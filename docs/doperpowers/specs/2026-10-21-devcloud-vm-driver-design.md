@@ -932,7 +932,9 @@ so a host never holds an AWS credential.
   never reaches the core as a label. `list` is `describe-instances` filtered on `tag-key=devcloud`;
   an instance `shutting-down` or `terminated` is gone (EC2 lists terminated instances for about an
   hour), so `get` returns null for it and `list` leaves it out. State `running` maps to
-  `running`; `created` is `LaunchTime`.
+  `running`; `created` is the root volume's attach time (`LaunchTime` only when that is missing),
+  since `LaunchTime` moves when a stopped instance starts again; a Vm's `location` is the region,
+  which `ls`'s price lookup passes back to `types` (M8, Decision Log).
 - **The base image** for `image: null` is Canonical's Ubuntu 24.04 amd64 AMI for the region, read
   at create time from the public SSM parameter
   `/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id`. Only
@@ -961,9 +963,10 @@ so a host never holds an AWS credential.
   GCE metadata server and, failing that, EC2's IMDSv2 (a session token, then
   `meta-data/spot/instance-action`, which answers 404 until EC2 has scheduled the interruption).
   EC2 gives two minutes' notice and does not run the guest's shutdown as GCE does, so a spot EC2
-  host also runs a timer, every 5 seconds while `DEVCLOUD_SPOT=1`, that polls the notice and starts
-  the bounded departure once when it appears; an ordinary reboot or a missing notice departs
-  nothing. Spot needs the account's `AWSServiceRoleForEC2Spot` service-linked role, which only a
+  host also runs a resident watch (`devcloud-spot-notice.service`, while `DEVCLOUD_SPOT=1`) that
+  polls the notice every 5 seconds, asking EC2 only, and starts the bounded departure once when it
+  appears, then exits; a reclaim already departed departs nothing, and an ordinary reboot or a
+  missing notice departs nothing (M8, Decision Log). Spot needs the account's `AWSServiceRoleForEC2Spot` service-linked role, which only a
   console request creates by itself: H13 creates it with the person's session, and the provider
   maps the error a missing role gives to exit 3 with kind `other` and a message naming the role,
   so the narrow credential needs no IAM permission.
@@ -977,7 +980,7 @@ so a host never holds an AWS credential.
   `devcloud` tag, and `image-delete` deregisters the AMI with its snapshots
   (`--delete-associated-snapshots`). A deletion interrupted between the two leaves a snapshot no
   `images` call returns again, so `images` first deletes every snapshot the account owns that
-  carries `devcloud=image`, is older than a day (a `create-image` in flight has no AMI that names
+  carries `devcloud=image` or `devcloud=test` (`provider test`'s image), is older than a day (a `create-image` in flight has no AMI that names
   its snapshot yet) and is named by none of the account's AMIs; a failure there is reported on
   stderr and never fails `images`. An AMI is
   regional, which matches an account being one region.
@@ -1722,7 +1725,7 @@ Working directory: the `devcloud-vm` worktree.
 
     bash devcloud/tests/run.sh                         # unit + container integration (the devcloud gate)
     python3 -m unittest discover -s devcloud/tests/unit -p 'test_*.py'   # unit only, while iterating
-    ci-gate --gates devcloud,repo-checks,shell-lint     # the committed HEAD on CI
+    ci-gate --gates devcloud-unit,devcloud-image,devcloud-host,devcloud-systemd,repo-checks,shell-lint   # the committed HEAD on CI
 
 Live (from a MacBook session; the profile's accounts):
 
@@ -2211,6 +2214,16 @@ commit 5168e433 on its branch, 2026-10-21):
     instance avoids that (friction tracker).
   Evidence: `docs/doperpowers/plans/2026-10-22-devcloud-node-removal-report.md`.
 
+- Observation: The `devcloud` ci-kit gate is now four gates, `devcloud-unit`, `devcloud-image`,
+  `devcloud-host` and `devcloud-systemd`; `ci-gate --gates devcloud` is refused (`unknown gate`).
+  Concrete Steps names the four.
+  Evidence: M8's executor, 2026-11-04; run 41972697466 green on the four, repo-checks, shell-lint.
+- Observation: The core's bake treats any state that is not `running` as off, but EC2 can image
+  only a `stopped` instance, so the aws provider's `image-create` waits through `stopping`. Hetzner
+  and GCE never surfaced this. No other Hetzner- or GCE-only assumption was found in the core (dotted
+  type names, a region as location, root first contact all pass).
+  Evidence: M8's report, 2026-11-04.
+
 ## Decision Log
 
 - Decision: Verification. One independent spec review by the `doperpowers:adversarial-reviewer`
@@ -2248,6 +2261,25 @@ commit 5168e433 on its branch, 2026-10-21):
   - **The version** is bumped once for the branch (`scripts/bump-version.sh --plugin devcloud`),
     and compared with `origin/main`'s just before merging.
   Date/Author: 2026-11-04, the M8/M9 plan executor.
+- Decision: M8's build, against the fake `aws` (a583dbe9), settled these where §6.6 was silent
+  or literal; the design text above is revised to match.
+  - **EC2's notice watch is a resident service** polling every 5 s, not a 5-second timer: a
+    timer starts a unit 17,280 times a day, each a journal entry and a fresh interpreter, and
+    would keep the IMDS token in a file between runs. It asks EC2 only, since `preempted()` asks
+    GCE first and the watch must not race GCE's shutdown departure; it departs once and exits 0.
+    `depart_preempted` does nothing when the status already says departed, which covers EC2's
+    shutdown stopping the spot unit after the watch departed.
+  - **The same 25 s bounded departure** serves EC2's two-minute notice. A longer EC2 budget would
+    give the ship more time; left as a follow-up.
+  - **A Vm's `location` is the region**, because `ls` prices a VM through `types(vm.location)`.
+  - **`created` is the root volume's attach time**, not `LaunchTime`, which a stop and start
+    move, and which would expose an old VM to the reaper's "excess, made in the last 2 hours"
+    deletion.
+  - **The orphan-snapshot sweep covers `devcloud=test` too**: `provider test`'s image leaves a
+    snapshot the same way when its deletion is interrupted.
+  - **No EC2 key pair**: the core's user-data authorizes the driver keys, so the policy needs no
+    `ec2:ImportKeyPair`. Prices come from the Pricing API filtered `ANY_OF` on the families' types.
+  Date/Author: 2026-11-04, the M8/M9 plan executor, from M8's executor.
 - Decision: Provider-agnostic from the first version, with Hetzner, GCE and adopt adapters and a
   per-project `devenv/host.toml`, instead of the Hetzner-only driver first proposed.
   Rationale: the person asked that each project be able to use the provider it prefers, or a server
