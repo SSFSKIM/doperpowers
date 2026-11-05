@@ -113,6 +113,11 @@ if cmd == "nvidia-smi":
         done(0, out="".join(f"{name}, {s['version']}\n" for name in s["gpus"]))
     done(9, out="NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.\n")
 if cmd == "systemctl":
+    if args == ["restart", "docker.service"] and s["restart_fails"] > 0:
+        s["restart_fails"] -= 1
+        done(1, err="Job for docker.service failed because the control process exited with error code.\n")
+    if args == ["restart", "docker.service"]:
+        s["restarted_with"] = pathlib.Path(s["daemon_json"]).read_text()
     if args == ["enable", "--now", "docker.service"]:
         if not os.path.lexists(os.path.join(s["bin"], "dockerd")):
             done(1, err="Failed to enable unit: Unit file docker.service does not exist.\n")
@@ -139,9 +144,17 @@ if cmd == "nvidia-ctk":
 if cmd == "docker":
     path = pathlib.Path(s["daemon_json"])
     runtime = path.exists() and "nvidia" in json.loads(path.read_text()).get("runtimes", {})
+    # The daemon runs the runtime it read when it last (re)started.
+    runtime = runtime and "nvidia" in json.loads(s["restarted_with"] or "{}").get("runtimes", {})
     if not (s["docker_active"] and runtime and (s["loaded"] or s["own_driver"])) or s["container_blind"]:
         done(125, err='docker: Error response from daemon: could not select device driver "" with capabilities: '
                       '[[gpu]].\n')
+    # The image's NVIDIA_REQUIRE_CUDA (cuda>=13.0), checked by the toolkit's hook unless disabled.
+    disabled = any(a == "NVIDIA_DISABLE_REQUIRE=true" for a in args)
+    if not disabled and tuple(map(int, s["cuda"].split("."))) < (13, 0):
+        done(125, err="docker: Error response from daemon: failed to create task for container: "
+                      "nvidia-container-cli: requirement error: unsatisfied condition: cuda>=13.0, please update "
+                      "your driver to a newer version, or use an earlier cuda container\n")
     done(0, out="".join(f"GPU {i}: {name} (UUID: GPU-{i})\n" for i, name in enumerate(s["gpus"])))
 done(127, err=f"the fake has no {cmd} {args}\n")
 '''
@@ -172,7 +185,8 @@ class Machine:
             "kernel": OLD, "meta": META, "exact_next": EXACT_NEW,
             "archive": [EXACT_OLD, UTILS, META, "docker-ce", "containerd.io", TOOLKIT],
             "installed": ["docker-ce-cli"], "images": ["linux-image-aws", f"linux-image-{OLD}"],
-            "own_driver": False, "loaded": False, "gpus": list(kind_of_gpu), "version": "615.71.09",
+            "own_driver": False, "loaded": False, "gpus": list(kind_of_gpu), "version": "580.178.04",
+            "cuda": "13.0", "restart_fails": 0, "restarted_with": None,
             "docker_active": False, "docker_members": [], "container_blind": False,
             "toolkit_source": str(root / "etc/apt/sources.list.d/nvidia-container-toolkit.list"),
             "daemon_json": str(root / "etc/docker/daemon.json"), "key_file": str(NVIDIA_KEY),
@@ -238,7 +252,8 @@ class GpuStepTest(unittest.TestCase):
                             ("MARKER", self.root / "var/lib/devcloud/gpu-reboot.json"),
                             ("TOOLKIT_KEY", etc / "apt/keyrings/nvidia-container-toolkit.asc"),
                             ("TOOLKIT_SOURCE", etc / "apt/sources.list.d/nvidia-container-toolkit.list"),
-                            ("DAEMON_JSON", etc / "docker/daemon.json")):
+                            ("DAEMON_JSON", etc / "docker/daemon.json"),
+                            ("RESTART_OWED", self.root / "run/devcloud/gpu-docker-restart-owed")):
             patch = mock.patch.object(gpu, name, value)
             patch.start()
             self.addCleanup(patch.stop)
@@ -281,7 +296,7 @@ class GpuStepTest(unittest.TestCase):
         self.m.device("0000:00:1e.0")
         outcome = self.step()
         self.assertEqual(outcome.state, "ok", outcome.detail)
-        self.assertTrue(outcome.detail.startswith("NVIDIA L4 (driver 615.71.09); a CUDA container"), outcome.detail)
+        self.assertTrue(outcome.detail.startswith("NVIDIA L4 (driver 580.178.04); a CUDA container"), outcome.detail)
         for said in (f"installed the driver (branch {B} for kernel {OLD})", "installed Docker Engine",
                      "installed NVIDIA's container toolkit", "configured the NVIDIA runtime for Docker",
                      "dev added to the docker group"):
@@ -301,7 +316,8 @@ class GpuStepTest(unittest.TestCase):
         self.assertIn(["modprobe", "nvidia"], self.m.calls())
         self.assertIn(["modprobe", "nvidia_uvm"], self.m.calls())
         self.assertIn(["systemctl", "restart", "docker.service"], self.m.calls())
-        self.assertIn(["docker", "run", "--rm", "--gpus", "all", gpu.CUDA_IMAGE, "nvidia-smi", "-L"], self.m.calls())
+        self.assertIn(["docker", "run", "--rm", "--gpus", "all", "-e", "NVIDIA_DISABLE_REQUIRE=true", gpu.CUDA_IMAGE,
+                       "nvidia-smi", "-L"], self.m.calls())
         self.assertEqual(self.m.read()["docker_members"], ["dev"])
         self.assertFalse(gpu.MARKER.exists())
 
@@ -309,8 +325,8 @@ class GpuStepTest(unittest.TestCase):
         self.m.device("0000:00:1e.0")
         self.step()
         self.m.boot(OLD, "boot-2")
-        # The module loads by its PCI alias at boot.
-        self.m.update(loaded=True)
+        # The module loads by its PCI alias at boot; the daemon reads its configuration as it starts.
+        self.m.update(loaded=True, restarted_with=gpu.DAEMON_JSON.read_text())
         self.m.clear_calls()
         outcome = self.step()
         self.assertEqual(outcome.state, "ok")
@@ -326,7 +342,7 @@ class GpuStepTest(unittest.TestCase):
         self.m.device("0000:00:1e.0")
         self.step()
         self.m.boot(OLD, "boot-2")
-        self.m.update(loaded=True, docker_active=True)
+        self.m.update(loaded=True, docker_active=True, restarted_with=gpu.DAEMON_JSON.read_text())
         state = self.m.read()
         if missing == "driver":
             state["installed"] = [p for p in state["installed"] if p not in (EXACT_OLD, UTILS)]
@@ -341,6 +357,7 @@ class GpuStepTest(unittest.TestCase):
             (self.m.bin / "nvidia-ctk").unlink()
         if missing == "runtime":
             gpu.DAEMON_JSON.unlink()
+            state["restarted_with"] = None
         state["calls"] = []
         self.m.state_path.write_text(json.dumps(state))
 
@@ -381,13 +398,35 @@ class GpuStepTest(unittest.TestCase):
 
     def test_an_adopted_machines_own_driver_and_docker_are_kept(self):
         self.m.device("0000:00:1e.0")
-        self.m.update(own_driver=True, version="550.163.01")
+        self.m.update(own_driver=True, version="550.163.01", cuda="12.4")
         (self.m.bin / "nvidia-smi").symlink_to(self.m.fake)     # the person's own install
         self.m.install_already("docker-ce")
         outcome = self.step()
         self.assertEqual(outcome.state, "ok", outcome.detail)
         self.assertIn("(driver 550.163.01)", outcome.detail)
         self.assertEqual(self.m.installs(), [[TOOLKIT]])
+
+    def test_an_adopted_machines_older_driver_passes_the_container_check(self):
+        # R525 supports CUDA 12.0; the check image asks for 13.0, which the check does not need.
+        self.m.device("0000:00:1e.0")
+        self.m.update(own_driver=True, version="525.147.05", cuda="12.0")
+        (self.m.bin / "nvidia-smi").symlink_to(self.m.fake)
+        outcome = self.step()
+        self.assertEqual(outcome.state, "ok", outcome.detail)
+        self.assertIn("(driver 525.147.05)", outcome.detail)
+
+    def test_a_failed_docker_restart_is_owed_until_one_succeeds(self):
+        self.m.device("0000:00:1e.0")
+        self.m.update(restart_fails=1)
+        self.assertTrue(self.failed().startswith("the runtime: systemctl restart exited 1"))
+        self.m.clear_calls()
+        outcome = self.step()   # the same boot: daemon.json already holds the runtime
+        self.assertEqual(outcome.state, "ok", outcome.detail)
+        self.assertIn(["systemctl", "restart", "docker.service"], self.m.calls())
+        self.assertIn("configured the NVIDIA runtime for Docker", outcome.detail)
+        self.m.clear_calls()
+        self.step()
+        self.assertNotIn(["systemctl", "restart", "docker.service"], self.m.calls(), "paid once, not again")
 
     # --- the kernel the archive has no modules for ---
 

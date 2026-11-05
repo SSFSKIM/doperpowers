@@ -24,18 +24,24 @@ class BootExitTest(unittest.TestCase):
         self.lock_path = tmp / "lifecycle.lock"
 
     def boot(self, failing=None, projects_state="ok", during=None, maws_state="skipped", gpu_state="skipped",
-             reboot=False, reboot_fails=False):
+             reboot=False, reboot_fails=False, during_gpu=None):
         """`during`: a step's label and what happens on the host while it runs.
-        `reboot`: the GPU step asks for the reboot."""
+        `reboot`: the GPU step asks for the reboot; `during_gpu`, what happens
+        on the host as the GPU step ends, once its step guard is let go."""
         recorded = []
         self.ran, self.booted = [], []
 
         def gpu_step(r):
             r.reboot = reboot
+            if during_gpu:
+                during_gpu()
             return (gpu_state, "made up")
+
+        self.held, self.held_at_run = [], []
 
         def run(argv, **kwargs):
             self.ran.append(argv)
+            self.held_at_run.append(list(self.held))
             if reboot_fails:
                 raise steps.StepError("systemctl reboot exited 1")
         with contextlib.ExitStack() as stack:
@@ -169,6 +175,43 @@ class ReleaseStartedTest(BootExitTest):
                     self.assertEqual(self.boot()[0], 0)
                 self.assertEqual(len(taken), locks)
                 self.assertTrue(all(kw == {"shared": True} for kw in taken))
+
+    def test_a_release_starting_as_the_gpu_step_ends_is_not_rebooted_under(self):
+        """The step asks for its reboot outside its own step guard; a release
+        that took the lifecycle lock in that gap must not have the person's
+        server rebooted mid-release."""
+        host = mock.Mock(desc=mock.Mock(adopted=True), reboot=False)
+        with mock.patch.object(steps, "Run", lambda kind: host):
+            code, recorded = self.boot(gpu_state="deferred", reboot=True,
+                                       during_gpu=lambda: self.released_up_to("restore-keys"))
+        self.assertEqual(code, 0)
+        self.assertEqual(self.ran, [], "no systemctl reboot once the release has started")
+        self.assertNotIn("projects", [name for name, _ in recorded])
+        self.assertNotIn(True, self.booted)
+
+    def test_a_vm_whose_departure_started_as_the_gpu_step_ends_is_not_rebooted_either(self):
+        # A reboot would cut the departure's ship short; the departure owns the machine now.
+        code, recorded = self.boot(gpu_state="deferred", reboot=True, during_gpu=lambda: status.set_lifecycle(
+            "depart", "departing", "started", steps=[], path=self.status_path))
+        self.assertEqual(code, 0)
+        self.assertEqual(self.ran, [])
+        self.assertNotIn("projects", [name for name, _ in recorded])
+
+    def test_the_reboot_is_asked_for_under_the_lifecycle_lock(self):
+        # A VM's steps take no lock (its departure must not wait on them): only the reboot's request does.
+        real = steps.lease.locked
+
+        @contextlib.contextmanager
+        def locked(**kw):
+            with real(**kw):
+                self.held.append(kw)
+                yield
+                self.held.pop()
+        host = mock.Mock(desc=mock.Mock(adopted=False), reboot=False)
+        with mock.patch.object(steps.lease, "locked", locked), mock.patch.object(steps, "Run", lambda kind: host):
+            self.boot(gpu_state="deferred", reboot=True)
+            self.assertEqual(self.ran, [["systemctl", "reboot"]])
+        self.assertEqual(self.held_at_run, [[{"shared": True}]])
 
     def test_a_departing_vm_still_boots_its_services_gated(self):
         """A VM's departure starts again from step 0 after a reboot (§4.2):

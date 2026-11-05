@@ -334,11 +334,11 @@ machine's own driver or Docker) is kept, and a boot that stopped halfway
 finishes the rest at the next:
 
 1. **The driver**: when `nvidia-smi` lists no GPU, Ubuntu's precompiled,
-   signed modules of the pinned `-server-open` branch for the running kernel
-   (`linux-modules-nvidia-615-server-open-$(uname -r)`, with
-   `nvidia-utils-615-server`), loaded at once. When the archive has none for
+   signed modules of NVIDIA's long-term branch, 580, as `-server-open`, for
+   the running kernel (`linux-modules-nvidia-580-server-open-$(uname -r)`,
+   with `nvidia-utils-580-server`), loaded at once. When the archive has none for
    the running kernel, the flavour's metapackage
-   (`linux-modules-nvidia-615-server-open-<flavour>`) brings a newer kernel
+   (`linux-modules-nvidia-580-server-open-<flavour>`) brings a newer kernel
    with them, and the boot reboots into it once (the marker
    `/var/lib/devcloud/gpu-reboot.json`); still missing afterwards, the step
    fails naming the kernel and the branch.
@@ -351,13 +351,17 @@ finishes the rest at the next:
    `/etc/apt/keyrings/nvidia-container-toolkit.asc`, then its source and
    `nvidia-container-toolkit`.
 4. **The runtime**: `nvidia-ctk runtime configure --runtime=docker`, and the
-   daemon restarted when that changed `/etc/docker/daemon.json`.
+   daemon restarted when that changed `/etc/docker/daemon.json` (a restart
+   that failed stays owed until one succeeds).
 
-The step then runs `nvidia/cuda:13.0.3-base-ubuntu24.04` with `--gpus all`,
-which must list the GPU: `ok` names it and its driver version, `failed` names
+The step then runs `nvidia/cuda:13.0.3-base-ubuntu24.04` with `--gpus all`
+and `NVIDIA_DISABLE_REQUIRE=true` (the check is that the GPU reaches a
+container, so an adopted machine's older driver passes it), which must list
+the GPU: `ok` names it and its driver version, `failed` names
 the part and the reason. apt never removes a package here (`--no-remove`), so
 a conflict on an adopted machine fails the step rather than replacing what is
-installed. The image is unchanged: a GPU VM's first boot takes some minutes
+installed. The reboot is asked for only while no departure or release has
+started. The image is unchanged: a GPU VM's first boot takes some minutes
 longer for the downloads, and the output goes to `/var/log/devcloud/gpu.log`.
 
 **Projects.** A repository describes its own environment in `devenv/` at its

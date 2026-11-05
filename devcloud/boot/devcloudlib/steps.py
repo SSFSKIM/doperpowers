@@ -942,7 +942,20 @@ def _reboot():
     for: asked of systemd, which stops the boot's unit and whatever waits on
     it; the next boot runs every step again and starts the services. Exit 0
     leaves the unit not failed, so a driver waiting on the boot goes on
-    waiting. False, the step recorded failed, when systemd refuses."""
+    waiting. False, the step recorded failed, when systemd refuses.
+    Asked under the lifecycle lock, shared, and only while no departure or
+    release has started: the step's own guard is let go when it returns, and
+    a release that took the lock since must not have the person's server
+    rebooted under it, nor a departure its ship cut short. Then the boot ends
+    there, as it does once a release has started (True)."""
+    with lease.locked(shared=True):
+        if status.departure_started():
+            _say("gpu: no reboot: the departure or release has started, and the boot configures nothing more")
+            return True
+        return _ask_reboot()
+
+
+def _ask_reboot():
     try:
         run(["systemctl", "reboot"], log="gpu", timeout=120)
     except StepError as error:

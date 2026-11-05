@@ -34,11 +34,13 @@ import tempfile
 from . import proc
 from .proc import StepError
 
-# The newest -server-open branch Ubuntu 24.04 ships for the L4, L40S and A10G
-# (their PCI ids are in its driver's Modaliases), read from the noble-updates
-# index on 2026-11-04: 615 (615.71.09). Its utilities are in multiverse, which
-# Ubuntu's cloud images enable.
-BRANCH = "615"
+# NVIDIA's current long-term branch, as -server-open: hosts are long-lived, and
+# it is supported to 2028 and kept in Ubuntu's restricted component, where the
+# newer branches (595, 615) sit in multiverse and go end-of-life within about a
+# year. The L4, L40S and A10G are in its driver's Modaliases; noble-updates had
+# 580.178.04 on 2026-11-04, with exact module packages for every current
+# kernel flavour (aws, gcp, generic and their LTS and HWE lines).
+BRANCH = "580"
 NVIDIA_VENDOR = "0x10de"
 SYSFS = pathlib.Path("/sys/bus/pci/devices")
 OSRELEASE = pathlib.Path("/proc/sys/kernel/osrelease")
@@ -55,7 +57,13 @@ TOOLKIT_KEY = pathlib.Path("/etc/apt/keyrings/nvidia-container-toolkit.asc")
 TOOLKIT_SOURCE = pathlib.Path("/etc/apt/sources.list.d/nvidia-container-toolkit.list")
 TOOLKIT_REPO = "https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /"
 DAEMON_JSON = pathlib.Path("/etc/docker/daemon.json")
-# CUDA 13.0 needs a 580 driver or later.
+# The runtime's configuration changed and Docker has not yet restarted onto
+# it: kept until a restart succeeds, so a retry in the same boot still owes
+# it. Under /run: a reboot restarts the daemon anyway.
+RESTART_OWED = pathlib.Path("/run/devcloud/gpu-docker-restart-owed")
+# The check container. Its NVIDIA_REQUIRE_CUDA (cuda>=13.0) is turned off with
+# NVIDIA_DISABLE_REQUIRE: the check proves the GPU reaches a container, and an
+# adopted machine's own older driver (R525: CUDA 12.0) must pass it.
 CUDA_IMAGE = "nvidia/cuda:13.0.3-base-ubuntu24.04"
 
 LOG = "gpu"
@@ -297,12 +305,16 @@ def _runtime(did):
     before = _read(DAEMON_JSON)
     proc.run(["nvidia-ctk", "runtime", "configure", "--runtime=docker"], log=LOG, timeout=120)
     if _read(DAEMON_JSON) != before:
+        proc.write_file(RESTART_OWED, "", mode=0o600, dir_mode=0o711)
+    if RESTART_OWED.exists():
         proc.run(["systemctl", "restart", "docker.service"], log=LOG, timeout=300)
+        RESTART_OWED.unlink()
         did.append("configured the NVIDIA runtime for Docker")
 
 
 def _check_container(listed):
-    out = proc.run(["docker", "run", "--rm", "--gpus", "all", CUDA_IMAGE, "nvidia-smi", "-L"],
+    out = proc.run(["docker", "run", "--rm", "--gpus", "all", "-e", "NVIDIA_DISABLE_REQUIRE=true", CUDA_IMAGE,
+                    "nvidia-smi", "-L"],
                    log=LOG, capture=True, timeout=900)
     seen = [line for line in out.splitlines() if line.startswith("GPU ")]
     if not any(listed[0][0] in line for line in seen):
