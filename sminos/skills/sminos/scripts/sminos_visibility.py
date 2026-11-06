@@ -49,6 +49,7 @@ import os
 import re
 import sys
 import time
+from contextlib import contextmanager
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 if SCRIPT_DIR not in sys.path:
@@ -139,26 +140,29 @@ def set_visibility(sid, *, access=None, share=None, operator):
             raise Widening(before, after)
         return after
 
-    try:
-        rec, moved = records.set_policy(sid, mutate)
-    except records.NoRecord as e:
-        raise Refused("%s: its visibility is kept on its record, on its own machine" % e)
-    if not moved:
-        return {"record": rec, "changed": False, "transition": None}
-    t = {"policyRev": rec["policyRev"], "access": rec["access"],
-         **previous_known(sid, seen["before"][0], rec["policyRev"]), "at": S.now(ms=True)}
-    set_pending(sid, t)
+    # The policy's change and its pending entry under one lock, the transitions': two setters never interleave
+    # between them, so the entry kept is always the latest revision's, and its `previous` reads the one before.
+    with _locked() as sessions:
+        try:
+            rec, moved = records.set_policy(sid, mutate)
+        except records.NoRecord as e:
+            raise Refused("%s: its visibility is kept on its record, on its own machine" % e)
+        if not moved:
+            return {"record": rec, "changed": False, "transition": None}
+        t = {"policyRev": rec["policyRev"], "access": rec["access"],
+             **previous_known(sid, seen["before"][0], rec["policyRev"], sessions.get(sid)), "at": S.now(ms=True)}
+        sessions[sid] = t
     S.nudge_daemon()
     return {"record": rec, "changed": True, "transition": t}
 
 
-def previous_known(sid, old_access, rev):
+def previous_known(sid, old_access, rev, held):
     """{"previous": the session's audience before the change at `rev`} as
-    known here, or {} when it is not: the whole org (None) for a session
-    that was not private; else the endpoint's word kept at the policyRev
-    before; else, behind a change the endpoint never answered, the audience
-    before that one (the endpoint then compares against the same)."""
-    held = transitions().get(sid)
+    known here, or {} when it is not: behind a change the endpoint never
+    answered (`held`, the session's kept transition), the audience before
+    that one (the endpoint then compares against the same); else the whole
+    org (None) for a session that was not private; else the endpoint's word
+    kept at the policyRev before."""
     if held is not None and not held.get("done") and held.get("policyRev", rev) < rev:
         return {"previous": held["previous"]} if "previous" in held else {}
     if old_access != "private":
@@ -191,16 +195,21 @@ def transitions():
         if isinstance(sessions, dict) else {}
 
 
-def _update(fn):
-    """The kept transitions changed by fn(sessions) under their lock, and
-    written whole; a done one past DONE_KEPT_S dropped."""
+@contextmanager
+def _locked():
+    """The kept transitions, {session: transition}, for the block to change
+    under their lock; written whole when it ends without raising and changed
+    them, a done one past DONE_KEPT_S dropped."""
     path = transitions_path()
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     with open(path + ".lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             sessions = transitions()
-            fn(sessions)
+            was = json.dumps(sessions, sort_keys=True)
+            yield sessions
+            if json.dumps(sessions, sort_keys=True) == was:
+                return
             cut = time.time() - DONE_KEPT_S
             sessions = {sid: t for sid, t in sessions.items()
                         if not t.get("done") or (S._ts_epoch(t["done"]) or 0) >= cut}
@@ -216,14 +225,14 @@ def _update(fn):
 
 def set_pending(sid, t):
     """The session's transition: `t` in place of any kept."""
-    _update(lambda sessions: sessions.__setitem__(sid, dict(t)))
+    with _locked() as sessions:
+        sessions[sid] = dict(t)
 
 
 def _amend(sid, rev, **fields):
-    def fn(sessions):
+    with _locked() as sessions:
         if sessions.get(sid, {}).get("policyRev") == rev:
             sessions[sid] = {**sessions[sid], **fields}
-    _update(fn)
 
 
 # ------------------------------------------------------------- the uplink's side: completing a transition
