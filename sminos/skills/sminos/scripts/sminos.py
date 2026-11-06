@@ -3034,7 +3034,8 @@ def lineage_provenance(project, sid, peer=None, former=None, events=None):
     """A provenance from the sessions `sid` continues, or None. The first
     final record along them wins; else the latest `joined` among them, the
     nearest first, that publishes (its owners the machine's when it names
-    none); else the first provisional record, the fallback, so a provisional
+    none, its policy read from where it sits: from_joined); else the first
+    provisional record, the fallback, so a provisional
     session between it and a final ancestor never hides the ancestor. The
     session's own publications are never evidence: they say what its record
     already is. A predecessor whose record file cannot be read ends the walk
@@ -3058,8 +3059,8 @@ def lineage_provenance(project, sid, peer=None, former=None, events=None):
         for s in chain:
             j = last_published(project, s, events)
             if j is not None:
-                return records.from_joined({"owners": owners_of(j) or [records.MACHINE], "origin": j.get("origin")},
-                                           chain)
+                return records.from_joined({"owners": owners_of(j) or [records.MACHINE], "origin": j.get("origin"),
+                                            "writer": j["writer"]}, chain)
     return fallback
 
 

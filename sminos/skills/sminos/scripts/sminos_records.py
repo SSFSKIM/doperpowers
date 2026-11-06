@@ -383,8 +383,9 @@ def claim(launch, sid, deadline=None):
             checked_owners(prov["owners"])
             policy_carried(prov)
         except ValueError:
-            # Not a provenance this code wrote: the claim stands, its content does not.
-            prov = default_provenance()
+            # Not a provenance this code wrote: the claim stands, its content does not. Its policy is unknown too
+            # (its spawner may have been private): the narrowest, as for a spawner whose record cannot be read.
+            prov = {**default_provenance(), "access": "private", "shares": []}
         rec = _record(sid, {**prov, "basis": "launch"}, have=have)
         sminos._write_record(record_path(sid), rec)
         return rec
@@ -614,9 +615,15 @@ def inherited(rec, former):
 def from_joined(event, former=()):
     """A provenance from a `joined` that publishes: its owners and
     origin; the principal its requester's for a desk spawn, else the
-    machine's; the default slot (the log carries no inference)."""
+    machine's; the default slot (the log carries no inference). The log
+    carries no policy either, so it is read from where the `joined` sits
+    (O18 D6): under an audience stream its session was private, and a
+    continuation known only from it is private with no shares, its shares
+    unknown — the narrowest, for its owner to widen; under the plain
+    writer, the listed default."""
     origin = event["origin"] if isinstance(event.get("origin"), dict) else {"kind": "terminal"}
     requester = origin.get("requester") if origin.get("kind") == "maws" else None
     return {**default_provenance("lineage"), "origin": origin, "owners": list(event["owners"]),
             "principal": requester if isinstance(requester, str) and requester else MACHINE,
+            **({"access": "private", "shares": []} if sminos.is_stream(event.get("writer")) else {}),
             "former": list(former)}
