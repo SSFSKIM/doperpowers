@@ -7,12 +7,17 @@
 #   bump-version.sh [--plugin NAME] <new-version>   Bump the plugin's declared files
 #   bump-version.sh --check [--plugin NAME]         Report versions (detect drift); every plugin by default
 #   bump-version.sh --audit [--plugin NAME]         Check + grep the plugin's tree for old version strings
+#   bump-version.sh --since BASE [HEAD]             Fail when a plugin's shipped files changed since BASE
+#                                                   but its version is not above BASE's (HEAD: default the working tree)
 #
 # .version-bump.json lists the plugins, each with its files and a field in
 # each; the first listed is the default plugin. A field is a dotted path
 # whose parts are keys, array indexes, or `key[name=value]`, which selects
 # the one array element whose `name` is `value` — how a marketplace entry is
 # addressed, so a reordered marketplace never moves the wrong version.
+# A plugin's `root` (default `.`) is the directory it owns, less any nested
+# plugin's root; `unshipped` lists globs, relative to the root, of the files
+# that never reach a session, whose changes need no bump (`*` crosses `/`).
 #
 set -euo pipefail
 
@@ -98,9 +103,13 @@ declared_files() {
   jq -r --arg p "$1" '.plugins[] | select(.name == $p) | .files[] | "\(.path)\t\(.field)"' "$CONFIG"
 }
 
-# The plugin's audit root (relative to the repo) and exclude patterns.
-audit_root() {
-  jq -r --arg p "$1" '.plugins[] | select(.name == $p) | .audit.root // "."' "$CONFIG"
+# The plugin's root (relative to the repo), its unshipped globs, and its
+# audit's exclude patterns.
+plugin_root() {
+  jq -r --arg p "$1" '.plugins[] | select(.name == $p) | .root // "."' "$CONFIG"
+}
+unshipped_globs() {
+  jq -r --arg p "$1" '.plugins[] | select(.name == $p) | .unshipped[]?' "$CONFIG"
 }
 audit_excludes() {
   jq -r --arg p "$1" '.plugins[] | select(.name == $p) | .audit.exclude[]?' "$CONFIG"
@@ -190,7 +199,7 @@ cmd_audit() {
   fi
 
   local root rel
-  rel="$(audit_root "$plugin")"
+  rel="$(plugin_root "$plugin")"
   root="$REPO_ROOT"
   [[ "$rel" == "." ]] || root="$REPO_ROOT/$rel"
   echo "Audit: scanning $rel for version string '$current_version'..."
@@ -273,16 +282,152 @@ cmd_bump() {
   cmd_audit "$plugin"
 }
 
+# A declared field's value at a git revision, or in the working tree when the
+# revision is empty; fails when the file or the field is absent there.
+field_at() {
+  local rev="$1" path="$2" field="$3"
+  if [[ -z "$rev" ]]; then
+    [[ -f "$REPO_ROOT/$path" ]] || return 1
+    read_json_field "$REPO_ROOT/$path" "$field"
+    return
+  fi
+  git -C "$REPO_ROOT" show "$rev:$path" >"$SINCE_TMP/blob" 2>/dev/null || return 1
+  read_json_field "$SINCE_TMP/blob" "$field"
+}
+
+# The marketplace updates by version number alone, so a change to a plugin's
+# shipped files installs only under a version above the one its base carried:
+# fail for each plugin whose shipped files differ between BASE and HEAD (the
+# working tree when HEAD is empty) unless every declared version at HEAD is
+# above every one at BASE.
+cmd_since() {
+  local base="$1" head="$2" only="$3"
+  local rev
+  for rev in "$base" ${head:+"$head"}; do
+    if ! git -C "$REPO_ROOT" rev-parse --verify --quiet "$rev^{commit}" >/dev/null; then
+      echo "error: '$rev' is not a commit in $REPO_ROOT" >&2
+      exit 1
+    fi
+  done
+  SINCE_TMP=$(mktemp -d)
+  trap 'rm -rf "$SINCE_TMP"' EXIT
+
+  # The plugins, a nested root before the root it sits in, so that a path
+  # goes to the innermost plugin that owns it.
+  local -a names=() roots=() globs=() counts=() samples=()
+  local name root
+  while IFS=$'\t' read -r root name; do
+    names+=("$name")
+    roots+=("$root")
+    globs+=("$(unshipped_globs "$name")")
+    counts+=(0)
+    samples+=("")
+  done < <(for name in $(plugin_names); do printf '%s\t%s\n' "$(plugin_root "$name")" "$name"; done | sort -r)
+
+  # Into a file, not a process substitution, so a diff that fails fails the
+  # check instead of reading as no change.
+  git -C "$REPO_ROOT" diff --name-only --no-renames -z "$base" ${head:+"$head"} -- >"$SINCE_TMP/changed"
+  # The working tree's new files are part of its change too.
+  [[ -n "$head" ]] || git -C "$REPO_ROOT" ls-files -z --others --exclude-standard >>"$SINCE_TMP/changed"
+  local path rel pat i matched
+  while IFS= read -r -d '' path; do
+    for i in "${!names[@]}"; do
+      root=${roots[i]}
+      if [[ "$root" == "." ]]; then
+        rel=$path
+      elif [[ "$path" == "$root/"* ]]; then
+        rel=${path#"$root"/}
+      else
+        continue
+      fi
+      matched=0
+      while IFS= read -r pat; do
+        # shellcheck disable=SC2053 # the glob is the point
+        if [[ -n "$pat" && "$rel" == $pat ]]; then
+          matched=1
+          break
+        fi
+      done <<<"${globs[i]}"
+      if ((matched == 0)); then
+        counts[i]=$((counts[i] + 1))
+        if ((counts[i] <= 3)); then
+          samples[i]+="${samples[i]:+, }$rel"
+        fi
+      fi
+      break
+    done
+  done <"$SINCE_TMP/changed"
+
+  local short failed=0 any=0 field hv bv head_min head_min_path base_max more
+  short=$(git -C "$REPO_ROOT" rev-parse --short "$base")
+  echo "Plugins whose shipped files changed since $short (to ${head:-the working tree}):"
+  echo ""
+  for i in "${!names[@]}"; do
+    name=${names[i]}
+    [[ -z "$only" || "$name" == "$only" ]] || continue
+    ((counts[i] > 0)) || continue
+    any=1
+    head_min="" head_min_path="" base_max=""
+    while IFS=$'\t' read -r path field; do
+      if ! hv=$(field_at "$head" "$path" "$field"); then
+        head_min="unreadable" head_min_path=$path
+        break
+      fi
+      if [[ -z "$head_min" ]] || version_gt "$head_min" "$hv"; then
+        head_min=$hv head_min_path=$path
+      fi
+      if bv=$(field_at "$base" "$path" "$field" 2>/dev/null); then
+        if [[ -z "$base_max" ]] || version_gt "$bv" "$base_max"; then
+          base_max=$bv
+        fi
+      fi
+    done < <(declared_files "$name")
+
+    more=""
+    ((counts[i] <= 3)) || more=", …"
+    if [[ "$head_min" == "unreadable" ]]; then
+      printf "  %-12s  UNREADABLE: no version in %s\n" "$name" "$head_min_path"
+      failed=1
+    elif [[ -z "$base_max" ]]; then
+      printf "  %-12s  %s, new since %s  (%s)\n" "$name" "$head_min" "$short" "${samples[i]}$more"
+    elif version_gt "$head_min" "$base_max"; then
+      printf "  %-12s  %s -> %s  (%s)\n" "$name" "$base_max" "$head_min" "${samples[i]}$more"
+    else
+      printf "  %-12s  NOT BUMPED: %s is %s, not above %s at %s  (%s)\n" \
+        "$name" "$head_min_path" "$head_min" "$base_max" "$short" "${samples[i]}$more"
+      failed=1
+    fi
+  done
+  ((any)) || echo "  (none)"
+
+  if ((failed)); then
+    echo ""
+    echo "A plugin's change installs only under a version above its base's: the marketplace"
+    echo "updates by number alone, and reports a reused number already installed. Bump each"
+    echo "plugin marked above with scripts/bump-version.sh [--plugin NAME] <version>. A path"
+    echo "that never reaches a session belongs in that plugin's \"unshipped\" list in"
+    echo ".version-bump.json instead."
+    return 1
+  fi
+}
+
 # --- main ---
 
 plugin=""
 command=""
-version=""
+since_base=""
+arg="" # the version to bump to, or --since's HEAD
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --plugin)
       [[ $# -ge 2 ]] || { echo "error: --plugin needs a name" >&2; exit 1; }
       plugin="$2"
+      shift 2
+      ;;
+    --since)
+      [[ $# -ge 2 ]] || { echo "error: --since needs a base revision" >&2; exit 1; }
+      command="--since"
+      since_base="$2"
       shift 2
       ;;
     --check | --audit)
@@ -298,7 +443,7 @@ while [[ $# -gt 0 ]]; do
       exit 1
       ;;
     *)
-      version="$1"
+      arg="$1"
       shift
       ;;
   esac
@@ -313,16 +458,22 @@ case "$command" in
   --audit)
     cmd_audit "${plugin:-$(plugin_names | head -1)}"
     ;;
+  --since)
+    cmd_since "$since_base" "$arg" "$plugin"
+    ;;
   *)
-    if [[ "$command" == "--help" || -z "$version" ]]; then
+    if [[ "$command" == "--help" || -z "$arg" ]]; then
       echo "Usage: bump-version.sh [--plugin NAME] <new-version> | --check [--plugin NAME] | --audit [--plugin NAME]"
+      echo "       | --since BASE [HEAD] [--plugin NAME]"
       echo ""
       echo "  <new-version>  Bump the plugin's declared files to the given version"
       echo "  --check        Show current versions, detect drift (every plugin unless --plugin)"
       echo "  --audit        Check + scan the plugin's tree for undeclared version references"
+      echo "  --since BASE   Fail when a plugin's shipped files changed since BASE without a version"
+      echo "                 above BASE's; HEAD defaults to the working tree (every plugin unless --plugin)"
       echo "  --plugin NAME  The plugin, as .version-bump.json names it; default: $(plugin_names | head -1)"
       exit 0
     fi
-    cmd_bump "${plugin:-$(plugin_names | head -1)}" "$version"
+    cmd_bump "${plugin:-$(plugin_names | head -1)}" "$arg"
     ;;
 esac
