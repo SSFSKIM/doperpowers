@@ -26,10 +26,14 @@ atomically (sminos._write_record) under one lock for every change here:
   `record.owners` act adding it is in `ownersProof`) is the session's
   current state, as the policy is, not its evidence's: a record replaced by
   stronger evidence takes the provenance's owners and ownersProof, then each
-  such member not already among them and each such act not already in its
-  proof (added_by_acts), so an owner gained while the record was
-  provisional or weaker is never lost to the evidence that replaces it. The
-  `@machine` token and a spawn's proof stay the evidence's.
+  such member not already among them (added_by_acts) and, when there is
+  one, every proof of the old record not already in its proof, in the old
+  order: an add verifies only when its signer is the machine's owner or
+  proven by an earlier proof (MAWS org-protocol's attest.ts), so the chain
+  behind it is kept, though the members it proves are not made owners
+  again. So an owner gained while the record was provisional or weaker is
+  never lost to the evidence that replaces it. The `@machine` token stays
+  the evidence's, and with no such owner the proof is the evidence's alone.
 - `controller {lane, since}` is current state, not provenance: set at each
   launch by the bridge's lane verdict (set_controller) and never copied.
 - The policy (O18 D10): `access` (ACCESS, absent: listed), `shares`
@@ -231,34 +235,33 @@ def checked_owners(owners):
 
 
 def added_by_acts(rec):
-    """(members, acts): the owners of `rec` an owner's act added, each a
-    member of its `owners` whose `record.owners` act adding it is in its
-    `ownersProof`, and those acts, in the record's order."""
+    """The owners of `rec` an owner's act added, in its order: each a member
+    of its `owners` whose `record.owners` act adding it is in its
+    `ownersProof`."""
     owners = rec.get("owners") if isinstance(rec.get("owners"), list) else []
     proofs = rec.get("ownersProof") if isinstance(rec.get("ownersProof"), list) else []
-    acts = [p for p in proofs if isinstance(p, dict) and p.get("action") == "record.owners"
-            and isinstance(p.get("args"), dict) and p["args"].get("member") in owners
-            and p["args"]["member"] != MACHINE]
-    added = {p["args"]["member"] for p in acts}
-    return [o for o in owners if o in added], acts
+    added = {p["args"].get("member") for p in proofs if isinstance(p, dict) and p.get("action") == "record.owners"
+             and isinstance(p.get("args"), dict) and isinstance(p["args"].get("member"), str)}
+    return [o for o in owners if o in added and o != MACHINE]
 
 
 def _record(sid, prov, created=None, have=None):
     """A record of `prov`, replacing `have` (the session's record, or None):
     its `controller` kept, its policy kept whole when it carries one, else
     the provenance's (a continuation's or a spawn's), and the owners an act
-    added kept beside the provenance's, with their acts (added_by_acts)."""
+    added kept beside the provenance's (added_by_acts), with every proof of
+    `have` after the provenance's, the chain behind their acts."""
     checked_owners(prov.get("owners"))
     rec = {"session": sid, "source": prov.get("source") or "default", "basis": basis(prov)}
     for k in PROVENANCE:
         rec[k] = prov[k]
-    members, acts = added_by_acts(have or {})
+    members = added_by_acts(have or {})
     if members:
         rec["owners"] = checked_owners(list(rec["owners"]) + [m for m in members if m not in rec["owners"]])
         proof = list(rec["ownersProof"]) if isinstance(rec["ownersProof"], list) else []
-        for a in acts:
-            if a not in proof:
-                proof.append(a)
+        for p in have["ownersProof"]:
+            if p not in proof:
+                proof.append(p)
         rec["ownersProof"] = proof
     controller = (have or {}).get("controller")
     if controller:

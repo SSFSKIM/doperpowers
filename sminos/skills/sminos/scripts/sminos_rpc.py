@@ -189,12 +189,14 @@ hello's `record` capability: `record.access {session, access}`,
 keeps. They carry no context (a record changes whatever launch runs the
 session, as a spawn's machine does), pass checks 1-6 as every RL10 RPC
 (read-only refuses them, narrowing included; `bad-shape` for an access,
-grade or member that does not fit, and for an owners `proof` that is not
-this op's whole act adding this member — MAWS's isAction shape, step-up
+grade or member that does not fit, and for a `proof` that is not this op's
+whole act — MAWS's isAction, field by field and its formats, step-up
 required, no session or context, for this machine's org and ref from
-identity.json (none: refused), the RPC's opId, opCreated and device
-(owners_proof): the record keeps it as that owner's proof, which every
-attestation of the session carries), and run as the operator through the
+identity.json (none: refused), the RPC's opId, opCreated, device and name,
+naming its session (or a lane B appSessionId, which sminos cannot place)
+and exactly its change (record_proof): the record keeps an owners act as
+that owner's proof, which every attestation of the session carries), and
+run as the operator through the
 CLI's own setters (record_change: sminos_visibility.set_visibility,
 add_owner), since the endpoint verified the act's step-up by an owner.
 `done {changed, policyRev}`; `no-session` for no readable record;
@@ -928,8 +930,8 @@ class Rpcs:
         if name == "spawn":
             admit_spawn(args, p["ceiling"], here.checkouts(project))
         shape(name, args, rpc.get("member"))
-        if name == "record.owners":
-            owners_proof(rpc)
+        if name in RECORD:
+            record_proof(rpc)
         why = None if self.coded else context_refusal(rpc)
         if why is not None:
             raise Refused("bad-shape", "%s: %s" % (name, why))
@@ -1868,37 +1870,110 @@ def shape(name, args, member):
 ACT_KEYS = frozenset(("v", "org", "machine", "device", "opId", "opCreated", "action", "args", "nonce", "created",
                       "stepUp"))   # a record act's, all required: MAWS's isAction, step-up, no session or context
 ASSERTION_KEYS = frozenset(("credentialId", "authenticatorData", "clientDataJSON", "signature"))
+ACT_TARGETS = ("session", "appSessionId")   # a record act's target: a lane A engine session, a lane B app session
+SIGNATURE_BYTES = 64      # a step-up signature, P1363 r||s (MAWS org-protocol keys.ts)
+ACT_FRESH_MS = 60_000     # action.ts's FRESH_MS: how far opCreated may follow created
 
 
-def owners_proof(rpc):
-    """Check 6 for `record.owners`: its `proof` is the act this op carries
-    out, whole, since the record keeps it for good as the added owner's
-    proof (RL9) and the endpoint refuses every attestation whose ownersProof
-    holds an act its isAction refuses (MAWS org-protocol's action.ts). So,
-    before anything is written: exactly ACT_KEYS, and `webauthn` beside them
-    if any (its four parts); `v` 1; `org`, `machine`, `device`, `nonce`,
-    `created` and `stepUp` non-empty strings, `args` an object; `org` and
-    `machine` this machine's org and ref (identity.json: record RPCs arrive
-    only on a cut-over machine, and with none no act is this machine's);
-    `opId`, `opCreated` and `device` the RPC's own; `action` `record.owners`
-    adding the same member. `bad-shape` otherwise: an act kept that the
-    endpoint refuses would void the session's attestations, and another act
-    would leave the owner unproven or proven by the wrong one. The signature
-    is the endpoint's to verify, not checked here."""
-    proof, ident = rpc.get("proof"), rl10.cutover()
-    args = proof.get("args") if isinstance(proof, dict) else None
-    webauthn = proof.get("webauthn") if isinstance(proof, dict) else None
-    if not (isinstance(args, dict) and set(proof) - {"webauthn"} == ACT_KEYS
-            and ("webauthn" not in proof or (isinstance(webauthn, dict) and set(webauthn) == ASSERTION_KEYS
-                                             and all(is_text(v) for v in webauthn.values())))
-            and proof["v"] == 1 and type(proof["v"]) is int
-            and all(is_text(proof[k]) for k in ("org", "machine", "device", "nonce", "created", "stepUp"))
-            and ident is not None and proof["org"] == ident["org"] and proof["machine"] == ident.get("ref")
-            and proof["opId"] == rpc.get("opId") and proof["opCreated"] == rpc.get("opCreated")
-            and proof["device"] == rpc.get("device") and proof["action"] == "record.owners"
-            and args.get("add") is True and args.get("member") == rpc["args"].get("member")):
-        raise Refused("bad-shape", "record.owners: proof is the whole signed act that adds this member, step-up "
-                                   "included, under this opId, opCreated and device, for this machine of its org")
+def act_text(v, most=512):
+    """action.ts's isText: a non-empty string of at most `most` UTF-16 code
+    units (JavaScript's length)."""
+    return isinstance(v, str) and v != "" and len(v.encode("utf-16-le", "surrogatepass")) // 2 <= most
+
+
+def iso_ms(ts):
+    """Epoch milliseconds of `ts` when it is an ISO-8601 milliseconds time as
+    MAWS's isIsoMillis reads it (sminos_codes.is_iso_millis), else None."""
+    if not codes.is_iso_millis(ts):
+        return None
+    try:
+        whole = calendar.timegm(tuple(int(g) for g in codes.ISO_MILLIS_RE.fullmatch(ts).groups()) + (0, 0, 0))
+    except (ValueError, OverflowError):
+        return None
+    return whole * 1000 + int(ts[20:23])
+
+
+def is_b64(v):
+    """action.ts's isB64: the canonical base64url spelling of some bytes, not empty."""
+    return isinstance(v, str) and v != "" and codes.b64url_decode(v) is not None
+
+
+def proof_refusal(rpc, ident):
+    """Why a record RPC's `proof` is not the act it carries out (record_proof),
+    or None. `ident` is this machine's identity (sminos_rl10.cutover)."""
+    proof, name = rpc.get("proof"), rpc["rpc"]
+    if not (isinstance(proof, dict) and set(proof) - {"webauthn"} == ACT_KEYS):
+        return "has exactly an act's fields, stepUp among them, and no session, context or requestDigest"
+    try:
+        codes.canonical(proof)
+    except (codes.NotCanonical, RecursionError, ValueError):
+        return "is canonical JSON"
+    if not (type(proof["v"]) is int and proof["v"] == 1):
+        return "is of version 1"
+    if not (act_text(proof["org"]) and act_text(proof["device"]) and act_text(proof["action"], 128)):
+        return "has an org, a device and an action within action.ts's bounds"
+    if codes.b64url_bytes(proof["nonce"], codes.NONCE_BYTES) is None:
+        return "has a nonce of %d bytes, base64url" % codes.NONCE_BYTES
+    if codes.b64url_bytes(proof["stepUp"], SIGNATURE_BYTES) is None:
+        return "has a step-up signature of %d bytes, base64url" % SIGNATURE_BYTES
+    created, born = iso_ms(proof["created"]), iso_ms(proof["opCreated"])
+    if created is None or born is None or born > created + ACT_FRESH_MS:
+        return "has created and opCreated in ISO-8601 milliseconds, opCreated no later than created + 60 s"
+    w = proof.get("webauthn", {})
+    if "webauthn" in proof and not (isinstance(w, dict) and set(w) == ASSERTION_KEYS and all(map(is_b64, w.values()))):
+        return "has a whole WebAuthn assertion when it has one"
+    if ident is None:
+        return "is this machine's act, and this machine has no identity (identity.json)"
+    if proof["org"] != ident["org"] or proof["machine"] != ident.get("ref"):
+        return "is for this machine (its org and ref)"
+    if any(proof[k] != rpc.get(k) for k in ("opId", "opCreated", "device")):
+        return "is this op's (its opId, opCreated and device)"
+    if proof["action"] != name:
+        return "is a %s act" % name
+    args = proof["args"]
+    targets = [k for k in ACT_TARGETS if k in args] if isinstance(args, dict) else []
+    if len(targets) != 1:
+        return "names one target, session or appSessionId"
+    target = args[targets[0]]
+    if not (target == rpc["args"].get("session") if targets[0] == "session" else isinstance(target, str) and target):
+        return "is for this session"
+    try:
+        same = codes.canonical({k: v for k, v in args.items() if k != targets[0]}) \
+            == codes.canonical({k: v for k, v in rpc["args"].items() if k != "session"})
+    except (codes.NotCanonical, RecursionError, ValueError):
+        same = False
+    if not same:
+        return "makes this change"
+    return None
+
+
+def record_proof(rpc):
+    """Check 6 for every record RPC: its `proof` is the act this op carries
+    out, whole (§Q of MAWS's O8 plan: the act verbatim), checked before
+    anything is written. The record keeps an owners act for good as the
+    added owner's proof (RL9), and the endpoint refuses every attestation
+    whose ownersProof holds an act its isAction refuses (MAWS org-protocol's
+    action.ts), so the act is held to isAction field by field: exactly
+    ACT_KEYS, `webauthn` beside them if any (its four parts canonical
+    base64url); canonical JSON; `v` 1; `org`, `device` (512) and `action`
+    (128) within isText's bounds in UTF-16 units; `nonce` 16 bytes and
+    `stepUp` 64, canonical base64url; `created` and `opCreated` ISO-8601
+    milliseconds (isIsoMillis), opCreated no later than created + 60 s.
+    Then it is this op's on this machine: `org` and `machine` this machine's
+    org and ref (identity.json: record RPCs arrive only on a cut-over
+    machine, and with none no act is this machine's); `opId`, `opCreated` and
+    `device` the RPC's; `action` the RPC's name; `args` naming one target,
+    `session` equal to the RPC's `args.session`, or `appSessionId` (lane B),
+    any non-empty string, since the endpoint placed it on this session
+    through its members join, which sminos cannot check (not every lane B
+    session here has a `launched/` file); and, past the target, exactly the
+    RPC's args less `session` (`{access}`, `{member, grade}`, `{add,
+    member}`), compared as canonical JSON, so `true` is never `1`.
+    `bad-shape` otherwise. The signature is the endpoint's to verify, not
+    checked here."""
+    why = proof_refusal(rpc, rl10.cutover())
+    if why is not None:
+        raise Refused("bad-shape", "%s: proof %s" % (rpc["rpc"], why))
 
 
 def record_change(name, sid, args, proof):

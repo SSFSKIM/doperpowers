@@ -891,11 +891,11 @@ class RecordRpcs(Base):
         other_op["proof"] = {**other_op["proof"], "opId": b64() + "op"}
         cases.append(("a proof for another op", other_op, "bad-shape"))
 
-        def proof(what, **change):
-            """An owners act whose proof is the signed act with `change`
+        def proof(what, name="record.owners", change=None, **fields):
+            """A record act whose proof is the signed act with `fields`
             (a field None: left out), refused before anything is written."""
-            rpc = self.act("record.owners", {"add": True, "member": B})
-            rpc["proof"] = {k: v for k, v in {**rpc["proof"], **change}.items() if v is not None}
+            rpc = self.act(name, change or {"add": True, "member": B})
+            rpc["proof"] = {k: v for k, v in {**rpc["proof"], **fields}.items() if v is not None}
             cases.append((what, rpc, "bad-shape"))
         proof("a proof with no step-up", stepUp=None)
         proof("a proof with an empty step-up", stepUp="")
@@ -908,24 +908,92 @@ class RecordRpcs(Base):
         proof("a proof of another op's first sealing", opCreated=iso(time.time() - 30))
         proof("a proof of another version", v=2)
         proof("a proof with no org", org="")
+        # Bound to its target and its change, for all three.
+        access, shares = ("record.access", {"access": "org-view"}), ("record.shares", {"member": B, "grade": "view"})
+        for name, change in (access, shares, ("record.owners", {"add": True, "member": B})):
+            proof("%s: a proof for another session" % name, name, change, args={"session": U, **change})
+            proof("%s: a proof of another action" % name, name, change,
+                  action="record.shares" if name == "record.access" else "record.access")
+            proof("%s: a proof with two targets" % name, name, change,
+                  args={"session": S, "appSessionId": "app-1", **change})
+            proof("%s: a proof with no target" % name, name, change, args=dict(change))
+            proof("%s: a proof with more" % name, name, change, args={"session": S, "note": "x", **change})
+            proof("%s: a proof for an empty app session" % name, name, change, args={"appSessionId": "", **change})
+        proof("record.access: a proof for another level", *access, args={"session": S, "access": "listed"})
+        proof("record.shares: a proof for another grade", *shares,
+              args={"session": S, "member": B, "grade": "converse"})
+        proof("record.shares: a proof for another member", *shares, args={"session": S, "member": C, "grade": "view"})
+        proof("record.shares: a proof removing the share", *shares, args={"session": S, "member": B, "grade": None})
+        proof("record.owners: a proof whose add is 1", "record.owners", None,
+              args={"session": S, "add": 1, "member": B})
+        for name, change in (access, shares):
+            cases.append(("%s: no proof" % name, self.act(name, change, proof=None), "bad-shape"))
         for what, rpc, code in cases:
             with self.subTest(what):
                 self.refused(link, self.send(link, rpc), code)
         self.assertEqual(records.read(S)["owners"], [A], "nothing changed")
         self.assertEqual(self.policy(), ("private", [], rec["policyRev"]))
 
-    def test_an_owners_proof_is_checked_against_this_machines_identity(self):
+    def test_a_record_proof_is_checked_against_this_machines_identity(self):
         rpc = self.act("record.owners", {"add": True, "member": B})
-        rpcmod.owners_proof(rpc)
-        rpcmod.owners_proof({**rpc, "proof": {**rpc["proof"], "webauthn": {
-            "credentialId": b64(), "authenticatorData": b64(), "clientDataJSON": b64(), "signature": b64()}}})
+        rpcmod.record_proof(rpc)
+        rpcmod.record_proof({**rpc, "proof": {**rpc["proof"], "webauthn": {
+            "credentialId": b64(), "authenticatorData": b64(37), "clientDataJSON": b64(120), "signature": b64(70)}}})
         with mock.patch.object(rpcmod.rl10, "cutover", return_value=None):
             with self.assertRaises(rpcmod.Refused) as got:
-                rpcmod.owners_proof(rpc)
+                rpcmod.record_proof(rpc)
         self.assertEqual(got.exception.outcome["error"]["code"], "bad-shape", "no identity: no act is this machine's")
-        for webauthn in ({"signature": b64()}, None):
+        for webauthn in ({"signature": b64()}, None, {"credentialId": b64(), "authenticatorData": b64(),
+                                                      "clientDataJSON": b64(), "signature": b64() + "="},
+                         {"credentialId": "", "authenticatorData": b64(), "clientDataJSON": b64(), "signature": b64()}):
             with self.subTest(webauthn=webauthn), self.assertRaises(rpcmod.Refused):
-                rpcmod.owners_proof({**rpc, "proof": {**rpc["proof"], "webauthn": webauthn}})
+                rpcmod.record_proof({**rpc, "proof": {**rpc["proof"], "webauthn": webauthn}})
+
+    def test_a_record_proofs_fields_are_in_maws_formats(self):
+        """action.ts's isAction, field by field: what it refuses, refused here
+        before anything is written."""
+        op = "2026-11-05T10:01:00.000Z"
+        rpc = self.act("record.owners", {"add": True, "member": B}, created=op)
+        a = rpc["proof"]
+        # The bounds themselves pass: opCreated 60 s after created, texts at 512 UTF-16 units.
+        rpcmod.record_proof({**rpc, "proof": {**a, "created": "2026-11-05T10:00:00.000Z"}})
+        rpcmod.record_proof({**rpc, "device": "d" * 512, "proof": {**a, "device": "d" * 512}})
+        rpcmod.record_proof({**rpc, "device": "\U0001F600" * 256, "proof": {**a, "device": "\U0001F600" * 256}})
+        last = a["stepUp"][:-1] + {"A": "B", "Q": "R", "g": "h", "w": "x"}.get(a["stepUp"][-1], "B")
+        bad = [
+            ("a nonce of 15 bytes", {"nonce": b64(15)}),
+            ("a nonce of 17 bytes", {"nonce": b64(17)}),
+            ("a padded nonce", {"nonce": b64() + "=="}),
+            ("a nonce in base64's alphabet", {"nonce": "+/" + b64()[2:]}),
+            ("a step-up of 63 bytes", {"stepUp": b64(63)}),
+            ("a step-up with spare bits set", {"stepUp": last}),
+            ("created without milliseconds", {"created": op[:19] + "Z"}),
+            ("created on no calendar day", {"created": "2026-02-30T00:00:00.000Z"}),
+            ("created at hour 24", {"created": "2026-11-05T24:00:00.000Z"}),
+            ("opCreated more than 60 s after created", {"created": "2026-11-05T09:59:59.999Z"}),
+        ]
+        for what, change in bad:
+            with self.subTest(what), self.assertRaises(rpcmod.Refused):
+                rpcmod.record_proof({**rpc, "proof": {**a, **change}})
+        for what, field, value in (("a device of 513", "device", "d" * 513),
+                                   ("a device of 513 UTF-16 units", "device", "\U0001F600" * 256 + "d"),
+                                   ("a device no canonical JSON holds (a lone surrogate)", "device", "dev-\ud800")):
+            with self.subTest(what), self.assertRaises(rpcmod.Refused):
+                rpcmod.record_proof({**rpc, field: value, "proof": {**a, field: value}})
+        with self.subTest("an org of 513"), self.assertRaises(rpcmod.Refused), \
+                mock.patch.object(rpcmod.rl10, "cutover", return_value={"org": "o" * 513, "ref": "machine-ref-1"}):
+            rpcmod.record_proof({**rpc, "proof": {**a, "org": "o" * 513}})
+        with mock.patch.object(rpcmod.rl10, "cutover", return_value={"org": "o" * 512, "ref": "machine-ref-1"}):
+            rpcmod.record_proof({**rpc, "proof": {**a, "org": "o" * 512}})
+
+    def test_a_proof_for_a_lane_b_app_session_is_accepted(self):
+        """A lane B act names its app session: the endpoint placed it on this
+        record through its members join, which sminos cannot check."""
+        link, rec = self.start(access="private")
+        rpc = self.act("record.shares", {"member": B, "grade": "view"})
+        rpc["proof"]["args"] = {"appSessionId": "app-session-1", "member": B, "grade": "view"}
+        self.assertEqual(self.outcome(link, self.send(link, rpc)),
+                         {"state": "done", "result": {"changed": True, "policyRev": rec["policyRev"] + 1}})
 
     def test_no_session_without_a_readable_record_or_outside_the_project(self):
         link, _ = self.start(access="private")
