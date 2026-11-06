@@ -2280,7 +2280,7 @@ def addressed_append(project, session, recipients, kind, fields, why):
         die("%s: its recipients' audiences differ; send to each on its own" % why, EXIT_UNKNOWN)
     writer, aud, _, _ = choice[0]
     keep_stream(project, writer, aud)
-    return _append(project, writer, [{"kind": kind, **fields}])[0]
+    return log_append(project, writer, kind, **fields)
 
 
 # Append receipts (O12 M6): the provenance of this machine's operator words.
