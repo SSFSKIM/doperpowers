@@ -3152,9 +3152,9 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
                     # A record lost (deleted, a restore without it) of a session that was private: its own stream
                     # says so, its shares unknown — the narrowest, for its owner to widen (O18 D10).
                     prov = {**prov, "access": "private", "shares": []}
-                floor = policy_rev_floor(sid) if rec is None and prov.get("access") == "private" \
-                    and "policyRev" not in prov else 0
-                if floor:
+                floor = policy_rev_floor(sid) if rec is None and prov.get("access") == "private" else 0
+                if floor > prov.get("policyRev", 0):
+                    # Above every revision of it kept here, a predecessor's (inherited) included.
                     prov = {**prov, "policyRev": floor}
                 rec = records.establish(sid, prov, _RECORD_DEADLINE)[0]
         except (OSError, LockBusy, ValueError) as e:
@@ -4762,16 +4762,19 @@ def reach_permit(project, session, e):
 
 def own_writers_here(project):
     """Whether a line under this machine's own name in `project`'s log was
-    written here: a hub project of this machine's org, where the hub brings
-    this machine's writers back only as its own signed echoes, or a project
-    neither git nor a hub syncs. Not a git-mirrored log, whose merge can
-    import a line under any writer name; not a project unknown here."""
-    if project is None:
+    written here: a project with no git remote that is a hub project of this
+    machine's org, where the hub brings this machine's writers back only as
+    its own signed echoes, or that nothing syncs. Not a project with a
+    remote, whatever its transport: a git mirror's merge can import a line
+    under any writer name, and `project init --hub` keeps the log and the
+    remote (its archive since), so a converted mirror still holds what git
+    imported. Not a project unknown here."""
+    if project is None or project.remote:
         return False
     if project.hub is not None:
         e = enrollment()
         return e is not None and project.hub.get("org") == e["org"]
-    return not project.remote
+    return True
 
 
 def same_owner_local(e, session, project):
