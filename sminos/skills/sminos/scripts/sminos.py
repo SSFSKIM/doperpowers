@@ -5210,16 +5210,17 @@ def record_copy(home, delivered):
             warn("delivered; its copy is not kept in %s: the message is for a private session's audience alone, "
                  "and %s's log is not filtered by audience" % (home.name, home.name))
             return None
-        # Its audience kept in the home too, before the copy (the uplink's voids, the session's own reads),
-        # as the delivering project kept it.
-        keep_stream(home, first["writer"], next(
-            (a for dest, _ in delivered for a in [audience_module().stream_audience(dest, first["writer"])]
-             if a is not None), None))
     fields = {k: v for k, v in first.items() if k not in ("writer", "seq", "kind", "from_project")}
     fields["to"] = [dict(r, project=dest.id) for dest, e in delivered for r in e["to"] if isinstance(r, dict)]
     refs = ["%s:%s:%d" % (dest.id, e["writer"], e["seq"]) for dest, e in delivered]
     fields["copy"] = refs[0] if len(refs) == 1 else refs
     try:
+        if is_stream(first["writer"]):
+            # Its audience kept in the home too, before the copy (the uplink's voids, the session's own reads),
+            # as the delivering project kept it; one that cannot be kept fails the copy, never the delivery.
+            keep_stream(home, first["writer"], next(
+                (a for dest, _ in delivered for a in [audience_module().stream_audience(dest, first["writer"])]
+                 if a is not None), None))
         c = log_append(home, first["writer"], first["kind"], **fields)
     except OSError as err:
         warn("delivered, but its copy could not be recorded in %s: %s" % (home.name, err))

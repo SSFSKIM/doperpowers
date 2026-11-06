@@ -40,7 +40,11 @@ its tombstone, `{writer, seq, withheld: true}`, whatever the local file
 holds there: a refusal lost to a dropped connection is still honoured, and
 a refused body never reaches the archive once a void fills its position.
 Below a `conflict` kept (uplink-taken.json), the hub holds another event, so
-nothing from there on is copied. A run with no usable `archive_have` fails.
+nothing from there on is copied. Past that frontier (frozen for a former
+name, lowered by a conflict) the archive's file keeps what it already holds,
+up to the last position this machine wrote or the hub's vector: the run
+replaces only the prefix it confirms, so the archive never loses a position
+another archiver or an earlier run gave it. A run with no usable `archive_have` fails.
 """
 
 import glob
@@ -155,20 +159,50 @@ def admitted(project):
     return have, marked, hl.conflicts(), hl.is_own
 
 
-def admitted_bytes(data, writer, top, marked):
+def archived_seq(line, writer):
+    """The position a line of the archive's file holds for `writer` — an
+    event's or a tombstone's —, or None."""
+    try:
+        e = json.loads(line.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if isinstance(e, dict) and e.get("writer") == writer and type(e.get("seq")) is int and e["seq"] > 0:
+        return e["seq"]
+    return None
+
+
+def admitted_bytes(data, writer, top, marked, archived=None, head=0):
     """An own writer file's admitted projection: its lines up to `top`, each
     position in `marked` (runs) its tombstone instead, whatever the file holds
     there (nothing included), in seq order; a line no event parses from is
-    no admitted position, and is left out."""
-    lines = {}
+    no admitted position, and is left out. Past `top`, `archived` — the bytes
+    the archive already holds for the writer — keeps each position it holds
+    up to the last this machine wrote or `head`, the hub's vector for it
+    (a tombstone for one in `marked`): a frontier frozen or lowered below
+    what the archive holds says nothing of those positions, so the archive
+    never loses one, and nothing local past `top` is ever copied. Up to
+    `top` the projection replaces what the archive holds, and a line past
+    both bounds, beyond anything this machine or the hub held of the
+    writer, is no position of it (the remote edited), and is left out."""
+    lines, last = {}, 0
     for line in data.split(b"\n"):
         e = sminos.parse_event(line.decode("utf-8", "replace")) if line.strip() else None
+        if e is not None:
+            last = max(last, e["seq"])
         if e is None or e["seq"] > top or hublog.in_runs(e["seq"], marked):
             continue
         lines.setdefault(e["seq"], []).append(line)
     for a, b in marked:
         for seq in range(a, min(b, top) + 1):
             lines[seq] = [json.dumps(hublog.tombstone(writer, seq), ensure_ascii=False).encode("utf-8")]
+    kept = {}
+    for line in (archived or b"").split(b"\n"):
+        seq = archived_seq(line, writer) if line.strip() else None
+        if seq is not None and top < seq <= max(last, head):
+            kept.setdefault(seq, []).append(line)
+    for seq in kept:
+        lines[seq] = ([json.dumps(hublog.tombstone(writer, seq), ensure_ascii=False).encode("utf-8")]
+                      if hublog.in_runs(seq, marked) else kept[seq])
     return b"".join(line + b"\n" for seq in sorted(lines) for line in lines[seq])
 
 
@@ -194,15 +228,18 @@ def copy_log(project, clone):
                        if e is not None), None)
         if writer is None or sminos.is_stream(writer):
             continue
+        dst = os.path.join(clone, name)
         if own(writer):
             top = have.get(writer, 0)
             if writer in conflicts:
                 top = min(top, conflicts[writer] - 1)
             if top <= 0:
                 continue
-            data = admitted_bytes(data, writer, top, sorted(marked.get(writer, [])))
+            # Over the file the remote holds (none through a symlink): what it holds past this run's frontier of
+            # this machine's or the hub's positions is kept.
+            data = admitted_bytes(data, writer, top, sorted(marked.get(writer, [])), held_as_file(dst),
+                                  have.get(writer, 0))
         names.append(name)
-        dst = os.path.join(clone, name)
         if held_as_file(dst) == data:
             continue
         if os.path.isdir(dst) and not os.path.islink(dst):

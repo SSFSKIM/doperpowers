@@ -416,8 +416,12 @@ class Plane(unittest.TestCase):
 
 
 class Admitted(Plane):
-    def copied(self, writer):
+    def copied(self, writer, archived=None):
+        """`archived`: the lines the archive's clone already holds for `writer` (the remote's file)."""
         clone = tempfile.mkdtemp(dir=BASE)
+        path = os.path.join(clone, writer.replace("/", ".") + ".jsonl")
+        if archived is not None:
+            Path(path).write_text("".join(json.dumps(e) + "\n" for e in archived))
         names = archive.copy_log(self.p, clone)
         path = os.path.join(clone, writer.replace("/", ".") + ".jsonl")
         held = [json.loads(line) for line in Path(path).read_text().splitlines()] if os.path.exists(path) else None
@@ -538,6 +542,41 @@ class Admitted(Plane):
         hl.on_have({"have": {own: 2}, "archive": True})
         hl.bound(own, 1, conflict=True)
         self.assertEqual([e["text"] for e in self.copied(own)[1]], ["one"])
+        theirs = {"ts": "t", "writer": own, "seq": 2, "kind": "say", "text": "the hub's, archived by another"}
+        self.assertEqual([e["text"] for e in self.copied(own, [theirs])[1]], ["one", "the hub's, archived by another"],
+                         "the archive keeps what it holds past the conflict")
+
+    def test_the_archive_keeps_every_position_it_holds_past_what_this_run_confirms(self):
+        """A former name's frontier is frozen below what the archive already
+        holds of its writer (another archiver copied it as the hub served it):
+        the confirmed prefix is the local projection, the rest stays as the
+        archive holds it — a tombstone too —, never the local body past the
+        frontier; a position this machine recorded voided is a tombstone there
+        as well."""
+        old = "oldname/human"
+        self.put(old, (1, {"text": "public"}), (2, {"text": "local, unconfirmed"}), (3, {"text": "voided here"}),
+                 (4, {"text": "withheld upstream"}))
+        self.hl(machine="oldname").on_have({"have": {old: 1}, "withheld": {}, "archive": True})
+        self.hl().on_have({"have": {old: 4, "testhost/human": 0}, "withheld": {}, "archive": True})
+        d = self.uplink()
+        d["voided"] = {old: [3]}
+        Path(self.p.home, hublog.STATE_FILE).write_text(json.dumps(d))
+        archived = [{"ts": "t", "writer": old, "seq": 1, "kind": "say", "text": "stale"},
+                    {"ts": "t", "writer": old, "seq": 2, "kind": "say", "text": "the hub's two"},
+                    {"ts": "t", "writer": old, "seq": 3, "kind": "say", "text": "the hub's three"},
+                    hublog.tombstone(old, 4)]
+        held = self.copied(old, archived)[1]
+        self.assertEqual([e.get("text", "tombstone") for e in held], ["public", "the hub's two", "tombstone", "tombstone"])
+        self.assertNotIn("unconfirmed", json.dumps(held))
+        self.assertNotIn("withheld upstream", json.dumps(held))
+
+        own = "testhost/human"
+        self.put(own, (1, {"text": "one"}), (2, {"text": "two"}))
+        self.hl().on_have({"have": {own: 2}, "withheld": {}, "archive": True})
+        edited = [{"ts": "t", "writer": own, "seq": 1, "kind": "say", "text": "edited in git"},
+                  {"ts": "t", "writer": own, "seq": 3, "kind": "say", "text": "past anything written"}]
+        self.assertEqual([e["text"] for e in self.copied(own, edited)[1]], ["one", "two"],
+                         "the confirmed prefix is the log's, and past what this machine or the hub held, nothing")
 
 
 class Retry(Plane):

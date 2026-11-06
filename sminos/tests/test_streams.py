@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -49,6 +50,15 @@ VECTORS = json.loads((HERE / "audience-vectors.json").read_text())
 
 def stream(sid, members, machine="testhost"):
     return "%s/%s~%s" % (machine, sid, sminos.audience_digest(members))
+
+
+def next_ms():
+    """Wait for the log's millisecond clock to move on: across a session's
+    streams `ts` is the only order, so events a test orders across them
+    each need one of their own."""
+    t = sminos.now(ms=True)
+    while sminos.now(ms=True) == t:
+        time.sleep(0.0002)
 
 
 class Vectors(unittest.TestCase):
@@ -150,11 +160,13 @@ class Streams(tw.Machine):
         self.assertEqual(sminos.lifecycle(self.p, S, "state", required=False, state="idle", machine="testhost"), [],
                          "a policy the endpoint has not given an audience for writes nothing yet")
         self.audience(S, [A], [A], rec["policyRev"])
+        next_ms()
         sminos.lifecycle(self.p, S, "state", state="idle", machine="testhost")
         self.assertEqual([e["state"] for e in self.events(stream(S, [A]))], ["idle"], "a new stream")
 
         rec, _ = records.set_policy(S, lambda a, s: ("listed", s))
         self.audience(S, [A], None, rec["policyRev"])
+        next_ms()
         sminos.lifecycle(self.p, S, "state", state="working", machine="testhost")
         self.assertEqual([e["state"] for e in self.events("testhost/" + S)], ["working"], "listed: the plain writer")
         self.assertEqual({sminos.writer_session(e["writer"]) for e in sminos.log_read(self.p)}, {S},
@@ -297,6 +309,22 @@ class Streams(tw.Machine):
         self.assertEqual(au.stream_audience(self.p, stream(S, [A, C])), [A, C],
                          "the copy's stream is kept in its home with its audience, as in the delivering project")
         self.assertFalse({"audience", "policyRev"} & {k for e in copies for k in e}, "no policy fields stored")
+
+    def test_a_copy_whose_stream_cannot_be_kept_at_home_is_a_copy_failure_and_the_say_is_delivered(self):
+        self.capable()
+        other = self.project("other", hub=True)
+        self.session(self.p, S, name="sender")
+        self.local(S)
+        self.audience(S, [A], None, 0)
+        self.remote(R, "private", project=other)
+        self.audience(R, [A], [A, C], 3)
+        os.makedirs(sminos.project_path(self.p, au.STREAMS) + ".lock")   # the home's stream index cannot be written
+        got = self.say("@other/private hi")
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("delivered, but its copy could not be recorded in work", got.stderr)
+        self.assertIn("private: recorded (on %s)" % OTHER, got.stdout, "delivery went on")
+        self.assertEqual([e["text"] for e in self.says(stream(S, [A, C]), other)], ["@other/private hi"])
+        self.assertEqual(self.says(stream(S, [A, C])), [], "no copy at home")
 
     def test_no_copy_of_a_stream_event_goes_into_a_home_that_keeps_no_streams(self):
         """A session in a local project (its log git-mirrored or kept here,
