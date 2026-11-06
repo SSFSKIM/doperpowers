@@ -3124,7 +3124,9 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
     lineage, then the hook's, then the defaults; final over provisional).
     The candidate is its lineage (lineage_provenance; `former`, a hand-off's
     predecessor, when the caller knows it), else `evidence` (the hook's:
-    the session's own environment), else the machine's defaults. A record a
+    the session's own environment), else the machine's defaults; a session
+    with no record whose candidate carries no policy is private with no
+    shares when a stream of its own is catalogued (has_own_stream). A record a
     launch established, or a final lineage, has nothing stronger to look
     for but a claim (sminos_records.claim); a final hook record looks for a
     lineage only where one can appear, a background job or a hand-off. Then,
@@ -3146,12 +3148,28 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
             prov = lineage_provenance(project, sid, peer, former, events) \
                 or evidence or records.default_provenance()
             if records.stronger(prov, rec):
+                if rec is None and not records.policy_carried(prov) and has_own_stream(sid):
+                    # A record lost (deleted, a restore without it) of a session that was private: its own stream
+                    # says so, its shares unknown — the narrowest, for its owner to widen (O18 D10).
+                    prov = {**prov, "access": "private", "shares": []}
                 rec = records.establish(sid, prov, _RECORD_DEADLINE)[0]
         except (OSError, LockBusy, ValueError) as e:
             warn("the record of session %s could not be written: %s" % (sid[:8], e))
     if rec is not None and records.is_final(rec) and project is not None:
         publish_owners(project, sid, events)
     return rec
+
+
+def has_own_stream(sid):
+    """Whether a session has an audience stream of its own writer, under
+    this machine's name now or a former one, catalogued in any project
+    known here (streams.json, sminos_audience.keep_stream): it was private
+    when that stream was written. Read only when a record is about to be
+    written for a session that has none."""
+    me, former = machine_identity()
+    mine = {"%s/%s" % (name, sid) for name in (me, *former)}
+    return any(is_stream(w) and writer_base(w) in mine
+               for p in known_projects(all_seats=[]) for w in audience_module().streams_of(p))
 
 
 _UNREADABLE_SAID = set()

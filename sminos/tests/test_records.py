@@ -1470,6 +1470,28 @@ class ThePolicy(unittest.TestCase):
         self.assertEqual(out["7d000004-0000-4000-8000-00000000007d"], [[MEMBER], [TX], {}],
                          "under the plain writer: the listed default")
 
+    def test_a_private_session_whose_record_is_lost_is_recreated_private(self):
+        """Its record file gone (deleted, a restore without it), the session's
+        own audience stream, catalogued in streams.json, says it was
+        private: recreated private with no shares, policyRev 0 (its shares
+        unknown: the narrowest, for its owner to widen). A session with no
+        stream of its own is recreated listed, as before."""
+        m = Machine(self)
+        for sid, name in ((T0, "hidden"), (TB, "open")):
+            m.peer(sid, name)
+            m.hook("SessionStart", sid)
+        set_private(m, T0)
+        m.py("import sminos_audience\n"
+             "p = sminos.resolve_project(sys.argv[1])\n"
+             "sminos_audience.keep_stream(p, sminos.stream_writer(sminos.writer_id(sys.argv[2]), [sys.argv[3]]),"
+             " [sys.argv[3]])", str(m.repo), T0, MEMBER)
+        for sid in (T0, TB):
+            m.record_path(sid).unlink()
+            m.hook("Stop", sid, source="")
+        self.assertEqual(policy(m.record(T0)), {"access": "private", "shares": []},
+                         "its own stream says it was private")
+        self.assertEqual(policy(m.record(TB)), {}, "no stream of its own: the listed default")
+
     def test_a_pending_launch_this_code_never_wrote_is_claimed_private(self):
         """The claim stands and its content does not: the launch's policy is
         unknown (its spawner may have been private), so the narrowest."""
