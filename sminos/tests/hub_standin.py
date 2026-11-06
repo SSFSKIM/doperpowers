@@ -96,8 +96,10 @@ is <client-id> / <client-secret>.
     moved only by its own `joined`/`state` snapshots from that machine,
     newer by `policyRev` then `created`. Each upload batch reads it once, the
     rows as they stood before the batch, its snapshots then recorded, and
-    judges each event in order, replaying them: an event naming a session
-    the registry does not know (addressing), an audience outside a named
+    judges each event in order, replaying them, in two passes: a session
+    the registry did not know before the batch is known, for what names it,
+    by its own snapshot anywhere in the batch (the first pass); then an
+    event naming a session the registry does not know (addressing), an audience outside a named
     private session's, senders (`attest.owners`, else the machine's owners)
     outside its audience, a snapshot of a session bound to another machine,
     or an `unlisted` notice that breaks its rule, is withheld — a tombstone
@@ -606,7 +608,10 @@ def judge(e, reach):
         if newer(s, rows.get(s["session"])):
             rows[s["session"]] = {k: s[k] for k in ("audience", "policyRev", "created")}
     for session, role in f["refs"]:
-        row = rows.get(session)
+        # A session the registry did not know before the batch is known by its own snapshot anywhere in the batch
+        # (the first pass, `ahead`), so an event naming a session whose first `joined` the batch carries later is
+        # not withheld for the order its writers were drawn in (the M2 fix of M1's replay, 2026-11-05).
+        row = rows.get(session) or reach.get("ahead", {}).get(session)
         if row is None:
             if role == "addressing":
                 return "withhold"
@@ -831,7 +836,11 @@ def reach_of(p, machine, events):
     for snapshot in snapshots:
         apply_snapshot(machine, snapshot)
     mine = {s: state["policies"].get(s, {}).get("machine") == machine.lower() for s in rows}
-    return {"available": True, "rows": rows, "mine": mine, "owners": owners}
+    ahead = {}
+    for snapshot in snapshots:
+        if mine.get(snapshot["session"]) and newer(snapshot, ahead.get(snapshot["session"])):
+            ahead[snapshot["session"]] = {k: snapshot[k] for k in ("audience", "policyRev", "created")}
+    return {"available": True, "rows": rows, "mine": mine, "owners": owners, "ahead": ahead}
 
 
 def store(pid, p, machine, events, refuse, replies):

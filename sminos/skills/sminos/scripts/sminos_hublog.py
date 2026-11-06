@@ -861,6 +861,15 @@ class HubLog:
             self.keep_taken(have)   # what the hub holds of this machine's writers is taken, up to its bounds
         admitted, why = admitted_have(have, frame.get("withheld"), self.is_own)
         d = self.state()
+        prev = d.get("archive_have") if isinstance(d.get("archive_have"), dict) else None
+        if admitted is not None and prev is not None and isinstance(prev.get("withheld"), dict):
+            # The hub lists the withheld positions of this machine's name now alone (withheldOf): a former name's,
+            # listed by a `have` before the rename, are kept, so a refusal a disconnect lost before it is still
+            # honoured. Positions are never un-withheld, so keeping them is safe.
+            for w, runs in prev["withheld"].items():
+                if isinstance(w, str) and w.split("/", 1)[0] != self.machine and self.is_own(w) \
+                        and w not in admitted["withheld"]:
+                    admitted["withheld"][w] = runs
         if d.get("archive") != self.archive:
             log("the hub says this machine %s the archive of %s" % ("writes" if self.archive else "does not write",
                                                                    self.project.name))

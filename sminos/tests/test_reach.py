@@ -229,6 +229,19 @@ class HubStandin(unittest.TestCase):
                                                      "seq": 1}],
                          "a snapshot of a session bound to another machine is withheld")
 
+    def test_a_batch_naming_a_session_whose_first_joined_it_carries_later_is_admitted(self):
+        """A seat spawned and messaged at once: the message's writer is drawn
+        before the seat's own, so its first `joined` comes later in the batch.
+        Known by the batch's own snapshot (the first pass), the message goes
+        through (the batch-order race in M1's replay, fixed in M2)."""
+        new = "ffffffff-0000-4000-8000-%012x" % (int(time.time() * 1e6) % (1 << 48))
+        m = self.a.mark()
+        self.a.post({"t": "events", "project": self.pid, "events": [
+            event("testhost/human", 1, to=[{"session": new, "alias": "n"}], text="hello, new seat"),
+            self.joined("testhost", new)]})
+        self.assertEqual(self.refusals(self.a, m), [])
+        self.assertEqual(self.stored("testhost/human")[0].get("text"), "hello, new seat")
+
     def test_runs_of_withheld_positions_are_compressed(self):
         w = "testhost/human"
         evs = [event(w, s, to=[{"session": "gone-%d" % s, "alias": "g"}]) for s in (1, 2, 3)] + \
@@ -280,6 +293,37 @@ class HubStandin(unittest.TestCase):
         frames = self.b.hello(self.pid)
         self.assertIn(stream, next(f for f in frames if f["t"] == "have")["have"], "its owners meet the audience")
         self.assertIn(stream, [e["writer"] for f in frames if f["t"] == "events" for e in f["events"]])
+        self.hub.call("POST", "/control/reader", {"machine": "other", "owners": [], "streams": False})
+        self.hub.call("POST", "/control/reader", {"machine": "testhost", "owners": []})
+
+    def test_a_member_reading_only_the_plain_writers_never_names_the_private_session(self):
+        """What reaches a machine outside a private session's audience,
+        through the stand-in's filter, read as sminos projects it: no member
+        for the session and no trace of its id or short, though a listed
+        session messaged it beside a public one (its split) and was spawned
+        by it (redacted)."""
+        priv, pub, child = "9d0000d4-0000-4000-8000-0000000000d4", OTHER_SID, "6e000001-0000-4000-8000-0000000000c3"
+        s_stream = "testhost/%s~%s" % (priv, sminos.audience_digest([M1]))
+        c_stream = "testhost/%s~%s" % (child, sminos.audience_digest([M1]))
+        self.hub.call("POST", "/control/reader", {"machine": "testhost", "owners": [M1]})
+        self.hub.call("POST", "/control/reader", {"machine": "other", "owners": [M2], "streams": True})
+        self.b.post({"t": "events", "project": self.pid, "events": [self.joined("other", pub)]})
+        m = self.a.mark()
+        self.a.post({"t": "events", "project": self.pid, "events": [
+            {**self.joined("testhost", priv, policyRev=1), "writer": s_stream, "audience": [M1]},
+            event(s_stream, 2, "state", session=priv, state="working", audience=[M1]),
+            self.joined("testhost", child, origin={"kind": "sminos-spawn", "spawnerSession": None}),
+            {**event(c_stream, 1, text="@%s hi" % priv[:8], to=[{"session": priv, "alias": "p"}]),
+             "audience": [M1]},
+            event("testhost/" + child, 2, text="@pub hi", to=[{"session": pub, "alias": "pub"}])]})
+        self.assertEqual(self.refusals(self.a, m), [])
+        got = [e for f in self.b.hello(self.pid) if f["t"] == "events" for e in f["events"]]
+        self.assertTrue(got, "the plain writers reach it")
+        self.assertNotIn(priv, json.dumps(got))
+        self.assertNotIn(priv[:8], json.dumps(got))
+        info = sminos._projection([{k: v for k, v in e.items() if k != "mac"} for e in got])
+        self.assertNotIn(priv, info)
+        self.assertIn(child, info)
         self.hub.call("POST", "/control/reader", {"machine": "other", "owners": [], "streams": False})
         self.hub.call("POST", "/control/reader", {"machine": "testhost", "owners": []})
 
@@ -374,6 +418,14 @@ class Admitted(Plane):
                          "own writers only, a former name's among them, never another machine's")
         self.assertIsInstance(d["archive_at"], float)
         self.assertNotIn("archive_have_error", d)
+
+    def test_a_former_names_withheld_positions_outlive_the_rename(self):
+        """The hub lists only the name now's withheld positions: a former
+        name's, listed before the rename, are kept, so the archive still
+        tombstones them."""
+        self.hl().on_have({"have": {"oldname/" + SID: 3}, "withheld": {"oldname/" + SID: [2]}, "archive": True})
+        self.hl().on_have({"have": {"oldname/" + SID: 3, "testhost/human": 1}, "withheld": {}, "archive": True})
+        self.assertEqual(self.uplink()["archive_have"]["withheld"], {"oldname/" + SID: [2]})
 
     def test_a_withheld_list_that_disagrees_with_its_vector_confirms_nothing(self):
         for withheld, why in (({"testhost/human": [7]}, "past that writer's head"),
