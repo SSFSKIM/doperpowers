@@ -1149,7 +1149,9 @@ class HubLog:
         notice is the daemon.log line alone. The session's own `joined` or
         `state` is owed a restatement (sminos_daemon.owe_restatement: the
         hub's registry moves only on those), unless it was the restatement,
-        which owes nothing more. A position withheld already queues nothing.
+        which owes nothing more: owed before the position is settled, and
+        settled even when the debt cannot be recorded. A position withheld
+        already queues nothing.
         Whether it was recorded now."""
         if seq in self.withheld().get(writer, ()):
             return False
@@ -1171,9 +1173,15 @@ class HubLog:
                                              "ts": e["ts"]}]
             self.notices_owed = True
             told = "; its session %s is told" % session[:8]
+        # The debt before the settlement: a settled position returns early above, so a debt recorded after it
+        # would be lost to a process that died between the two; owed first, a refusal seen again repairs it.
+        try:
+            owed = daemon.owe_restatement(self.project, writer, seq, e)
+        except OSError as err:
+            owed = None
+            told += "; its restatement could not be recorded as owed (%s)" % err
         self.save(d)
         self.keep_taken({writer: seq})
-        owed = daemon.owe_restatement(self.project, writer, seq, e)
         if owed == "owed":
             told += "; its %s is owed a restatement, at the daemon's next tick" % e["kind"]
         elif owed == "again":

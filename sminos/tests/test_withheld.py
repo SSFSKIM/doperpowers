@@ -13,7 +13,9 @@ whichever way the hub's word arrives: its refusal, its tombstone on resync
   naming a session nobody exposed.
 - Restate: over DX2 too, a session's own `joined` or `state` the hub
   withheld restated once by the daemon's next tick (MAWS #492): admitted,
-  never restated again once withheld again, owed nothing after a newer one.
+  never restated again once withheld again, owed nothing after a newer one;
+  the debt and the restatement's identity outliving an interrupted write,
+  and a restated marker kept until its verdict.
 - Rl10: the uplink in this process against endpoint_standin.py, whose ctl
   `refuse` sends `not-reachable`.
 
@@ -29,6 +31,7 @@ import shutil
 import sys
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -335,6 +338,89 @@ class Restate(OverDx2):
         self.assertEqual([r["reason"] for r in self.upload()], ["not-reachable"])
         self.tick()
         self.assertEqual(len(self.own()), before + 1, "nothing written for it")
+
+    # Interruptions: a debt or a restatement's identity outlives a process
+    # that dies between two writes, and a marker outlives any delay of its
+    # verdict.
+
+    def restate(self):
+        return daemon._restate_held(sminos.project_path(self.p, daemon.RESTATE_FILE))
+
+    def restated_before_a_crash(self):
+        """The tick died after it appended the restatement of S1's `joined`
+        and before it recorded it: the entry left `restating`. Returns the
+        restatement."""
+        held = self.restate()
+        held[S1]["joined"]["restating"] = True
+        sminos.write_json(sminos.project_path(self.p, daemon.RESTATE_FILE), held)
+        return sminos.lifecycle(self.p, S1, "joined", **sminos.joined_again(sminos.own_events_of(self.p, S1), S1))[0]
+
+    def test_the_debt_is_recorded_before_the_position_is_settled(self):
+        self.hello()
+        self.tick()
+        joined = self.own("joined")[0]
+        with mock.patch.object(hublog.HubLog, "save", side_effect=OSError("no space left")):
+            with self.assertRaises(OSError):
+                self.hl.withhold_own(W, joined["seq"])
+        self.assertEqual(self.restate()[S1]["joined"]["seq"], joined["seq"], "owed, though never settled")
+        self.assertTrue(self.hl.withhold_own(W, joined["seq"]), "its refusal seen again on resync settles it")
+        self.assertEqual(self.restate()[S1]["joined"]["seq"], joined["seq"])
+
+    def test_a_debt_that_cannot_be_recorded_still_settles_the_position(self):
+        self.hello()
+        self.tick()
+        joined = self.own("joined")[0]
+        with mock.patch.object(daemon, "owe_restatement", side_effect=OSError("no space left")):
+            self.assertTrue(self.hl.withhold_own(W, joined["seq"]))
+        self.assertIn(joined["seq"], self.hl.withheld()[W])
+        self.assertIn("no space left", tw.daemon_log())
+
+    def test_a_restatement_left_restating_and_appended_is_adopted(self):
+        first, _ = self.withhold_the_first_snapshots()
+        again = self.restated_before_a_crash()
+        self.tick()
+        self.assertEqual([e["seq"] for e in self.own("joined")], [first["seq"], again["seq"]], "not written again")
+        self.assertEqual(self.restate()[S1]["joined"],
+                         {"writer": again["writer"], "seq": again["seq"], "ts": again["ts"], "restated": True})
+        self.upload()   # still bound to another machine: withheld again
+        self.assertNotIn("joined", self.restate().get(S1, {}))
+        self.tick()
+        self.assertEqual(len(self.own("joined")), 2, "owed nothing more")
+
+    def test_a_restatement_left_restating_and_withheld_owes_nothing(self):
+        self.withhold_the_first_snapshots()
+        self.restated_before_a_crash()
+        self.upload()   # its verdict before any tick recovers it
+        self.assertNotIn("joined", self.restate().get(S1, {}))
+        self.tick()
+        self.assertEqual(len(self.own("joined")), 2)
+
+    def test_a_restated_marker_outlives_a_delayed_verdict(self):
+        self.withhold_the_first_snapshots()
+        self.tick()   # both restated, their verdicts not yet taken
+        held = self.restate()
+        for at in held[S1].values():
+            at["ts"] = "2026-01-01T00:00:00.000Z"
+        sminos.write_json(sminos.project_path(self.p, daemon.RESTATE_FILE), held)
+        newer = sminos.lifecycle(self.p, S1, "state", state="busy", machine="testhost")[0]
+        self.assertEqual(daemon.owe_restatement(self.p, W, newer["seq"], newer), "owed")
+        self.assertTrue(self.restate()[S1]["joined"].get("restated"), "no verdict yet: kept, however old")
+        self.upload()   # the verdicts arrive: each withheld
+        self.assertNotIn("joined", self.restate().get(S1, {}))
+        self.tick()
+        self.assertEqual(len(self.own("joined")), 2, "not restated again")
+
+    def test_a_restated_marker_is_dropped_once_a_have_admits_it(self):
+        self.withhold_the_first_snapshots()
+        self.bind("testhost")
+        self.tick()
+        self.assertEqual(sorted(self.restate()[S1]), ["joined", "state"])
+        self.assertEqual(self.upload(), [], "admitted")
+        self.tick()
+        self.assertEqual(sorted(self.restate()[S1]), ["joined", "state"], "the hub's have has not said so yet")
+        self.hello()
+        self.tick()
+        self.assertEqual(self.restate(), {})
 
 
 class Rl10(Sender):
