@@ -98,7 +98,14 @@ are delivered here alone, on the endpoint's verdict: each tick's words pass
 (Link.ask_words), behind its upload pass, asks `words?` about the first
 owed event of each words-gated writer, naming the project whose log holds
 it, and the `words` answer is carried out at once (on_words,
-sminos.deliver_verdict). An endpoint rebuilding a lost policy cache asks
+sminos.deliver_verdict). Where the welcome advertised `reach` (P5 O18
+D3, D8) every peer push is delivered here alone too, on the endpoint's
+answer: the same pass asks `reach?` about the first owed event of each
+writer a push would hand over as a peer frame (sminos.reach_due), a
+`peer` words verdict asks it again for its event, and a `deliver` is
+carried out at once under a permit for that push alone
+(sminos.deliver_reach); `refuse` settles `refused-reach` here, and no
+answer leaves it owed. An endpoint rebuilding a lost policy cache asks
 `snapshots?` of one project at a time, and each ask is answered with one
 bounded page of the newest stored `joined` and `state` of each remote
 session writer, plain and stream (on_snapshots, snapshot_page; O18 D7).
@@ -116,6 +123,7 @@ import itertools
 import json
 import os
 import queue
+import re
 import selectors
 import signal
 import socket
@@ -166,6 +174,7 @@ UPLOAD_AHEAD = POST_LIMIT  # an upload pass queues no more while the log lane ho
 LANE_ENTRY = 256 * 1024    # RL10: the host and words passes queue lane entries of at most this many bytes
 WORDS_WAIT = 10.0         # RL10: how long a `words?` waits for its verdict; past it, a failed attempt (O12 M6)
 WORDS_EVERY = 10.0        # RL10: how often the words pass looks for owed words when nothing asked for one
+REACH_WAIT = 10.0         # RL10: how long a `reach?` waits for its answer; past it, owed still, no attempt (P5 O18)
 SNAPSHOT_PAGE = 200       # RL10: a `snapshots` page carries at most this many events, in at most LANE_ENTRY bytes
 SNAPSHOT_KINDS = ("joined", "state")
 # RL10: a file each words pass appends one line to ({at, wall, cpu, asks}), when set: the measurement
@@ -1505,6 +1514,7 @@ class Link:
         self.revoked_due = False  # RL10: a revocation set was kept that the owed events have not been marked by
         self.members_sent = {}    # RL10: session → the `member` frame last sent on this connection
         self.visibility = False   # RL10: the endpoint's welcome advertised `access` (P5 O18 D9): member frames carry it
+        self.reach = False        # RL10: it advertised `reach` (P5 O18 D3): every peer push here waits for its answer
         self.members_unsent = set()   # RL10: the sessions whose frame is due and not yet queued (publish_members)
         self.member_read_for = None   # RL10: the running sessions the projects known here were last listed for
         self.next_member_read = 0.0   # RL10: when they are read again (monotonic) when none came or went
@@ -1512,8 +1522,9 @@ class Link:
         self.member_known = {}    # RL10: project id → project, every project known here as last listed (members)
         self.transitions_failing = ""   # complete_transitions' failure as last said
         self.unlisted = set()     # RL10: (project id, session) a writer named and its rows did not, since that listing
-        self.asks = {}            # RL10: a `words?` id → what it asked (ask_words), until its verdict or its deadline
-        self.asked = {}           # RL10: (project id, session, writer) → the id of the ask it has out
+        self.asks = {}            # RL10: a `words?` or `reach?` id → what it asked (ask_words), until answered or due
+        self.asked = {}           # RL10: (project id, session, writer) → the id of its one ask out, of either kind
+        self.reach_silent = set()  # RL10: the asked keys whose `reach?` went unanswered, said once in daemon.log
         self.words_due = True     # RL10: the words pass runs at the next tick (and every WORDS_EVERY)
         self.next_words = 0.0     # RL10: when it runs again unasked (monotonic)
         self.restating = False    # RL10: this connection's welcome began a restatement not closed by `restated` yet
@@ -1566,7 +1577,7 @@ class Link:
             # Interfaces §D).
             self.handlers.update({"policy": self.on_policy, "revoked": self.on_revoked,
                                   "legacy-key?": self.on_legacy_key, "query": self.on_query,
-                                  "tombstone": self.on_tombstone, "words": self.on_words,
+                                  "tombstone": self.on_tombstone, "words": self.on_words, "reach": self.on_reach,
                                   "spent": self.on_spent, "audience": self.on_audience,
                                   "snapshots?": self.on_snapshots})
 
@@ -1668,6 +1679,7 @@ class Link:
         self.members_unsent = set()
         self.asks.clear()         # an ask is answered on its own connection, or never
         self.asked.clear()
+        self.reach_silent.clear()
         self.words_due = True
         self.host_queued.clear()
         self.host_owed.clear()
@@ -1701,6 +1713,7 @@ class Link:
         caps = frame.get("capabilities")
         caps = [c for c in caps if isinstance(c, str)] if isinstance(caps, list) else []
         self.visibility = "access" in caps
+        self.reach = "reach" in caps
         try:
             audience.keep_capabilities(caps)
         except OSError as e:
@@ -1752,19 +1765,74 @@ class Link:
         not revoked since), and the writer's next owed event asked at the next
         tick. An answer to no ask held here — one that expired and was asked
         again, one a revocation dropped — is no answer; one naming no verdict
-        is a failed attempt, as silence is."""
-        held = self.asks.pop(frame.get("id"), None) if isinstance(frame.get("id"), str) else None
+        is a failed attempt, as silence is. Where the endpoint decides reach
+        (P5 O18 D8) a `peer` verdict delivers nothing yet: the push it calls
+        for asks `reach?` about the same event first (ask_peer), and the
+        admission of the words never stands for it."""
+        held = self.held_ask(frame, "words?")
         if held is None:
             return
-        self.asked.pop(held["key"], None)
-        self.words_due = True
         verdict = frame.get("verdict")
         if verdict not in sminos.WORDS_VERDICTS:
             log("the endpoint's answer on %s in %s names no verdict (%r): a failed attempt"
                 % (sminos.event_ref(held["event"]), held["project"].name, verdict))
             sminos.words_unanswered(held["project"], held["member"], held["event"], "the endpoint named no verdict")
             return
+        if verdict == "peer" and self.reach:
+            self.ask_peer(held)
+            return
         sminos.deliver_verdict(held["project"], held["member"], held["event"], verdict)
+        self.next_upload = 0.0   # its outcome goes up on the next pass
+
+    def held_ask(self, frame, kind):
+        """The ask of this kind an answer names, no longer held (its key's
+        ask out cleared, and the next pass due); None for an answer to no ask
+        of this kind held here — one past its deadline, one a revocation
+        dropped — which is no answer."""
+        ask = frame.get("id")
+        held = self.asks.get(ask) if isinstance(ask, str) else None
+        if held is None or held.get("t", "words?") != kind:
+            return None
+        del self.asks[ask]
+        self.asked.pop(held["key"], None)
+        self.words_due = True
+        return held
+
+    def ask_peer(self, held):
+        """A `peer` words verdict's push asked about first (P5 O18 D8: each
+        push asks `reach?`, whatever admitted it before): the same event,
+        remembered as the words pass's, under a new id. With the lane full
+        nothing is asked now, and the event, still owed, is asked `words?`
+        again by a later pass."""
+        if self.session_lane.queued() >= UPLOAD_AHEAD:
+            return
+        e, project = held["event"], held["project"]
+        ask = os.urandom(12).hex()
+        self.queue_asks([(ask, {"key": held["key"], "project": project, "member": held["member"], "event": e,
+                                "t": "reach?", "words": "peer"},
+                          {"t": "reach?", "id": ask, "project": project.id, "session": held["member"].session,
+                           "event": {k: v for k, v in e.items() if k != "verified"}})])
+
+    def on_reach(self, frame, _stream):
+        """The endpoint's answer on a `reach?` (P5 O18 D3), carried out at
+        once (sminos.deliver_reach: still the writer's first owed, the same
+        body): `deliver` the push it was asked for, under a permit for that
+        push alone; `refuse` settled `refused-reach` here, with no outcome
+        back. An answer to no ask held here, or one naming neither, is no
+        answer: the event stays owed, asked again under a new id, no attempt
+        counted."""
+        held = self.held_ask(frame, "reach?")
+        if held is None:
+            return
+        self.reach_silent.discard(held["key"])
+        verdict = frame.get("verdict")
+        if verdict not in sminos.REACH_VERDICTS:
+            log("the endpoint's answer on the reach of %s in %s names no verdict (%r): it stays owed, asked again"
+                % (sminos.event_ref(held["event"]), held["project"].name, verdict))
+            return
+        reason = frame.get("reason")
+        reason = reason if isinstance(reason, str) and re.fullmatch(r"[a-z][a-z-]{0,39}", reason) else None
+        sminos.deliver_reach(held["project"], held["member"], held["event"], verdict, reason)
         self.next_upload = 0.0   # its outcome goes up on the next pass
 
     def on_audience(self, frame, _stream):
@@ -2596,7 +2664,15 @@ class Link:
         attempt (sminos.words_unanswered), the event asked again under a new
         id. One whose signer is revoked is marked instead
         (sminos.revoke_owed), and one carrying a signer is not asked while
-        the set cannot be read."""
+        the set cannot be read.
+
+        Where the welcome advertised `reach` (P5 O18 D3, D8) the same pass
+        asks `reach? {id, project, session, event}` alike about the first owed
+        event of each writer a push would hand over as a peer frame
+        (sminos.reach_due), the sending session's member frame first too when
+        it is this machine's; one key's one ask out at a time, of either
+        kind, so no writer has both. Its deadline is REACH_WAIT, and passing
+        it counts nothing (expire_asks)."""
         now = time.monotonic()
         self.words_due, self.next_words = False, now + WORDS_EVERY
         try:
@@ -2613,36 +2689,46 @@ class Link:
                 rows = self.plane.member_rows.get(pid) or {}
                 if not rows:
                     continue
-                owed = sminos.words_due(project, [m for _, m in sorted(rows.items())])
-                if owed and not self.members_before(project, owed):
+                members = [m for _, m in sorted(rows.items())]
+                owed = [(sid, e, "words?") for sid, due in sorted(sminos.words_due(project, members).items())
+                        for e in due]
+                if self.reach:
+                    owed += [(sid, e, "reach?") for sid, due in sorted(sminos.reach_due(project, members).items())
+                             for e in due]
+                # The endpoint decides by the recipient's record, a reach by the sending session's of this machine too.
+                sessions = {sid for sid, _, _ in owed} | {
+                    sminos.writer_session(e["writer"]) for _, e, kind in owed if kind == "reach?"
+                    and sminos.writer_base(e["writer"]) == "%s/%s" % (sminos.host_name(),
+                                                                      sminos.writer_session(e["writer"]))}
+                if owed and not self.members_before(project, sessions):
                     if batch:
                         self.queue_asks(batch)
                     self.words_due = True   # asked once their members are queued
                     return
-                for sid, due in sorted(owed.items()):
-                    for e in due:
-                        key = (pid, sid, e["writer"])
-                        if key in self.asked:
-                            continue
-                        if isinstance(e.get("verified"), dict) and (revoked is None or rl10.event_revoked(e, revoked)):
-                            if revoked is not None:
-                                for x in sminos.revoke_owed(project, rows[sid], revoked):
-                                    log("%s in %s is signed by a revoked key: marked refused-revoked for %s, never "
-                                        "delivered" % (sminos.event_ref(x), project.name, sid[:8]))
-                                    self.next_upload = 0.0
-                            continue
-                        ask = os.urandom(12).hex()
-                        frame = {"t": "words?", "id": ask, "project": pid, "session": sid,
-                                 "event": {k: v for k, v in e.items() if k != "verified"}}
-                        n = len(json.dumps(frame, ensure_ascii=False).encode("utf-8"))
-                        if batch and size + n > LANE_ENTRY:
-                            self.queue_asks(batch)
-                            batch, size = [], 0
-                            if self.session_lane.queued() >= UPLOAD_AHEAD:
-                                self.words_due = True   # the rest on a later pass
-                                return
-                        batch.append((ask, {"key": key, "project": project, "member": rows[sid], "event": e}, frame))
-                        size += n
+                for sid, e, kind in owed:
+                    key = (pid, sid, e["writer"])
+                    if key in self.asked:
+                        continue
+                    if isinstance(e.get("verified"), dict) and (revoked is None or rl10.event_revoked(e, revoked)):
+                        if revoked is not None:
+                            for x in sminos.revoke_owed(project, rows[sid], revoked):
+                                log("%s in %s is signed by a revoked key: marked refused-revoked for %s, never "
+                                    "delivered" % (sminos.event_ref(x), project.name, sid[:8]))
+                                self.next_upload = 0.0
+                        continue
+                    ask = os.urandom(12).hex()
+                    frame = {"t": kind, "id": ask, "project": pid, "session": sid,
+                             "event": {k: v for k, v in e.items() if k != "verified"}}
+                    n = len(json.dumps(frame, ensure_ascii=False).encode("utf-8"))
+                    if batch and size + n > LANE_ENTRY:
+                        self.queue_asks(batch)
+                        batch, size = [], 0
+                        if self.session_lane.queued() >= UPLOAD_AHEAD:
+                            self.words_due = True   # the rest on a later pass
+                            return
+                    batch.append((ask, {"key": key, "project": project, "member": rows[sid], "event": e, "t": kind},
+                                  frame))
+                    size += n
             if batch:
                 self.queue_asks(batch)
         except BaseException:
@@ -2664,21 +2750,31 @@ class Link:
 
     def queue_asks(self, batch):
         """One entry of the words pass, [(id, what it asks, frame)], queued,
-        and each ask held from now until its verdict or its deadline."""
+        and each ask held from now until its answer or its deadline
+        (WORDS_WAIT for a `words?`, REACH_WAIT for a `reach?`)."""
         self.session_lane.send([frame for _, _, frame in batch])
-        deadline = time.monotonic() + WORDS_WAIT
+        now = time.monotonic()
         for ask, held, _ in batch:
-            self.asks[ask] = {**held, "deadline": deadline}
+            wait = REACH_WAIT if held.get("t") == "reach?" else WORDS_WAIT
+            self.asks[ask] = {**held, "deadline": now + wait}
             self.asked[held["key"]] = ask
 
     def expire_asks(self, now):
-        """Each ask past its deadline dropped and counted a failed attempt
-        (said in daemon.log at the first); its event is asked again."""
+        """Each ask past its deadline dropped; its event is asked again. A
+        `words?` is counted a failed attempt (said in daemon.log at the
+        first); a `reach?` is none: its delivery stays owed, never given up
+        (P5 O18 D3, acceptance 5), said once while it goes unanswered."""
         for ask, held in sorted(self.asks.items(), key=lambda kv: kv[1]["deadline"]):
             if held["deadline"] > now:
                 break
             del self.asks[ask]
             self.asked.pop(held["key"], None)
+            if held.get("t") == "reach?":
+                if held["key"] not in self.reach_silent:
+                    self.reach_silent.add(held["key"])
+                    log("the endpoint gave no answer on the reach of %s in %s within %g s: it stays owed, asked "
+                        "again each pass" % (sminos.event_ref(held["event"]), held["project"].name, REACH_WAIT))
+                continue
             attempts = sminos.words_unanswered(held["project"], held["member"], held["event"],
                                                "the endpoint gave no verdict within %g s" % WORDS_WAIT)
             if attempts == 1:

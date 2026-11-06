@@ -139,6 +139,20 @@ def capable():
     return "access" in (d.get("capabilities") or [])
 
 
+def reach_capable():
+    """Whether every peer push here is the endpoint's to decide (`reach?`,
+    P5 O18 D3, D8): the machine is cut over to its endpoint and the
+    endpoint's welcome advertised `reach`. An unreadable file on a cut-over
+    machine is taken as capable, so the pushes are held owed (fail closed)."""
+    if not sminos.sibling_module("sminos_rl10").cut_over():
+        return False
+    try:
+        d = _read_audiences()
+    except StreamUnknown:
+        return True
+    return "reach" in (d.get("capabilities") or [])
+
+
 def _write_audiences(d):
     path = audiences_path()
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
@@ -283,6 +297,19 @@ def owners_of(sid, held=None):
         owners = rec.get("owners") if isinstance(rec.get("owners"), list) else []
         if owners and sminos.records_module().MACHINE not in owners:
             return sorted(set(owners))
+    return None
+
+
+def machine_owners(held=None):
+    """The machine's owners (`@machine`) as the endpoint resolved them: the
+    owners it gave a session of this machine whose record names exactly
+    `@machine`; None when no such word is kept."""
+    held = held if held is not None else _read_audiences()
+    records = sminos.records_module()
+    for sid, entry in sorted((held.get("sessions") or {}).items()):
+        if isinstance(entry, dict) and entry.get("owners") and is_local(sid) \
+                and (records.read(sid) or {}).get("owners") == [records.MACHINE]:
+            return list(entry["owners"])
     return None
 
 

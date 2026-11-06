@@ -65,6 +65,7 @@ OUTBOX = "outcomes.jsonl"
 READ_ONLY = "refused-read-only"
 REFUSED_WORDS = "refused-words"       # the endpoint's verdict on a person's words: refuse (O12 M6)
 REFUSED_REVOKED = "refused-revoked"   # signed by a key, device or member since revoked (O12 M6)
+REFUSED_REACH = "refused-reach"       # the endpoint's `reach` answer: refuse (P5 O18 D3); settled here, never reported
 UNCERTAIN = {"sent?": "uncertain: the session took the message and its answer never came",
              "woken?": "uncertain: the stopped seat was resumed with it and reported no session id"}
 

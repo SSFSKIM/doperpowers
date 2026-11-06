@@ -17,7 +17,10 @@ substituted and each `vary` path compared for presence. What sminos does with
 a down line is checked where it shows (a file, a delivery, a spent position).
 `scene` and `quiet` are the endpoint's, and passed by. A `words?` the
 conversation does not stage is answered `refuse` at once, so a session's
-later owed events are asked as the conversation stages them.
+later owed events are asked as the conversation stages them. The
+conversation stages no `reach?` (P5 O18 D3): its endpoint advertises
+`reach`, and each one sminos asks before a peer push is answered `deliver`
+at once, the push the conversation expects then made.
 
 Two kinds of line are not sminos's to send as written, each named in a table
 below with its reason:
@@ -836,8 +839,16 @@ ANSWERED = set()
 
 def answer_unstaged(conn):
     """Each words? the conversation does not stage, answered `refuse`: its
-    event settles, and the session's next owed event is asked."""
+    event settles, and the session's next owed event is asked. Each reach?,
+    which it never stages, answered `deliver`."""
     for i, f in enumerate(conn.frames):
+        if f.get("t") == "reach?" and (conn.number, i) not in ANSWERED:
+            ANSWERED.add((conn.number, i))
+            try:
+                conn.write({"t": "reach", "id": f["id"], "verdict": "deliver"})
+            except OSError:
+                pass
+            continue
         if f.get("t") != "words?" or (conn.number, i) in ANSWERED or (conn.number, i) in MATCHED:
             continue
         e = f.get("event") or {}
