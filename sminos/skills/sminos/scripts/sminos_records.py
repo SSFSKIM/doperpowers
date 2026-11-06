@@ -19,9 +19,17 @@ atomically (sminos._write_record) under one lock for every change here:
   the machine's defaults). `source` is the basis when the evidence is final
   and `default` when it is provisional: the defaults, or a launch or a
   continuation that copied a provisional record. A record is replaced, its
-  `controller` kept, only by strictly stronger evidence (strength: the
-  basis's rank, then final over provisional), so it moves up at most a few
-  times and never back.
+  `controller`, its policy and the owners an act added kept, only by
+  strictly stronger evidence (strength: the basis's rank, then final over
+  provisional), so it moves up at most a few times and never back.
+- An owner an owner's act added (add_owner: a member of `owners` whose
+  `record.owners` act adding it is in `ownersProof`) is the session's
+  current state, as the policy is, not its evidence's: a record replaced by
+  stronger evidence takes the provenance's owners and ownersProof, then each
+  such member not already among them and each such act not already in its
+  proof (added_by_acts), so an owner gained while the record was
+  provisional or weaker is never lost to the evidence that replaces it. The
+  `@machine` token and a spawn's proof stay the evidence's.
 - `controller {lane, since}` is current state, not provenance: set at each
   launch by the bridge's lane verdict (set_controller) and never copied.
 - The policy (O18 D10): `access` (ACCESS, absent: listed), `shares`
@@ -32,8 +40,9 @@ atomically (sminos._write_record) under one lock for every change here:
   provenance carries its predecessor's (inherited), and a sminos spawn its
   spawner's access and shares (sminos.spawn_provenance), so a background
   copy, a resume or a seat never widens reach. It changes only through
-  set_policy, which bumps policyRev. A record whose policy fields do not
-  read as these is no record (read gives None: unreadable, fail closed).
+  set_policy, which bumps policyRev (as add_owner does). A record whose
+  policy fields do not read as these is no record (read gives None:
+  unreadable, fail closed).
 - `@machine`, as an owner or a principal, stands for this machine's owners;
   the endpoint resolves it against the org state, and it never leaves the
   machine. As an owner it may stand once, first, beside the member ids an
@@ -221,14 +230,36 @@ def checked_owners(owners):
     return owners
 
 
+def added_by_acts(rec):
+    """(members, acts): the owners of `rec` an owner's act added, each a
+    member of its `owners` whose `record.owners` act adding it is in its
+    `ownersProof`, and those acts, in the record's order."""
+    owners = rec.get("owners") if isinstance(rec.get("owners"), list) else []
+    proofs = rec.get("ownersProof") if isinstance(rec.get("ownersProof"), list) else []
+    acts = [p for p in proofs if isinstance(p, dict) and p.get("action") == "record.owners"
+            and isinstance(p.get("args"), dict) and p["args"].get("member") in owners
+            and p["args"]["member"] != MACHINE]
+    added = {p["args"]["member"] for p in acts}
+    return [o for o in owners if o in added], acts
+
+
 def _record(sid, prov, created=None, have=None):
     """A record of `prov`, replacing `have` (the session's record, or None):
-    its `controller` kept, and its policy kept whole when it carries one,
-    else the provenance's (a continuation's or a spawn's)."""
+    its `controller` kept, its policy kept whole when it carries one, else
+    the provenance's (a continuation's or a spawn's), and the owners an act
+    added kept beside the provenance's, with their acts (added_by_acts)."""
     checked_owners(prov.get("owners"))
     rec = {"session": sid, "source": prov.get("source") or "default", "basis": basis(prov)}
     for k in PROVENANCE:
         rec[k] = prov[k]
+    members, acts = added_by_acts(have or {})
+    if members:
+        rec["owners"] = checked_owners(list(rec["owners"]) + [m for m in members if m not in rec["owners"]])
+        proof = list(rec["ownersProof"]) if isinstance(rec["ownersProof"], list) else []
+        for a in acts:
+            if a not in proof:
+                proof.append(a)
+        rec["ownersProof"] = proof
     controller = (have or {}).get("controller")
     if controller:
         rec["controller"] = controller

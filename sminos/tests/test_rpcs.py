@@ -3546,7 +3546,8 @@ class Checks(unittest.TestCase):
 
     def test_s_send_is_offered_through_the_endpoint_alone(self):
         """DX2 does not carry `send`: from the hub it is `unsupported`, loose,
-        and never runs; the machine's desk lists it on RL10 alone."""
+        and never runs; the machine's desk lists it on RL10 alone, as the
+        record RPCs."""
         import sminos_hublog as hublog
         rpc = self.send("send", {"session": self.bridged.sid, "text": "hello"})
         o = self.refused(rpc, "unsupported")
@@ -3554,7 +3555,7 @@ class Checks(unittest.TestCase):
         self.assertNotIn(rpc["nonce"], self.ledger(), "a refusal before the ledger")
         self.assertEqual(self.mod.ops("deliver"), [])
         self.assertNotIn("send", hublog.desk()["rpcs"])
-        self.assertEqual(hublog.desk(True)["rpcs"], list(rpcs.RPC_NAMES) + ["send"])
+        self.assertEqual(hublog.desk(True)["rpcs"], list(rpcs.RPC_NAMES) + ["send", *rpcs.RECORD])
 
     def test_s_a_send_needs_the_sessions_bridge_its_launch_and_the_project(self):
         """Fenced as every bridge command (O12 M7): a session with no bridge is

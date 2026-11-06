@@ -190,13 +190,16 @@ keeps. They carry no context (a record changes whatever launch runs the
 session, as a spawn's machine does), pass checks 1-6 as every RL10 RPC
 (read-only refuses them, narrowing included; `bad-shape` for an access,
 grade or member that does not fit, and for an owners `proof` that is not
-this op's act adding this member: the record keeps it as that owner's
-proof), and run as the operator through the CLI's own setters
-(record_change: sminos_visibility.set_visibility, add_owner), since the
-endpoint verified the act's step-up by an owner. `done {changed,
-policyRev}`; `no-session` for no readable record; `unsupported` for a
-change an endpoint without `access` cannot carry. One the daemon stopped
-mid-run is `interrupted`.
+this op's whole act adding this member — MAWS's isAction shape, step-up
+required, no session or context, for this machine's org and ref from
+identity.json (none: refused), the RPC's opId, opCreated and device
+(owners_proof): the record keeps it as that owner's proof, which every
+attestation of the session carries), and run as the operator through the
+CLI's own setters (record_change: sminos_visibility.set_visibility,
+add_owner), since the endpoint verified the act's step-up by an owner.
+`done {changed, policyRev}`; `no-session` for no readable record;
+`unsupported` for a change an endpoint without `access` cannot carry. One
+the daemon stopped mid-run is `interrupted`.
 
 `send` (MAWS O9 §E) is offered there alone (DX2 refuses it `unsupported`):
 a person's message into the session, as the bridge's `deliver` in either
@@ -248,6 +251,7 @@ import sminos_media as media  # noqa: E402
 import sminos_owed as owed  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 import sminos_requests as requests  # noqa: E402
+import sminos_rl10 as rl10  # noqa: E402
 import sminos_visibility as visibility  # noqa: E402
 
 LEDGER_FILE = "rpcs.json"
@@ -1861,19 +1865,40 @@ def shape(name, args, member):
         need(e is None or e in control.EFFORTS, "effort is one of %s" % ", ".join(control.EFFORTS))
 
 
+ACT_KEYS = frozenset(("v", "org", "machine", "device", "opId", "opCreated", "action", "args", "nonce", "created",
+                      "stepUp"))   # a record act's, all required: MAWS's isAction, step-up, no session or context
+ASSERTION_KEYS = frozenset(("credentialId", "authenticatorData", "clientDataJSON", "signature"))
+
+
 def owners_proof(rpc):
     """Check 6 for `record.owners`: its `proof` is the act this op carries
-    out, since the record keeps it as the added owner's proof (RL9) — an
-    action object of `record.owners`, of the RPC's own opId and device,
-    adding the same member. `bad-shape` otherwise: an endpoint that sent
-    another would leave the owner unproven, or proven by the wrong act."""
-    proof = rpc.get("proof")
+    out, whole, since the record keeps it for good as the added owner's
+    proof (RL9) and the endpoint refuses every attestation whose ownersProof
+    holds an act its isAction refuses (MAWS org-protocol's action.ts). So,
+    before anything is written: exactly ACT_KEYS, and `webauthn` beside them
+    if any (its four parts); `v` 1; `org`, `machine`, `device`, `nonce`,
+    `created` and `stepUp` non-empty strings, `args` an object; `org` and
+    `machine` this machine's org and ref (identity.json: record RPCs arrive
+    only on a cut-over machine, and with none no act is this machine's);
+    `opId`, `opCreated` and `device` the RPC's own; `action` `record.owners`
+    adding the same member. `bad-shape` otherwise: an act kept that the
+    endpoint refuses would void the session's attestations, and another act
+    would leave the owner unproven or proven by the wrong one. The signature
+    is the endpoint's to verify, not checked here."""
+    proof, ident = rpc.get("proof"), rl10.cutover()
     args = proof.get("args") if isinstance(proof, dict) else None
-    if not (isinstance(args, dict) and proof.get("action") == "record.owners"
-            and proof.get("opId") == rpc.get("opId") and proof.get("device") == rpc.get("device")
+    webauthn = proof.get("webauthn") if isinstance(proof, dict) else None
+    if not (isinstance(args, dict) and set(proof) - {"webauthn"} == ACT_KEYS
+            and ("webauthn" not in proof or (isinstance(webauthn, dict) and set(webauthn) == ASSERTION_KEYS
+                                             and all(is_text(v) for v in webauthn.values())))
+            and proof["v"] == 1 and type(proof["v"]) is int
+            and all(is_text(proof[k]) for k in ("org", "machine", "device", "nonce", "created", "stepUp"))
+            and ident is not None and proof["org"] == ident["org"] and proof["machine"] == ident.get("ref")
+            and proof["opId"] == rpc.get("opId") and proof["opCreated"] == rpc.get("opCreated")
+            and proof["device"] == rpc.get("device") and proof["action"] == "record.owners"
             and args.get("add") is True and args.get("member") == rpc["args"].get("member")):
-        raise Refused("bad-shape", "record.owners: proof is the signed act that adds this member, under this "
-                                   "opId and device")
+        raise Refused("bad-shape", "record.owners: proof is the whole signed act that adds this member, step-up "
+                                   "included, under this opId, opCreated and device, for this machine of its org")
 
 
 def record_change(name, sid, args, proof):

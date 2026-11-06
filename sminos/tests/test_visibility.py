@@ -890,11 +890,42 @@ class RecordRpcs(Base):
         other_op = self.act("record.owners", {"add": True, "member": B})
         other_op["proof"] = {**other_op["proof"], "opId": b64() + "op"}
         cases.append(("a proof for another op", other_op, "bad-shape"))
+
+        def proof(what, **change):
+            """An owners act whose proof is the signed act with `change`
+            (a field None: left out), refused before anything is written."""
+            rpc = self.act("record.owners", {"add": True, "member": B})
+            rpc["proof"] = {k: v for k, v in {**rpc["proof"], **change}.items() if v is not None}
+            cases.append((what, rpc, "bad-shape"))
+        proof("a proof with no step-up", stepUp=None)
+        proof("a proof with an empty step-up", stepUp="")
+        proof("a truncated proof", nonce=None, created=None)
+        proof("a proof with a session", session=S)
+        proof("a proof with a context", context={"lane": "A", "session": S, "launch": "l"})
+        proof("a proof with a request digest", requestDigest={})
+        proof("a proof for another machine", machine="machine-ref-2")
+        proof("a proof for another org", org="org-2")
+        proof("a proof of another op's first sealing", opCreated=iso(time.time() - 30))
+        proof("a proof of another version", v=2)
+        proof("a proof with no org", org="")
         for what, rpc, code in cases:
             with self.subTest(what):
                 self.refused(link, self.send(link, rpc), code)
         self.assertEqual(records.read(S)["owners"], [A], "nothing changed")
         self.assertEqual(self.policy(), ("private", [], rec["policyRev"]))
+
+    def test_an_owners_proof_is_checked_against_this_machines_identity(self):
+        rpc = self.act("record.owners", {"add": True, "member": B})
+        rpcmod.owners_proof(rpc)
+        rpcmod.owners_proof({**rpc, "proof": {**rpc["proof"], "webauthn": {
+            "credentialId": b64(), "authenticatorData": b64(), "clientDataJSON": b64(), "signature": b64()}}})
+        with mock.patch.object(rpcmod.rl10, "cutover", return_value=None):
+            with self.assertRaises(rpcmod.Refused) as got:
+                rpcmod.owners_proof(rpc)
+        self.assertEqual(got.exception.outcome["error"]["code"], "bad-shape", "no identity: no act is this machine's")
+        for webauthn in ({"signature": b64()}, None):
+            with self.subTest(webauthn=webauthn), self.assertRaises(rpcmod.Refused):
+                rpcmod.owners_proof({**rpc, "proof": {**rpc["proof"], "webauthn": webauthn}})
 
     def test_no_session_without_a_readable_record_or_outside_the_project(self):
         link, _ = self.start(access="private")
