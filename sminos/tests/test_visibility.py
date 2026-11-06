@@ -98,9 +98,10 @@ class Base(tw.Machine):
                               env=self.env(session), capture_output=True, text=True, timeout=60,
                               start_new_session=True)
 
-    def tty(self, answer, *args):
+    def tty(self, answer, *args, before=None):
         """The CLI on a controlling pty of its own, the operator answering
-        `answer` at the confirmation. (exit code, everything it printed)."""
+        `answer` at the confirmation (`before()` run first, while the prompt
+        waits). (exit code, everything it printed)."""
         env = self.env()
         pid, fd = pty.fork()
         if pid == 0:
@@ -122,6 +123,8 @@ class Base(tw.Machine):
                 break
             out += chunk
             if not sent and b"[y/N]" in out:
+                if before:
+                    before()
                 os.write(fd, answer.encode() + b"\n")
                 sent = True
         _, status = os.waitpid(pid, 0)
@@ -314,6 +317,39 @@ class Cutover(Base):
         self.assertNotEqual(code, 0, out)
         self.assertIn("use MAWS", out)
         self.assertEqual(self.policy()[0], "private")
+
+    def test_an_audience_frame_after_the_file_was_lost_stands_for_no_welcome(self):
+        """The file rebuilt by an `audience` frame after it went missing, or
+        could not be read, holds no capabilities: the word stays unknown
+        (widening waits, and so do the pushes `reach` decides) until a real
+        welcome says."""
+        au.keep_capabilities(["access", "reach", "record"])
+        self.local(S, access="private")
+        path = au.audiences_path()
+        for lose in (lambda: os.unlink(path), lambda: open(path, "w").write("{not json")):
+            lose()
+            self.audience(U, [B], [B], 3)
+            self.assertNotIn("capabilities", json.load(open(path)), "no welcome made up")
+            self.assertTrue(au.widening_through_app())
+            self.assertTrue(au.reach_capable(), "the pushes stay the endpoint's to decide")
+            code, out = self.tty("y", "access", S, "listed")
+            self.assertNotEqual(code, 0, out)
+            self.assertIn("use MAWS", out)
+            self.assertEqual(self.policy()[0], "private")
+        au.keep_capabilities(["access", "reach"])
+        self.assertEqual(json.load(open(path))["sessions"][U]["policyRev"], 3, "the frame kept")
+        code, out = self.tty("y", "access", S, "listed")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.policy()[0], "listed")
+
+    def test_a_welcome_with_record_kept_while_the_terminal_waits_refuses_at_the_write(self):
+        self.local(S, access="private")
+        code, out = self.tty("y", "access", S, "listed",
+                             before=lambda: au.keep_capabilities(["access", "reach", "record"]))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("[y/N]", out, "the prompt was asked before the welcome")
+        self.assertIn("use MAWS", out)
+        self.assertEqual(self.policy()[0], "private", "nothing written")
 
     def test_a_machine_not_cut_over_to_an_endpoint_keeps_the_terminal(self):
         """No endpoint, no welcome and no app path (a machine enrolled at no

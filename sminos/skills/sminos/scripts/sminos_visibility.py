@@ -134,9 +134,10 @@ def set_visibility(sid, *, access=None, share=None, operator):
     grade or None to remove it)), on its record here (sminos_records.
     set_policy), and the transition it makes recorded for the uplink to
     write (see the module); the daemon nudged. `operator`: the caller may
-    widen (the CLI's operator who confirmed at the terminal; M5's executor
-    with the act's proof); otherwise a widening raises Widening, decided
-    under the records lock against the record as it is then. Refused for a
+    widen (M5's executor with the act's proof, True; the CLI's operator who
+    confirmed at the terminal, terminal_may_widen, a callable asked at the
+    write); otherwise a widening raises Widening, decided under the records
+    lock against the record as it is then. Refused for a
     session with no readable record here, or a change this machine's
     endpoint cannot carry. {record, changed, transition (None for no
     change)}."""
@@ -156,7 +157,7 @@ def set_visibility(sid, *, access=None, share=None, operator):
             return after
         if not capable and not (after[0] == "listed" and after[1] == before[1]):
             raise Refused(NO_CAPABILITY)
-        if widens(before, after) and not operator:
+        if widens(before, after) and not (operator() if callable(operator) else operator):
             raise Widening(before, after)
         return after
 
@@ -529,6 +530,15 @@ def report(name, sid, out):
     print("%s: %s; %s" % (name, policy, state))
 
 
+def terminal_may_widen():
+    """The confirmed terminal's authority, decided again at the write under
+    the records lock: a welcome advertising `record` kept while the prompt
+    waited moves the widening to the app."""
+    if au.widening_through_app():
+        raise Refused(THROUGH_APP, "widening")
+    return True
+
+
 def _run(name, sid, change):
     try:
         out = set_visibility(sid, operator=False, **change)
@@ -540,7 +550,7 @@ def _run(name, sid, change):
         if not confirmed(name, w):
             S.die("%s: not confirmed; nothing changed" % name, 1)
         try:
-            out = set_visibility(sid, operator=True, **change)
+            out = set_visibility(sid, operator=terminal_may_widen, **change)
         except Refused as e:
             S.die(str(e), 1)
     except Refused as e:
