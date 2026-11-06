@@ -171,7 +171,10 @@ def keep_capabilities(capabilities):
 def audience_entry(frame):
     """An `audience` frame as kept, or None when it is no such frame: its
     owners (member ids), its members (an audience, or None: listed), its
-    policyRev; its digest, when sent, must be its members'."""
+    policyRev; its digest, when sent, must be its members'. A local
+    session's frame may name `withdrawn`, the members its change at that
+    policyRev withdrew (as the endpoint checks an `unlisted` notice), kept
+    with it when it names any (O18 M4)."""
     sid, owners, members, rev = frame.get("session"), frame.get("owners"), frame.get("members"), frame.get("policyRev")
     if not (sminos.UUID_RE.match(str(sid or "")) and isinstance(owners, list)
             and all(isinstance(o, str) and o for o in owners) and type(rev) is int and rev >= 0):
@@ -184,7 +187,14 @@ def audience_entry(frame):
             return None
     elif frame.get("digest") is not None:
         return None
-    return sid, {"owners": sorted(set(owners)), "members": members, "policyRev": rev}
+    entry = {"owners": sorted(set(owners)), "members": members, "policyRev": rev}
+    withdrawn = frame.get("withdrawn")
+    if withdrawn is not None:
+        if not isinstance(withdrawn, list) or not all(isinstance(m, str) and m for m in withdrawn):
+            return None
+        if withdrawn:
+            entry["withdrawn"] = sorted(set(withdrawn))
+    return sid, entry
 
 
 def keep_audience(frame):

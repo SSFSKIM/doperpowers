@@ -145,14 +145,17 @@ def upload_form(e):
     return {**e, "created": created}
 
 
-def audience_frame(session, owners, members=None, policy_rev=0):
+def audience_frame(session, owners, members=None, policy_rev=0, withdrawn=None):
     """An `audience` frame's body as the endpoint sends it (O18 Interfaces
-    §B): members None for a listed session, its digest beside them."""
+    §B): members None for a listed session, its digest beside them; for a
+    local session whose change at that policyRev withdrew members, those
+    members as `withdrawn` (O18 M4's interface change: absent when it
+    withdrew none)."""
     import hashlib
     digest = None if members is None else hashlib.sha256(
         json.dumps(sorted(set(members)), separators=(",", ":")).encode()).hexdigest()[:16]
     return {"session": session, "owners": list(owners), "members": None if members is None else sorted(set(members)),
-            "digest": digest, "policyRev": policy_rev}
+            "digest": digest, "policyRev": policy_rev, **({"withdrawn": sorted(set(withdrawn))} if withdrawn else {})}
 
 
 def b64url(data):
