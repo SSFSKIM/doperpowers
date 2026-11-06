@@ -1845,7 +1845,9 @@ class Link:
         kept, so nothing goes under the new stream ahead of it, its snapshot
         after."""
         try:
-            setters.notice_before(frame, self.visibility_project)
+            written = setters.notice_before(frame, self.visibility_project)
+            if written is not None and written.id in self.logs:
+                self.logs[written.id].undraw()   # drawn afresh, the notice's writer first (complete_transitions)
         except (Exception, SystemExit) as e:  # noqa: BLE001 — the tick's completion tries again
             log("the unlisted notice of session %r could not be written (%r): tried again"
                 % (str(frame.get("session"))[:40], e))
@@ -1875,15 +1877,34 @@ class Link:
         """The pending policy changes whose audience the endpoint gave
         written (sminos_visibility.complete), what they wrote uploaded on
         the next pass; a failure said once while it holds, and tried again
-        at the next tick."""
+        at the next tick.
+
+        Each completed session's project has its upload drawn afresh
+        (HubLog.undraw): a draw suspended between frames was sorted before
+        the notice's writer existed and reads a writer's file only when it
+        reaches it, so it could carry the snapshot, under a stream that
+        already had events, ahead of the notice. A failure drops every
+        project's draw: what it wrote is not known."""
+        done = []
         try:
-            if setters.complete(self.visibility_project, sessions):
-                self.next_upload = 0.0
+            try:
+                done = setters.complete(self.visibility_project, sessions)
+            except setters.TransitionFailed as e:
+                done = e.done
+                raise
             self.transitions_failing = ""
         except (Exception, SystemExit) as e:  # noqa: BLE001
+            for hl in self.logs.values():
+                hl.undraw()
             if repr(e) != self.transitions_failing:
                 self.transitions_failing = repr(e)
                 log("a policy change's notice and snapshot could not be written (%r): tried again" % e)
+        for sid in done:
+            project = self.visibility_project(sid)
+            if project is not None and project.id in self.logs:
+                self.logs[project.id].undraw()
+        if done:
+            self.next_upload = 0.0
 
     def on_snapshots(self, frame, _stream):
         """RL10's `snapshots? {id, project, after?}` (O18 D7): the endpoint

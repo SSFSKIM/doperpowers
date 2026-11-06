@@ -278,17 +278,19 @@ def notice_before(frame, project_of):
     """An `audience` frame from the endpoint, before it is kept: the notice
     of the session's pending transition at its policyRev written (or none
     decided), so it precedes every event of the session's new stream.
-    `project_of(sid)` is the project the session's member frame named."""
+    `project_of(sid)` is the project the session's member frame named. The
+    project written in, or None."""
     got = au.audience_entry(frame) if isinstance(frame, dict) else None
     if got is None:
-        return
+        return None
     sid, entry = got
     t = transitions().get(sid)
     if t is None or t.get("done") or "notice" in t or t["policyRev"] != entry["policyRev"]:
-        return
+        return None
     project = project_of(sid)
     if project is not None:
         _notice(sid, t, entry, project)
+    return project
 
 
 def complete(project_of, sessions=None):
@@ -296,12 +298,14 @@ def complete(project_of, sessions=None):
     audience the endpoint gave at its policyRev — kept, as on_audience
     keeps it — or, with an endpoint that carries no visibility, one going
     listed: its notice written if not yet (a restart between), then its
-    snapshot. The sessions completed."""
+    snapshot. The sessions completed. A snapshot that could not be written
+    leaves its transition pending, its notice kept as written, for the next
+    try; the others are completed first, then TransitionFailed names it."""
     pending = {sid: t for sid, t in transitions().items()
                if not t.get("done") and (sessions is None or sid in sessions)}
     if not pending:
         return []
-    capable, out = au.capable(), []
+    capable, out, failed = au.capable(), [], []
     for sid, t in sorted(pending.items()):
         try:
             entry = au.entry_of(sid)
@@ -316,16 +320,33 @@ def complete(project_of, sessions=None):
             continue
         if "notice" not in t:
             _notice(sid, t, entry, project)
-        written = snapshot(sid, project)
+        try:
+            written = snapshot(sid, project)
+        except S.LogWriteFailed as e:
+            failed.append(str(e))
+            continue
         _amend(sid, t["policyRev"], snapshot=written, done=S.now(ms=True))
         out.append(sid)
+    if failed:
+        raise TransitionFailed(out, failed)
     return out
+
+
+class TransitionFailed(Exception):
+    """Some snapshot could not be written: `done`, the sessions completed
+    all the same; `failed`, what failed."""
+
+    def __init__(self, done, failed):
+        super().__init__("; ".join(failed))
+        self.done = done
 
 
 def snapshot(sid, project):
     """The session's snapshot written again under the writer its policy
     gives now: `joined`, as its last joined had it, and its `state`. The
-    writers written under; nothing for a session not a joined member here."""
+    writers written under; nothing for a session not a joined member here,
+    or whose latest membership is no `joined`. LogWriteFailed (the
+    lifecycle's) when an event of it cannot be written."""
     view = S.view_of(project, titles=False)
     m = next((m for m in view.members if m.session == sid and m.local), None)
     if m is None:
@@ -334,10 +355,9 @@ def snapshot(sid, project):
     fields = S.joined_fields(m.alias, m.name_source or str(j.get("name_source") or "derived"),
                              *(str(j.get(k) or "") for k in ("cwd", "worktree", "role", "seat")), "",
                              str(j.get("session_kind") or m.kind or ""), session=sid)
-    got = S.lifecycle(project, sid, "joined", guard=lambda evs: S.latest_membership(evs) == "joined",
-                      required=False, **fields)
+    got = S.lifecycle(project, sid, "joined", guard=lambda evs: S.latest_membership(evs) == "joined", **fields)
     if got and m.state:
-        got += S.lifecycle(project, sid, "state", required=False, state=m.state, machine=S.host_name())
+        got += S.lifecycle(project, sid, "state", state=m.state, machine=S.host_name())
     return sorted({e["writer"] for e in got})
 
 
