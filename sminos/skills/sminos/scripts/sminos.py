@@ -3152,12 +3152,37 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
                     # A record lost (deleted, a restore without it) of a session that was private: its own stream
                     # says so, its shares unknown — the narrowest, for its owner to widen (O18 D10).
                     prov = {**prov, "access": "private", "shares": []}
+                floor = policy_rev_floor(sid) if rec is None and prov.get("access") == "private" \
+                    and "policyRev" not in prov else 0
+                if floor:
+                    prov = {**prov, "policyRev": floor}
                 rec = records.establish(sid, prov, _RECORD_DEADLINE)[0]
         except (OSError, LockBusy, ValueError) as e:
             warn("the record of session %s could not be written: %s" % (sid[:8], e))
     if rec is not None and records.is_final(rec) and project is not None:
         publish_owners(project, sid, events)
     return rec
+
+
+def policy_rev_floor(sid):
+    """The policyRev a session's recreated record starts at: above every
+    revision of it this machine still holds — its endpoint's audience entry
+    (daemon/audiences.json) and its kept transition (visibility.json) — or 0
+    when it holds none. The endpoint's word at a revision the lost record
+    had would never match a record restarted below it (audience_of needs
+    its own revision, and an entry is replaced only by a newer one), so the
+    session would stay unwritable; above them, the endpoint restates its
+    audience at the new revision once its member frame carries it."""
+    revs = []
+    try:
+        entry = audience_module().entry_of(sid)
+    except audience_module().StreamUnknown:
+        entry = None
+    held = sibling_module("sminos_visibility").transitions().get(sid)
+    for rev in ((entry or {}).get("policyRev"), (held or {}).get("policyRev")):
+        if type(rev) is int and rev >= 0:
+            revs.append(rev + 1)
+    return max(revs, default=0)
 
 
 def has_own_stream(sid):

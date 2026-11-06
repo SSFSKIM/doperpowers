@@ -25,9 +25,11 @@ import select
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -225,6 +227,31 @@ class Setters(Base):
         self.assertNotEqual(got.returncode, 0)
         self.assertIn("id", got.stderr, "asked for the member's id")
 
+    def test_two_setters_racing_leave_the_pending_transition_at_the_records_revision(self):
+        """The second setter runs between the first's policy write and its
+        pending entry: one lock serializes both, so the entry kept is the
+        latest revision's, its previous audience the one before the
+        earliest change the endpoint has not answered."""
+        rec = self.local(S, access="private", shares=(B, C))
+        real, box = records.set_policy, {}
+
+        def first_paused(sid, mutate, deadline=None):
+            out = real(sid, mutate, deadline)
+            if "second" not in box:
+                box["second"] = threading.Thread(target=lambda: vis.set_visibility(S, share=(C, None), operator=False))
+                box["second"].start()
+                box["second"].join(0.5)
+            return out
+        with mock.patch.object(records, "set_policy", side_effect=first_paused):
+            vis.set_visibility(S, share=(B, None), operator=False)
+        box["second"].join(10)
+        rev = records.read(S)["policyRev"]
+        self.assertEqual(rev, rec["policyRev"] + 2)
+        t = vis.transitions()[S]
+        self.assertEqual((t["policyRev"], t["previous"]), (rev, [A, B, C]))
+        self.assertEqual(vis.withdrawn_of(t, {"members": [A], "policyRev": rev}), ([B, C], ""),
+                         "both changes' withdrawn members")
+
 
 # ------------------------------------------------------------- the transition
 
@@ -378,6 +405,63 @@ class Transitions(Base):
         self.assertFalse(vis.transitions()[S].get("done"))
         self.assertEqual(self.kinds(stream(S, [B])), [])
 
+    def test_a_draw_suspended_mid_batch_sends_the_notice_in_or_before_its_snapshots_frame(self):
+        """An upload drawn before the transition and suspended between
+        frames is drawn again after it, so the notice's writer goes first and
+        the snapshot, under a stream that already had events, never ahead."""
+        link, rec = self.start(shares=(C,))
+        vis.set_visibility(S, share=(B, "list"), operator=True)
+        self.published(link, rec["policyRev"] + 1)
+        self.answer(link, [A, B, C], rec["policyRev"] + 1)
+        early = "testhost/00000000-0000-4000-8000-000000000000"   # sorts before every stream of S
+        for n in (1, 2):
+            sminos.log_append(self.p, early, "status", session=early.split("/")[1], status="n%d" % n)
+        hl = link.logs[self.p.id] = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
+        hl.have = {}
+        frames = []
+
+        def draw():
+            got = hl.next_upload()
+            if got is not None:
+                frames.append([(e["writer"], e["seq"], e["kind"]) for e in got[0]["events"]])
+                hl.took(got[1])
+            return got
+        with mock.patch.object(hublog, "BATCH_BYTES", 1):   # one event a frame
+            self.assertEqual(draw()[0]["events"][0]["writer"], early)
+            rev = rec["policyRev"] + 2
+            vis.set_visibility(S, share=(B, None), operator=False)
+            self.published(link, rev)
+            self.answer(link, [A, C], rev)
+            while draw() is not None or draw() is not None:
+                pass
+        snap = max(e["seq"] for e in self.events(stream(S, [A, C])) if e["kind"] == "joined")
+        at = {key: i for i, f in enumerate(frames) for key in f}
+        self.assertLessEqual(at[(stream(S, [B]), 1, "unlisted")], at[(stream(S, [A, C]), snap, "joined")],
+                             "the notice in or before its snapshot's frame: %r" % frames)
+
+    def test_a_snapshot_that_fails_to_write_leaves_the_transition_pending_for_the_next_tick(self):
+        link, rec = self.start(shares=(B, C))
+        vis.set_visibility(S, share=(B, None), operator=False)
+        rev = rec["policyRev"] + 1
+        self.published(link, rev)
+        real, failed = sminos._append, []
+
+        def once(project, writer, events, **kw):
+            if not failed and events and events[0].get("kind") == "joined":
+                failed.append(writer)
+                raise OSError("No space left on device")
+            return real(project, writer, events, **kw)
+        with mock.patch.object(sminos, "_append", side_effect=once):
+            self.answer(link, [A, C], rev)
+        self.assertEqual(failed, [stream(S, [A, C])])
+        self.assertEqual(self.kinds(stream(S, [B])), ["unlisted"], "the notice written")
+        self.assertEqual(self.kinds(stream(S, [A, C])), [])
+        self.assertFalse(vis.transitions()[S].get("done"), "pending while its snapshot is not written")
+        link.complete_transitions()
+        self.assertEqual(self.kinds(stream(S, [A, C])), ["joined", "state"], "written at the next try")
+        self.assertEqual(self.kinds(stream(S, [B])), ["unlisted"], "the notice once")
+        self.assertTrue(vis.transitions()[S].get("done"))
+
     def test_a_notice_is_nothing_to_chat_delivery_or_a_projection(self):
         link, rec = self.start(shares=(B,))
         vis.set_visibility(S, share=(B, None), operator=False)
@@ -391,6 +475,49 @@ class Transitions(Base):
         got = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "chat", "-n", "50", "--json"],
                              cwd=self.p.root, env=self.env(), capture_output=True, text=True, timeout=60)
         self.assertNotIn("unlisted", got.stdout)
+
+
+# ------------------------------------------------------------- a private record lost
+
+
+class Recovered(Base):
+    """A private session whose record file is lost is recreated private
+    (ensure_record); its policyRev comes back above every revision this
+    machine still holds of it, so the endpoint's audience at the new one
+    can be kept over the last, and the session writes again."""
+
+    def setUp(self):
+        super().setUp()
+        self.session(self.p, S, name="kept")
+
+    def lose(self):
+        os.unlink(records.record_path(S))
+        sminos.forget_caches()
+        return sminos.ensure_record(self.p, S)
+
+    def test_a_lost_revision_1_record_comes_back_at_2_and_writes_once_its_audience_arrives(self):
+        self.assertEqual(self.local(S, access="private", shares=(B,))["policyRev"], 1)
+        sminos.view_of(self.p)
+        self.assertEqual(self.kinds(stream(S, [A, B])), ["joined"])
+        rec = self.lose()
+        self.assertEqual((rec["access"], rec["shares"]), ("private", []))
+        self.assertGreaterEqual(rec["policyRev"], 2)
+        with self.assertRaises(au.StreamUnknown):
+            sminos.own_stream(self.p, S)
+        self.audience(S, [A], [A], rec["policyRev"])
+        self.assertEqual(au.entry_of(S)["policyRev"], rec["policyRev"], "kept over the revision-1 entry")
+        got = sminos.lifecycle(self.p, S, "state", state="idle", machine="testhost")
+        self.assertEqual([e["writer"] for e in got], [stream(S, [A])])
+
+    def test_above_a_pending_change_the_endpoint_never_answered(self):
+        self.local(S, access="private", shares=(B, C))
+        sminos.view_of(self.p)
+        vis.set_visibility(S, share=(C, None), operator=False)   # policyRev 2, unanswered
+        self.assertEqual(vis.transitions()[S]["policyRev"], 2)
+        self.assertGreaterEqual(self.lose()["policyRev"], 3)
+
+    def kinds(self, writer):
+        return [e["kind"] for e in self.events(writer)]
 
 
 # ------------------------------------------------------------- unlisting, through the hub stand-in's filter
