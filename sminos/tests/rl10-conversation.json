@@ -74,10 +74,10 @@
       "name": "the token: a hello without it is closed with nothing written; one with it is welcomed, then the revocation set, the directory and the legacy key's ask",
       "steps": [
         { "open": "stranger" },
-        { "up": { "t": "hello", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["audience"], "token": "{{wrongToken}}", "sminos": { "version": "1.25.0" }, "policy": { "read_only": false, "ceiling": "settings" } }, "conn": "stranger", "vary": ["sminos.version"] },
+        { "up": { "t": "hello", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["audience", "record"], "token": "{{wrongToken}}", "sminos": { "version": "1.25.0" }, "policy": { "read_only": false, "ceiling": "settings" } }, "conn": "stranger", "vary": ["sminos.version"] },
         { "closed": "stranger" },
         { "open": "main" },
-        { "up": { "t": "hello", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["audience"], "token": "{{token}}", "sminos": { "version": "1.25.0" }, "policy": { "read_only": false, "ceiling": "settings" } }, "vary": ["sminos.version"], "note": "the policy is taken only while the endpoint holds none" },
+        { "up": { "t": "hello", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["audience", "record"], "token": "{{token}}", "sminos": { "version": "1.25.0" }, "policy": { "read_only": false, "ceiling": "settings" } }, "vary": ["sminos.version"], "note": "the policy is taken only while the endpoint holds none" },
         {
           "down": { "t": "welcome", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["access", "reach"], "build": "{{build}}", "identity": { "org": "{{org}}", "hub": "{{hub}}", "name": "{{name}}", "former": [], "ref": "{{ref}}", "enrolled": "{{enrolled}}" }, "policy": { "read_only": false, "ceiling": "settings" }, "stateVersion": 3 },
           "vary": ["stateVersion"],
@@ -294,7 +294,7 @@
         { "scene": "restart" },
         { "closed": "main" },
         { "open": "main" },
-        { "up": { "t": "hello", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["audience"], "token": "{{token}}", "sminos": { "version": "1.25.0" }, "policy": { "read_only": false, "ceiling": "settings" } }, "vary": ["sminos.version"] },
+        { "up": { "t": "hello", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["audience", "record"], "token": "{{token}}", "sminos": { "version": "1.25.0" }, "policy": { "read_only": false, "ceiling": "settings" } }, "vary": ["sminos.version"] },
         { "down": { "t": "welcome", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["access", "reach"], "build": "{{build}}", "identity": { "org": "{{org}}", "hub": "{{hub}}", "name": "{{name}}", "former": [], "ref": "{{ref}}", "enrolled": "{{enrolled}}" }, "policy": { "read_only": false, "ceiling": "settings" }, "stateVersion": 3 }, "vary": ["stateVersion"] },
         { "down": { "t": "revoked", "version": 3, "devices": [], "members": [], "keys": [] }, "vary": ["version"] },
         { "quiet": ["legacy-key?"], "ms": 300, "note": "the key is held: not asked again" },
