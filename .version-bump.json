@@ -158,6 +158,7 @@
         "README.md",
         "*/README.md",
         "tests/*",
+        "clipper/test/*",
         "evals/*"
       ],
       "audit": {

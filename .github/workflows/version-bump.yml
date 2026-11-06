@@ -20,8 +20,12 @@ jobs:
           BEFORE: ${{ github.event.before }}
         run: |
           if [[ $BEFORE =~ ^0+$ ]]; then echo "a new branch: no earlier tip to compare"; exit 0; fi
+          # Retry a transient fetch failure, but never pass without a comparison.
           if ! git fetch --no-tags --depth=1 origin "$BEFORE"; then
-            echo "::warning::main's earlier tip $BEFORE could not be fetched (a force push?): nothing to compare"
-            exit 0
+            sleep 2
+            if ! git fetch --no-tags --depth=1 origin "$BEFORE"; then
+              echo "::error::main's earlier tip $BEFORE could not be fetched after two attempts"
+              exit 1
+            fi
           fi
           bash scripts/bump-version.sh --since "$BEFORE" HEAD
