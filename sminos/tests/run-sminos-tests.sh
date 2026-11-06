@@ -407,6 +407,9 @@ run_suites() {
   if python3 -B "$SCRIPT_DIR/test_reach.py"; then
     pass "message reach on the log plane: the hub stand-in's M1 rules, the admitted have, retries, dead writers and voids (test_reach.py)"
   else fail "message reach on the log plane: the hub stand-in's M1 rules, the admitted have, retries, dead writers and voids (test_reach.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_visibility.py"; then
+    pass "a session's reach set by its owner: access and share, widening at the operator's terminal alone, the unlisted notice before the snapshot, unlisting through the hub's filter (test_visibility.py)"
+  else fail "a session's reach set by its owner: access and share, widening at the operator's terminal alone, the unlisted notice before the snapshot, unlisting through the hub's filter (test_visibility.py)"; fi
   if python3 "$SCRIPT_DIR/test_heads.py"; then pass "an own writer of no session waits for its upstream's head on a new enrolment, DX2 and RL10 (test_heads.py)"; else
     fail "an own writer of no session waits for its upstream's head on a new enrolment, DX2 and RL10 (test_heads.py)"; fi
   # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink

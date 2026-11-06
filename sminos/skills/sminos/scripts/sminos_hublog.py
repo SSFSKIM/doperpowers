@@ -392,17 +392,18 @@ def read_events(path):
 
 
 def writer_and_last(path):
-    """A writer file's writer (its first event's) and last seq (its last
-    well-formed line's, as an appender reads it); ("", 0) when it holds none."""
+    """A writer file's writer (its first event's), last seq (its last
+    well-formed line's, as an appender reads it) and first event's kind;
+    ("", 0, "") when it holds none."""
     try:
         with open(path, "rb") as f:
             for line in f:
                 e = sminos.parse_event(line.decode("utf-8", "replace")) if line.strip() else None
                 if e:
-                    return e["writer"], sminos._last_seq(f)
+                    return e["writer"], sminos._last_seq(f), e["kind"]
     except OSError:
         pass
-    return "", 0
+    return "", 0, ""
 
 
 PLUGIN_MANIFEST = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".claude-plugin",
@@ -438,7 +439,7 @@ class HubLog:
         self.coded = coded   # DX2's codes; off on RL10, where the key is None
         self.key = cred["key"]
         self.machine = cred["machine"]
-        self.files = {}      # path → (size, mtime_ns, writer, last): the vector's reads, kept while a file holds
+        self.files = {}      # path → (size, mtime_ns, writer, last, first kind): the vector's reads, kept while a file holds
         self.listing = None  # (log dir mtime_ns, prefixes, paths): the own writers' files as last listed (own_paths)
         self.ran = {}        # session → when (monotonic) a hot look last found it running here
         self.nonces = None   # nonce → (writer, seq) of every coded event the log holds, read on first import
@@ -601,7 +602,7 @@ class HubLog:
         stopped), or one that changed within HOT_FOR. Any other append, to a
         writer quiet longer than that, is seen by the next scan's whole look,
         or at once when its sender nudged the daemon."""
-        _, mtime_ns, writer, _ = held
+        mtime_ns, writer = held[1], held[2]
         session = sminos.writer_session(writer) if writer else ""
         if not session:
             return True
@@ -1057,7 +1058,12 @@ class HubLog:
         def frame():
             return {"t": "events", "project": self.project.id, "events": batch}, reach
 
-        for writer, (last, path) in sorted(self.writers(own=True, live=live).items()):
+        # A writer whose first event is an `unlisted` notice (a notice's stream holds nothing else, P5 O18 D6)
+        # goes first: the hub judges a notice against its registry as it stood before the batch, so the snapshot
+        # of the change it announces must never go up in an earlier one (sminos_visibility).
+        own = self.writers(own=True, live=live)
+        notices = {held[2] for held in self.files.values() if held[4] == "unlisted"}
+        for writer, (last, path) in sorted(own.items(), key=lambda kv: (kv[0] not in notices, kv[0])):
             if not self.own(writer):
                 continue
             if writer in self.paused:

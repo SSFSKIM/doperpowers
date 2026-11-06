@@ -138,6 +138,7 @@ import sminos_policy as policy  # noqa: E402
 import sminos_requests as requests  # noqa: E402
 import sminos_rl10 as rl10  # noqa: E402
 import sminos_rpc as rpc  # noqa: E402
+import sminos_visibility as setters  # noqa: E402
 
 STREAM_PATH = "/machine/stream"
 FRAMES_PATH = "/machine/frames"
@@ -1509,6 +1510,7 @@ class Link:
         self.next_member_read = 0.0   # RL10: when they are read again (monotonic) when none came or went
         self.next_member_whole = 0.0  # RL10: when every one is read again, whatever its inputs (Plane.stale)
         self.member_known = {}    # RL10: project id → project, every project known here as last listed (members)
+        self.transitions_failing = ""   # complete_transitions' failure as last said
         self.unlisted = set()     # RL10: (project id, session) a writer named and its rows did not, since that listing
         self.asks = {}            # RL10: a `words?` id → what it asked (ask_words), until its verdict or its deadline
         self.asked = {}           # RL10: (project id, session, writer) → the id of the ask it has out
@@ -1769,7 +1771,16 @@ class Link:
         """The endpoint's word on one session's audience (P5 O18 D7): its
         owners, its members (none: listed) and policyRev, kept in
         daemon/audiences.json for the CLI's writers (sminos_audience). A
-        frame that is no such frame is said and passed by."""
+        frame that is no such frame is said and passed by. A local session's
+        policy change pending at its policyRev (sminos_visibility) is
+        completed around it: its `unlisted` notice before the audience is
+        kept, so nothing goes under the new stream ahead of it, its snapshot
+        after."""
+        try:
+            setters.notice_before(frame, self.visibility_project)
+        except (Exception, SystemExit) as e:  # noqa: BLE001 — the tick's completion tries again
+            log("the unlisted notice of session %r could not be written (%r): tried again"
+                % (str(frame.get("session"))[:40], e))
         try:
             taken = audience.keep_audience(frame)
         except OSError as e:
@@ -1778,6 +1789,33 @@ class Link:
         if not taken:
             log("an audience frame from the endpoint that is none (session %r): passed by"
                 % (str(frame.get("session"))[:40],))
+            return
+        self.complete_transitions({frame.get("session")})
+
+    def visibility_project(self, sid):
+        """The project a local session's policy change is told in: the one
+        its member frame named, else the first whose rows hold it; None for
+        a session that is no member here now."""
+        pid = (self.members_sent.get(sid) or {}).get("project")
+        if pid is None:
+            pid = next((p for p, rows in sorted(self.plane.member_rows.items()) if sid in rows), None)
+        if pid is None:
+            return None
+        return self.member_known.get(pid) or (self.logs[pid].project if pid in self.logs else None)
+
+    def complete_transitions(self, sessions=None):
+        """The pending policy changes whose audience the endpoint gave
+        written (sminos_visibility.complete), what they wrote uploaded on
+        the next pass; a failure said once while it holds, and tried again
+        at the next tick."""
+        try:
+            if setters.complete(self.visibility_project, sessions):
+                self.next_upload = 0.0
+            self.transitions_failing = ""
+        except (Exception, SystemExit) as e:  # noqa: BLE001
+            if repr(e) != self.transitions_failing:
+                self.transitions_failing = repr(e)
+                log("a policy change's notice and snapshot could not be written (%r): tried again" % e)
 
     def on_snapshots(self, frame, _stream):
         """RL10's `snapshots? {id, project, after?}` (O18 D7): the endpoint
@@ -2709,6 +2747,7 @@ class Link:
                 held = bool(self.members_unsent)
                 if held and scan:
                     self.next_scan = 0.0
+            self.complete_transitions()   # a policy change whose audience was kept before a restart
             if scan and not held:
                 if not self.coded:
                     self.sync_policy()

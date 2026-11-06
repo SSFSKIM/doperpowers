@@ -101,6 +101,12 @@ member too, seat-less, from the first call that reads its project.
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
     sminos status   <member> <one line>                   # the member's own "now" line
     sminos retire   <member> [--purge]                    # stop; keep (or purge) a seat's record
+    sminos access   <member> private|listed|org-view|org-converse   # who may reach a session of this
+                   machine: private, its owners' agents and its shares'; listed or org-wide, every member's
+    sminos share    <member> <person> list|view|converse|approve|none   # a member's grade on it (<person> an
+                   org member id, or an email this machine holds one for); list ("Can message") lets their
+                   agents message it, view and up read it too. Narrowing is any shell's; widening (access up,
+                   a share added or raised) only the owner's, in a terminal, confirmed there, or MAWS
     sminos remove   <seat>                                # stop and delete the record
     sminos list     [project] [--project P,..] [--machine M,..] [--state W,..] [--org] [--here] [--stopped] [--all] [--json]
                    [words..]  # the caller's project (a session's own, else the working directory's;
@@ -608,8 +614,10 @@ HOLDER_AWAITING = "awaiting-admission"
 # A session's membership is its latest of these, in its own file, by seq.
 MEMBERSHIP = ("joined", "retired")
 # The facts about a session the projection reads; whoever writes one for a
-# session on its machine appends it to that session's file.
-LIFECYCLE = MEMBERSHIP + ("renamed", "state", "titled", "in-charge", "status")
+# session on its machine appends it to that session's file. `unlisted` is a
+# session's transition notice (P5 O18 D6): the members it is addressed to no
+# longer see the session.
+LIFECYCLE = MEMBERSHIP + ("renamed", "state", "titled", "in-charge", "status", "unlisted")
 # The harness session kinds that are members on sight; any other is not.
 JOINABLE_KINDS = ("interactive", "bg")
 # A headless or SDK run (`claude -p`, the agent SDKs) registers as
@@ -3872,13 +3880,17 @@ def _projection(events):
     `continues`, the session that names it so (lineage). `aliases`: every
     alias its own joined and renamed events carried, each with the latest ts
     among them (the former aliases a name still reaches it by, §4 of the
-    charge names design)."""
+    charge names design). `unlisted`: the highest policyRev of a transition
+    notice of its own writers the log holds (P5 O18 D6; 0 for none), and
+    `policyRev` the highest its own `joined` and `state` snapshots carry (0
+    for none, or none carrying one): an arriving event carries what its
+    endpoint signed, this machine's own carry neither (unlisted_here)."""
     info = {}
 
     def row(sid):
         return info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
                                      "titled": None, "in_charge": [], "status": [], "to": "", "continues": "",
-                                     "aliases": {}, "owned": None})
+                                     "aliases": {}, "owned": None, "unlisted": 0, "policyRev": 0})
 
     for e in events:
         sid, kind = e.get("session"), e["kind"]
@@ -3886,9 +3898,16 @@ def _projection(events):
             continue
         own = writer_session(e["writer"]) == sid
         r = row(sid)
+        rev = e.get("policyRev") if type(e.get("policyRev")) is int else 0
+        if kind == "unlisted":
+            if own and rev >= 1:
+                r["unlisted"] = max(r["unlisted"], rev)
+            continue
         if kind in MEMBERSHIP or kind in ("renamed", "state", "titled"):
             if not own:
                 continue
+            if kind in ("joined", "state"):
+                r["policyRev"] = max(r["policyRev"], rev)
             if kind in ("joined", "renamed") and e.get("alias"):
                 held, ts = str(e["alias"]), str(e.get("ts") or "")
                 r["aliases"][held] = max(r["aliases"].get(held, ""), ts)
@@ -3915,6 +3934,16 @@ def _projection(events):
     for r in info.values():
         r["status"] = latest_across_writers(r["status"])
     return info
+
+
+def unlisted_here(sid, r):
+    """Whether the log shows the session unlisted to this machine's reader
+    (P5 O18 D6): it holds a notice of the session's own writers — the hub
+    serves one only to the members its change withdrew — at a policyRev no
+    snapshot of the session it holds reaches. Then the session is none of
+    the projection's members, so no listing, search, tag or broadcast
+    reaches it. Never a session of this machine's: its record is here."""
+    return r["unlisted"] > r["policyRev"] and not audience_module().is_local(sid)
 
 
 def lineage(sid, info):
@@ -4138,7 +4167,7 @@ def view_of(project, all_seats=None, titles=True):
     internal = internal_pids()
     forks = {r.get("sessionId") for r in peer_records() if str(r.get("pid")) in internal}
     joined = [(sid, r) for sid, r in info.items()
-              if r["latest"] and r["latest"]["kind"] == "joined" and sid not in forks]
+              if r["latest"] and r["latest"]["kind"] == "joined" and sid not in forks and not unlisted_here(sid, r)]
     joined.sort(key=lambda x: (x[1]["joined"]["ts"], x[0]), reverse=True)
     out = [_member(sid, r, by_session.get(sid), local.get(sid, {}).get("peer"), sid in local, titles, info,
                    shadowing(project, sid, info, all_seats))
@@ -4155,7 +4184,7 @@ def view_of(project, all_seats=None, titles=True):
                 str(r["latest"].get("project") or ""))
                for sid, r in info.items()
                if r["latest"] and r["latest"]["kind"] == "retired" and r["joined"] and sid not in by_session
-               and r["latest"].get("reason") != "continued"]
+               and r["latest"].get("reason") != "continued" and not unlisted_here(sid, r)]
     view = View(out, rows, retired, events, info, len(appended))
     if titles:
         _VIEWS[project.id] = view
@@ -11998,6 +12027,14 @@ def cmd_answer(a):
     control_module().cmd_answer(a)
 
 
+def cmd_access(a):
+    sibling_module("sminos_visibility").cmd_access(a)
+
+
+def cmd_share(a):
+    sibling_module("sminos_visibility").cmd_share(a)
+
+
 def tick(project):
     """One daemon tick of one project (§8): integrate, reconcile, publish,
     deliver, push. {"integrated", "reconciled", "published", "delivered",
@@ -12325,6 +12362,17 @@ def build_parser():
     rt.add_argument("seat")
     rt.add_argument("--purge", action="store_true")
     rt.set_defaults(fn=cmd_retire)
+
+    ac = sub.add_parser("access", add_help=False)
+    ac.add_argument("member")
+    ac.add_argument("level", choices=("private", "listed", "org-view", "org-converse"))
+    ac.set_defaults(fn=cmd_access)
+
+    sh = sub.add_parser("share", add_help=False)
+    sh.add_argument("member")
+    sh.add_argument("person")
+    sh.add_argument("grade", choices=("list", "view", "converse", "approve", "none"))
+    sh.set_defaults(fn=cmd_share)
 
     rm = sub.add_parser("remove", add_help=False)
     rm.add_argument("seat")
