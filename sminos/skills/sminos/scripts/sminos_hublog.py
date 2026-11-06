@@ -504,7 +504,7 @@ class HubLog:
             if isinstance(held, dict) and isinstance(held.get("at"), list) and type(held.get("last")) is int:
                 at = {s for s in held["at"] if type(s) is int and s >= 1}
                 if at:
-                    out[w] = {"at": at, "last": held["last"]}
+                    out[w] = {"at": at, "last": held["last"], **({"final": True} if held.get("final") else {})}
         return out
 
     def voided(self):
@@ -972,13 +972,17 @@ class HubLog:
             self.bound(writer, max(at - 1, 0), conflict=reason == "conflict")
             if reason == "audience" and at:
                 self.stop_dead(writer, at)
+            elif reason == "conflict" and at and at in self.voided().get(writer, ()):
+                # The endpoint signed another body at a position the hub then refused `audience`: its ledger
+                # refuses the void there for good (MAWS O18 M2), so the writer can never go on past it.
+                self.stop_dead(writer, at, final=True)
         elif isinstance(writer, str) and self.own(writer) and reason == "state-unavailable" and self.coded and at:
             held = self.paused.get(writer)
             due = held[0] if held else time.monotonic() + ask_wait()
             self.paused[writer] = (due, min(at, held[1]) if held else at)
             self.bound(writer, at - 1)
 
-    def stop_dead(self, writer, seq):
+    def stop_dead(self, writer, seq, final=False):
         """An `audience` refusal of an own writer at seq: the writer is dead
         (dead) — never uploaded again, on this stream or a later one, while
         its stream is not its session's — until an event is appended to it
@@ -992,11 +996,16 @@ class HubLog:
         d = self.state()
         dead = d.get("dead") if isinstance(d.get("dead"), dict) else {}
         held = self.dead().get(writer, {"at": set(), "last": 0})
-        dead[writer] = {"at": sorted(held["at"] | {seq}), "last": max(last, held["last"])}
+        dead[writer] = {"at": sorted(held["at"] | {seq}), "last": max(last, held["last"]),
+                        **({"final": True} if final or held.get("final") else {})}
         d["dead"] = dead
         self.save(d)
-        log("%s of %s was refused audience at %d: not uploaded again until an event is appended to it"
-            % (writer, self.project.name, seq))
+        if final:
+            log("%s of %s: the void at %d was refused conflict, where the endpoint signed another body: the writer "
+                "stops there for good" % (writer, self.project.name, seq))
+        else:
+            log("%s of %s was refused audience at %d: not uploaded again until an event is appended to it"
+                % (writer, self.project.name, seq))
 
     def revive(self, writer, held):
         """A dead writer that took an event since it was stopped: current
@@ -1059,7 +1068,7 @@ class HubLog:
                 self.sent[writer] = min(self.sent.get(writer, 0), seq - 1)
                 log("%s of %s goes up again from %d, which the hub could not check" % (writer, self.project.name, seq))
             if writer in dead:
-                if last <= dead[writer]["last"]:
+                if dead[writer].get("final") or last <= dead[writer]["last"]:
                     continue
                 voided[writer] = self.revive(writer, dead[writer])
             if writer in self.stuck or last <= self.sent.get(writer, 0):

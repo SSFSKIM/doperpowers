@@ -629,6 +629,26 @@ class Dead(Plane):
         self.assertEqual([e["kind"] for frame, _ in hl.uploads() for e in frame["events"]], ["void", "say"],
                          "a later upload of the position sends the void again")
 
+    def test_a_void_the_endpoint_refuses_conflict_stops_its_writer_for_good(self):
+        """The endpoint had signed another body at the refused position: its
+        ledger refuses the void `conflict`, which is final, never retried on
+        a reconnect or revived by a later event."""
+        writer = "testhost/" + SID
+        self.say(writer, "one")
+        hl = self.hl(coded=False)
+        hl.on_have({"have": {}})
+        hl.took({writer: 1})
+        self.refuse(hl, writer, 1)
+        self.say(writer, "two")
+        self.assertEqual([e["kind"] for frame, _ in hl.uploads() for e in frame["events"]], ["void", "say"])
+        hl.on_refused({"t": "refused", "project": self.p.id,
+                       "refusal": {"reason": "conflict", "writer": writer, "seq": 1, "message": "signed"}})
+        self.assertTrue(self.uplink()["dead"][writer].get("final"))
+        hl.reset()
+        hl.on_have({"have": {}})
+        self.say(writer, "three")
+        self.assertEqual(self.uploaded(hl), [], "neither a reconnect nor a later event takes it up again")
+
     def test_a_plain_writer_refused_audience_stays_dead_until_written_again(self):
         self.check_revival("testhost/" + SID)
 
