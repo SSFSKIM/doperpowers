@@ -23,8 +23,10 @@ is <client-id> / <client-secret>.
   writers' events once each at the next seq — a copy of a stored one passed
   over, a different payload at a stored position `refused` (`conflict`), a
   writer not the machine's `refused` (`writer-not-yours`), an event past
-  1 MiB `refused` (`too-large`), a gap answered by `resend` — and fans what it stored out to every other machine that opened
-  the project; `rejected` goes to the project's audit record; `session`
+  1 MiB `refused` (`too-large`), a gap answered by `resend`, and what
+  message reach refuses (below) — and fans what it stored out to every
+  other machine that opened the project and may read its writer;
+  `rejected` goes to the project's audit record; `session`
   messages and `hb-ack` are kept (each with when it was received: a session
   message's `received` and `at` alike, epoch seconds); `part`
   frames are joined. A machine's lease (DX2) starts at the first `hello` of
@@ -76,6 +78,37 @@ is <client-id> / <client-secret>.
   deletion is confirmed) reaches the hub and gets the Worker's 403
   `{"error": "not-enrolled"}`.
 
+- Message reach, as M1's hub applies it (P5 O18 D5, D6; an independent port
+  of its project.ts, never sminos's code):
+  - One reader check (`may_read`, mayRead) wherever events, vectors or the
+    backlog go to a machine (fan-out, `hello`'s `have` and backlog): a plain
+    writer is everyone's, a machine's own writers its own, and a stream
+    (`<writer>~<digest>`) goes only to a machine whose owners meet its
+    audience and whose connection reads streams. A DX2 stream reads none:
+    each machine's owners and `streams` are `[]` and false until
+    `/control/reader` sets them.
+  - An event with an `audience` sits under its digest's stream (and a
+    stream's event carries one), else `refused` `audience`, its writer
+    stopped; a stream's audience is kept at its first position.
+  - The org's policy registry, one row a session (its audience, `policyRev`,
+    `created`), bound to the first machine that exposed it (a snapshot
+    uploaded, or one `/control/inject` stores, as the fill reads the log),
+    moved only by its own `joined`/`state` snapshots from that machine,
+    newer by `policyRev` then `created`. Each upload batch reads it once, the
+    rows as they stood before the batch, its snapshots then recorded, and
+    judges each event in order, replaying them: an event naming a session
+    the registry does not know (addressing), an audience outside a named
+    private session's, senders (`attest.owners`, else the machine's owners)
+    outside its audience, a snapshot of a session bound to another machine,
+    or an `unlisted` notice that breaks its rule, is withheld — a tombstone
+    `{writer, seq, withheld: true}` stored at the position, the refused
+    body's hash beside it, fanned out as an event, and `refused`
+    `not-reachable` with no message; the writer goes on. A byte-identical
+    resend there is refused the same way, another body `conflict`.
+  - `have` carries, for the hello's own machine's writers only, the
+    positions withheld: `withheld {writer: [seq | [from, to], ...]}`, runs
+    compressed, absent when there are none.
+
 Any other request is admitted as Access would admit nothing: 404.
 
 The test's own hands (the stand-in plays a hub that may lie):
@@ -108,6 +141,17 @@ The test's own hands (the stand-in plays a hub that may lie):
 - `POST /control/post-delay` `{"seconds"}`: every frame POST from then on
   waits this long before it is looked at (a slow link, a fresh TLS
   connection each); 0 ends it.
+- `POST /control/policies` `{"available"?, "rows"?}`: with `available`
+  false the registry cannot be read — every event that needs it is
+  `refused` `state-unavailable`, nothing stored at its position (no
+  tombstone), its writer stopped — and true again recovers; `rows` sets
+  registry rows as they are (`{session: {machine, audience?, policyRev?,
+  created?}}`).
+- `POST /control/admission` `{"held"}`: while held, each `events` frame is
+  taken (its POST answered, nothing stored or refused) and decided only at
+  the release, in order, its replies written down its machine's stream.
+- `POST /control/reader` `{"machine", "owners"?, "streams"?}`: the machine
+  as message reach reads it.
 - `POST /control/archive` `{"project", "machine"}` designates the project's
   archive machine (DX2's `have.archive`).
 - `POST /control/register` `{"project", "name", "kind"?}` registers a
@@ -146,7 +190,8 @@ The test's own hands (the stand-in plays a hub that may lie):
 - `GET /control/state`: `{"generation" (of the stream opened last),
   "generations", "connected", "posted", "machines", "enrollments",
   "redemptions", "faults", "post_faults", "projects", "hb_acks", "sessions",
-  "leases", "lapses", "registry", "online", "orgs", "keys", "requests"}` —
+  "leases", "lapses", "registry", "online", "orgs", "keys", "requests",
+  "policies", "readers", "policies_available", "admission_held"}` —
   `keys` the provisioning keys without their secrets, `requests` every
   `/machine/` request but a frame POST, `{method, path, at}` as each
   arrived, the redemptions among them — `registry` the
@@ -154,7 +199,9 @@ The test's own hands (the stand-in plays a hub that may lie):
   many `org` frames each machine's streams were sent
   — `machines` without their secrets, `redemptions` every body
   `/machine/enroll` received, `projects` each project's name, vector,
-  events per writer, the machines that opened it, and its audit record.
+  events per writer, the machines that opened it, its audit record, its
+  withheld positions, its streams' audiences, and how many uploads wait
+  for admission.
 - `GET /control/since?sessions=N&hb_acks=M`: `{"sessions", "hb_acks"}`, each
   list from that index on (a reader that polls takes only what is new).
 
@@ -168,6 +215,7 @@ stalls), a lost or truncated redemption, or a request whose body was left
 unread.
 """
 
+import hashlib
 import json
 import os
 import queue
@@ -214,7 +262,11 @@ state = {"generations": {}, "last": None, "streams": {}, "posted": [], "faults":
          # Access: tokens it still holds whose machine the hub no longer has ({client_id, client_secret}),
          # and client id → how many more requests it answers 401 (a token not yet at its edge)
          "orphans": [], "edge": {},
-         "answers": [], "requests": []}
+         "answers": [], "requests": [],
+         # message reach (P5 O18 M1): each machine as a reader (name key → {owners, streams}); the org's
+         # policy registry (session → {machine, audience, policyRev, created}); whether it can be read, and
+         # whether admission is held back
+         "readers": {}, "policies": {}, "policies_available": True, "admission_held": False}
 server = None   # the listener, replaced by an outage's end (the lock held)
 PORT = 0
 ACCESS_PAGE = (b"<!DOCTYPE html><html><head><title>Access denied | Cloudflare Access</title></head>"
@@ -406,11 +458,215 @@ def key_redemption(key, machine, fault):
     return e
 
 
+# ------------------------------------------------------------- message reach (P5 O18 M1; the lock held)
+#
+# An independent port of the hub's M1 code (MAWS apps/desk-hub/src/objects/project.ts's mayRead, reachOf, judge,
+# factsOf, audienceError; log-store.ts's withhold and withheldOf; policies.ts; apps/org-protocol's sessionRefs and
+# streamOf), never sminos's own, so sminos is tested against the rule rather than against itself.
+
+STREAM = re.compile(r"^([^/]+/[^~]+)~([0-9a-f]{16})$")
+
+
+def stream_of(writer):
+    m = STREAM.match(writer) if isinstance(writer, str) else None
+    return (m.group(1), m.group(2)) if m else (writer, None)
+
+
+def audience_digest(members):
+    return hashlib.sha256(json.dumps(sorted(set(members)), separators=(",", ":")).encode()).hexdigest()[:16]
+
+
+def is_audience(v):
+    return isinstance(v, list) and bool(v) and all(isinstance(m, str) and m for m in v) \
+        and all(v[i - 1] < v[i] for i in range(1, len(v)))
+
+
+def writer_machine(writer):
+    """A writer's machine, None for hub/ and legacy/ (names.ts's writerMachine)."""
+    if not isinstance(writer, str) or writer.startswith(("hub/", "legacy/")) or "/" not in writer[1:]:
+        return None
+    return writer.split("/", 1)[0]
+
+
+def writer_session(writer):
+    base = stream_of(writer)[0]
+    machine = writer_machine(base)
+    if machine is None:
+        return None
+    session = base[len(machine) + 1:]
+    return None if session in ("", "human") else session
+
+
+def is_session_id(v):
+    return isinstance(v, str) and v != "" and len(v) <= 256
+
+
+def session_refs(e):
+    """Every session `e` names, its writing session aside (sessionRefs)."""
+    out, own = [], writer_session(e.get("writer"))
+    if isinstance(e.get("to"), list):
+        for r in e["to"]:
+            if isinstance(r, dict) and is_session_id(r.get("session")):
+                out.append((r["session"], "addressing"))
+    if is_session_id(e.get("session")) and e["session"] != own:
+        out.append((e["session"], "addressing"))
+    for holder in (e, e.get("attest") if isinstance(e.get("attest"), dict) else {}):
+        origin = holder.get("origin")
+        if isinstance(origin, dict) and is_session_id(origin.get("spawnerSession")):
+            out.append((origin["spawnerSession"], "provenance"))
+    if e.get("kind") == "retired" and e.get("reason") == "continued" and is_session_id(e.get("to")):
+        out.append((e["to"], "provenance"))
+    return out
+
+
+def body_hash(e):
+    return hashlib.sha256(json.dumps(e, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def facts_of(e):
+    own = writer_session(e["writer"])
+    rev = e.get("policyRev")
+    snapshot = None
+    if own is not None and e.get("kind") in ("joined", "state") and e.get("session") == own:
+        snapshot = {"session": own, "audience": e["audience"] if is_audience(e.get("audience")) else None,
+                    "policyRev": rev if type(rev) is int and rev >= 0 else 0,
+                    "created": e.get("created") if isinstance(e.get("created"), str) else e.get("ts", "")}
+    attest = e.get("attest")
+    attested = attest["owners"] if isinstance(attest, dict) and isinstance(attest.get("owners"), list) \
+        and all(isinstance(o, str) for o in attest["owners"]) else None
+    refs = session_refs(e)
+    notice = e["session"] if e.get("kind") == "unlisted" and isinstance(e.get("session"), str) else None
+    return {"own": own, "audience": e["audience"] if is_audience(e.get("audience")) else None, "refs": refs,
+            "snapshot": snapshot, "notice": notice, "attested": attested,
+            "needs": bool(refs) or snapshot is not None or notice is not None}
+
+
+def audience_error(e):
+    """Why an event's `audience` and its writer disagree (refused `audience`), or None."""
+    digest = stream_of(e["writer"])[1]
+    rev = e.get("policyRev")
+    if rev is not None and not (type(rev) is int and rev >= 0):
+        return "policyRev is a whole number"
+    if "audience" not in e:
+        return None if digest is None else "an event under a stream writer carries the audience its digest names"
+    if not is_audience(e["audience"]):
+        return "audience is the sorted, distinct member ids the event is for"
+    if digest is None:
+        return "an event with an audience is written under its stream, <writer>~<digest>"
+    return None if audience_digest(e["audience"]) == digest else "the writer's digest is not its audience's"
+
+
+def newer(a, b):
+    return b is None or b["policyRev"] is None or a["policyRev"] > b["policyRev"] \
+        or (a["policyRev"] == b["policyRev"] and a["created"] > b["created"])
+
+
+def policy_of(session):
+    """A session's policy as the registry holds it, or None (copied: the caller replays it)."""
+    row = state["policies"].get(session)
+    if row is None or row["policyRev"] is None:
+        return None
+    return {"audience": row["audience"], "policyRev": row["policyRev"], "created": row["created"]}
+
+
+def apply_snapshot(machine, snapshot):
+    """A snapshot `machine` uploaded (or a log the fill reads): the session bound to its first exposer, its
+    policy moved when newer; whether the session is the machine's."""
+    row = state["policies"].setdefault(snapshot["session"], {"machine": machine.lower(), "audience": None,
+                                                             "policyRev": None, "created": ""})
+    if row["machine"] != machine.lower():
+        return False
+    if newer(snapshot, row if row["policyRev"] is not None else None):
+        row.update(audience=snapshot["audience"], policyRev=snapshot["policyRev"], created=snapshot["created"])
+    return True
+
+
+def judge(e, reach):
+    """One event against the registry, `reach["rows"]` replayed as its snapshots are taken: "admit",
+    "withhold" or "unavailable" (judge)."""
+    f = facts_of(e)
+    sender = f["attested"] if f["attested"] is not None else reach["owners"]
+    if f["needs"] and not reach["available"]:
+        return "unavailable"
+    rows, mine = reach["rows"], reach["mine"]
+    if e.get("kind") == "unlisted":
+        if not (is_session_id(e.get("session")) and type(e.get("policyRev")) is int and e["policyRev"] >= 1
+                and is_audience(e.get("audience")) and "text" not in e and "to" not in e) \
+                or f["refs"] or f["own"] is None or e["session"] != f["own"] \
+                or stream_of(e["writer"])[1] is None or not mine.get(f["own"]):
+            return "withhold"
+        row = rows.get(f["own"])
+        if row is None or not e["policyRev"] > row["policyRev"]:
+            return "withhold"
+        return "admit" if row["audience"] is None or set(e["audience"]) <= set(row["audience"]) else "withhold"
+    if f["snapshot"] is not None:
+        s = f["snapshot"]
+        if not mine.get(s["session"]):
+            return "withhold"
+        if newer(s, rows.get(s["session"])):
+            rows[s["session"]] = {k: s[k] for k in ("audience", "policyRev", "created")}
+    for session, role in f["refs"]:
+        row = rows.get(session)
+        if row is None:
+            if role == "addressing":
+                return "withhold"
+            continue
+        if row["audience"] is not None and (f["audience"] is None or not set(f["audience"]) <= set(row["audience"])):
+            return "withhold"
+    if f["audience"] is not None and (not sender or not set(sender) <= set(f["audience"])):
+        return "withhold"
+    return "admit"
+
+
+def reader(machine):
+    """A machine as `mayRead` reads it: its owners, and whether its connection reads streams (DX2's never do,
+    unless a test says so: /control/reader)."""
+    r = state["readers"].get(machine.lower(), {})
+    return {"owners": list(r.get("owners", [])), "streams": bool(r.get("streams", False))}
+
+
+def may_read(machine, writer, p):
+    """The one reader check (mayRead): a plain writer is everyone's; a machine's own writers its own; a stream
+    a machine's whose owners meet its audience on a connection that reads streams."""
+    base, digest = stream_of(writer)
+    if digest is None:
+        return True
+    head = writer_machine(base)
+    if head is not None and head.lower() == machine.lower():
+        return True
+    audience = p["streams"].get(writer)
+    r = reader(machine)
+    return audience is not None and r["streams"] and any(o in audience for o in r["owners"])
+
+
+def keep_stream(p, writer, audience):
+    if stream_of(writer)[1] is not None and writer not in p["streams"]:
+        p["streams"][writer] = list(audience)
+
+
+def withheld_of(p, machine):
+    """The withheld positions of `machine`'s writers, as ascending seqs and [from, to] runs (withheldOf)."""
+    out = {}
+    for w, seqs in sorted(p["withheld"].items()):
+        if writer_machine(w) != machine:
+            continue
+        runs = out.setdefault(w, [])
+        for s in sorted(int(k) for k in seqs):
+            last = runs[-1] if runs else None
+            end = None if last is None else (last if isinstance(last, int) else last[1])
+            if end is not None and s == end + 1:
+                runs[-1] = [last if isinstance(last, int) else last[0], s]
+            else:
+                runs.append(s)
+    return out
+
+
 # ------------------------------------------------------------- the log plane (the lock held)
 
 
 def project(pid):
-    return state["projects"].setdefault(pid, {"name": "", "writers": {}, "open": {}, "audit": [], "archive": None})
+    return state["projects"].setdefault(pid, {"name": "", "writers": {}, "open": {}, "audit": [], "archive": None,
+                                              "streams": {}, "withheld": {}, "held": []})
 
 
 def vector(p):
@@ -429,7 +685,10 @@ def to_machine(machine, generation, frames):
 
 def fan_out(pid, p, events, sender=None):
     for m, gen in list(p["open"].items()):
-        if m != sender and not to_machine(m, gen, [{"t": "events", "project": pid, "events": events}]):
+        if m == sender:
+            continue
+        readable = [e for e in events if may_read(m, e["writer"], p)]
+        if readable and not to_machine(m, gen, [{"t": "events", "project": pid, "events": readable}]):
             del p["open"][m]
 
 
@@ -496,8 +755,14 @@ def apply(machine, s, frame, replies):
         if state["leases"].get(machine, {}).get("generation") != s.generation:
             state["leases"][machine] = {"generation": s.generation, "expires": time.time() + LEASE, "lapsed": False}
             refresh_online()
-        replies.append({"t": "have", "project": pid, "have": vector(p), "archive": p["archive"] == machine})
+        # What this machine may read alone, and its own writers' withheld positions (P5 O18 D6).
+        withheld = withheld_of(p, machine)
+        replies.append({"t": "have", "project": pid,
+                        "have": {w: s for w, s in vector(p).items() if may_read(machine, w, p)},
+                        "archive": p["archive"] == machine, **({"withheld": withheld} if withheld else {})})
         for w, evs in sorted(p["writers"].items()):
+            if not may_read(machine, w, p):
+                continue
             suffix = [e for e in evs if e["seq"] > have.get(w, 0)]
             for i in range(0, len(suffix), BATCH):
                 replies.append({"t": "events", "project": pid, "events": suffix[i:i + BATCH]})
@@ -513,6 +778,66 @@ def apply(machine, s, frame, replies):
     events = frame.get("events")
     if not isinstance(events, list):
         return refuse({"reason": "bad-shape", "message": "events is a list"})
+    if state["admission_held"]:
+        # Admission held back (/control/admission): taken, and decided only at its release.
+        p["held"].append((machine, s.generation, events))
+        return None
+    return store(pid, p, machine, events, refuse, replies)
+
+
+def reach_of(p, machine, events):
+    """What the batch's reach check reads, once (reachOf): the registry's rows of every session the events that may
+    be stored name, as they stood before the batch, with the batch's snapshots then recorded, and which of them
+    are bound to the uploader after it; None when no event needs the registry."""
+    nxt, stopped, snapshots, sessions = {}, set(), [], set()
+    for e in events:
+        if shape_error(e) is not None:
+            if isinstance(e, dict) and isinstance(e.get("writer"), str):
+                stopped.add(e["writer"])
+            continue
+        w, seq = e["writer"], e["seq"]
+        if w in stopped:
+            continue
+        if w.split("/", 1)[0] != machine and not (w.startswith("legacy/") and p["archive"] == machine):
+            stopped.add(w)
+            continue
+        evs = p["writers"].get(w, [])
+        at = nxt.get(w, (evs[-1]["seq"] if evs else 0) + 1)
+        if seq < at:
+            held = p["withheld"].get(w, {}).get(seq)
+            stored = next((x for x in evs if x["seq"] == seq), None)
+            if (held != body_hash(e)) if held is not None else (stored is not None and not same(stored, e)):
+                stopped.add(w)
+            continue
+        if seq > at or audience_error(e) is not None:
+            stopped.add(w)
+            continue
+        nxt[w] = at + 1
+        f = facts_of(e)
+        sessions.update(s for s, _ in f["refs"])
+        if f["snapshot"] is not None:
+            snapshots.append(f["snapshot"])
+        if f["notice"] is not None:
+            sessions.add(f["notice"])
+        if f["needs"] or f["audience"] is not None:
+            sessions.add(None)
+    if not sessions:
+        return None
+    owners = reader(machine)["owners"]
+    if not state["policies_available"]:
+        return {"available": False, "rows": {}, "mine": {}, "owners": owners}
+    named = {s for s in sessions if s is not None} | {s["session"] for s in snapshots}
+    rows = {s: policy_of(s) for s in named}
+    for snapshot in snapshots:
+        apply_snapshot(machine, snapshot)
+    mine = {s: state["policies"].get(s, {}).get("machine") == machine.lower() for s in rows}
+    return {"available": True, "rows": rows, "mine": mine, "owners": owners}
+
+
+def store(pid, p, machine, events, refuse, replies):
+    """An upload's events, as DC3's Project and M1's reach check take them."""
+    reach = reach_of(p, machine, events)
+    reach = reach or {"available": True, "rows": {}, "mine": {}, "owners": reader(machine)["owners"]}
     accepted, stopped = [], set()
     for e in events:
         problem = shape_error(e)
@@ -542,11 +867,41 @@ def apply(machine, s, frame, replies):
         evs = p["writers"].setdefault(w, [])
         last = evs[-1]["seq"] if evs else 0
         if seq <= last:
+            withheld = p["withheld"].get(w, {}).get(seq)
             held = next((x for x in evs if x["seq"] == seq), None)
-            if held is None or not same(held, e):
+            if withheld is not None:
+                # A withheld position's resend: the same body withheld again, another a conflict.
+                if withheld == body_hash(e):
+                    refuse({"reason": "not-reachable", "writer": w, "seq": seq})
+                else:
+                    stopped.add(w)
+                    refuse({"reason": "conflict", "writer": w, "seq": seq,
+                            "message": "a different payload was withheld at this position"})
+            elif held is None or not same(held, e):
                 stopped.add(w)
                 refuse({"reason": "conflict", "writer": w, "seq": seq, "message": "a different payload is stored at this position"})
         elif seq == last + 1:
+            mismatch = audience_error(e)
+            if mismatch is not None:
+                stopped.add(w)
+                refuse({"reason": "audience", "writer": w, "seq": seq, "message": mismatch})
+                continue
+            verdict = judge(e, reach)
+            if verdict == "unavailable":
+                stopped.add(w)
+                refuse({"reason": "state-unavailable", "writer": w, "seq": seq,
+                        "message": "the policy registry could not be read to check what this event names; send it again"})
+                continue
+            if is_audience(e.get("audience")):
+                keep_stream(p, w, e["audience"])
+            if verdict == "withhold":
+                # Out of reach: a tombstone at the position, the refused body's hash beside it; the writer goes on.
+                tombstone = {"writer": w, "seq": seq, "withheld": True}
+                p["withheld"].setdefault(w, {})[seq] = body_hash(e)
+                evs.append(tombstone)
+                accepted.append(tombstone)
+                refuse({"reason": "not-reachable", "writer": w, "seq": seq})
+                continue
             evs.append(e)
             accepted.append(e)
         else:
@@ -555,6 +910,23 @@ def apply(machine, s, frame, replies):
     if accepted:
         fan_out(pid, p, accepted, sender=machine)
     return None   # an event refused here leaves the frame applied: its refusal goes down the stream alone
+
+
+def release_admission():
+    """Admission no longer held back: what each machine uploaded meanwhile is decided now, in order, its replies
+    written down the machine's stream (the lock held)."""
+    for pid, p in state["projects"].items():
+        held, p["held"] = p["held"], []
+        for machine, generation, events in held:
+            replies = []
+
+            def refuse(refusal, replies=replies, machine=machine, pid=pid, p=p):
+                replies.append({"t": "refused", "project": pid, "refusal": refusal})
+                p["audit"].append({"kind": "refused", "machine": machine, **refusal})
+
+            store(pid, p, machine, events, refuse, replies)
+            if replies:
+                to_machine(machine, generation, replies)
 
 
 def join_part(s, frame):
@@ -709,14 +1081,17 @@ class Handler(BaseHTTPRequestHandler):
                                for m, lease in state["leases"].items()},
                     "lapses": state["lapses"],
                     "projects": {pid: {"name": p["name"], "vector": vector(p), "writers": p["writers"],
-                                       "open": p["open"], "audit": p["audit"], "follow": p.get("follow", {})}
+                                       "open": p["open"], "audit": p["audit"], "follow": p.get("follow", {}),
+                                       "withheld": {w: sorted(ss) for w, ss in p["withheld"].items()},
+                                       "streams": p["streams"], "held": len(p["held"])}
                                  for pid, p in state["projects"].items()},
                     "registry": state["registry"], "online": state["online"], "orgs": state["orgs"],
                     "machines": [{k: v for k, v in m.items() if k != "client_secret"}
                                  for m in state["machines"].values()],
                     "enrollments": [{k: v for k, v in e.items()} for e in state["enrollments"].values()],
                     "keys": [{k: v for k, v in key.items() if k != "token"} for key in state["keys"].values()],
-                    "requests": state["requests"]})
+                    "requests": state["requests"], "policies": state["policies"], "readers": state["readers"],
+                    "policies_available": state["policies_available"], "admission_held": state["admission_held"]})
         elif self.path.startswith("/control/since?"):
             q = urllib.parse.parse_qs(self.path.split("?", 1)[1])
             with lock:
@@ -741,6 +1116,13 @@ class Handler(BaseHTTPRequestHandler):
                     evs = p["writers"].setdefault(e["writer"], [])
                     evs.append(e)
                     evs.sort(key=lambda x: x["seq"])
+                    # As the registry's fill reads the log: a snapshot binds its session to its writer's machine.
+                    if isinstance(e.get("writer"), str) and isinstance(e.get("kind"), str):
+                        f = facts_of(e)
+                        if f["snapshot"] is not None and writer_machine(e["writer"]) is not None:
+                            apply_snapshot(writer_machine(e["writer"]), f["snapshot"])
+                        if is_audience(e.get("audience")):
+                            keep_stream(p, e["writer"], e["audience"])
                 fan_out(req["project"], p, req["events"])
             self.reply(200, {"injected": len(req["events"])})
         elif self.path == "/control/drop":
@@ -771,6 +1153,29 @@ class Handler(BaseHTTPRequestHandler):
             with lock:
                 state["post_delay"] = float(json.loads(self.body()).get("seconds") or 0)
             self.reply(200, {"seconds": state["post_delay"]})
+        elif self.path == "/control/reader":
+            req = json.loads(self.body())
+            with lock:
+                r = state["readers"].setdefault(req["machine"].lower(), {"owners": [], "streams": False})
+                r.update({k: req[k] for k in ("owners", "streams") if k in req})
+            self.reply(200, {"reader": r})
+        elif self.path == "/control/policies":
+            req = json.loads(self.body())
+            with lock:
+                if "available" in req:
+                    state["policies_available"] = bool(req["available"])
+                for session, row in (req.get("rows") or {}).items():
+                    state["policies"][session] = {"machine": row["machine"].lower(), "audience": row.get("audience"),
+                                                  "policyRev": row.get("policyRev", 0),
+                                                  "created": row.get("created", "")}
+            self.reply(200, {"available": state["policies_available"]})
+        elif self.path == "/control/admission":
+            req = json.loads(self.body())
+            with lock:
+                state["admission_held"] = bool(req["held"])
+                if not state["admission_held"]:
+                    release_admission()
+            self.reply(200, {"held": state["admission_held"]})
         elif self.path == "/control/archive":
             req = json.loads(self.body())
             with lock:
