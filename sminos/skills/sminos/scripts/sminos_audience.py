@@ -161,6 +161,30 @@ def reach_capable():
     return d is None or "reach" in (d.get("capabilities") or [])
 
 
+def widening_through_app():
+    """Whether widening a session's reach here is the app's alone, so the
+    CLI refuses it ("use MAWS") from a terminal too and keeps narrowing (P5
+    Decision Logs 231 and 232; the architect's ruling, sminos chat 1164):
+    the machine is cut over to its endpoint and that endpoint's welcome
+    advertised `record`, meaning it serves the Share sheet's `record.access`,
+    `record.shares` and `record.owners` acts, from any member's MAWS. The
+    word is the last welcome's, kept: an endpoint away, stopped or
+    unreachable leaves it standing, so stopping mawsd never hands widening
+    back to the terminal; only a later welcome without `record` (a MAWS
+    rollback) does. On a cut-over machine a file not there yet, or one that
+    cannot be read, counts as `record`: every welcome writes it, so the word
+    is not known yet (fail closed). A machine not cut over has no endpoint to
+    carry an act, so the operator's terminal stays its gate (a machine
+    enrolled at no hub: no hub, no welcome)."""
+    if not sminos.sibling_module("sminos_rl10").cut_over():
+        return False
+    try:
+        d = _read_kept()
+    except StreamUnknown:
+        return True
+    return d is None or "record" in (d.get("capabilities") or [])
+
+
 def _write_audiences(d):
     path = audiences_path()
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
