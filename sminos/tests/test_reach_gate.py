@@ -491,6 +491,30 @@ class SameOwner(Rig):
         self.assertEqual(self.reach_asks(ep)[0]["event"]["seq"], e["seq"])
         self.assertEqual(self.inbox(RECIP), [])
 
+    def test_a_mirror_converted_to_a_hub_project_still_asks_about_what_git_imported(self):
+        """`project init --hub` keeps the project's id, its log and its git
+        remote (now the log's archive): a line git imported under this
+        machine's name before the conversion is still in the log, so a
+        project with a remote never takes the name for the sender."""
+        gm = self.mirrored("gc")
+        for sid, name in ((SENDER, "sender"), (RECIP, "rover")):
+            self.session(gm, sid, name=name, inbox=True)
+            self.owned(sid)
+        sminos.reconcile(gm)
+        e = self.imported_say(gm, "imported before the hub")
+        enrolled = Path(os.environ["SMINOS_HOME"], "daemon", "hub.json")
+        hub = {"hub": "http://127.0.0.1:9", "org": "org-1"}
+        self.assertEqual({k: json.loads(enrolled.read_text())[k] for k in hub}, hub)
+        r = tw.sminos_cli("project", "init", "--hub", cwd=gm.root, session=None)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        sminos.forget_caches()
+        hp = sminos.resolve_project(gm.root)
+        self.assertEqual((hp.id, hp.remote, (hp.hub or {}).get("org")), (gm.id, gm.remote, "org-1"),
+                         "the same project, its remote kept, now of the org's hub")
+        self.assertTrue(sminos.ReachGate(hp).needs(e, RECIP), "what git imported is still asked")
+        sminos.deliver_next(hp, tw.member(RECIP))
+        self.assertEqual(self.inbox(RECIP), [], "left owed for the uplink's reach?")
+
     def test_a_project_nothing_syncs_keeps_the_fast_path(self):
         lp = self.project("lp")
         self.assertFalse(lp.remote or lp.hub)
@@ -525,6 +549,24 @@ class Capability(Rig):
         tw.wait_for(lambda: self.inbox(RECIP), timeout=WAIT)
         self.assertEqual(len(self.reach_asks(ep)), 1)
         self.assertTrue(os.path.exists(au.audiences_path()), "the welcome kept what it said")
+
+    def test_a_welcome_landing_just_after_the_read_finds_none_is_still_capable(self):
+        """One read decides: the file missing when it was read is capable,
+        though a welcome writes it (an endpoint without reach) a moment
+        after."""
+        os.unlink(au.audiences_path())
+        real = sminos.json_at
+
+        def welcome_after(path):
+            try:
+                return real(path)
+            except FileNotFoundError:
+                if path == au.audiences_path():
+                    au._write_audiences({"v": 1, "capabilities": [], "sessions": {}})
+                raise
+        with mock.patch.object(sminos, "json_at", side_effect=welcome_after):
+            self.assertTrue(au.reach_capable())
+        self.assertFalse(au.reach_capable(), "and the welcome's word from then on")
 
     def test_an_endpoint_that_said_it_has_no_reach_pushes_as_before(self):
         au.keep_capabilities([])

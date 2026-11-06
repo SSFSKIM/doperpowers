@@ -116,10 +116,16 @@ def _read_audiences():
     """The kept file as a dict; {} when there is none; StreamUnknown when it
     is there and cannot be read (fail closed: a remote session's privacy is
     unknown)."""
+    d = _read_kept()
+    return {} if d is None else d
+
+
+def _read_kept():
+    """_read_audiences, None when there is no file: what one read found."""
     try:
         d = sminos.json_at(audiences_path())
     except FileNotFoundError:
-        return {}
+        return None
     except (OSError, ValueError) as e:
         raise StreamUnknown("%s cannot be read (%s): no event naming another session is written until it can"
                             % (AUDIENCES, e))
@@ -149,10 +155,10 @@ def reach_capable():
     if not sminos.sibling_module("sminos_rl10").cut_over():
         return False
     try:
-        d = _read_audiences()
+        d = _read_kept()   # one read decides: a welcome may write the file just after it
     except StreamUnknown:
         return True
-    return "reach" in (d.get("capabilities") or []) or not os.path.exists(audiences_path())
+    return d is None or "reach" in (d.get("capabilities") or [])
 
 
 def _write_audiences(d):

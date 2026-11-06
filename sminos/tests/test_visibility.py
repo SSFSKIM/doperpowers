@@ -516,6 +516,21 @@ class Recovered(Base):
         self.assertEqual(vis.transitions()[S]["policyRev"], 2)
         self.assertGreaterEqual(self.lose()["policyRev"], 3)
 
+    def test_a_continuation_comes_back_above_its_own_revision_not_at_its_predecessors(self):
+        """A recreated record taking its predecessor's policy (inherited)
+        carries the predecessor's policyRev; the floor still raises it above
+        the continuation's own revisions kept here."""
+        pred = "6d0000c3-0000-4000-8000-0000000000c3"
+        self.assertEqual(self.local(pred, access="private", shares=(B,))["policyRev"], 1)
+        self.local(S, access="private", shares=(B,))
+        records.set_policy(S, lambda a, s: (a, [{"member": B, "grade": "view"}]))
+        self.audience(S, [A], [A, B], 2)
+        os.unlink(records.record_path(S))
+        sminos.forget_caches()
+        rec = sminos.ensure_record(self.p, S, former=[pred])
+        self.assertEqual((rec["access"], rec.get("former")), ("private", [pred]), "its predecessor's policy")
+        self.assertGreaterEqual(rec["policyRev"], 3)
+
     def kinds(self, writer):
         return [e["kind"] for e in self.events(writer)]
 
