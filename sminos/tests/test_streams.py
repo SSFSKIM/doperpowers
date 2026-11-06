@@ -225,7 +225,7 @@ class Streams(tw.Machine):
 
     def test_the_hello_advertises_audience(self):
         import sminos_rl10 as rl10
-        self.assertEqual(rl10.hello_frame("t" * 64, "1", None)["capabilities"], ["audience"])
+        self.assertIn("audience", rl10.hello_frame("t" * 64, "1", None)["capabilities"])
 
     # ---- addressed events
 

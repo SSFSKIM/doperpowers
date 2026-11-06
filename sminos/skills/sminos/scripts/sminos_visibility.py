@@ -11,7 +11,13 @@ agents may message it, and its record on its own machine keeps them
     sminos access <member> private|listed|org-view|org-converse
     sminos share  <member> <person> list|view|converse|approve|none
 
-Both are set_visibility, which M5's executor calls too. Narrowing (lowering
+Both are set_visibility, which the record RPCs' executor calls too
+(sminos_rpc.record_change: `record.access`, `record.shares`, with
+operator=True, the endpoint having verified the act's step-up); the
+executor's `record.owners` is add_owner, an owner added with its act as
+proof, which bumps policyRev and records the same transition through the
+one path every change shares (_changed): a private session's audience is
+its owners and shares, and an owner added withdraws no one. Narrowing (lowering
 access, removing a share, lowering a grade) is any shell's; widening
 (anything that raises any member's reach) runs only as the operator, with no
 CLAUDE_CODE_SESSION_ID, confirmed at /dev/tty: an agent cannot open a
@@ -73,14 +79,21 @@ NO_CAPABILITY = ("this machine's endpoint cannot carry a session's visibility (i
 
 
 class Refused(Exception):
-    """The change is refused; nothing was written."""
+    """The change is refused; nothing was written. `code`, the record RPCs'
+    answer for it (sminos_rpc): `no-session` for a session with no readable
+    record here, `unsupported` for a change this machine's endpoint cannot
+    carry."""
+
+    def __init__(self, message, code="unsupported"):
+        super().__init__(message)
+        self.code = code
 
 
 class Widening(Refused):
     """The change widens reach: the operator's to make (WIDENING)."""
 
     def __init__(self, before, after):
-        super().__init__(WIDENING)
+        super().__init__(WIDENING, "widening")
         self.before, self.after = before, after
 
 
@@ -140,17 +153,52 @@ def set_visibility(sid, *, access=None, share=None, operator):
             raise Widening(before, after)
         return after
 
-    # The policy's change and its pending entry under one lock, the transitions': two setters never interleave
-    # between them, so the entry kept is always the latest revision's, and its `previous` reads the one before.
+    def write():
+        rec, moved = records.set_policy(sid, mutate)
+        return rec, moved, seen.get("before", (None,))[0]
+    return _changed(sid, write)
+
+
+def add_owner(sid, member, proof):
+    """`member` added to the session's owners on its record here, its act
+    (`proof`, the signed `record.owners` act verbatim) appended to
+    `ownersProof` (sminos_records.add_owner), and the transition that makes
+    recorded as set_visibility's is: its revision bumped, the snapshot
+    written again once the endpoint gives the audience at it, under the new
+    stream of a private session (owners and shares). It withdraws no one, so
+    no notice is owed. The executor's (sminos_rpc: the endpoint verified the
+    act, by an owner, under step-up). A member already an owner changes
+    nothing. {record, changed, transition}; Refused (`no-session`) as
+    set_visibility's."""
+    if not MEMBER_RE.fullmatch(str(member)):
+        raise ValueError("an owner added is a member id (32 lowercase hex characters)")
+    records = S.records_module()
+
+    def write():
+        rec, moved = records.add_owner(sid, member, proof)
+        return rec, moved, au.policy_of(rec)[0]
+    return _changed(sid, write)
+
+
+def _changed(sid, write):
+    """One change of a session's record and its pending transition (see the
+    module), shared by every setter: `write()` changes the record under the
+    records' lock and gives (record, changed, its access before). The
+    record's change and the pending entry under one lock, the transitions':
+    two setters never interleave between them, so the entry kept is always
+    the latest revision's, and its `previous` reads the one before. The
+    daemon nudged after a change."""
+    records = S.records_module()
     with _locked() as sessions:
         try:
-            rec, moved = records.set_policy(sid, mutate)
+            rec, moved, was = write()
         except records.NoRecord as e:
-            raise Refused("%s: its visibility is kept on its record, on its own machine" % e)
+            raise Refused("%s: its visibility is kept on its record, on its own machine" % e, "no-session")
         if not moved:
             return {"record": rec, "changed": False, "transition": None}
-        t = {"policyRev": rec["policyRev"], "access": rec["access"],
-             **previous_known(sid, seen["before"][0], rec["policyRev"], sessions.get(sid)), "at": S.now(ms=True)}
+        access, _, rev = au.policy_of(rec)
+        t = {"policyRev": rev, "access": access, **previous_known(sid, was, rev, sessions.get(sid)),
+             "at": S.now(ms=True)}
         sessions[sid] = t
     S.nudge_daemon()
     return {"record": rec, "changed": True, "transition": t}

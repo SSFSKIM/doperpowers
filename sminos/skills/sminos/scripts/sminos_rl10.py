@@ -289,8 +289,10 @@ class Connection:
 
 
 # What this sminos can do beyond RL10's major (OX1). `audience` (P5 O18 D9): an audience stream may come down to it,
-# since its archive copies only the hub-admitted public projection (sminos_archive), never a stream.
-CAPABILITIES = ("audience",)
+# since its archive copies only the hub-admitted public projection (sminos_archive), never a stream. `record` (MAWS O8
+# M6b): it executes `record.access`, `record.shares` and `record.owners` (sminos_rpc), which the endpoint offers only
+# while this is advertised.
+CAPABILITIES = ("audience", "record")
 
 
 def hello_frame(token, version, policy):

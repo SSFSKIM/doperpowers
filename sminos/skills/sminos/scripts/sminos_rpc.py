@@ -182,6 +182,22 @@ bridge (`context`), and `resume`, `retire` and `stop`, outside the bridge's
 fence, are `unsupported`. A spawn's `proof` reaches the new session's
 record as its `ownersProof` (SMINOS_DESK_PROOF).
 
+The record RPCs (MAWS O8 M6b, M5b) are offered there alone too, behind the
+hello's `record` capability: `record.access {session, access}`,
+`record.shares {session, member, grade | null}` and `record.owners
+{session, add: true, member}`, the signed act as `proof`, which the ledger
+keeps. They carry no context (a record changes whatever launch runs the
+session, as a spawn's machine does), pass checks 1-6 as every RL10 RPC
+(read-only refuses them, narrowing included; `bad-shape` for an access,
+grade or member that does not fit, and for an owners `proof` that is not
+this op's act adding this member: the record keeps it as that owner's
+proof), and run as the operator through the CLI's own setters
+(record_change: sminos_visibility.set_visibility, add_owner), since the
+endpoint verified the act's step-up by an owner. `done {changed,
+policyRev}`; `no-session` for no readable record; `unsupported` for a
+change an endpoint without `access` cannot carry. One the daemon stopped
+mid-run is `interrupted`.
+
 `send` (MAWS O9 §E) is offered there alone (DX2 refuses it `unsupported`):
 a person's message into the session, as the bridge's `deliver` in either
 turn state, keyed `{writer: SEND_WRITER, seq}` — a writer no log has, so
@@ -223,6 +239,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
+import sminos_audience as audience  # noqa: E402
 import sminos_bridge as bridge  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_control as control  # noqa: E402
@@ -231,6 +248,7 @@ import sminos_media as media  # noqa: E402
 import sminos_owed as owed  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 import sminos_requests as requests  # noqa: E402
+import sminos_visibility as visibility  # noqa: E402
 
 LEDGER_FILE = "rpcs.json"
 OWED_FILE = "rpcs-owed.json"  # daemon/: the compaction and op messages not yet the hub's (sminos_owed)
@@ -271,7 +289,8 @@ DECISION_TIMEOUT = 15     # an async question's answer is relayed to the mod, wh
 SPAWN_TASK = "Begin with your brief."
 RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume", "stop",
              "command", "btw", "stop-agent", "tell", "media")
-RL10_ONLY = ("send",)     # offered by the endpoint alone (MAWS O9 §E): DX2 does not carry them
+RECORD = ("record.access", "record.shares", "record.owners")   # a session's reach and owners (MAWS O8 M6b, M5b)
+RL10_ONLY = ("send",) + RECORD   # offered by the endpoint alone (MAWS O9 §E, O8 M6b): DX2 does not carry them
 RL10_RPC_NAMES = RPC_NAMES + RL10_ONLY
 SEND_TEXT_MAX = 65536     # O9 §E `send`: a person's message, in characters (MAWS bounds a typed prompt at 65,536)
 SEND_WAIT_S = 10          # how long a send waits for its key's `delivered` outcome before it answers `submitted`
@@ -431,8 +450,9 @@ def binding_of(record):
 def context_refusal(rpc):
     """Why a remote RPC's context cannot fence it (RL4: an action on a
     session carries `{lane: 'A', session: args.session, launch}`), or None.
-    A spawn acts on the machine and carries none."""
-    if rpc["rpc"] == "spawn":
+    A spawn acts on the machine and carries none; nor does a record act,
+    which changes the session's record whatever launch runs it (RECORD)."""
+    if rpc["rpc"] == "spawn" or rpc["rpc"] in RECORD:
         return None
     c = rpc.get("context")
     if not isinstance(c, dict):
@@ -904,6 +924,8 @@ class Rpcs:
         if name == "spawn":
             admit_spawn(args, p["ceiling"], here.checkouts(project))
         shape(name, args, rpc.get("member"))
+        if name == "record.owners":
+            owners_proof(rpc)
         why = None if self.coded else context_refusal(rpc)
         if why is not None:
             raise Refused("bad-shape", "%s: %s" % (name, why))
@@ -1088,6 +1110,8 @@ class Rpcs:
                 log("spawn %s carries no proof: the session's ownersProof is []" % op)
             return lambda: spawn(args, op, facts["checkout"], rpc["member"], rpc.get("proof") if remote else None)
         sid = args["session"]
+        if name in RECORD:
+            return lambda: record_change(name, sid, args, rpc.get("proof"))
         launch = rpc["context"]["launch"] if remote else None
         if remote and name in UNFENCED:
             raise Refused("unsupported", "%s is not offered to a remote caller: it runs outside the bridge's launch "
@@ -1818,12 +1842,59 @@ def shape(name, args, member):
         i = args.get("instructions")
         need(i is None or (isinstance(i, str) and len(i) <= INSTRUCTIONS_MAX),
              "instructions is text of at most %d characters" % INSTRUCTIONS_MAX)
+    elif name == "record.access":
+        need(args.get("access") in audience.ACCESS, "access is one of %s" % ", ".join(audience.ACCESS))
+    elif name == "record.shares":
+        need(isinstance(args.get("member"), str) and visibility.MEMBER_RE.fullmatch(args["member"]),
+             "member is a member's id")
+        need("grade" in args and (args["grade"] is None or args["grade"] in audience.GRADES),
+             "grade is one of %s, or null to remove the share" % ", ".join(audience.GRADES))
+    elif name == "record.owners":
+        need(args.get("add") is True, "add is true: an owner is only added")
+        need(isinstance(args.get("member"), str) and visibility.MEMBER_RE.fullmatch(args["member"]),
+             "member is a member's id")
     elif name == "spawn":
         need(is_text(args.get("brief")), "brief is the session's brief")
         wt, m, e = args.get("worktree"), args.get("model"), args.get("effort")
         need(wt is None or (isinstance(wt, str) and WORKTREE_RE.fullmatch(wt)), "worktree is a name")
         need(m is None or (isinstance(m, str) and MODEL_RE.fullmatch(m)), "model is a model id or alias")
         need(e is None or e in control.EFFORTS, "effort is one of %s" % ", ".join(control.EFFORTS))
+
+
+def owners_proof(rpc):
+    """Check 6 for `record.owners`: its `proof` is the act this op carries
+    out, since the record keeps it as the added owner's proof (RL9) — an
+    action object of `record.owners`, of the RPC's own opId and device,
+    adding the same member. `bad-shape` otherwise: an endpoint that sent
+    another would leave the owner unproven, or proven by the wrong act."""
+    proof = rpc.get("proof")
+    args = proof.get("args") if isinstance(proof, dict) else None
+    if not (isinstance(args, dict) and proof.get("action") == "record.owners"
+            and proof.get("opId") == rpc.get("opId") and proof.get("device") == rpc.get("device")
+            and args.get("add") is True and args.get("member") == rpc["args"].get("member")):
+        raise Refused("bad-shape", "record.owners: proof is the signed act that adds this member, under this "
+                                   "opId and device")
+
+
+def record_change(name, sid, args, proof):
+    """A record RPC's execution (MAWS O8 M6b, M5b): the session's access, a
+    share, or an owner added, on its record here, through the setters the
+    CLI's verbs use (sminos_visibility), as the operator: the endpoint
+    verified the act's step-up by an owner, which is what admits a widening.
+    `done {changed, policyRev}`; `no-session` for no readable record,
+    `unsupported` for a change this machine's endpoint cannot carry."""
+    try:
+        if name == "record.access":
+            out = visibility.set_visibility(sid, access=args["access"], operator=True)
+        elif name == "record.shares":
+            out = visibility.set_visibility(sid, share=(args["member"], args["grade"]), operator=True)
+        else:
+            out = visibility.add_owner(sid, args["member"], proof)
+    except visibility.Refused as e:
+        raise Refused(e.code, str(e)) from e
+    except ValueError as e:
+        raise Refused("bad-shape", "%s: %s" % (name, e)) from e
+    return done({"changed": out["changed"], "policyRev": audience.policy_of(out["record"])[2]})
 
 
 def check_digest(path, sid, digest, decision, scope=None):

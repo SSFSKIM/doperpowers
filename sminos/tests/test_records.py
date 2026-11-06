@@ -933,23 +933,22 @@ class TheStore(unittest.TestCase):
         self.assertTrue(os.path.exists(R.pending_path("d" * 32)))
         self.assertIsNone(R.claim("../x", T0))
 
-    def test_owners_never_mix_the_machine_with_members(self):
+    def test_the_machine_stands_beside_members_once_and_never_twice(self):
+        """An owner added by a `manage` act is a member id beside `@machine`
+        (the remote layer's §5.8): every writer takes the mixed list; the
+        token twice, an empty list or an empty owner, none."""
         R = self.R
         mixed = dict(R.default_provenance(source="launch"), owners=["@machine", MEMBER])
-        with self.assertRaises(ValueError):
-            R.establish(T0, mixed)
-        self.assertIsNone(R.read(T0))
-        with self.assertRaises(ValueError):
-            R.write_pending("e" * 32, mixed)
-        self.assertFalse(os.path.exists(R.pending_path("e" * 32)))
-        R.establish(T0, R.default_provenance())
-        with self.assertRaises(ValueError):
-            R.establish(T0, dict(mixed, source="lineage"))
-        self.assertEqual(R.read(T0)["owners"], ["@machine"], "a provisional record is not replaced by a mixed list")
-        for bad in ([], ["@machine", "@machine"], [""], "@machine"):
+        rec, changed = R.establish(T0, mixed)
+        self.assertTrue(changed)
+        self.assertEqual(R.read(T0)["owners"], ["@machine", MEMBER])
+        R.write_pending("e" * 32, mixed)
+        self.assertTrue(os.path.exists(R.pending_path("e" * 32)))
+        for bad in ([], ["@machine", "@machine"], ["@machine", MEMBER, "@machine"], [""], "@machine"):
             with self.assertRaises(ValueError):
                 R.checked_owners(bad)
         self.assertEqual(R.checked_owners([MEMBER, "f" * 32]), [MEMBER, "f" * 32])
+        mixed = dict(mixed, owners=["@machine", "@machine"])
         # A pending file this code never wrote: the claim stands, its owners do not.
         os.makedirs(os.path.dirname(R.pending_path("a" * 32)), exist_ok=True)
         with open(R.pending_path("a" * 32), "w") as f:

@@ -34,13 +34,15 @@ atomically (sminos._write_record) under one lock for every change here:
   copy, a resume or a seat never widens reach. It changes only through
   set_policy, which bumps policyRev. A record whose policy fields do not
   read as these is no record (read gives None: unreadable, fail closed).
-- `@machine`, as an owner or a principal, stands for this machine's owners,
-  and as an owner it stands alone: a list that mixes it with member ids is
-  refused by every writer here (checked_owners), since `joined` leaves the
-  token off and its readers would lose the members beside it;
+- `@machine`, as an owner or a principal, stands for this machine's owners;
   the endpoint resolves it against the org state, and it never leaves the
-  machine. Nothing here leaves the machine but `origin`, and `owners` that
-  hold no `@machine`, on a final record's `joined` (sminos.published_provenance).
+  machine. As an owner it may stand once, first, beside the member ids an
+  owner's `manage` act added (add_owner; the remote layer's §5.8: the token
+  follows the machine's owners, the added member is proven by its act in
+  `ownersProof`). Nothing here leaves the machine but `origin`, and `owners`
+  as member ids, on a final record's `joined` (sminos.published_provenance:
+  a list holding the token publishes the endpoint's resolution of it, or
+  none).
 - No secret is ever in a record: a route names a file (the merged launch
   settings a seat ran with) or a gateway's scheme, host and port.
 
@@ -209,12 +211,13 @@ def _locked(deadline=None):
 
 
 def checked_owners(owners):
-    """`owners` when it is a record's: a non-empty list of strings, either
-    exactly `@machine` or member ids only; otherwise ValueError."""
+    """`owners` when it is a record's: a non-empty list of strings, `@machine`
+    at most once and only first (the members an owner added stand beside
+    it); otherwise ValueError."""
     if not (isinstance(owners, list) and owners and all(isinstance(o, str) and o for o in owners)):
         raise ValueError("owners must be a non-empty list of strings: %r" % (owners,))
-    if MACHINE in owners and owners != [MACHINE]:
-        raise ValueError("owners mixes %s with member ids: %r" % (MACHINE, owners))
+    if MACHINE in owners[1:]:
+        raise ValueError("owners holds %s other than once, first: %r" % (MACHINE, owners))
     return owners
 
 
@@ -286,6 +289,27 @@ def set_policy(sid, mutate, deadline=None):
         if new == checked_policy(access, shares):
             return rec, False
         rec["access"], rec["shares"], rec["policyRev"] = new[0], new[1], rev + 1
+        sminos._write_record(record_path(sid), rec)
+        return rec, True
+
+
+def add_owner(sid, member, proof, deadline=None):
+    """(record, changed): `member` added to the session's owners under the
+    records' lock, its act (`proof`, verbatim) appended to `ownersProof`,
+    policyRev bumped (an owner change moves a private session's audience,
+    owners and shares, and every owner change republishes its `joined`); the
+    record written whole, everything else as read. A member already an owner
+    changes nothing and writes nothing. NoRecord as set_policy's."""
+    with _locked(deadline):
+        rec = read(sid)
+        if rec is None:
+            raise NoRecord("session %s has %s" % (str(sid)[:8], "a record that cannot be read"
+                                                   if unreadable(sid) else "no record"))
+        if member in rec["owners"]:
+            return rec, False
+        rec["owners"] = checked_owners(list(rec["owners"]) + [member])
+        rec["ownersProof"] = (list(rec["ownersProof"]) if isinstance(rec.get("ownersProof"), list) else []) + [proof]
+        rec["policyRev"] = sminos_audience.policy_of(rec)[2] + 1
         sminos._write_record(record_path(sid), rec)
         return rec, True
 
