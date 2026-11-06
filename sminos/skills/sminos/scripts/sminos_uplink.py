@@ -2754,6 +2754,7 @@ class Link:
                 for pid in sorted(self.opened):
                     self.upload(self.logs[pid], live)
                     self.deliveries(self.logs[pid])
+                    self.logs[pid].show_notices()   # what the hub withheld, told its sending session (P5 O18 D5)
                     if not self.coded:
                         self.host_pass(self.logs[pid])
             self.failing = ""
@@ -3057,7 +3058,7 @@ def cmd_uplink(_a):
     if os.getppid() != parent:
         log("not started (pid %d): its daemon (pid %d) is gone" % (os.getpid(), parent))
         return
-    lf = take_lock()  # noqa: F841 — held for the process's life
+    lock = take_lock()   # held for the process's life, released as it ends (below)
     cred = None
     if rl10.cut_over():
         if rl10.check()[0] is None:
@@ -3090,3 +3091,4 @@ def cmd_uplink(_a):
     if held:
         log("the builds held: %d of %d saved or already current in %.2f s" % (saved, held, time.monotonic() - at))
     log("stopped (pid %d)%s" % (os.getpid(), "" if halt.is_set() or not ended() else ": its daemon is gone"))
+    lock.close()

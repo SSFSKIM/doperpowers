@@ -57,7 +57,14 @@ the endpoint refused for good never comes down: its position does, as
 Message reach (P5 O18 D5, D6). The hub only refuses: a `not-reachable`
 refusal leaves a tombstone `{writer, seq, withheld: true}` at the position
 and the writer goes on (an arriving tombstone is a spent position here,
-never reported); a `state-unavailable` one on a direct stream pauses the
+never reported). An own position it withheld while this machine's event
+holds it — the refusal, or its tombstone seen again on resync (DX2's
+tombstone, RL10's `spent withheld`, a `have`'s withheld list) — is recorded
+withheld (`withheld`, for good; withhold_own): the event stays in its
+writer file as what its session tried to send, the position counts as
+uploaded, and the sending session is shown that the message was not
+delivered (`notices`, until it is live, for NOTICE_KEPT); a
+`state-unavailable` one on a direct stream pauses the
 writer and sends the position again after ASK_MS (on RL10 the endpoint
 rewinds); an `audience` one — the stream the event went under is not its
 session's now — stops the writer past the stream (`dead`), until an event
@@ -67,8 +74,9 @@ up as a content-free `void {ts, writer, seq, kind: void, of, audience?}`
 
 Its state between streams lives in the project's home, `uplink.json`: the
 spent positions, the rejections not yet reported (a report whose POST
-failed is sent again after the next `hello`), the dead writers and the
-voided positions, whether the hub's latest `have` named this machine the
+failed is sent again after the next `hello`), the dead writers, the
+voided and the withheld positions, the notices not yet shown, whether the
+hub's latest `have` named this machine the
 project's archive machine, with when it said so, and what that same `have`
 admitted of this machine's own writers — its vector and its withheld
 positions (`archive`, `archive_at`, `archive_have`: what sminos_archive
@@ -136,6 +144,10 @@ ENDPOINT_ADDS = ("created", "mac", "sig", "attest", "audience", "policyRev")
 # one retry per writer per wait, for as long as the stream is open.
 # SMINOS_ASK_MS overrides it, in milliseconds.
 ASK_MS = 30_000
+# How long a notice of a message the hub withheld waits for its sending
+# session to be live, from the message's own ts; past it the notice is
+# dropped, said in daemon.log (show_notices).
+NOTICE_KEPT = 86400.0
 
 
 def log(line):
@@ -288,6 +300,35 @@ def tombstone(writer, seq):
     """The line the archive holds at a position the hub withheld, or this
     machine recorded refused or voided."""
     return {"writer": writer, "seq": seq, "withheld": True}
+
+
+def notice_text(to):
+    """What the sending session is shown of its message the hub withheld
+    (P5 O18 D5): one word of why, and whom it was to — never its text."""
+    return "[sminos: your message to %s was not delivered: not-reachable]" % to
+
+
+def addressed_to(e):
+    """The aliases a message names, as its notice says them: its `to`'s, in
+    order, each once and joined (a copy or a broadcast names several), and
+    `all` for one to everyone (`*`); None for an event that is no message
+    (sminos.CHAT_KINDS), or none held."""
+    if not isinstance(e, dict) or e.get("kind") not in sminos.CHAT_KINDS:
+        return None
+    to = e.get("to")
+    if not isinstance(to, list):
+        return "all"
+    aliases = [r["alias"] for r in to if isinstance(r, dict) and isinstance(r.get("alias"), str) and r["alias"]]
+    return ", ".join(" ".join(a.split())[:64] for a in dict.fromkeys(aliases)) or "all"
+
+
+def notices_in(d):
+    """The notices an uplink.json holds (HubLog.withhold_own), each
+    {writer, seq, session, to, ts}; any other entry left out."""
+    raw = d.get("notices")
+    return [n for n in raw if isinstance(n, dict) and isinstance(n.get("writer"), str) and type(n.get("seq")) is int
+            and isinstance(n.get("session"), str) and isinstance(n.get("to"), str) and isinstance(n.get("ts"), str)] \
+        if isinstance(raw, list) else []
 
 
 def runs_of(raw):
@@ -444,6 +485,7 @@ class HubLog:
         self.nonces = None   # nonce → (writer, seq) of every coded event the log holds, read on first import
         self.epochs = {}     # own writer → how many bounds were set on it (bound), across streams: an upload's mark
         self.taken_failing = None   # TAKEN_FILE's write failure as last said (keep)
+        self.notices_owed = None    # whether uplink.json holds notices to show (show_notices); None: not yet read
         self.reset()
 
     def reset(self):
@@ -514,6 +556,15 @@ class HubLog:
         sends the void again, its echo reads present, and the archive holds
         its tombstone."""
         raw = self.state().get("voided")
+        return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
+            if isinstance(raw, dict) else {}
+
+    def withheld(self):
+        """{writer: {seq}}: the positions of this machine's writers the hub
+        withheld while an event of this machine's held them (withhold_own),
+        kept for good: the file keeps the event, the hub a tombstone, and
+        the archive copies the tombstone."""
+        raw = self.state().get("withheld")
         return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
             if isinstance(raw, dict) else {}
 
@@ -886,7 +937,27 @@ class HubLog:
         else:
             d.pop("archive_have_error", None)
         self.save(d)
+        if admitted is not None:
+            self.withhold_listed(admitted["withheld"])
         self.release_heads()
+
+    def withhold_listed(self, listed):
+        """The positions a `have` lists withheld (its `withheld`, as
+        admitted_have kept it) of this machine's writers under its name now,
+        each an event of this machine's holds here and not yet recorded so:
+        settled withheld (withhold_own), so a refusal lost to a dropped
+        connection still reaches its sender, once."""
+        held, lasts = self.withheld(), None
+        for w, raw in sorted(listed.items()):
+            if not self.allocated_here(w):
+                continue
+            if lasts is None:
+                lasts = self.writers(own=True)
+            last = lasts.get(w, (0, None))[0]
+            for a, b in runs_of(raw):
+                for seq in range(a, min(b, last) + 1):
+                    if seq not in held.get(w, ()):
+                        self.withhold_own(w, seq)
 
     def release_heads(self):
         """This machine's operator writer, waiting for the upstream's head
@@ -954,7 +1025,8 @@ class HubLog:
         ask_wait, with no reconnect and no further write, once per wait for
         as long as the stream is open, never given up. A `not-reachable` one
         (the hub withheld the event, a tombstone in its place) stops
-        nothing: the writer goes on at the next seq."""
+        nothing: the writer goes on at the next seq, and the position is
+        settled withheld here (withhold_own)."""
         r = frame.get("refusal") if isinstance(frame.get("refusal"), dict) else {}
         reason, writer = r.get("reason"), r.get("writer")
         self.drawing = None   # what was drawn may hold a writer stopped now
@@ -981,6 +1053,8 @@ class HubLog:
             due = held[0] if held else time.monotonic() + ask_wait()
             self.paused[writer] = (due, min(at, held[1]) if held else at)
             self.bound(writer, at - 1)
+        elif isinstance(writer, str) and self.own(writer) and reason == "not-reachable" and at:
+            self.withhold_own(writer, at)
 
     def stop_dead(self, writer, seq, final=False):
         """An `audience` refusal of an own writer at seq: the writer is dead
@@ -1039,6 +1113,83 @@ class HubLog:
                 return None
             v["audience"] = audience
         return v
+
+    def withhold_own(self, writer, seq):
+        """An own position the hub withheld (P5 O18 D5: its `not-reachable`
+        refusal, or its tombstone seen on resync) while the event this
+        machine's session wrote holds it here. spend_own keeps such a
+        position the event's, rightly for every reason it serves; here the
+        hub holds a tombstone in its place and the writer goes on past it.
+        Recorded withheld for good (withheld), the event left in its writer
+        file as this machine's record of what its session tried to send,
+        and counted as uploaded: taken, never stopped or bounded, so the
+        writer's next events go up and nothing waits behind it (`sent` is
+        left as it is: an upload of it again, a `resend` from before it, is
+        withheld again for the same body). The sending session's notice is
+        queued (show_notices); the operator's writer has no session, so its
+        notice is the daemon.log line alone. A position withheld already
+        queues nothing. Whether it was recorded now."""
+        if seq in self.withheld().get(writer, ()):
+            return False
+        e = next((x for x in read_events(sminos.writer_path(self.project, writer)) if x["seq"] == seq), None)
+        d = self.state()
+        held = d.get("withheld") if isinstance(d.get("withheld"), dict) else {}
+        held[writer] = sorted(set(held.get(writer) or []) | {seq})
+        d["withheld"] = held
+        to, session = addressed_to(e), sminos.writer_session(writer)
+        at = sminos._ts_epoch(e.get("ts")) if e is not None else None
+        if to is None:
+            told = ""
+        elif not session:
+            told = "; the operator's message to %s was not delivered" % to
+        elif at is None or time.time() - at > NOTICE_KEPT:
+            told = "; the message is too old for its session %s to be told" % session[:8]
+        else:
+            d["notices"] = notices_in(d) + [{"writer": writer, "seq": seq, "session": session, "to": to,
+                                             "ts": e["ts"]}]
+            self.notices_owed = True
+            told = "; its session %s is told" % session[:8]
+        self.save(d)
+        self.keep_taken({writer: seq})
+        log("the hub withheld %s:%d of %s (not-reachable): settled here, the writer goes on past it%s"
+            % (writer, seq, self.project.name, told))
+        return True
+
+    def show_notices(self):
+        """The notices withhold_own queued, each pushed to its sending
+        session while that session is live, as a frame no log holds (no
+        peer log event, so no reach is asked for it), and dropped once
+        pushed, once a push may have reached it, or NOTICE_KEPT past its
+        message's ts (said in daemon.log); a session not live keeps its
+        notice. Run on the uplink's upload pass; uplink.json is read only
+        while it holds some."""
+        if self.notices_owed is False:
+            return
+        d = self.state()
+        queued = notices_in(d)
+        left = []
+        for n in queued:
+            at = sminos._ts_epoch(n["ts"])
+            if at is None or time.time() - at > NOTICE_KEPT:
+                log("the notice of %s:%d of %s was not shown: its session %s was not live within %d h of the "
+                    "message" % (n["writer"], n["seq"], self.project.name, n["session"][:8], NOTICE_KEPT // 3600))
+                continue
+            peer = sminos.peer_for_session(n["session"])
+            if not peer:
+                left.append(n)
+                continue
+            try:
+                sminos.control_module().push_live(peer, n["session"], notice_text(n["to"]))
+            except sminos.SendFailed as e:
+                if e.phase == "before":
+                    left.append(n)
+                    continue
+                log("the notice of %s:%d of %s may have reached its session %s (%s): not pushed again"
+                    % (n["writer"], n["seq"], self.project.name, n["session"][:8], e))
+        if left != queued:
+            d["notices"] = left
+            self.save(d)
+        self.notices_owed = bool(left)
 
     def own(self, writer):
         return writer.startswith(self.machine + "/") or (self.archive and writer.startswith(LEGACY))
@@ -1178,7 +1329,8 @@ class HubLog:
         for raw in events:
             if self.coded and is_tombstone(raw):
                 # A position the hub withheld (P5 O18 D5): content-free, carrying no code, and spent here as a
-                # position refused is, never reported.
+                # position refused is, never reported; an own one an event of this machine holds is settled
+                # withheld (spend).
                 if self.spend(raw["writer"], raw["seq"], "withheld", by="the hub"):
                     newly.setdefault(raw["writer"], set()).add(int(raw["seq"]))
                 continue
@@ -1282,7 +1434,8 @@ class HubLog:
         here is (`take`): an own writer's, under this machine's name or a
         former one, through `spend_own`, so a position an event of this
         machine holds stays that event's (a lost endpoint ledger answers this
-        machine's own echoes `conflict`); any other's
+        machine's own echoes `conflict`) — and, the hub's tombstone there
+        (`withheld`), is settled withheld (withhold_own); any other's
         added to the spent positions. Nothing is reported up. Each position
         is said once in daemon.log, with its project and the endpoint's
         reason. Whether it was spent now."""
@@ -1297,6 +1450,10 @@ class HubLog:
             return False   # said when it was spent
         if self.is_own(writer):
             if not self.spend_own(writer, seq):
+                if reason == "withheld":
+                    # The hub's tombstone of what this machine sent (D5), seen on resync: settled as its refusal is.
+                    self.withhold_own(writer, seq)
+                    return False
                 log("%s spent %s: %s; an event of this machine holds that position, so it is not spent"
                     % (by, where, why))
                 return False

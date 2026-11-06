@@ -75,7 +75,7 @@ is the hub's tombstones, sent as the `have`'s `withheld` and counted in its
 vector; `archive` (a boolean, or {project: boolean}) is the `have`'s archive
 designation. `refuse_audience` (a list of writers) refuses each upload of
 those writers `audience`, the writer's later events in the frame passed
-over, as the endpoint refuses a stream it does not sign. `refused` (ctl
+over, as the endpoint refuses a stream it does not sign. `refuse_upload` (ctl
 `refuse` {project, writer, seq, reason?}) sends `refused {project, refusal:
 {reason, writer, seq}}`, `not-reachable` by default, with no message.
 
@@ -507,9 +507,10 @@ class Endpoint:
                                         **({"message": message} if message else {})}})
         return out
 
-    def refused(self, project, writer, seq, reason="not-reachable"):
+    def refuse_upload(self, project, writer, seq, reason="not-reachable"):
         """The hub's refusal of an upload as the endpoint passes it down, with
-        no message (a `not-reachable` never carries one). Sent, and returned."""
+        no message (a `not-reachable` never carries one). Sent, and returned.
+        (Not `refused`: that is the list of the hellos refused.)"""
         frame = {"t": "refused", "project": project, "refusal": {"reason": reason, "writer": writer, "seq": seq}}
         self.send(frame)
         return frame
@@ -655,7 +656,7 @@ def control(ep, req):
         mode = int(str(arg.pop("mode", "600")), 8)
         ep.write_rl10(mode, **arg)
     elif op == "refuse":
-        ep.refused(arg["project"], arg["writer"], arg["seq"], arg.get("reason", "not-reachable"))
+        ep.refuse_upload(arg["project"], arg["writer"], arg["seq"], arg.get("reason", "not-reachable"))
     elif op == "unlink-rl10":
         os.unlink(ep.rl10_path())
     elif op == "stop":

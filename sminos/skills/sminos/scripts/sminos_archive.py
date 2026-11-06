@@ -35,7 +35,8 @@ a former name's entry as the last `have` under that name saved it, and none
 copied without one: sminos_hublog's on_have), never `sent` or `taken`: on RL10 `taken` moves once the endpoint's socket
 takes a frame, before the hub admitted or refused anything in it. Each
 position that `have` lists withheld, each this machine recorded refused
-`audience` or voided (sminos_hublog's `dead` and `voided`), is written as
+`audience`, voided or withheld (sminos_hublog's `dead`, `voided` and
+`withheld`: a refusal received, kept past a rename), is written as
 its tombstone, `{writer, seq, withheld: true}`, whatever the local file
 holds there: a refusal lost to a dropped connection is still honoured, and
 a refused body never reaches the archive once a void fills its position.
@@ -152,7 +153,7 @@ def admitted(project):
         except ValueError as e:
             raise daemon.SyncFailed("the archive of %s: its saved withheld list of %s is unreadable (%s)"
                                     % (project.name, w, e))
-    for source in (hl.dead(), hl.voided()):
+    for source in (hl.dead(), hl.voided(), hl.withheld()):
         for w, held in source.items():
             seqs = held["at"] if isinstance(held, dict) else held
             marked.setdefault(w, []).extend((s, s) for s in seqs)
