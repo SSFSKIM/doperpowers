@@ -11,6 +11,9 @@ whichever way the hub's word arrives: its refusal, its tombstone on resync
 
 - Dx2: HubLog against hub_standin.py over DX2, which withholds a message
   naming a session nobody exposed.
+- Restate: over DX2 too, a session's own `joined` or `state` the hub
+  withheld restated once by the daemon's next tick (MAWS #492): admitted,
+  never restated again once withheld again, owed nothing after a newer one.
 - Rl10: the uplink in this process against endpoint_standin.py, whose ctl
   `refuse` sends `not-reachable`.
 
@@ -36,6 +39,7 @@ import test_words as tw  # noqa: E402  (its machine, sessions and inboxes, the e
 
 import sminos  # noqa: E402
 import sminos_archive as archive  # noqa: E402
+import sminos_daemon as daemon  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
 
 S1 = tw.S1
@@ -72,7 +76,9 @@ class Sender(tw.Machine):
         return json.loads(Path(self.p.home, hublog.STATE_FILE).read_text())
 
 
-class Dx2(Sender):
+class OverDx2(Sender):
+    """HubLog against a hub stand-in of the class's own, over DX2."""
+
     @classmethod
     def setUpClass(cls):
         cls.hub = tr.Hub()
@@ -114,6 +120,8 @@ class Dx2(Sender):
         return [(e["seq"], e.get("text"), e.get("withheld"))
                 for e in self.hub.state()["projects"][self.p.id]["writers"].get(W, [])]
 
+
+class Dx2(OverDx2):
     def test_a_refusal_settles_the_event_withheld_and_the_session_is_told_once(self):
         self.hello()
         self.joined()
@@ -225,6 +233,108 @@ class Dx2(Sender):
         held = tw.read_lines(os.path.join(clone, W.replace("/", ".") + ".jsonl"))
         self.assertEqual(held[1], {"writer": W, "seq": 2, "withheld": True})
         self.assertNotIn("secret", json.dumps(held))
+
+
+class Restate(OverDx2):
+    """A withheld own snapshot restated (D5; MAWS #492): withhold_own owes a
+    restatement of the session's `joined` or `state`, the daemon's next tick
+    writes it from the record as it is now, and a restatement the hub
+    withholds again owes nothing more. The daemon writes the snapshots
+    itself (its reconciliation joins the live session, publish_state its
+    first word); the stand-in's registry row binding S1 to another machine
+    is what withholds them, and moving it back by hand plays a cause that
+    clears (the provenance race), which the stand-in cannot race."""
+
+    def setUp(self):
+        super().setUp()
+        self.bind("other")
+
+    def bind(self, machine):
+        self.hub.call("POST", "/control/policies", {"rows": {S1: {"machine": machine}}})
+
+    def tick(self):
+        sminos.forget_caches()
+        return daemon.tick(self.p)
+
+    def own(self, kind=None):
+        return [e for e in tw.read_lines(sminos.writer_path(self.p, W)) if kind is None or e["kind"] == kind]
+
+    def hub_has(self, e):
+        held = self.hub.state()["projects"][self.p.id]["writers"].get(W, [])
+        return next((x for x in held if x["seq"] == e["seq"]), None)
+
+    def withhold_the_first_snapshots(self):
+        """The daemon's first tick joins S1 and publishes its word; both go
+        up and the hub withholds them. Returns (the joined, the state)."""
+        self.hello()
+        self.tick()
+        joined, state = self.own("joined"), self.own("state")
+        self.assertEqual((len(joined), len(state)), (1, 1), self.own())
+        self.assertEqual(sorted(r["seq"] for r in self.upload() if r["reason"] == "not-reachable"),
+                         sorted([joined[0]["seq"], state[0]["seq"]]))
+        return joined[0], state[0]
+
+    def test_a_withheld_joined_is_restated_at_the_next_tick_and_the_hub_admits_it(self):
+        first, _ = self.withhold_the_first_snapshots()
+        self.assertEqual(self.hub_has(first), {"writer": W, "seq": first["seq"], "withheld": True})
+        self.bind("testhost")
+        self.tick()
+        joined = self.own("joined")
+        self.assertEqual(len(joined), 2, "the next tick writes the joined again")
+        again = joined[1]
+        self.assertEqual({k: again.get(k) for k in ("alias", "cwd", "machine", "session_kind")},
+                         {k: first.get(k) for k in ("alias", "cwd", "machine", "session_kind")},
+                         "from the session's last joined")
+        self.assertEqual(self.upload(), [], "admitted")
+        self.assertEqual(self.hub_has(again)["kind"], "joined")
+        self.assertEqual(self.hub.state()["policies"][S1]["machine"], "testhost")
+        self.tick()
+        self.assertEqual(len(self.own("joined")), 2, "restated once")
+        self.assertIn("restated", tw.daemon_log())
+
+    def test_a_restatement_withheld_again_is_not_restated(self):
+        first, _ = self.withhold_the_first_snapshots()   # bound to another machine for good
+        self.tick()
+        joined, state = self.own("joined"), self.own("state")
+        self.assertEqual((len(joined), len(state)), (2, 2), "each restated once")
+        self.assertEqual(sorted(r["seq"] for r in self.upload() if r["reason"] == "not-reachable"),
+                         sorted([joined[1]["seq"], state[1]["seq"]]), "withheld again")
+        for _ in range(2):
+            self.tick()
+        self.assertEqual((len(self.own("joined")), len(self.own("state"))), (2, 2), "no third snapshot")
+        said = [x for x in tw.daemon_log().splitlines() if "again" in x and S1[:8] in x]
+        self.assertEqual(len(said), 2, tw.daemon_log())
+
+    def test_a_withheld_state_followed_by_a_newer_own_state_owes_nothing(self):
+        _, state = self.withhold_the_first_snapshots()
+        newer = sminos.lifecycle(self.p, S1, "state", state="busy", machine="testhost")[0]
+        self.bind("testhost")
+        self.tick()
+        self.assertEqual([e["seq"] for e in self.own("state")], [state["seq"], newer["seq"]],
+                         "the newer state stands for it")
+        self.assertEqual(len(self.own("joined")), 2, "the joined, with nothing newer, is still owed")
+
+    def test_a_withheld_joined_of_a_session_that_ended_is_not_restated(self):
+        self.withhold_the_first_snapshots()
+        self.end_sender()
+        self.tick()
+        kinds = [e["kind"] for e in self.own()]
+        self.assertEqual(kinds[-1], "retired", kinds)
+        self.assertEqual((kinds.count("joined"), kinds.count("state")), (1, 1),
+                         "a retired session is never joined again by a restatement")
+        self.tick()
+        self.assertEqual(self.own()[-1]["kind"], "retired")
+
+    def test_a_withheld_message_owes_no_restatement(self):
+        self.bind("testhost")
+        self.hello()
+        self.tick()
+        self.upload()
+        before = len(self.own())
+        self.say("the secret words")
+        self.assertEqual([r["reason"] for r in self.upload()], ["not-reachable"])
+        self.tick()
+        self.assertEqual(len(self.own()), before + 1, "nothing written for it")
 
 
 class Rl10(Sender):

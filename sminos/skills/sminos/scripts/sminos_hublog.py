@@ -63,7 +63,9 @@ tombstone, RL10's `spent withheld`, a `have`'s withheld list) — is recorded
 withheld (`withheld`, for good; withhold_own): the event stays in its
 writer file as what its session tried to send, the position counts as
 uploaded, and the sending session is shown that the message was not
-delivered (`notices`, until it is live, for NOTICE_KEPT). A
+delivered (`notices`, until it is live, for NOTICE_KEPT); a session's own
+`joined` or `state` is owed a restatement the daemon's next tick writes
+(sminos_daemon.owe_restatement), once. A
 `state-unavailable` refusal on a direct stream pauses the writer and sends
 the position again after ASK_MS (on RL10 the endpoint rewinds); an
 `audience` one — the stream the event went under is not its
@@ -1144,8 +1146,11 @@ class HubLog:
         left as it is: an upload of it again, a `resend` from before it, is
         withheld again for the same body). The sending session's notice is
         queued (show_notices); the operator's writer has no session, so its
-        notice is the daemon.log line alone. A position withheld already
-        queues nothing. Whether it was recorded now."""
+        notice is the daemon.log line alone. The session's own `joined` or
+        `state` is owed a restatement (sminos_daemon.owe_restatement: the
+        hub's registry moves only on those), unless it was the restatement,
+        which owes nothing more. A position withheld already queues nothing.
+        Whether it was recorded now."""
         if seq in self.withheld().get(writer, ()):
             return False
         e = next((x for x in read_events(sminos.writer_path(self.project, writer)) if x["seq"] == seq), None)
@@ -1168,6 +1173,13 @@ class HubLog:
             told = "; its session %s is told" % session[:8]
         self.save(d)
         self.keep_taken({writer: seq})
+        owed = daemon.owe_restatement(self.project, writer, seq, e)
+        if owed == "owed":
+            told += "; its %s is owed a restatement, at the daemon's next tick" % e["kind"]
+        elif owed == "again":
+            told += ("; it restated session %s's %s, which the hub withheld again: not restated again, a cause "
+                     "that holds (a session bound to another machine) is not repaired by republishing, and "
+                     "its next %s is the next try" % (session[:8], e["kind"], e["kind"]))
         log("the hub withheld %s:%d of %s (not-reachable): settled here, the writer goes on past it%s"
             % (writer, seq, self.project.name, told))
         return True

@@ -411,8 +411,8 @@ run_suites() {
     pass "a session's reach set by its owner: access and share, widening at the operator's terminal alone, the unlisted notice before the snapshot, unlisting through the hub's filter (test_visibility.py)"
   else fail "a session's reach set by its owner: access and share, widening at the operator's terminal alone, the unlisted notice before the snapshot, unlisting through the hub's filter (test_visibility.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_withheld.py"; then
-    pass "the sender's side of a hub refusal: an own event settled withheld, its writer going on, its session told once (test_withheld.py)"
-  else fail "the sender's side of a hub refusal: an own event settled withheld, its writer going on, its session told once (test_withheld.py)"; fi
+    pass "the sender's side of a hub refusal: an own event settled withheld, its writer going on, its session told once, a withheld own snapshot restated once (test_withheld.py)"
+  else fail "the sender's side of a hub refusal: an own event settled withheld, its writer going on, its session told once, a withheld own snapshot restated once (test_withheld.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_reach_gate.py"; then
     pass "message reach at the send boundary: reach? asked by the uplink alone for every peer push, refused-reach, owed, same owner, projectless (test_reach_gate.py)"
   else fail "message reach at the send boundary: reach? asked by the uplink alone for every peer push, refused-reach, owed, same owner, projectless (test_reach_gate.py)"; fi

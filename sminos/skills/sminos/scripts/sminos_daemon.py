@@ -31,8 +31,9 @@ every project known here, each in the order of §8:
   3. publish     (hub projects) a local member joined under a former name
                  of this machine joins again under its name now; (mirrored
                  and hub projects) `state` once a word has held for two
-                 ticks, the first at once; (every project) `renamed` on a
-                 harness rename
+                 ticks, the first at once; (hub projects) an own snapshot
+                 the hub withheld, restated once (restate_withheld);
+                 (every project) `renamed` on a harness rename
   4. deliver     everything owed to a local member, through deliver_next
   5. push        (mirrored projects) commit what the tick appended, push
   6. archive     (hub projects with a remote, on the machine the hub
@@ -858,6 +859,154 @@ def mirrored(project):
     return bool(project.remote) and project.hub is None
 
 
+# ------------------------------------------------------------- restating a withheld own snapshot
+#
+# P5 O18 D5 (MAWS #492). The hub's policy registry moves only on a session's
+# own `joined` and `state` snapshots. One the hub withholds stays in its
+# writer file (HubLog.withhold_own), and every publisher compares against
+# that file, so without this the registry's row would stay where it was
+# until the session's word or record next changed: for an idle session,
+# never. withhold_own owes a restatement of that session and kind
+# (owe_restatement), and the next tick writes it (restate_withheld), from
+# the record as it is now. A restatement the hub withholds again owes
+# nothing more: a cause that holds (a session bound to another machine) is
+# not repaired by republishing, and the session's next natural snapshot is
+# the next try, so each costs at most one extra position.
+#
+# RESTATE_FILE, in the project's home: {session: {kind: {writer, seq, ts,
+# restated?}}} — the position withheld (owed), or the restatement written
+# for it (`restated`, kept so its own withholding is told apart, until
+# RESTATED_KEPT past its ts). One entry a session and kind, the latest
+# position: it is written by the uplink and the tick under one lock, and the
+# tick holds it across the restatement's append, so a refusal of a
+# restatement is never taken for a natural snapshot's.
+
+RESTATE_FILE = "restate.json"
+SNAPSHOT_KINDS = ("joined", "state")
+RESTATED_KEPT = 7 * 86400.0
+
+
+def _restate_path(project):
+    return sminos.project_path(project, RESTATE_FILE)
+
+
+def _restate_held(path):
+    try:
+        d = sminos.json_at(path)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for sid, kinds in (d.items() if isinstance(d, dict) else ()):
+        for kind, at in (kinds.items() if isinstance(kinds, dict) else ()):
+            if kind in SNAPSHOT_KINDS and isinstance(at, dict) and isinstance(at.get("writer"), str) \
+                    and type(at.get("seq")) is int and isinstance(at.get("ts"), str):
+                out.setdefault(sid, {})[kind] = at
+    return out
+
+
+@contextlib.contextmanager
+def _restatements(project):
+    """The project's restatements, {session: {kind: entry}}, for the block to
+    change under their lock; written whole when it ends without raising and
+    changed them, a restated entry past RESTATED_KEPT dropped."""
+    path = _restate_path(project)
+    with sminos.flocked(path + ".lock"):
+        held = _restate_held(path)
+        was = json.dumps(held, sort_keys=True)
+        yield held
+        cut = time.time() - RESTATED_KEPT
+        held = {sid: kept for sid, kinds in held.items()
+                if (kept := {k: at for k, at in kinds.items()
+                             if not at.get("restated") or (sminos._ts_epoch(at["ts"]) or 0) >= cut})}
+        if json.dumps(held, sort_keys=True) != was:
+            sminos.write_json(path, held)
+
+
+def _later(e, at):
+    """Whether the event `e` sits after the position `at` (both {writer,
+    seq, ts}): by seq in one writer, by ts across writers (a session's own
+    events go under its streams and its machine's former names too)."""
+    if e["writer"] == at["writer"]:
+        return e["seq"] > at["seq"]
+    return str(e.get("ts") or "") > at["ts"]
+
+
+def owe_restatement(project, writer, seq, e):
+    """withhold_own's side: the event `e` the hub withheld at writer:seq,
+    when it is its writer's session's own `joined` or `state`, is owed a
+    restatement — unless a later position of that session and kind is owed
+    or restated already — and the daemon nudged. A restatement withheld
+    again owes nothing: its entry is dropped. Returns "owed", "again" (the
+    restatement was withheld) or None (nothing owed)."""
+    sid = sminos.writer_session(writer)
+    if not (sid and isinstance(e, dict) and e.get("kind") in SNAPSHOT_KINDS and e.get("session") == sid):
+        return None
+    at = {"writer": writer, "seq": seq, "ts": str(e.get("ts") or "")}
+    with _restatements(project) as held:
+        entry = held.get(sid, {}).get(e["kind"])
+        if entry is not None and entry.get("restated") and (entry["writer"], entry["seq"]) == (writer, seq):
+            del held[sid][e["kind"]]
+            return "again"
+        if entry is not None and _later(entry, at):
+            return None
+        held.setdefault(sid, {})[e["kind"]] = at
+    sminos.nudge_daemon()
+    return "owed"
+
+
+def restate_withheld(project, view):
+    """Duty 3, for a hub project: each snapshot owed a restatement
+    (owe_restatement) written again through lifecycle, as the publishers
+    write it, so its stream, audience, policyRev and redaction are the
+    record's now — a `joined` with the fields of the session's last
+    `joined` (sminos.joined_again), a `state` with the member's word now —
+    provided the session is still a local member and no later own snapshot
+    of that kind was written since (checked under its file's lock). One
+    that is no longer owed is dropped; one whose append failed stays owed
+    for the next tick. Returns how many it appended."""
+    path = _restate_path(project)
+    if not any(not at.get("restated") for kinds in _restate_held(path).values() for at in kinds.values()):
+        return 0
+    members = {m.session: m for m in view.members if m.local and m.session}
+    n = 0
+    with _restatements(project) as held:
+        for sid, kinds in held.items():
+            for kind, at in list(kinds.items()):
+                if at.get("restated"):
+                    continue
+                m, why = members.get(sid), {}
+
+                def guard(evs, kind=kind, at=at, why=why):
+                    if any(x["kind"] == kind and _later(x, at) for x in evs):
+                        why["no"] = "a later one was written since"
+                    elif kind == "joined" and sminos.latest_membership(evs) != "joined":
+                        why["no"] = "the session is no member now"
+                    return not why
+
+                if m is None:
+                    got, why["no"] = [], "the session is no member here now"
+                elif kind == "joined":
+                    fields = sminos.joined_again(sminos.own_events_of(project, sid), sid)
+                    got = [] if fields is None else sminos.lifecycle(project, sid, "joined", guard=guard,
+                                                                     required=False, **fields)
+                    if fields is None:
+                        why["no"] = "the session's own events hold no joined"
+                else:
+                    got = sminos.lifecycle(project, sid, "state", guard=guard, required=False,
+                                           state=m.state, machine=sminos.host_name())
+                if got:
+                    e = got[0]
+                    kinds[kind] = {"writer": e["writer"], "seq": e["seq"], "ts": e["ts"], "restated": True}
+                    sminos.daemon_log("restate %s: the hub withheld %s:%d, session %s's %s; restated at %s:%d"
+                                      % (project.name, at["writer"], at["seq"], sid[:8], kind, e["writer"], e["seq"]))
+                    n += 1
+                elif why:
+                    del kinds[kind]
+                    sminos.daemon_log("restate %s: the hub withheld %s:%d, session %s's %s; not restated: %s"
+                                      % (project.name, at["writer"], at["seq"], sid[:8], kind, why["no"]))
+    return n
+
+
 def shared(project):
     """Whether another machine reads the project's log, through git or a hub."""
     return bool(project.remote) or project.hub is not None
@@ -889,6 +1038,8 @@ def tick(project, all_seats=None, record=None):
         notice_former_writers(project, view, record)
     if shared(project):
         out["published"] += publish_state(project, view, record) + publish_titles(project, view)
+    if project.hub is not None:
+        out["published"] += restate_withheld(project, view)
     out["published"] += publish_renames(project, view)
     out["delivered"], out["to"] = deliver_owed(project, view)
     if out["integrated"]:
