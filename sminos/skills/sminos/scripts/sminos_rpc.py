@@ -1912,6 +1912,8 @@ def proof_refusal(rpc, ident):
         return "is of version 1"
     if not (act_text(proof["org"]) and act_text(proof["device"]) and act_text(proof["action"], 128)):
         return "has an org, a device and an action within action.ts's bounds"
+    if not (isinstance(proof["opId"], str) and OP_ID_RE.fullmatch(proof["opId"])):
+        return "has an opId (16-128 characters of A-Z, a-z, 0-9, _ and -): a record RPC is keyed by its op"
     if codes.b64url_bytes(proof["nonce"], codes.NONCE_BYTES) is None:
         return "has a nonce of %d bytes, base64url" % codes.NONCE_BYTES
     if codes.b64url_bytes(proof["stepUp"], SIGNATURE_BYTES) is None:
@@ -1956,7 +1958,9 @@ def record_proof(rpc):
     action.ts), so the act is held to isAction field by field: exactly
     ACT_KEYS, `webauthn` beside them if any (its four parts canonical
     base64url); canonical JSON; `v` 1; `org`, `device` (512) and `action`
-    (128) within isText's bounds in UTF-16 units; `nonce` 16 bytes and
+    (128) within isText's bounds in UTF-16 units; `opId` one OP_ID_RE takes
+    (so a record RPC without one, which op_refusal admits as a legacy
+    nonce-keyed RPC, is refused: no act lacks it); `nonce` 16 bytes and
     `stepUp` 64, canonical base64url; `created` and `opCreated` ISO-8601
     milliseconds (isIsoMillis), opCreated no later than created + 60 s.
     Then it is this op's on this machine: `org` and `machine` this machine's

@@ -934,6 +934,23 @@ class RecordRpcs(Base):
         self.assertEqual(records.read(S)["owners"], [A], "nothing changed")
         self.assertEqual(self.policy(), ("private", [], rec["policyRev"]))
 
+    def test_a_record_rpc_without_an_opid_is_refused(self):
+        """op_refusal admits a nonce-keyed RPC with no opId (DX6's legacy
+        shape), but an act without one is no act isAction takes: refused
+        before anything is written, whatever opId the proof carries."""
+        rpc = self.act("record.owners", {"add": True, "member": B})
+        for what, op, proof_op in (("no opId", None, None), ("a null opId", "null", None),
+                                   ("a null opId, the proof's a string", "null", rpc["opId"])):
+            got = {k: v for k, v in rpc.items() if k != "opId"}
+            if op == "null":
+                got["opId"] = None
+            got["proof"] = {**rpc["proof"], "opId": proof_op}
+            with self.subTest(what), self.assertRaises(rpcmod.Refused) as refused:
+                rpcmod.record_proof(got)
+            self.assertEqual(refused.exception.outcome["error"]["code"], "bad-shape")
+        with self.assertRaises(rpcmod.Refused):
+            rpcmod.record_proof({**rpc, "opId": "short", "proof": {**rpc["proof"], "opId": "short"}})
+
     def test_a_record_proof_is_checked_against_this_machines_identity(self):
         rpc = self.act("record.owners", {"add": True, "member": B})
         rpcmod.record_proof(rpc)
