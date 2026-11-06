@@ -142,15 +142,17 @@ def capable():
 def reach_capable():
     """Whether every peer push here is the endpoint's to decide (`reach?`,
     P5 O18 D3, D8): the machine is cut over to its endpoint and the
-    endpoint's welcome advertised `reach`. An unreadable file on a cut-over
-    machine is taken as capable, so the pushes are held owed (fail closed)."""
+    endpoint's welcome advertised `reach`. On a cut-over machine a file that
+    is not there yet, or cannot be read, is taken as capable, so the pushes
+    are held owed (fail closed) until a welcome says: keep_capabilities
+    writes it at every welcome, an old endpoint's empty list included."""
     if not sminos.sibling_module("sminos_rl10").cut_over():
         return False
     try:
         d = _read_audiences()
     except StreamUnknown:
         return True
-    return "reach" in (d.get("capabilities") or [])
+    return "reach" in (d.get("capabilities") or []) or not os.path.exists(audiences_path())
 
 
 def _write_audiences(d):

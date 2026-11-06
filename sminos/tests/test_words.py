@@ -141,11 +141,13 @@ class Machine(unittest.TestCase):
     # ---- the machine
 
     def cut_over(self, name="testhost", former=None):
-        """identity.json, as the first welcome writes it."""
+        """identity.json, as the first welcome writes it, and the
+        capabilities that welcome kept: none, an endpoint before O18's."""
         sminos.write_json(rl10.identity_path(), {
             "org": "org-1", "hub": "http://127.0.0.1:9", "name": name, "former": former or {},
             "ref": "machine-ref-1", "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z",
             "build": "b"}, mode=0o600)
+        sminos.audience_module().keep_capabilities([])
         sminos.forget_caches()
 
     def revoke(self, version=2, devices=(), members=(), keys=()):

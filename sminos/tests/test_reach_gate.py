@@ -452,6 +452,87 @@ class SameOwner(Rig):
                               **{"from": "human", "to": [{"session": RECIP, "alias": "rover"}], "text": "op"})
         self.assertTrue(sminos.ReachGate(self.hp).needs(e, RECIP))
 
+    def mirrored(self, name):
+        """A project git mirrors: a remote named, no hub."""
+        p = self.project(name)
+        smns = Path(p.root, ".smns")
+        smns.write_text(json.dumps({**json.loads(smns.read_text()), "remote": "/nowhere/%s-log.git" % name}))
+        sminos.forget_caches()
+        p = sminos.resolve_project(p.root)
+        self.assertTrue(p.remote and p.hub is None)
+        return p
+
+    def imported_say(self, project, text):
+        """A `say` under this machine's name and SENDER's id, as a git merge
+        brings one: no `verified`, nothing appended here."""
+        seq = max([e["seq"] for e in sminos.log_read(project) if e["writer"] == "testhost/" + SENDER] or [0]) + 1
+        return self.arrive(project, "testhost/" + SENDER, seq, kind="say", to=(RECIP,), signer=None,
+                           sender="sender", text=text)
+
+    def test_an_own_name_say_a_git_mirror_imported_goes_through_reach(self):
+        """The writer name is not provenance: a git-mirrored log can import a
+        line under this machine's name and an existing local session's id
+        that no one here wrote. Only a log that cannot bring this machine's
+        own writers from elsewhere takes the name for the sender: a hub
+        project of its org, or a project nothing syncs."""
+        gm = self.mirrored("gm")
+        for sid, name in ((SENDER, "sender"), (RECIP, "rover")):
+            self.session(gm, sid, name=name, inbox=True)
+            self.owned(sid)
+        sminos.reconcile(gm)
+        e = self.imported_say(gm, "not from here")
+        self.assertTrue(sminos.ReachGate(gm).needs(e, RECIP), "a git mirror's import is asked")
+        self.assertTrue(sminos.ReachGate(gm.id).needs(e, RECIP), "named by its id alike")
+        sminos.deliver_next(gm, tw.member(RECIP))
+        self.assertEqual(self.inbox(RECIP), [], "left owed for the uplink's reach?")
+        ep = self.endpoint(reach_verdict="refuse")
+        self.uplink()
+        tw.wait_for(lambda: self.reach_asks(ep), timeout=WAIT)
+        self.assertEqual(self.reach_asks(ep)[0]["event"]["seq"], e["seq"])
+        self.assertEqual(self.inbox(RECIP), [])
+
+    def test_a_project_nothing_syncs_keeps_the_fast_path(self):
+        lp = self.project("lp")
+        self.assertFalse(lp.remote or lp.hub)
+        for sid, name in ((SENDER, "sender"), (RECIP, "rover")):
+            self.session(lp, sid, name=name, inbox=True)
+            self.owned(sid)
+        e = sminos.log_append(lp, "testhost/" + SENDER, "say",
+                              **{"from": "sender", "to": [{"session": RECIP, "alias": "rover"}], "text": "mine"})
+        self.assertFalse(sminos.ReachGate(lp).needs(e, RECIP))
+        self.assertFalse(sminos.ReachGate(self.hp).needs(
+            {**e, "seq": 99}, RECIP), "a hub project of this machine's org: its own writers are its own")
+
+
+# ------------------------------------------------------------- the capability, before any welcome
+
+
+class Capability(Rig):
+    def test_a_cut_over_machine_with_no_capabilities_kept_holds_peer_pushes_until_a_welcome(self):
+        """A cut-over machine whose endpoint has not said yet (no
+        audiences.json: a welcome keeps it, an old endpoint's empty list
+        included) is taken as reach-capable: a peer push waits for the
+        endpoint's word rather than going unasked."""
+        self.live(SENDER, "sender")
+        self.live(RECIP, "rover", owners=ANOTHER)
+        os.unlink(au.audiences_path())
+        self.assertTrue(au.reach_capable())
+        self.assertIn(sminos.WORDS_RECORDED, self.cli("say", "@rover before any welcome"))
+        time.sleep(0.5)
+        self.assertEqual(self.inbox(RECIP), [], "nothing pushed unasked")
+        ep = self.endpoint(reach_verdict="deliver")
+        self.uplink()
+        tw.wait_for(lambda: self.inbox(RECIP), timeout=WAIT)
+        self.assertEqual(len(self.reach_asks(ep)), 1)
+        self.assertTrue(os.path.exists(au.audiences_path()), "the welcome kept what it said")
+
+    def test_an_endpoint_that_said_it_has_no_reach_pushes_as_before(self):
+        au.keep_capabilities([])
+        self.assertFalse(au.reach_capable())
+        os.unlink(sminos.sibling_module("sminos_rl10").identity_path())
+        sminos.forget_caches()
+        self.assertFalse(au.reach_capable(), "a machine not cut over: never")
+
 
 # ------------------------------------------------------------- the projectless push
 
