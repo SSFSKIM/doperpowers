@@ -642,9 +642,16 @@ class Members(Machine):
         sminos.forget_caches()
         link = self.link()
         now = 1000.0
+        # S2 with no record file yet (none established): it restates with the defaults. A member frame is built
+        # from the record file as it reads at publication (Link.fresh_frame), so the record is kept from being
+        # written, not only from being read.
+        ensure = sminos.ensure_record
         with mock.patch.object(sminos, "session_record", side_effect=lambda sid: None if sid == S2 else
-                               sminos.records_module().read(sid)):
+                               sminos.records_module().read(sid)), \
+                mock.patch.object(sminos, "ensure_record", side_effect=lambda project, sid, *a, **k:
+                                  None if sid == S2 else ensure(project, sid, *a, **k)):
             link.members(now)
+        self.assertFalse(os.path.lexists(sminos.records_module().record_path(S2)))
         first = {f["session"]: f for f in link.session_lane.take()}
         self.assertEqual(set(first), {S1, S2}, "this machine's sessions in both projects, and no remote member")
         self.assertEqual((first[S1]["project"], first[S2]["project"]), (p.id, q.id))

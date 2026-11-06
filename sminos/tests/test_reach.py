@@ -487,6 +487,20 @@ class Admitted(Plane):
                 archive.copy_log(self.p, tempfile.mkdtemp(dir=BASE))
             self.assertIn(why, str(raised.exception), "the run fails, saying why")
 
+    def test_a_hub_before_message_reach_lists_no_withheld_and_the_archive_copies_up_to_its_vector(self):
+        """Today's hub (before MAWS O18 M1) sends a `have` with no `withheld`:
+        nothing is withheld there, so its vector confirms every own position
+        up to it, as the archive copied before."""
+        own = "testhost/human"
+        self.put(own, (1, {"text": "one"}), (2, {"text": "two"}), (3, {"text": "not admitted yet"}))
+        self.put("other/human", (1, {"text": "theirs"}))
+        self.hl().on_have({"have": {own: 2, "other/human": 1}, "archive": True})
+        d = self.uplink()
+        self.assertEqual(d["archive_have"], {"have": {own: 2}, "withheld": {}})
+        self.assertNotIn("archive_have_error", d)
+        self.assertEqual([e["text"] for e in self.copied(own)[1]], ["one", "two"])
+        self.assertEqual([e["text"] for e in self.copied("other/human")[1]], ["theirs"])
+
     def test_no_have_yet_fails_the_run(self):
         with self.assertRaises(daemon.SyncFailed):
             archive.copy_log(self.p, tempfile.mkdtemp(dir=BASE))
