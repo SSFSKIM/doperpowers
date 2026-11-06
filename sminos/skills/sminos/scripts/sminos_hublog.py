@@ -862,14 +862,19 @@ class HubLog:
         admitted, why = admitted_have(have, frame.get("withheld"), self.is_own)
         d = self.state()
         prev = d.get("archive_have") if isinstance(d.get("archive_have"), dict) else None
-        if admitted is not None and prev is not None and isinstance(prev.get("withheld"), dict):
-            # The hub lists the withheld positions of this machine's name now alone (withheldOf): a former name's,
-            # listed by a `have` before the rename, are kept, so a refusal a disconnect lost before it is still
-            # honoured. Positions are never un-withheld, so keeping them is safe.
-            for w, runs in prev["withheld"].items():
-                if isinstance(w, str) and w.split("/", 1)[0] != self.machine and self.is_own(w) \
-                        and w not in admitted["withheld"]:
-                    admitted["withheld"][w] = runs
+        if admitted is not None:
+            # The hub lists the withheld positions of this machine's name now alone (withheldOf), so its vector says
+            # nothing the archive may copy by for a former name's writer: a position withheld there, its refusal
+            # lost to a disconnect before a `have` listed it, would be copied as admitted. A former name's entry,
+            # vector and withheld alike, stays as the last `have` saved it while that name was listed (carried
+            # from one saved entry to the next); with none saved, its writer is not copied. A former name gets
+            # no new appends, so freezing it loses nothing.
+            def former(w):
+                return isinstance(w, str) and w.split("/", 1)[0] != self.machine and self.is_own(w)
+            for part in ("have", "withheld"):
+                kept = prev.get(part) if prev is not None and isinstance(prev.get(part), dict) else {}
+                admitted[part] = {**{w: s for w, s in admitted[part].items() if not former(w)},
+                                  **{w: s for w, s in kept.items() if former(w)}}
         if d.get("archive") != self.archive:
             log("the hub says this machine %s the archive of %s" % ("writes" if self.archive else "does not write",
                                                                    self.project.name))

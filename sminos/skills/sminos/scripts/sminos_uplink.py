@@ -2429,11 +2429,12 @@ class Link:
                     # presence carries it); asked here too, so a session of
                     # a project not open on the stream has it as well.
                     self.plane.bridges.answers(sid, now, socks)
-                    if sminos.records_module().unreadable(sid):
+                    frame = self.fresh_frame(pid, m)
+                    if frame is None:
                         # An established record that cannot be read (P5 O18 D10): its policy is unknown, so no
                         # frame goes, and one sent before is withdrawn (`gone` below), until it reads again.
                         continue
-                    current[sid] = member_frame(pid, m, self.plane.bridges.launch(sid), self.visibility)
+                    current[sid] = frame
         frames = [f for sid, f in current.items() if self.members_sent.get(sid) != f]
         frames += [{"t": "member", "session": sid, "gone": True} for sid in self.members_sent if sid not in current]
         batch, size, unsent = [], 0, set()
@@ -2452,6 +2453,18 @@ class Link:
         self.members_unsent = unsent
         if not unsent:
             self.members_whole = True
+
+    def fresh_frame(self, pid, m):
+        """The member frame of a plane row from its session's record as it
+        reads now (the row's may be a stale one, from before a repair or a
+        policy change), or None while the record file exists and cannot be
+        read. One read serves both, so the frame never pairs a fresh check
+        with an older record."""
+        records = sminos.records_module()
+        rec = records.read(m.session)
+        if rec is None and sminos.UUID_RE.fullmatch(m.session) and os.path.lexists(records.record_path(m.session)):
+            return None
+        return member_frame(pid, m._replace(record=rec), self.plane.bridges.launch(m.session), self.visibility)
 
     def send_members(self, batch):
         """One entry of member frames queued, and taken as sent."""
@@ -2491,9 +2504,7 @@ class Link:
             rows = self.plane.member_rows.get(at, {})
             if sid in rows:
                 rows[sid] = rows[sid]._replace(record=sminos.session_record(sid))
-                changed = changed or self.members_sent.get(sid) != member_frame(at, rows[sid],
-                                                                                self.plane.bridges.launch(sid),
-                                                                                self.visibility)
+                changed = changed or self.members_sent.get(sid) != self.fresh_frame(at, rows[sid])
         if changed or sessions & self.members_unsent:
             self.publish_members(time.monotonic())
         return not sessions & self.members_unsent

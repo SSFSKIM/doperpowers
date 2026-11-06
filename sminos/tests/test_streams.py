@@ -294,6 +294,28 @@ class Streams(tw.Machine):
             self.assertEqual([e["text"] for e in self.says("testhost/" + S, project)], ["@other/public hi"])
         copies = [e for w in (stream(S, [A, C]), "testhost/" + S) for e in self.says(w, self.p)]
         self.assertTrue(all("copy" in e for e in copies), "the home project's events are the copies")
+        self.assertEqual(au.stream_audience(self.p, stream(S, [A, C])), [A, C],
+                         "the copy's stream is kept in its home with its audience, as in the delivering project")
+        self.assertFalse({"audience", "policyRev"} & {k for e in copies for k in e}, "no policy fields stored")
+
+    def test_no_copy_of_a_stream_event_goes_into_a_home_that_keeps_no_streams(self):
+        """A session in a local project (its log git-mirrored or kept here,
+        never filtered by audience) tags a private session in a hub project:
+        delivered under the stream there, and no copy of it at home."""
+        self.capable()
+        home = self.project("local")
+        self.session(home, S, name="sender")
+        self.local(S)
+        self.audience(S, [A], None, 0)
+        self.remote(R, "private")
+        self.audience(R, [A], [A, C], 3)
+        got = self.say("@work/private hi", cwd=home.root)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertEqual([e["text"] for e in self.says(stream(S, [A, C]))], ["@work/private hi"], "delivered")
+        self.assertIn("delivered; its copy is not kept in local", got.stderr)
+        self.assertEqual([e for e in sminos.log_read(home) if e["kind"] in ("say", "human")], [],
+                         "no copy in the home's log, under any writer")
+        self.assertNotIn("private hi", "".join(Path(home.home, "log", n).read_text() for n in self.files(home)))
 
     def test_a_listed_sender_never_writes_toward_a_private_session_its_owners_are_outside_of(self):
         self.capable()
@@ -355,6 +377,38 @@ class Streams(tw.Machine):
         self.assertIsNone(e["to"])
 
     # ---- an unreadable record
+
+    def test_a_member_frame_is_built_from_the_record_as_it_reads_at_its_publication(self):
+        """A private record corrupted, the plane refreshed (its row's record
+        None, the listing withdrawn), the file repaired before the plane reads
+        it again: the next publication sends the private frame, never the
+        defaults the stale row would give."""
+        self.capable()
+        self.session(self.p, S, name="kept")
+        rec = self.local(S, access="private")
+        self.audience(S, [A], [A], rec["policyRev"])
+        sminos.view_of(self.p)
+        link = self.link()
+        link.welcomed_rl10({"t": "welcome", "capabilities": ["access", "reach"], "policy": None})
+        link.members(0.0)
+        self.assertEqual(link.members_sent[S]["access"], "private")
+        link.log_lane.take()
+        path = records.record_path(S)
+        good = Path(path).read_bytes()
+        Path(path).write_text("{not json")
+        sminos.forget_caches()
+        link.plane.refresh(self.p)
+        self.assertIsNone(link.plane.member_rows[self.p.id][S].record, "the plane's row: no record")
+        link.publish_members(0.0)
+        self.assertIn({"t": "member", "session": S, "gone": True}, link.log_lane.take())
+        Path(path).write_bytes(good)
+        os.chmod(path, 0o600)
+        sminos.forget_caches()
+        link.publish_members(0.0)   # before the plane reads it again
+        sent = [f for f in link.log_lane.take() if f.get("session") == S]
+        self.assertEqual([(f.get("access"), f.get("policyRev")) for f in sent], [("private", rec["policyRev"])])
+        self.assertTrue(link.members_before(self.p, {S}))
+        self.assertEqual(link.log_lane.take(), [], "members_before compares the same fresh record: nothing changed")
 
     def test_an_unreadable_established_record_fails_closed_until_it_reads_again(self):
         self.capable()

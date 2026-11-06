@@ -795,6 +795,7 @@ def reach_of(p, machine, events):
     be stored name, as they stood before the batch, with the batch's snapshots then recorded, and which of them
     are bound to the uploader after it; None when no event needs the registry."""
     nxt, stopped, snapshots, sessions = {}, set(), [], set()
+    batched = {}   # the batch's own events by position, for a later one sent again at a seq the batch already holds
     for e in events:
         if shape_error(e) is not None:
             if isinstance(e, dict) and isinstance(e.get("writer"), str):
@@ -807,17 +808,24 @@ def reach_of(p, machine, events):
             stopped.add(w)
             continue
         evs = p["writers"].get(w, [])
-        at = nxt.get(w, (evs[-1]["seq"] if evs else 0) + 1)
+        last = evs[-1]["seq"] if evs else 0
+        at = nxt.get(w, last + 1)
         if seq < at:
-            held = p["withheld"].get(w, {}).get(seq)
-            stored = next((x for x in evs if x["seq"] == seq), None)
-            if (held != body_hash(e)) if held is not None else (stored is not None and not same(stored, e)):
+            # A position held already stops its writer, as store will, when it is sent again with another body:
+            # against the stored event or the withheld one's hash, or against the batch's own earlier event there.
+            if seq <= last:
+                held = p["withheld"].get(w, {}).get(seq)
+                stored = next((x for x in evs if x["seq"] == seq), None)
+                if (held != body_hash(e)) if held is not None else (stored is not None and not same(stored, e)):
+                    stopped.add(w)
+            elif not same(batched[(w, seq)], e):
                 stopped.add(w)
             continue
         if seq > at or audience_error(e) is not None:
             stopped.add(w)
             continue
         nxt[w] = at + 1
+        batched[(w, seq)] = e
         f = facts_of(e)
         sessions.update(s for s, _ in f["refs"])
         if f["snapshot"] is not None:

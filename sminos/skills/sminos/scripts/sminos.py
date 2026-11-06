@@ -5192,7 +5192,10 @@ def record_copy(home, delivered):
     naming the delivering event as `<project id>:<writer>:<seq>`, a list of
     those when several projects' events deliver it — no one is owed it
     (addressed_to). Written after the delivering events; one that cannot be
-    written is a warning, since the message was delivered."""
+    written is a warning, since the message was delivered. A copy under an
+    audience stream has the stream's audience kept in `home` first, and goes
+    into a hub project's home alone (streams_here): elsewhere the log is
+    published whole, so none is written, and a warning says so."""
     groups = {}
     for dest, e in delivered:
         groups.setdefault(e["writer"], []).append((dest, e))
@@ -5200,6 +5203,18 @@ def record_copy(home, delivered):
         # One copy per audience among the delivering events (P5 O18 D4): each under its own stream, as theirs.
         return [c for group in groups.values() for c in [record_copy(home, group)] if c is not None]
     first = delivered[0][1]
+    if is_stream(first["writer"]):
+        if not streams_here(home):
+            # A git-mirrored or local home publishes its whole log (the mirror stages everything): an audience
+            # stream's body goes nowhere the hub does not filter it.
+            warn("delivered; its copy is not kept in %s: the message is for a private session's audience alone, "
+                 "and %s's log is not filtered by audience" % (home.name, home.name))
+            return None
+        # Its audience kept in the home too, before the copy (the uplink's voids, the session's own reads),
+        # as the delivering project kept it.
+        keep_stream(home, first["writer"], next(
+            (a for dest, _ in delivered for a in [audience_module().stream_audience(dest, first["writer"])]
+             if a is not None), None))
     fields = {k: v for k, v in first.items() if k not in ("writer", "seq", "kind", "from_project")}
     fields["to"] = [dict(r, project=dest.id) for dest, e in delivered for r in e["to"] if isinstance(r, dict)]
     refs = ["%s:%s:%d" % (dest.id, e["writer"], e["seq"]) for dest, e in delivered]

@@ -242,6 +242,19 @@ class HubStandin(unittest.TestCase):
         self.assertEqual(self.refusals(self.a, m), [])
         self.assertEqual(self.stored("testhost/human")[0].get("text"), "hello, new seat")
 
+    def test_a_position_the_batch_repeats_with_another_body_stops_its_writer_before_its_snapshot(self):
+        """[seq 1, another body at seq 1, joined at seq 2]: the conflict stops
+        the writer, so the joined is never stored, nor its snapshot applied:
+        the session is bound to no one (reachOf's `batched`)."""
+        sid = "eeeeeeee-0000-4000-8000-%012x" % (int(time.time() * 1e6) % (1 << 48))
+        w = "testhost/" + sid
+        m = self.a.mark()
+        self.a.post({"t": "events", "project": self.pid, "events": [
+            event(w, 1, to="*", text="one"), event(w, 1, to="*", text="another"), self.joined("testhost", sid, seq=2)]})
+        self.assertEqual([r["reason"] for r in self.refusals(self.a, m)], ["conflict"])
+        self.assertEqual([e["seq"] for e in self.stored(w)], [1], "the joined is not stored")
+        self.assertNotIn(sid, self.hub.state()["policies"], "nor does its snapshot bind the session")
+
     def test_runs_of_withheld_positions_are_compressed(self):
         w = "testhost/human"
         evs = [event(w, s, to=[{"session": "gone-%d" % s, "alias": "g"}]) for s in (1, 2, 3)] + \
@@ -379,8 +392,9 @@ class Plane(unittest.TestCase):
                                      {"url": "http://127.0.0.1:9", "org": "org-1"})
         sminos.project_path(self.p, "log")
 
-    def hl(self, coded=True):
-        return hublog.HubLog(self.p, {"key": RAW_KEY if coded else None, "machine": "testhost"}, coded=coded)
+    def hl(self, coded=True, machine="testhost"):
+        """`machine`: another name than this machine's now, as the uplink saw it before a rename."""
+        return hublog.HubLog(self.p, {"key": RAW_KEY if coded else None, "machine": machine}, coded=coded)
 
     def put(self, writer, *events):
         """Events as they are, into a writer file (another machine's as imported, an own one as written)."""
@@ -410,8 +424,10 @@ class Admitted(Plane):
         return names, held
 
     def test_a_have_saves_its_own_writers_vector_and_withheld_list_beside_archive_at(self):
+        self.hl(machine="oldname").on_have({"have": {"oldname/" + SID: 2}, "withheld": {"oldname/" + SID: [1]},
+                                            "archive": True})
         self.hl().on_have({"have": {"testhost/human": 5, "oldname/" + SID: 2, "other/human": 9},
-                           "withheld": {"testhost/human": [2, [4, 5]], "oldname/" + SID: [1]}, "archive": True})
+                           "withheld": {"testhost/human": [2, [4, 5]]}, "archive": True})
         d = self.uplink()
         self.assertEqual(d["archive_have"], {"have": {"testhost/human": 5, "oldname/" + SID: 2},
                                              "withheld": {"testhost/human": [2, [4, 5]], "oldname/" + SID: [1]}},
@@ -423,9 +439,36 @@ class Admitted(Plane):
         """The hub lists only the name now's withheld positions: a former
         name's, listed before the rename, are kept, so the archive still
         tombstones them."""
-        self.hl().on_have({"have": {"oldname/" + SID: 3}, "withheld": {"oldname/" + SID: [2]}, "archive": True})
+        self.hl(machine="oldname").on_have({"have": {"oldname/" + SID: 3}, "withheld": {"oldname/" + SID: [2]},
+                                            "archive": True})
         self.hl().on_have({"have": {"oldname/" + SID: 3, "testhost/human": 1}, "withheld": {}, "archive": True})
         self.assertEqual(self.uplink()["archive_have"]["withheld"], {"oldname/" + SID: [2]})
+
+    def test_a_former_names_entry_is_frozen_at_the_last_have_that_listed_it(self):
+        """A stale message under the name then is withheld, the connection
+        drops before a `have` confirms it, and the machine is renamed: the
+        next `have` carries the former writer's head but lists the name now's
+        withheld positions alone. The former writer's entry stays as the last
+        `have` taken under its name saved it, so its refused body never
+        reaches the archive; with no such entry, it is not copied at all."""
+        old = "oldname/human"
+        self.put(old, (1, {"text": "public"}), (2, {"text": "the refused private body"}))
+        self.hl(machine="oldname").on_have({"have": {old: 1}, "withheld": {}, "archive": True})
+        # ... seq 2 withheld upstream, the refusal lost to the drop; then the rename.
+        self.hl().on_have({"have": {old: 2, "testhost/human": 0}, "withheld": {}, "archive": True})
+        self.assertEqual(self.uplink()["archive_have"]["have"].get(old), 1, "frozen, not the hub's head now")
+        names, held = self.copied(old)
+        self.assertEqual([e.get("text") for e in held], ["public"])
+        self.assertNotIn("refused private body", json.dumps(held))
+        self.hl().on_have({"have": {old: 2}, "withheld": {}, "archive": True})
+        self.assertEqual([e.get("text") for e in self.copied(old)[1]], ["public"], "still frozen a have later")
+
+        Path(self.p.home, hublog.STATE_FILE).unlink()   # no `have` saved under the former name
+        self.hl().on_have({"have": {old: 2}, "withheld": {}, "archive": True})
+        self.assertNotIn(old, self.uplink()["archive_have"]["have"])
+        names, held = self.copied(old)
+        self.assertNotIn("oldname.human.jsonl", names)
+        self.assertIsNone(held, "excluded: never the hub's head without the list that came with it")
 
     def test_a_withheld_list_that_disagrees_with_its_vector_confirms_nothing(self):
         for withheld, why in (({"testhost/human": [7]}, "past that writer's head"),
@@ -453,7 +496,8 @@ class Admitted(Plane):
         stream = "testhost/%s~%s" % (SID, sminos.audience_digest([M1]))
         self.put(stream, (1, {"text": "private"}))
         self.put("other/%s~%s" % (OTHER_SID, sminos.audience_digest([M1])), (1, {"text": "theirs, private"}))
-        self.hl().on_have({"have": {own: 3, "oldname/" + SID: 1, "other/human": 3, stream: 1},
+        self.hl(machine="oldname").on_have({"have": {"oldname/" + SID: 1}, "archive": True})
+        self.hl().on_have({"have": {own: 3, "oldname/" + SID: 2, "other/human": 3, stream: 1},
                            "withheld": {own: [2]}, "archive": True})
         names, held = self.copied(own)
         self.assertEqual([(e["seq"], e.get("text"), e.get("withheld")) for e in held],
@@ -463,7 +507,7 @@ class Admitted(Plane):
         self.assertEqual([e["text"] for e in self.copied("other/human")[1]], ["theirs", "past a spent hole"],
                          "another machine's as imported, whole")
         self.assertEqual([e["text"] for e in self.copied("oldname/" + SID)[1]], ["a former name's"],
-                         "a former name's writer is this machine's: up to the vector")
+                         "a former name's writer is this machine's: up to the vector of the last have under it")
         self.assertEqual(sorted(names), sorted(["testhost.human.jsonl", "other.human.jsonl",
                                                 "oldname.%s.jsonl" % SID]), "no stream file")
 

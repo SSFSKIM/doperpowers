@@ -30,8 +30,9 @@ A plain writer of another machine is copied as imported — whole, never
 re-sequenced, so the codes and the holes of spent positions are kept as the
 log holds them. This machine's own (under its name or a former one,
 `HubLog.is_own`) is copied up to the hub's vector in the `have` that
-confirmed the run (`archive_have` in uplink.json, saved with `archive_at`),
-never `sent` or `taken`: on RL10 `taken` moves once the endpoint's socket
+confirmed the run (`archive_have` in uplink.json, saved with `archive_at`;
+a former name's entry as the last `have` under that name saved it, and none
+copied without one: sminos_hublog's on_have), never `sent` or `taken`: on RL10 `taken` moves once the endpoint's socket
 takes a frame, before the hub admitted or refused anything in it. Each
 position that `have` lists withheld, each this machine recorded refused
 `audience` or voided (sminos_hublog's `dead` and `voided`), is written as
