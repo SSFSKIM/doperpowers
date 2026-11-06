@@ -63,10 +63,10 @@ tombstone, RL10's `spent withheld`, a `have`'s withheld list) — is recorded
 withheld (`withheld`, for good; withhold_own): the event stays in its
 writer file as what its session tried to send, the position counts as
 uploaded, and the sending session is shown that the message was not
-delivered (`notices`, until it is live, for NOTICE_KEPT); a
-`state-unavailable` one on a direct stream pauses the
-writer and sends the position again after ASK_MS (on RL10 the endpoint
-rewinds); an `audience` one — the stream the event went under is not its
+delivered (`notices`, until it is live, for NOTICE_KEPT). A
+`state-unavailable` refusal on a direct stream pauses the writer and sends
+the position again after ASK_MS (on RL10 the endpoint rewinds); an
+`audience` one — the stream the event went under is not its
 session's now — stops the writer past the stream (`dead`), until an event
 appended to it says the CLI chose it again: then each refused position goes
 up as a content-free `void {ts, writer, seq, kind: void, of, audience?}`
@@ -498,7 +498,7 @@ class HubLog:
         self.drawing = None  # the uploads drawn and not yet taken (next_upload), kept between the uplink's passes
         self.bounds = {}     # own writer → the seq `taken` may not pass on this stream (bound), until an upload sent
         #                      after it is answered
-        self.head_waits = True   # the operator writer may wait for its head (release_heads): False once it is not
+        self.head_waits = True   # an operator writer may wait for its head (release_heads): False once none does
         self.paused = {}     # own writer → (when it goes up again, monotonic; the lowest seq the hub could not check):
         #                      a `state-unavailable` refusal on a direct stream (on_refused)
 
@@ -960,32 +960,48 @@ class HubLog:
                         self.withhold_own(w, seq)
 
     def release_heads(self):
-        """This machine's operator writer, waiting for the upstream's head
-        (sminos.waits_for_head, #147), is released once this stream's `have`
-        said the head and the log reached it — the hub's backlog imported
-        (DX2), or the positions the endpoint refused spent (RL10): what
-        waited is appended above the head, and the next upload carries it.
-        Run after a `have`, an import and a spent position."""
-        writer = self.machine + "/human"
+        """This machine's operator writers — `<machine>/human` and each
+        audience stream of it, `<machine>/human~<digest>` (P5 O18 D6) — each
+        waiting for the upstream's head (sminos.waits_for_head, #147), are
+        released one by one once this stream's `have` said that writer's
+        head and the log reached it — the hub's backlog imported (DX2), or
+        the positions the endpoint refused spent (RL10): what waited is
+        appended above the head, and the next upload carries it. Looked at
+        are the operator writers the `have` names, those the log holds and
+        those queued, a former name's queue into its namesake under the name
+        now; the first `have` of the enrolment is kept as the writers it
+        named a head for (sminos.keep_headed). Run after a `have`, an import
+        and a spent position."""
+        me = self.machine + "/human"
         if self.have is None or sminos.host_name() != self.machine:
             return   # an uplink outliving a re-enrolment under another name releases nothing of the new one
-        if self.head_waits and not sminos.waits_for_head(self.project, writer):
-            self.head_waits = False   # the enrolment's rule, which only an enrolment (a new uplink) changes
-        # A queue can still appear: a command that began before a rename
-        # queues under the name it read then.
-        if not (self.head_waits or sminos.queued_operators(self.project)):
+        # A queue can still appear once nothing waits: a command that began
+        # before a rename queues under the name it read then.
+        queues = sminos.queued_operators(self.project)
+        if not (self.head_waits or queues):
             return
-        last = self.writers(own=True).get(writer, (0, None))[0]
-        head = self.have.get(writer, 0)
-        if frontier(last, self.spent().get(writer, set())) < head:
-            return
-        released = sminos.release_queued(self.project, writer)
-        self.drawing = None
-        log("%s of %s is at the upstream's head (%d): it takes its seqs here from now on%s" % (
-            writer, self.project.name, head,
-            "; the %d that waited for it are appended above it" % len(released) if released else ""))
-        if released:
-            sminos.nudge_daemon()   # their delivery here, which waited with them
+        if self.head_waits:
+            sminos.keep_headed(self.project, [w for w, s in self.have.items() if sminos.writer_base(w) == me and s > 0])
+        lasts, spent = self.writers(own=True), self.spent()
+        into = {sminos.namesake(w, self.machine) for w in queues}
+        waiting = False
+        for writer in sorted({w for w in set(self.have) | set(lasts) if sminos.writer_base(w) == me} | into):
+            if writer not in into and not sminos.waits_for_head(self.project, writer):
+                continue
+            head = self.have.get(writer, 0)
+            if frontier(lasts.get(writer, (0, None))[0], spent.get(writer, set())) < head:
+                waiting = True
+                continue
+            released = sminos.release_queued(self.project, writer)
+            self.drawing = None
+            log("%s of %s is at the upstream's head (%d): it takes its seqs here from now on%s" % (
+                writer, self.project.name, head,
+                "; the %d that waited for it are appended above it" % len(released) if released else ""))
+            if released:
+                sminos.nudge_daemon()   # their delivery here, which waited with them
+        # The enrolment's rule, which only an enrolment (a new uplink) changes: once nothing waits, a writer
+        # the kept `have` did not name never will.
+        self.head_waits = waiting
 
     def on_resend(self, frame):
         """The hub lacks a writer's events from `from` on. Every batch is

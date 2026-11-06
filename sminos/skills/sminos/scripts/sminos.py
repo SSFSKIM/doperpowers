@@ -1988,7 +1988,12 @@ def writer_locks(path, held=False):
 # project's heads.json then names the writer known for the enrolment, and what
 # waited is appended above that head, in order and with the ts it was said
 # at, and goes up with the next upload. A machine enrolled before this rule
-# has no mark, and nothing of it waits.
+# has no mark, and nothing of it waits. Each audience stream of the operator
+# writer, `<name>/human~<digest>` (P5 O18 D6: the operator's words to a
+# private session), is an operator writer too, waiting for and released on
+# its own head; the first `have` seen under the enrolment is kept as the
+# operator writers it named a head for (`headed`), and a writer it did not
+# name, a stream opened later included, has nothing upstream to wait for.
 HEADS_FILE = "heads.json"
 HEADS_KEPT = 8   # enrolments daemon/heads.json keeps marked: one replacing another leaves the other marked
 QUEUED = "queued"
@@ -2040,11 +2045,22 @@ def _stamped(path, now):
     return d if isinstance(d, dict) and (d.get("name"), d.get("enrolled")) == now else None
 
 
+def operator_writer(writer):
+    """Whether a writer is an operator writer, `<name>/human` or an audience
+    stream of it, under any name."""
+    base = writer_base(writer) if isinstance(writer, str) else ""
+    return base.endswith("/human") and base.count("/") == 1
+
+
 def waits_for_head(project, writer):
     """Whether an append to `writer` in `project` waits for the upstream's
-    head (the rule above): this machine's operator writer, in a project of
-    its upstream, under a marked enrolment, not yet known for it."""
-    if writer != writer_id():
+    head (the rule above): this machine's operator writer or a stream of it,
+    in a project of its upstream, under a marked enrolment, not yet known
+    for it — and once the enrolment's first `have` was kept (keep_headed),
+    only while that `have` named a head for it, or a queue of it is still
+    there (what it queued goes first: the release drains it under the
+    writer's locks, which this is read under)."""
+    if writer_base(writer) != writer_id():
         return False
     e = enrollment()
     if e is None or not (isinstance(project.hub, dict) and project.hub.get("org") == e["org"]):
@@ -2053,7 +2069,28 @@ def waits_for_head(project, writer):
     if now is None or now not in _marks():
         return False
     known = _stamped(os.path.join(project.home, HEADS_FILE), now)
-    return not (known is not None and writer in (known.get("known") or []))
+    if known is None:
+        return True
+    if writer in (known.get("known") or []):
+        return False
+    headed = known.get("headed")
+    return not (isinstance(headed, list) and writer not in headed
+                and not os.path.exists(queued_path(project, writer)))
+
+
+def keep_headed(project, writers):
+    """The operator writers the upstream holds a head for (`writers`), as
+    the first `have` seen under this machine's enrolment named them
+    (HubLog.release_heads), kept in the project's heads.json once per
+    marked enrolment: a writer it did not name has nothing upstream to wait
+    for (waits_for_head)."""
+    now = enrolment_stamp()
+    if now is None or now not in _marks():
+        return
+    known = _stamped(os.path.join(project.home, HEADS_FILE), now) or {"name": now[0], "enrolled": now[1]}
+    if "headed" not in known:
+        known["headed"] = sorted(writers)
+        write_json(project_path(project, HEADS_FILE), known)
 
 
 def queued_path(project, writer):
@@ -2085,16 +2122,23 @@ def queued_read(project, writer):
 
 def queued_operators(project):
     """{writer: path} of the project's queues of this machine's operator
-    writer, under its name now or a former one (a welcome that renamed the
-    machine while an append waited)."""
+    writers (the plain one and its streams), under its name now or a former
+    one (a welcome that renamed the machine while an append waited)."""
     me, former = machine_identity()
     names = {me, *former}
     out = {}
     for path in glob.glob(os.path.join(glob.escape(project.home), QUEUED, "*.jsonl")):
         got = queued_events(path)
-        if got and got[0]["writer"].endswith("/human") and got[0]["writer"].rpartition("/")[0] in names:
+        if got and operator_writer(got[0]["writer"]) and writer_base(got[0]["writer"]).rpartition("/")[0] in names:
             out[got[0]["writer"]] = path
     return out
+
+
+def namesake(writer, name):
+    """An operator writer under `name`: the plain one for the plain one, the
+    stream of the same digest for a stream."""
+    digest = stream_of(writer)[1]
+    return "%s/human" % name if digest is None else "%s/human~%s" % (name, digest)
 
 
 def queued_counts():
@@ -2143,11 +2187,13 @@ def release_queued(project, writer):
             known["known"] = sorted(set(known.get("known") or []) | {writer})
             write_json(project_path(project, HEADS_FILE), known)
         # What waited under a former name too, the operator's now under this
-        # name (a former name's writer is no upload's). Each queue is drained
-        # under its own writer's locks, which an appender still running as a
-        # former name takes to queue there.
+        # name (a former name's writer is no upload's), each queue into its
+        # namesake (a stream into the stream of its digest). Each queue is
+        # drained under its own writer's locks, which an appender still
+        # running as a former name takes to queue there.
         with ExitStack() as stack:
-            queues = queued_operators(project)
+            queues = {w: p for w, p in queued_operators(project).items()
+                      if namesake(w, writer_base(writer).rpartition("/")[0]) == writer}
             for w in sorted(queues):
                 if w != writer:
                     stack.enter_context(writer_locks(writer_path(project, w)))

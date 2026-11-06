@@ -368,6 +368,28 @@ class Streams(tw.Machine):
         self.assertTrue(sminos.own_operator_event(e) and sminos.receipted(self.p, e),
                         "its own operator's words, receipted, under the stream")
 
+    def test_under_a_new_enrolment_an_operator_say_to_a_private_session_waits_for_its_streams_head(self):
+        """The machine was re-enrolled (marked) and the hub holds positions of
+        the operator's stream already: the say queues, and lands above the
+        stream's head once the log reached it (#147, for the stream)."""
+        self.capable()
+        self.remote(R, "private")
+        self.audience(R, [A], [A, C], 2)
+        sminos.mark_enrolled(*sminos.enrolment_stamp())
+        writer = stream("human", [A, C])
+        got = self.say("@private hi", session="")
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("waits", got.stdout)
+        self.assertEqual(self.events(writer), [], "no seq taken before the stream's head is known")
+        self.assertEqual([e["text"] for e in sminos.queued_read(self.p, writer)], ["@private hi"])
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
+        hl.on_have({"have": {writer: 2}})
+        self.assertEqual(self.events(writer), [])
+        for seq in (1, 2):
+            hl.spend(writer, seq, "conflict")   # what the endpoint never signed here, as RL10 spends it
+        self.assertEqual([(e["seq"], e["text"]) for e in self.events(writer)], [(3, "@private hi")])
+        self.assertEqual(sminos.queued_operators(self.p), {})
+
     def test_with_no_capability_a_say_is_as_before(self):
         self.capable(())
         self.session(self.p, S, name="sender")
