@@ -4711,7 +4711,8 @@ class WordsGate:
 #
 # One case needs no ask (the coordinator's ruling): a session of this machine messaging another session of this
 # machine whose record names literally the same owners — an identity comparison of two local records, `@machine`
-# on one machine being one owner set, never grade logic (same_owner_local).
+# on one machine being one owner set, never grade logic (same_owner_local) — in a log where the writer name is
+# this machine's provenance (own_writers_here): a git mirror's merge can bring a line under any name.
 
 _REACH_PERMITS = set()   # (project id, session, writer, seq, event hash): pushes the uplink may make now
 PROJECTLESS = "%s has no project, so only its owners' sessions reach it"
@@ -4734,11 +4735,28 @@ def reach_permit(project, session, e):
         _REACH_PERMITS.discard(key)
 
 
-def same_owner_local(e, session):
+def own_writers_here(project):
+    """Whether a line under this machine's own name in `project`'s log was
+    written here: a hub project of this machine's org, where the hub brings
+    this machine's writers back only as its own signed echoes, or a project
+    neither git nor a hub syncs. Not a git-mirrored log, whose merge can
+    import a line under any writer name; not a project unknown here."""
+    if project is None:
+        return False
+    if project.hub is not None:
+        e = enrollment()
+        return e is not None and project.hub.get("org") == e["org"]
+    return not project.remote
+
+
+def same_owner_local(e, session, project):
     """Whether `e` is a session of this machine's own event (its writer
-    `<this machine's name>/<session>` or a stream of it) to another session
-    of this machine, both records reading and naming the same owners: a
-    person's own sessions on one machine, which no reach ever restricts."""
+    `<this machine's name>/<session>` or a stream of it, in a log where that
+    name is provenance: own_writers_here) to another session of this
+    machine, both records reading and naming the same owners: a person's
+    own sessions on one machine, which no reach ever restricts."""
+    if not own_writers_here(project):
+        return False
     writer = str(e.get("writer") or "")
     sender = writer_session(writer)
     if not sender or writer_base(writer) != "%s/%s" % (host_name(), sender):
@@ -4757,6 +4775,7 @@ class ReachGate:
 
     def __init__(self, project):
         self.project = project if isinstance(project, str) or project is None else project.id
+        self.home = project if isinstance(project, Project) else known_project(project) if project else None
         self.capable = audience_module().reach_capable()
 
     def applies(self, e, words=None):
@@ -4772,7 +4791,7 @@ class ReachGate:
         """Whether the push needs the endpoint's `deliver`: the gate's, and
         not between one owner's sessions of this machine (same_owner_local).
         What every deliverer but the uplink leaves owed."""
-        return self.applies(e, words) and not same_owner_local(e, session)
+        return self.applies(e, words) and not same_owner_local(e, session, self.home)
 
     def held(self, e, session, words=None):
         """None when the push may go; "owed" when it may not now — no permit
