@@ -180,7 +180,7 @@ def supervisor_reply(short, text, session=""):
 # ------------------------------------------------------------------ delivery
 
 
-def push_live(peer, session, text, event=None, project=None, words=None, marker=None):
+def push_live(peer, session, text, event=None, project=None, words=None, marker=None, carried=None):
     """A delivery's last hop to a live session, `event` the last log event the
     text carries (None for a frame no log holds; every event of one push is
     one writer's, so one side's) and `project` the id of the project whose
@@ -204,7 +204,14 @@ def push_live(peer, session, text, event=None, project=None, words=None, marker=
     text's first line — a lane B observer's bridge refuses every `deliver` (M3), and the
     verdict was applied when the receipt was prepared — and anything else
     raises SendFailed("before"), nothing handed off. (A peer record naming
-    no pid names no process to hold a mode; every live one names one.)"""
+    no pid names no process to hold a mode; every live one names one.)
+
+    Message reach (P5 O18 D8): on a machine whose endpoint decides it, each
+    log event the text carries (`carried`, every event of a batch; `[event]`
+    by default) that goes as a peer frame must be one the uplink holds the
+    endpoint's `deliver` for (S.ReachGate), else S.ReachHeld — a
+    SendFailed("before") — is raised before anything is handed over."""
+    S.reach_hold(project, session, [event] if carried is None else carried, words)
     if marker is not None:
         text = "%s\n%s" % (marker, text)
     else:
