@@ -84,11 +84,20 @@ over, as the endpoint refuses a stream it does not sign. `refuse_upload` (ctl
 `refuse` {project, writer, seq, reason?}) sends `refused {project, refusal:
 {reason, writer, seq}}`, `not-reachable` by default, with no message.
 
+The hub's reach judgement (P5 O18 D5), in-process: `withhold`, a callable
+(project, event in its upload form) → truthy, withholds the upload it holds
+for at a position not yet held, as the hub withholds an event out of reach:
+the position is added to `withheld` (so the next `have` lists it and counts
+it), the body kept aside, and `refused {reason: not-reachable, writer, seq}`
+sent with no message; the writer goes on. A resend there is refused
+`not-reachable` again with the same body, `conflict` with another. None (the
+default) withholds nothing.
+
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
 persist_legacy, answer_policy, ack_results, verdicts, verdict,
 reach_verdicts, reach_verdict, relay, capabilities, audiences, admit,
-withheld, archive, refuse_audience.
+withheld, archive, refuse_audience, withhold.
 """
 
 import base64
@@ -105,7 +114,7 @@ LINE_MAX = 1 << 20   # a line at most 1 MiB of UTF-8 (O10 §D); larger text goes
 FIELDS = ("token", "identity", "policy", "revoked", "org", "build", "state_version", "refuse_reason", "ask_legacy",
           "persist_legacy", "answer_policy", "ack_results", "verdicts", "verdict", "reach_verdicts", "reach_verdict",
           "relay", "capabilities",
-          "audiences", "admit", "withheld", "archive", "refuse_audience")
+          "audiences", "admit", "withheld", "archive", "refuse_audience", "withhold")
 TS_MS = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 TS_S = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
@@ -268,6 +277,8 @@ class Endpoint:
         self.withheld = {}
         self.archive = False
         self.refuse_audience = []
+        self.withhold = None
+        self.withheld_bodies = {}   # (project id, writer, seq) → the body withheld there (withhold)
         self.unadmitted = {}    # project id → {writer: {seq}}: taken while admission was held back
         self.handler = None
         self.cv = threading.Condition()
@@ -515,8 +526,15 @@ class Endpoint:
                 elif writer in (self.refuse_audience or ()):
                     reason, message = "audience", "the stream's audience is not this session's"
                     stopped.add(writer)
+                elif (project, writer, seq) in self.withheld_bodies:
+                    # A withheld position sent again: the same body withheld again, another a conflict.
+                    reason = "not-reachable" if self.withheld_bodies[(project, writer, seq)] == form else "conflict"
                 elif seq in held.get(writer, {}) and held[writer][seq] != form:
                     reason = "conflict"
+                elif seq not in held.get(writer, {}) and self.withhold is not None and self.withhold(project, form):
+                    self.withheld_bodies[(project, writer, seq)] = form
+                    self.withheld.setdefault(project, {}).setdefault(writer, []).append(seq)
+                    reason = "not-reachable"
                 else:
                     held.setdefault(writer, {})[seq] = form
                     if not self.admit:
