@@ -11,7 +11,7 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) The map (read-only, doperpowers `904b0a35`, MAWS `1a11fedf6`).
 - [x] (2026-11-07) This spec.
 - [x] (2026-11-07) The spec's review: adversarial-reviewer on the design and on the execution section, one round each. Every finding was folded in (Decision Log, 2026-11-07, the review).
-- [ ] M1: devcloud's DX2 enrollment out (devcloud bump).
+- [x] (2026-11-07) M1: devcloud's DX2 enrollment out (devcloud 0.16.0, `1585356b`; review clean, devcloud gates GREEN, run 42338569325).
 - [ ] M2: the opt-in local-hub modes out (tests only).
 - [ ] M3a: the unit flips (tests only).
 - [ ] M3b: the endpoint stand-in ports, the session plane and the RPCs (tests only).
@@ -271,6 +271,15 @@ This is after the branch review and the merge, and it is not part of the branch'
   - The release's evidence is a milestone of its own (M8).
   - From the execution reviewer's re-check: the DX2 integration cases that enroll go in M4, with the enrollment, not in M5. The DX2-only assertions inside acceptance 2's suites that may go are listed by file and line.
   Date/Author: 2026-11-07, p5-desk-track-owner, on the two reviews.
+
+- Decision (M1, the executor; devcloud 0.16.0):
+  - A boot descriptor that still names `DEVCLOUD_SMINOS_SECRET` is refused by name, as a profile's `[desk] provisioning_secret` is. No live host is expected to carry it: the owner's `driver.toml` names only the v2 code.
+  - The step-11 enrollment deferral goes whole. A boot clears a leftover `enroll` record, and `devcloud enroll` finishes only step 13's provisioning.
+  - The `devcloud-enroll=code` label value is still accepted and worded by the reaper, because `set-labels` re-checks an existing VM's whole label set; the driver no longer writes it.
+  - `hub.json` stays in the sandbox identity check (harmless, map §1.11). `LEAVE_TIMEOUT` stays 180 s; it already bounds the endpoint's retirement.
+  - The departure tests run on a cut-over VM whose endpoint holds a certificate; `test_the_desk_not_answering_the_leave_goes_on` (DX2 only) goes.
+  - TECH-DEBT's desk-key expiry (2027-01-19) is deleted as the v1 key's. Whether the v2 code expires was not checked.
+  Date/Author: 2026-11-07, plan-executor (M1).
 
 ## Outcomes & Retrospective
 
