@@ -1889,8 +1889,7 @@ class ConfigDirSession(unittest.TestCase):
     def test_a_registered_dir_speaks_only_for_the_sessions_registered_to_it(self):
         """A dir copied from ~/.claude carries other sessions' records, a
         live one with a listening inbox among them: none of them is read as
-        that session's — no delivery is routed to it, no presence, no holder."""
-        import sminos_rpc as rpcs
+        that session's — no delivery is routed to it, no presence."""
         other, inbox = new_session(), os.path.join(self.cfg, "in.sock")
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         listener.bind(inbox)
@@ -1907,10 +1906,8 @@ class ConfigDirSession(unittest.TestCase):
         plane.sminos.forget_caches()
         self.assertIsNone(plane.sminos.peer_for_session(other), "no delivery is routed to it")
         self.assertNotIn(other, self.p.records.scan(), "no presence")
-        self.assertEqual(rpcs.holders(other), [], "no holder")
         self.assertIsNotNone(plane.sminos.session_running(self.sid), "while the session registered there is read")
         self.assertIn(self.sid, self.p.records.scan())
-        self.assertEqual([r["sessionId"] for r in rpcs.holders(self.sid)], [self.sid])
 
     def test_its_presence_and_its_rows_are_read_under_its_config_dir(self):
         self.fake.start_bridge()
@@ -4651,7 +4648,7 @@ class TickCost(unittest.TestCase):
         """ps adds the start's whole seconds to /proc/stat's boot time,
         itself a whole second: on a boot 0.7 s past its second, a process
         that began 0.5 s into a second reads as ps reads it, the second
-        before proc_started_at's instant."""
+        before its true instant."""
         import sminos
         proc = tempfile.mkdtemp(dir=T)
         hz = os.sysconf("SC_CLK_TCK")
@@ -4661,13 +4658,10 @@ class TickCost(unittest.TestCase):
         os.makedirs(os.path.join(proc, "4242"))
         with open(os.path.join(proc, "stat"), "w") as f:
             f.write("cpu  0 0 0 0\nintr 0\nctxt 0\nbtime %d\nprocesses 1\n" % int(boot))
-        with open(os.path.join(proc, "uptime"), "w") as f:
-            f.write("%.2f 0.00\n" % (now - boot))
         with open(os.path.join(proc, "4242", "stat"), "w") as f:
             f.write("4242 (claude (bg) x) S 1 4242 4242 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 %d 0 0\n" % ticks)
         with mock.patch.object(sminos, "PROC", proc):
             self.assertEqual(sminos._linux_start(4242), int(boot) + ticks // hz)
-            self.assertEqual(int(sminos.proc_started_at(4242)), int(boot) + ticks // hz + 1)
             self.assertEqual(sminos._linux_start(4343), 0, "no such process")
             os.unlink(os.path.join(proc, "stat"))
             self.assertIsNone(sminos._linux_start(4242), "no Linux /proc: ps answers")

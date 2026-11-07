@@ -24,6 +24,7 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) M7: docs and labels (`b6df7a2e..1c2adcae`, the deferred minors `6b20b662`, `ca0039f3`; review clean; gates on `ca0039f3` GREEN, sminos run 42380437461 (sminos-suites 16m12s), devcloud run 42380463408).
 - [x] (2026-11-07) The branch review and the merge. The xhigh panel over `fcf0b6a5..16ab8bd3` (a sweep, five lenses and the verifier) returned correct, with no findings. PR #470 merged as `3d708ebe`, with all 21 checks green. The residue is board tickets 176–179.
 - [x] (2026-11-07) M8: the release verified. Both Macs' daemons run 1.40.0 on RL10 (MacBook 15:03:53Z, mini 15:06:38Z). The gate's runtime is on board #170 (Outcomes).
+- [x] (2026-11-07) Board #177 closes the deferred deletion of the pre-cutover claims' recovery (the design's "What stays"): every machine's `daemon/rpcs.json` was read and held no unfinished Resume, Retire or Stop claim, and sminos 1.40.3 deletes the Resume recovery.
 
 ## What changes and what doesn't (acceptance)
 
