@@ -388,11 +388,6 @@ class Here:
     def checkouts(self, project):
         return policy.known_checkouts(project)
 
-    def cwd(self, project, sid):
-        sminos.forget_caches()
-        joined = (sminos.view_of(project, titles=False).info.get(sid) or {}).get("joined") or {}
-        return joined.get("cwd") or ""
-
 
 def results(frames, nonce):
     return [f["outcome"] for f in frames if f.get("t") == "rpc-result" and f.get("nonce") == nonce]
@@ -2457,6 +2452,16 @@ class ChecksOnRl10(unittest.TestCase):
         self.assertEqual(self.mod.ops("stop"), [], "nothing run again")
         self.assertIn("retire %s, claimed before a stop, reconciled: failed" % retire, tsp.read(
             os.path.join(os.environ["SMINOS_HOME"], "daemon.log")))
+
+    def test_k_a_malformed_task_id_is_bad_shape(self):
+        """Stop is not run here, but its args are still checked at admission:
+        a taskId the engine could not spell is `bad-shape` before `plan`
+        refuses the RPC itself, and a well-formed one is `unsupported`."""
+        for task in ("", "a" * 65, "b 1", "b.1", None, 7):
+            self.refused(self.send("stop", {"session": self.bridged.sid, "taskId": task}), "bad-shape")
+        self.refused(self.send("stop", {"session": self.bridged.sid}), "bad-shape")
+        self.refused(self.send("stop", {"session": self.bridged.sid, "taskId": "bmain1"}), "unsupported")
+        self.assertEqual(self.mod.ops("stop"), [])
 
     def test_i_results_are_republished_until_acknowledged(self):
         self.mod.turn = "t9"

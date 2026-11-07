@@ -1341,7 +1341,7 @@ class RequestsOnRl10(unittest.TestCase):
         body = self.raised_of(frames, "toolu_huge")
         self.assertEqual(body["input"], shown)
         self.assertIs(body["truncated"], True, "resync's marker")
-        self.assert_code("raised", body, "the code covers the input as it goes")
+        self.assert_code("raised", body, "a draft, its input as shown")
         self.assertLess(len(json.dumps(body).encode()), requests.RAISED_INPUT_MAX)
         self.r.sent(frames)
         self.assertEqual(self.r.pending_frame(self.PID)["raised"], [body], "the complete set carries it so")

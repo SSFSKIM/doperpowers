@@ -6,8 +6,9 @@ generate.py beside it; its code vectors and negatives went with DX1's codes,
 the file does not hold — lone surrogates, NaN and the infinities — the
 canonical text against its definition written out here (every Unicode
 scalar value, every surrogate, random strings and values, the key order,
-integers about 2^53), and base64url's one spelling of 32 and 16 bytes.
-Prints one `ok <name>` or `FAIL <name>` line per case, for
+integers about 2^53), base64url's one spelling of 32 and 16 bytes and what
+it refuses, and a log position's seq and ts by shape (is_log_seq,
+is_iso_millis). Prints one `ok <name>` or `FAIL <name>` line per case, for
 run-sminos-tests.sh to count.
 
     python3 codes_parity.py <skills/sminos/scripts> <dx1-codes.json>
@@ -181,5 +182,38 @@ NONCE = KEY[:codes.NONCE_BYTES]
 check("and so do a nonce's 16 bytes (an RPC's nonce)",
       codes.b64url_bytes(respelled(codes.b64url(NONCE)), codes.NONCE_BYTES) is None
       and codes.b64url_bytes(codes.b64url(NONCE), codes.NONCE_BYTES) == NONCE)
+check("the empty string is no code's or nonce's bytes (it encodes none)",
+      codes.b64url_bytes("", 32) is None and codes.b64url_bytes("", codes.NONCE_BYTES) is None)
+for name, text in (
+    ("what is not a string", 3),
+    ("characters outside the alphabet (standard base64's + and /)", codes.b64url(KEY).replace("A", "+", 1) + "/"),
+    ("padding", codes.b64url(NONCE) + "=="),
+):
+    check("base64url refuses %s" % name, codes.b64url_decode(text) is None and codes.b64url_bytes(text, 32) is None)
+
+# ---- a log position's seq and ts, by shape: what RL10's refusal, runs and spent positions read
+# (hublog.refusal, runs_of, spent; records' proofs). The cases DX1's hub/ position tests held.
+for name, seq in (("1", 1), ("the largest safe seq", 2 ** 53 - 1), ("3.0, the number 3 as JSON.parse reads it", 3.0)):
+    check("a log seq holds: %s" % name, codes.is_log_seq(seq))
+for name, seq in (("0", 0), ("-1", -1), ("1.5", 1.5), ("2^53", 2 ** 53), ("a string", "1"), ("true", True),
+                  ("false", False), ("null", None)):
+    check("a log seq fails: %s" % name, not codes.is_log_seq(seq))
+for name, ts in (("a common day", "2026-10-15T08:00:00.000Z"), ("a leap day", "2024-02-29T23:59:59.999Z"),
+                 ("2000's leap day", "2000-02-29T00:00:00.000Z")):
+    check("an ISO ts holds: %s" % name, codes.is_iso_millis(ts))
+for name, ts in (
+    ("February 29 of a common year", "2026-02-29T08:00:00.000Z"),
+    ("1900's February 29, a century not a leap year", "1900-02-29T08:00:00.000Z"),
+    ("month 13", "2026-13-01T08:00:00.000Z"),
+    ("day 0", "2026-10-00T08:00:00.000Z"),
+    ("hour 24", "2026-10-15T24:00:00.000Z"),
+    ("second 60", "2026-12-31T23:59:60.000Z"),
+    ("an offset", "2026-10-15T08:00:00.000+09:00"),
+    ("a lower-case z", "2026-10-15T08:00:00.000z"),
+    ("a full-width digit", "\uff12026-10-15T08:00:00.000Z"),
+    ("whole seconds", "2026-10-15T08:00:00Z"),
+    ("what is not a string", 1761000000000),
+):
+    check("an ISO ts fails: %s" % name, not codes.is_iso_millis(ts))
 
 sys.exit(1 if FAILED else 0)

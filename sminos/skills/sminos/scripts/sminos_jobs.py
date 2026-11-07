@@ -531,30 +531,6 @@ def task_rows(path, task):
         mm.close()
 
 
-def running_task(main, task):
-    """Whether `task` is a background shell or monitor the session's jobs index holds as running, its process
-    running: the main loop's (`main`, its transcript) or any subagent's, each loop's rows read as the plane reads
-    them (the job's start, then its notifications, `task_status` and TaskStop through the one table)."""
-    if not main.endswith(".jsonl"):
-        return False
-    agents = os.path.join(main[:-len(".jsonl")], "subagents")
-    try:
-        loops = [main] + sorted(os.path.join(agents, n) for n in os.listdir(agents)
-                                if n.startswith("agent-") and n.endswith(".jsonl"))
-    except OSError:
-        loops = [main]
-    top = None
-    for path in loops:
-        ledger = Ledger()
-        ledger.feed(task_rows(path, task))
-        if top is None:
-            top = ledger
-        if task in ledger.jobs:
-            body = ledger.jobs_body(True, None if ledger is top else top)
-            return any(j["taskId"] == task and j["status"] == "running" for j in body)
-    return False
-
-
 def rows_naming(path, agents, tools):
     """The rows of one loop's transcript that name any of these agent ids (as a whole JSON string, or a
     notification's task id) or calls (their toolUseId), in file order: every row `agent_outcome` reads for
