@@ -22,7 +22,12 @@
 # enrolled at the hub, proves the one-machine cases again on RL10: the former
 # name, projects leaving the hub, hello and presence on every connection,
 # delivery past spent positions, and a refusal the resend after it does not
-# undo. Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
+# undo. Last, two more machines, each cut over to its own endpoint_standin.py,
+# prove the two-machine sync again on RL10, what one endpoint took reaching
+# the other as arrivals (rl10-machines.sh's hand-off): a fresh machine's
+# bootstrap, members and states, a burst on both with messages across,
+# titles, a daemon restart and a dropped connection.
+# Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub; nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
 set -euo pipefail
@@ -1383,6 +1388,298 @@ assert_contains "$(cat "$RLOG/beta.$RMB.jsonl")" '"kind": "retired"' "RL10: its 
 kill "$R_DAEMON"
 set +e; wait "$R_DAEMON"; set -e
 assert_not_contains "$(cat "$T/r/s/daemon.log")" "Traceback" "RL10: nothing in beta's daemon.log is a traceback"
+unset MAWS_USER_DATA
+
+# ---- RL10: two machines, each cut over to its endpoint (#153 M3d)
+# The two-machine sync above, composed on RL10: alpha and beta are real
+# sminos homes, each with its daemon and its endpoint_standin.py, never
+# enrolled at a hub and holding no hub.json. What one endpoint accepted
+# reaches the other's connection as arrivals through the stand-in's own echo
+# (rl10_relay, the hand-off that stands in for MAWS's relay); each case
+# asserts what the producer's endpoint took and what the consumer holds,
+# shows or delivered: a fresh machine's bootstrap, the members and their
+# states, a burst on both with messages across, titles, a daemon restart and
+# a dropped connection, the logs identical on both machines and the
+# endpoints at each step. (The former name, and the cases of one machine,
+# are the block above.)
+echo "RL10: two machines through their endpoints:"
+# shellcheck source=rl10-machines.sh
+. "$SCRIPT_DIR/rl10-machines.sh"
+export SCRIPT_DIR   # the comparisons below import endpoint_standin from it
+rl10_as ya alpha
+rl10_cut_over
+YEPA=$EP
+YRA="$T/ya/repo"
+mkdir -p "$YRA"
+gitq init -q "$YRA"
+cd "$YRA"
+"$SMINOS" project init --name syncproj --hub --remote "ssh://archive$T/rl-archive2.git" >/dev/null
+YPID="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$YRA/.smns")"
+YALOG="$T/ya/s/projects/$YPID/log"
+YBLOG="$T/yb/s/projects/$YPID/log"
+YMA=6a000001-0000-4000-8000-0000000000a1
+inbox yma
+printf '{"pid":%s,"sessionId":"%s","name":"ma","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$INBOX_PID" "$YMA" "$YRA" "$T/yma.sock" > "$HOME/.claude/sessions/ma.json"
+run "$SMINOS" list --json
+assert_contains "$OUT" '"alias": "ma"' "RL10: ma joins syncproj on alpha"
+rl10_serve
+start_daemon
+YA_DAEMON=$DAEMON_PID
+y_relayed() { rl10_relay "$YEPA" "$YEPB"; "$@"; }
+# The log of the project as each machine and the endpoints hold it, writer by
+# writer: counts, last seq, and payloads (each event without what an endpoint
+# adds to it — `created`, `sig`, `attest`, and the `verified` its arrival is
+# stored with), an own writer's as its machine's endpoint took it.
+cat > "$T/rl10compare.py" <<'PY'
+import glob, json, os, sys
+sys.path.insert(0, os.environ["SCRIPT_DIR"])
+import endpoint_standin
+pid, alog, blog, epa, epb = sys.argv[1:6]
+def local(d):
+    out = {}
+    for p in glob.glob(os.path.join(d, "*.jsonl")):
+        evs = [json.loads(l) for l in open(p) if l.strip()]
+        if evs:
+            out[evs[0]["writer"]] = sorted(evs, key=lambda e: e["seq"])
+    return out
+def endpoint(d):
+    out = {}
+    for a in json.loads(endpoint_standin.ctl_call(d, "accepted", {"project": pid}))["events"]:
+        out.setdefault(a["event"]["writer"], []).append(a["event"])
+    return out
+held = {"alpha": local(alog), "beta": local(blog)}
+took = {"alpha": endpoint(epa), "beta": endpoint(epb)}
+def payload(e):
+    return json.dumps({k: v for k, v in e.items() if k not in ("created", "sig", "attest", "verified")}, sort_keys=True)
+bad, n = [], 0
+for w in sorted(set().union(*held.values(), *took.values())):
+    machine = w.partition("/")[0]
+    views = {"alpha": held["alpha"].get(w, []), "beta": held["beta"].get(w, []),
+             "%s's endpoint" % machine: took.get(machine, {}).get(w, [])}
+    shape = {s: (len(evs), evs[-1]["seq"] if evs else 0) for s, evs in views.items()}
+    if len(set(shape.values())) != 1:
+        bad.append("%s: (count, last) %s" % (w, shape))
+        continue
+    if len({tuple(map(payload, evs)) for evs in views.values()}) != 1:
+        bad.append("%s: payloads differ" % w)
+    other = "beta" if machine == "alpha" else "alpha"
+    if any((e.get("verified") or {}).get("signer", {}).get("name") != machine for e in views[other]):
+        bad.append("%s: %s holds an event of it not verified from %s" % (w, other, machine))
+    n += shape["alpha"][0]
+print("identical: %d writers, %d events" % (len(set().union(*held.values())), n) if not bad else "\n".join(bad))
+sys.exit(1 if bad else 0)
+PY
+y_compare() { SCRIPT_DIR="$SCRIPT_DIR" python3 -B "$T/rl10compare.py" "$YPID" "$YALOG" "$YBLOG" "$YEPA" "$YEPB"; }
+y_identical() { rl10_relay "$YEPA" "$YEPB"; y_compare >/dev/null 2>&1; }
+y_settle() { # label — wait until the two machines and their endpoints hold the same log
+  until_true 400 y_identical || true
+  run y_compare
+  if [[ "$RC" == 0 ]]; then pass "RL10: $1: identical on alpha, beta, and their endpoints ($OUT)"; else
+    fail "RL10: $1: identical on alpha, beta, and their endpoints"; echo "    ${OUT:0:1500}"; fi
+}
+y_took() { [ -n "$(rl10_up "$1" "$YPID" "$2")" ]; }   # ep-dir text — the endpoint took an event of the project carrying it
+y_joined_up() { [ "$(rl10_q "$YEPA" "any(e['kind'] == 'joined' and e['writer'] == 'alpha/$YMA' for c, e in up('$YPID'))")" = true ]; }
+until_true 200 y_joined_up || true
+y_joined_up && pass "RL10: alpha's uplink opens the project at its endpoint and uploads ma's joined" \
+  || fail "RL10: alpha's uplink opens the project at its endpoint and uploads ma's joined"
+
+echo "RL10: a burst on alpha alone:"
+says 10 "alpha alone"
+CLAUDE_CODE_SESSION_ID=$YMA says 5 "ma alone"
+y_alpha_took() { python3 - "$YALOG" "$YEPA" "$YPID" <<'PY'
+import glob, json, os, sys
+sys.path.insert(0, os.environ["SCRIPT_DIR"])
+import endpoint_standin
+d, ep, pid = sys.argv[1:4]
+took = {}
+for a in json.loads(endpoint_standin.ctl_call(ep, "accepted", {"project": pid}))["events"]:
+    took.setdefault(a["event"]["writer"], []).append(a["event"]["seq"])
+mine = {}
+for p in glob.glob(d + "/*.jsonl"):
+    evs = [json.loads(l) for l in open(p) if l.strip()]
+    mine[evs[0]["writer"]] = [e["seq"] for e in evs]
+sys.exit(0 if took == mine else 1)
+PY
+}
+until_true 200 y_alpha_took || true
+y_alpha_took && pass "RL10: alpha's writers are at its endpoint, each event once" || fail "RL10: alpha's writers are at its endpoint, each event once"
+
+echo "RL10: beta, fresh:"
+rl10_as yb beta
+rl10_cut_over
+YEPB=$EP
+YRB="$T/yb/repo"
+cp -R "$YRA" "$YRB"
+cd "$YRB"
+YMB=6b000001-0000-4000-8000-0000000000b1
+YNB=6b000002-0000-4000-8000-0000000000b2
+inbox ymb
+sleep 600 & YNB_PID=$!
+PIDS+=("$YNB_PID")
+printf '{"pid":%s,"sessionId":"%s","name":"mb","nameSource":"derived","kind":"bg","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$INBOX_PID" "$YMB" "$YRB" "$T/ymb.sock" > "$HOME/.claude/sessions/mb.json"
+printf '{"pid":%s,"sessionId":"%s","name":"nb","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$YNB_PID" "$YNB" "$YRB" > "$HOME/.claude/sessions/nb.json"
+printf '[{"id": "mbshort", "sessionId": "%s", "state": "idle"}]\n' "$YMB" > "$STUB_STATE/agents.json"
+"$SMINOS" seat add syncproj mb --session "$YMB" >/dev/null
+run "$SMINOS" list --json
+assert_equals "$(find "$YBLOG" -name '*.jsonl' | sed 's|.*/||; s|\..*||' | sort | uniq -c | awk '{print $2 "=" $1}' | tr '\n' ' ')" "beta=2 " \
+  "RL10: beta's log holds its own two writers, and nothing of alpha's"
+rl10_serve
+start_daemon
+YB_DAEMON=$DAEMON_PID
+y_settle "a fresh machine bootstraps the project from what alpha's endpoint took"
+assert_equals "$(rl10_q "$YEPB" "sorted({e['writer'] for c, e in up('$YPID')})")" "[\"beta/$YMB\", \"beta/$YNB\"]" \
+  "RL10: beta's endpoint takes beta's two writers alone: what beta holds of alpha's never goes up again"
+rl10_as ya alpha
+cd "$YRA"
+run "$SMINOS" list --json
+y_members() { printf '%s\n' "$OUT" | python3 -c 'import json, sys
+print(sorted((r["alias"], r["machine"], r["local"]) for r in json.load(sys.stdin)))'; }
+assert_equals "$(y_members)" "[('ma', 'alpha', True), ('mb', 'beta', False), ('nb', 'beta', False)]" \
+  "RL10: alpha sees mb and nb as beta's members"
+assert_equals "$(printf '%s\n' "$OUT" | python3 -c 'import json, sys
+print([r["state"] for r in json.load(sys.stdin) if r["alias"] == "nb"])')" "['idle']" "RL10: and nb's state"
+rl10_as yb beta
+cd "$YRB"
+run "$SMINOS" list --json
+assert_equals "$(y_members)" "[('ma', 'alpha', False), ('mb', 'beta', True), ('nb', 'beta', True)]" \
+  "RL10: beta keeps mb and nb its own, and sees ma as alpha's"
+
+echo "RL10: a burst on both:"
+rl10_as ya alpha
+(cd "$YRA" && says 20 "alpha burst" && CLAUDE_CODE_SESSION_ID=$YMA "$SMINOS" say "@mb ping from ma" >/dev/null) & BURST_A=$!
+rl10_as yb beta
+(cd "$YRB" && says 20 "beta burst" && CLAUDE_CODE_SESSION_ID=$YMB "$SMINOS" say "@ma pong from mb" >/dev/null) & BURST_B=$!
+wait "$BURST_A" "$BURST_B"
+y_settle "after a burst of say on both"
+until_true 200 y_took "$YEPA" "ping from ma" || true
+y_took "$YEPA" "ping from ma" && pass "RL10: alpha's endpoint takes ma's say to mb" || fail "RL10: alpha's endpoint takes ma's say to mb"
+until_true 200 y_relayed grep -q "ping from ma" "$T/ymb.received" || true
+assert_contains "$(cat "$T/ymb.received")" "ping from ma" "RL10: and it reaches mb on beta"
+until_true 200 y_took "$YEPB" "pong from mb" || true
+y_took "$YEPB" "pong from mb" && pass "RL10: beta's endpoint takes mb's say to ma" || fail "RL10: beta's endpoint takes mb's say to ma"
+until_true 200 y_relayed grep -q "pong from mb" "$T/yma.received" || true
+assert_contains "$(cat "$T/yma.received")" "pong from mb" "RL10: and it reaches ma on alpha"
+assert_equals "$(grep -c "ping from ma" "$T/ymb.received")$(grep -c "pong from mb" "$T/yma.received")" 11 "RL10: each once"
+
+echo "RL10: titles:"
+rl10_as ya alpha
+YTXA="$HOME/.claude/projects/-syncproj"
+mkdir -p "$YTXA"
+y_title_rec() { # kind value: one title record into ma's transcript, as the harness appends (and re-appends) it
+  printf '{"type":"%s","%s":"%s","sessionId":"%s"}\n' "$1" "$([ "$1" = custom-title ] && echo customTitle || echo aiTitle)" \
+    "$2" "$YMA" >> "$YTXA/$YMA.jsonl"
+}
+y_filler() { printf '{"type":"user","message":{"role":"user","content":"a turn"}}\n' >> "$YTXA/$YMA.jsonl"; }
+y_titles() { # [session] → the titles alpha's endpoint took for it (ma's by default), each position once
+  rl10_q "$YEPA" "[e['title'] for s, e in sorted({e['seq']: e for c, e in up('$YPID') if e['writer'] == 'alpha/${1:-$YMA}' and e['kind'] == 'titled'}.items())]"; }
+y_titles_are() { [ "$(y_titles "${2:-$YMA}")" = "$1" ]; }
+y_tick_a() { python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$T/ya/s/daemon/ticked" 2>/dev/null || true; }
+y_tick_moved() { [ "$(y_tick_a)" != "$1" ]; }
+y_two_ticks() { local t; t="$(y_tick_a)"; until_true 100 y_tick_moved "$t" || true; t="$(y_tick_a)"; until_true 100 y_tick_moved "$t" || true; }
+y_ma_on_beta() { # → ma's in-charge line and its source as beta's list --json carries them
+  (rl10_as yb beta && cd "$YRB" && "$SMINOS" list --json) | python3 -c 'import json, sys
+print(" / ".join("%s (%s)" % (r["charge"], r["charge_source"]) for r in json.load(sys.stdin) if r["alias"] == "ma"))'
+}
+y_ma_on_beta_is() { [ "$(y_ma_on_beta)" = "$1" ]; }
+for _ in 1 2 3; do y_filler; y_title_rec ai-title "Codex native Computer Use internals"; done
+until_true 200 y_titles_are '["Codex native Computer Use internals"]' || true
+assert_equals "$(y_titles)" '["Codex native Computer Use internals"]' \
+  "RL10: alpha's daemon publishes ma's title once, and its endpoint takes it, though the harness re-appended it"
+until_true 200 y_relayed y_ma_on_beta_is "Codex native Computer Use internals (title)" || true
+assert_equals "$(y_ma_on_beta)" "Codex native Computer Use internals (title)" \
+  "RL10: beta, which holds no transcript of ma, names ma by the title alpha published"
+for _ in 1 2 3; do y_filler; y_title_rec custom-title "cua_repl"; y_title_rec ai-title "Codex native Computer Use internals"; done
+until_true 200 y_titles_are '["Codex native Computer Use internals", "cua_repl"]' || true
+y_two_ticks
+for _ in 1 2 3; do y_filler; y_title_rec custom-title "cua_repl"; y_title_rec ai-title "Codex native Computer Use internals"; done
+y_two_ticks
+assert_equals "$(membership "$YALOG/alpha.$YMA.jsonl")" "joined ['Codex native Computer Use internals', 'cua_repl']" \
+  "RL10: a /rename is published as the new title, once: ticks over an unchanged title publish nothing"
+assert_equals "$(y_titles)" '["Codex native Computer Use internals", "cua_repl"]' "RL10: and alpha's endpoint takes it once"
+until_true 200 y_relayed y_ma_on_beta_is "cua_repl (title)" || true
+assert_equals "$(y_ma_on_beta)" "cua_repl (title)" "RL10: and beta names ma by it"
+YMA_REC="$(cat "$HOME/.claude/sessions/ma.json")"
+y_ma_ends_renamed() { # title
+  local t; t="$(y_tick_a)"; until_true 100 y_tick_moved "$t" || true
+  y_filler; y_title_rec custom-title "$1"; rm "$HOME/.claude/sessions/ma.json"
+}
+y_ma_ends_renamed "cua_repl, wrapped up"
+until_true 200 y_titles_are '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up"]' || true
+assert_equals "$(y_titles)" '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up"]' \
+  "RL10: ma renamed and closed between two ticks: alpha publishes the name it ended under, and its endpoint takes it"
+until_true 200 y_relayed membership_is "$YBLOG/alpha.$YMA.jsonl" "retired:ended ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up']" || true
+assert_equals "$(membership "$YBLOG/alpha.$YMA.jsonl")" \
+  "retired:ended ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up']" \
+  "RL10: and beta holds it beside ma's retirement, for a view of ended sessions to name it by"
+printf '%s\n' "$YMA_REC" > "$HOME/.claude/sessions/ma.json"
+until_true 200 membership_is "$YALOG/alpha.$YMA.jsonl" "joined ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up']" || true
+y_ma_ends_renamed "cua_repl, round two"
+until_true 200 y_titles_are '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up", "cua_repl, round two"]' || true
+assert_equals "$(y_titles)" '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up", "cua_repl, round two"]' \
+  "RL10: resumed, renamed and closed again between two ticks: that name is published too"
+until_true 200 y_relayed membership_is "$YBLOG/alpha.$YMA.jsonl" "retired:ended ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up', 'cua_repl, round two']" || true
+assert_equals "$(membership "$YBLOG/alpha.$YMA.jsonl")" \
+  "retired:ended ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up', 'cua_repl, round two']" \
+  "RL10: and beta holds that one too"
+y_settle "after titles"
+
+echo "RL10: a daemon restart:"
+kill "$YA_DAEMON"
+set +e; wait "$YA_DAEMON"; set -e
+rl10_as ya alpha
+(cd "$YRA" && says 5 "alpha while its daemon is down")
+# ea joins and ends while no daemon runs here: no daemon ever saw it a member.
+YEA=6a000002-0000-4000-8000-0000000000a2
+sleep 600 & YEA_PID=$!
+PIDS+=("$YEA_PID")
+printf '{"type":"ai-title","aiTitle":"Desk sidebar for ended sessions","sessionId":"%s"}\n' "$YEA" > "$YTXA/$YEA.jsonl"
+printf '{"pid":%s,"sessionId":"%s","name":"ea","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$YEA_PID" "$YEA" "$YRA" > "$HOME/.claude/sessions/ea.json"
+(cd "$YRA" && "$SMINOS" list >/dev/null)
+rm "$HOME/.claude/sessions/ea.json"
+(cd "$YRA" && "$SMINOS" list >/dev/null)
+rl10_as yb beta
+(cd "$YRB" && says 5 "beta while alpha's daemon is down")
+rl10_as ya alpha
+Y_CONNS="$(rl10_q "$YEPA" "d['conns']")"
+start_daemon
+YA_DAEMON=$DAEMON_PID
+y_reconnected() { [ "$(rl10_q "$1" "d['current'] or 0")" -gt "$2" ]; }
+until_true 200 y_reconnected "$YEPA" "$Y_CONNS" || true
+y_took_ea() { [ "$(rl10_q "$YEPA" "any(e['kind'] == 'titled' and e['writer'] == 'alpha/$YEA' for c, e in up('$YPID'))")" = true ]; }
+until_true 200 y_took_ea || true
+y_took_ea && pass "RL10: alpha's endpoint takes the title of a session that ended before alpha's daemon started" \
+  || fail "RL10: alpha's endpoint takes the title of a session that ended before alpha's daemon started"
+until_true 200 y_relayed membership_is "$YBLOG/alpha.$YEA.jsonl" "retired:ended ['Desk sidebar for ended sessions']" || true
+y_settle "after alpha's daemon restarts"
+assert_equals "$(membership "$YBLOG/alpha.$YEA.jsonl")" "retired:ended ['Desk sidebar for ended sessions']" \
+  "RL10: and beta holds it"
+assert_equals "$(grep -c "beta while alpha's daemon is down" <<<"$(cat "$YALOG/"beta.*.jsonl)")" 5 \
+  "RL10: what beta said while alpha's daemon was down reaches alpha on its new connection, each once"
+
+echo "RL10: a dropped connection:"
+Y_CONNS="$(rl10_q "$YEPB" "d['conns']")"
+python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$YEPB" drop >/dev/null
+rl10_as ya alpha
+(cd "$YRA" && says 3 "alpha while beta reconnects")
+rl10_as yb beta
+(cd "$YRB" && says 3 "beta while it reconnects")
+until_true 200 y_reconnected "$YEPB" "$Y_CONNS" || true
+y_reconnected "$YEPB" "$Y_CONNS" && pass "RL10: beta reconnects to its endpoint" || fail "RL10: beta reconnects to its endpoint"
+y_settle "after beta's connection drops"
+assert_equals "$(rl10_q "$YEPB" "[f['have'].get('alpha/$YMA', 0) > 0 for c, f in F if c == d['current'] and f.get('t') == 'hello' and f.get('project') == '$YPID']")" \
+  "[true]" "RL10: its new hello says what it holds of alpha's, so only what it lacks is handed again"
+assert_equals "$(grep -c "alpha while beta reconnects" <<<"$(cat "$YBLOG/"alpha.*.jsonl)")" 3 "RL10: what alpha said meanwhile reaches beta, each once"
+
+kill "$YA_DAEMON" "$YB_DAEMON"
+set +e; wait "$YA_DAEMON" "$YB_DAEMON"; set -e
+for side in ya yb; do
+  assert_not_contains "$(cat "$T/$side/s/daemon.log")" "Traceback" "RL10: nothing in $side's daemon.log is a traceback"
+done
+assert_equals "$(test -e "$T/ya/s/daemon/hub.json" || test -e "$T/yb/s/daemon/hub.json"; echo $?)" 1 "RL10: and neither holds a hub.json"
 unset MAWS_USER_DATA
 
 echo
