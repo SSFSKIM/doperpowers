@@ -3842,10 +3842,12 @@ DX2_ONLY = (
     "test_f_a_steer_to_a_session_without_a_bridge_takes_sminos_steer",   # unfenced: RL10 refuses it `context`
     "test_l_a_hub_that_lists_no_op_is_sent_none",   # DX2's welcome.kinds
 )
-# Stop and Resume run outside the bridge's launch fence: RL10 refuses them
-# `unsupported` (test_r_a_remote_rpc_never_takes_a_path_around_the_bridge),
-# and they go with `coded` (the architect's ruling, #153).
-UNFENCED_ONLY = tuple(n for n in dir(Checks) if n.startswith(("test_j_", "test_k_"))) + (
+# Stop (k) and Resume (j) run outside the bridge's launch fence: RL10
+# refuses them `unsupported` (test_r_a_remote_rpc_never_takes_a_path_around_the_bridge),
+# and they go with `coded` (the architect's ruling, #153). An observer's
+# refusal is every bridge command's, and runs.
+OBSERVED = "test_j_an_observers_refusal_is_the_rpcs_answer_lane_b"
+UNFENCED_ONLY = tuple(n for n in dir(Checks) if n.startswith(("test_j_", "test_k_")) and n != OBSERVED) + (
     "test_q_a_reseal_of_an_op_its_worker_then_refuses_is_answered_under_its_nonce",   # Resume's live-session refusal
 )
 # What no RPC controller takes part in (a function, or the bridge child
