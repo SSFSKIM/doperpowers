@@ -18,7 +18,7 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) M3c: the shell suites' one-machine cases (tests only; `a192e1dc..6d4817ef`, fixes `f4112d95`, `43a448db`, `e433dec0`; review clean, sminos gates GREEN on `e433dec0`, run 42354783123).
 - [x] (2026-11-07) M3d: the two-machine compositions (tests only; `65e8870c..95c94a7f`, fixes `289ca204`, `6e4397ff`, `e7121bd0`; review clean, sminos gates GREEN on `e7121bd0`, run 42354037484).
 - [x] (2026-11-07) M3e: open latency on RL10 (tests only; `a021ef36`, fix `9b402981`; review clean, sminos gates GREEN on `e433dec0`, run 42354783123). Every map §2.4 item has its RL10 test; the checklist is in the PR body.
-- [ ] M4: the `hub` verbs and `hub.json` reduced (the sminos 1.40.0 bump).
+- [x] (2026-11-07) M4: the `hub` verbs and `hub.json` reduced (the sminos 1.40.0 bump; `d2a87149`, `a76f947e`; review clean, sminos gates GREEN on `a76f947e`, run 42358177740; replay 107 ok, 0 FAIL). origin/main merged at `8d5efdfd`.
 - [ ] M5: the DX2 transport and the supervisor's DX2 arm out.
 - [ ] M6: `coded` collapsed.
 - [ ] M7: docs and labels.
@@ -333,6 +333,19 @@ This is after the branch review and the merge, and it is not part of the branch'
   - M3d's re-review found that a composition wrapper's passing predicate masks a relay command's non-zero exit. Dismissed: stderr is kept, and the predicate passes only once the consumer has the frames.
   - Item 6's second archiver (designated onto a remote another machine's archive already wrote) is not the first designation's path, and gets its own test before M4. Item 7's two-machine half (test-org: beta follows alpha's stray, the `projects`/`machines` tables) and item 2's alpha-side view of a renamed beta are composed in M3d.
   Date/Author: 2026-11-07, p5-desk-track-owner (coordinator) and plan-executor.
+
+- Decision (M4, the executor; reviewed clean):
+  - The pointer has two endings: on a cut-over machine, today's line naming the identity file; on a machine no endpoint has welcomed, that sminos takes the enrollment at the first welcome, with the machine's current name. Words after `enroll`, `check` or `leave` are ignored.
+  - The milestone is two commits: a tests-only commit that holds on the old code (`d2a87149`), then the shipping commit with the 1.40.0 bump (`a76f947e`).
+  - The shared fixtures are `tests/rl10_identity.py` (Python) and `rl10_cut_over` (shell, with an optional former map).
+  - DX2 transport tests that still pass stay for M5, including the stand-ins' own `.enroll(` methods (`StandinHub.enroll`, `bench_rig.Standin.enroll`), which write `hub.json` as a DX2 credential and are not `hub enroll`.
+  - M3 lacked a few RL10 twins: two in test-address, one in test-broadcast, test-sync's lone-surrogate writer, and two test_heads assertions with a new owed test. Each was added in `d2a87149` before its DX2 original went, since the DX2 blocks need `hub enroll` and could not stay running. The review confirmed each twin is real.
+  - `test_rl10.py:282`'s first-welcome assertion is inverted. The import of `hub.json`'s former names at the first welcome is a DX2-only behaviour that goes (allowed migration d); the PR names it.
+  - `sminos.queued_counts` goes as dead code. Left for M7: the user strings that still say `sminos hub enroll` (`hub_here`'s hint, `cmd_machines`, the usage text, the `run_suites` labels). Left for M6/M7: `cmd_machines`' DX2 presence branch, which nothing reaches.
+  - test-sync's "neither machine ever ran git" is now asserted on the one-machine RL10 block alone.
+  Date/Author: 2026-11-07, plan-executor (M4).
+- Decision (the coordinator, 2026-11-07): origin/main (`fcf0b6a5`, PR #469, sminos 1.39.1, the macOS protected-folder guard) is merged into the branch, never rebased, before the whole-branch review. Where the branch deletes phase-1 code the deletion wins; the guards stay in whatever survives, and `test_protected.py` stays green (its `hub.json` fixture moves to `identity.json`). 1.40.0 stays above 1.39.1.
+  Date/Author: 2026-11-07, p5-desk-track-owner (coordinator).
 
 ## Outcomes & Retrospective
 
