@@ -13,7 +13,7 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) The spec's review: adversarial-reviewer on the design and on the execution section, one round each. Every finding was folded in (Decision Log, 2026-11-07, the review).
 - [x] (2026-11-07) M1: devcloud's DX2 enrollment out (devcloud 0.16.0, `1585356b`; review clean, devcloud gates GREEN, run 42338569325).
 - [x] (2026-11-07) M2: the opt-in local-hub modes out (tests only; `0e2a69d6`; review clean, sminos gates GREEN, run 42339386393).
-- [ ] M3a: the unit flips (tests only).
+- [x] (2026-11-07) M3a: the unit flips (tests only; `c9b0240d`, `673a7851`; review clean, sminos gates GREEN, run 42343036908).
 - [ ] M3b: the endpoint stand-in ports, the session plane and the RPCs (tests only).
 - [ ] M3c: the shell suites' one-machine cases (tests only).
 - [ ] M3d: the two-machine compositions (tests only).
@@ -251,6 +251,9 @@ This is after the branch review and the merge, and it is not part of the branch'
 - Observation (M2): `bench_scale.py` never had the `--hub local` or `--maws` flags the spec and map §5 step 1 name; it needed no change in M2.
   Evidence: `bench_scale.py`'s parsers at `0e2a69d6`.
 
+- Observation (M3a): `test_rpcs` runs about 75 s locally instead of 36 s while both arms run, until M6. An existing race in `Checks::test_l_a_command_running_when_its_child_is_replaced_keeps_its_end` prints a thread traceback while the test passes; it is not fixed here.
+  Evidence: task 3's report; sminos-suites took 22m33s on `673a7851` (run 42343036908).
+
 ## Decision Log
 
 - Decision (verification, at authoring): the design and the execution section each get one `doperpowers:adversarial-reviewer` pass before execution. The branch gets the xhigh panel through `doperpowers:review-code`: the diff runs to thousands of lines across many files, and most of the risk is coverage silently lost rather than a defect in what is added. Acceptance 8's daemon check closes it.
@@ -289,6 +292,15 @@ This is after the branch review and the merge, and it is not part of the branch'
   - `make_hub` goes: the three Uplink classes call `StandinHub` directly. `Hub`, `StandinHub` and `call` stay until M5.
   - `ws_client.py` goes with `LocalHub` and `LocalBrowser`, its only users.
   Date/Author: 2026-11-07, plan-executor (M2).
+
+- Decision (the coordinator's correction to M1, 2026-11-07): the host side tolerates a descriptor or `boot.env` that still names `DEVCLOUD_SMINOS_SECRET` (or the v1 `provisioning_secret`): it ignores the key with one log line and never fails a step over it. A live `keep` VM (`dc-linux171-1e68`) still carries it. The refusal stays on the driver side only, where a profile naming v1 at `vm up`, `adopt` or `reconcile` planning makes no new host. This reverses M1's first decision for the host side; the fix lands in its own commit with a test. TECH-DEBT's deleted v1 desk-key row is replaced by a pointer: the v2 delegation's expiry (about 2027-01-26) is MAWS board #512.
+  Date/Author: 2026-11-07, p5-desk-track-owner (coordinator).
+- Decision (M3a, the executor):
+  - The RL10 twins are subclasses over seams (`coded`/`key`, `started`, `rpc`, `relay`, `no_bridge`, `op_for`, `bound`, `keyed`), so each test body runs on both paths. The coded bodies look the op key up through `rpcs.op_of` (the nonce on DX2), so their meaning is unchanged. M6 collapses each pair by deleting the coded arm.
+  - `ChecksOnRl10` sends RPCs in the endpoint's shape, with the opId derived from the nonce so a resend is the same op. Three of its tests are overridden for RL10 (the cd lone-surrogate case, the spawn half of spawn-and-retire, the opId-keyed ledger without DX2's nonce-keyed RPC). Not rerun on RL10: `test_r`/`test_s` (already RL10); DX1's code, the unfenced steer and `welcome.kinds` (DX2 only); Stop k×5, Resume j×14 and the reseal test that leans on Resume's refusal (they go with `coded`; their recovery is M3b's); three tests no RPC controller takes part in.
+  - The twins keep the `hub.json` fixture and flip only `coded`; the move to `identity.json` is M4's. The `test_heads` twins are the exception and trigger through `rl10.welcomed`, since that trigger is what they test.
+  - The Lifecycle twins run on the real `SocketLane` over a socketpair, the endpoint's slowness modelled as a held first write.
+  Date/Author: 2026-11-07, plan-executor (M3a).
 
 ## Outcomes & Retrospective
 
