@@ -10,7 +10,7 @@ Two halves.
 - `ChecksOnRl10` drives `sminos_rpc.Rpcs` in this process against DC2's
   real bridge child, with this test as its mod (`Mod`: commands answered as
   bridge.tsx answers them), and a `claude` stand-in (fake_claude.py) for
-  spawn and for the processes a Resume claimed before the cutover left.
+  spawn.
   Each refusal of DX6's order is produced on purpose, and the ledger's
   claims are reconciled from their traces.
 - `UplinkOnRl10` runs `sminos daemon uplink` on a machine cut over to its
@@ -30,7 +30,6 @@ import base64
 import hashlib
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -64,7 +63,6 @@ PDF = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n"
 TURN_UNKNOWN = "turn state unknown since the bridge reloaded; retry after the next model request"
 LAUNCH = "-Lm7launch0000000000AA"   # the bridged session's launch (O12 M7): base64url, here starting with `-`
 STALE = "Lm7launch-before-reopen"  # a launch the session ran under before it was reopened
-BG_SHORT_RE = re.compile(r"backgrounded · ([0-9a-f]+)")   # the job `claude --bg` names (fake_claude.py)
 
 
 def install_claude(name):
@@ -93,35 +91,6 @@ def stop_holders(state):
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
-
-
-def holders_of(sid):
-    """The engine's records of processes holding the session that run: [rec]."""
-    out = []
-    for name in os.listdir(os.path.join(os.environ["HOME"], ".claude", "sessions")):
-        try:
-            with open(os.path.join(os.environ["HOME"], ".claude", "sessions", name)) as f:
-                rec = json.load(f)
-        except (OSError, ValueError):
-            continue
-        if rec.get("sessionId") == sid and sminos.pid_alive(rec.get("pid")):
-            out.append(rec)
-    return out
-
-
-def ended_session(root):
-    """A terminal session of the project at `root` that ran here and ended:
-    joined, its process gone, its membership retired `ended`, its transcript
-    kept."""
-    s = tpr.Session(root, inbox=False)
-    sminos.reconcile(tpr.project_of(root))
-    append_row(s.sid, {"type": "user", "uuid": str(uuidlib.uuid4()), "timestamp": iso(time.time()), "cwd": root,
-                       "sessionId": s.sid, "message": {"role": "user", "content": "hello"}})
-    s.end()
-    sminos.reconcile(tpr.project_of(root))
-    latest = sminos.view_of(tpr.project_of(root), titles=False).info[s.sid]["latest"]
-    assert (latest["kind"], latest.get("reason")) == ("retired", "ended"), latest
-    return s.sid
 
 
 def launches(state):
@@ -463,9 +432,7 @@ class ChecksOnRl10(unittest.TestCase):
     a lane A context naming the bridged session's launch. A copy sent again
     under its nonce is the same op (its opId is the nonce's here). Resume,
     Retire and Stop run outside the bridge's fence and are not offered
-    (`unsupported`); what stays of them is the recovery of a claim kept
-    before the cutover (the reconciliations under "a claim kept before the
-    cutover")."""
+    (`unsupported`)."""
 
     PROJECT = "rpcproj-rl10"
 
@@ -664,9 +631,9 @@ class ChecksOnRl10(unittest.TestCase):
         self.assertIn("%.3f s old" % (self.clock[0] - rpcs.created_at(rpc["created"])), lines[0])
 
     def test_c_the_ledger_keeps_each_rpcs_created_and_when_it_was_done(self):
-        """A Resume's breakdown (click → claim → launch → done) reads off its
-        entry: `created`, `at`, `launched_at`, `done_at`. A refusal kept from
-        the ledger on carries them too."""
+        """An RPC's breakdown (click → claim → done) reads off its entry:
+        `created`, `at`, `done_at`. A refusal kept from the ledger on carries
+        them too."""
         self.mod.turn = "t1"
         ran = self.send("steer", {"session": self.bridged.sid, "text": "timed"}, created=iso(self.clock[0] - 2))
         self.assertEqual(self.outcome(ran)["state"], "done")
@@ -2017,7 +1984,7 @@ class ChecksOnRl10(unittest.TestCase):
     def reconciled(self, r, nonce, timeout=20.0):
         """The results `r` gives for a nonce once a reconciliation answers it
         (each try one more reconciliation, the clock where it is): a claim a
-        worker holds (a Resume's copy check) is answered after it."""
+        worker holds is answered after it."""
         def got():
             r.next_reconcile = 0.0
             return results(r.due({self.pid}), nonce)
@@ -2285,7 +2252,7 @@ class ChecksOnRl10(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.collect() is not None and not self.r.flight), "nothing left in flight")
         self.mod.settle("toolu_cut", outcome="deny", winner="terminal", by="terminal")
 
-    # ------------------------------------------------ a lane B observer; a claim kept before the cutover
+    # ------------------------------------------------ a lane B observer; a claim no trace can answer
 
     def test_j_an_observers_refusal_is_the_rpcs_answer_lane_b(self):
         """O12 M3: the bridge of a MAWS lane B session refuses every control
@@ -2307,140 +2274,24 @@ class ChecksOnRl10(unittest.TestCase):
                 rpcs.decide(rpcs.bridge.endpoint(self.bridged.sid), "toolu_x", {"behavior": "allow", "by": MEMBER})
         self.assertEqual(r.exception.outcome["error"]["code"], "lane-b")
 
-    def test_j_a_claimed_resume_is_reconciled_from_its_own_launch(self):
-        """A claimed Resume ran if a --bg process of its launch holds the
-        session: started at or after the launch the claim records, its job
-        the one the claim keeps. No launch recorded: nothing ran, said at
-        once. A launch whose job was never kept (the daemon stopped while
-        `claude --bg` ran, which outlives it: 2026-10-20's desk Resume) ran
-        if a --bg process started since holds the session that no other
-        Resume of it, still running then, may have started (a job id cannot
-        say: every --bg job of a session shares one); until one does, or
-        the window ends, it may still come."""
-        sid, late, unlaunched, jobless, never, other = (ended_session(self.root) for _ in range(6))
-        launched = time.time()
-        self.claim("JJJJJJJJJJJJJJJJJJJJJA", "resume", sid, self.clock[0], launched_at=launched, job=sid[:8])
-        self.claim("KKKKKKKKKKKKKKKKKKKKKA", "resume", late, self.clock[0] - rpcs.RESUME_TRACE_S - 1,
-                   launched_at=launched - rpcs.RESUME_TRACE_S - 1, job=late[:8])
-        self.claim("LLLLLLLLLLLLLLLLLLLLLA", "resume", unlaunched, self.clock[0])
-        self.claim("OOOOOOOOOOOOOOOOOOOOOA", "resume", jobless, self.clock[0], launched_at=launched)
-        # An earlier Resume of the same session, answered before this launch: its job id is the same
-        # (the engine names a session's every --bg job by its id's first 8), its process long gone.
-        self.claim("TTTTTTTTTTTTTTTTTTTTTA", "resume", jobless, self.clock[0] - 3600, launched_at=launched - 3600,
-                   job=jobless[:8], outcome={"state": "done", "result": {"session": jobless}},
-                   done_at=launched - 3590, acked=True)
-        self.claim("QQQQQQQQQQQQQQQQQQQQQA", "resume", never, self.clock[0], launched_at=launched)
-        # Another Resume of `other` launched at the same time and still runs: the process holding it
-        # may be that one's.
-        self.claim("RRRRRRRRRRRRRRRRRRRRRA", "resume", other, self.clock[0], launched_at=launched)
-        self.claim("SSSSSSSSSSSSSSSSSSSSSA", "resume", other, self.clock[0], launched_at=launched, job=other[:8])
-        time.sleep(1.1)  # whole seconds, as ps reads a start: the launches below are after the claims'
-        for s in (jobless, other):
-            subprocess.run(["claude", "--bg", "--resume", s], cwd=self.root, capture_output=True, check=True)
-        self.clock[0] = time.time()  # an outcome's done_at, on this clock, is compared with a real launch time
-        try:
-            with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "3", "SMINOS_POLL_INTERVAL": "0.05"}):
-                r = self.started()
-                first = r.due({self.pid})
-                self.assertEqual(results(first, "JJJJJJJJJJJJJJJJJJJJJA"), [], "its job may still come")
-                self.assertEqual([x["error"]["code"] for x in results(first, "LLLLLLLLLLLLLLLLLLLLLA")],
-                                 ["interrupted"], "stopped before its launch: nothing ran, said at once")
-                self.assertEqual(results(first, "OOOOOOOOOOOOOOOOOOOOOA"),
-                                 [{"state": "done", "result": {"session": jobless}}],
-                                 "its job never kept, but a --bg process started since holds the session, and the "
-                                 "only other Resume of it was answered before this launch: it ran")
-                self.assertEqual(results(first, "QQQQQQQQQQQQQQQQQQQQQA"), [],
-                                 "its job never kept, nothing holds the session yet: its launch may still land")
-                self.assertEqual(results(first, "RRRRRRRRRRRRRRRRRRRRRA"), [],
-                                 "another Resume running then may have started the process holding it: "
-                                 "no evidence for this one")
-                self.assertEqual([x["error"]["code"] for x in self.reconciled(r, "KKKKKKKKKKKKKKKKKKKKKA")],
-                                 ["interrupted"], "past the window with no job holding it")
-                subprocess.run(["claude", "--bg", "--resume", sid], cwd=self.root, capture_output=True, check=True)
-                self.assertEqual(self.reconciled(r, "JJJJJJJJJJJJJJJJJJJJJA"),
-                                 [{"state": "done", "result": {"session": sid}}], "its launch's job holds it: it ran")
-                self.clock[0] += rpcs.RESUME_TRACE_S + 1
-                for nonce in ("QQQQQQQQQQQQQQQQQQQQQA", "RRRRRRRRRRRRRRRRRRRRRA"):
-                    self.assertEqual([x["error"]["code"] for x in self.reconciled(r, nonce)], ["interrupted"],
-                                     "past the window with no process of its launch holding it")
-        finally:
-            for s in (sid, jobless, other):
-                for h in holders_of(s):
-                    os.kill(h["pid"], signal.SIGKILL)
-
-    def test_j_a_holder_older_than_the_claimed_launch_is_no_evidence(self):
-        sid = ended_session(self.root)
-        subprocess.run(["claude", "--bg", "--resume", sid], cwd=self.root, capture_output=True, check=True)
-        try:
-            self.assertTrue(holders_of(sid), "a --bg job already holds it")
-            time.sleep(1.2)  # the launch the claim records comes a whole second after it started
-            launched = time.time()
-            self.claim("MMMMMMMMMMMMMMMMMMMMMA", "resume", sid, self.clock[0], launched_at=launched, job=sid[:8])
-            self.claim("NNNNNNNNNNNNNNNNNNNNNA", "resume", sid, self.clock[0], launched_at=launched)
-            with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "3", "SMINOS_POLL_INTERVAL": "0.05"}):
-                r = self.started()
-                first = r.due({self.pid})
-                self.assertEqual(results(first, "MMMMMMMMMMMMMMMMMMMMMA"), [], "not taken as its launch")
-                self.assertEqual(results(first, "NNNNNNNNNNNNNNNNNNNNNA"), [],
-                                 "no job kept: not taken as its launch either; its own may still come")
-                self.assertTrue(wait_for(lambda: (r.take(), "MMMMMMMMMMMMMMMMMMMMMA" not in r.flight)[1]),
-                                "the harness was asked about its job")
-                r.next_reconcile = 0.0
-                self.assertEqual(results(r.due({self.pid}), "MMMMMMMMMMMMMMMMMMMMMA"), [],
-                                 "the job is the session's own, not a copy: its holder may still come")
-                self.clock[0] += rpcs.RESUME_TRACE_S + 1
-                for nonce in ("MMMMMMMMMMMMMMMMMMMMMA", "NNNNNNNNNNNNNNNNNNNNNA"):
-                    self.assertEqual([x["error"]["code"] for x in self.reconciled(r, nonce)], ["interrupted"])
-        finally:
-            for h in holders_of(sid):
-                os.kill(h["pid"], signal.SIGKILL)
-
-    def test_j_a_claimed_resume_whose_job_is_a_copy_has_the_copy_stopped(self):
-        """Stopped after its job was kept and before the copy check: the
-        harness reports that job under another session — a copy the engine
-        started, which the reconciliation stops, the RPC failed
-        copy-started, rather than left to run."""
-        sid = ended_session(self.root)
-        launched = time.time()
-        out = subprocess.run(["claude", "--bg", "--resume", sid, "--model", "sonnet"], cwd=self.root,
-                             capture_output=True, text=True, check=True).stdout
-        short = BG_SHORT_RE.search(out).group(1)
-        rows = json.loads(subprocess.run(["claude", "agents"], capture_output=True, text=True, check=True).stdout)
-        copy = next(row["sessionId"] for row in rows if row["id"] == short)
-        self.assertNotEqual(copy, sid)
-        self.assertTrue(holders_of(copy), "the copy runs")
-        self.claim("PPPPPPPPPPPPPPPPPPPPPA", "resume", sid, self.clock[0], launched_at=launched, job=short)
-        try:
-            with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "3", "SMINOS_POLL_INTERVAL": "0.05"}):
-                r = self.started()
-                o = self.reconciled(r, "PPPPPPPPPPPPPPPPPPPPPA")
-            self.assertEqual([x["error"]["code"] for x in o], ["copy-started"], o)
-            self.assertIn("was stopped", o[0]["error"]["message"])
-            self.assertEqual(holders_of(copy), [], "the copy no longer runs")
-        finally:
-            for h in holders_of(copy) + holders_of(sid):
-                os.kill(h["pid"], signal.SIGKILL)
-            # Its stopped row would read as another test's stopped copy.
-            os.unlink(os.path.join(self.claude, "agents", short + ".json"))
-
-    def test_j_an_unfinished_retire_or_stop_claim_is_reconciled_interrupted(self):
-        """A Retire and a Stop claimed before the cutover (DX2 kept the
-        ledger under the RPC's nonce), the daemon stopped before either was
-        answered: the RL10 controller's first reconciliation answers each
+    def test_j_an_unfinished_claim_without_a_trace_is_reconciled_interrupted(self):
+        """A model change and a record change claimed under the RPC's nonce
+        (an RPC without an opId), the daemon stopped before either was
+        answered: the controller's first reconciliation answers each
         `interrupted` at once (neither leaves a trace to wait for), keeps the
         outcome, and sends it under the nonce the claim was kept by, its
         opId null (an op keyed by its nonce). An answered one, and a
         tombstoned one, are left as they are."""
         now = self.clock[0]
-        retire, stop, answered, gone = (c * 21 + "A" for c in "WXYZ")
-        self.claim(retire, "retire", self.bridged.sid, now - 5)
-        self.claim(stop, "stop", self.bridged.sid, now - 5, task="bmain1")
-        self.claim(answered, "retire", self.bridged.sid, now - 60, outcome={"state": "done", "result": {}},
+        changed, access, answered, gone = (c * 21 + "A" for c in "WXYZ")
+        self.claim(changed, "model", self.bridged.sid, now - 5)
+        self.claim(access, "record.access", self.bridged.sid, now - 5)
+        self.claim(answered, "model", self.bridged.sid, now - 60, outcome={"state": "done", "result": {}},
                    done_at=now - 59)
-        self.claim(gone, "stop", self.bridged.sid, now - 60, tombstone=True)
+        self.claim(gone, "interrupt", self.bridged.sid, now - 60, tombstone=True)
         r = self.started()
         frames = r.due({self.pid})
-        for key in (retire, stop):
+        for key in (changed, access):
             [got] = [f for f in frames if f.get("t") == "rpc-result" and f.get("nonce") == key]
             self.assertEqual((got["opId"], got["project"], got["outcome"]["state"], got["outcome"]["error"]["code"]),
                              (None, self.pid, "failed", "interrupted"), key)
@@ -2449,8 +2300,8 @@ class ChecksOnRl10(unittest.TestCase):
                          "an answered claim is sent as it was answered")
         self.assertEqual(results(frames, gone), [], "a tombstoned one never goes")
         self.assertNotIn("outcome", self.ledger()[gone])
-        self.assertEqual(self.mod.ops("stop"), [], "nothing run again")
-        self.assertIn("retire %s, claimed before a stop, reconciled: failed" % retire, tsp.read(
+        self.assertEqual(self.mod.ops("model"), [], "nothing run again")
+        self.assertIn("model %s, claimed before a stop, reconciled: failed" % changed, tsp.read(
             os.path.join(os.environ["SMINOS_HOME"], "daemon.log")))
 
     def test_k_a_malformed_task_id_is_bad_shape(self):
@@ -2640,7 +2491,7 @@ class ChecksOnRl10(unittest.TestCase):
         self.mod.turn = "t-o7"
         op = new_op()
         self.assertEqual(self.r.tombstone(op), {"ok": True})
-        self.clock[0] += rpcs.SPAWN_TRACE_S + rpcs.RESUME_TRACE_S   # past every trace's window
+        self.clock[0] += rpcs.SPAWN_TRACE_S + 1   # past every trace's window: a spawn's is the longest
         self.r = self.started()
         self.assertEqual([f for f in self.r.due({self.pid}) if f.get("t") == "rpc-result"], [])
         self.assertTrue(self.ledger()[op]["tombstone"])
@@ -3527,69 +3378,6 @@ class CopyNames(unittest.TestCase):
         self.rename(fresh, "brand-new")
         self.tick()
         self.assertEqual(self.alias_of(fresh.sid), "brand-new", "a rename onto a free name is published")
-
-
-class LaunchStart(unittest.TestCase):
-    """When the engine's record carries no start, `launched_by` (the
-    reconciliation of a Resume claimed before a stop) reads the process's
-    own. On Linux `ps -o lstart` adds the start's offset to /proc/stat's
-    boot time, truncated to the second: a process begun 0.2 s after the
-    launch reads as begun the second before it, and the claim's own job is
-    taken for no evidence. A /proc stand-in reproduces such a boot (its true
-    instant 0.7 s past the second btime names), with `ps` answering as it
-    would."""
-
-    PID = 4242
-    JOB = "abcd1234"
-
-    def setUp(self):
-        self.proc = os.path.join(T, "proc-" + uuidlib.uuid4().hex[:8])
-        os.makedirs(os.path.join(self.proc, str(self.PID)))
-        self.hz = os.sysconf("SC_CLK_TCK")
-        now = time.time()
-        self.boot = int(now) - 3600 + 0.7
-        self.launched = int(now) - 60 + 0.1
-        with open(os.path.join(self.proc, "stat"), "w") as f:
-            f.write("cpu  0 0 0 0\nbtime %d\n" % int(self.boot))
-        with open(os.path.join(self.proc, "uptime"), "w") as f:
-            f.write("%.2f 0.00\n" % (now - self.boot))
-        self.ps = ""
-        for patch in (mock.patch.object(sminos, "PROC", self.proc),
-                      mock.patch.object(sminos, "read_proc_start", lambda pid: self.ps)):
-            patch.start()
-            self.addCleanup(patch.stop)
-
-    def began(self, at):
-        """The process began at `at`: its /proc/<pid>/stat (a command name
-        with spaces and parentheses in it), and what ps prints for it."""
-        ticks = int((at - self.boot) * self.hz)
-        with open(os.path.join(self.proc, str(self.PID), "stat"), "w") as f:
-            f.write("%d (claude (bg) x) S 1 %d %d 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 %d 0 0\n"
-                    % (self.PID, self.PID, self.PID, ticks))
-        ps_second = int(self.boot) + ticks // self.hz
-        self.ps = time.strftime("%a %b %d %H:%M:%S %Y", time.localtime(ps_second))
-        return ps_second
-
-    def holder(self, job=JOB):
-        return {"pid": self.PID, "sessionId": str(uuidlib.uuid4()), "kind": "bg", "jobId": job}
-
-    def test_its_own_job_begun_just_after_the_launch_holds(self):
-        ps_second = self.began(self.launched + 0.2)
-        self.assertLess(ps_second, int(self.launched), "the reproduction: ps reads the second before the launch")
-        self.assertTrue(rpcs.launched_by(self.holder(), self.launched, self.JOB))
-
-    def test_no_other_job_and_no_earlier_process_is_taken(self):
-        self.began(self.launched + 0.2)
-        self.assertFalse(rpcs.launched_by(self.holder("ffff0000"), self.launched, self.JOB), "another job")
-        self.began(self.launched - 1.5)
-        self.assertFalse(rpcs.launched_by(self.holder(), self.launched, self.JOB), "begun before the launch")
-
-    def test_without_proc_ps_decides(self):
-        os.unlink(os.path.join(self.proc, "uptime"))
-        self.began(self.launched + 2)
-        self.assertTrue(rpcs.launched_by(self.holder(), self.launched, self.JOB))
-        self.began(self.launched - 2)
-        self.assertFalse(rpcs.launched_by(self.holder(), self.launched, self.JOB))
 
 
 # ---------------------------------------------------------------- the uplink

@@ -8642,22 +8642,6 @@ def _start_ticks(pid):
         return int(f.read().rsplit(")", 1)[1].split()[19])
 
 
-def proc_started_at(pid):
-    """When a live process started, in epoch seconds to the clock tick, read
-    off /proc on Linux; None elsewhere, or when it cannot tell. `ps -o
-    lstart` on Linux adds the start's offset to /proc/stat's boot time,
-    which is truncated to the second, so it can read up to a second before
-    the process began; here the boot instant is now less the uptime, and the
-    reading is within a tick of the true start."""
-    try:
-        ticks = _start_ticks(pid)
-        with open(os.path.join(PROC, "uptime")) as f:
-            uptime = float(f.read().split()[0])
-        return time.time() - uptime + ticks / os.sysconf("SC_CLK_TCK")
-    except (OSError, ValueError, IndexError, TypeError):
-        return None
-
-
 _BOOT = {}   # a /proc's btime, as _linux_start read it, per cache generation
 
 
@@ -8666,9 +8650,9 @@ def _linux_start(pid):
     (procps's pr_lstart): /proc/stat's boot time, a whole second, plus the
     start's offset in whole seconds. Its text is then ps's own, the same on
     every read: a record of it is compared as text (derive_running), and the
-    harness records ps's reading (same_process). proc_started_at's truer
-    instant can fall in the second after. 0 when there is no such process;
-    None when /proc cannot tell (no Linux /proc), for ps to answer."""
+    harness records ps's reading (same_process). The process's true start
+    can fall in the second after. 0 when there is no such process; None
+    when /proc cannot tell (no Linux /proc), for ps to answer."""
     # The boot time, read once a cache generation (the kernel writes all of
     # /proc/stat out for each read, and every running session asks); a step
     # of the wall clock moves it, which the next generation reads. The

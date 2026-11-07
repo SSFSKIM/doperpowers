@@ -62,8 +62,8 @@ any effect and records the outcome before the result goes up; entries are
 kept a day (KEPT_S), and an op's id expires an hour before that
 (OP_HORIZON), so a resealed copy of an op the ledger dropped is refused, never
 run again. Each keeps the RPC's `created` and the time its outcome was kept
-(`done_at`) beside its claim's `at`, so one
-RPC's click, claim, launch and end read off its entry. An outcome whose write fails is held here, never sent, and
+(`done_at`) beside its claim's `at`, so one RPC's click, claim and end read
+off its entry. An outcome whose write fails is held here, never sent, and
 written again until it is kept. An op left claimed (the uplink stopped
 between the two writes) is reconciled from the action's own trace — a
 spawned seat carries the op on its record (`rpc_nonce`); a steer carries
@@ -89,15 +89,7 @@ request's decision, by the member. Spawn runs `sminos spawn`, which records
 `joined` as it always does.
 
 Resume, Retire and Stop run outside the bridge's launch fence, so they are
-refused `unsupported` (below). A Resume claim kept before the cutover is
-still reconciled from its launch: `done` only when a --bg process of its
-job holds the session; one whose job was never kept (`claude --bg`
-outlives the daemon that ran it) `done` when a --bg process started since
-its launch holds it and no other Resume of the session, still running
-then, could have started it, and `interrupted` once its window passes
-without one; a kept job the harness reports under another session is a
-copy, stopped, the RPC failed `copy-started` (trace, check_copy). A Retire
-or Stop claim so kept is `interrupted`.
+refused `unsupported` (below).
 
 A compaction's outcome reaches browsers as DX4 `compact`, carrying the RPC's
 nonce, from the bridge's `compact` events for the command this daemon issued
@@ -245,7 +237,6 @@ LAUNCH = bridge.LAUNCH    # a remote RPC sealed for another launch of its sessio
 PROOF_ENV = sminos.DESK_PROOF_ENV   # a desk spawn's proof, handed to its verb (O12 M7)
 STEER_TRACE_S = 30        # a claimed steer's answer is looked for this long after its claim
 SPAWN_TRACE_S = 420       # a claimed spawn's seat: `claude --bg` may take 300 s, its uuid poll more
-RESUME_TRACE_S = 420      # a claimed Resume's job: the same launch and poll
 COMPACT_HELD_S = 60       # a `compact` event waits at most this long for its command's result to name it
 RELOAD_WAIT_S = 60        # a `/reload-plugins` is done once its bridge answers from another child within this
 OPS_ENDED_KEPT = 1000     # nonces of ops whose end went up, kept so another copy of that end is passed by
@@ -479,8 +470,8 @@ def read_ledger(path):
 
 class Ledger:
     """`daemon/rpcs.json`: op → {project, rpc, session, created?, at,
-    nonce?, op_created?, launched_at?, job?, compact_id?, outcome?, refused?,
-    done_at?, acked?} | {tombstone, at, op_created?}. The op is the RPC's
+    nonce?, op_created?, compact_id?, outcome?, refused?, done_at?,
+    acked?} | {tombstone, at, op_created?}. The op is the RPC's
     `opId`, else its nonce (op_of); `nonce` and `op_created` are an opId's
     (the nonce the hub knows its latest copy by, and when the app chose the
     id). `created` is the RPC's own (epoch s, when it parses), `at` its claim,
@@ -746,7 +737,6 @@ class Rpcs:
         self.kept = owed.Kept(OWED_FILE, log)
         self.messages = [f for f in self.kept.load() if is_owed(f)]   # DX4 compact and op messages owed, as frames
         self.unwritten = {}       # op → its outcome, whose ledger write failed: never sent until it is kept
-        self.copies_asked = set()  # claimed Resumes whose kept job the harness was asked about (check_copy)
         self.next_reconcile = 0.0
         self.restore_compacts()
         self.restore_ops()
@@ -1499,9 +1489,7 @@ class Rpcs:
         worker holds: answered from their trace, or `interrupted` once no
         trace can come any more (main thread: it reads the seats and the
         bridges' kept files); a command so answered has its id kept before
-        its outcome and is followed to its end (rearm, recover_ops). A claimed Resume whose job is kept, and does
-        not hold the session, has the harness asked once, on a worker,
-        whether that job is a copy (check_copy)."""
+        its outcome and is followed to its end (rearm, recover_ops)."""
         now = self.clock()
         self.next_reconcile = now + RECONCILE_EVERY
         for op, outcome in list(self.unwritten.items()):
@@ -1511,18 +1499,10 @@ class Rpcs:
                 continue
             del self.unwritten[op]
             log("the outcome of %s is kept now: it is sent" % op)
-        claims = self.ledger.items()
-        for op, e in claims:
+        for op, e in self.ledger.items():
             if "outcome" in e or e.get("tombstone") or op in self.flight or op in self.unwritten:
                 continue
-            outcome, window = trace(op, e, [x for n, x in claims if n != op])
-            if outcome is None and kept_job(e) and op not in self.copies_asked:
-                self.copies_asked.add(op)
-                with self.op_lock:
-                    self.flight[op] = {"nonce": e.get("nonce", op), **binding_of(e)}
-                threading.Thread(target=self.check_copy, args=(op, e), name="rpc-resume-copy",
-                                 daemon=True).start()
-                continue
+            outcome, window = trace(op, e)
             if outcome is None and window and now - e.get("at", 0) < window:
                 continue
             if outcome is None:
@@ -1541,20 +1521,6 @@ class Rpcs:
                 continue
             log("%s %s, claimed before a stop, reconciled: %s" % (e.get("rpc"), op, outcome["state"]))
         self.recover_ops()
-
-    def check_copy(self, op, e):
-        """A claimed Resume's kept job, asked of the harness (a worker: it
-        polls `claude agents`): a job it reports under another session is a
-        copy the engine started, stopped now, the RPC failed `copy-started`.
-        Any other answer leaves the claim to its trace."""
-        try:
-            reported = job_session(e["job"])
-            if reported is not None and reported != e["session"]:
-                self.record(op, copy_started(e["job"], sminos.claude_stop(e["job"])))
-                log("resume %s, claimed before a stop: its job %s is a copy (%s)" % (op, e["job"], reported))
-        finally:
-            self.finished.put(("done", op))
-            self.wake()
 
     def results(self, pids, again):
         """`rpc-result` frames of these projects not yet acknowledged; with
@@ -2402,116 +2368,16 @@ def spawned(op):
     return None
 
 
-def holders(sid):
-    """The engine's records of the processes of this machine holding the
-    session, under every config dir sminos knows: each record whose pid runs
-    and is the process it describes. Read afresh, off sminos's caches (a
-    worker's call)."""
-    out = []
-    for path, owners in sminos.engine_record_paths(fresh=True):
-        try:
-            with open(path) as f:
-                rec = json.load(f)
-        except (OSError, ValueError):
-            continue
-        if isinstance(rec, dict) and rec.get("sessionId") == sid and sminos.speaks_for(owners, rec) \
-                and sminos.pid_alive(rec.get("pid")) \
-                and sminos.same_process(rec, fresh=True):
-            out.append(rec)
-    return out
-
-
-def job_session(short):
-    """The session id the harness reports for a job it just started (its
-    `claude agents` row can lag the banner), or None."""
-    for _ in range(int(os.environ.get("SMINOS_UUID_POLL") or "30")):
-        try:
-            p = subprocess.run(["claude", "agents", "--json", "--all"], capture_output=True, text=True, timeout=60)
-            rows = json.loads(p.stdout) if p.returncode == 0 and p.stdout.strip() else []
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            rows = []
-        for r in rows if isinstance(rows, list) else []:
-            if isinstance(r, dict) and r.get("id") == short and r.get("sessionId"):
-                return r["sessionId"]
-        time.sleep(sminos.poll_interval())
-    return None
-
-
-def started_at(rec):
-    """When a holder's process started, in epoch seconds, or None: the
-    engine's record, else /proc (Linux, to the clock tick), else `ps` (whole
-    seconds, the start's own second on macOS — never one before it)."""
-    at = sminos.process_started(rec)
-    if at is not None:
-        return at
-    at = sminos.proc_started_at(rec.get("pid"))
-    if at is not None:
-        return at
-    parsed = sminos._parse_lstart(sminos.read_proc_start(rec.get("pid")))
-    return time.mktime(parsed) if parsed else None   # ps prints the local zone
-
-
-def launched_by(rec, launched, job, rivals=()):
-    """Whether a holder of the session is the --bg process of the launch made
-    at `launched`, whose job is `job`: started no earlier than the launch's
-    second, its job the one that launch started. With no `job` (a launch
-    stopped before its banner was read), any --bg process started since
-    then that none of `rivals` — the launch times of other Resumes of the
-    session still running when this one launched — can own: one launched
-    no later than the process's start could be its launch. (A job id does
-    not tell launches apart: the engine names a session's every --bg job
-    by the session id's first 8 characters.)"""
-    started = started_at(rec)
-    if rec.get("kind") != "bg" or started is None or started < int(launched):
-        return False
-    if job is not None:
-        return rec.get("jobId") == job
-    return not any(int(r) <= started for r in rivals)
-
-
-def copy_started(short, stopped):
-    """A Resume whose job continued a copy of the session, not the session:
-    the RPC's failure, saying whether the copy was stopped."""
-    return failed("copy-started", "the session was opened elsewhere meanwhile, so the engine started a copy (%s) "
-                                  "instead of continuing it; the copy %s" % (
-                                      short, "was stopped" if stopped else
-                                      "could not be stopped: `claude stop %s` failed" % short))
-
-
 # ------------------------------------------------------------- traces
-
-
-def kept_job(e):
-    """A claimed Resume's job, as its launch kept it, or None."""
-    job = e.get("job") if e.get("rpc") == "resume" else None
-    return job if isinstance(job, str) and job and e.get("session") else None
-
-
-def resume_rivals(e, others):
-    """The launch times of other Resume claims of `e`'s session not finished
-    before `e`'s launch: a process started since could be theirs. One
-    answered before it is not: its process, if any, had ended by the time
-    this launch found no process holding the session."""
-    launched = e.get("launched_at")
-    out = []
-    for x in others:
-        at, ended = x.get("launched_at"), x.get("done_at")
-        if x.get("rpc") != "resume" or x.get("session") != e.get("session") \
-                or not isinstance(at, (int, float)) or isinstance(at, bool):
-            continue
-        if isinstance(ended, (int, float)) and not isinstance(ended, bool) and ended < launched:
-            continue
-        out.append(at)
-    return out
 
 
 # The RPCs whose answer the bridge's child keeps under the op, each with how that answer reads as the outcome.
 KEPT_READERS = {"steer": steered, "command": commanded, "btw": started, "stop-agent": agent_stopped, "tell": told}
 
 
-def trace(op, e, others=()):
+def trace(op, e):
     """(the outcome a claim's trace shows, or None; how long after its claim
-    a trace may still appear). `others`: the ledger's other entries."""
+    a trace may still appear)."""
     if e.get("rpc") == "spawn":
         return spawned(op), SPAWN_TRACE_S
     if e.get("rpc") == "media" and e.get("session"):
@@ -2528,17 +2394,6 @@ def trace(op, e, others=()):
         read = KEPT_READERS[e["rpc"]]
         outcome = read(answered) if isinstance(answered, dict) else None
         return outcome, STEER_TRACE_S
-    if e.get("rpc") == "resume" and e.get("session"):
-        launched, job = e.get("launched_at"), kept_job(e)
-        if not isinstance(launched, (int, float)) or isinstance(launched, bool):
-            return None, 0   # stopped before its launch: nothing ran
-        # Stopped after the launch began: `claude --bg` outlives the uplink
-        # that ran it, so its job may hold the session now or within the
-        # window. Before its job was known, a --bg process started since the
-        # launch is taken for it unless another Resume could have started it.
-        rivals = resume_rivals(e, others) if job is None else ()
-        ran = any(launched_by(r, launched, job, rivals) for r in holders(e["session"]))
-        return (done({"session": e["session"]}) if ran else None), RESUME_TRACE_S
     return None, 0
 
 
