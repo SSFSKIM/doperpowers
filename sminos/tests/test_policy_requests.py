@@ -17,10 +17,15 @@ outcomes of delivering what came from outside (DC7 M2 of the desk).
 - Then the uplink against the hub stand-in: requests and settlements reach
   the hub with codes and the pending set is republished on a reconnect;
   delivery outcomes reach it with codes; the policy is published in
-  `machine` and again when the owner changes it.
+  `machine` and again when the owner changes it. `UplinkOnRl10` runs the
+  same against the endpoint stand-in on a machine cut over (#153 M3b):
+  every message a draft, a person's words delivered on the endpoint's
+  verdict, the policy the endpoint's.
 
-Hermetic: HOME and SMINOS_HOME are temporary (test_session_plane's); nothing
-reaches beyond 127.0.0.1 and this directory.
+Hermetic: HOME and SMINOS_HOME are temporary (test_session_plane's;
+UplinkOnRl10's of its own, MAWS_USER_DATA with them: EndpointHome);
+nothing reaches beyond 127.0.0.1, this directory and a Unix socket under
+/tmp.
 """
 
 import json

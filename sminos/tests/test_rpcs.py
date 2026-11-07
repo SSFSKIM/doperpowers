@@ -20,9 +20,15 @@ Two halves.
   execution and a restart between execution and report each resolve with
   the RPC executed once, and a spawn retried with its nonce after a cut
   yields one session.
+- `UplinkOnRl10` runs those cases on a machine cut over to its endpoint
+  (#153 M3b): the uplink against the endpoint stand-in
+  (endpoint_standin.py), each RPC sent down as the endpoint sends it and
+  its `rpc-result` keyed by its opId. Resume is not offered on RL10.
 
-Hermetic: HOME and SMINOS_HOME are temporary (test_session_plane's); nothing
-reaches beyond 127.0.0.1 and this directory.
+Hermetic: HOME and SMINOS_HOME are temporary (test_session_plane's;
+UplinkOnRl10's of its own, MAWS_USER_DATA with them:
+test_policy_requests.EndpointHome); nothing reaches beyond 127.0.0.1, this
+directory and a Unix socket under /tmp.
 """
 
 import base64
