@@ -354,8 +354,8 @@ run_suites() {
     fail "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; fi
   if python3 "$SCRIPT_DIR/test_list_fold.py"; then pass "stopped members fold only in text views (test_list_fold.py)"; else
     fail "stopped members fold only in text views (test_list_fold.py)"; fi
-  if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the hub and RL10 carry (test_org_retired.py)"; else
-    fail "a retired machine's sessions read gone; machines says what the hub and RL10 carry (test_org_retired.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else
+    fail "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager.py"; then pass "the session manager's command: windows, pending, subscriptions (test_manager.py)"; else
     fail "the session manager's command: windows, pending, subscriptions (test_manager.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager_serve.py"; then pass "the session manager's page: serve, install, status (test_manager_serve.py)"; else
@@ -390,10 +390,12 @@ run_suites() {
     pass "a gate process's deliveries: its mode, receipts, admission, stop, retries, restarts (test_holder_deliveries.py)"
   else fail "a gate process's deliveries: its mode, receipts, admission, stop, retries, restarts (test_holder_deliveries.py)"; fi
   echo
-  if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
-  if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
-  if python3 "$SCRIPT_DIR/test_rl10.py"; then pass "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; else
-    fail "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; fi
+  if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the endpoint (test-uplink.sh)"; else
+    fail "the uplink to the endpoint (test-uplink.sh)"; fi
+  if "$SCRIPT_DIR/test-hub.sh"; then pass "hub projects, and the hub verbs on an endpoint's enrollment (test-hub.sh)"; else
+    fail "hub projects, and the hub verbs on an endpoint's enrollment (test-hub.sh)"; fi
+  if python3 "$SCRIPT_DIR/test_rl10.py"; then pass "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, legacy-key? (test_rl10.py)"; else
+    fail "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, legacy-key? (test_rl10.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_endpoint_standin.py"; then pass "the endpoint stand-in's hand-off between two machines (test_endpoint_standin.py)"; else
     fail "the endpoint stand-in's hand-off between two machines (test_endpoint_standin.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_streams.py"; then pass "audience streams on the writing side: the names, a session's own stream, the split say, the private sender's refusal, redaction, an unreadable record (test_streams.py)"; else
@@ -405,19 +407,19 @@ run_suites() {
   if python3 "$SCRIPT_DIR/test_owed.py"; then pass "what a machine still owes: daemon owed's kinds, its bound and exit, the uplink's taken (test_owed.py)"; else
     fail "what a machine still owes: daemon owed's kinds, its bound and exit, the uplink's taken (test_owed.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_reach.py"; then
-    pass "message reach on the log plane: the hub stand-in's M1 rules, the admitted have, retries, dead writers and voids (test_reach.py)"
-  else fail "message reach on the log plane: the hub stand-in's M1 rules, the admitted have, retries, dead writers and voids (test_reach.py)"; fi
+    pass "message reach on the log plane: the admitted have, retries, dead writers and voids (test_reach.py)"
+  else fail "message reach on the log plane: the admitted have, retries, dead writers and voids (test_reach.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_visibility.py"; then
-    pass "a session's reach set by its owner: access and share, widening at the operator's terminal alone and through the app once the endpoint serves its record acts, the unlisted notice before the snapshot, unlisting through the hub's filter (test_visibility.py)"
-  else fail "a session's reach set by its owner: access and share, widening at the operator's terminal alone and through the app once the endpoint serves its record acts, the unlisted notice before the snapshot, unlisting through the hub's filter (test_visibility.py)"; fi
+    pass "a session's reach set by its owner: access and share, widening at the operator's terminal alone and through the app once the endpoint serves its record acts, the unlisted notice before the snapshot, unlisting through the endpoint's audience (test_visibility.py)"
+  else fail "a session's reach set by its owner: access and share, widening at the operator's terminal alone and through the app once the endpoint serves its record acts, the unlisted notice before the snapshot, unlisting through the endpoint's audience (test_visibility.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_withheld.py"; then
-    pass "the sender's side of a hub refusal: an own event settled withheld, its writer going on, its session told once, a withheld own snapshot restated once (test_withheld.py)"
-  else fail "the sender's side of a hub refusal: an own event settled withheld, its writer going on, its session told once, a withheld own snapshot restated once (test_withheld.py)"; fi
+    pass "the sender's side of a not-reachable refusal: an own event settled withheld, its writer going on, its session told once, a withheld own snapshot restated once (test_withheld.py)"
+  else fail "the sender's side of a not-reachable refusal: an own event settled withheld, its writer going on, its session told once, a withheld own snapshot restated once (test_withheld.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_reach_gate.py"; then
     pass "message reach at the send boundary: reach? asked by the uplink alone for every peer push, refused-reach, owed, same owner, projectless (test_reach_gate.py)"
   else fail "message reach at the send boundary: reach? asked by the uplink alone for every peer push, refused-reach, owed, same owner, projectless (test_reach_gate.py)"; fi
-  if python3 "$SCRIPT_DIR/test_heads.py"; then pass "an own writer of no session waits for its upstream's head on a new enrolment, DX2 and RL10 (test_heads.py)"; else
-    fail "an own writer of no session waits for its upstream's head on a new enrolment, DX2 and RL10 (test_heads.py)"; fi
+  if python3 "$SCRIPT_DIR/test_heads.py"; then pass "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; else
+    fail "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; fi
   # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink
   # (rl10_conformance.py): every line as written; an `amend` would mean a line sminos cannot send as written, and fails.
   while IFS= read -r line; do
@@ -426,7 +428,8 @@ run_suites() {
       *) fail "rl10 conformance: ${line#FAIL }" ;;
     esac
   done < <(python3 -B "$SCRIPT_DIR/rl10_conformance.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/rl10-conversation.json" 2>&1)
-  if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
+  if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the endpoint, two machines (test-sync.sh)"; else
+    fail "sync through the endpoint, two machines (test-sync.sh)"; fi
   if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
   if "$SCRIPT_DIR/test-org.sh"; then pass "the org's directory: machine projects, follow-only hellos (test-org.sh)"; else
     fail "the org's directory: machine projects, follow-only hellos (test-org.sh)"; fi
@@ -450,8 +453,8 @@ run_suites() {
   if python3 "$SCRIPT_DIR/test_policy_requests.py"; then
     pass "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; else
     fail "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; fi
-  if python3 "$SCRIPT_DIR/test_rpcs.py"; then pass "the RPCs: verified, bound, at most once (test_rpcs.py)"; else
-    fail "the RPCs: verified, bound, at most once (test_rpcs.py)"; fi
+  if python3 "$SCRIPT_DIR/test_rpcs.py"; then pass "the RPCs: checked, bound, at most once (test_rpcs.py)"; else
+    fail "the RPCs: checked, bound, at most once (test_rpcs.py)"; fi
   if python3 "$SCRIPT_DIR/test_media.py"; then pass "a desk upload's files: no link followed, excluded, swept (test_media.py)"; else
     fail "a desk upload's files: no link followed, excluded, swept (test_media.py)"; fi
   if python3 "$SCRIPT_DIR/test_records.py"; then pass "each session's record: owners, origin, route, claimed at launch (test_records.py)"; else

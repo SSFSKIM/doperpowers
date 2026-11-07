@@ -1,94 +1,82 @@
 #!/usr/bin/env python3
-"""sminos_uplink — the machine's connection to the desk hub (DC4 of the desk).
+"""sminos_uplink — the machine's connection to its endpoint (RL10, MAWS's
+`mawsd`; DC4 of the desk, the frames O10's Interfaces §D).
 
 `sminos daemon uplink` is its own process, which `daemon run` starts as a
-child and restarts when it exits; at most one runs per $SMINOS_HOME
+child on a machine cut over to its endpoint (sminos_rl10: daemon/identity.json)
+and restarts when it exits; at most one runs per $SMINOS_HOME
 (`daemon/uplink.lock`), and it ends when its parent does (the parent names
-itself at spawn, so one already gone at startup counts). It reads the
-machine's credential (`daemon/hub.json`, written by enrollment; without it
-nothing connects) and holds DX2's connection, opened outbound: the stream
-down — `GET /machine/stream`, Server-Sent Events — and frames up by `POST
-/machine/frames`, each under the stream's generation. A stream silent for
-three heartbeat periods is dead; the uplink reconnects with backoff.
+itself at spawn, so one already gone at startup counts). It dials the
+endpoint rl10.json names, says `hello`, keeps the identity the welcome gives
+(sminos_rl10.welcomed), and reconnects with backoff while rl10.json names
+an endpoint. Before the cutover no uplink runs: the endpoint is only probed
+(cmd_probe), and a whole welcome cuts the machine over.
 
-The threads: a reader that only reads the stream (the SSE parse, no sminos
-call) into a queue, so the stream is drained whatever the rest is doing;
-beside it the stream's acker, which answers each heartbeat with `hb-ack` on a
-connection of its own (no sminos call either), so the machine's lease at the
-hub never waits on the main thread; two sender lanes (Sender), each a thread
-with one persistent connection to the hub, which post in order what the main
-thread queues for them — the log lane the log plane's frames (the connect's
-bundle, uploads, outcomes, rejections, the machine's presence, every
-re-`hello`), the session lane the session plane's, the requests' and the RPC
-results, its frames of a project held until that project's `hello` was
-answered — so a POST the hub holds, or a fresh TLS handshake, stops neither
-the pump nor the other lane; and the process's main thread, which does every
-sminos call and never waits on the network. sminos's per-invocation caches
-are module globals no second thread may share, and a git phase of the tick
-loop, a derivation, or this process's own delivery never holds the reader
-up. The main thread takes whatever is queued as one batch, then ticks once:
-what the batch imported is delivered once per project, so a burst from the
-hub costs a tick, not a tick a frame. A lane's answers come back on the same
-queue: after a 200 the continuations of what it carried run there, in
-order. Each lane says in daemon.log every connection it dials and closes,
-with how many POSTs each carried, and any POST slower than
-SLOW_POST_SECONDS.
+The threads: a reader that only reads the socket (sminos_rl10.Reader, no
+sminos call) into a queue, so the socket is drained whatever the rest is
+doing; one lane (SocketLane), a thread that writes in order what the main
+thread queues on it — the log plane's frames (the connect's bundle,
+uploads, outcomes, rejections, the machine's presence, every re-`hello`),
+the session plane's, the members', the requests' and the RPC results — so
+an endpoint slow to read stops neither the pump nor the reader; and the
+process's main thread, which does every sminos call and never waits on
+the network. sminos's per-invocation caches are module globals no second
+thread may share, and a git phase of the tick loop, a derivation, or this
+process's own delivery never holds the reader up. The main thread takes
+whatever is queued as one batch, then ticks once: what the batch imported
+is delivered once per project, so a burst from the endpoint costs a tick,
+not a tick a frame. The lane's continuations come back on the same queue
+and run there, in order: the socket is one ordered stream with no
+per-frame answer, so a frame written is a frame taken.
 
-The hub sends the org's directory down the stream (`org`: every project of
-the org, with its kind and whether it is retired, and every enrolled
-machine); the uplink keeps it at daemon/org.json and registers every project
-of it it does not know (root ""), so the machine follows every project of
-its org. On every stream, for every hub project of this machine's org known
-here (hub_projects), the uplink sends `hello` with its vector — `follow` when
-the machine has no checkout of it and no session in it, and again whenever
-that changes — and, for a project it holds, its machine's presence (DX4
-`machine`), then uploads its own writers' suffix past the hub's `have`, and
-from then on what they append; it follows `resend`, says each `refused` in
-daemon.log, and imports what the hub sends (sminos_hublog.py: each event's
-code verified before it enters the log, a refused one reported up as
-`rejected`). Every archive period it says `hello` again for each project it
-opened, one POST each, so the hub's answer — whether this machine writes the
-project's git archive (sminos_archive.py) — is never older than a period,
-even on a stream that never drops. The session plane
-(sminos_plane.py) rides the same stream: each session's presence after the
-`hello` and whenever it changes, and the hub's subscriptions served as DX4
-messages; a bridge's reader wakes the main thread, so what it read goes up
-at once. The plane's transcripts and its warmer are the process's, kept
-across streams: the builds the warmer keeps current for the live members
-are saved under daemon/plane/ as they grow and once more at the uplink's
-stop (STOP_SAVE_SECONDS at most), and loaded by the next process, which
-sweeps the ones past their keep as it starts. The machine's policy (sminos_policy) goes up in `machine` on every
+The endpoint sends the org's directory (`org`: every project of the org,
+with its kind and whether it is retired, and every enrolled machine); the
+uplink keeps it at daemon/org.json and registers every project of it it
+does not know (root ""), so the machine follows every project of its org.
+On every connection, for every hub project of this machine's org known
+here (hub_projects), the uplink sends `hello` with its vector — `follow`
+when the machine has no checkout of it and no session in it, and again
+whenever that changes — and, for a project it holds, its machine's
+presence (DX4 `machine`), then uploads its own writers' suffix past the
+endpoint's `have`, and from then on what they append; it follows `resend`,
+says each `refused` in daemon.log, and imports what the endpoint sends
+(sminos_hublog.py: each event checked before it enters the log, a refused
+one reported up as `rejected`). Every archive period it says `hello` again
+for each project it opened, so the answer — whether this machine writes
+the project's git archive (sminos_archive.py) — is never older than a
+period, even on a connection that never drops. The session plane
+(sminos_plane.py) rides the same connection: each session's presence
+after the `hello` and whenever it changes, and the endpoint's
+subscriptions served as DX4 messages; a bridge's reader wakes the main
+thread, so what it read goes up at once. The plane's transcripts and its
+warmer are the process's, kept across connections: the builds the warmer
+keeps current for the live members are saved under daemon/plane/ as they
+grow and once more at the uplink's stop (STOP_SAVE_SECONDS at most), and
+loaded by the next process, which sweeps the ones past their keep as it
+starts. The machine's policy (sminos_policy) goes up in `machine` on every
 connect and again whenever it changes; the requests the bridges raise and
-settle go up as DX4 `raised` and `settled` with their codes, and the
-complete pending set after every connect (sminos_requests); what
-delivery made of each event from outside, as DX4 `delivery`
-(sminos_outcomes); and the RPCs the hub forwards, verified, executed at most
-once, and answered as `rpc-result` until `rpc-ack` (sminos_rpc). A POST the
-hub does not answer 200 ends the stream, and the next one redoes the
-handshake: what the handshake heals is marked sent when queued (the vector's
-reach, a complete pending set, an RPC result), and what it does not (the
-presence tombstone, rejections reported, outcomes dropped, settlements and
-compaction messages) only once the hub answered 200, in flight meanwhile.
-A 200 names the frames the hub refused whole (DX2's `refused`, by their
-place in the POST): the continuation of what it carried is told which of its
-own were, so what was refused stays owed, and a project refused `not-open`
-(the hub no longer holds it open on this stream) is opened again, what it
-refused going with or after that hello (sminos_owed). The stream's own
-`refused` of a frame the answer named is only said.
-Frames larger than a frame's bound travel as parts, both ways.
+settle go up as DX4 `raised` and `settled`, and the complete pending set
+after every connect (sminos_requests); what delivery made of each event
+from outside, as DX4 `delivery` (sminos_outcomes); and the RPCs the
+endpoint forwards, checked, executed at most once, and answered as
+`rpc-result` until `rpc-ack` (sminos_rpc). A write that fails, or a lane
+holding more than SEND_QUEUE_MAX unsent, ends the connection, and the next
+one redoes the handshake: what the handshake heals is marked sent when
+queued (the vector's reach, a complete pending set, an RPC result), and
+what it does not (the presence tombstone, rejections reported, outcomes
+dropped, settlements and compaction messages) only once its frame is
+written, in flight meanwhile. Frames larger than FRAME_LIMIT travel as
+parts, both ways.
 
-On a machine cut over to its endpoint (sminos_rl10) the Link runs over
-RL10's socket (SocketTransport): no hub, no generation, no codes; one
-SocketLane in place of both senders, a frame written being a
-frame taken, so every continuation runs once its frame is written, and
-everything a reconnect restates goes again after each welcome, closed by
+Everything a reconnect restates goes again after each welcome, closed by
 `restated {}` once the whole of it is queued (Link.restated_due): the
 endpoint then withdraws whatever session the restatement left out. The
 endpoint's own frames down — its policy, its revocation set, its ask for
-the DX1 key, a device's `query` and `tombstone` of an operation, and
-`spent`, a position it refused for good, recorded as one refused here
-(HubLog.spend) — are handled there alone. Up the socket go `member`
-frames too (O12 M6, Link.members): every session of this machine, in every project known here
+the machine's old desk key (`legacy-key?`, answered from hub.json), a
+device's `query` and `tombstone` of an operation, and `spent`, a position
+it refused for good, recorded as one refused here (HubLog.spend) — are
+handled in the Link. Up the socket go `member` frames too (O12 M6,
+Link.members): every session of this machine, in every project known here
 whether the endpoint relays it or not (the endpoint decides a person's
 words from them), the whole set after each welcome, then each one that
 changed, and `{session, gone: true}` for one that left. A revocation set
@@ -109,8 +97,6 @@ answer leaves it owed. An endpoint rebuilding a lost policy cache asks
 `snapshots?` of one project at a time, and each ask is answered with one
 bounded page of the newest stored `joined` and `state` of each remote
 session writer, plain and stream (on_snapshots, snapshot_page; O18 D7).
-Before the cutover the endpoint
-is only probed (cmd_probe), beside the hub's stream.
 """
 
 import collections
@@ -146,11 +132,11 @@ BACKOFF_MAX = 60
 POLL = 0.25               # how often the main thread looks up from an idle stream
 DRAIN_FRAMES = 1000       # what is queued is handled as one batch, then one tick: at most this many items
 DRAIN_FOR = 1.0           # or this long of handling, so a burst neither starves the tick nor holds delivery
-FRAME_LIMIT = 1 << 20     # every frame, either way, at most 1 MiB of UTF-8 (DX2); a larger one goes as parts
+FRAME_LIMIT = 1 << 20     # every frame, either way, at most 1 MiB of UTF-8 a line; a larger one goes as parts
 SCAN_EVERY = 2.0          # how often the projects known here are looked over for a hub project to open
 UPLOAD_EVERY = 0.5        # how often this machine's writers are looked at for events to upload
 CHECKOUTS_EVERY = 10.0    # how often the machine presence's checkouts are read again (the policy: every scan)
-SEND_QUEUE_MAX = 16 << 20  # a lane holding more unsent than this: the hub is not taking frames, the stream ends
+SEND_QUEUE_MAX = 16 << 20  # a lane holding more unsent than this: the endpoint is not taking frames, the connection ends
 UPLOAD_AHEAD = 4 << 20    # an upload pass queues no more while the lane holds this much unsent
 LANE_ENTRY = 256 * 1024    # RL10: the host and words passes queue lane entries of at most this many bytes
 WORDS_WAIT = 10.0         # RL10: how long a `words?` waits for its verdict; past it, a failed attempt (O12 M6)
@@ -171,9 +157,6 @@ def legacy_key_path():
 
 def log(line):
     sminos.daemon_log("uplink: " + line)
-
-
-# ------------------------------------------------------------- the stream
 
 
 # ------------------------------------------------------------- frames on the wire
@@ -206,7 +189,7 @@ def escaped_size(ch):
 
 
 def to_wire(frame, limit=FRAME_LIMIT):
-    """The lines a frame travels as (DX2): its JSON text when within `limit`
+    """The lines a frame travels as: its JSON text when within `limit`
     bytes, else `part` frames, each a slice of that text (parts.ts's toWire;
     a Python str holds whole code points, so no slice splits a pair)."""
     text = wire_text(frame)
@@ -254,14 +237,14 @@ class EndStream(Exception):
 
 
 class NotDelivered(EndStream):
-    """A POST the hub did not answer 200: nothing in it may be taken as landed."""
+    """A frame not written to the endpoint: nothing queued may be taken as landed."""
 
 
 class Stopping(EndStream):
-    """The uplink is ending (SIGTERM, or its daemon is gone) while it posts."""
+    """The uplink is ending (SIGTERM, or its daemon is gone) while it writes."""
 
 
-# ------------------------------------------------------------- the sender lanes
+# ------------------------------------------------------------- frames by project
 
 
 def project_of(frame):
@@ -286,14 +269,13 @@ def by_project(frames):
 
 
 class SocketLane(threading.Thread):
-    """RL10's one lane, the counterpart of DX2's two Senders: a thread that
-    writes, in FIFO order, what the main thread queues (`send`) on the
+    """RL10's one lane: a thread that writes, in FIFO order, what the main thread queues (`send`) on the
     endpoint's socket. The socket is one ordered stream with no per-frame
     answer, so a frame written is taken: once an entry's lines are written,
     ("sent", [then, ...]) goes on the transport's items for the main loop to
     run, each continuation told nothing was refused. A write that fails, or
     more than SEND_QUEUE_MAX unsent, ends the lane: ("closed", NotDelivered)
-    is put once, and the connection ends as a lost POST ends a stream.
+    is put once, and the connection ends.
     Being one stream, it needs no gate: a project's `hello` goes before
     whatever is queued behind it, so `release` and `hold` change nothing."""
 
@@ -381,7 +363,7 @@ class SocketTransport:
     """RL10's transport for a Link: the endpoint's connection, read by
     sminos_rl10's Reader onto `items` (the welcome already read is put first),
     and written by one SocketLane, made at the welcome. `number` counts the
-    process's connections and stands for DX2's generation."""
+    process's connections: the Link's generation."""
 
     numbers = itertools.count(1)
 
@@ -656,8 +638,8 @@ class Link:
         self.checkouts_from = {}  # project id → the joined_dirs its checkouts were last drawn from (draw_machine)
         self.imported = {}        # project id → HubLog: imports not yet delivered (deliver_imports)
         self.log_lane = self.session_lane = None  # the stream's senders, from its welcome on
-        self.reporting = collections.Counter()   # project id → POSTs of its rejections not yet answered
-        self.delivering = set()   # project ids whose delivery outcomes are in a POST not yet answered
+        self.reporting = collections.Counter()   # project id → frames of its rejections not yet written
+        self.delivering = set()   # project ids whose delivery outcomes are in a frame not yet written
         self.opening = set()      # project ids whose `hello` is out: a refusal does not open them again
         self.unrecorded = {}      # project id → rejections the hub took, their record not yet written
         self.undropped = {}       # project id → (outbox, lines) the hub took, their drop not yet done
@@ -671,7 +653,7 @@ class Link:
                          "rpc": self.on_rpc,
                          "rpc-ack": self.on_rpc_ack, "org": self.on_org,
                          # The endpoint's own (RL10, O10 Interfaces §D): its policy, its revocations, its ask
-                         # for the machine's DX1 key, a device's query and tombstone, the verdicts on words
+                         # for the machine's old desk key, a device's query and tombstone, the verdicts on words
                          # and reach, the positions it spent, an audience change and a snapshots ask.
                          "policy": self.on_policy, "revoked": self.on_revoked,
                          "legacy-key?": self.on_legacy_key, "query": self.on_query,
@@ -684,19 +666,19 @@ class Link:
             self.session_lane.send([plane.frame(m) for m in messages])
 
     def ran(self, thens):
-        """A lane's ("sent", thens): the continuations of what the hub
-        answered 200, in order. One that fails is that frame's failure, not
-        the stream's."""
+        """A lane's ("sent", thens): the continuations of what it wrote, in
+        order. One that fails is that frame's failure, not the
+        connection's."""
         for then in thens:
             try:
                 then()
             except EndStream:
                 raise
             except (Exception, SystemExit) as e:  # noqa: BLE001 — as a frame handler's
-                log("the continuation of a POST failed: %r" % e)
+                log("the continuation of a write failed: %r" % e)
 
     def close_lanes(self):
-        """Whether a lane was in a POST as they closed."""
+        """Whether a lane was writing as they closed."""
         lanes = [lane for lane in (self.log_lane, self.session_lane) if lane is not None]
         posting = any(lane.posting() for lane in lanes)
         for lane in lanes:
@@ -706,7 +688,7 @@ class Link:
 
     def close(self):
         if self.close_lanes() and self.ended():
-            log("the uplink is ending during a POST: the stream is closed")
+            log("the uplink is ending during a write: the connection is closed")
         self.plane.close()
 
     def dispatch(self, frame, stream):
@@ -1098,8 +1080,8 @@ class Link:
             return
         refusal = frame.get("refusal") if isinstance(frame.get("refusal"), dict) else {}
         if refusal.get("reason") == "not-open":
-            # DX2's refusal of a frame whose project its stream did not hold
-            # open, which a lane's own answer carried: passed by.
+            # A refusal of a frame whose project this connection did not
+            # hold open: passed by.
             return
         hl.on_refused(frame)
 
@@ -1207,7 +1189,7 @@ class Link:
         return machine
 
     def open(self, hl):
-        """`hello` for a project on this stream, with what DX2 republishes
+        """`hello` for a project on this connection, with what is republished
         after every connect that is this child's — the machine's presence,
         for a project it holds — and the rejections not yet reported. A
         project it neither has a checkout of nor a session in is opened to
@@ -1359,18 +1341,17 @@ class Link:
 
     @staticmethod
     def uploaded(hl, frame, reach, epochs, refused):
-        """An upload answered (DX2: the hub's 200; RL10: written to the
-        endpoint): taken (`taken`, what `daemon owed` reads), unless the
-        answer refused it whole, and for no writer the upstream refused or
+        """An upload written to the endpoint: taken (`taken`, what `daemon
+        owed` reads), unless `refused` names it (never, on one ordered
+        stream), and for no writer the upstream refused or
         asked again for since it was sent (HubLog.keep_taken's epochs)."""
         if id(frame) not in refused:
             hl.keep_taken(reach, epochs=epochs)
 
     def deliveries(self, hl):
         """What delivery made of the events from outside, as DX4 `delivery`
-        messages sealed as they go; dropped from the outbox once the hub
-        answered the POST that carried them (unless it refused one
-        `not-open`), and not taken again meanwhile — nor while a drop that
+        messages as they go; dropped from the outbox once the frame that
+        carried them is written, and not taken again meanwhile — nor while a drop that
         failed is still owed (settle_marks)."""
         pid = hl.project.id
         self.settle_marks(hl)
@@ -1521,9 +1502,9 @@ class Link:
     def relay_requests(self):
         """The requests of the open projects' bridged sessions: readers for
         them, and what they read, up — one entry per project, so each
-        continuation follows the POST that carried its own frames and no
-        other project's gate. A settlement leaves the outbox, relayed, once
-        that POST was answered and the answer does not name it refused; a
+        continuation follows the write of its own frames and no other
+        project's. A settlement leaves the outbox, relayed, once its frame
+        is written; a
         complete set is taken when queued (every connect sends one again)."""
         self.requests.follow(self.bridged(self.opened))
         self.requests.take()
@@ -1931,12 +1912,7 @@ class Link:
             if every > 0 and now >= self.next_confirm and not held:
                 # The hub reads the archive designation at each hello: asked
                 # again, it answers with the designation as it is now. One
-                # project per POST, as `open` sends them (the log lane posts
-                # each entry alone): the deployed hub answered 503 to a POST
-                # carrying the hellos of more than about six projects, which
-                # dropped every machine's stream at its first confirmation
-                # once its org held seven (2026-10-19). A hello the hub holds
-                # holds the log lane alone.
+                # project per lane entry, as `open` sends them.
                 self.next_confirm = now + every
                 for pid in sorted(self.opened):
                     self.log_lane.send([self.logs[pid].hello(self.follows.get(pid, False))])
@@ -2023,7 +1999,7 @@ def serve_link(link, stream, ended, woken):
                 while item is not None:
                     if item[0] == "closed":
                         if isinstance(item[1], EndStream):
-                            raise item[1]   # a lane's POST not delivered
+                            raise item[1]   # a lane's write not delivered
                         log("the stream closed: %s" % item[1])
                         return welcomed
                     if item[0] == "sent":
@@ -2050,11 +2026,11 @@ def serve_link(link, stream, ended, woken):
                         item = None
             finally:
                 # What the batch imported reaches its members whatever ended
-                # it: a POST that failed, the stream's close, the uplink's end.
+                # it: a write that failed, the connection's close, the uplink's end.
                 link.deliver_imports()
             link.tick()
         except NotDelivered as e:
-            log("a POST was not delivered (%s): reconnecting, to redo the handshake" % e)
+            log("a write was not delivered (%s): reconnecting, to redo the handshake" % e)
             return welcomed
         except Stopping as e:
             log("%s: the stream is closed" % e)
@@ -2217,8 +2193,8 @@ def cmd_uplink(_a):
     look. It speaks RL10 to the endpoint of a machine cut over to it
     (sminos_rl10), and runs on nothing before: a machine not cut over has
     nothing to connect to (its endpoint is the supervisor's to probe,
-    cmd_probe, and only a whole welcome cuts it over), whatever hub.json
-    holds."""
+    cmd_probe, and only a whole welcome cuts it over); a hub.json changes
+    nothing."""
     parent = supervisor()
     if os.getppid() != parent:
         log("not started (pid %d): its daemon (pid %d) is gone" % (os.getpid(), parent))

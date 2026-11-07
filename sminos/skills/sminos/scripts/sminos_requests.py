@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """sminos_requests — the requests this machine's sessions raise, relayed to
-the hub (DC7 of the desk: DX4's `raised` and `settled`, DX2's `pending`,
-DX1's codes; DX5's requests as the consumer).
+the hub through the machine's endpoint (DC7 of the desk: DX4's `raised` and
+`settled`, the `pending` set; DX5's requests as the consumer).
 
 A bridge (DC2) raises each permission prompt or question the engine puts to
 its dialog as `raised`, and settles it once as `settled`; its snapshot holds
@@ -12,8 +12,8 @@ stream (`GET /events`) and takes from it only those: the snapshot's
 mod's whole state again, which replaces the bridge's pending set). Chunks
 and everything else are passed over unparsed.
 
-What goes up, each as its draft (RL10 carries no code), the daemon
-saying only what its bridges reported, as they reported it:
+What goes up, each as its draft (the endpoint signs what it relays), the
+daemon saying only what its bridges reported, as they reported it:
 
 - DX4 `raised` `{request, session, tool, input, agentId?, truncated?,
   deadline?, async?, toolUseId?}` (composite 6fa2252d, 43a27604): the
@@ -37,7 +37,7 @@ saying only what its bridges reported, as they reported it:
   older entries, bare request ids, are not read: the first start on a file
   of that form sends again what live bridges still list, which the hub
   takes as resends of requests no longer pending;
-- DX2 `pending` `{project, raised}`: the machine's complete set for the
+- `pending` `{project, raised}`: the machine's complete set for the
   project, after every connect, and whenever a request left the set with no
   settlement the bridge reported (its bridge gone, a snapshot without it):
   the hub drops what the set no longer holds; nothing is settled in a
@@ -46,15 +46,13 @@ saying only what its bridges reported, as they reported it:
   none), so it waits for that, at most HOLD_MAX: an uplink that starts with
   requests already pending does not empty the hub's set first.
 
-The state outlives the stream (the uplink keeps one Requests): a settlement
-made while the hub is out of reach goes up after the next connect, ahead of
-the complete set, and is never dropped; a raise made then is in that set. A
-message queued on a lane (`sending`) is in flight, neither due nor opened
-again, until the POST carrying it is answered 200 (`delivered`): it leaves
-the outbox unless the answer names it refused `not-open`, and stays owed
-then, to go with or after the hello that opens its project again
-(sminos_owed). A settlement leaves for `daemon/requests.json` (relayed); a
-POST lost or a stream cut leaves it owed (`reset`). The settlements owed are
+The state outlives the connection (the uplink keeps one Requests): a
+settlement made while the endpoint is out of reach goes up after the next
+connect, ahead of the complete set, and is never dropped; a raise made then
+is in that set. A message queued on the lane (`sending`) is in flight,
+neither due nor opened again, until its frame is written (`delivered`): it
+leaves the outbox then. A settlement leaves for `daemon/requests.json`
+(relayed); a connection cut first leaves it owed (`reset`). The settlements owed are
 kept in `daemon/requests-owed.json` as they change, so a restarted uplink
 sends them again even when their bridge is gone; the bridge's snapshot
 brings back, while the bridge runs, what was not yet read. A reader whose
@@ -95,8 +93,9 @@ SUGGESTION_BYTES_MAX = 2048  # each at most this many bytes of canonical UTF-8 J
 # A permission's input, as UTF-8 JSON, a raise carries whole: past it, each string is held to INPUT_CAP and the
 # request marked `truncated`, as the mod's resync shortens one (bridge-stream.tsx's RESYNC_INPUT_CAP), and if
 # that is still past it the input goes as {}. Under it a string the mod capped at its TEXT_CAP (65,536 UTF-16
-# units, at most 192 KiB of UTF-8) goes whole. One raise is then far from a lane's 16 MiB; a project's complete
-# set carries every request pending in it, so it passes that bound only with some sixty at the bound at once.
+# units, at most 192 KiB of UTF-8) goes whole. One raise is then far from the RL10 lane's 16 MiB (SEND_QUEUE_MAX);
+# a project's complete set carries every request pending in it, so it passes that bound only with some sixty at
+# the bound at once (TECH-DEBT, board #149).
 RAISED_INPUT_MAX = 256 * 1024
 INPUT_CAP = 1024           # UTF-16 code units a cut input keeps of each string: the mod's RESYNC_INPUT_CAP
 WANTED = (b'"raised"', b'"settled"', b'"resync"', b'"compact"', b'"run"', b'"btw"', b'"media"')   # a line carrying none of these is no line of ours
@@ -289,7 +288,7 @@ class Requests:
         self.stale = set()    # project ids whose complete pending set is owed
         self.holding = {}     # project id → since when its owed set waits for its sessions' snapshots
         self.queued = {}      # (session, request, t) → the outbox's frame carrying that settlement
-        self.flying = {}      # id(frame) → frame: outbox messages on a lane, their POST not yet answered
+        self.flying = {}      # id(frame) → frame: outbox messages on the lane, not yet written
         self.relayed = load_relayed()  # session → [(request, t)]: the settlements done with (sent or superseded)
         self.compacts = []    # [(session, project id, event)]: the bridges' `compact` events, for the RPCs
         self.ops = []         # [(session, project id, event)]: the bridges' `run` and `btw` events, for the RPCs
@@ -300,8 +299,8 @@ class Requests:
     def restore(self):
         """The settlements a stopped uplink still owed, back in the outbox
         in their order, but those done with since. Each goes as this
-        machine's draft (`uncoded`), whatever the hub's uplink sealed and
-        kept before the cutover."""
+        machine's draft (`uncoded`), whatever an uplink before the cutover
+        sealed and kept."""
         for item in self.kept.load():
             try:
                 key, pid, frame = (item["session"], item["request"], item["t"]), item["project"], item["frame"]
@@ -320,8 +319,9 @@ class Requests:
                 self.outbox.append((pid, frame))
 
     def uncoded(self, frame):
-        """A kept message as RL10 sends it: its body with no DX1 code, under
-        this machine's name now."""
+        """A kept message as RL10 sends it: its body with no `mac` (the old
+        desk code a message kept before the cutover carries), under this
+        machine's name now."""
         m = frame["message"]
         body = m.get("body")
         if isinstance(body, dict) and "mac" in body:
@@ -591,8 +591,9 @@ class Requests:
                 self.flying[id(f)] = f
 
     def delivered(self, frames, refused):
-        """The POST carrying `frames` was answered 200, `refused` naming
-        ({id(frame): reason}) those the hub refused whole. A message it took
+        """The frame carrying `frames` was written, `refused` naming
+        ({id(frame): reason}) those refused whole (none: the lane refuses
+        nothing). A message it took
         leaves the outbox, a settlement kept as relayed; one refused
         `not-open` stays owed (its project is opened again, and it goes with
         or after that hello), and a complete set so refused is owed again;
@@ -614,7 +615,7 @@ class Requests:
         self.relay(took)
 
     def unsent(self, frames):
-        """Frames dropped from a lane before any POST carried them (a
+        """Frames dropped from a lane before they were written (a
         re-open's `hold`): no longer in flight, owed as they stand."""
         for f in frames:
             self.flying.pop(id(f), None)

@@ -12,7 +12,6 @@
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per installation;
 # `claude` is a stub; nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
-# run-sminos-tests.sh runs this file beside its own cases.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

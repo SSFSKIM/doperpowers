@@ -13,12 +13,11 @@ order, and the first that fails is its answer, as DX6's error code:
    `opId` is 16-128 characters of base64url's alphabet (`bad-op-id`), and
    carries `opCreated`, the app's time when it chose the id, kept across
    reseals, no later than `created` by more than FRESH_S (`bad-op-created`);
-2. where it runs, since every enrolled machine holds the org key: `machine`
-   is this machine's enrolled name (`wrong-machine`), `project` a hub project
+2. where it runs: `machine` is this machine's enrolled name (`wrong-machine`), `project` a hub project
    of this machine in its org (`unknown-project`), the session one that
    joined that project from this machine, ended or not (`no-session`);
 3. the ledger, keyed by the op: the `opId`, else the nonce (an RPC without
-   one, as DX6 sends it). An op it knows is answered from it and never run
+   one, as DX6 defined it). An op it knows is answered from it and never run
    again; one it holds a tombstone for is refused `tombstoned`; one whose
    `opCreated` (a nonce-keyed RPC's `created`) is older than OP_HORIZON is
    refused `expired`, since the ledger's day may have dropped it;
@@ -74,7 +73,7 @@ does live — for as long as that trace may still appear, then answered
 `failed` `interrupted`.
 
 What became of an op is asked of the ledger (RL4's `query`, carried over
-RL10 in a later phase): `done` or `refused` with its outcome, `in-progress`
+RL10): `done` or `refused` with its outcome, `in-progress`
 (claimed, or held by a worker), `expired`, `not-received`, or `unavailable`
 while the ledger cannot be read. An app told `not-received` tombstones the
 op (`tombstone`), so a late copy is refused; claiming and tombstoning are one
@@ -104,7 +103,7 @@ nonce, from the bridge's `compact` events for the command this daemon issued
 (read by the requests' readers, sminos_requests). The command's id is kept on
 the RPC's ledger entry until its compaction ends, so one held for its turn's
 end that runs after a restart still carries the nonce. The messages are owed
-as a settlement is (sminos_owed): until a POST's answer takes them, kept in
+as a settlement is (sminos_owed): until their frame is written, kept in
 `daemon/rpcs-owed.json` across restarts.
 
 A desk command's outcome reaches browsers the same way, as DX4 `op` (the desk
@@ -417,8 +416,9 @@ def entry_of(rpc, at):
 
 def binding_of(record):
     """The binding an op's ledger entry or in-flight record holds (BINDING:
-    who sent it and what it acts on, an RL10 op's), or {}: a DX2 op's, a
-    tombstone's, and an entry an older daemon wrote hold none."""
+    who sent it and what it acts on, an RL10 op's), or {}: an op kept
+    before the cutover, a tombstone's, and an entry an older daemon wrote
+    hold none."""
     return {k: record[k] for k in BINDING if k in record} if record else {}
 
 
@@ -741,7 +741,7 @@ class Rpcs:
         self.op_ids = {}          # a bridge's command id → the op this daemon issued ({project, session, nonce, at,
         #                           name, args, child}), until its end
         self.ops_ended = collections.OrderedDict()   # (session, id) → None: ended ops, including CLI runs without a nonce
-        self.flying = {}          # id(frame) → frame: compact and op messages on a lane, their POST not yet answered
+        self.flying = {}          # id(frame) → frame: compact and op messages on the lane, not yet written
         self.kept = owed.Kept(OWED_FILE, log)
         self.messages = [f for f in self.kept.load() if is_owed(f)]   # DX4 compact and op messages owed, as frames
         self.unwritten = {}       # op → its outcome, whose ledger write failed: never sent until it is kept
@@ -1589,7 +1589,7 @@ class Rpcs:
 
     def opening(self, pid):
         """What follows a project's `hello` on a new stream: every result of
-        it the hub has not acknowledged (DX2)."""
+        it the endpoint has not acknowledged."""
         self.take()
         return self.results({pid}, True)
 
@@ -1605,8 +1605,9 @@ class Rpcs:
                 self.flying[id(f)] = f
 
     def delivered(self, frames, refused):
-        """The POST carrying `frames` was answered 200, `refused` naming
-        ({id(frame): reason}) those the hub refused whole: a compact or op
+        """The frame carrying `frames` was written, `refused` naming
+        ({id(frame): reason}) those refused whole (none: the lane refuses
+        nothing): a compact or op
         message it took leaves `messages`; one refused `not-open` stays owed (its
         project is opened again), and a result so refused goes again; one
         refused otherwise would be refused again, and leaves, said."""
@@ -1626,7 +1627,7 @@ class Rpcs:
             self.kept.save(self.messages)
 
     def unsent(self, frames):
-        """Frames dropped from a lane before any POST carried them (a
+        """Frames dropped from a lane before they were written (a
         re-open's `hold`): no longer in flight, owed as they stand."""
         for f in frames:
             if f.get("t") == "rpc-result":

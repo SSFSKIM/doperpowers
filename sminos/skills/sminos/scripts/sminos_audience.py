@@ -184,8 +184,8 @@ def widening_through_app():
     cannot be read, or one an `audience` frame rebuilt after either (no
     capabilities in it) counts as `record`: every welcome writes them, so
     the word is not known yet (fail closed). A machine not cut over has no endpoint to
-    carry an act, so the operator's terminal stays its gate (a machine
-    enrolled at no hub: no hub, no welcome)."""
+    carry an act, so the operator's terminal stays its gate (one its
+    endpoint never welcomed)."""
     if not sminos.sibling_module("sminos_rl10").cut_over():
         return False
     return _kept_word("record")

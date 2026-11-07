@@ -8,7 +8,8 @@ request's digest (`input_sha256`), a part's id, a log seq's and a
 timestamp's shape.
 
 The canonical form is the hub's TypeScript byte for byte (pinned by
-tests/codes_parity.py against DX1's shared numbers and digests): keys ordered by
+tests/codes_parity.py against the desk's shared numbers and digests,
+tests/dx1-codes.json): keys ordered by
 UTF-16 code units, strings as ECMAScript's JSON.stringify writes them, every
 number as the IEEE-754 double nearest it written as ECMAScript's
 Number::toString writes that double. What I-JSON forbids is refused: a lone

@@ -46,13 +46,15 @@ project (sminos.record_project), which registers a project not known here
 yet — a .smns committed under a live session — so it is ticked this tick and
 the session moves within one interval (§1a of the org directory's design).
 
-`daemon run` loops the tick, and beside it supervises the uplink to the desk
-hub (`daemon uplink`, sminos_uplink.py) as a child process it restarts with
-backoff — a process, not a thread, because sminos's caches are module globals
-the tick clears, and so a hang or a crash of either side never stops the
-other. When its scripts change (a plugin update), it stops the uplink and
-executes itself again in the same process, so the service manager sees no
-exit and its restart throttle never holds the machine off the hub. `install`
+`daemon run` loops the tick, and beside it supervises the uplink to the
+machine's endpoint (`daemon uplink`, sminos_uplink.py, over RL10) as a child
+process it restarts with backoff — a process, not a thread, because sminos's
+caches are module globals the tick clears, and so a hang or a crash of either
+side never stops the other. Before the cutover it only probes the endpoint
+(`daemon probe`). When its scripts change (a plugin update), it stops the
+uplink and executes itself again in the same process, so the service manager
+sees no exit and its restart throttle never holds the machine off its
+endpoint. `install`
 writes the machine's service, a launchd agent on macOS or a systemd user unit
 on Linux (it loads nothing); `status` prints the last tick per project.
 """
@@ -1556,7 +1558,7 @@ def nudged_at():
 
 
 ENDPOINT_DOWN = ("this machine is cut over to its endpoint, which is not running (no endpoint at %s): no uplink runs "
-                 "until it does, and none to the hub again")
+                 "until it does")
 ENDPOINT_DOWN_EVERY = 3600
 
 
@@ -1567,7 +1569,7 @@ def uplink_wanted():
     """The uplink this machine runs, and what it runs on. A machine cut over
     to its endpoint (identity.json) runs ("rl10", the endpoint) while
     rl10.json names one, else ("waiting", None). A machine not cut over runs
-    none, (None, None), whatever hub.json holds: an endpoint there is only
+    none, (None, None), a hub.json changing nothing: an endpoint there is only
     probed (UplinkSupervisor.probe), and only its complete welcome cuts
     over."""
     if rl10.cut_over():
@@ -1593,7 +1595,7 @@ class UplinkSupervisor(threading.Thread):
     with backoff whenever it exits, and at once on what it should run on when
     that changes.
 
-    Before the cutover no child runs, whatever hub.json holds: an endpoint
+    Before the cutover no child runs, a hub.json changing nothing: an endpoint
     rl10.json names is probed (`daemon probe`, backing off from 1 s to a
     minute), and only a probe's complete welcome cuts the machine over
     (identity.json). A wrong token, a refusal, an endpoint not enrolled yet
@@ -1628,8 +1630,8 @@ class UplinkSupervisor(threading.Thread):
             sminos.daemon_log("uplink: " + ENDPOINT_DOWN % rl10.path())
 
     def probe(self):
-        """The endpoint probed, before the cutover, beside whatever uplink
-        runs: a `daemon probe` child at a time while rl10.json names an
+        """The endpoint probed, before the cutover, while no uplink runs: a
+        `daemon probe` child at a time while rl10.json names an
         endpoint, the next one after a backoff (1 s, doubling to a minute,
         and from 1 s again when rl10.json names another) unless the last cut
         the machine over. Called every supervisor pass."""
@@ -2076,8 +2078,8 @@ def cmd_status(_a):
 # Upload, refused, kept, host and outcomes only for a project of this
 # machine's upstream (a hub project of the org it is enrolled in, or cut over
 # to): with none, nothing is owed up. Queued is counted in any project: what
-# waits after the machine left its upstream (a `hub leave` before the first
-# `have`) has nothing to release it but an enrolment under its name again,
+# waits after the machine left its upstream (its identity.json gone before
+# the first `have`) has nothing to release it but an enrolment under its name again,
 # and appending it here could take a seq the hub holds. Events owed to a
 # closed terminal session (sminos_outcomes.closed_sessions: reported
 # `recorded`, delivered if it comes back) are counted on their own line and
@@ -2151,7 +2153,7 @@ def kept_items(name):
 
 def owed_kept(failed):
     """{project id: [(at, ref)]} of the messages kept under daemon/ that no
-    hub or endpoint has taken yet; a file that cannot be inspected goes to
+    endpoint has taken yet; a file that cannot be inspected goes to
     `failed`."""
     out = {}
     reqs = sminos.sibling_module("sminos_requests")

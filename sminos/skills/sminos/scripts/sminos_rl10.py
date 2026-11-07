@@ -3,11 +3,11 @@
 
 A machine whose `mawsd` endpoint serves RL10 writes `rl10.json` (O2's
 literal paths, `path`): the endpoint's Unix socket, a token and the protocol's
-major. The uplink child (`sminos daemon uplink`) then speaks RL10 to it in
-place of DX2 to the hub: the same frames, newline-delimited JSON on the
-socket, at most FRAME_LIMIT a line (larger text as DX2's `part`s), one
-ordered stream with no codes. Nothing of the machine opens a connection to
-the hub once it is cut over.
+major. The uplink child (`sminos daemon uplink`) speaks RL10 to it once the
+machine is cut over: newline-delimited JSON frames on the socket, at most
+FRAME_LIMIT a line (larger text as `part`s), one ordered stream with no
+codes. Nothing of the machine opens a connection to the hub: the endpoint
+alone talks to it.
 
 - Discovery (`find`): a regular file of mode 0600 owned by this uid, with
   `protocol` 1, a `token` of 64 hex characters and a `socket` path; anything
@@ -24,8 +24,8 @@ the hub once it is cut over.
   ({org, hub, name, former, ref, enrolled, cutover, build}, 0600, whole),
   whose presence is the cutover: from then on the machine's identity is read
   from it alone (`sminos.enrollment`, `sminos.machine_identity`,
-  `sminos_daemon.enrolled_at`, `hub show`), and the daemon runs the uplink in
-  RL10 mode only. `former` is this machine's own map of names to the
+  `sminos_daemon.enrolled_at`, `hub show`), and the daemon runs the uplink.
+  `former` is this machine's own map of names to the
   sessions it held under them (is_self's evidence), empty at the first
   welcome; a welcome that renames the machine adds the sessions
   held under the old name (`sminos_hub.sessions_under`) before the identity
@@ -337,7 +337,7 @@ def identity_path():
 
 def cut_over():
     """Whether this machine is cut over: identity.json is there, readable or
-    not. Once it is, no DX2 uplink runs again; removing it undoes that."""
+    not. Only then does an uplink run; removing it undoes that."""
     return os.path.lexists(identity_path())
 
 

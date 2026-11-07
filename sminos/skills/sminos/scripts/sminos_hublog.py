@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """sminos_hublog — one hub project's log plane on this machine (DC4 of the
-desk: DX2's log handshake, carried over RL10 to the machine's endpoint).
+desk: the log handshake, carried over RL10 to the machine's endpoint).
 
 The uplink (sminos_uplink.py) holds the endpoint's connection; what it says
 about one project is drawn up here, and what the endpoint sends about one
@@ -19,7 +19,7 @@ Each comes wrapped `{event, signer, owners?}`, the endpoint having signed
 and verified what passes it (O10 M6): a wrapper or an event that is no log
 event sminos can read is refused `bad-shape`, and so is an `event` carrying
 a `verified` key of its own (the verdict is the endpoint's to say). A
-refused event never enters the log; it is reported up as DX2's `rejected`,
+refused event never enters the log; it is reported up as `rejected`,
 named only by what it carried, and its position is spent — a tombstone:
 nothing is ever appended there, the writer's later events are not held back
 behind it (every reader of a writer's file takes seqs by order, not by
@@ -41,7 +41,7 @@ refused here (`spend`), each said once in daemon.log. Then whatever was
 appended is delivered — by the uplink, once per batch of the frames already
 queued with it (`deliver`) — and the tick loop nudged.
 
-Message reach (P5 O18 D5, D6). The hub only refuses: a `not-reachable`
+Message reach (P5 O18 D5, D6). The endpoint only refuses: a `not-reachable`
 refusal leaves a tombstone `{writer, seq, withheld: true}` at the position
 and the writer goes on (it comes down as `spent withheld`, a spent position
 here, never reported). An own position it withheld while this machine's
@@ -61,10 +61,10 @@ up as a content-free `void {ts, writer, seq, kind: void, of, audience?}`
 (`voided`, for good; the local file keeps the body) and the rest as stored.
 
 Its state between streams lives in the project's home, `uplink.json`: the
-spent positions, the rejections not yet reported (a report whose POST
+spent positions, the rejections not yet reported (a report whose write
 failed is sent again after the next `hello`), the dead writers, the
 voided and the withheld positions, the notices not yet shown, whether the
-hub's latest `have` named this machine the
+endpoint's latest `have` named this machine the
 project's archive machine, with when it said so, and what that same `have`
 admitted of this machine's own writers — its vector and its withheld
 positions (`archive`, `archive_at`, `archive_have`: what sminos_archive
@@ -72,8 +72,8 @@ runs on, admitted_have). Beside it,
 `uplink-taken.json` (TAKEN_FILE) holds what `sminos daemon owed` reads:
 how far each of this machine's writers no longer has to be sent (`taken`),
 never more than the uplink's own resume state — each opening `have` sets it
-to what the upstream holds, down as well as up; each upload answered and not
-refused whole (on RL10, once written) and each later `have` raises it;
+to what the upstream holds, down as well as up; each upload once written
+and each later `have` raises it;
 a writer the upstream refuses or asks again for (`resend`) is lowered and
 bounded on the stream against answers and vectors that predate it (`bound`)
 — and the positions where the upstream holds another event (`conflicts`,
@@ -115,14 +115,13 @@ HOT_FOR = 600.0
 RACY_NS = 1_000_000_000
 RAN_KEEP = 256   # sessions past HOT_FOR the hot look's memory may hold before it is pruned
 # The reason an event that verifies is refused for its position (another event
-# holds it here, or it is spent): DX2's `conflict`, which the hub admits since
-# DC3 M3.
+# holds it here, or it is spent).
 CONFLICT_REASON = "conflict"
 # What the endpoint adds to an event this machine wrote when it returns it
 # (RL10): the `created` it derived from `ts` and signed, its signature, the
 # owner attestation, the audience and policyRev it signs into every event
-# (P5 O18; sminos never stores either itself); and DX1's code while it
-# dual-codes.
+# (P5 O18; sminos never stores either itself); and `mac`, the old desk code
+# an endpoint that still dual-codes adds.
 ENDPOINT_ADDS = ("created", "mac", "sig", "attest", "audience", "policyRev")
 # How long a notice of a message the hub withheld waits for its sending
 # session to be live, from the message's own ts; past it the notice is
@@ -145,7 +144,7 @@ def glob_names(names, prefix):
 
 
 def rejected(project, e, reason, message):
-    """DX2's `rejected` for an event refused on import, naming it only by what
+    """`rejected` for an event refused on import, naming it only by what
     it carried: `event` its writer and seq as they came when the writer was a
     string and the seq a number (else null), `nonce` its mac.nonce when that
     was a string."""
@@ -168,7 +167,7 @@ def position(e):
 
 
 def refusal(project, e):
-    """(DX2's reason, what was wrong) for an arriving event that may not
+    """(the refusal's reason, what was wrong) for an arriving event that may not
     enter this project's log by its shape; (None, "") when it passes."""
     if not isinstance(e, dict):
         return "bad-shape", "not a log event"
@@ -182,7 +181,7 @@ def refusal(project, e):
 
 def unwrapped(raw):
     """An arriving event on RL10, `{event, signer, owners?}`: (the event, or
-    what stands for it in a rejection; its `verified` key; DX2's reason and
+    what stands for it in a rejection; its `verified` key; the refusal's reason and
     what was wrong, or None and "")."""
     if not isinstance(raw, dict) or not isinstance(raw.get("event"), dict):
         return raw.get("event") if isinstance(raw, dict) else None, None, "bad-shape", \
@@ -280,7 +279,7 @@ def admitted_have(have, raw, own):
     (D6): (`archive_have` — {have: {writer: seq}, withheld: {writer: [seq |
     [from, to], ...]}}, the own writers alone, `own` telling — or None, why
     not). The hub lists the positions it withheld whole, in the one frame
-    (withheldOf), and a frame arrives whole or not at all: DX2's parts are
+    (withheldOf), and a frame arrives whole or not at all: its parts are
     joined into the frame they carry, the endpoint passes the hub's `have`
     down unchanged, and an assembler that cannot hold a frame (the endpoint's
     and the hub's, 16 MiB) drops it whole. So a list that does arrive is the
@@ -588,7 +587,7 @@ class HubLog:
     # ---------------------------------------------------- up
 
     def hello(self, follow=False):
-        """DX2's `hello`; `follow` when this machine holds no checkout and no
+        """The project's `hello`; `follow` when this machine holds no checkout and no
         session of the project and opens it only to read and deliver (the
         org's directory): its lease then counts toward none of the project's
         machines. Without it the machine holds the project."""
@@ -782,7 +781,7 @@ class HubLog:
         return [f for f in raw if isinstance(f, dict)] if isinstance(raw, list) else []
 
     def reported(self, frames):
-        """The rejections in `frames` reached the hub (a POST answered 200)."""
+        """The rejections in `frames` reached the endpoint (their frame written)."""
         if not frames:
             return
         d = self.state()
@@ -877,8 +876,8 @@ class HubLog:
         audience stream of it, `<machine>/human~<digest>` (P5 O18 D6) — each
         waiting for the upstream's head (sminos.waits_for_head, #147), are
         released one by one once this stream's `have` said that writer's
-        head and the log reached it — the hub's backlog imported (DX2), or
-        the positions the endpoint refused spent (RL10): what waited is
+        head and the log reached it — the upstream's events imported, or
+        the positions the endpoint refused spent: what waited is
         appended above the head, and the next upload carries it. Looked at
         are the operator writers the `have` names, those the log holds and
         those queued, a former name's queue into its namesake under the name
@@ -1212,8 +1211,8 @@ class HubLog:
         return got
 
     def took(self, reach):
-        """An upload was queued: the hub's next `have` puts `sent` right
-        should its POST be lost."""
+        """An upload was queued: the next `have` puts `sent` right should
+        its frame be lost."""
         for writer, seq in reach.items():
             self.sent[writer] = max(self.sent.get(writer, 0), seq)
 

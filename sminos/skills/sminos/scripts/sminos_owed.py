@@ -3,12 +3,9 @@
 (sminos_requests' settlements, sminos_rpc's compaction messages), kept under
 daemon/ so an uplink that restarts sends it again.
 
-A message is owed from the moment it is made until a POST carrying it was
-answered 200 and the answer did not name it among the frames the hub refused
-whole (DX2's `refused`, MAWS #88). One refused `not-open` stays owed and goes
-again once its project is open (the refusal re-opens it); one refused
-otherwise would be refused again, and leaves. A POST lost, a stream cut, or
-an uplink stopped leaves it owed; a duplicate is the side to err on, since the
+A message is owed from the moment it is made until the frame carrying it
+was written to the endpoint. A write that fails, a connection cut, or an
+uplink stopped leaves it owed; a duplicate is the side to err on, since the
 hub takes a settlement once per raise (MAWS desk-hub `Project.settled`,
 `markSettled`).
 
