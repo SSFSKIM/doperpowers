@@ -105,9 +105,9 @@ Two machines, each its sminos and its stand-in (#153 M3d's compositions):
 runs) is one pass of that relay: source's accepted events into dest's live
 connection as arrivals, for each project it opened, past what its last hello
 holds and what was handed since; the `relay` command is a pass each way
-between every two of the stand-ins it names. What carries them between endpoints in
-production is MAWS's relay; the hand-off carries the frames themselves,
-never one written by hand.
+between every two of the stand-ins it names. What carries them between
+endpoints in production is MAWS's relay; the hand-off carries the frames
+themselves, never one written by hand.
 
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,

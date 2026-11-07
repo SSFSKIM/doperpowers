@@ -42,7 +42,7 @@ class Client:
     then frames up, and every frame that came down kept."""
 
     def __init__(self, ep_dir, token):
-        d = json.load(open(os.path.join(ep_dir, "rl10.json")))
+        d = endpoint_standin.read_json(os.path.join(ep_dir, "rl10.json"))
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.connect(d["socket"])
         self.buf, self.down, self.asked = b"", [], 0
