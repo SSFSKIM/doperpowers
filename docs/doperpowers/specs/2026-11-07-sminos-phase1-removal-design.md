@@ -20,7 +20,7 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) M3e: open latency on RL10 (tests only; `a021ef36`, fix `9b402981`; review clean, sminos gates GREEN on `e433dec0`, run 42354783123). Every map §2.4 item has its RL10 test; the checklist is in the PR body.
 - [x] (2026-11-07) M4: the `hub` verbs and `hub.json` reduced (the sminos 1.40.0 bump; `d2a87149`, `a76f947e`; review clean, sminos gates GREEN on `a76f947e`, run 42358177740; replay 107 ok, 0 FAIL). origin/main merged at `8d5efdfd`.
 - [x] (2026-11-07) M5: the DX2 transport and the supervisor's DX2 arm out (`34538211`; review clean, sminos gates GREEN, run 42365283498; replay 107 ok, 0 FAIL).
-- [ ] M6: `coded` collapsed.
+- [x] (2026-11-07) M6: `coded` collapsed (`e9afa4e8`, fix `f9bd7b49`; review clean, sminos gates GREEN on `f9bd7b49`, run 42377347462; replay 107 ok, 0 FAIL; sminos-suites 18m54s).
 - [ ] M7: docs and labels.
 - [ ] The branch review and the merge.
 - [ ] M8: the release verified (both Macs' daemons, the gate's runtime).
@@ -262,6 +262,9 @@ This is after the branch review and the merge, and it is not part of the branch'
 - Observation (M5): `Plane.say_again`, `Plane.again` and `GONE_KEEP` are unreachable on RL10, since `SocketLane.hold` always returns None. They belong with the no-op `hold`/`release` gates this change scopes out (Constraints, Scope).
   Evidence: task 9's report.
 - Observation (M5): sminos-suites took 19m08s on `34538211` (run 42365283498), against 23m56s at M4 and ~20–22 min before the branch.
+
+- Observation (M6): `SocketLane`'s `unsent` count can go negative after a close during a held write. Harmless and from before the branch; not fixed here.
+  Evidence: task 10's report.
 
 ## Decision Log
 
