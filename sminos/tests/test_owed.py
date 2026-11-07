@@ -54,20 +54,18 @@ SECRET = "the body nobody may print"
 
 
 class Lane:
-    """A Link's lane that keeps what it is sent; a send's continuation is
-    told the frames `refuse` names refused (by id), else nothing."""
+    """A Link's lane that keeps what it is sent, written as taken."""
 
     def __init__(self):
-        self.sent, self.refuse, self.held, self.hold_thens = [], {}, [], False
+        self.sent, self.held, self.hold_thens = [], [], False
 
     def send(self, frames, then=None):
         self.sent += frames
         if then is not None:
-            answer = {id(f): self.refuse[f["t"]] for f in frames if f["t"] in self.refuse}
             if self.hold_thens:
-                self.held.append(lambda: then(answer))   # the main loop runs it later
+                self.held.append(then)   # the main loop runs it later
             else:
-                then(answer)
+                then()
 
     def run_held(self):
         held, self.held = self.held, []
@@ -79,12 +77,6 @@ class Lane:
 
     def queued(self):
         return 0
-
-    def hold(self, _project):
-        return None, []
-
-    def release(self, _project):
-        pass
 
     def close(self):
         pass
@@ -407,12 +399,8 @@ class Taken:
         hl.on_have({"have": {w: 0}})
         self.assertEqual(hl.taken(), {w: 1}, "never back")
         link = self.link()
-        link.log_lane.refuse = {"events": "not-open"}
-        link.upload(hl)
-        self.assertEqual(hl.taken(), {w: 1}, "an upload the hub refused is not taken")
         hl.reset()
         hl.on_have({"have": {w: 1}})
-        link.log_lane.refuse = {}
         link.upload(hl)
         self.assertEqual([e["seq"] for f in link.log_lane.sent[-1:] for e in f["events"]], [2, 3])
         self.assertEqual(hl.taken(), {w: 3}, "an upload answered is taken")

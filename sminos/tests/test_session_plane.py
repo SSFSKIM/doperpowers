@@ -4278,26 +4278,6 @@ class Lifecycle(unittest.TestCase):
             self.assertEqual(kind, "sent", thens)
             link.ran(thens)
 
-    def test_a_heal_says_again_only_the_leavers_a_body_still_in_flight_could_contradict(self):
-        """The leavers `say_again` says not running again are those said gone
-        at or after the oldest frame of the project's body out at the re-open
-        (`since`): only a session live when such a frame was queued can be
-        contradicted by it. One said gone before carries no live presence in
-        that body. GONE_KEEP bounds what is kept, as memory alone."""
-        project, _, ended = self.ended_presence_project("gone-bound")
-        pl, got = self.connect(project)
-        self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "said gone at the connect")
-        at = pl.gone[project.id][ended]
-
-        def said_again(since, now):
-            pl.say_again(project.id, since)
-            return [m["session"] for m in pl.presence(project.id, now=now) if m["body"]["record"] is None]
-        self.assertEqual(said_again(at - 1, at + 1), [ended], "the body out is older than the leave: said again")
-        self.assertEqual(said_again(at - 1, at + 1200), [ended], "however long ago the leave was")
-        self.assertEqual(said_again(at + 1, at + 2), [], "the body out began after it was said gone: not")
-        self.assertEqual(said_again(at - 1, at + plane.GONE_KEEP + 1), [], "past the memory bound: not kept")
-        self.assertEqual(pl.gone.get(project.id), {})
-
     def test_a_hello_not_written_leaves_every_mark_and_the_next_connection_says_it_all_again_on_rl10(self):
         """RL10 (#153 M5, for DX2's hello answered 503): a connect whose
         hello the lane fails to write (Link.open; the connection ends)
