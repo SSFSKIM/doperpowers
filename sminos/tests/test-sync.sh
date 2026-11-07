@@ -1437,7 +1437,8 @@ y_relayed() { rl10_relay "$YEPA" "$YEPB"; "$@"; }
 # The log of the project as each machine and the endpoints hold it, writer by
 # writer: counts, last seq, and payloads (each event without what an endpoint
 # adds to it — `created`, `sig`, `attest`, and the `verified` its arrival is
-# stored with), an own writer's as its machine's endpoint took it.
+# stored with), an own writer's as its machine's endpoint took it; beta's
+# former name's writers, which stay on beta, left out.
 cat > "$T/rl10compare.py" <<'PY'
 import glob, json, os, sys
 sys.path.insert(0, os.environ["SCRIPT_DIR"])
@@ -1456,6 +1457,9 @@ def endpoint(d):
         out.setdefault(a["event"]["writer"], []).append(a["event"])
     return out
 held = {"alpha": local(alog), "beta": local(blog)}
+for side in held.values():   # a former name's writers stay on their machine
+    for w in [w for w in side if w.startswith("betaold/")]:
+        del side[w]
 took = {"alpha": endpoint(epa), "beta": endpoint(epb)}
 def payload(e):
     return json.dumps({k: v for k, v in e.items() if k not in ("created", "sig", "attest", "verified")}, sort_keys=True)
@@ -1512,9 +1516,11 @@ PY
 until_true 200 y_alpha_took || true
 y_alpha_took && pass "RL10: alpha's writers are at its endpoint, each event once" || fail "RL10: alpha's writers are at its endpoint, each event once"
 
-echo "RL10: beta, fresh:"
-rl10_as yb beta
-rl10_cut_over
+echo "RL10: beta, fresh, renamed by its endpoint:"
+# beta held its sessions as betaold, and its endpoint's first welcome names
+# it beta, formerly betaold (`daemon probe`): what alpha reads of it is
+# beta's alone.
+rl10_as yb betaold
 YEPB=$EP
 YRB="$T/yb/repo"
 cp -R "$YRA" "$YRB"
@@ -1531,28 +1537,44 @@ printf '{"pid":%s,"sessionId":"%s","name":"nb","nameSource":"derived","kind":"in
 printf '[{"id": "mbshort", "sessionId": "%s", "state": "idle"}]\n' "$YMB" > "$STUB_STATE/agents.json"
 "$SMINOS" seat add syncproj mb --session "$YMB" >/dev/null
 run "$SMINOS" list --json
-assert_equals "$(find "$YBLOG" -name '*.jsonl' | sed 's|.*/||; s|\..*||' | sort | uniq -c | awk '{print $2 "=" $1}' | tr '\n' ' ')" "beta=2 " \
+assert_contains "$OUT" '"machine": "betaold"' "RL10: the seat mb and the session nb join as betaold"
+assert_equals "$(find "$YBLOG" -name '*.jsonl' | sed 's|.*/||; s|\..*||' | sort | uniq -c | awk '{print $2 "=" $1}' | tr '\n' ' ')" "betaold=2 " \
   "RL10: beta's log holds its own two writers, and nothing of alpha's"
-rl10_serve
+printf '{"pid":%s,"sessionId":"%s","name":"nb-renamed","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$YNB_PID" "$YNB" "$YRB" > "$HOME/.claude/sessions/nb.json"
+run "$SMINOS" daemon tick
+assert_equals "$(python3 -c 'import json, sys
+print([(e["kind"], e.get("alias") or e.get("state")) for e in map(json.loads, open(sys.argv[1])) if e["kind"] != "joined"])' \
+  "$YBLOG/betaold.$YNB.jsonl")" "[('state', 'idle'), ('renamed', 'nb-renamed')]" \
+  "RL10: nb's state and its rename to nb-renamed are published under betaold"
+Y_ENROLLED="$(python3 -c 'import time; t = time.time(); print(time.strftime("%Y-%m-%dT%H:%M:%S.", time.gmtime(t)) + "%03dZ" % int(t % 1 * 1000))')"
+rl10_serve "\"identity\": {\"org\": \"org-1\", \"hub\": \"http://127.0.0.1:9\", \"name\": \"beta\", \"former\": [\"betaold\"], \"ref\": \"ref-beta\", \"enrolled\": \"$Y_ENROLLED\"}"
+run "$SMINOS" daemon probe
+assert_contains "$OUT" "welcomed as beta of org org-1: this machine is cut over" "RL10: beta's endpoint welcomes it as beta"
+rl10_as yb beta
 start_daemon
 YB_DAEMON=$DAEMON_PID
 y_settle "a fresh machine bootstraps the project from what alpha's endpoint took"
 assert_equals "$(rl10_q "$YEPB" "sorted({e['writer'] for c, e in up('$YPID')})")" "[\"beta/$YMB\", \"beta/$YNB\"]" \
-  "RL10: beta's endpoint takes beta's two writers alone: what beta holds of alpha's never goes up again"
+  "RL10: beta's endpoint takes the seat and the session that joined as betaold, joined again as beta and only as beta: never a writer of alpha's or of the former name"
+assert_equals "$(rl10_q "$YEPB" "[(e['kind'], e.get('alias'), e.get('name_source'), e.get('state')) for c, e in up('$YPID') if e['writer'] == 'beta/$YNB'][:2]")" \
+  '[["joined", "nb-renamed", "user", null], ["state", null, null, "idle"]]' \
+  "RL10: nb joins again under its name now, nb-renamed, and with its state"
 rl10_as ya alpha
 cd "$YRA"
 run "$SMINOS" list --json
 y_members() { printf '%s\n' "$OUT" | python3 -c 'import json, sys
 print(sorted((r["alias"], r["machine"], r["local"]) for r in json.load(sys.stdin)))'; }
-assert_equals "$(y_members)" "[('ma', 'alpha', True), ('mb', 'beta', False), ('nb', 'beta', False)]" \
-  "RL10: alpha sees mb and nb as beta's members"
+assert_equals "$(y_members)" "[('ma', 'alpha', True), ('mb', 'beta', False), ('nb-renamed', 'beta', False)]" \
+  "RL10: alpha sees mb and nb-renamed as beta's members"
 assert_equals "$(printf '%s\n' "$OUT" | python3 -c 'import json, sys
-print([r["state"] for r in json.load(sys.stdin) if r["alias"] == "nb"])')" "['idle']" "RL10: and nb's state"
+print([r["state"] for r in json.load(sys.stdin) if r["alias"] == "nb-renamed"])')" "['idle']" "RL10: and nb-renamed's state"
+assert_equals "$(find "$YALOG" -name 'betaold.*' | wc -l | tr -d ' ')" 0 "RL10: alpha holds no writer of beta's former name"
 rl10_as yb beta
 cd "$YRB"
 run "$SMINOS" list --json
-assert_equals "$(y_members)" "[('ma', 'alpha', False), ('mb', 'beta', True), ('nb', 'beta', True)]" \
-  "RL10: beta keeps mb and nb its own, and sees ma as alpha's"
+assert_equals "$(y_members)" "[('ma', 'alpha', False), ('mb', 'beta', True), ('nb-renamed', 'beta', True)]" \
+  "RL10: beta keeps mb and nb-renamed its own, and sees ma as alpha's"
 
 echo "RL10: a burst on both:"
 rl10_as ya alpha

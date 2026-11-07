@@ -16,7 +16,8 @@
 #   rl10_cut_over            this machine cut over as $DAEMON_HOST of org-1
 #   rl10_serve [<fields>]    its stand-in up, with that identity; a person's
 #                            words delivered on its `words` verdict; <fields>
-#                            more of its config, a JSON object's members
+#                            more of its config, a JSON object's members (one
+#                            named again, identity, overrides: the last wins)
 #   rl10_directory <body> <ep-dir>...  the org's directory (an `org` frame's
 #                            body) the stand-ins hold, sent down each live
 #                            connection
