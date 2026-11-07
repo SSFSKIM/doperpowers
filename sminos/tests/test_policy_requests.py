@@ -31,6 +31,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -40,6 +41,7 @@ from unittest import mock
 
 import test_session_plane as tsp  # noqa: E402 — first: it makes this run's HOME and SMINOS_HOME
 
+import endpoint_standin  # noqa: E402
 import sminos  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_outcomes as outcomes  # noqa: E402
@@ -2064,6 +2066,297 @@ class Uplink(unittest.TestCase):
             self.assertIn("a Stop hook stands", got[-1]["reason"])
             self.assertEqual(got[-1]["session"], self.sid)
             self.assertTrue(codes.verifies(self.key, "delivery", self.project, got[-1]), "with its code")
+        finally:
+            self.bridge.refusing = None
+
+
+# ---------------------------------------------------------------- the uplink on RL10
+
+
+def cut_over():
+    """identity.json as the endpoint's first welcome writes it, and the
+    capabilities that welcome kept (none: an endpoint before O18's), as
+    test_words.Machine.cut_over writes them: `sminos daemon uplink` then
+    speaks RL10 (sminos_uplink.cmd_uplink runs run_rl10)."""
+    rl10 = sminos.sibling_module("sminos_rl10")
+    sminos.write_json(rl10.identity_path(), {
+        "org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {}, "ref": "machine-ref-1",
+        "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"}, mode=0o600)
+    sminos.audience_module().keep_capabilities([])
+    sminos.forget_caches()
+
+
+class EndpointHome:
+    """A machine cut over to its endpoint, for one RL10 class's life (#153
+    M3b): its own HOME, SMINOS_HOME and MAWS_USER_DATA under a short
+    directory of /tmp (a Unix socket's path is bounded), set when it is made;
+    `close` restores the whole environment as it found it. So neither it nor
+    the module's DX2 classes, whose hub.json is under T, see the other's
+    files, whatever order they run in. The endpoint stand-in
+    (endpoint_standin.Endpoint, `fields` its fields) listens where the
+    uplink looks for rl10.json; `spawn` starts a process this home stops at
+    `close`, the last first."""
+
+    def __init__(self, **fields):
+        self.saved = dict(os.environ)
+        self.procs = []
+        self.base = tempfile.mkdtemp(prefix="smu.", dir="/tmp")
+        for var in ("SMINOS_RL10", "DAEMON_HOME", "AGORA_HOME", "XDG_CONFIG_HOME", "SMNS_MEMBER"):
+            os.environ.pop(var, None)
+        os.environ.update(HOME=os.path.join(self.base, "h"), SMINOS_HOME=os.path.join(self.base, "s"),
+                          MAWS_USER_DATA=os.path.join(self.base, "m"), SMINOS_DERIVE_EVERY="0")
+        os.makedirs(os.path.join(os.environ["HOME"], ".claude", "sessions"))
+        os.makedirs(os.path.join(os.environ["SMINOS_HOME"], "daemon"), mode=0o700)
+        sminos.forget_caches()
+        cut_over()
+        self.ep = endpoint_standin.Endpoint(os.path.join(os.environ["MAWS_USER_DATA"], "mawsd", "endpoint"),
+                                            **fields)
+        self.ep.start()
+
+    def spawn(self, argv):
+        p = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.procs.append(p)
+        return p
+
+    def close(self):
+        for p in reversed(self.procs):
+            if p.poll() is None:
+                p.terminate()
+        for p in self.procs:
+            p.wait(10)
+        self.ep.stop()
+        os.environ.clear()
+        os.environ.update(self.saved)
+        sminos.forget_caches()
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def mark(self):
+        """Where the frames the endpoint received stand now."""
+        return len(self.ep.frames())
+
+    def messages(self, since=0, kind=None):
+        """The session-plane messages the endpoint received after `since`."""
+        return messages(self.ep.frames()[since:], kind)
+
+    def opened(self, project, since):
+        """Whether a connection after `since` opened the project (its
+        `hello`), waited for: the stream it was dropped on is over and the
+        next one is open (what results and the pending set go up after)."""
+        return wait_for(lambda: [f for f in self.ep.frames()[since:] if f["t"] == "hello"
+                                 and f.get("project") == project], timeout=30)
+
+
+def person_from_outside(sid, alias, text, seq):
+    """A person's `human` to the session as the endpoint sends it down: the
+    hub's event (DX1's draft, no code: RL10 carries none) wrapped with its
+    verified signer, MEMBER's device (endpoint_standin.arriving)."""
+    ts = "2026-10-15T08:05:%02d.000Z" % (seq % 60)
+    e = {"ts": ts, "writer": "hub/" + MEMBER, "seq": seq, "kind": "human", "from": "human", "member": MEMBER,
+         "to": [{"session": sid, "alias": alias}], "text": text, "created": ts, "sig": {"kid": "k-dev-1", "sig": "AA"}}
+    return endpoint_standin.Endpoint.arriving(e, {"kind": "device", "member": MEMBER, "device": "dev-1",
+                                                  "keyId": "k-dev-1"})
+
+
+class UplinkOnRl10(unittest.TestCase):
+    """Uplink's tests on a machine cut over to its endpoint (RL10, #153 M3b):
+    the real `sminos daemon uplink` against the endpoint stand-in, in a home
+    of its own (EndpointHome). Session-plane messages reach the endpoint as
+    `{t: session, message}`, the complete set as `pending`, each a draft:
+    where Uplink checks DX1's code, this checks there is none. A person's
+    words from outside arrive as the endpoint sends them down (`events`,
+    each `arriving`); a cut-over machine delivers them on the endpoint's
+    `words?` verdict (O12 M6), which the stand-in answers `words` (through
+    the session's bridge). It advertises no capabilities, an endpoint before
+    O18's as test_words's machine is: no `reach?` is asked, and none of these
+    pushes is a peer frame that would be."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rig = EndpointHome(verdict="words")
+        cls.addClassCleanup(cls.rig.close)
+        cls.ep = cls.rig.ep
+        bindir = os.path.join(cls.rig.base, "bin")
+        os.makedirs(bindir)
+        with open(os.path.join(bindir, "claude"), "w") as f:
+            f.write('#!/bin/sh\n[ "$1" = agents ] && echo "[]"\nexit 0\n')
+        os.chmod(os.path.join(bindir, "claude"), 0o755)
+        os.environ["PATH"] = bindir + os.pathsep + os.environ["PATH"]
+        cls.root, cls.project = make_project("uplinked-rl10")
+        subprocess.run(GIT + ["-C", cls.root, "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+        cls.session = Session(cls.root)
+        cls.addClassCleanup(cls.session.end)
+        cls.sid = cls.session.sid
+        cls.bridge = Bridge(cls.sid)
+        cls.addClassCleanup(cls.bridge.stop)
+        r = cli("daemon", "tick")
+        assert r.returncode == 0, r.stderr
+        cls.alias = member_of(project_of(cls.root), cls.sid).alias
+        cls.uplink = cls.rig.spawn([CLI, "daemon", "uplink"])
+        ok = wait_for(lambda: [m for m in cls.rig.messages(kind="presence")
+                               if m["session"] == cls.sid and m["body"]["bridge"]], timeout=20)
+        assert ok, "the uplink connected to the endpoint and said the session's bridge"
+
+    def tearDown(self):
+        # The machine's policy is its endpoint's here: a test that made it
+        # read-only asks the endpoint back, as `sminos daemon policy` does.
+        if policy.read_only():
+            r = cli("daemon", "policy", "--read-only", "off")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(wait_for(lambda: not self.ep.policy["read_only"] and not policy.read_only()
+                                     and not policy.unsent_change(), timeout=15), "the endpoint's policy is back")
+
+    def mine(self, since, kind):
+        return [m for m in self.rig.messages(since, kind) if m.get("session") == self.sid]
+
+    def body(self, since, kind, rid):
+        """The body of the session's first `kind` message after `since`
+        about the request, waited for."""
+        got = wait_for(lambda: [m["body"] for m in self.mine(since, kind) if m["body"]["request"] == rid],
+                       timeout=20)
+        return got[0] if got else None
+
+    def pending_sets(self):
+        """The pending sets the endpoint received for the project, in
+        order: each `pending` frame's requests."""
+        return [[r["request"] for r in f["raised"]] for f in self.ep.frames("pending") if f["project"] == self.project]
+
+    def test_a_requests_and_settlements_reach_the_endpoint_and_are_republished(self):
+        mark = self.rig.mark()
+        self.bridge.raise_("toolu_up1", input_={"command": "make deploy"}, agentId="a7", truncated=True)
+        raised = self.body(mark, "raised", "toolu_up1")
+        self.assertIsNotNone(raised, "raised reaches the endpoint")
+        self.assertEqual((raised["request"], raised["agentId"], raised["truncated"]), ("toolu_up1", "a7", True),
+                         "a subagent's, its input capped: the endpoint takes both fields")
+        self.assertNotIn("mac", raised, "a draft: RL10 carries no code (Uplink checks DX1's)")
+        self.bridge.settle("toolu_up1", outcome="deny", winner="terminal", by="terminal")
+        settled = self.body(mark, "settled", "toolu_up1")
+        self.assertIsNotNone(settled, "settled reaches the endpoint")
+        self.assertNotIn("mac", settled, "a draft")
+        self.assertEqual((settled["request"], settled["outcome"]), ("toolu_up1", "deny"))
+        self.bridge.raise_("toolu_up2")
+        self.assertIsNotNone(self.body(mark, "raised", "toolu_up2"))
+        # The connection drops while the uplink is held still, and a request
+        # is raised meanwhile: the endpoint learns of it from the complete set
+        # the next connection carries, after its hello.
+        sets = len(self.pending_sets())
+        os.kill(self.uplink.pid, signal.SIGSTOP)
+        try:
+            self.ep.drop()
+            self.bridge.raise_("toolu_up3")
+        finally:
+            os.kill(self.uplink.pid, signal.SIGCONT)
+        got = wait_for(lambda: [s for s in self.pending_sets()[sets:] if "toolu_up3" in s], timeout=20)
+        self.assertTrue(got, "the complete pending set, republished on the reconnect: %s" % self.pending_sets()[sets:])
+        self.assertEqual(sorted(got[-1]), ["toolu_up2", "toolu_up3"], "everything still pending, and only that")
+        self.assertEqual([m for m in self.mine(0, "raised") if m["body"]["request"] == "toolu_up3"],
+                         [], "carried by the set, not by a raise of its own")
+        self.bridge.settle("toolu_up2")
+        self.bridge.settle("toolu_up3")
+
+    def test_d_the_ask_mods_dialog_reaches_the_endpoint_with_its_calls_tool_use_id(self):
+        mark = self.rig.mark()
+        self.bridge.raise_("toolu_plugin_up", tool="AskUserQuestion",
+                           input_={"questions": [{"question": "Ship it?", "options": [{"label": "yes"}]}]},
+                           toolUseId="toolu_01up")
+        raised = self.body(mark, "raised", "toolu_plugin_up")
+        self.assertIsNotNone(raised, "raised reaches the endpoint")
+        self.assertEqual(raised["toolUseId"], "toolu_01up", "the endpoint relays it as received")
+        self.assertNotIn("mac", raised, "a draft, under no code")
+        self.bridge.settle("toolu_plugin_up", outcome="answered")
+
+    def test_c_an_uplink_restart_keeps_what_is_pending(self):
+        """The uplink restarts (a daemon restart) while a request is
+        pending: the first set the new process publishes holds it."""
+        mark = self.rig.mark()
+        self.bridge.raise_("toolu_kept")
+        self.assertIsNotNone(self.body(mark, "raised", "toolu_kept"))
+        sets = len(self.pending_sets())
+        old = UplinkOnRl10.uplink
+        old.terminate()
+        old.wait(10)
+        mark = self.rig.mark()
+        UplinkOnRl10.uplink = self.rig.spawn([CLI, "daemon", "uplink"])
+        self.assertTrue(wait_for(lambda: [m for m in self.rig.messages(mark, "presence") if m["session"] == self.sid],
+                                 timeout=20), "the new uplink is connected")
+        got = wait_for(lambda: self.pending_sets()[sets:], timeout=15)
+        self.assertTrue(got, "a set was published")
+        time.sleep(1.0)
+        after = self.pending_sets()[sets:]
+        self.assertTrue(all("toolu_kept" in s for s in after), "no set after the restart lacks it: %s" % after)
+        self.bridge.settle("toolu_kept")
+
+    def deliver_from_outside(self, text):
+        """A person's `human` to the session, sent down as the endpoint
+        sends another's event (`events`); its key."""
+        UplinkOnRl10.seq = getattr(UplinkOnRl10, "seq", 0) + 1
+        wrapped = person_from_outside(self.sid, self.alias, text, UplinkOnRl10.seq)
+        self.ep.events(self.project, [wrapped])
+        return {"writer": wrapped["event"]["writer"], "seq": wrapped["event"]["seq"]}
+
+    def deliveries(self, since, key):
+        return [m["body"] for m in self.mine(since, "delivery") if m["body"]["event"] == key]
+
+    def asked(self, key):
+        """The `words?` the uplink asked the endpoint about the event."""
+        return [f for f in self.ep.frames("words?") if {k: f["event"][k] for k in ("writer", "seq")} == key]
+
+    def test_b_delivery_outcomes_and_the_policy(self):
+        mark = self.rig.mark()
+        key = self.deliver_from_outside("hello from the web")
+        got = wait_for(lambda: self.deliveries(mark, key), timeout=15)
+        self.assertTrue(got, "a delivery outcome reaches the endpoint")
+        d = got[0]
+        self.assertEqual(d["outcome"], "delivered")
+        self.assertNotIn("mac", d, "a draft, with no code")
+        self.assertEqual(d["reason"], "pushed to the live session")
+        self.assertIn("hello from the web", self.bridge.texts(), "through its bridge")
+        self.assertEqual(len(self.asked(key)), 1, "on the endpoint's verdict (`words?`, RL10's gate)")
+
+        # The policy is the endpoint's on RL10: the change made here goes up
+        # as policy-set at once, and the endpoint's answer settles it, which
+        # the machine's presence then says.
+        mark = self.rig.mark()
+        r = cli("daemon", "policy", "--read-only", "on")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(wait_for(lambda: [f for f in self.ep.frames()[mark:] if f["t"] == "policy-set"
+                                          and f.get("read_only") is True], timeout=10),
+                        "the policy changed is asked of the endpoint at once")
+        self.assertTrue(wait_for(lambda: [m for m in self.rig.messages(mark, "machine")
+                                          if m["body"]["policy"]["read_only"]], timeout=10),
+                        "and published once the endpoint answered")
+        key = self.deliver_from_outside("not on a read-only machine")
+        got = wait_for(lambda: self.deliveries(mark, key), timeout=15)
+        self.assertTrue(got)
+        d = got[0]
+        self.assertEqual(d["outcome"], "refused-read-only")
+        self.assertNotIn("mac", d, "a draft")
+        self.assertNotIn("not on a read-only machine", self.bridge.texts() + self.session.inbox.texts(),
+                         "nothing delivered")
+        self.assertEqual(self.asked(key), [], "settled here unasked: the endpoint has nothing to decide")
+
+    def test_e_a_send_the_engine_dropped_after_submitted_reaches_the_endpoint_failed(self):
+        """DC8.G5 end to end on RL10: the bridge answered `submitted`, then
+        reported the engine's drop; the next pass of the delivery path sends
+        a second `delivery` for the same key, `failed` with the bridge's
+        reason, a draft."""
+        import sminos_bridge as bridge
+        self.bridge.refusing = "a Stop hook stands"
+        try:
+            mark = self.rig.mark()
+            key = self.deliver_from_outside("taken, then dropped")
+            self.assertTrue(wait_for(lambda: self.deliveries(mark, key), timeout=15), "delivered first")
+            self.assertTrue(wait_for(lambda: [r for r in bridge.load_kept(self.sid).get("refused") or []
+                                              if r["key"] == {"project": self.project, **key}]),
+                            "the child kept the refusal, its key naming the project")
+            r = cli("daemon", "tick")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(wait_for(lambda: [d for d in self.deliveries(mark, key) if d["outcome"] == "failed"],
+                                     timeout=15), "a failed outcome for the same key reaches the endpoint")
+            got = self.deliveries(mark, key)
+            self.assertEqual([d["outcome"] for d in got], ["delivered", "failed"])
+            self.assertIn("a Stop hook stands", got[-1]["reason"])
+            self.assertEqual(got[-1]["session"], self.sid)
+            self.assertNotIn("mac", got[-1], "a draft")
         finally:
             self.bridge.refusing = None
 
