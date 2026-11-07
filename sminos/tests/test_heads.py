@@ -74,6 +74,16 @@ class Machine(unittest.TestCase):
         if fresh:
             sminos.mark_enrolled("testhost", enrolled)
 
+    def welcome(self, **identity):
+        """The machine cut over (RL10): the endpoint's first welcome is its
+        enrolment, which marks the operator writer as waiting for its head."""
+        self.enrol(fresh=False)
+        rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], **identity}})
+
+    def endpoint_log(self, machine="testhost"):
+        """The project's log plane as the uplink holds it on RL10: no code."""
+        return hublog.HubLog(self.p, {"key": None, "machine": machine}, coded=False)
+
     def say(self, text):
         return sminos.log_append(self.p, W, "human", **{"from": "human", "to": "*", "text": text})
 
@@ -223,6 +233,66 @@ class Dx2(Machine):
         self.assertEqual([e["text"] for e in sminos.queued_read(self.p, W)], ["hello"])
 
 
+class Dx2OnRl10(Machine):
+    """Dx2's shared tests on RL10 (#153 M3a): the endpoint's welcome is the
+    enrolment that marks the writer, the upstream's events at the writer's
+    positions come as `spent`, and the log plane is uncoded. Each is named
+    after its Dx2 twin; the first one's is
+    Rl10.test_the_cutovers_welcome_holds_the_writer_until_the_endpoints_head."""
+
+    def test_a_release_cut_short_after_its_append_is_finished_without_a_second_copy(self):
+        self.welcome()
+        self.say("early")
+        kept = Path(sminos.queued_path(self.p, W)).read_text()
+        hl = self.endpoint_log()
+        hl.on_have({"have": {}})
+        self.assertEqual([e["text"] for e in self.log()], ["early"])
+        Path(sminos.queued_path(self.p, W)).write_text(kept)   # as a crash before the queue's removal leaves it
+        hl.on_have({"have": {W: 1}})
+        self.assertEqual([e["text"] for e in self.log()], ["early"], "not appended twice")
+        self.assertFalse(os.path.exists(sminos.queued_path(self.p, W)))
+
+    def test_an_endpoint_holding_nothing_of_the_writer_releases_it_at_the_have(self):
+        self.welcome()
+        self.assertIsNone(self.say("early")["seq"])
+        hl = self.endpoint_log()
+        hl.on_have({"have": {}})
+        self.assertEqual([(e["seq"], e["text"]) for e in self.log()], [(1, "early")])
+        self.assertEqual(self.uploaded(hl), [(W, 1, "early")])
+
+    def test_a_new_enrolment_waits_again_and_a_session_writer_never_waits(self):
+        self.welcome()
+        hl = self.endpoint_log()
+        hl.on_have({"have": {}})
+        self.assertEqual(self.say("first")["seq"], 1)
+        self.welcome(enrolled="2026-10-29T00:00:00.000Z")   # enrolled again under the same name
+        self.assertIsNone(self.say("second")["seq"], "known for the enrolment it was seen under, not this one")
+        sid = "6e000001-0000-4000-8000-0000000000e1"
+        joined = sminos.log_append(self.p, "testhost/" + sid, "joined", session=sid, alias="a", name_source="derived",
+                                   machine="testhost", cwd="/w", session_kind="interactive")
+        self.assertEqual(joined["seq"], 1, "a session's writer is a new UUID: it never collides, never waits")
+
+    def test_daemon_owed_counts_what_waits(self):
+        self.welcome()
+        self.say("early")
+        out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "daemon", "owed"],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
+        line = [x for x in out.stdout.splitlines() if x.startswith("work: ")]
+        self.assertEqual(len(line), 1, out.stdout)
+        self.assertIn("queued 1", line[0])
+        self.assertNotIn("early", out.stdout, "no body")
+
+    def test_an_operators_say_says_it_waits(self):
+        self.welcome()
+        out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "say", "--in", "work", "hello"],
+                             capture_output=True, text=True, timeout=60, cwd=os.environ["HOME"])
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn("waits", out.stdout)
+        self.assertEqual(self.log(), [])
+        self.assertEqual([e["text"] for e in sminos.queued_read(self.p, W)], ["hello"])
+
+
 class Streams(Machine):
     """The operator's words to a private session go under an audience stream
     of its writer, `<name>/human~<digest>` (P5 O18 D6): each such stream
@@ -270,6 +340,35 @@ class Streams(Machine):
         self.assertIsNone(self.append(self.stream(self.D2), "early")["seq"])
         hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"}).on_have(
             {"have": {}})
+        self.assertEqual(self.held(self.stream(self.D2)), [(1, "early")], "released at the have, which holds none")
+
+    def test_an_operator_stream_waits_for_its_own_head_and_lands_above_it_on_rl10(self):
+        """The same on RL10: the endpoint's welcome marks every operator
+        writer, and the upstream's events at their positions come as `spent`."""
+        self.welcome()
+        s1, s2 = self.stream(self.D1), self.stream(self.D2)
+        self.assertIsNone(self.append(s1, "to the private one")["seq"], "it waits, as the plain writer does")
+        hl = self.endpoint_log()
+        hl.on_have({"have": {W: 1, s1: 2}})
+        self.assertIsNone(self.append(s1, "again")["seq"], "its head is known, the log not at it")
+        self.assertTrue(hl.spend(W, 1, "conflict"))
+        self.assertIsNone(self.append(s1, "a third")["seq"], "the plain writer's head says nothing of the stream's")
+        self.assertEqual(self.append(W, "plain")["seq"], 2, "the plain writer released on its own head")
+        for seq in (1, 2):
+            self.assertTrue(hl.spend(s1, seq, "conflict"))
+        self.assertEqual(self.held(s1), [(3, "to the private one"), (4, "again"), (5, "a third")],
+                         "released above the stream's head, in order")
+        self.assertEqual([(w, s) for frame, _ in hl.uploads() for e in frame["events"]
+                          for w, s in [(e["writer"], e["seq"])] if w == s1], [(s1, 3), (s1, 4), (s1, 5)])
+        self.assertEqual(self.append(s2, "a stream the endpoint holds nothing of")["seq"], 1,
+                         "a stream the have named no head for has none to wait for")
+        self.assertEqual(self.append(s1, "after")["seq"], 6)
+        self.assert_one_event_a_position()
+
+    def test_before_any_have_every_operator_stream_waits_on_rl10(self):
+        self.welcome()
+        self.assertIsNone(self.append(self.stream(self.D2), "early")["seq"])
+        self.endpoint_log().on_have({"have": {}})
         self.assertEqual(self.held(self.stream(self.D2)), [(1, "early")], "released at the have, which holds none")
 
     def test_a_former_names_queues_release_each_into_its_namesake(self):
@@ -415,6 +514,14 @@ class Renamed(Machine):
             {"have": {}})
         self.assertEqual([e["text"] for e in self.log()], ["first", "second"])
 
+    def test_within_one_queue_its_file_order_holds_against_a_clock_stepped_back_on_rl10(self):
+        self.welcome()
+        for ts, text in (("2026-10-28T02:00:01.000Z", "first"), ("2026-10-28T02:00:00.000Z", "second")):
+            with mock.patch.object(sminos, "now", return_value=ts):
+                self.say(text)
+        self.endpoint_log().on_have({"have": {}})
+        self.assertEqual([e["text"] for e in self.log()], ["first", "second"])
+
     def rename_after_first_welcome(self):
         self.enrol(fresh=False)
         rl10.welcomed(Rl10.WELCOME)
@@ -503,6 +610,14 @@ class Renamed(Machine):
 
     def test_a_fragment_a_queue_was_left_with_does_not_swallow_the_next_append(self):
         self.enrol()
+        self.say("early")
+        with open(sminos.queued_path(self.p, W), "a") as f:
+            f.write('{"ts": "2026-10-28T00:00:00.000Z", "writer": "testhost/hu')   # an interrupted write
+        self.say("after it")
+        self.assertEqual([e["text"] for e in sminos.queued_read(self.p, W)], ["early", "after it"])
+
+    def test_a_fragment_a_queue_was_left_with_does_not_swallow_the_next_append_on_rl10(self):
+        self.welcome()
         self.say("early")
         with open(sminos.queued_path(self.p, W), "a") as f:
             f.write('{"ts": "2026-10-28T00:00:00.000Z", "writer": "testhost/hu')   # an interrupted write

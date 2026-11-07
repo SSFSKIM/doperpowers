@@ -49,6 +49,7 @@ import sminos_archive as archive  # noqa: E402
 import sminos_audience  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
+import endpoint_standin  # noqa: E402
 
 KEY = base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode()
 RAW_KEY = bytes(range(32))
@@ -392,8 +393,11 @@ class Plane(unittest.TestCase):
                                      {"url": "http://127.0.0.1:9", "org": "org-1"})
         sminos.project_path(self.p, "log")
 
-    def hl(self, coded=True, machine="testhost"):
+    coded = True   # DX2's codes; an OnRl10 twin runs the same tests uncoded, as a cut-over machine does (#153)
+
+    def hl(self, coded=None, machine="testhost"):
         """`machine`: another name than this machine's now, as the uplink saw it before a rename."""
+        coded = self.coded if coded is None else coded
         return hublog.HubLog(self.p, {"key": RAW_KEY if coded else None, "machine": machine}, coded=coded)
 
     def put(self, writer, *events):
@@ -593,6 +597,14 @@ class Admitted(Plane):
                          "the confirmed prefix is the log's, and past what this machine or the hub held, nothing")
 
 
+class AdmittedOnRl10(Admitted):
+    """Admitted's tests uncoded, as a machine cut over to its endpoint runs
+    them (RL10, #153 M3a): the endpoint relays the hub's `have`, its
+    `withheld` and `archive` among it."""
+
+    coded = False
+
+
 class Retry(Plane):
     def refuse(self, hl, writer, seq, reason="state-unavailable"):
         hl.on_refused({"t": "refused", "project": self.p.id,
@@ -727,6 +739,20 @@ class Dead(Plane):
         v = hublog.seal(RAW_KEY, self.p.id, {"ts": "2026-11-05T00:00:01.000Z", "writer": "other/" + OTHER_SID,
                                               "seq": 1, "kind": "void", "of": 1, "audience": [M1]})
         self.assertEqual(hl.take([v]), (1, []), "imported as the hub sent it")
+        sminos.forget_caches()
+        self.assertEqual(sminos.view_of(self.p, titles=False).members, [], "no member of it")
+        out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "chat", "work", "-n", "5"],
+                             capture_output=True, text=True, timeout=60, cwd=BASE)
+        self.assertIn("(no messages)", out.stdout, out.stdout + out.stderr)
+        self.assertEqual(sminos._owed(sminos.log_read(self.p), SID, {}), [], "owed to no one")
+
+    def test_a_void_from_elsewhere_is_nothing_to_a_reader_on_rl10(self):
+        """The same void as the endpoint sends it down (RL10), verified."""
+        hl = self.hl(coded=False)
+        hl.on_have({"have": {}})
+        v = endpoint_standin.Endpoint.arriving({"ts": "2026-11-05T00:00:01.000Z", "writer": "other/" + OTHER_SID,
+                                               "seq": 1, "kind": "void", "of": 1, "audience": [M1]})
+        self.assertEqual(hl.take([v]), (1, []), "imported as the endpoint sent it")
         sminos.forget_caches()
         self.assertEqual(sminos.view_of(self.p, titles=False).members, [], "no member of it")
         out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "chat", "work", "-n", "5"],

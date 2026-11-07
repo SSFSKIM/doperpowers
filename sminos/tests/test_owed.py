@@ -383,23 +383,32 @@ class ReadOnly(Machine):
 
 
 class Taken(Machine):
-    """The uplink's `taken`: what a process beside it reads for the upload kind."""
+    """The uplink's `taken`: what a process beside it reads for the upload
+    kind. `coded`: DX2's Link and HubLog, under the org key's codes; the
+    OnRl10 twins run the same tests uncoded, as a machine cut over to its
+    endpoint does (#153)."""
+
+    coded = True
 
     def link(self):
-        cred = {"org": "org-1", "hub": "http://127.0.0.1:9", "machine": "testhost", "key": base64.urlsafe_b64decode(
-            KEY + "=")}
-        link = uplink.Link(cred, {}, transport=mock.Mock(number=1))
+        cred = {"org": "org-1", "hub": "http://127.0.0.1:9", "machine": "testhost",
+                "key": base64.urlsafe_b64decode(KEY + "=") if self.coded else None}
+        link = uplink.Link(cred, {}, transport=mock.Mock(number=1), coded=self.coded)
         self.addCleanup(link.close)
         link.generation = 1
         link.log_lane = link.session_lane = Lane()
         return link
+
+    def log_plane(self, p):
+        return hublog.HubLog(p, {"key": base64.urlsafe_b64decode(KEY + "=") if self.coded else None,
+                                 "machine": "testhost"}, coded=self.coded)
 
     def test_the_hubs_have_and_each_upload_it_took(self):
         p = self.project("work")
         w = "testhost/" + S1
         for _ in range(3):
             sminos.log_append(p, w, "say", to=[], text="x")
-        hl = hublog.HubLog(p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"})
+        hl = self.log_plane(p)
         hl.on_have({"have": {w: 1, "hub/mem-1": 9}})
         self.assertEqual(hl.taken(), {w: 1}, "the hub's vector for this machine's writers, as it said it")
         hl.on_have({"have": {w: 0}})
@@ -429,12 +438,12 @@ class TakenBounds(Machine):
         self.w = "testhost/" + S1
         for _ in range(3):
             sminos.log_append(self.p, self.w, "say", to=[], text="x")
-        self.hl = hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"})
+        self.hl = self.log_plane(self.p)
         self.hl.on_have({"have": {}})
         self.lane = self.link().log_lane
         self.lane.hold_thens = True
 
-    link = Taken.link
+    coded, link, log_plane = Taken.coded, Taken.link, Taken.log_plane
 
     def upload(self):
         link = self.link()
@@ -594,12 +603,14 @@ class TakenRig(Machine):
         self.w = "testhost/" + S1
         for _ in range(3):
             sminos.log_append(self.p, self.w, "say", to=[], text="x")
-        self.hl = hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"})
+        self.hl = self.log_plane(self.p)
         self.hl.on_have({"have": {}})
-        self.lane = Taken.link(self).log_lane
+        self.lane = self.link().log_lane
+
+    coded, link, log_plane = Taken.coded, Taken.link, Taken.log_plane
 
     def upload(self):
-        link = Taken.link(self)
+        link = self.link()
         link.log_lane = link.session_lane = self.lane
         link.upload(self.hl)
 
@@ -637,7 +648,7 @@ class TakenResumes(TakenRig):
         line = self.line(out, "work")
         self.assertIn("refused 1 [%s:2]" % S1[:8], line)
         self.assertIn("upload 2 [%s:2, %s:3]" % (S1[:8], S1[:8]), line)
-        hublog.HubLog(self.p, {"key": None, "machine": "testhost"}).on_have({"have": {self.w: 3}})
+        self.log_plane(self.p).on_have({"have": {self.w: 3}})
         self.assertIn("refused 1", self.line(self.owed()[1], "work"), "persisted: another process, another stream")
 
     def test_another_refusal_is_not_kept_past_the_stream(self):
@@ -695,6 +706,26 @@ class TakenWrites(TakenRig):
             self.lane.run_held()
             self.hl.on_have({"have": {self.w: 3}})
         self.assertEqual(self.owed()[0], 1)
+
+
+# The same tests uncoded, as a machine cut over to its endpoint runs them
+# (RL10, #153 M3a): each beside its DX2 twin above, which goes with `coded`.
+
+
+class TakenOnRl10(Taken):
+    coded = False
+
+
+class TakenBoundsOnRl10(TakenBounds):
+    coded = False
+
+
+class TakenResumesOnRl10(TakenResumes):
+    coded = False
+
+
+class TakenWritesOnRl10(TakenWrites):
+    coded = False
 
 
 class Enrollment(Machine):

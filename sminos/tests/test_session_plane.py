@@ -4587,6 +4587,51 @@ class Lifecycle(unittest.TestCase):
     def kinds(hub):
         return [[f["t"] for f in body] for body in hub.bodies()]
 
+    def on_socket(self, project, wall=None, write=None):
+        """A Link cut over to its endpoint (RL10, #153 M3a), uncoded, its one
+        lane RL10's own SocketLane writing to a socket whose far end the test
+        reads, with the project's uncoded HubLog among its logs: (link, the
+        connection's items, hl, the far end). `write`, when given, wraps the
+        lane's writes (`write(real, data)`), as an endpoint slow to read."""
+        import sminos_hublog as hublog
+        import sminos_rl10 as rl10
+        import sminos_uplink as uplink
+        near, far = (rl10.Connection(sock) for sock in socket.socketpair())
+        self.addCleanup(far.sock.close)
+        self.addCleanup(near.sock.close)
+        conn = near if write is None else types.SimpleNamespace(write=lambda data: write(near.write, data))
+        cred = {"machine": "testhost", "org": "org-1", "key": None, "hub": "http://127.0.0.1:9"}
+        hl = hublog.HubLog(project, cred, coded=False)
+        link = uplink.Link(cred, {project.id: hl}, transport=mock.Mock(number=1), coded=False)
+        link.plane.wall = wall or (lambda: time.time() + 3600)
+        items = queue.Queue()
+        link.generation = 1
+        link.log_lane = link.session_lane = uplink.SocketLane(conn, items.put, lambda: False)
+        link.log_lane.start()
+        self.addCleanup(link.close)
+        far.written = []
+        return link, items, hl, far
+
+    @staticmethod
+    def written(far):
+        """Every frame the far end has been written so far, in order."""
+        while True:
+            try:
+                line = far.read_line(0.05)
+            except TimeoutError:
+                return far.written
+            if line is None:
+                return far.written
+            far.written.append(json.loads(line))
+
+    def ran_until(self, link, items, test, timeout=10.0):
+        """The lane's continuations run as the main loop runs them, until `test()` holds."""
+        deadline = time.monotonic() + timeout
+        while not test():
+            kind, thens = items.get(timeout=max(0.0, deadline - time.monotonic()))
+            self.assertEqual(kind, "sent", thens)
+            link.ran(thens)
+
     def test_a_project_opened_again_is_gated_until_its_new_hello_is_answered_and_opened_once(self):
         """The hub lost the project's open state mid-stream: a POST's answer
         names two of its frames refused `not-open`, and the project is opened
@@ -4800,6 +4845,39 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(hl.unreported(), [], "written on the next pass")
         self.assertEqual(len(calls), 2)
 
+    def test_a_failed_rejection_write_releases_the_gate_and_is_written_later_on_rl10(self):
+        """The same on RL10, where a frame written to the endpoint is taken:
+        the hello's continuation fails to record the rejections reported, the
+        project's session messages go all the same, nothing is held as in
+        flight, and the record is written on a later pass."""
+        project, runs, _ = self.ended_presence_project("reported-fails-rl10")
+        link, items, hl, far = self.on_socket(project)
+        rejection = {"t": "rejected", "project": project.id, "event": {"writer": "hub/x", "seq": 4},
+                     "reason": "bad-shape", "message": "not an event"}
+        state = hl.state()
+        state["unreported"] = [rejection]
+        hl.save(state)
+        real, calls = hl.reported, []
+
+        def flaky(frames):
+            calls.append(frames)
+            if len(calls) == 1:
+                raise OSError("No space left on device")
+            real(frames)
+
+        hl.reported = flaky
+        link.open(hl)
+        self.ran_until(link, items, lambda: calls)
+        self.assertIn(rejection, self.written(far), "the hello's bundle carried it to the endpoint")
+        link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, {"after": True})])
+        self.assertTrue(wait_for(lambda: any(f.get("t") == "session" and f["message"]["body"] == {"after": True}
+                                             for f in self.written(far))), "the message goes")
+        self.assertEqual(link.reporting[project.id], 0, "nothing held as in flight")
+        self.assertEqual(hl.unreported(), [rejection], "the write failed")
+        link.settle_marks(hl)
+        self.assertEqual(hl.unreported(), [], "written on the next pass")
+        self.assertEqual(len(calls), 2)
+
     def test_a_failed_outbox_drop_is_retried_and_its_outcomes_not_posted_again(self):
         import sminos_outcomes as outcomes
         project, runs, _ = self.ended_presence_project("drop-fails")
@@ -4825,6 +4903,35 @@ class Lifecycle(unittest.TestCase):
             link.deliveries(hl)
             time.sleep(0.3)
         self.assertEqual(self.kinds(hub), [self.kinds(hub)[0], ["session"]], "the outcomes posted once")
+        self.assertFalse(box.waiting(), "dropped on the next pass")
+        self.assertEqual(len(calls), 2)
+
+    def test_a_failed_outbox_drop_is_retried_and_its_outcomes_not_posted_again_on_rl10(self):
+        import sminos_outcomes as outcomes
+        project, runs, _ = self.ended_presence_project("drop-fails-rl10")
+        link, items, hl, far = self.on_socket(project)
+        box = outcomes.Outbox(project)
+        box.record({"writer": "hub/x", "seq": 1}, runs, "delivered", None)
+        real, calls = outcomes.Outbox.drop, []
+
+        def flaky(self_, n):
+            calls.append(n)
+            if len(calls) == 1:
+                raise OSError("No space left on device")
+            real(self_, n)
+
+        def outcomes_written():
+            return [f["message"]["body"]["outcome"] for f in self.written(far)
+                    if f.get("t") == "session" and f["message"]["kind"] == "delivery"]
+
+        with mock.patch.object(outcomes.Outbox, "drop", flaky):
+            link.open(hl)
+            self.ran_until(link, items, lambda: calls)   # the hello's, then the outcomes'
+            self.assertNotIn(project.id, link.delivering, "nothing held as in flight")
+            self.assertTrue(box.waiting(), "the drop failed")
+            link.deliveries(hl)
+            time.sleep(0.3)
+        self.assertEqual(outcomes_written(), ["delivered"], "the outcomes written once")
         self.assertFalse(box.waiting(), "dropped on the next pass")
         self.assertEqual(len(calls), 2)
 
@@ -4878,6 +4985,61 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(uploaded(), list(range(1, n + 1)), "in order, each once")
         self.assertGreater(passes, 2, "over several passes")
         self.assertEqual(sorted(sealed), list(range(1, n + 1)), "each event sealed once: %s" % sealed)
+        self.assertLess(first, n, "the lane's bound stopped the first passes short of the backlog")
+
+    def test_a_paced_backlog_is_drawn_once_across_its_upload_passes_on_rl10(self):
+        """The same on RL10's one lane, the endpoint slow to read the first
+        write: every event is drawn into its upload form once, and all of it
+        reaches the endpoint in order."""
+        import sminos
+        import sminos_hublog as hublog
+        import sminos_uplink as uplink
+        root = os.path.join(T, "paced-backlog-rl10")
+        subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "-q", root], check=True)
+        subprocess.run([os.path.join(SCRIPTS, "sminos"), "project", "init", "--name", "paced-backlog-rl10"], cwd=root,
+                       check=True, capture_output=True)
+        sminos.forget_caches()
+        project = sminos.resolve_project(root)
+        writer = "testhost/5a000003-0000-4000-8000-0000000000c4"
+        n = 12
+        for i in range(n):
+            sminos.log_append(project, writer, "say", **{"from": "k", "to": "*", "text": "%02d " % i + "x" * 4000})
+        reached, release = threading.Event(), threading.Event()
+
+        def write(real, data):   # the first write held, as an endpoint not reading yet
+            if not reached.is_set():
+                reached.set()
+                release.wait(10)
+            real(data)
+
+        link, _items, hl, far = self.on_socket(project, write=write)
+        hl.on_have({"t": "have", "project": project.id, "have": {}})
+        drawn, real = [], hublog.HubLog.as_uploaded
+
+        def counting(e):
+            drawn.append(e["seq"])
+            return real(e)
+
+        with mock.patch.object(hublog, "BATCH_BYTES", 1), mock.patch.object(uplink, "UPLOAD_AHEAD", 9000), \
+                mock.patch.object(hublog.HubLog, "as_uploaded", staticmethod(counting)):
+            link.upload(hl)
+            self.assertTrue(reached.wait(10), "the first write is held at the endpoint")
+            link.upload(hl)
+            first = len(drawn)
+            release.set()
+            passes = 1
+
+            def uploaded():
+                nonlocal passes
+                if link.log_lane.queued() == 0 and not link.log_lane.posting():
+                    passes += 1
+                    link.upload(hl)
+                return [e["seq"] for f in self.written(far) if f.get("t") == "events" for e in f["events"]]
+
+            self.assertTrue(wait_for(lambda: len(uploaded()) == n), "the whole backlog reached the endpoint")
+        self.assertEqual(uploaded(), list(range(1, n + 1)), "in order, each once")
+        self.assertGreater(passes, 2, "over several passes")
+        self.assertEqual(sorted(drawn), list(range(1, n + 1)), "each event drawn once: %s" % drawn)
         self.assertLess(first, n, "the lane's bound stopped the first passes short of the backlog")
 
     def test_the_daemon_sweeps_what_the_bridge_left_for_ended_sessions(self):

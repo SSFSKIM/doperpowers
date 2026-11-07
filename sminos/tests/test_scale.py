@@ -306,6 +306,7 @@ class HotLooks(unittest.TestCase):
     whole look sees the rest (2026-10-28: an idle uplink at 5–16 % of a core)."""
 
     HOUR_AGO = time.time() - 3600
+    coded = True   # DX2's codes; HotLooksOnRl10 runs the same tests uncoded, as a cut-over machine does (#153)
 
     def setUp(self):
         hublog = sminos.sibling_module("sminos_hublog")
@@ -322,7 +323,8 @@ class HotLooks(unittest.TestCase):
         for name in os.listdir(self.log_dir):
             os.utime(os.path.join(self.log_dir, name), (self.HOUR_AGO, self.HOUR_AGO))
         self.still()
-        self.hl = hublog.HubLog(self.project, {"key": b"k" * 32, "machine": MACHINE})
+        self.hl = hublog.HubLog(self.project, {"key": b"k" * 32 if self.coded else None, "machine": MACHINE},
+                                coded=self.coded)
         self.hl.writers(own=True)   # the whole look: every own writer read
 
     def write(self, writer, sid, seq):
@@ -466,12 +468,19 @@ class HotLooks(unittest.TestCase):
                          "." + prefix + "a.jsonl", "x" + prefix + "a.jsonl", "legacy.a.jsonl", ".legacy.a.jsonl",
                          prefix.upper() + "a.jsonl", prefix + "a\nb.jsonl"):
                 open(os.path.join(d, name), "w").close()
-            hl = hublog.HubLog(types.SimpleNamespace(home=home), {"key": b"k" * 32, "machine": machine})
+            hl = hublog.HubLog(types.SimpleNamespace(home=home),
+                               {"key": b"k" * 32 if self.coded else None, "machine": machine}, coded=self.coded)
             for archive in (False, True):
                 hl.archive, hl.listing = archive, None
                 want = [p for prefix_ in [prefix] + (["legacy."] if archive else [])
                         for p in glob.glob(os.path.join(glob.escape(d), glob.escape(prefix_) + "*.jsonl"))]
                 self.assertEqual(sorted(hl.own_paths()[0]), sorted(want), (machine, archive))
+
+
+class HotLooksOnRl10(HotLooks):
+    """HotLooks uncoded (RL10, #153 M3a)."""
+
+    coded = False
 
 
 class QuietReads(unittest.TestCase):
@@ -909,9 +918,12 @@ class CheckoutsFromTheRead(unittest.TestCase):
         def close(self):
             pass
 
+    coded = True   # DX2's codes; CheckoutsFromTheReadOnRl10 runs the same tests uncoded (#153)
+
     def setUp(self):
-        self.cred = {"key": b"k" * 32, "machine": MACHINE, "org": ORG, "hub": "http://127.0.0.1:9"}
-        self.link = uplink.Link(self.cred, {})
+        self.cred = {"key": b"k" * 32 if self.coded else None, "machine": MACHINE, "org": ORG,
+                     "hub": "http://127.0.0.1:9"}
+        self.link = uplink.Link(self.cred, {}, coded=self.coded)
         self.addCleanup(self.link.close)
         self.link.log_lane = self.Lane()
         self.sid = str(uuid.uuid4())
@@ -930,7 +942,8 @@ class CheckoutsFromTheRead(unittest.TestCase):
             write(os.path.join(d, ".smns"), {"project": pid, "name": "co-%s" % pid[:8], "hub": {"org": ORG}})
             dirs.append(d)
         sminos.forget_caches()
-        self.link.logs[pid] = sminos.sibling_module("sminos_hublog").HubLog(sminos.known_project(pid), self.cred)
+        self.link.logs[pid] = sminos.sibling_module("sminos_hublog").HubLog(sminos.known_project(pid), self.cred,
+                                                                            coded=self.coded)
         self.link.opened.add(pid)
         return pid, root, dirs
 
@@ -970,6 +983,12 @@ class CheckoutsFromTheRead(unittest.TestCase):
         self.assertEqual(self.posted(self.scan(pid, now + uplink.SCAN_EVERY, {self.sid: w1})),
                          [("hello", False, None), ("session", False, [w1])])
         self.assertTrue(self.link.holds(pid))
+
+
+class CheckoutsFromTheReadOnRl10(CheckoutsFromTheRead):
+    """CheckoutsFromTheRead uncoded (RL10, #153 M3a)."""
+
+    coded = False
 
 
 class WholeReads(unittest.TestCase):

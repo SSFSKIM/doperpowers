@@ -830,16 +830,23 @@ class Refusals(unittest.TestCase):
 
 
 class Requests(unittest.TestCase):
-    """The relay of requests, against the real bridge child."""
+    """The relay of requests, against the real bridge child. `key`: DX2's
+    org key, each message sealed under it; RequestsOnRl10 runs the same
+    tests with none, as a machine cut over to its endpoint does (#153)."""
 
     PID = "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f"
+    key = KEY
+
+    def assert_code(self, kind, body, msg=None):
+        """The message's body as it goes up: under DX1's code (DX2)."""
+        self.assertTrue(codes.verifies(KEY, kind, self.PID, body), msg)
 
     def setUp(self):
         forget_owed()
         self.addCleanup(forget_owed)
         self.sid = str(uuidlib.uuid4())
         self.bridge = Bridge(self.sid)
-        self.r = requests.Requests(KEY, "testhost")
+        self.r = requests.Requests(self.key, "testhost")
         self.r.follow({self.sid: self.PID})
 
     def tearDown(self):
@@ -866,7 +873,7 @@ class Requests(unittest.TestCase):
         self.assertEqual({k: v for k, v in body.items() if k != "mac"},
                          {"request": "toolu_01", "session": self.sid, "tool": "Bash",
                           "input": {"command": "pnpm e2e", "timeout": 0.5}})
-        self.assertTrue(codes.verifies(KEY, "raised", self.PID, body), "DX1's code, smns-hub-raised-v1")
+        self.assert_code("raised", body, "DX1's code, smns-hub-raised-v1")
         self.r.sent(frames)
         self.assertEqual(self.r.due({self.PID}), [], "sent once")
         self.assertEqual([x["request"] for x in self.r.pending_frame(self.PID)["raised"]], ["toolu_01"])
@@ -876,7 +883,7 @@ class Requests(unittest.TestCase):
         self.assertEqual({k: v for k, v in s.items() if k != "mac"},
                          {"request": "toolu_01", "winner": "web", "outcome": "deny", "by": MEMBER},
                          "as the bridge reported it")
-        self.assertTrue(codes.verifies(KEY, "settled", self.PID, s))
+        self.assert_code("settled", s)
         self.r.sent(frames)
         self.assertEqual(self.r.pending_frame(self.PID), {"t": "pending", "project": self.PID, "raised": []})
 
@@ -896,7 +903,7 @@ class Requests(unittest.TestCase):
         self.assertIs(q["truncated"], True)
         self.assertNotIn("truncated", bg, "truncated only as true")
         for b in (bg, q):
-            self.assertTrue(codes.verifies(KEY, "raised", self.PID, b), "the code covers every field")
+            self.assert_code("raised", b, "the code covers every field")
             self.assertNotIn("t", b)
 
     def test_a_requests_suggestions_go_up_under_the_code_within_the_hubs_bound(self):
@@ -930,7 +937,7 @@ class Requests(unittest.TestCase):
         for rid in ("toolu_sg9", "toolu_sgbig", "toolu_sgbad", "toolu_sgnone"):
             self.assertNotIn("suggestions", bodies[rid], rid + ": left out whole, the request still raised")
         for b in bodies.values():
-            self.assertTrue(codes.verifies(KEY, "raised", self.PID, b), "the code covers them")
+            self.assert_code("raised", b, "the code covers them")
         self.assertEqual([r.get("suggestions") for r in self.r.pending_frame(self.PID)["raised"]
                           if r["request"] == "toolu_sg1"], [[rule]], "the pending set carries them")
         for rid in bodies:
@@ -947,7 +954,7 @@ class Requests(unittest.TestCase):
         frames = self.due(lambda fs: len(messages(fs, "raised")) == 3)
         dialog, same, bad = (m["body"] for m in messages(frames, "raised"))
         self.assertEqual((dialog["request"], dialog["toolUseId"]), ("toolu_plugin_7", "toolu_01outer"))
-        self.assertTrue(codes.verifies(KEY, "raised", self.PID, dialog), "the code covers it")
+        self.assert_code("raised", dialog, "the code covers it")
         self.assertNotIn("toolUseId", same, "only where it differs from request")
         self.assertNotIn("toolUseId", bad, "only a non-empty string")
         self.assertEqual([r.get("toolUseId") for r in self.r.pending_frame(self.PID)["raised"]
@@ -997,7 +1004,7 @@ class Requests(unittest.TestCase):
         recent settlements carry it, and it goes up once — not again on the
         next snapshot, nor from a Requests that starts anew (a restart)."""
         self.r.close()
-        self.r = requests.Requests(KEY, "testhost")
+        self.r = requests.Requests(self.key, "testhost")
         self.bridge.raise_("toolu_quick")
         self.bridge.settle("toolu_quick", outcome="allow", winner="other", by="cli")
         self.r.follow({self.sid: self.PID})
@@ -1005,7 +1012,7 @@ class Requests(unittest.TestCase):
         self.assertEqual([m["body"]["request"] for m in messages(frames, "settled")], ["toolu_quick"])
         self.assertEqual(messages(frames, "raised"), [])
         self.r.sent(frames)
-        again = requests.Requests(KEY, "testhost")
+        again = requests.Requests(self.key, "testhost")
         try:
             again.follow({self.sid: self.PID})
             self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
@@ -1042,7 +1049,7 @@ class Requests(unittest.TestCase):
         send(lambda fs: messages(fs, "settled"))
         self.assertEqual(relayed, [("toolu_ask", "withdrawn"), ("toolu_ask", "answered")])
         self.assertEqual(self.r.pending_frame(self.PID)["raised"], [])
-        again = requests.Requests(KEY, "testhost")
+        again = requests.Requests(self.key, "testhost")
         try:
             again.follow({self.sid: self.PID})
             self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
@@ -1101,12 +1108,12 @@ class Requests(unittest.TestCase):
         self.assertIsNotNone(wait_for(lambda: old.proc.poll() is not None), "the old child leaves")
         self.bridge.raise_("toolu_ask", **self.ASK)
         self.bridge.settle("toolu_ask", outcome="answered", winner="web", by=MEMBER)
-        self.r = requests.Requests(KEY, "testhost")
+        self.r = requests.Requests(self.key, "testhost")
         self.r.follow({self.sid: self.PID})
         frames = self.due(lambda fs: messages(fs, "settled"))
         self.assertEqual(self.settled_by(frames), [("toolu_ask", "answered")])
         self.r.sent(frames)
-        again = requests.Requests(KEY, "testhost")
+        again = requests.Requests(self.key, "testhost")
         try:
             again.follow({self.sid: self.PID})
             self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
@@ -1154,7 +1161,7 @@ class Requests(unittest.TestCase):
         self.r.sent(frames)
         self.resubscribe()
         self.assertEqual(self.settled_by(self.r.due({self.PID})), [], "the snapshot lists it: not sent")
-        again = requests.Requests(KEY, "testhost")
+        again = requests.Requests(self.key, "testhost")
         try:
             again.follow({self.sid: self.PID})
             self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
@@ -1174,7 +1181,7 @@ class Requests(unittest.TestCase):
                "async": True, "t": 1}
         self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
                           "delivered": {}, "pending": [ask], "settled": []})
-        self.r = requests.Requests(KEY, "testhost")
+        self.r = requests.Requests(self.key, "testhost")
         self.r.follow({self.sid: self.PID})
         frames = self.due(lambda fs: messages(fs, "raised"))
         self.assertEqual(self.settled_by(frames), [])
@@ -1202,7 +1209,7 @@ class Requests(unittest.TestCase):
             self.bridge.settle("toolu_old", outcome="allow", winner="other", by="cli")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             sminos.write_json(path, {self.sid: ["toolu_old"]})
-            self.r = requests.Requests(KEY, "testhost")
+            self.r = requests.Requests(self.key, "testhost")
             self.r.follow({self.sid: self.PID})
             frames = self.due(lambda fs: messages(fs, "settled"))
             self.assertEqual(self.settled_by(frames), [("toolu_old", "allow")])
@@ -1247,7 +1254,7 @@ class Requests(unittest.TestCase):
         self.r.close()
         self.bridge.raise_("toolu_before")
         clock = [100.0]
-        self.r = requests.Requests(KEY, "testhost", clock=lambda: clock[0])
+        self.r = requests.Requests(self.key, "testhost", clock=lambda: clock[0])
         self.r.follow({self.sid: self.PID})
         first = self.r.opening(self.PID)
         self.assertEqual([f for f in first if f.get("t") == "pending"], [], "no set before its bridge is read")
@@ -1330,7 +1337,7 @@ class Requests(unittest.TestCase):
         body = self.raised_of(frames, "toolu_huge")
         self.assertEqual(body["input"], shown)
         self.assertIs(body["truncated"], True, "resync's marker")
-        self.assertTrue(codes.verifies(KEY, "raised", self.PID, body), "the code covers the input as it goes")
+        self.assert_code("raised", body, "the code covers the input as it goes")
         self.assertLess(len(json.dumps(body).encode()), requests.RAISED_INPUT_MAX)
         self.r.sent(frames)
         self.assertEqual(self.r.pending_frame(self.PID)["raised"], [body], "the complete set carries it so")
@@ -1379,6 +1386,15 @@ class Requests(unittest.TestCase):
                          allow)
 
 
+class RequestsOnRl10(Requests):
+    """Requests' tests with no key (RL10, #153 M3a): every message a draft."""
+
+    key = None
+
+    def assert_code(self, kind, body, msg=None):
+        self.assertNotIn("mac", body, "RL10: a draft, with no code")
+
+
 # ---------------------------------------------------------------- the uplink
 
 
@@ -1393,7 +1409,10 @@ def forget_owed():
 
 
 class Owed(unittest.TestCase):
-    """sminos_owed's file, through its owners."""
+    """sminos_owed's file, through its owners: under DX2's org key; OwedOnRl10
+    runs the same with none, as a machine cut over to its endpoint (#153)."""
+
+    key, coded = KEY, True
 
     def setUp(self):
         forget_owed()
@@ -1408,7 +1427,7 @@ class Owed(unittest.TestCase):
                                                          "frame": frame}]})
         said = []
         with mock.patch.object(requests, "log", said.append):
-            r = requests.Requests(KEY, "testhost")
+            r = requests.Requests(self.key, "testhost")
         self.addCleanup(r.close)
         self.assertEqual((r.outbox, r.queued), ([], {}), "nothing taken from a newer version's file")
         self.assertTrue(any("not version 1's (2)" in line for line in said), said)
@@ -1418,7 +1437,11 @@ class Owed(unittest.TestCase):
         rpc_path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpc.OWED_FILE)
         sminos.write_json(rpc_path, {"version": 2, "owed": [{**frame, "message": {**frame["message"],
                                                                                   "kind": "compact", "body": {}}}]})
-        self.assertEqual(rpc.Rpcs(KEY, "testhost").messages, [], "nor a compaction message")
+        self.assertEqual(rpc.Rpcs(self.key, "testhost", coded=self.coded).messages, [], "nor a compaction message")
+
+
+class OwedOnRl10(Owed):
+    key, coded = None, False
 
 
 class RelayedOnLanes(unittest.TestCase):
