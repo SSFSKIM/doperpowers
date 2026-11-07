@@ -89,9 +89,9 @@ member too, seat-less, from the first call that reads its project.
     sminos daemon   policy [--read-only on|off] [--ceiling MODE|settings]   # the owner's setting: what this
                    machine admits from outside. Read-only records what is written elsewhere and delivers
                    none of it; the ceiling bounds a spawn. A session reports it, never changes it unasked
-    sminos hub      enroll [--name N] [--replace] | show   # this machine at the desk hub: its name
-                   there is its name everywhere (the writer host of what it writes). The code is
-                   pasted at a hidden prompt, or piped on stdin — never an argument: it carries the org key
+    sminos hub      show                                  # this machine's name, hub and org, as its endpoint
+                   gave them at its first welcome: its name there is its name everywhere (the writer host
+                   of what it writes). Enrolling is the endpoint's: mawsd endpoint enroll|status
     sminos rpc-query [--created T] -- <opId>              # what became of a desk RPC, as the daemon's ledger
                    file holds it (RL4's query, JSON): done, refused, in-progress, expired, not-received;
                    --created, its opCreated. `--` before the id: a base64url id may start with `-`.
@@ -136,9 +136,9 @@ member too, seat-less, from the first call that reads its project.
                    how to reach or resume it. Alone, inside a session: the line its commits carry
     sminos projects [--all]                               # every project known here: kind (hub, machine,
                    local), live and waiting sessions, their machines; --all: a retired machine's too
-    sminos machines                                       # every machine enrolled in the org: online or
-                   last seen (cut over to RL10, which says nothing of who is online: its newest event),
-                   or retired; its live sessions and their projects
+    sminos machines                                       # every machine enrolled in the org: its newest
+                   event (the endpoint says nothing of who is online), or retired; its live sessions and
+                   their projects
     sminos chart    [project] [--stopped] [--all] [--width N]        # the members as boxes, grouped by project
     sminos tui      [project] [--all] [--no-tmux]        # the chart, interactive, inside tmux: arrows move, enter attaches
     sminos attach   <seat>                                # claude attach <short>
@@ -1086,7 +1086,7 @@ def hub_here(pid, name, hub):
     if e is None or e["org"] != hub["org"]:
         if HINTS["on"] and hint_due(pid):
             warn("project %s syncs through the desk hub of org %s; this machine is not enrolled%s "
-                 "(sminos hub enroll)" % (name, hub["org"], " in it" if e else ""))
+                 "(mawsd endpoint enroll)" % (name, hub["org"], " in it" if e else ""))
         return {"url": "", "org": hub["org"]}
     if hub["url"] and hub["url"] != e["url"] and not said_once(pid, WARNED_URL):
         line = ("project %s: its .smns names the hub %s, but this machine is enrolled at %s for org %s; "
@@ -2436,8 +2436,8 @@ def release_queued(project, writer):
                         for w in {writer, *queues} for e in _log_file_events(writer_path(project, w))
                         if e["ts"] >= since}
                 waiting = [e for e in waiting if json.dumps(e, sort_keys=True) not in held]
-            # Appended whatever the enrolment says meanwhile (a `hub enroll`
-            # publishing another under this name): its head was found reached.
+            # Appended whatever the enrolment says meanwhile (a welcome
+            # naming another under this name): its head was found reached.
             out = _append(project, writer, waiting, held=True, released=True) if waiting else []
             for p in queues.values():
                 try:
@@ -3074,7 +3074,7 @@ def desk_member():
 def desk_proof():
     """A remote desk spawn's proof (O12 M7), as the daemon handed it to the
     verb: [the signed action], the new session's ownersProof; [] when the
-    daemon handed none (a DX2 spawn), or one that does not parse as a JSON
+    daemon handed none, or one that does not parse as a JSON
     object, which daemon.log says. The endpoint authorized the spawn: a
     proof it cannot keep is the attestation's loss, never a refusal."""
     text = os.environ.get(DESK_PROOF_ENV)
@@ -12062,16 +12062,14 @@ def newest_events(projects):
 
 def cmd_machines(_a):
     """`machines`: every machine enrolled in the org (daemon/org.json) —
-    online, or when it was last seen, or retired — with its live sessions
-    and the projects they are in, read from the logs this machine holds. On
-    a machine cut over to its endpoint (RL10), which carries no presence
-    (the endpoint sends every machine `online: false`, and `seen` only as of
-    its last restatement), this machine is `this machine` and another its
-    newest event, the frame's `seen` or the logs', whichever is later. On a
-    machine that is not enrolled, this machine alone."""
+    this machine, another's newest event, or retired — with its live
+    sessions and the projects they are in, read from the logs this machine
+    holds. The endpoint carries no presence (it sends every machine
+    `online: false`, and `seen` only as of its last restatement), so another
+    machine's newest event is the frame's `seen` or the logs', whichever is
+    later. On a machine that is not enrolled, this machine alone."""
     e = enrollment()
     org = org_directory() if e else None
-    rl10 = e is not None and sibling_module("sminos_rl10").cut_over()
     by_machine = {}
     projects = known_projects()
     live = live_members(projects)
@@ -12086,27 +12084,23 @@ def cmd_machines(_a):
         return name, state, str(len(sessions)), ", ".join(sorted(names, key=str.lower)) or "-"
 
     if e is None:
-        print("this machine is not enrolled at a desk hub (sminos hub enroll): it knows only itself")
+        print("this machine is not enrolled at a desk hub (mawsd endpoint enroll): it knows only itself")
         rows = [row(host_name(), "this machine")]
     elif org is None:
-        print("no org directory yet: %s" % ("the endpoint has not sent one (sminos daemon status)" if rl10 else
-                                             "the daemon has not connected to the hub (sminos daemon run)"))
+        print("no org directory yet: the endpoint has not sent one (sminos daemon status)")
         rows = [row(e["machine"], "this machine")]
     else:
-        rows, heard = [], newest_events(projects) if rl10 else {}
+        rows, heard = [], newest_events(projects)
         for m in sorted(org["machines"], key=lambda m: m["name"].lower()):
             seen = _ts_epoch(m.get("seen"))
             if machine_retired(m["name"]):
                 state = "retired"
-            elif rl10 and m["name"].lower() == e["machine"].lower():
+            elif m["name"].lower() == e["machine"].lower():
                 state = "this machine"
-            elif rl10:
+            else:
                 seen = max((t for t in (seen, heard.get(m["name"].lower())) if t is not None), default=None)
                 state = "last event %s ago" % short_age(max(0.0, time.time() - seen)) if seen is not None \
                     else "no event yet"
-            else:
-                state = "online" if m.get("online") is True else \
-                    "last seen %s ago" % short_age(max(0.0, time.time() - seen)) if seen is not None else "never seen"
             rows.append(row(m["name"], state))
     print_table(("MACHINE", "STATE", "LIVE", "PROJECTS"), rows)
     if org is not None:
@@ -13033,8 +13027,8 @@ def build_parser():
 
     # `hub` takes its words as `wake` does (no word is an option to argparse,
     # so its parse never fails): sminos_hub parses them and never prints one.
-    # An enrollment code typed on the command line must not reach argparse's
-    # error, which echoes the word it could not place.
+    # An old enrollment code typed after `hub enroll` must not reach
+    # argparse's error, which echoes the word it could not place.
     hb = sub.add_parser("hub", add_help=False, prefix_chars="\0")
     hb.add_argument("words", nargs="*")
     hb.set_defaults(fn=cmd_hub)

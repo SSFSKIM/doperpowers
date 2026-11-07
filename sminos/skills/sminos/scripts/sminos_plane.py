@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """sminos_plane — the session plane on this machine (DC7 of the desk: DX4 as
-its machine-side producer, DX2's session frames, DX5 as a consumer).
+its machine-side producer, the session frames RL10 carries, DX5 as a
+consumer).
 
-The uplink (sminos_uplink.py) holds the stream and posts; this module says
-what the machine's sessions are doing and serves the hub's subscriptions.
+The uplink (sminos_uplink.py) holds the endpoint's connection and writes to
+it; this module says what the machine's sessions are doing and serves the
+subscriptions the endpoint relays.
 Everything here runs on the uplink's main thread but the readers of the
 bridges' streams, the diff runs, and every read of a transcript's bulk —
 which only read sockets, run git, and read files, and hand what they read
@@ -217,7 +219,7 @@ TOMBSTONE_FILE = "presence.json"  # under daemon/: project id → the time its s
 TOMBSTONE_MARGIN = 60.0   # s: a session that left this long before that time is said again (clock steps, a write in flight)
 # s: how long a leaver is kept for a re-open's heal (say_again), a bound on memory alone: which leavers a
 # heal says again is decided by when the body it heals was queued, not by age. A body out an hour after its
-# oldest line was queued would have ended its lane long before (16 MiB queued, or any POST past 60 s).
+# oldest line was queued would have ended its lane long before (16 MiB queued).
 GONE_KEEP = 3600.0
 DIFF_MAX = 4 << 20        # bytes of diff text; the rest is cut and said so
 GIT_TIMEOUT = 30
@@ -2830,14 +2832,14 @@ class Plane:
 
     def take_read(self, pid):
         """The read the forced presence just drawn for the project said its
-        leavers from, taken by the POST that carries it (`accepted`'s
+        leavers from, taken by the frame that carries it (`accepted`'s
         `read`); None when there was none."""
         return self.tombstoned.pop(pid, None)
 
     def accepted(self, pid, read=None):
-        """The hub answered 200 to the POST that carried a connect's presence
-        for the project: its leavers are said, so the next connect says only
-        those that left since that read — `read`, the one that POST's
+        """The frame that carried a connect's presence for the project was
+        written: its leavers are said, so the next connect says only
+        those that left since that read — `read`, the one that frame's
         presence was drawn from (take_read), else the latest forced one's.
         Kept across restarts; a mark that cannot be written leaves the old
         one, which says more, never less."""
@@ -2870,7 +2872,7 @@ class Plane:
 
         if not (isinstance(sid, str) and sminos.UUID_RE.match(sid)):
             return refuse("session is a session id")
-        if not (agent is None or (isinstance(agent, str) and AGENT_ID.match(agent))):
+        if not (agent is None or (isinstance(agent, str) and AGENT_ID.fullmatch(agent))):
             return refuse("agentId is null or a subagent's id")
         if sid not in self.here.get(project.id, {}):
             sminos.forget_caches()
@@ -2920,7 +2922,7 @@ class Plane:
         return s.page(before, min(limit, 1000))
 
     def output(self, frame_):
-        """DX2 `output`: answered as DX4 `output` on the sub, from the task's
+        """`output`: answered as DX4 `output` on the sub, from the task's
         file under the session's canonical roots — derived from the working
         directories this machine knows for the session (the one it joined the
         project from, and its engine record's while it runs). A frame out of
@@ -2951,7 +2953,7 @@ class Plane:
         return []
 
     def read(self, frame_):
-        """DX2 `read`: the session's bridge asked on a thread of its own,
+        """`read`: the session's bridge asked on a thread of its own,
         answered on the sub as DX4 `read`. A frame out of DX3's form, or on a
         sub this stream does not serve, is passed by, as the hub refuses it."""
         s = self.subs.get(frame_.get("sub"))

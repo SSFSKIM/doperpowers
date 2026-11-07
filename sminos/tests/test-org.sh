@@ -336,8 +336,11 @@ cp -R "$RO" "$RC_"
 python3 -c 'import json, sys
 d = json.load(open(sys.argv[1])); d["remote"] = sys.argv[2]; json.dump(d, open(sys.argv[1], "w"))' "$RC_/.smns" "ssh://archive$T/archive.git"
 run_in "$RC_" "$SMINOS" list
-assert_contains "$OUT" "project orgproj syncs through the desk hub of org org-1; this machine is not enrolled (sminos hub enroll)" \
-  "a reading verb on a machine not enrolled says how the project syncs"
+assert_contains "$OUT" "project orgproj syncs through the desk hub of org org-1; this machine is not enrolled (mawsd endpoint enroll)" \
+  "a reading verb on a machine not enrolled says how the project syncs, and where the enrollment is made"
+run_in "$RC_" "$SMINOS" machines
+assert_contains "$OUT" "this machine is not enrolled at a desk hub (mawsd endpoint enroll): it knows only itself" \
+  "machines on a machine not enrolled: where the enrollment is made"
 run_in "$RC_" "$SMINOS" list
 assert_not_contains "$OUT" "this machine is not enrolled" "once a day"
 run_in "$RC_" "$SMINOS" project show

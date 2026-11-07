@@ -1758,6 +1758,35 @@ class StaleSocket(unittest.TestCase):
         self.assertLess(took, plane.STALE_WAIT, "no redial for a session that does not run")
 
 
+class SubscribeChecks(unittest.TestCase):
+    """What `subscribe` refuses before it opens anything: the agentId is
+    null or a whole subagent id, never one with a newline after it."""
+
+    def setUp(self):
+        self.sid = new_session()
+        self.p = plane.Plane("testhost", lambda: None, transcripts=plane.Transcripts(), disk=plane.Disk())
+        self.project = types.SimpleNamespace(id=PROJECT, name="checked", home=tempfile.mkdtemp(dir=T))
+        self.p.here = {PROJECT: {}}
+
+    def tearDown(self):
+        self.p.close()
+
+    def refusal(self, agent):
+        """The `end` message a subscribe for a session not here gets, `refresh` finding none."""
+        with mock.patch.object(plane.Plane, "refresh", lambda _self, _project: None):
+            out = self.p.subscribe(self.project, {"session": self.sid, "agentId": agent, "sub": "s1"})
+        [end] = out
+        self.assertEqual((end["kind"], end["body"]["reason"]), ("end", "error"))
+        return end["body"]["message"]
+
+    def test_an_agent_id_with_a_trailing_newline_is_refused(self):
+        bad = "agentId is null or a subagent's id"
+        self.assertEqual(self.refusal("a1\n"), bad)
+        self.assertEqual(self.refusal("a1\nx"), bad)
+        for good in ("a1", None):
+            self.assertTrue(self.refusal(good).startswith("no session "), "past the agentId check: %r" % good)
+
+
 class ConfigDirSession(unittest.TestCase):
     """A session whose engine runs under another config dir (CLAUDE_CONFIG_DIR):
     its engine record and its transcript live there, and its own hook, the
@@ -4707,7 +4736,7 @@ class UplinkOnRl10(unittest.TestCase):
     POLICY = {"read_only": False, "ceiling": "settings"}
 
     def desk_rpcs(self):
-        """RL10's (sminos_hublog.desk(rl10=True)): the endpoint offers RPCs the hub does not."""
+        """The RPCs this machine offers the endpoint (sminos_hublog.desk()'s `rpcs`)."""
         import sminos_rpc
         return list(sminos_rpc.RL10_RPC_NAMES)
 
