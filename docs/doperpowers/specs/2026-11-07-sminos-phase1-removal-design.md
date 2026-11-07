@@ -11,7 +11,7 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) The map (read-only, doperpowers `904b0a35`, MAWS `1a11fedf6`).
 - [x] (2026-11-07) This spec.
 - [x] (2026-11-07) The spec's review: adversarial-reviewer on the design and on the execution section, one round each. Every finding was folded in (Decision Log, 2026-11-07, the review).
-- [x] (2026-11-07) M1: devcloud's DX2 enrollment out (devcloud 0.16.0, `1585356b`; review clean, devcloud gates GREEN, run 42338569325).
+- [x] (2026-11-07) M1: devcloud's DX2 enrollment out (devcloud 0.16.0, `1585356b`; review clean, devcloud gates GREEN, run 42338569325). The coordinator's correction (the host tolerates the v1 key) landed as `82c4aea9`, reviewed clean, GREEN, run 42345027485.
 - [x] (2026-11-07) M2: the opt-in local-hub modes out (tests only; `0e2a69d6`; review clean, sminos gates GREEN, run 42339386393).
 - [x] (2026-11-07) M3a: the unit flips (tests only; `c9b0240d`, `673a7851`; review clean, sminos gates GREEN, run 42343036908).
 - [ ] M3b: the endpoint stand-in ports, the session plane and the RPCs (tests only).
