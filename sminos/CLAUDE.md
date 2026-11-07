@@ -12,8 +12,8 @@ The project family: a committed `.smns` names a project, every session working u
 
 A second skill, `skills/manager/`, is the owner's read-only session manager (design `docs/doperpowers/specs/2026-10-31-session-manager-design.md`); its command, which imports the CLI's modules and adds no sminos verb, is described in `skills/manager/scripts/CLAUDE.md`.
 
-The skill's body is what a member acts on; machine setup (the project and its mirror, enrollment, the daemon, the policy) is its `references/setup.md`.
+The skill's body is what a member acts on; machine setup (the project and its mirror, the machine's place at the hub, the daemon, the policy) is its `references/setup.md`.
 
-Design in `docs/doperpowers/specs/2026-10-13-smns-project-log-design.md`; the hub side in `docs/doperpowers/plans/2026-10-15-desk-dc4-uplink.md`, a child of the desk's composite design in MAWS.
+Design in `docs/doperpowers/specs/2026-10-13-smns-project-log-design.md`; the hub side in `docs/doperpowers/plans/2026-10-15-desk-dc4-uplink.md`, a child of the desk's composite design in MAWS, whose DX2 transport RL10 to the machine's endpoint superseded (board #153, `docs/doperpowers/specs/2026-11-07-sminos-phase1-removal-design.md`).
 
 Tests: `tests/run-sminos-tests.sh` (the `sminos` gate), `tests/mods/run.sh` (the `sminos-mods` gate).

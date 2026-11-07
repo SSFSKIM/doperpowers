@@ -102,7 +102,7 @@ Then, in `~/.claude/settings.json`, turn on function hooks (sminos's bridge and 
 }
 ```
 
-`outputStyle` is optional: leave it out to keep reading the transcript. Spanning machines takes one more step, a git mirror or a desk hub: see [sminos's setup guide](sminos/skills/sminos/references/setup.md). Updating, and how this coexists with other marketplaces: [`docs/INSTALL-doperpowers.md`](docs/INSTALL-doperpowers.md).
+`outputStyle` is optional: leave it out to keep reading the transcript. Spanning machines takes one more step, a git mirror or a desk hub reached through the machine's MAWS endpoint: see [sminos's setup guide](sminos/skills/sminos/references/setup.md). Updating, and how this coexists with other marketplaces: [`docs/INSTALL-doperpowers.md`](docs/INSTALL-doperpowers.md).
 
 ## What to expect
 

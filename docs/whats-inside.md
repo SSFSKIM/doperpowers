@@ -85,7 +85,7 @@ The project family, standalone: nothing of doperpowers' is needed for it to run.
 | ask tool | `mcp__sminos__AskUserQuestion`: the built-in question tool plus `async`, so a session asks and keeps working |
 | address | Ends every commit and PR a session writes with its `Sminos-Session:` line, which `sminos who` reads back |
 | names | Renames a session with a generated name after what it is in charge of |
-| daemon | Syncs a project's log across machines, through a git mirror or the desk hub |
+| daemon | Syncs a project's log across machines, through a git mirror or the desk hub (over RL10, through the machine's MAWS endpoint) |
 
 ## to-human
 

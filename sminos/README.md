@@ -2,7 +2,8 @@
 
 The project family as a Claude Code plugin: every session working in a
 project is a member that sees the others, messages them and its human, hands
-work between them, and spans machines through a git mirror or a desk hub.
+work between them, and spans machines through a git mirror or a desk hub
+(reached through the machine's MAWS endpoint).
 The plugin carries the `sminos` CLI and skill, the shell hooks that join a
 session to its project and record what it sent its human, and the function
 hooks (mods) that make a session reachable from outside it: the bridge, the
@@ -36,7 +37,7 @@ The mods load only where `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set.
 - [`skills/sminos/SKILL.md`](skills/sminos/SKILL.md) — what a member does:
   find, message and reach the other sessions, spawn and retire them.
 - [`skills/sminos/references/setup.md`](skills/sminos/references/setup.md) —
-  a machine's one-time work: a project and its mirror, enrollment at the desk
+  a machine's one-time work: a project and its mirror, its place at the desk
   hub, the daemon, the policy.
 - [`hooks/mods/README.md`](hooks/mods/README.md) — the bridge, the ask and the
   address, and the contract other plugins read

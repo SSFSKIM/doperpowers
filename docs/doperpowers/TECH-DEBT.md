@@ -268,8 +268,9 @@ the spec's Decision Log entry "the branch review round"
     (Arkho #82): the suite resolves `REPO_ROOT` with `pwd -P`.
   - Speed claims that only 8× load breaks (`stress-ng --cpu 32` on 4
     vCPU; all pass 20/20 at 2×) are left as their owners wrote them:
-    - `test-uplink.sh`'s "an event from the hub reaches m within a second
-      while the fetch hangs", 17 of 20;
+    - `test-uplink.sh`'s "a web human reaches m within a second while
+      the fetch hangs" (RL10; its DX2 original, since removed, passed 17
+      of 20);
     - `test_session_plane.py`'s `test_a_presence_within_a_second`, 8 of 20.
     Under ci-kit §6 these belong in a pinned-core `perf` gate, not a
     correctness gate. Trigger: a failure in the CI gates, or that gate.
@@ -289,21 +290,10 @@ the spec's Decision Log entry "the branch review round"
   nothing reaches it today. Fix: treat any exception there as the
   `OSError` case (`failed`, nothing ran). Trigger: a field of another
   type added to the claim.
-- **T3 — an uplink POST past its 60 s deadline can leave its worker
-  alive.** `sminos_uplink.py` `post()`/`exchange()` (desk DC4 M3): on the
-  whole-exchange deadline the main thread shuts `HTTPConnection.sock`,
-  but `http.client` drops that attribute after `getresponse()` for an
-  HTTP/1.0 or `Connection: close` answer, so a body trickled faster than
-  the socket timeout keeps the abandoned worker and its socket until the
-  hub finishes; `NotDelivered` then reconnects in the same process, so
-  repeats could accumulate them. Stop and orphan exit are unaffected.
-  Fix: keep the response's socket for the deadline's cleanup. Trigger: a
-  hub or proxy seen trickling answers, or an uplink's thread count
-  growing.
 - **T3 — a forged position under one of this machine's session ids leaves
   a lock file.** `sminos_hublog.py` `spend_own` (desk panel fixes): a
   refused event at `<machine>/<uuid>` is spent under that writer file's
-  lock, so a lying hub naming session ids this machine never ran leaves
+  lock, so a lying endpoint naming session ids this machine never ran leaves
   an empty `<machine>.<uuid>.jsonl.lock` in the log per id. Harmless (git
   excludes `*.lock`, no reader opens them). Fix: spend without the lock
   when no writer file exists and no local session holds the id. Trigger:
@@ -567,12 +557,6 @@ Residue from the whole-branch review of `docs/doperpowers/specs/2026-10-18-smns-
   - At 2026-10-19 09:09Z on the MacBook, 8 of `mini`'s 92 members read `@macbook`, all `gone`.
   - This is legacy data: cleaning the duplicated seat records ends it.
   - T3. Trigger: a machine project's machine count on the desk misleads someone, or the next cleanup of seat records.
-- ~~**`test-sync.sh`'s "alpha reconnects once its stream is silent" can overrun its 6 s bound.**~~ **FIXED 2026-10-19**: a muted stream now writes no frame (`hub_standin.py`'s stream loop); the trigger fired as four red runs in thirty minutes on CI, one at 7 s.
-  - The stand-in's `mute` stops a stream's heartbeat but still writes the frames queued for it.
-  - Alpha's own lease lapsing flips its online state, so the stand-in sends an `org` frame down every open stream, the muted one included.
-  - That frame restarts the uplink reader's silence timer, which is a socket timeout per read, so the reconnect can come late.
-  - A real half-open stream carries nothing (the stand-in's own comment on `muted` says "nothing written"), so the stand-in is what diverges: a muted stream should hold every frame.
-  - T3. Trigger: the next red run of this check, or the next edit to `mute`.
 
 ## sminos daemon: restart in place (2026-10-19, 7.186.1)
 
@@ -601,6 +585,12 @@ Residue of the fix for `daemon run` and its uplink burning a core each on a mach
 - **Passes over many sessions read a transcript index up to TRANSCRIPT_FRESH (5 s) old.** In a long-lived process, a transcript created within that window is invisible to a view's state words (`gone` for `stopped`), to `refresh_joined`, and to the seat-side hand-off scan, until the next refresh. Every write or settlement that rests on a transcript's absence or content looks again (`transcript_now`, the `fresh` rechecks, `continued_in` before an `ended`, `push_member`'s `gone`, the sweeps), a listing begun within TRANSCRIPT_SHARED (0.25 s) counting as now so that one pass's many writes share it. What remains is a view up to one refresh behind, and a write that misses a transcript created in the quarter second before it. T3. Trigger: a decision found acting on a stale miss.
 - ~~**The uplink still forgets every cache each scan (SCAN_EVERY, 2 s).**~~ **FIXED 2026-10-28 (sminos 1.27.10):** its trigger came (the uplink at 5–16 % of a core idle); a scan now reads within the generation the session plane renews, and forgets only at a nudge or a welcome. See "sminos idle CPU" below.
 - **The per-process file caches keep entries for removed files.** `_SEAT_FILES`, `_LOG_FILES`, `_FILE_BYTES` (sminos 1.27.11) and `HubLog.files` (its own-writer pass) drop an entry only when its file is read again and fails. Memory is bounded by the files a process has ever seen; a long-lived daemon on a machine that removes many seats or logs grows by their parsed size. T3. Trigger: daemon memory growth observed.
+
+## sminos requests: a complete pending set on the RL10 lane (2026-10-28, sminos 1.27.2; board #149)
+
+Residue of the bound on a raised request's input (`RAISED_INPUT_MAX`, `sminos_requests.shown_input`; PR #424). Board #153 moved it from DX2's lane to the RL10 lane, where it holds unchanged.
+
+- **A project's complete `pending` set can still pass the RL10 lane's 16 MiB.** The bound keeps one raise at 256 KiB, but the set carries every request pending in the project as one frame (as parts), so some sixty requests at the bound at once pass `SEND_QUEUE_MAX`, and the lane ends with `NotDelivered` and reconnects, sending the set again. T3. Trigger: a daemon.log line "the RL10 lane holds more than 16 MiB unsent" with many requests pending in one project.
 
 ## sminos requests: a request raised again (2026-10-19, 7.188.2)
 
@@ -642,12 +632,6 @@ Residue of appeal leaving no pass for a grant whose call carries a guard's handl
 Residue of the reload line's hook reading the conversation for a mark when a reload that updated to-human has started its module over (since 0.3.2 the module's start-up read, `started` in to-human/hooks/mods/to-human.tsx), found by its review.
 
 - **A session that compacted and has sent no mark since reads as one that never sent one.** `$.session.messages()` starts at the last compaction, so when to-human is updated while a session sits idle after a `/compact` the person typed (the autoreload runs only between main turns), the reload line reaches the report and the view stays unfolded until the model's next message. The compact mod's own compaction is followed by a resume turn whose reply usually carries a mark, and a reload of any other plugin keeps the module and its state. To close it, keep the view's state (`hasSeenMark`, and `isFullTranscript`, which a fresh module also resets) in `$.state` under a to-human contract, as the sminos ask keeps its asks. The catch: `$.state.set` is refused while a `ui.render` hook draws, and the mark is first seen in one, so the write has to come from another event (the response row's `session.append`, the band's press). T3. Trigger: the reload line, or an unfolded view, seen after a to-human update in a compacted session.
-
-## the desk hub and many projects in one POST (2026-10-20, sminos 1.1.3)
-
-Residue of the uplink's archive confirmation, which dropped every machine's stream 900 s after each connect while it said `hello` for every project in one POST (sminos_uplink.py `Link.tick`; doperpowers#296). The uplink now sends each project's hello in its own POST.
-
-- **The deployed hub still fails a POST that carries reply-owing frames for many projects.** `Machine.frames` (MAWS apps/desk-hub/src/objects/machine.ts) answers `503 delivery-failed` once it has applied about six such projects' runs, and it discards the exception, so the mechanism is unconfirmed. The likeliest one is Cloudflare's call-chain depth limit, if each project's call back into the Machine deepens the next run's chain. The uplink's one remaining sender of such a POST is `relay_rpcs`, which batches `rpc-result` frames (each owes an `rpc-ack`) across projects. RPCs are rare and seldom span seven projects at once. The hub-side step is to log what `Machine.frames` and `Project.fromMachine` catch, then fix the mechanism the log names. T2. Trigger: a `503 delivery-failed` with 5 or more frames applied in a daemon.log from sminos 1.1.3 on, or the hub's next change to `Machine.frames`.
 
 ## the fullscreen transcript's hold, released at the window's top (2026-10-20, to-human 0.3.2)
 

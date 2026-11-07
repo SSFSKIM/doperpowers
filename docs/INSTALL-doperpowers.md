@@ -59,7 +59,7 @@ Then, in `~/.claude/settings.json`:
   as usual. It can also be set per launch.
 
 sminos works within one machine as soon as it is installed. To span machines,
-a project needs a git mirror or the machine an enrollment at the desk hub:
+a project needs a git mirror, or the machine enrolled at the desk hub through its MAWS endpoint:
 [sminos's setup guide](../sminos/skills/sminos/references/setup.md).
 
 ## Updating
