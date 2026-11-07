@@ -521,6 +521,167 @@ refollowed && pass "active again, alpha follows it again" || fail "active again,
 run_in "$BARE" "$SMINOS" projects
 assert_equals "$(proj_row followed-x)" "followed-x hub 0 0 -" "and projects lists it"
 
+# ---- RL10: the org's directory on the uplink side, one machine
+# Re-proves on RL10 the one-machine cases of "alpha's uplink" and "a project
+# retired, then active again" above. epsilon is cut over to its endpoint
+# stand-in by its identity.json alone (no hub enrollment, no hub.json,
+# nothing of hub_standin); the directory is the stand-in's `org`, sent after
+# each welcome, or an `org` frame sent down the live connection; what the
+# endpoint brings of a followed project is an RL10 arrival; what epsilon says
+# and uploads is read from the frames the stand-in received. The cases that
+# need a second machine (beta, the tables built from two) are not here.
+echo "RL10, epsilon's uplink:"
+as e epsilon
+export MAWS_USER_DATA="$T/e/maws"
+EPE="$MAWS_USER_DATA/mawsd/endpoint"
+EID='{"org": "org-1", "hub": "http://127.0.0.1:9", "name": "epsilon", "former": [], "ref": "ref-epsilon", "enrolled": "2026-11-05T00:00:00.000Z"}'
+# Cut over as a welcome leaves a machine: daemon/identity.json, the stand-in's
+# identity (the same enrolment, so nothing waits for a head, #147).
+mkdir -p "$SMINOS_HOME/daemon"
+chmod 700 "$SMINOS_HOME" "$SMINOS_HOME/daemon"
+python3 - "$SMINOS_HOME/daemon/identity.json" "$EID" <<'PY'
+import json, os, sys
+with open(sys.argv[1], "w") as f:
+    json.dump({**json.loads(sys.argv[2]), "former": {}, "cutover": "2026-11-05T00:00:01.000Z", "build": "b"}, f)
+os.chmod(sys.argv[1], 0o600)
+PY
+EMP="$(mp_of epsilon)"
+EBARE="$T/e/bare"
+mkdir -p "$EBARE"
+# orgproj-e, held by a session there; chkproj-e, by its checkout alone.
+REO="$T/e/orgproj"
+gitq init -q "$REO"
+write_smns "$REO" orgproj-e '{"org": "org-1"}'
+EOPID="$(smns_id "$REO")"
+EMA=5e000002-0000-4000-8000-0000000000e2
+live_pid
+session_record ma "$EMA" "$LIVE_PID" "$REO" idle
+run_in "$REO" "$SMINOS" list
+REK="$T/e/chkproj"
+gitq init -q "$REK"
+write_smns "$REK" chkproj-e '{"org": "org-1"}'
+EKPID="$(smns_id "$REK")"
+run_in "$REK" "$SMINOS" say "chkproj-e exists"
+# A stray in the bare directory, its <message> exported to the machine project.
+ESTRAY=5e000001-0000-4000-8000-0000000000e1
+live_pid
+session_record stray "$ESTRAY" "$LIVE_PID" "$EBARE" idle
+ETX="$HOME/.claude/projects/bare/$ESTRAY.jsonl"
+mkdir -p "$(dirname "$ETX")"
+printf '%s\n' '{"type":"user","uuid":"se000001","isSidechain":false,"origin":{"kind":"human"},"message":{"role":"user","content":"go"}}' > "$ETX"
+hook_payload SessionStart "$ESTRAY" "$EBARE" "$ETX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
+printf '%s\n' '{"type":"assistant","uuid":"se000002","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"<message>done in the bare directory of epsilon</message>"}]}}' >> "$ETX"
+hook_payload Stop "$ESTRAY" "$EBARE" "$ETX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
+# The org's directory as the endpoint sends it: followed-x retired or not.
+org_dir() { # retired(true|false) → an `org` frame's body
+  python3 - "$1" "$EOPID" "$EKPID" "$EMP" "$FOLLOWX" <<'PY'
+import json, sys
+retired, held, chk, own, followx = sys.argv[1] == "true", *sys.argv[2:]
+print(json.dumps({"projects": [{"id": held, "name": "orgproj-e", "kind": "hub", "retired": False},
+                               {"id": chk, "name": "chkproj-e", "kind": "hub", "retired": False},
+                               {"id": own, "name": "epsilon", "kind": "machine", "retired": False},
+                               {"id": followx, "name": "followed-x", "kind": "hub", "retired": retired}],
+                  "machines": [{"name": "epsilon", "online": True}]}))
+PY
+}
+org_sent() { # retired(true|false) → `ctl send`'s argument: the directory as an `org` frame down the live connection
+  python3 -c 'import json, sys; print(json.dumps({"frames": [{"t": "org", **json.loads(sys.argv[1])}]}))' "$(org_dir "$1")"
+}
+python3 "$SCRIPT_DIR/endpoint_standin.py" serve "$EPE" "{\"identity\": $EID, \"org\": $(org_dir false), \"ask_legacy\": false}" &
+PIDS+=("$!")
+until_true test -S "$EPE/ctl.sock"
+ep_e() { python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPE" "$@" >/dev/null; }
+epq_e() { python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPE" state \
+  | python3 -c 'import json, sys; d = json.load(sys.stdin); print(json.dumps(eval(sys.argv[1], {"d": d})))' "$1"; }
+# The follow of epsilon's last hello of a project on the live connection:
+# true | false | none (not opened on it).
+ep_follow() {
+  epq_e "next((str(f['frame'].get('follow') is True).lower() for f in reversed(d['received']) if f['conn'] == d['current']
+               and f['frame'].get('t') == 'hello' and f['frame'].get('project') == '$1'), 'none')" | tr -d '"'
+}
+ep_follows() { [ "$(ep_follow "$1")" = "$2" ]; }
+ep_says() { # project text — whether an `events` frame epsilon sent up for the project carries the text
+  [ "$(epq_e "any('$2' in repr(f['frame']['events']) for f in d['received'] if f['frame'].get('t') == 'events'
+                  and f['frame'].get('project') == '$1')" 2>/dev/null)" = true ]
+}
+start_daemon
+E_DAEMON=$DAEMON_PID
+until_true ep_follows "$EOPID" false || true
+assert_equals "$(ep_follow "$EOPID")" false "epsilon holds orgproj-e, its checkout here: hello without follow"
+until_true ep_follows "$EMP" false || true
+assert_equals "$(ep_follow "$EMP")" false "and its own machine project"
+# On RL10 a session's <message> is kept in its project's host store, not
+# its log, and goes up the session lane as a sub-less `host` message.
+ep_host_says() { # project text — whether a `host` session message epsilon sent for the project carries the text
+  [ "$(epq_e "any('$2' in repr(f['frame']['message'].get('body')) for f in d['received'] if f['frame'].get('t') == 'session'
+                  and f['frame']['message'].get('kind') == 'host' and f['frame']['message'].get('project') == '$1')" 2>/dev/null)" = true ]
+}
+until_true ep_host_says "$EMP" "done in the bare directory of epsilon" || true
+ep_host_says "$EMP" "done in the bare directory of epsilon" \
+  && pass "the stray's <message> reaches the endpoint, a host message of epsilon's machine project" \
+  || fail "the stray's <message> reaches the endpoint, a host message of epsilon's machine project"
+until_true ep_follows "$EKPID" false || true
+assert_equals "$(ep_follow "$EKPID")" false "a project registered here by its checkout alone is held"
+until_true ep_follows "$FOLLOWX" true || true
+assert_equals "$(ep_follow "$FOLLOWX")" true "a project of the org's directory epsilon does not hold is opened follow: true"
+assert_equals "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["root"], d["name"], d["hub"]["org"])' \
+  "$SMINOS_HOME/projects/$FOLLOWX/project.json" 2>&1)" " followed-x org-1" "registered here with no root"
+assert_contains "$(cat "$SMINOS_HOME/daemon/org.json")" "\"id\": \"$FOLLOWX\"" "the org's directory is kept at daemon/org.json"
+EGM=5c000013-0000-4000-8000-0000000000c3
+ep_e send "$(python3 - "$FOLLOWX" "$EGM" <<'PY'
+import json, sys, time
+project, session = sys.argv[1:3]
+ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+joined = {"ts": ts, "writer": "gamma/" + session, "seq": 1, "kind": "joined", "session": session, "alias": "gm",
+          "name_source": "user", "machine": "gamma", "cwd": "/home/g/x", "worktree": "", "role": "", "seat": "",
+          "by": "", "session_kind": "interactive", "repo": "x", "branch": "main"}
+signer = {"kind": "machine", "ref": "ref-gamma", "name": "gamma", "keyId": "k-gamma"}
+print(json.dumps({"frames": [{"t": "events", "project": project, "events": [{"event": joined, "signer": signer}]}]}))
+PY
+)"
+egm_here() { [ -s "$SMINOS_HOME/projects/$FOLLOWX/log/gamma.$EGM.jsonl" ]; }
+until_true egm_here || true
+egm_here && pass "what the endpoint brings of a followed project reaches epsilon" \
+  || fail "what the endpoint brings of a followed project reaches epsilon"
+run_in "$EBARE" "$SMINOS" say "@followed-x/gm hello from epsilon"
+assert_rc 0 "$RC" "a message tagged into the followed project is accepted"
+until_true ep_says "$FOLLOWX" "hello from epsilon" || true
+ep_says "$FOLLOWX" "hello from epsilon" && pass "and goes up in an events frame of that project" \
+  || fail "and goes up in an events frame of that project"
+assert_equals "$(epq_e "sorted({str(f['frame'].get('follow') is True) for f in d['received'] if f['frame'].get('t') == 'hello'
+                                and f['frame'].get('project') == '$FOLLOWX'})")" '["True"]' \
+  "epsilon still follows it: writing a message holds nothing"
+
+echo "RL10, a project retired, then active again:"
+CONNS_E="$(epq_e 'd["conns"]')"
+# Retired in the stand-in's directory too, so the reconnect's welcome carries it.
+ep_e set "{\"org\": $(org_dir true)}"
+ep_e send "$(org_sent true)"
+e_reopened_without() { [ "$(epq_e 'd["conns"]')" -gt "$CONNS_E" ] && [ "$(epq_e 'd["connected"]')" = true ] \
+  && ep_follows "$EMP" false && ep_follows "$FOLLOWX" none; }
+until_true e_reopened_without || true
+e_reopened_without && pass "a project the directory retires leaves the connection: epsilon reconnects without it" \
+  || fail "a project the directory retires leaves the connection: epsilon reconnects without it"
+e_row() { printf '%s\n' "$OUT" | awk -v n="$1" '$1 == n { $1 = $1; print }'; }
+run_in "$EBARE" "$SMINOS" projects
+assert_not_contains "$OUT" "followed-x" "projects hides it"
+run_in "$EBARE" "$SMINOS" projects --all
+assert_contains "$OUT" "followed-x" "projects --all shows it"
+assert_equals "$(e_row followed-x)" "followed-x hub (retired) 0 0 -" "marked retired"
+CONN_RETIRED="$(epq_e 'd["current"]')"
+ep_e set "{\"org\": $(org_dir false)}"
+ep_e send "$(org_sent false)"
+e_refollowed() { [ "$(epq_e 'd["current"]')" = "$CONN_RETIRED" ] && ep_follows "$FOLLOWX" true; }
+until_true e_refollowed || true
+e_refollowed && pass "active again, epsilon follows it again, on the same connection" \
+  || fail "active again, epsilon follows it again, on the same connection"
+run_in "$EBARE" "$SMINOS" projects
+assert_equals "$(e_row followed-x)" "followed-x hub 0 0 -" "and projects lists it"
+kill "$E_DAEMON"
+set +e; wait "$E_DAEMON"; set -e
+assert_not_contains "$(cat "$SMINOS_HOME/daemon.log")" "Traceback" "nothing in epsilon's daemon.log is a traceback"
+unset MAWS_USER_DATA
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test-org: all $PASSES assertions passed"
