@@ -120,7 +120,11 @@ not gate plugin changes.
   `--plugin sminos` and `--plugin web` bump those, which never move with doperpowers). Bump in the same commit as the change: the plugin
   marketplace updates by version number alone, so a feature merged under a
   number the cache already holds reports "already at the latest version" and
-  never installs (kairos, 2026-09-06).
+  never installs (kairos, 2026-09-06; 15 of main's 400 changes, 2026-09-28 to 11-05).
+  `scripts/bump-version.sh --since origin/main` checks a change before it is
+  pushed; the `version-bump` gate checks a PR, and a workflow of that name
+  each push to main. A path that never reaches a session belongs in its
+  plugin's `unshipped` list in `.version-bump.json`.
 - **Plugin hook matchers see qualified names.** The harness expands a plugin
   skill's slash command as `doperpowers:<skill>` (observed in a
   `UserPromptExpansion` payload: `command_name: "doperpowers:kairos"`), and a

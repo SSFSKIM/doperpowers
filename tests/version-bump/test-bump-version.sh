@@ -46,15 +46,18 @@ make_fixture() {
         { "path": ".claude-plugin/plugin.json", "field": "version" },
         { "path": ".claude-plugin/marketplace.json", "field": "plugins[name=fixture].version" }
       ],
+      "unshipped": ["CLAUDE.md", "*/CLAUDE.md", "docs/*", ".claude-plugin/marketplace.json"],
       "audit": { "exclude": ["extra"] }
     },
     {
       "name": "extra",
+      "root": "extra",
       "files": [
         { "path": "extra/.claude-plugin/plugin.json", "field": "version" },
         { "path": ".claude-plugin/marketplace.json", "field": "plugins[name=extra].version" }
       ],
-      "audit": { "root": "extra", "exclude": [] }
+      "unshipped": ["tests/*"],
+      "audit": { "exclude": [] }
     }
   ]
 }
@@ -192,5 +195,113 @@ fi
 
 cmp -s "$TEST_ROOT/package.before-missing" "$missing_repo/package.json" \
   || fail "package.json changed despite a missing declared manifest"
+
+# --since BASE [HEAD]: a plugin whose shipped files changed since BASE must
+# carry a version above BASE's at HEAD (the working tree when HEAD is absent).
+# A path belongs to the innermost plugin root above it; a path matching that
+# plugin's unshipped globs needs no bump.
+commit_all() {
+  git -C "$1" add -A
+  git -C "$1" -c user.name=t -c user.email=t@example.com commit -qm "$2"
+}
+since() {
+  local repo="$1"
+  shift
+  /bin/bash "$repo/scripts/bump-version.sh" --since "$@" >"$TEST_ROOT/since.out" 2>&1
+}
+since_fails_naming() {
+  local repo="$1" plugin="$2" why="$3"
+  shift 3
+  if since "$repo" "$@"; then
+    fail "--since passed $why"
+  fi
+  grep -q "^  $plugin .*NOT BUMPED" "$TEST_ROOT/since.out" \
+    || fail "--since did not name $plugin as not bumped ($why): $(cat "$TEST_ROOT/since.out")"
+}
+
+since_repo="$TEST_ROOT/since"
+make_fixture "$since_repo" '{ "name": "fixture-plugin", "version": "1.2.3" }'
+mkdir -p "$since_repo/skills" "$since_repo/extra/hooks" "$since_repo/extra/tests"
+echo one >"$since_repo/skills/SKILL.md"
+echo one >"$since_repo/extra/hooks/hook.sh"
+git -C "$since_repo" init -q
+commit_all "$since_repo" base
+base=$(git -C "$since_repo" rev-parse HEAD)
+
+# Only unshipped paths: no plugin needs a bump. `*` crosses directories, and
+# the root plugin's `docs/*` reaches nothing of the nested plugin's.
+mkdir -p "$since_repo/docs/deep/er" "$since_repo/skills/x"
+echo doc >"$since_repo/docs/deep/er/note.md"
+echo doc >"$since_repo/skills/x/CLAUDE.md"
+echo t >"$since_repo/extra/tests/t.sh"
+commit_all "$since_repo" docs
+since "$since_repo" "$base" HEAD || fail "--since failed on unshipped changes only: $(cat "$TEST_ROOT/since.out")"
+grep -q "(none)" "$TEST_ROOT/since.out" || fail "--since named a plugin for unshipped changes: $(cat "$TEST_ROOT/since.out")"
+
+# A shipped change without a bump fails, naming that plugin and not the other.
+echo two >"$since_repo/skills/SKILL.md"
+commit_all "$since_repo" skill
+since_fails_naming "$since_repo" fixture "a root plugin's skill change without a bump" "$base" HEAD
+! grep -q "^  extra " "$TEST_ROOT/since.out" || fail "--since named extra for the root plugin's change"
+# Given HEAD, the change is HEAD's, whatever the working tree holds.
+echo one >"$since_repo/skills/SKILL.md"
+since_fails_naming "$since_repo" fixture "HEAD's change, the working tree having undone it" "$base" HEAD
+git -C "$since_repo" checkout -q -- .
+
+# The nested plugin owns its tree: its change is its own, not the root's.
+nested_base=$(git -C "$since_repo" rev-parse HEAD)
+echo two >"$since_repo/extra/hooks/hook.sh"
+commit_all "$since_repo" hook
+since_fails_naming "$since_repo" extra "a nested plugin's change without a bump" "$nested_base" HEAD
+! grep -q "^  fixture " "$TEST_ROOT/since.out" || fail "--since gave the nested plugin's change to the root plugin"
+
+# The working tree is the default HEAD: an uncommitted bump of both passes.
+/bin/bash "$since_repo/scripts/bump-version.sh" 1.3.0 >/dev/null
+/bin/bash "$since_repo/scripts/bump-version.sh" --plugin extra 0.2.0 >/dev/null
+since "$since_repo" "$base" || fail "--since failed after both plugins were bumped: $(cat "$TEST_ROOT/since.out")"
+grep -q "^  fixture .*1.2.3 -> 1.3.0" "$TEST_ROOT/since.out" || fail "--since did not report fixture's bump: $(cat "$TEST_ROOT/since.out")"
+grep -q "^  extra .*0.1.0 -> 0.2.0" "$TEST_ROOT/since.out" || fail "--since did not report extra's bump: $(cat "$TEST_ROOT/since.out")"
+since "$since_repo" "$base" HEAD && fail "--since read the working tree when given HEAD"
+
+# A partial bump (one declared file left behind) fails, as does a lower version.
+commit_all "$since_repo" bumped
+jq '.version = "1.2.3"' "$since_repo/.claude-plugin/plugin.json" >"$TEST_ROOT/p.json"
+mv "$TEST_ROOT/p.json" "$since_repo/.claude-plugin/plugin.json"
+since_fails_naming "$since_repo" fixture "a bump that left plugin.json at the base's version" "$base"
+jq '.version = "1.2.2"' "$since_repo/package.json" >"$TEST_ROOT/p.json"
+mv "$TEST_ROOT/p.json" "$since_repo/package.json"
+since_fails_naming "$since_repo" fixture "a version below the base's" "$base"
+git -C "$since_repo" checkout -q -- .
+
+# In the working tree, an untracked file is part of the change.
+echo new >"$since_repo/extra/hooks/new.sh"
+since_fails_naming "$since_repo" extra "an untracked shipped file in the working tree" "$(git -C "$since_repo" rev-parse HEAD)"
+rm "$since_repo/extra/hooks/new.sh"
+
+# --plugin limits the check to that plugin.
+echo three >"$since_repo/skills/SKILL.md"
+since "$since_repo" "$(git -C "$since_repo" rev-parse HEAD)" --plugin extra \
+  || fail "--since --plugin extra failed on the root plugin's change: $(cat "$TEST_ROOT/since.out")"
+git -C "$since_repo" checkout -q -- .
+
+# A plugin absent at the base is new: nothing to compare its version with.
+new_repo="$TEST_ROOT/since-new"
+make_fixture "$new_repo" '{ "name": "fixture-plugin", "version": "1.2.3" }'
+mv "$new_repo/extra" "$TEST_ROOT/extra-later"
+jq '.plugins |= map(select(.name != "extra"))' "$new_repo/.claude-plugin/marketplace.json" >"$TEST_ROOT/m.json"
+cp "$TEST_ROOT/m.json" "$new_repo/.claude-plugin/marketplace.json"
+git -C "$new_repo" init -q
+commit_all "$new_repo" base
+new_base=$(git -C "$new_repo" rev-parse HEAD)
+git -C "$new_repo" checkout -q HEAD -- .
+mv "$TEST_ROOT/extra-later" "$new_repo/extra"
+jq '.plugins += [{ "name": "extra", "version": "0.1.0", "source": "./extra" }]' "$TEST_ROOT/m.json" \
+  >"$new_repo/.claude-plugin/marketplace.json"
+commit_all "$new_repo" add-extra
+since "$new_repo" "$new_base" HEAD || fail "--since failed on a plugin new since the base: $(cat "$TEST_ROOT/since.out")"
+grep -q "^  extra .*new since" "$TEST_ROOT/since.out" || fail "--since did not call extra new: $(cat "$TEST_ROOT/since.out")"
+
+# A base that is not a commit is an error, not a pass.
+since "$since_repo" no-such-rev && fail "--since accepted a base that is not a commit"
 
 echo "Version-bump tests passed"
