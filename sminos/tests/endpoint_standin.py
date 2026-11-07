@@ -16,13 +16,15 @@ As a subprocess (the shell suites):
 
     python3 endpoint_standin.py serve <directory> [<config JSON>]
     python3 endpoint_standin.py ctl <directory> <op> [<JSON>]
+    python3 endpoint_standin.py hand <source directory> <dest directory>
 
 `serve` also listens on <directory>/ctl.sock, and writes it last, so its
 presence says the stand-in is up. `ctl`'s ops: `state` (everything below,
 as JSON), `send` {frames}, `set` {field: value} (the fields below), `drop`,
 `restart`, `rl10` {field: value, mode?} (rl10.json rewritten with those
 fields; `mode` its permission bits), `refuse` {project, writer, seq,
-reason?}, `unlink-rl10`, `stop`.
+reason?}, `accepted` {project, after?} and `opened` (below), `unlink-rl10`,
+`stop`.
 
 What it does on each connection, one at a time (a new one replaces the last,
 as sminos's reconnect does):
@@ -92,6 +94,18 @@ it), the body kept aside, and `refused {reason: not-reachable, writer, seq}`
 sent with no message; the writer goes on. A resend there is refused
 `not-reachable` again with the same body, `conflict` with another. None (the
 default) withholds nothing.
+
+Two machines, each its sminos and its stand-in (#153 M3d's compositions):
+`accepted(project, after)` is what a stand-in took of a project, past
+`after` ({writer: seq}) and up to what is admitted, each event in its
+`echo` form, as the relay carries it to another machine's endpoint;
+`opened()` the live connection's number and the projects its hellos opened.
+`hand(source, dest, cursor)` (the `hand` command for two stand-ins `serve`
+runs) is one pass of that relay: source's accepted events into dest's live
+connection as arrivals, for each project it opened, past what its last hello
+holds and what was handed since. What carries them between endpoints in
+production is MAWS's relay; the hand-off carries the frames themselves,
+never one written by hand.
 
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
@@ -608,6 +622,39 @@ class Endpoint:
     def tombstone(self, op):
         self.send({"t": "tombstone", "opId": op})
 
+    # ---------------------------------------------------- between two machines (hand)
+
+    def accepted(self, project, after=None):
+        """What this endpoint accepted of `project` as it would relay it to
+        another machine's endpoint: each event held and admitted past
+        `after` ({writer: seq}), in its `echo` form, writer by writer in seq
+        order; a writer stops at a position held back from admission."""
+        after = after or {}
+        with self.cv:
+            held = self.logs.get(project, {})
+            back = self.unadmitted.get(project, {})
+            positions = []
+            for w in sorted(held):
+                for s in sorted(held[w]):
+                    if s in back.get(w, ()):
+                        break
+                    if s > after.get(w, 0):
+                        positions.append((w, s))
+        return [self.echo(project, w, s) for w, s in positions]
+
+    def opened(self):
+        """The live connection's number and the projects its hellos opened:
+        {conn, projects: {project: {name, have, follow, at}}}, each the last
+        hello of it (`at` its place among the frames received)."""
+        with self.cv:
+            conn = self.current.number if self.current is not None else None
+            projects = {}
+            for at, (n, f) in enumerate(self.received):
+                if n == conn and f.get("t") == "hello" and isinstance(f.get("project"), str):
+                    projects[f["project"]] = {"name": f.get("name"), "have": dict(f.get("have") or {}),
+                                              "follow": f.get("follow") is True, "at": at}
+            return {"conn": conn, "projects": projects}
+
     # ---------------------------------------------------- the test's reads
 
     def frames(self, t=None, conn=None):
@@ -695,6 +742,10 @@ def control(ep, req):
         ep.write_rl10(mode, **arg)
     elif op == "refuse":
         ep.refuse_upload(arg["project"], arg["writer"], arg["seq"], arg.get("reason", "not-reachable"))
+    elif op == "accepted":
+        return {"events": ep.accepted(arg["project"], arg.get("after"))}
+    elif op == "opened":
+        return ep.opened()
     elif op == "unlink-rl10":
         os.unlink(ep.rl10_path())
     elif op == "stop":
@@ -704,7 +755,8 @@ def control(ep, req):
     return {"ok": True}
 
 
-def ctl_main(directory, op, arg):
+def ctl_call(directory, op, arg):
+    """One ctl request to the stand-in serving `directory`: its answer's text."""
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.connect(os.path.join(directory, "ctl.sock"))
     sock.sendall((json.dumps({"op": op, "arg": arg}) + "\n").encode("utf-8"))
@@ -718,8 +770,82 @@ def ctl_main(directory, op, arg):
         if not chunk:
             break
         data += chunk
-    print(data.decode("utf-8").rstrip("\n"))
     sock.close()
+    return data.decode("utf-8").rstrip("\n")
+
+
+def ctl_main(directory, op, arg):
+    print(ctl_call(directory, op, arg))
+
+
+# ------------------------------------------------------------- two machines
+
+
+class Served:
+    """A stand-in `serve` runs, through its ctl socket: the parts of an
+    Endpoint that `hand` reads and sends through."""
+
+    def __init__(self, directory):
+        self.dir = directory
+
+    def call(self, op, arg):
+        answer = json.loads(ctl_call(self.dir, op, arg))
+        if "error" in answer:
+            raise RuntimeError("the stand-in at %s: %s" % (self.dir, answer["error"]))
+        return answer
+
+    def accepted(self, project, after=None):
+        return self.call("accepted", {"project": project, "after": after or {}})["events"]
+
+    def opened(self):
+        return self.call("opened", {})
+
+    def events(self, project, wrapped):
+        self.call("send", {"frames": [{"t": "events", "project": project, "events": list(wrapped)}]})
+
+
+def hand(source, dest, cursor_path):
+    """One pass of the relay between two machines' endpoints, for the
+    two-machine compositions (#153 M3d): what `source` accepted reaches the
+    live connection of `dest` as arrivals, one `events` frame per project
+    that connection opened, each event in the form source's `echo` gives
+    it, past what the project's last hello said it holds and what was
+    handed since that hello (kept at cursor_path, so a later pass sends
+    only what is new; a new connection or a new hello starts again from
+    its `have`, as the hub sends what a hello lacks). `source` and `dest`
+    are Endpoints, or Served for a stand-in `serve` runs. How many events
+    were handed."""
+    opened = dest.opened()
+    cursor = read_json(cursor_path) or {}
+    if cursor.get("conn") != opened["conn"]:
+        cursor = {"conn": opened["conn"], "projects": {}}
+    handed = 0
+    for project, hello in sorted(opened["projects"].items()):
+        held = cursor["projects"].get(project)
+        if held is None or held.get("at") != hello["at"]:
+            held = {"at": hello["at"], "after": dict(hello["have"])}
+        wrapped = source.accepted(project, held["after"])
+        if wrapped:
+            try:
+                dest.events(project, wrapped)
+            except (OSError, RuntimeError):
+                break   # the connection went: the next pass reads the next one's hellos
+            for w in wrapped:
+                e = w["event"]
+                held["after"][e["writer"]] = max(held["after"].get(e["writer"], 0), e["seq"])
+            handed += len(wrapped)
+        cursor["projects"][project] = held
+    if opened["conn"] is not None:
+        write_private(cursor_path, cursor)
+    return handed
+
+
+def hand_main(source_dir, dest_dir):
+    """`hand <source> <dest>`: one pass, the cursor kept in dest's
+    directory under source's path, the count printed."""
+    import hashlib
+    tag = hashlib.sha256(os.path.abspath(source_dir).encode()).hexdigest()[:12]
+    print(hand(Served(source_dir), Served(dest_dir), os.path.join(dest_dir, "handed-%s.json" % tag)))
 
 
 if __name__ == "__main__":
@@ -727,5 +853,8 @@ if __name__ == "__main__":
         serve_main(sys.argv[2], json.loads(sys.argv[3]) if len(sys.argv) > 3 else {})
     elif len(sys.argv) >= 4 and sys.argv[1] == "ctl":
         ctl_main(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]) if len(sys.argv) > 4 else {})
+    elif len(sys.argv) == 4 and sys.argv[1] == "hand":
+        hand_main(sys.argv[2], sys.argv[3])
     else:
-        sys.exit("usage: endpoint_standin.py serve <directory> [<config JSON>] | ctl <directory> <op> [<JSON>]")
+        sys.exit("usage: endpoint_standin.py serve <directory> [<config JSON>] | ctl <directory> <op> [<JSON>]"
+                 " | hand <source directory> <dest directory>")

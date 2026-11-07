@@ -396,6 +396,8 @@ run_suites() {
   if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
   if python3 "$SCRIPT_DIR/test_rl10.py"; then pass "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; else
     fail "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_endpoint_standin.py"; then pass "the endpoint stand-in's hand-off between two machines (test_endpoint_standin.py)"; else
+    fail "the endpoint stand-in's hand-off between two machines (test_endpoint_standin.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_streams.py"; then pass "audience streams on the writing side: the names, a session's own stream, the split say, the private sender's refusal, redaction, an unreadable record (test_streams.py)"; else
     fail "audience streams on the writing side: the names, a session's own stream, the split say, the private sender's refusal, redaction, an unreadable record (test_streams.py)"; fi
   if python3 "$SCRIPT_DIR/test_snapshots.py"; then pass "the endpoint's policy-cache rebuild: snapshots? answered in bounded pages, remote writers only, the last done (test_snapshots.py)"; else
