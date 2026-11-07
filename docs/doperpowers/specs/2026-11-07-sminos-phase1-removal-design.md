@@ -14,7 +14,7 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) M1: devcloud's DX2 enrollment out (devcloud 0.16.0, `1585356b`; review clean, devcloud gates GREEN, run 42338569325). The coordinator's correction (the host tolerates the v1 key) landed as `82c4aea9`, reviewed clean, GREEN, run 42345027485.
 - [x] (2026-11-07) M2: the opt-in local-hub modes out (tests only; `0e2a69d6`; review clean, sminos gates GREEN, run 42339386393).
 - [x] (2026-11-07) M3a: the unit flips (tests only; `c9b0240d`, `673a7851`; review clean, sminos gates GREEN, run 42343036908).
-- [ ] M3b: the endpoint stand-in ports, the session plane and the RPCs (tests only).
+- [x] (2026-11-07) M3b: the endpoint stand-in ports, the session plane and the RPCs (tests only; `1ee32911..84417b8e`, fix `71ac14b0`; review clean, sminos gates GREEN on `84417b8e`, run 42344457872).
 - [ ] M3c: the shell suites' one-machine cases (tests only).
 - [ ] M3d: the two-machine compositions (tests only).
 - [ ] M3e: open latency on RL10 (tests only).
@@ -301,6 +301,16 @@ This is after the branch review and the merge, and it is not part of the branch'
   - The twins keep the `hub.json` fixture and flip only `coded`; the move to `identity.json` is M4's. The `test_heads` twins are the exception and trigger through `rl10.welcomed`, since that trigger is what they test.
   - The Lifecycle twins run on the real `SocketLane` over a socketpair, the endpoint's slowness modelled as a held first write.
   Date/Author: 2026-11-07, plan-executor (M3a).
+
+- Decision (M3b, the executor):
+  - Withheld and Restate run in-process: an uncoded `HubLog` against the stand-in's own `take`/`have`, since their steps depend on order and the live uplink uploads every 0.5 s. `RestateThroughTheUplink` runs one restatement end to end through `run_rl10`.
+  - `endpoint_standin` gains `withhold`, an in-process callable, None by default. It refuses an upload `not-reachable`, lists and counts it in the next `have`, and answers a resend `not-reachable` again or `conflict`. Its tests are `StandinWithholds`; with it unset, admission is unchanged.
+  - Unlisting: each reader's log is the stand-in's `echo` carrying the `audience`/`policyRev` the endpoint signs in, chosen by `hub_standin`'s `may_read` rule. The readers are cut over through `identity.json`.
+  - Recovery of a persisted claim: Checks' three Resume reconciliations (launch and copy cleanup included) run in `ChecksOnRl10`; a new test reconciles Retire and Stop claims `interrupted` at once and sends them with `opId: null`, as the code does for a DX2-era claim keyed by nonce.
+  - `RelayedOnRl10` (item 15) resets requests and RPCs per stream by hand, as `on_welcome` does, so `welcomed_rl10` writes no `identity.json` into the module's shared home. Its six DX2-only cases are None.
+  - RL10 values in the ported Uplink classes: the machine policy ceiling `settings`, `desk.rpcs` = `RL10_RPC_NAMES`, each `codes.verifies` replaced by "no `mac`", and the op/compact `rpc` is the opId.
+  - Not green alone: `eaa4ef8c` carries part of `test_rpcs`' `UplinkOnRl10`, which refers to `test_policy_requests.EndpointHome` before `0301a5da` adds it. Tests only. No rebase rewrites it; every commit from `0301a5da` on is consistent, and the PR names it.
+  Date/Author: 2026-11-07, plan-executor (M3b).
 
 ## Outcomes & Retrospective
 
