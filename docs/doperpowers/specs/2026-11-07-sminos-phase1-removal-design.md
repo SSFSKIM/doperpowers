@@ -312,6 +312,23 @@ This is after the branch review and the merge, and it is not part of the branch'
   - Not green alone: `eaa4ef8c` carries part of `test_rpcs`' `UplinkOnRl10`, which refers to `test_policy_requests.EndpointHome` before `0301a5da` adds it. Tests only. No rebase rewrites it; every commit from `0301a5da` on is consistent, and the PR names it.
   Date/Author: 2026-11-07, plan-executor (M3b).
 
+- Decision (M3c, the executor):
+  - Machines in the RL10 shell blocks cut over through `daemon probe` (test-uplink; test-sync, with a rename by `former`) or a hand-written `identity.json` (test-archive, test-org). No RL10 block uses `hub enroll`, `hub.json` or `hub_standin`.
+  - test-uplink's RL10 block reuses helpers defined in its DX2 sections; M5 keeps those definitions (task 5's report lists them). Its 4 MB burst goes as several ctl sends, each under the ctl channel's 1 MiB line.
+  - test-uplink's RL10 derivation case adds a session with ten tool calls so the derivation really forks; the DX2 twin's never did (its transcript has none) and passes trivially until M5 removes it.
+  - Item 2's test-hub half (L279–352: seats, members, send and retire after a rename) was in neither M3 batch's list. It joined M3c, in test-sync's RL10 rename case, with the other `betaold` holder's joined arriving from the stand-in. The leave case waits for what it asserts instead of assuming one scan.
+  Date/Author: 2026-11-07, plan-executor (M3c and its review).
+- Decision (M3d, the executor): the stand-in gains `accepted()` (its own `echo` of what it took) and `hand()`, which passes those wrapped events to another stand-in's connection as arrivals; `relay` is a ctl command, one process a pass, retrying only a vanished data connection and failing on anything else, with stderr kept. `rl10-machines.sh` is the shared shell helper (identity fixtures, endpoints, hand-off passes). The one-pass design composes; it does not reimplement MAWS's relay.
+  Date/Author: 2026-11-07, plan-executor (M3d and its review).
+- Decision (M3e, the executor): `bench_rig` gains an endpoint hub that starts `endpoint_standin`, points the machine at it and cuts it over by `daemon probe`; the rig then runs the real uplink child. `BenchOpenOnRl10::test_opens_after_the_uplinks_restart` asserts the post-restart build `loaded` unconditionally, since `BenchOpens`' timed sample may honestly be missing under load.
+  Date/Author: 2026-11-07, plan-executor (M3e and its review).
+- Decision (the M3/M4 boundary, confirmed by the coordinator):
+  - `measure_pages` part 2 is not re-pointed at RL10. Benches are measurements, not gates; `bench_open --rl10` and `bench_scale opens --rl10` measure the open through the real uplink, and M3e names only them. Rejected: porting part 2 onto `endpoint_standin`, which would duplicate what the two benches measure.
+  - test-uplink's 300-event "burst while every POST is slow" is not ported: it measures DX2's batching. On RL10 the backlog's pacing is `UPLOAD_AHEAD`'s, proven by `test_session_plane.py::Lifecycle::test_a_paced_backlog_is_drawn_once_across_its_upload_passes_on_rl10` (item 16).
+  - M3d's re-review found that a composition wrapper's passing predicate masks a relay command's non-zero exit. Dismissed: stderr is kept, and the predicate passes only once the consumer has the frames.
+  - Item 6's second archiver (designated onto a remote another machine's archive already wrote) is not the first designation's path, and gets its own test before M4. Item 7's two-machine half (test-org: beta follows alpha's stray, the `projects`/`machines` tables) and item 2's alpha-side view of a renamed beta are composed in M3d.
+  Date/Author: 2026-11-07, p5-desk-track-owner (coordinator) and plan-executor.
+
 ## Outcomes & Retrospective
 
 (At completion.)
