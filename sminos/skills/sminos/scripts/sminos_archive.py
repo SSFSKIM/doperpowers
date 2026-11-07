@@ -17,17 +17,40 @@ none, and runs nothing.
 
 A run works in the clone at `<project home>/archive/`, outside `log/`: it
 fetches the remote (bounded, as the mirror's fetches are), starts from
-`origin/main` when the remote has one, copies every top-level `*.jsonl` of
-`log/` over its namesake whole — never re-sequenced, so the codes and the holes
-of spent positions are kept as the log holds them — leaves the files the log
-lacks as the remote has them, commits, and pushes. A push the remote rejected
-because it moved is retried from a fresh fetch. Nothing is ever read from the
-clone into `log/`: git never feeds the live log of a hub project.
+`origin/main` when the remote has one, copies the log's hub-admitted public
+projection over the namesakes of its files (copy_log), leaves the files the
+log lacks as the remote has them, commits, and pushes. A push the remote
+rejected because it moved is retried from a fresh fetch. Nothing is ever read
+from the clone into `log/`: git never feeds the live log of a hub project.
+
+The admitted public projection (P5 O18 D6): the archive's remote is the
+project's, readable by the whole org, so it holds only what the hub admitted
+to every reader. No audience stream (`<writer>~<digest>`) ever enters it.
+A plain writer of another machine is copied as imported — whole, never
+re-sequenced, so the codes and the holes of spent positions are kept as the
+log holds them. This machine's own (under its name or a former one,
+`HubLog.is_own`) is copied up to the hub's vector in the `have` that
+confirmed the run (`archive_have` in uplink.json, saved with `archive_at`;
+a former name's entry as the last `have` under that name saved it, and none
+copied without one: sminos_hublog's on_have), never `sent` or `taken`: on RL10 `taken` moves once the endpoint's socket
+takes a frame, before the hub admitted or refused anything in it. Each
+position that `have` lists withheld, each this machine recorded refused
+`audience` or voided (sminos_hublog's `dead` and `voided`), is written as
+its tombstone, `{writer, seq, withheld: true}`, whatever the local file
+holds there: a refusal lost to a dropped connection is still honoured, and
+a refused body never reaches the archive once a void fills its position.
+Below a `conflict` kept (uplink-taken.json), the hub holds another event, so
+nothing from there on is copied. Past that frontier (frozen for a former
+name, lowered by a conflict) the archive's file keeps what it already holds,
+up to the last position this machine wrote or the hub's vector: the run
+replaces only the prefix it confirms, so the archive never loses a position
+another archiver or an earlier run gave it. A run with no usable `archive_have` fails.
 """
 
 import glob
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -106,22 +129,117 @@ def held_as_file(dst):
         return f.read()
 
 
+STREAM_FILE = re.compile(r"~[0-9a-f]{16}\.jsonl$")
+
+
+def admitted(project):
+    """What the run copies this machine's own writers by: (the hub's
+    admitted vector {writer: seq}, {writer: [(from, to)]} of the positions
+    written as tombstones, {writer: seq} below which nothing is copied for a
+    conflict). daemon.SyncFailed when the last `have` confirmed nothing
+    usable (none saved yet, or one sminos_hublog.admitted_have refused)."""
+    hl = hublog.HubLog(project, {"key": None, "machine": sminos.host_name()}, coded=False)
+    d = hl.state()
+    ah = d.get("archive_have")
+    if not (isinstance(ah, dict) and isinstance(ah.get("have"), dict) and isinstance(ah.get("withheld"), dict)):
+        raise daemon.SyncFailed("the archive of %s waits for a have from the hub that confirms what it admitted%s"
+                                % (project.name, ": %s" % d["archive_have_error"] if d.get("archive_have_error") else ""))
+    have = {w: s for w, s in ah["have"].items() if type(s) is int}
+    marked = {}
+    for w, raw in ah["withheld"].items():
+        try:
+            marked[w] = hublog.runs_of(raw)
+        except ValueError as e:
+            raise daemon.SyncFailed("the archive of %s: its saved withheld list of %s is unreadable (%s)"
+                                    % (project.name, w, e))
+    for source in (hl.dead(), hl.voided()):
+        for w, held in source.items():
+            seqs = held["at"] if isinstance(held, dict) else held
+            marked.setdefault(w, []).extend((s, s) for s in seqs)
+    return have, marked, hl.conflicts(), hl.is_own
+
+
+def archived_seq(line, writer):
+    """The position a line of the archive's file holds for `writer` — an
+    event's or a tombstone's —, or None."""
+    try:
+        e = json.loads(line.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    if isinstance(e, dict) and e.get("writer") == writer and type(e.get("seq")) is int and e["seq"] > 0:
+        return e["seq"]
+    return None
+
+
+def admitted_bytes(data, writer, top, marked, archived=None, head=0):
+    """An own writer file's admitted projection: its lines up to `top`, each
+    position in `marked` (runs) its tombstone instead, whatever the file holds
+    there (nothing included), in seq order; a line no event parses from is
+    no admitted position, and is left out. Past `top`, `archived` — the bytes
+    the archive already holds for the writer — keeps each position it holds
+    up to the last this machine wrote or `head`, the hub's vector for it
+    (a tombstone for one in `marked`): a frontier frozen or lowered below
+    what the archive holds says nothing of those positions, so the archive
+    never loses one, and nothing local past `top` is ever copied. Up to
+    `top` the projection replaces what the archive holds, and a line past
+    both bounds, beyond anything this machine or the hub held of the
+    writer, is no position of it (the remote edited), and is left out."""
+    lines, last = {}, 0
+    for line in data.split(b"\n"):
+        e = sminos.parse_event(line.decode("utf-8", "replace")) if line.strip() else None
+        if e is not None:
+            last = max(last, e["seq"])
+        if e is None or e["seq"] > top or hublog.in_runs(e["seq"], marked):
+            continue
+        lines.setdefault(e["seq"], []).append(line)
+    for a, b in marked:
+        for seq in range(a, min(b, top) + 1):
+            lines[seq] = [json.dumps(hublog.tombstone(writer, seq), ensure_ascii=False).encode("utf-8")]
+    kept = {}
+    for line in (archived or b"").split(b"\n"):
+        seq = archived_seq(line, writer) if line.strip() else None
+        if seq is not None and top < seq <= max(last, head):
+            kept.setdefault(seq, []).append(line)
+    for seq in kept:
+        lines[seq] = ([json.dumps(hublog.tombstone(writer, seq), ensure_ascii=False).encode("utf-8")]
+                      if hublog.in_runs(seq, marked) else kept[seq])
+    return b"".join(line + b"\n" for seq in sorted(lines) for line in lines[seq])
+
+
 def copy_log(project, clone):
-    """Every writer file of log/ over its namesake at the clone's top, whole —
-    read under the file's own lock, so no append is caught half written — and
-    the names copied. Each is written as a regular file by rename inside the
-    clone: whatever the remote put at that name (a symlink, which the reset
-    checked out as one, a directory) is replaced, never written through, so
-    nothing the remote holds can steer a write out of the clone."""
+    """The log's admitted public projection (the module's) over the
+    namesakes of its files at the clone's top — each file read under its own
+    lock, so no append is caught half written — and the names copied. Each
+    is written as a regular file by rename inside the clone: whatever the
+    remote put at that name (a symlink, which the reset checked out as one, a
+    directory) is replaced, never written through, so nothing the remote
+    holds can steer a write out of the clone."""
     log = os.path.join(project.home, "log")
+    have, marked, conflicts, own = admitted(project)
     names = []
     for path in sorted(glob.glob(os.path.join(glob.escape(log), "*.jsonl"))):
         name = os.path.basename(path)
+        if STREAM_FILE.search(name):
+            continue
         with sminos.flocked(path + ".lock"):
             with open(path, "rb") as f:
                 data = f.read()
-        names.append(name)
+        writer = next((e["writer"] for e in map(sminos.parse_event, data.decode("utf-8", "replace").split("\n"))
+                       if e is not None), None)
+        if writer is None or sminos.is_stream(writer):
+            continue
         dst = os.path.join(clone, name)
+        if own(writer):
+            top = have.get(writer, 0)
+            if writer in conflicts:
+                top = min(top, conflicts[writer] - 1)
+            if top <= 0:
+                continue
+            # Over the file the remote holds (none through a symlink): what it holds past this run's frontier of
+            # this machine's or the hub's positions is kept.
+            data = admitted_bytes(data, writer, top, sorted(marked.get(writer, [])), held_as_file(dst),
+                                  have.get(writer, 0))
+        names.append(name)
         if held_as_file(dst) == data:
             continue
         if os.path.isdir(dst) and not os.path.islink(dst):

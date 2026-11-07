@@ -731,12 +731,13 @@ def rejoin_former(project, view=None):
         if not (m.local and m.session):
             continue
         j = (view.info.get(m.session) or {}).get("joined") or {}
-        if not j or j.get("writer") == sminos.writer_id(m.session):
+        # A writer of its name now is its own, plain or one of its audience streams (P5 O18 D6).
+        if not j or sminos.writer_base(str(j.get("writer") or "")) == sminos.writer_id(m.session):
             continue
 
         def guard(evs, mine=sminos.writer_id(m.session)):
             last = next((e for e in reversed(evs) if e["kind"] in sminos.MEMBERSHIP), None)
-            return last is not None and last["kind"] == "joined" and last["writer"] != mine
+            return last is not None and last["kind"] == "joined" and sminos.writer_base(last["writer"]) != mine
 
         got = sminos.lifecycle(project, m.session, "joined", guard=guard, required=False,
                                **sminos.joined_fields(m.alias, m.name_source, *(

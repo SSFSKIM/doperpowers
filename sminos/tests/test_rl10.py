@@ -266,7 +266,7 @@ class Welcome(Machine):
         self.assertEqual(ep.hellos[0][1], hello, "the hello is the connection's first line")
         self.assertEqual(hello["token"], ep.token)
         self.assertEqual(hello["protocol"], {"major": 1, "minor": 0})
-        self.assertEqual(hello["capabilities"], [])
+        self.assertEqual(hello["capabilities"], ["audience"], "its archive copies only the admitted projection (O18 D9)")
         self.assertIsInstance(hello["sminos"]["version"], str)
         self.assertEqual(set(hello["policy"]), {"read_only", "ceiling"})
         ident = wait_for(self.identity)

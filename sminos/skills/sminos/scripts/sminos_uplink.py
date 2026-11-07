@@ -98,7 +98,11 @@ are delivered here alone, on the endpoint's verdict: each tick's words pass
 (Link.ask_words), behind its upload pass, asks `words?` about the first
 owed event of each words-gated writer, naming the project whose log holds
 it, and the `words` answer is carried out at once (on_words,
-sminos.deliver_verdict). Before the cutover the endpoint
+sminos.deliver_verdict). An endpoint rebuilding a lost policy cache asks
+`snapshots?` of one project at a time, and each ask is answered with one
+bounded page of the newest stored `joined` and `state` of each remote
+session writer, plain and stream (on_snapshots, snapshot_page; O18 D7).
+Before the cutover the endpoint
 is only probed (cmd_probe), beside the hub's stream.
 """
 
@@ -124,6 +128,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 import sminos_archive as archive  # noqa: E402
+import sminos_audience as audience  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
@@ -160,6 +165,8 @@ UPLOAD_AHEAD = POST_LIMIT  # an upload pass queues no more while the log lane ho
 LANE_ENTRY = 256 * 1024    # RL10: the host and words passes queue lane entries of at most this many bytes
 WORDS_WAIT = 10.0         # RL10: how long a `words?` waits for its verdict; past it, a failed attempt (O12 M6)
 WORDS_EVERY = 10.0        # RL10: how often the words pass looks for owed words when nothing asked for one
+SNAPSHOT_PAGE = 200       # RL10: a `snapshots` page carries at most this many events, in at most LANE_ENTRY bytes
+SNAPSHOT_KINDS = ("joined", "state")
 # RL10: a file each words pass appends one line to ({at, wall, cpu, asks}), when set: the measurement
 # O14's B2 gates the cutover on (sminos/tests/bench_scale.py run --rl10), and nothing else's
 WORDS_TIMES = "SMINOS_WORDS_TIMES"
@@ -1342,6 +1349,43 @@ def hub_project(pid, cred):
     return hub_projects(cred).get(pid)
 
 
+def _snapshot_index(events):
+    """{writer: {kind: its newest stored event}} of SNAPSHOT_KINDS, for every
+    writer of a session (sminos.writer_session: plain and stream)."""
+    out = {}
+    for e in events:
+        if e["kind"] in SNAPSHOT_KINDS and sminos.writer_session(e["writer"]):
+            held = out.setdefault(e["writer"], {})
+            if e["kind"] not in held or e["seq"] > held[e["kind"]]["seq"]:
+                held[e["kind"]] = e
+    return out
+
+
+def snapshot_page(hl, after=None):
+    """(events, next): one `snapshots` page of a project (O18 D7, Interfaces
+    §B), the newest stored `joined` and `state` of each remote session
+    writer (not this machine's under any of its names, HubLog.is_own), in
+    writer order past `after` (the last writer of the page before), each as
+    stored less `verified`, as `words?` sends one. A page holds whole
+    writers, at most SNAPSHOT_PAGE events in at most LANE_ENTRY bytes (and
+    at least one writer); `next` is its last writer while any remain, else
+    None. Read from the merged log the readers keep (log_memo), so a
+    rebuild's pages scan the log once while no file of it moves."""
+    events = sminos._store_whole(hl.project, "log", shared=True)[1]
+    index = sminos.log_memo(events, "snapshots", _snapshot_index)
+    writers = sorted(w for w in index if not hl.is_own(w) and not (isinstance(after, str) and w <= after))
+    page, size = [], 1024   # room for the frame around them: its id, project and cursor
+    for i, w in enumerate(writers):
+        these = [{k: v for k, v in e.items() if k != "verified"}
+                 for e in sorted(index[w].values(), key=lambda e: e["seq"])]
+        n = sum(len(json.dumps(e, ensure_ascii=False).encode("utf-8")) + 1 for e in these)
+        if page and (len(page) + len(these) > SNAPSHOT_PAGE or size + n > LANE_ENTRY):
+            return page, writers[i - 1]
+        page += these
+        size += n
+    return page, None
+
+
 def joined_dirs(here):
     """The directories a project's sessions joined from here, in order, as
     the plane's read holds them ({session: cwd}, Plane.here): what of that
@@ -1353,7 +1397,7 @@ def joined_dirs(here):
 # ------------------------------------------------------------- one stream
 
 
-def member_frame(pid, m, launch=None):
+def member_frame(pid, m, launch=None, visibility=False):
     """RL10's `member` for a local member's row (Plane.member_rows): its record's
     provenance and ownership (sminos.session_record; the defaults, `@machine`
     and a terminal origin, with no principal or inference, while it has
@@ -1361,9 +1405,12 @@ def member_frame(pid, m, launch=None):
     is set yet and the engine host launched it (origin `maws`), else A —
     what the row says of it, and `launch`, the launch its bridge names (O12
     M7: what a remote action's context is fenced to), absent with no bridge.
-    O8's `access` and `shares` are not sent yet. `principal` and `inference`
-    cross because the endpoint is this machine; they never ride a log
-    event."""
+    `visibility` (the endpoint's welcome advertised `access`, P5 O18 D9):
+    the record's `access`, `shares` and `policyRev` too, the defaults where
+    it says nothing (sminos_audience.policy_of); an older endpoint rejects a
+    whole frame on a share grade it does not know, so none is sent to it.
+    `principal` and `inference` cross because the endpoint is this machine;
+    they never ride a log event."""
     rec = m.record or {}
     origin = rec.get("origin") if isinstance(rec.get("origin"), dict) else dict(sminos.DEFAULT_ORIGIN)
     controller = rec.get("controller") if isinstance(rec.get("controller"), dict) else None
@@ -1384,6 +1431,8 @@ def member_frame(pid, m, launch=None):
     for key in ("principal", "inference", "controller"):
         if rec.get(key) is not None:
             frame[key] = rec[key]
+    if visibility:
+        frame["access"], frame["shares"], frame["policyRev"] = audience.policy_of(rec)
     return frame
 
 
@@ -1454,6 +1503,7 @@ class Link:
         self.revoked_whole = False  # RL10: the next revocation set is the welcome's, kept whole
         self.revoked_due = False  # RL10: a revocation set was kept that the owed events have not been marked by
         self.members_sent = {}    # RL10: session → the `member` frame last sent on this connection
+        self.visibility = False   # RL10: the endpoint's welcome advertised `access` (P5 O18 D9): member frames carry it
         self.members_unsent = set()   # RL10: the sessions whose frame is due and not yet queued (publish_members)
         self.member_read_for = None   # RL10: the running sessions the projects known here were last listed for
         self.next_member_read = 0.0   # RL10: when they are read again (monotonic) when none came or went
@@ -1515,7 +1565,8 @@ class Link:
             self.handlers.update({"policy": self.on_policy, "revoked": self.on_revoked,
                                   "legacy-key?": self.on_legacy_key, "query": self.on_query,
                                   "tombstone": self.on_tombstone, "words": self.on_words,
-                                  "spent": self.on_spent})
+                                  "spent": self.on_spent, "audience": self.on_audience,
+                                  "snapshots?": self.on_snapshots})
 
     def post_session(self, messages):
         if messages:
@@ -1643,6 +1694,15 @@ class Link:
         is kept whole either way."""
         self.policy_asked = None
         self.revoked_whole = True
+        # What the endpoint can do beyond RL10's major (OX1): with `access`, member frames carry the sessions'
+        # visibility and the CLI's writers choose audience streams (P5 O18 D9), from the capabilities kept here.
+        caps = frame.get("capabilities")
+        caps = [c for c in caps if isinstance(c, str)] if isinstance(caps, list) else []
+        self.visibility = "access" in caps
+        try:
+            audience.keep_capabilities(caps)
+        except OSError as e:
+            log("the endpoint's capabilities could not be kept (%s): this machine's writers read the last kept" % e)
         if isinstance(frame.get("revoked"), dict):
             self.on_revoked(frame["revoked"], None)
         self.on_policy(frame.get("policy"), None, welcome=True)
@@ -1704,6 +1764,42 @@ class Link:
             return
         sminos.deliver_verdict(held["project"], held["member"], held["event"], verdict)
         self.next_upload = 0.0   # its outcome goes up on the next pass
+
+    def on_audience(self, frame, _stream):
+        """The endpoint's word on one session's audience (P5 O18 D7): its
+        owners, its members (none: listed) and policyRev, kept in
+        daemon/audiences.json for the CLI's writers (sminos_audience). A
+        frame that is no such frame is said and passed by."""
+        try:
+            taken = audience.keep_audience(frame)
+        except OSError as e:
+            log("an audience frame could not be kept (%s): the writers read the last kept" % e)
+            return
+        if not taken:
+            log("an audience frame from the endpoint that is none (session %r): passed by"
+                % (str(frame.get("session"))[:40],))
+
+    def on_snapshots(self, frame, _stream):
+        """RL10's `snapshots? {id, project, after?}` (O18 D7): the endpoint
+        rebuilding a lost policy cache, one project at a time, page after
+        page, answered `snapshots {id, project, events, next, done}` with
+        the page past `after` (snapshot_page), `done` on the project's last.
+        A project that is no hub project of this org known here has none: one
+        page, empty and done, said in daemon.log. sminos carries what it
+        stored; the endpoint verifies each again before taking it."""
+        ask, pid = frame.get("id"), frame.get("project")
+        if not isinstance(ask, str):
+            log("a snapshots? with no id (%r): not answered" % (ask,))
+            return
+        hl = self.logs[pid] if isinstance(pid, str) and pid in self.opened else self.log_of(pid)
+        if hl is None:
+            log("snapshots? for project %r, which is no hub project of org %s known here: answered with none"
+                % (pid, self.cred["org"]))
+            events, after = [], None
+        else:
+            events, after = snapshot_page(hl, frame.get("after"))
+        self.session_lane.send([{"t": "snapshots", "id": ask, "project": pid, "events": events, "next": after,
+                                 "done": after is None}])
 
     def on_legacy_key(self, _frame, _stream):
         """`legacy-key?`: hub.json's DX1 key handed to the endpoint, which
@@ -2333,7 +2429,12 @@ class Link:
                     # presence carries it); asked here too, so a session of
                     # a project not open on the stream has it as well.
                     self.plane.bridges.answers(sid, now, socks)
-                    current[sid] = member_frame(pid, m, self.plane.bridges.launch(sid))
+                    frame = self.fresh_frame(pid, m)
+                    if frame is None:
+                        # An established record that cannot be read (P5 O18 D10): its policy is unknown, so no
+                        # frame goes, and one sent before is withdrawn (`gone` below), until it reads again.
+                        continue
+                    current[sid] = frame
         frames = [f for sid, f in current.items() if self.members_sent.get(sid) != f]
         frames += [{"t": "member", "session": sid, "gone": True} for sid in self.members_sent if sid not in current]
         batch, size, unsent = [], 0, set()
@@ -2352,6 +2453,18 @@ class Link:
         self.members_unsent = unsent
         if not unsent:
             self.members_whole = True
+
+    def fresh_frame(self, pid, m):
+        """The member frame of a plane row from its session's record as it
+        reads now (the row's may be a stale one, from before a repair or a
+        policy change), or None while the record file exists and cannot be
+        read. One read serves both, so the frame never pairs a fresh check
+        with an older record."""
+        records = sminos.records_module()
+        rec = records.read(m.session)
+        if rec is None and sminos.UUID_RE.fullmatch(m.session) and os.path.lexists(records.record_path(m.session)):
+            return None
+        return member_frame(pid, m._replace(record=rec), self.plane.bridges.launch(m.session), self.visibility)
 
     def send_members(self, batch):
         """One entry of member frames queued, and taken as sent."""
@@ -2391,8 +2504,7 @@ class Link:
             rows = self.plane.member_rows.get(at, {})
             if sid in rows:
                 rows[sid] = rows[sid]._replace(record=sminos.session_record(sid))
-                changed = changed or self.members_sent.get(sid) != member_frame(at, rows[sid],
-                                                                                self.plane.bridges.launch(sid))
+                changed = changed or self.members_sent.get(sid) != self.fresh_frame(at, rows[sid])
         if changed or sessions & self.members_unsent:
             self.publish_members(time.monotonic())
         return not sessions & self.members_unsent

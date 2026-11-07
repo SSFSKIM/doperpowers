@@ -5,12 +5,23 @@
 # its `daemon run` and its uplink, against hub_standin.py, the project's
 # remote a bare git repository. Pins DC4.G3: the machine the hub designates
 # (DX2's `have.archive`) writes the log to the remote on schedule, from a
-# clone outside log/, each writer file copied whole — the codes and the holes
-# of spent positions kept; no other machine pushes it; a machine whose
+# clone outside log/, each writer file of another machine copied whole as
+# imported — the codes and the holes of spent positions kept — and its own up
+# to the hub's vector in the `have` that confirmed the run; no other machine
+# pushes it; a machine whose
 # designation moves stops at its next schedule, and with none nobody pushes;
 # what the remote holds never reaches the log (files the log lacks stay as the
 # remote has them, and the log's copy wins over a writer file edited there);
 # a push the remote rejected because it moved is retried from a fresh fetch.
+# On DX2, a position the hub's policy registry could not check goes up again
+# after the wait, with no reconnect and no further write (P5 O18 D5). On RL10
+# (a third machine, gamma, cut over to endpoint_standin.py), the archive is
+# the hub-admitted public projection (P5 O18 D6): no audience stream; an own
+# event the endpoint's socket took but the hub has not admitted is not in it,
+# though `taken` covers it; a position the hub withheld is its tombstone,
+# whether the refusal reached the machine or was lost to a dropped
+# connection; and a position refused `audience` here and voided since is a
+# tombstone too, never the body the local file keeps.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub; nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
@@ -62,7 +73,8 @@ gitq() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 
 unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME DAEMON_HOST
 # The archive's schedule: every 2 seconds here (15 minutes by default).
-export SMINOS_DERIVE_EVERY=0 SMINOS_ARCHIVE_EVERY=2 DAEMON_BOOT_ID=boot-current SCRIPTS
+# A position the hub could not check goes up again 1.5 s after (30 s by default).
+export SMINOS_DERIVE_EVERY=0 SMINOS_ARCHIVE_EVERY=2 SMINOS_ASK_MS=1500 DAEMON_BOOT_ID=boot-current SCRIPTS
 mkdir -p "$T/bin"
 as() { # a|b host — one machine: its HOME, its SMINOS_HOME, its host name
   export HOME="$T/$1/home" SMINOS_HOME="$T/$1/s" STUB_STATE="$T/$1/stub" DAEMON_HOST="$2"
@@ -105,6 +117,16 @@ elif cmd == "archive":  # project machine|null
     call("POST", "/control/archive", {"project": args[0], "machine": None if args[1] == "null" else args[1]})
 elif cmd == "vector":  # project writer
     print(call("GET", "/control/state")[1]["projects"].get(args[0], {}).get("vector", {}).get(args[1], 0))
+elif cmd == "policies":  # available(true|false) [rows-json]
+    call("POST", "/control/policies", {"available": args[0] == "true", **({"rows": json.loads(args[1])} if args[1:] else {})})
+elif cmd == "gen":  # machine — its current stream's generation
+    print(call("GET", "/control/state")[1]["generations"].get(args[0], 0))
+elif cmd == "stored":  # project writer seq — the event the hub holds there, as JSON
+    evs = call("GET", "/control/state")[1]["projects"].get(args[0], {}).get("writers", {}).get(args[1], [])
+    print(json.dumps(next((e for e in evs if e["seq"] == int(args[2])), None)))
+elif cmd == "refusals":  # project reason — how many refusals of that reason its audit holds
+    print(sum(1 for r in call("GET", "/control/state")[1]["projects"].get(args[0], {}).get("audit", [])
+              if r.get("kind") == "refused" and r.get("reason") == args[1]))
 elif cmd == "hellos":  # machine — the most projects one POST of its said hello to, and how many it said hello to
     sets = []
     for p in call("GET", "/control/state")[1]["posted"]:
@@ -341,6 +363,33 @@ confirmations a 2 || true
 confirmations b 2 || true
 assert_equals "$(git -C "$BARE" rev-parse main)" "$HEAD_BEFORE" "with the designation cleared, nobody pushes"
 
+# ---- a position the hub's policy registry could not check (P5 O18 D5)
+echo "a position the hub could not check, on a direct stream:"
+DSID=6e000001-0000-4000-8000-0000000000d1
+ctl policies true "{\"$DSID\": {\"machine\": \"delta\"}}"   # a session another machine exposed
+GEN="$(ctl gen alpha)"
+ctl policies false
+ASEQ="$(cd "$RA" && as a alpha && python3 - "$DSID" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+e = sminos.log_append(sminos.resolve_project(os.getcwd()), "alpha/human", "say",
+                      **{"from": "human", "to": [{"session": sys.argv[1], "alias": "d"}], "text": "to a session the registry checks"})
+print(e["seq"])
+PY
+)"
+refused_unavailable() { [ "$(ctl refusals "$PID" state-unavailable)" -ge 1 ]; }
+until_true 200 refused_unavailable || true
+assert_equals "$(refused_unavailable && echo yes)" yes "the hub refuses an event naming a session state-unavailable while its registry cannot be read"
+assert_equals "$(ctl stored "$PID" alpha/human "$ASEQ")" null "and stores nothing at its position"
+ctl policies true
+landed() { ctl stored "$PID" alpha/human "$ASEQ" | grep -q "to a session the registry checks"; }
+until_true 200 landed || true
+assert_equals "$(landed && echo yes)" yes "once it can be read, the event lands, with no further write"
+assert_equals "$(ctl gen alpha)" "$GEN" "and no reconnect: on the same stream"
+assert_contains "$(cat "$T/a/s/daemon.log")" "alpha/human of archproj goes up again from $ASEQ, which the hub could not check" \
+  "the retry, said in daemon.log"
+
 kill "$A_DAEMON" "$B_DAEMON"
 set +e; wait "$A_DAEMON" "$B_DAEMON"; set -e
 for side in a b; do
@@ -354,10 +403,13 @@ cd "$RB"
 OUT="$(python3 - "$T/stranger" <<'PY'
 import os, subprocess, sys
 sys.path.insert(0, os.environ["SCRIPTS"])
-import sminos, sminos_archive as archive
+import sminos, sminos_archive as archive, sminos_hublog as hublog
 stranger = sys.argv[1]
 project = sminos.resolve_project(os.getcwd())
-sminos.log_append(project, "beta/human", "say", **{"from": "human", "to": "*", "text": "beta, raced"})
+e = sminos.log_append(project, "beta/human", "say", **{"from": "human", "to": "*", "text": "beta, raced"})
+# The hub's have that confirms the run admits it (the archive copies an own writer up to that vector alone).
+hublog.HubLog(project, {"key": bytes(range(32)), "machine": "beta"}).on_have(
+    {"have": {"beta/human": e["seq"]}, "archive": True})
 real, raced, answers = archive.push_once, [], []
 
 def push_once(clone):
@@ -402,6 +454,124 @@ print(json.dumps([opened, refreshed, ahead, [dict(hl.sent), sorted(hl.stuck)]]))
 PY
 )" '[[{"beta/human": 5}, []], [{"beta/human": 5}, ["beta/human"], true], {"beta/human": 7}, [{"beta/human": 3}, []]]' \
   "its have moves what the hub holds only forward and keeps a refused writer stopped; a new stream starts both over"
+
+# ---- RL10: the hub-admitted public projection (P5 O18 D6)
+# gamma, cut over to its endpoint stand-in, which answers each hello with the
+# hub's `have` as the endpoint passes it down: its archive designation, its
+# vector (`admit` off holds the hub's admission back: an upload the socket
+# took counts in no vector), its withheld positions.
+echo "RL10, the archive machine's endpoint holding back the hub's admission:"
+as c gamma
+export MAWS_USER_DATA="$T/c/maws"
+EPDIR="$MAWS_USER_DATA/mawsd/endpoint"
+"$SMINOS" hub enroll <<<"$(ctl code "$HUB" "$(ctl token)" gamma "$KEY")" >/dev/null
+RC="$T/c/repo"
+BARE2="$T/rl10-archive.git"
+gitq init -q --bare "$BARE2"
+mkdir -p "$RC"
+gitq init -q "$RC"
+cd "$RC"
+"$SMINOS" project init --name rlarch --hub --remote "$BARE2" >/dev/null
+PID2="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$RC/.smns")"
+CLOG="$T/c/s/projects/$PID2/log"
+python3 "$SCRIPT_DIR/endpoint_standin.py" serve "$EPDIR" "{\"identity\": {\"org\": \"org-1\", \"hub\": \"$HUB\", \"name\": \"gamma\", \"former\": [], \"ref\": \"ref-gamma\", \"enrolled\": \"2026-11-05T00:00:00.000Z\"}, \"archive\": true}" &
+PIDS+=("$!")
+until_true 100 test -S "$EPDIR/ctl.sock"
+ep() { python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPDIR" "$@" >/dev/null; }
+epq() { python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPDIR" state \
+  | python3 -c 'import json, sys; d = json.load(sys.stdin); print(json.dumps(eval(sys.argv[1], {"d": d})))' "$1"; }
+start_daemon
+C_DAEMON=$DAEMON_PID
+opened_rl10() { [ "$(epq "any(f['frame'].get('t') == 'hello' and f['frame'].get('project') == '$PID2' for f in d['received'])")" = true ]; }
+until_true 300 opened_rl10 || true
+assert_equals "$(opened_rl10 && echo yes)" yes "gamma is cut over, and opens the project on the endpoint's socket"
+gsay() { (cd "$RC" && "$SMINOS" say "$1" >/dev/null); }
+GW=gamma.human.jsonl
+on_remote2() { git -C "$BARE2" show "main:$GW" 2>/dev/null; }
+archived2() { on_remote2 | grep -Fq -- "$1"; }
+seq_of() { python3 -c 'import json, sys; print(max((json.loads(l)["seq"] for l in open(sys.argv[1]) if sys.argv[2] in l), default=0))' "$CLOG/$GW" "$1"; }
+taken_to() { python3 -c 'import json, sys
+try: print(json.load(open(sys.argv[1])).get("taken", {}).get("gamma/human", 0))
+except (OSError, ValueError): print(0)' "$T/c/s/projects/$PID2/uplink-taken.json"; }
+taken_past() { [ "$(taken_to)" -ge "$1" ]; }
+# An archive run that started after `epoch` and has finished (daemon.json's archive record).
+run_after() { python3 -c 'import json, sys
+try: a = json.load(open(sys.argv[1])).get("archive") or {}
+except (OSError, ValueError): a = {}
+sys.exit(0 if float(a.get("started") or 0) > float(sys.argv[2]) and ("pushed" in a or "error" in a) else 1)' \
+  "$T/c/s/projects/$PID2/daemon.json" "$1"; }
+tombstone_at() { on_remote2 | grep -Fqx -- "{\"writer\": \"gamma/human\", \"seq\": $1, \"withheld\": true}"; }
+
+gsay "gamma, admitted"
+# An operator stream: a writer of its own for an audience, which the archive never takes.
+(cd "$RC" && python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+sminos.log_append(sminos.resolve_project(os.getcwd()), "gamma/human~" + sminos.audience_digest(["4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c"]),
+                  "say", **{"from": "human", "to": "*", "text": "gamma, to an audience"})
+PY
+)
+until_true 300 archived2 "gamma, admitted" || true
+assert_equals "$(archived2 "gamma, admitted" && echo yes)" yes "an event the hub admitted reaches the archive"
+assert_equals "$(ls "$CLOG"/*~*.jsonl | wc -l | tr -d ' ')" 1 "the log holds an audience stream"
+assert_equals "$(git -C "$BARE2" ls-tree --name-only main | tr '\n' ' ')" "$GW " \
+  "the commit holds the plain writer's file and no stream file"
+
+ep set '{"admit": false}'
+gsay "gamma, held back"
+HELD="$(seq_of "gamma, held back")"
+until_true 200 taken_past "$HELD" || true
+assert_equals "$(taken_past "$HELD" && echo taken)" taken "the endpoint's socket took it: taken covers it"
+AT="$(python3 -c 'import time; print(time.time())')"
+until_true 300 run_after "$AT" || true
+assert_equals "$(run_after "$AT" && echo ran)" ran "an archive runs after"
+assert_not_contains "$(on_remote2)" "gamma, held back" "and does not hold it: the hub has not admitted it"
+ep refuse "{\"project\": \"$PID2\", \"writer\": \"gamma/human\", \"seq\": $HELD}"
+ep set "{\"withheld\": {\"$PID2\": {\"gamma/human\": [$HELD]}}, \"admit\": true}"
+until_true 300 tombstone_at "$HELD" || true
+assert_equals "$(tombstone_at "$HELD" && echo yes)" yes "after the hub's refusal and the next have, the archive holds its tombstone"
+assert_not_contains "$(on_remote2)" "gamma, held back" "and not the body"
+assert_contains "$(cat "$CLOG/$GW")" "gamma, held back" "which the local file keeps"
+
+echo "  a refusal lost to a dropped connection:"
+ep set '{"admit": false}'
+gsay "gamma, its refusal lost"
+LOST="$(seq_of "gamma, its refusal lost")"
+until_true 200 taken_past "$LOST" || true
+CONNS="$(epq 'd["conns"]')"
+# The hub withholds it; the connection drops before any refusal reaches the machine.
+ep set "{\"withheld\": {\"$PID2\": {\"gamma/human\": [$HELD, $LOST]}}, \"admit\": true}"
+ep drop
+reconnected() { [ "$(epq 'd["conns"]')" -gt "$CONNS" ] && [ "$(epq 'd["connected"]')" = true ]; }
+until_true 300 reconnected || true
+assert_equals "$(reconnected && echo yes)" yes "gamma reconnects"
+until_true 300 tombstone_at "$LOST" || true
+assert_equals "$(tombstone_at "$LOST" && echo yes)" yes "with no further write, the next archive holds the tombstone the have lists"
+assert_not_contains "$(on_remote2)" "gamma, its refusal lost" "and not the body"
+
+echo "  a position refused audience here, voided since:"
+ep set '{"refuse_audience": ["gamma/human"]}'
+gsay "gamma, a stale audience"
+STALE="$(seq_of "gamma, a stale audience")"
+dead_here() { python3 -c 'import json, sys; sys.exit(0 if "gamma/human" in json.load(open(sys.argv[1])).get("dead", {}) else 1)' \
+  "$T/c/s/projects/$PID2/uplink.json" 2>/dev/null; }
+until_true 200 dead_here || true
+assert_equals "$(dead_here && echo dead)" dead "an audience refusal stops the writer, kept in uplink.json"
+ep set '{"refuse_audience": []}'
+gsay "gamma, current again"
+voided_up() { [ "$(epq "any(e == {'ts': e.get('ts'), 'writer': 'gamma/human', 'seq': $STALE, 'kind': 'void', 'of': $STALE} for f in d['received'] if f['frame'].get('t') == 'events' for e in f['frame']['events'])")" = true ]; }
+until_true 200 voided_up || true
+assert_equals "$(voided_up && echo yes)" yes "an event written to it again revives it: a content-free void goes up at the refused position"
+until_true 300 archived2 "gamma, current again" || true
+assert_equals "$(archived2 "gamma, current again" && echo yes)" yes "the rest of the writer reaches the archive"
+assert_equals "$(tombstone_at "$STALE" && echo yes)" yes "the voided position is its tombstone there"
+assert_not_contains "$(on_remote2)" "gamma, a stale audience" "never the refused body"
+assert_contains "$(cat "$CLOG/$GW")" "gamma, a stale audience" "which the local file keeps"
+assert_equals "$(git -C "$BARE2" ls-tree --name-only main | grep -c '~' || true)" 0 "still no stream file"
+kill "$C_DAEMON"
+set +e; wait "$C_DAEMON"; set -e
+assert_not_contains "$(cat "$T/c/s/daemon.log")" "Traceback" "nothing in gamma's daemon.log is a traceback"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

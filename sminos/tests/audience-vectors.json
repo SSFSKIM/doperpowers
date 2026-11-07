@@ -1,0 +1,171 @@
+{
+ "what": "P5 O18 Interfaces \u00a7A: the audience digest, the stream names and sessionRefs, as MAWS's apps/org-protocol/test/vectors.test.ts ('audience streams') pins them (master 9f49f8fbc, M1). sminos_audience and sminos's stream names are checked against these by test_streams.py.",
+ "digest": [
+  {
+   "members": [
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "digest": "fe20b390ff62eb18"
+  },
+  {
+   "members": [
+    "0123456789abcdef0123456789abcdef"
+   ],
+   "digest": "6cdc3a581db65fa5"
+  },
+  {
+   "members": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   ],
+   "digest": "fe20b390ff62eb18"
+  }
+ ],
+ "streamOf": [
+  {
+   "writer": "mac-1/e0ad139c-18bc-45bd-9489-be8653145f80~fe20b390ff62eb18",
+   "base": "mac-1/e0ad139c-18bc-45bd-9489-be8653145f80",
+   "digest": "fe20b390ff62eb18"
+  },
+  {
+   "writer": "hub/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa~fe20b390ff62eb18",
+   "base": "hub/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "digest": "fe20b390ff62eb18"
+  },
+  {
+   "writer": "mac-1/e0ad139c-18bc-45bd-9489-be8653145f80",
+   "base": "mac-1/e0ad139c-18bc-45bd-9489-be8653145f80",
+   "digest": null
+  },
+  {
+   "writer": "mac-1/e0ad139c-18bc-45bd-9489-be8653145f80~FE20B390FF62EB18",
+   "base": "mac-1/e0ad139c-18bc-45bd-9489-be8653145f80~FE20B390FF62EB18",
+   "digest": null
+  },
+  {
+   "writer": "mac-1/e0ad139c-18bc-45bd-9489-be8653145f80~fe20b390",
+   "base": "mac-1/e0ad139c-18bc-45bd-9489-be8653145f80~fe20b390",
+   "digest": null
+  }
+ ],
+ "streamWriter": [
+  {
+   "base": "mac-1/e0ad139c-18bc-45bd-9489-be8653145f80",
+   "audience": [
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "writer": "mac-1/e0ad139c-18bc-45bd-9489-be8653145f80~fe20b390ff62eb18"
+  }
+ ],
+ "writerSession": [
+  {
+   "writer": "mac-1/e0ad139c-18bc-45bd-9489-be8653145f80~fe20b390ff62eb18",
+   "session": "e0ad139c-18bc-45bd-9489-be8653145f80"
+  },
+  {
+   "writer": "mac-1/human",
+   "session": null
+  },
+  {
+   "writer": "hub/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "session": null
+  }
+ ],
+ "sessionRefs": [
+  {
+   "event": {
+    "writer": "m/e0ad139c-18bc-45bd-9489-be8653145f80",
+    "kind": "say",
+    "to": [
+     {
+      "session": "11111111-2222-4333-8444-555555555555",
+      "alias": "r"
+     }
+    ],
+    "session": "e0ad139c-18bc-45bd-9489-be8653145f80"
+   },
+   "refs": [
+    {
+     "session": "11111111-2222-4333-8444-555555555555",
+     "role": "addressing",
+     "path": "to.0.session"
+    }
+   ]
+  },
+  {
+   "event": {
+    "writer": "m/human",
+    "kind": "in-charge",
+    "session": "11111111-2222-4333-8444-555555555555"
+   },
+   "refs": [
+    {
+     "session": "11111111-2222-4333-8444-555555555555",
+     "role": "addressing",
+     "path": "session"
+    }
+   ]
+  },
+  {
+   "event": {
+    "writer": "m/e0ad139c-18bc-45bd-9489-be8653145f80~fe20b390ff62eb18",
+    "kind": "joined",
+    "session": "e0ad139c-18bc-45bd-9489-be8653145f80",
+    "origin": {
+     "kind": "sminos-spawn",
+     "spawnerSession": "99999999-2222-4333-8444-555555555555"
+    },
+    "attest": {
+     "origin": {
+      "kind": "spawn",
+      "spawnerSession": "99999999-2222-4333-8444-555555555555"
+     }
+    }
+   },
+   "refs": [
+    {
+     "session": "99999999-2222-4333-8444-555555555555",
+     "role": "provenance",
+     "path": "origin.spawnerSession"
+    },
+    {
+     "session": "99999999-2222-4333-8444-555555555555",
+     "role": "provenance",
+     "path": "attest.origin.spawnerSession"
+    }
+   ]
+  },
+  {
+   "event": {
+    "writer": "m/e0ad139c-18bc-45bd-9489-be8653145f80",
+    "kind": "retired",
+    "session": "e0ad139c-18bc-45bd-9489-be8653145f80",
+    "reason": "continued",
+    "to": "11111111-2222-4333-8444-555555555555"
+   },
+   "refs": [
+    {
+     "session": "11111111-2222-4333-8444-555555555555",
+     "role": "provenance",
+     "path": "to"
+    }
+   ]
+  },
+  {
+   "event": {
+    "writer": "m/e0ad139c-18bc-45bd-9489-be8653145f80",
+    "kind": "joined",
+    "session": "e0ad139c-18bc-45bd-9489-be8653145f80",
+    "origin": {
+     "kind": "sminos-spawn",
+     "spawnerSession": null
+    },
+    "to": "*"
+   },
+   "refs": []
+  }
+ ]
+}

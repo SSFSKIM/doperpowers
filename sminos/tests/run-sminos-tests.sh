@@ -396,10 +396,17 @@ run_suites() {
   if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
   if python3 "$SCRIPT_DIR/test_rl10.py"; then pass "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; else
     fail "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_streams.py"; then pass "audience streams on the writing side: the names, a session's own stream, the split say, the private sender's refusal, redaction, an unreadable record (test_streams.py)"; else
+    fail "audience streams on the writing side: the names, a session's own stream, the split say, the private sender's refusal, redaction, an unreadable record (test_streams.py)"; fi
+  if python3 "$SCRIPT_DIR/test_snapshots.py"; then pass "the endpoint's policy-cache rebuild: snapshots? answered in bounded pages, remote writers only, the last done (test_snapshots.py)"; else
+    fail "the endpoint's policy-cache rebuild: snapshots? answered in bounded pages, remote writers only, the last done (test_snapshots.py)"; fi
   if python3 "$SCRIPT_DIR/test_words.py"; then pass "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; else
     fail "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; fi
   if python3 "$SCRIPT_DIR/test_owed.py"; then pass "what a machine still owes: daemon owed's kinds, its bound and exit, the uplink's taken (test_owed.py)"; else
     fail "what a machine still owes: daemon owed's kinds, its bound and exit, the uplink's taken (test_owed.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_reach.py"; then
+    pass "message reach on the log plane: the hub stand-in's M1 rules, the admitted have, retries, dead writers and voids (test_reach.py)"
+  else fail "message reach on the log plane: the hub stand-in's M1 rules, the admitted have, retries, dead writers and voids (test_reach.py)"; fi
   if python3 "$SCRIPT_DIR/test_heads.py"; then pass "an own writer of no session waits for its upstream's head on a new enrolment, DX2 and RL10 (test_heads.py)"; else
     fail "an own writer of no session waits for its upstream's head on a new enrolment, DX2 and RL10 (test_heads.py)"; fi
   # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink
