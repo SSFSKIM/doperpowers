@@ -20,6 +20,33 @@
           "field": "plugins[name=doperpowers].version"
         }
       ],
+      "unshipped": [
+        "CLAUDE.md",
+        "*/CLAUDE.md",
+        "README.md",
+        "*/README.md",
+        "tests/*",
+        "AGENTS.md",
+        "NOTICE",
+        ".github/*",
+        ".gitignore",
+        ".gitattributes",
+        ".pre-commit-config.yaml",
+        ".smns",
+        ".version-bump.json",
+        ".claude-plugin/marketplace.json",
+        ".agents/*",
+        ".doperpowers/*",
+        "docs/*",
+        "archive/*",
+        "application-agents/*",
+        "teaching/*",
+        "infra/*",
+        "devenv/*",
+        "codex/*",
+        "evals/*",
+        "scripts/*"
+      ],
       "audit": {
         "exclude": [
           "CHANGELOG.md",
@@ -40,6 +67,7 @@
     },
     {
       "name": "devcloud",
+      "root": "devcloud",
       "files": [
         {
           "path": "devcloud/.claude-plugin/plugin.json",
@@ -50,13 +78,21 @@
           "field": "plugins[name=devcloud].version"
         }
       ],
+      "unshipped": [
+        "CLAUDE.md",
+        "*/CLAUDE.md",
+        "README.md",
+        "*/README.md",
+        "tests/*",
+        "types/*"
+      ],
       "audit": {
-        "root": "devcloud",
         "exclude": []
       }
     },
     {
       "name": "to-human",
+      "root": "to-human",
       "files": [
         {
           "path": "to-human/.claude-plugin/plugin.json",
@@ -67,13 +103,20 @@
           "field": "plugins[name=to-human].version"
         }
       ],
+      "unshipped": [
+        "CLAUDE.md",
+        "*/CLAUDE.md",
+        "README.md",
+        "*/README.md",
+        "tests/*"
+      ],
       "audit": {
-        "root": "to-human",
         "exclude": []
       }
     },
     {
       "name": "sminos",
+      "root": "sminos",
       "files": [
         {
           "path": "sminos/.claude-plugin/plugin.json",
@@ -84,13 +127,21 @@
           "field": "plugins[name=sminos].version"
         }
       ],
+      "unshipped": [
+        "CLAUDE.md",
+        "*/CLAUDE.md",
+        "README.md",
+        "*/README.md",
+        "tests/*",
+        "types/*"
+      ],
       "audit": {
-        "root": "sminos",
         "exclude": []
       }
     },
     {
       "name": "web",
+      "root": "web",
       "files": [
         {
           "path": "web/.claude-plugin/plugin.json",
@@ -101,8 +152,16 @@
           "field": "plugins[name=web].version"
         }
       ],
+      "unshipped": [
+        "CLAUDE.md",
+        "*/CLAUDE.md",
+        "README.md",
+        "*/README.md",
+        "tests/*",
+        "clipper/test/*",
+        "evals/*"
+      ],
       "audit": {
-        "root": "web",
         "exclude": [
           "clipper",
           "runs"

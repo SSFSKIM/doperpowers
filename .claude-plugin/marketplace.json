@@ -9,7 +9,7 @@
     {
       "name": "doperpowers",
       "description": "A development methodology for Claude Code: a design you approve, one living spec, test-first builds by fresh subagents, and review by another model family.",
-      "version": "7.217.0",
+      "version": "7.218.0",
       "source": "./",
       "author": {
         "name": "SSFSKIM",
