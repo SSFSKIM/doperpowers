@@ -116,10 +116,16 @@ def _read_audiences():
     """The kept file as a dict; {} when there is none; StreamUnknown when it
     is there and cannot be read (fail closed: a remote session's privacy is
     unknown)."""
+    d = _read_kept()
+    return {} if d is None else d
+
+
+def _read_kept():
+    """_read_audiences, None when there is no file: what one read found."""
     try:
         d = sminos.json_at(audiences_path())
     except FileNotFoundError:
-        return {}
+        return None
     except (OSError, ValueError) as e:
         raise StreamUnknown("%s cannot be read (%s): no event naming another session is written until it can"
                             % (AUDIENCES, e))
@@ -137,6 +143,22 @@ def capable():
     except StreamUnknown:
         return True
     return "access" in (d.get("capabilities") or [])
+
+
+def reach_capable():
+    """Whether every peer push here is the endpoint's to decide (`reach?`,
+    P5 O18 D3, D8): the machine is cut over to its endpoint and the
+    endpoint's welcome advertised `reach`. On a cut-over machine a file that
+    is not there yet, or cannot be read, is taken as capable, so the pushes
+    are held owed (fail closed) until a welcome says: keep_capabilities
+    writes it at every welcome, an old endpoint's empty list included."""
+    if not sminos.sibling_module("sminos_rl10").cut_over():
+        return False
+    try:
+        d = _read_kept()   # one read decides: a welcome may write the file just after it
+    except StreamUnknown:
+        return True
+    return d is None or "reach" in (d.get("capabilities") or [])
 
 
 def _write_audiences(d):
@@ -171,7 +193,10 @@ def keep_capabilities(capabilities):
 def audience_entry(frame):
     """An `audience` frame as kept, or None when it is no such frame: its
     owners (member ids), its members (an audience, or None: listed), its
-    policyRev; its digest, when sent, must be its members'."""
+    policyRev; its digest, when sent, must be its members'. A local
+    session's frame may name `withdrawn`, the members its change at that
+    policyRev withdrew (as the endpoint checks an `unlisted` notice), kept
+    with it when it names any (O18 M4)."""
     sid, owners, members, rev = frame.get("session"), frame.get("owners"), frame.get("members"), frame.get("policyRev")
     if not (sminos.UUID_RE.match(str(sid or "")) and isinstance(owners, list)
             and all(isinstance(o, str) and o for o in owners) and type(rev) is int and rev >= 0):
@@ -184,7 +209,14 @@ def audience_entry(frame):
             return None
     elif frame.get("digest") is not None:
         return None
-    return sid, {"owners": sorted(set(owners)), "members": members, "policyRev": rev}
+    entry = {"owners": sorted(set(owners)), "members": members, "policyRev": rev}
+    withdrawn = frame.get("withdrawn")
+    if withdrawn is not None:
+        if not isinstance(withdrawn, list) or not all(isinstance(m, str) and m for m in withdrawn):
+            return None
+        if withdrawn:
+            entry["withdrawn"] = sorted(set(withdrawn))
+    return sid, entry
 
 
 def keep_audience(frame):
@@ -273,6 +305,19 @@ def owners_of(sid, held=None):
         owners = rec.get("owners") if isinstance(rec.get("owners"), list) else []
         if owners and sminos.records_module().MACHINE not in owners:
             return sorted(set(owners))
+    return None
+
+
+def machine_owners(held=None):
+    """The machine's owners (`@machine`) as the endpoint resolved them: the
+    owners it gave a session of this machine whose record names exactly
+    `@machine`; None when no such word is kept."""
+    held = held if held is not None else _read_audiences()
+    records = sminos.records_module()
+    for sid, entry in sorted((held.get("sessions") or {}).items()):
+        if isinstance(entry, dict) and entry.get("owners") and is_local(sid) \
+                and (records.read(sid) or {}).get("owners") == [records.MACHINE]:
+            return list(entry["owners"])
     return None
 
 

@@ -201,10 +201,12 @@ class Rig(unittest.TestCase):
         return [line for line in text.splitlines() if words in line]
 
     def cut_over(self, devices=()):
-        """This machine cut over to its endpoint, `devices` revoked."""
+        """This machine cut over to its endpoint, `devices` revoked; its
+        welcome kept no capabilities (an endpoint before O18's)."""
         sminos.write_json(rl10.identity_path(), {
             "org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {}, "ref": "r",
             "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"})
+        sminos.audience_module().keep_capabilities([])
         self.revoke(devices)
         sminos.forget_caches()
 

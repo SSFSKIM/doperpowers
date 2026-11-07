@@ -597,7 +597,9 @@ def judge(e, reach):
                 or f["refs"] or f["own"] is None or e["session"] != f["own"] \
                 or stream_of(e["writer"])[1] is None or not mine.get(f["own"]):
             return "withhold"
-        row = rows.get(f["own"])
+        # Judged against the rows as they stood before the batch (M2's two passes): the snapshot of the change
+        # it announces may ride the same batch, before it or after.
+        row = reach.get("before", rows).get(f["own"])
         if row is None or not e["policyRev"] > row["policyRev"]:
             return "withhold"
         return "admit" if row["audience"] is None or set(e["audience"]) <= set(row["audience"]) else "withhold"
@@ -848,7 +850,7 @@ def reach_of(p, machine, events):
     for snapshot in snapshots:
         if mine.get(snapshot["session"]) and newer(snapshot, ahead.get(snapshot["session"])):
             ahead[snapshot["session"]] = {k: snapshot[k] for k in ("audience", "policyRev", "created")}
-    return {"available": True, "rows": rows, "mine": mine, "owners": owners, "ahead": ahead}
+    return {"available": True, "rows": rows, "before": dict(rows), "mine": mine, "owners": owners, "ahead": ahead}
 
 
 def store(pid, p, machine, events, refuse, replies):

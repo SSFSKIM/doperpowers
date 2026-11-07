@@ -26,7 +26,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -222,6 +221,73 @@ class Dx2(Machine):
         self.assertIn("waits", out.stdout)
         self.assertEqual(self.log(), [])
         self.assertEqual([e["text"] for e in sminos.queued_read(self.p, W)], ["hello"])
+
+
+class Streams(Machine):
+    """The operator's words to a private session go under an audience stream
+    of its writer, `<name>/human~<digest>` (P5 O18 D6): each such stream
+    waits for its own head as the plain writer does, and is released on it."""
+
+    D1, D2 = "%016x" % 0xd1, "%016x" % 0xd2
+
+    def stream(self, digest, name="testhost"):
+        return "%s/human~%s" % (name, digest)
+
+    def append(self, writer, text):
+        return sminos.log_append(self.p, writer, "human", **{"from": "human", "to": "*", "text": text})
+
+    def held(self, writer):
+        return [(e["seq"], e["text"]) for e in sminos.log_read(self.p) if e["writer"] == writer]
+
+    def hub_events(self, writer, n):
+        key = base64.urlsafe_b64decode(KEY + "=")
+        return [hublog.seal(key, self.p.id, {"ts": "2026-10-01T00:00:%02d.000Z" % s, "writer": writer, "seq": s,
+                                             "kind": "human", "from": "human", "to": "*", "text": "old %d" % s})
+                for s in range(1, n + 1)]
+
+    def test_an_operator_stream_waits_for_its_own_head_and_lands_above_it(self):
+        self.enrol()
+        s1, s2 = self.stream(self.D1), self.stream(self.D2)
+        self.assertIsNone(self.append(s1, "to the private one")["seq"], "it waits, as the plain writer does")
+        hl = hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"})
+        hl.on_have({"have": {W: 1, s1: 2}})
+        self.assertIsNone(self.append(s1, "again")["seq"], "its head is known, its backlog not landed")
+        self.assertEqual(hl.take(self.hub_events(W, 1)), (1, []))
+        self.assertIsNone(self.append(s1, "a third")["seq"], "the plain writer's head says nothing of the stream's")
+        self.assertEqual(self.append(W, "plain")["seq"], 2, "the plain writer released on its own head")
+        self.assertEqual(hl.take(self.hub_events(s1, 2)), (2, []))
+        self.assertEqual(self.held(s1), [(1, "old 1"), (2, "old 2"), (3, "to the private one"), (4, "again"),
+                                         (5, "a third")], "released above the stream's head, in order")
+        self.assertEqual([(w, s) for frame, _ in hl.uploads() for e in frame["events"]
+                          for w, s in [(e["writer"], e["seq"])] if w == s1], [(s1, 3), (s1, 4), (s1, 5)])
+        self.assertEqual(self.append(s2, "a stream the hub holds nothing of")["seq"], 1,
+                         "a stream the have named no head for has none to wait for")
+        self.assertEqual(self.append(s1, "after")["seq"], 6)
+        self.assert_one_event_a_position()
+
+    def test_before_any_have_every_operator_stream_waits(self):
+        self.enrol()
+        self.assertIsNone(self.append(self.stream(self.D2), "early")["seq"])
+        hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"}).on_have(
+            {"have": {}})
+        self.assertEqual(self.held(self.stream(self.D2)), [(1, "early")], "released at the have, which holds none")
+
+    def test_a_former_names_queues_release_each_into_its_namesake(self):
+        self.enrol(fresh=False)
+        rl10.welcomed(Rl10.WELCOME)
+        self.assertIsNone(self.append(self.stream(self.D1), "stream as testhost")["seq"])
+        self.assertIsNone(self.append(W, "plain as testhost")["seq"])
+        rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
+        new1 = self.stream(self.D1, "renamed")
+        self.assertIsNone(self.append(new1, "stream as renamed")["seq"])
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False)
+        hl.on_have({"have": {new1: 1}})
+        self.assertEqual(self.held("renamed/human"), [(1, "plain as testhost")], "the plain into the plain")
+        self.assertEqual(self.held(new1), [], "the stream waits for its own head")
+        hl.spend(new1, 1, "conflict")
+        self.assertEqual(self.held(new1), [(2, "stream as testhost"), (3, "stream as renamed")],
+                         "the stream's queues, former name first, into the stream of the same digest")
+        self.assertEqual(sminos.queued_operators(self.p), {})
 
 
 class Rl10(Machine):

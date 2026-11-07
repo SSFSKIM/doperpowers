@@ -42,6 +42,11 @@ as sminos's reconnect does):
   `words?` with `words {id, verdict}` when `verdicts` names one for its id,
   or `verdict` is set (a callable in-process: (frame) → verdict or None),
   and `refuse` for one naming no `project`, as the endpoint answers it;
+  `reach?` (P5 O18 D3) likewise with `reach {id, verdict, reason?}` from
+  `reach_verdicts` by id, else `reach_verdict` (a callable in-process:
+  (frame) → verdict or None; a verdict is `deliver`, `refuse` — sent with
+  reason `not-reachable` — or (`refuse`, reason)), silent when neither
+  names one, as an endpoint that holds no record of the session is;
   `restated` (the end of sminos's restatement after a welcome) is kept.
   `handler`, in-process, is called with each frame first and may return
   frames to send (the later halves' hook).
@@ -75,14 +80,15 @@ is the hub's tombstones, sent as the `have`'s `withheld` and counted in its
 vector; `archive` (a boolean, or {project: boolean}) is the `have`'s archive
 designation. `refuse_audience` (a list of writers) refuses each upload of
 those writers `audience`, the writer's later events in the frame passed
-over, as the endpoint refuses a stream it does not sign. `refused` (ctl
+over, as the endpoint refuses a stream it does not sign. `refuse_upload` (ctl
 `refuse` {project, writer, seq, reason?}) sends `refused {project, refusal:
 {reason, writer, seq}}`, `not-reachable` by default, with no message.
 
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
-persist_legacy, answer_policy, ack_results, verdicts, verdict, relay,
-capabilities, audiences, admit, withheld, archive, refuse_audience.
+persist_legacy, answer_policy, ack_results, verdicts, verdict,
+reach_verdicts, reach_verdict, relay, capabilities, audiences, admit,
+withheld, archive, refuse_audience.
 """
 
 import base64
@@ -97,7 +103,8 @@ import time
 
 LINE_MAX = 1 << 20   # a line at most 1 MiB of UTF-8 (O10 §D); larger text goes as `part`s
 FIELDS = ("token", "identity", "policy", "revoked", "org", "build", "state_version", "refuse_reason", "ask_legacy",
-          "persist_legacy", "answer_policy", "ack_results", "verdicts", "verdict", "relay", "capabilities",
+          "persist_legacy", "answer_policy", "ack_results", "verdicts", "verdict", "reach_verdicts", "reach_verdict",
+          "relay", "capabilities",
           "audiences", "admit", "withheld", "archive", "refuse_audience")
 TS_MS = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 TS_S = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
@@ -145,14 +152,17 @@ def upload_form(e):
     return {**e, "created": created}
 
 
-def audience_frame(session, owners, members=None, policy_rev=0):
+def audience_frame(session, owners, members=None, policy_rev=0, withdrawn=None):
     """An `audience` frame's body as the endpoint sends it (O18 Interfaces
-    §B): members None for a listed session, its digest beside them."""
+    §B): members None for a listed session, its digest beside them; for a
+    local session whose change at that policyRev withdrew members, those
+    members as `withdrawn` (O18 M4's interface change: absent when it
+    withdrew none)."""
     import hashlib
     digest = None if members is None else hashlib.sha256(
         json.dumps(sorted(set(members)), separators=(",", ":")).encode()).hexdigest()[:16]
     return {"session": session, "owners": list(owners), "members": None if members is None else sorted(set(members)),
-            "digest": digest, "policyRev": policy_rev}
+            "digest": digest, "policyRev": policy_rev, **({"withdrawn": sorted(set(withdrawn))} if withdrawn else {})}
 
 
 def b64url(data):
@@ -248,6 +258,8 @@ class Endpoint:
         self.ack_results = True
         self.verdicts = {}
         self.verdict = None
+        self.reach_verdicts = {}
+        self.reach_verdict = None
         self.members = {}   # session → its last `member` frame (the member state an action's context is read from)
         self.relay = True
         self.capabilities = []   # the welcome's (an O18 endpoint's: ["access", "reach"])
@@ -449,6 +461,14 @@ class Endpoint:
                 verdict = self.verdict(frame) if callable(self.verdict) else self.verdict
             if verdict is not None:
                 out.append({"t": "words", "id": frame.get("id"), "verdict": verdict})
+        elif t == "reach?":
+            verdict = self.reach_verdicts.get(frame.get("id"))
+            if verdict is None and self.reach_verdict is not None:
+                verdict = self.reach_verdict(frame) if callable(self.reach_verdict) else self.reach_verdict
+            if verdict is not None:
+                verdict, reason = (verdict, "not-reachable") if isinstance(verdict, str) else tuple(verdict)
+                out.append({"t": "reach", "id": frame.get("id"), "verdict": verdict,
+                            **({"reason": reason} if verdict == "refuse" else {})})
         elif t == "hello" and isinstance(frame.get("project"), str) and self.relay:
             out.append(self.have(frame["project"]))
         elif t == "events" and isinstance(frame.get("project"), str) and isinstance(frame.get("events"), list):
@@ -507,9 +527,10 @@ class Endpoint:
                                         **({"message": message} if message else {})}})
         return out
 
-    def refused(self, project, writer, seq, reason="not-reachable"):
+    def refuse_upload(self, project, writer, seq, reason="not-reachable"):
         """The hub's refusal of an upload as the endpoint passes it down, with
-        no message (a `not-reachable` never carries one). Sent, and returned."""
+        no message (a `not-reachable` never carries one). Sent, and returned.
+        (Not `refused`: that is the list of the hellos refused.)"""
         frame = {"t": "refused", "project": project, "refusal": {"reason": reason, "writer": writer, "seq": seq}}
         self.send(frame)
         return frame
@@ -655,7 +676,7 @@ def control(ep, req):
         mode = int(str(arg.pop("mode", "600")), 8)
         ep.write_rl10(mode, **arg)
     elif op == "refuse":
-        ep.refused(arg["project"], arg["writer"], arg["seq"], arg.get("reason", "not-reachable"))
+        ep.refuse_upload(arg["project"], arg["writer"], arg["seq"], arg.get("reason", "not-reachable"))
     elif op == "unlink-rl10":
         os.unlink(ep.rl10_path())
     elif op == "stop":

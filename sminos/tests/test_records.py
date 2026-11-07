@@ -1441,6 +1441,68 @@ class ThePolicy(unittest.TestCase):
             "its spawner's reach; its policyRev its own, from 0")
         self.assertEqual(policy(m.record(m.spawn("byhand"))), {}, "an operator's spawn: the defaults")
 
+    def test_a_continuation_known_only_from_its_predecessors_joined_takes_its_policy_from_where_it_sits(self):
+        """A predecessor whose record file is gone speaks only through its
+        publishing `joined`, which carries no policy: under an audience
+        stream it was private, so its continuation is private with no
+        shares (the shares unknown: the narrowest, for the owner to widen);
+        under its plain writer, the listed default."""
+        m = Machine(self)
+        got = m.py("import json, sminos_audience, sminos_records as R\n"
+                   "p = sminos.resolve_project(sys.argv[1]); member = sys.argv[2]\n"
+                   "f = sminos.joined_fields('x', 'derived', sys.argv[1])\n"
+                   "out = {}\n"
+                   "for old, new, stream in ((sys.argv[3], sys.argv[4], True), (sys.argv[5], sys.argv[6], False)):\n"
+                   "    w = sminos.writer_id(old)\n"
+                   "    if stream:\n"
+                   "        sminos_audience.keep_stream(p, sminos.stream_writer(w, [member]), [member])\n"
+                   "    sminos._append(p, sminos.stream_writer(w, [member]) if stream else w, [{'kind': 'joined',\n"
+                   "        'session': old, **f, 'owners': [member], 'origin': {'kind': 'terminal'}}])\n"
+                   "    sminos._append(p, w, [{'kind': 'retired', 'session': old, 'by': '', 'reason': 'continued',\n"
+                   "        'to': new}])\n"
+                   "    sminos.forget_caches()\n"
+                   "    prov = sminos.lineage_provenance(p, new)\n"
+                   "    out[new] = (prov['owners'], prov['former'], R.policy_carried(prov))\n"
+                   "print(json.dumps(out))", str(m.repo), MEMBER, T0, TB, TX, "7d000004-0000-4000-8000-00000000007d")
+        out = json.loads(got)
+        self.assertEqual(out[TB], [[MEMBER], [T0], {"access": "private", "shares": []}],
+                         "its predecessor's joined sat under a stream: private, no shares, policyRev 0")
+        self.assertEqual(out["7d000004-0000-4000-8000-00000000007d"], [[MEMBER], [TX], {}],
+                         "under the plain writer: the listed default")
+
+    def test_a_private_session_whose_record_is_lost_is_recreated_private(self):
+        """Its record file gone (deleted, a restore without it), the session's
+        own audience stream, catalogued in streams.json, says it was
+        private: recreated private with no shares, policyRev 0 (its shares
+        unknown: the narrowest, for its owner to widen). A session with no
+        stream of its own is recreated listed, as before."""
+        m = Machine(self)
+        for sid, name in ((T0, "hidden"), (TB, "open")):
+            m.peer(sid, name)
+            m.hook("SessionStart", sid)
+        set_private(m, T0)
+        m.py("import sminos_audience\n"
+             "p = sminos.resolve_project(sys.argv[1])\n"
+             "sminos_audience.keep_stream(p, sminos.stream_writer(sminos.writer_id(sys.argv[2]), [sys.argv[3]]),"
+             " [sys.argv[3]])", str(m.repo), T0, MEMBER)
+        for sid in (T0, TB):
+            m.record_path(sid).unlink()
+            m.hook("Stop", sid, source="")
+        self.assertEqual(policy(m.record(T0)), {"access": "private", "shares": []},
+                         "its own stream says it was private")
+        self.assertEqual(policy(m.record(TB)), {}, "no stream of its own: the listed default")
+
+    def test_a_pending_launch_this_code_never_wrote_is_claimed_private(self):
+        """The claim stands and its content does not: the launch's policy is
+        unknown (its spawner may have been private), so the narrowest."""
+        R = self.store()
+        os.makedirs(os.path.dirname(R.pending_path("a" * 32)), exist_ok=True)
+        Path(R.pending_path("a" * 32)).write_text(json.dumps({"owners": "not a list"}))
+        R.bind("a" * 32, TB)
+        got = R.claim("a" * 32, TB)
+        self.assertEqual((got["owners"], got["source"], policy(got)),
+                         (["@machine"], "default", {"access": "private", "shares": []}))
+
     @unittest.skipIf(os.geteuid() == 0, "root reads a file of mode 000")
     def test_a_seat_of_a_spawner_whose_record_cannot_be_read_is_private(self):
         m = Machine(self)

@@ -542,6 +542,19 @@ def exists(project_id, session, e):
     return r is not None and r.get("hash") == S.event_hash(e)
 
 
+def words_of(project_id, session, e):
+    """The verdict the event's held receipt was prepared under (`words`:
+    True a person's words, False a peer's, None none taken); None when no
+    receipt is held for it or it cannot be read. What a retry pushes under,
+    and so whether the reach gate decides it (P5 O18 D8)."""
+    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"]), create=False)
+    try:
+        r = _read(path) if os.path.exists(path) else None
+    except Unreadable:
+        return None
+    return r.get("words") if r is not None and r.get("hash") == S.event_hash(e) else None
+
+
 def handed(project_id, session, e):
     """Whether the event's receipt went to its process: True when an attempt
     reached its inbox (or may have) or the mod admitted it; False when there

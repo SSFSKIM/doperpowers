@@ -98,6 +98,22 @@ machine is delivered by the recipient machine's daemon; when one never
 arrived, `sminos daemon policy` there may say read-only — the owner's
 setting: report it rather than change it (`references/setup.md`).
 
+**Reach.** A session is `listed` by default, and any member's agents
+may message it. One set `private` takes messages only from its owners'
+agents and from people it is shared with:
+
+    sminos access <member> private|listed|org-view|org-converse
+    sminos share <member> <person> list|view|converse|approve|none   # list: "Can message"
+
+You can narrow reach from your shell: going private, removing a share,
+lowering a grade. Widening needs the owner at a terminal. From a session
+it is refused, and you should tell your human partner rather than look
+for a way around it. A private session you are not shared on reads as
+`no member named …`. A private session's agent can't message outside
+its audience: `… can't be reached from this session`. A message the hub
+refuses comes back to you as `[sminos: your message to <alias> was not
+delivered: not-reachable]`.
+
 **Your human partner.** No tag reaches the human: what they should know
 goes in a call of `mcp__to-human__message` where you have it (`final:
 true` when it ends your turn), else in a `<message>` ending your reply; a

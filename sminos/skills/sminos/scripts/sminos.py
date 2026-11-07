@@ -101,6 +101,12 @@ member too, seat-less, from the first call that reads its project.
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
     sminos status   <member> <one line>                   # the member's own "now" line
     sminos retire   <member> [--purge]                    # stop; keep (or purge) a seat's record
+    sminos access   <member> private|listed|org-view|org-converse   # who may reach a session of this
+                   machine: private, its owners' agents and its shares'; listed or org-wide, every member's
+    sminos share    <member> <person> list|view|converse|approve|none   # a member's grade on it (<person> an
+                   org member id, or an email this machine holds one for); list ("Can message") lets their
+                   agents message it, view and up read it too. Narrowing is any shell's; widening (access up,
+                   a share added or raised) only the owner's, in a terminal, confirmed there, or MAWS
     sminos remove   <seat>                                # stop and delete the record
     sminos list     [project] [--project P,..] [--machine M,..] [--state W,..] [--org] [--here] [--stopped] [--all] [--json]
                    [words..]  # the caller's project (a session's own, else the working directory's;
@@ -608,8 +614,10 @@ HOLDER_AWAITING = "awaiting-admission"
 # A session's membership is its latest of these, in its own file, by seq.
 MEMBERSHIP = ("joined", "retired")
 # The facts about a session the projection reads; whoever writes one for a
-# session on its machine appends it to that session's file.
-LIFECYCLE = MEMBERSHIP + ("renamed", "state", "titled", "in-charge", "status")
+# session on its machine appends it to that session's file. `unlisted` is a
+# session's transition notice (P5 O18 D6): the members it is addressed to no
+# longer see the session.
+LIFECYCLE = MEMBERSHIP + ("renamed", "state", "titled", "in-charge", "status", "unlisted")
 # The harness session kinds that are members on sight; any other is not.
 JOINABLE_KINDS = ("interactive", "bg")
 # A headless or SDK run (`claude -p`, the agent SDKs) registers as
@@ -1988,7 +1996,12 @@ def writer_locks(path, held=False):
 # project's heads.json then names the writer known for the enrolment, and what
 # waited is appended above that head, in order and with the ts it was said
 # at, and goes up with the next upload. A machine enrolled before this rule
-# has no mark, and nothing of it waits.
+# has no mark, and nothing of it waits. Each audience stream of the operator
+# writer, `<name>/human~<digest>` (P5 O18 D6: the operator's words to a
+# private session), is an operator writer too, waiting for and released on
+# its own head; the first `have` seen under the enrolment is kept as the
+# operator writers it named a head for (`headed`), and a writer it did not
+# name, a stream opened later included, has nothing upstream to wait for.
 HEADS_FILE = "heads.json"
 HEADS_KEPT = 8   # enrolments daemon/heads.json keeps marked: one replacing another leaves the other marked
 QUEUED = "queued"
@@ -2040,11 +2053,22 @@ def _stamped(path, now):
     return d if isinstance(d, dict) and (d.get("name"), d.get("enrolled")) == now else None
 
 
+def operator_writer(writer):
+    """Whether a writer is an operator writer, `<name>/human` or an audience
+    stream of it, under any name."""
+    base = writer_base(writer) if isinstance(writer, str) else ""
+    return base.endswith("/human") and base.count("/") == 1
+
+
 def waits_for_head(project, writer):
     """Whether an append to `writer` in `project` waits for the upstream's
-    head (the rule above): this machine's operator writer, in a project of
-    its upstream, under a marked enrolment, not yet known for it."""
-    if writer != writer_id():
+    head (the rule above): this machine's operator writer or a stream of it,
+    in a project of its upstream, under a marked enrolment, not yet known
+    for it — and once the enrolment's first `have` was kept (keep_headed),
+    only while that `have` named a head for it, or a queue of it is still
+    there (what it queued goes first: the release drains it under the
+    writer's locks, which this is read under)."""
+    if writer_base(writer) != writer_id():
         return False
     e = enrollment()
     if e is None or not (isinstance(project.hub, dict) and project.hub.get("org") == e["org"]):
@@ -2053,7 +2077,28 @@ def waits_for_head(project, writer):
     if now is None or now not in _marks():
         return False
     known = _stamped(os.path.join(project.home, HEADS_FILE), now)
-    return not (known is not None and writer in (known.get("known") or []))
+    if known is None:
+        return True
+    if writer in (known.get("known") or []):
+        return False
+    headed = known.get("headed")
+    return not (isinstance(headed, list) and writer not in headed
+                and not os.path.exists(queued_path(project, writer)))
+
+
+def keep_headed(project, writers):
+    """The operator writers the upstream holds a head for (`writers`), as
+    the first `have` seen under this machine's enrolment named them
+    (HubLog.release_heads), kept in the project's heads.json once per
+    marked enrolment: a writer it did not name has nothing upstream to wait
+    for (waits_for_head)."""
+    now = enrolment_stamp()
+    if now is None or now not in _marks():
+        return
+    known = _stamped(os.path.join(project.home, HEADS_FILE), now) or {"name": now[0], "enrolled": now[1]}
+    if "headed" not in known:
+        known["headed"] = sorted(writers)
+        write_json(project_path(project, HEADS_FILE), known)
 
 
 def queued_path(project, writer):
@@ -2085,16 +2130,23 @@ def queued_read(project, writer):
 
 def queued_operators(project):
     """{writer: path} of the project's queues of this machine's operator
-    writer, under its name now or a former one (a welcome that renamed the
-    machine while an append waited)."""
+    writers (the plain one and its streams), under its name now or a former
+    one (a welcome that renamed the machine while an append waited)."""
     me, former = machine_identity()
     names = {me, *former}
     out = {}
     for path in glob.glob(os.path.join(glob.escape(project.home), QUEUED, "*.jsonl")):
         got = queued_events(path)
-        if got and got[0]["writer"].endswith("/human") and got[0]["writer"].rpartition("/")[0] in names:
+        if got and operator_writer(got[0]["writer"]) and writer_base(got[0]["writer"]).rpartition("/")[0] in names:
             out[got[0]["writer"]] = path
     return out
+
+
+def namesake(writer, name):
+    """An operator writer under `name`: the plain one for the plain one, the
+    stream of the same digest for a stream."""
+    digest = stream_of(writer)[1]
+    return "%s/human" % name if digest is None else "%s/human~%s" % (name, digest)
 
 
 def queued_counts():
@@ -2143,11 +2195,13 @@ def release_queued(project, writer):
             known["known"] = sorted(set(known.get("known") or []) | {writer})
             write_json(project_path(project, HEADS_FILE), known)
         # What waited under a former name too, the operator's now under this
-        # name (a former name's writer is no upload's). Each queue is drained
-        # under its own writer's locks, which an appender still running as a
-        # former name takes to queue there.
+        # name (a former name's writer is no upload's), each queue into its
+        # namesake (a stream into the stream of its digest). Each queue is
+        # drained under its own writer's locks, which an appender still
+        # running as a former name takes to queue there.
         with ExitStack() as stack:
-            queues = queued_operators(project)
+            queues = {w: p for w, p in queued_operators(project).items()
+                      if namesake(w, writer_base(writer).rpartition("/")[0]) == writer}
             for w in sorted(queues):
                 if w != writer:
                     stack.enter_context(writer_locks(writer_path(project, w)))
@@ -3034,7 +3088,8 @@ def lineage_provenance(project, sid, peer=None, former=None, events=None):
     """A provenance from the sessions `sid` continues, or None. The first
     final record along them wins; else the latest `joined` among them, the
     nearest first, that publishes (its owners the machine's when it names
-    none); else the first provisional record, the fallback, so a provisional
+    none, its policy read from where it sits: from_joined); else the first
+    provisional record, the fallback, so a provisional
     session between it and a final ancestor never hides the ancestor. The
     session's own publications are never evidence: they say what its record
     already is. A predecessor whose record file cannot be read ends the walk
@@ -3058,8 +3113,8 @@ def lineage_provenance(project, sid, peer=None, former=None, events=None):
         for s in chain:
             j = last_published(project, s, events)
             if j is not None:
-                return records.from_joined({"owners": owners_of(j) or [records.MACHINE], "origin": j.get("origin")},
-                                           chain)
+                return records.from_joined({"owners": owners_of(j) or [records.MACHINE], "origin": j.get("origin"),
+                                            "writer": j["writer"]}, chain)
     return fallback
 
 
@@ -3069,7 +3124,9 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
     lineage, then the hook's, then the defaults; final over provisional).
     The candidate is its lineage (lineage_provenance; `former`, a hand-off's
     predecessor, when the caller knows it), else `evidence` (the hook's:
-    the session's own environment), else the machine's defaults. A record a
+    the session's own environment), else the machine's defaults; a session
+    with no record whose candidate carries no policy is private with no
+    shares when a stream of its own is catalogued (has_own_stream). A record a
     launch established, or a final lineage, has nothing stronger to look
     for but a claim (sminos_records.claim); a final hook record looks for a
     lineage only where one can appear, a background job or a hand-off. Then,
@@ -3091,12 +3148,53 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
             prov = lineage_provenance(project, sid, peer, former, events) \
                 or evidence or records.default_provenance()
             if records.stronger(prov, rec):
+                if rec is None and not records.policy_carried(prov) and has_own_stream(sid):
+                    # A record lost (deleted, a restore without it) of a session that was private: its own stream
+                    # says so, its shares unknown — the narrowest, for its owner to widen (O18 D10).
+                    prov = {**prov, "access": "private", "shares": []}
+                floor = policy_rev_floor(sid) if rec is None and prov.get("access") == "private" else 0
+                if floor > prov.get("policyRev", 0):
+                    # Above every revision of it kept here, a predecessor's (inherited) included.
+                    prov = {**prov, "policyRev": floor}
                 rec = records.establish(sid, prov, _RECORD_DEADLINE)[0]
         except (OSError, LockBusy, ValueError) as e:
             warn("the record of session %s could not be written: %s" % (sid[:8], e))
     if rec is not None and records.is_final(rec) and project is not None:
         publish_owners(project, sid, events)
     return rec
+
+
+def policy_rev_floor(sid):
+    """The policyRev a session's recreated record starts at: above every
+    revision of it this machine still holds — its endpoint's audience entry
+    (daemon/audiences.json) and its kept transition (visibility.json) — or 0
+    when it holds none. The endpoint's word at a revision the lost record
+    had would never match a record restarted below it (audience_of needs
+    its own revision, and an entry is replaced only by a newer one), so the
+    session would stay unwritable; above them, the endpoint restates its
+    audience at the new revision once its member frame carries it."""
+    revs = []
+    try:
+        entry = audience_module().entry_of(sid)
+    except audience_module().StreamUnknown:
+        entry = None
+    held = sibling_module("sminos_visibility").transitions().get(sid)
+    for rev in ((entry or {}).get("policyRev"), (held or {}).get("policyRev")):
+        if type(rev) is int and rev >= 0:
+            revs.append(rev + 1)
+    return max(revs, default=0)
+
+
+def has_own_stream(sid):
+    """Whether a session has an audience stream of its own writer, under
+    this machine's name now or a former one, catalogued in any project
+    known here (streams.json, sminos_audience.keep_stream): it was private
+    when that stream was written. Read only when a record is about to be
+    written for a session that has none."""
+    me, former = machine_identity()
+    mine = {"%s/%s" % (name, sid) for name in (me, *former)}
+    return any(is_stream(w) and writer_base(w) in mine
+               for p in known_projects(all_seats=[]) for w in audience_module().streams_of(p))
 
 
 _UNREADABLE_SAID = set()
@@ -3872,13 +3970,17 @@ def _projection(events):
     `continues`, the session that names it so (lineage). `aliases`: every
     alias its own joined and renamed events carried, each with the latest ts
     among them (the former aliases a name still reaches it by, §4 of the
-    charge names design)."""
+    charge names design). `unlisted`: the highest policyRev of a transition
+    notice of its own writers the log holds (P5 O18 D6; 0 for none), and
+    `policyRev` the highest its own `joined` and `state` snapshots carry (0
+    for none, or none carrying one): an arriving event carries what its
+    endpoint signed, this machine's own carry neither (unlisted_here)."""
     info = {}
 
     def row(sid):
         return info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
                                      "titled": None, "in_charge": [], "status": [], "to": "", "continues": "",
-                                     "aliases": {}, "owned": None})
+                                     "aliases": {}, "owned": None, "unlisted": 0, "policyRev": 0})
 
     for e in events:
         sid, kind = e.get("session"), e["kind"]
@@ -3886,9 +3988,16 @@ def _projection(events):
             continue
         own = writer_session(e["writer"]) == sid
         r = row(sid)
+        rev = e.get("policyRev") if type(e.get("policyRev")) is int else 0
+        if kind == "unlisted":
+            if own and rev >= 1:
+                r["unlisted"] = max(r["unlisted"], rev)
+            continue
         if kind in MEMBERSHIP or kind in ("renamed", "state", "titled"):
             if not own:
                 continue
+            if kind in ("joined", "state"):
+                r["policyRev"] = max(r["policyRev"], rev)
             if kind in ("joined", "renamed") and e.get("alias"):
                 held, ts = str(e["alias"]), str(e.get("ts") or "")
                 r["aliases"][held] = max(r["aliases"].get(held, ""), ts)
@@ -3915,6 +4024,16 @@ def _projection(events):
     for r in info.values():
         r["status"] = latest_across_writers(r["status"])
     return info
+
+
+def unlisted_here(sid, r):
+    """Whether the log shows the session unlisted to this machine's reader
+    (P5 O18 D6): it holds a notice of the session's own writers — the hub
+    serves one only to the members its change withdrew — at a policyRev no
+    snapshot of the session it holds reaches. Then the session is none of
+    the projection's members, so no listing, search, tag or broadcast
+    reaches it. Never a session of this machine's: its record is here."""
+    return r["unlisted"] > r["policyRev"] and not audience_module().is_local(sid)
 
 
 def lineage(sid, info):
@@ -4138,7 +4257,7 @@ def view_of(project, all_seats=None, titles=True):
     internal = internal_pids()
     forks = {r.get("sessionId") for r in peer_records() if str(r.get("pid")) in internal}
     joined = [(sid, r) for sid, r in info.items()
-              if r["latest"] and r["latest"]["kind"] == "joined" and sid not in forks]
+              if r["latest"] and r["latest"]["kind"] == "joined" and sid not in forks and not unlisted_here(sid, r)]
     joined.sort(key=lambda x: (x[1]["joined"]["ts"], x[0]), reverse=True)
     out = [_member(sid, r, by_session.get(sid), local.get(sid, {}).get("peer"), sid in local, titles, info,
                    shadowing(project, sid, info, all_seats))
@@ -4155,7 +4274,7 @@ def view_of(project, all_seats=None, titles=True):
                 str(r["latest"].get("project") or ""))
                for sid, r in info.items()
                if r["latest"] and r["latest"]["kind"] == "retired" and r["joined"] and sid not in by_session
-               and r["latest"].get("reason") != "continued"]
+               and r["latest"].get("reason") != "continued" and not unlisted_here(sid, r)]
     view = View(out, rows, retired, events, info, len(appended))
     if titles:
         _VIEWS[project.id] = view
@@ -4246,6 +4365,14 @@ def daemon_log(line):
         f.write("%s %s\n" % (now(ms=True), line))
 
 
+def push_words(project, session, e, gate, owed):
+    """The verdict a push of `e` is made under: a held receipt's for its
+    retry (the verdict taken with it), else the words gate's (WordsGate.words)."""
+    if owed == HOLDER_RETRY:
+        return holder_module().words_of(project.id, session, e)
+    return gate.words(e)
+
+
 def deliver_next(project, member):
     """The one delivery operation, for the sender's fast path and the daemon
     alike. Under delivered/<session>.lock, from choosing through the push to
@@ -4283,7 +4410,13 @@ def deliver_next(project, member):
     push (holder_owed, before any other check). A receipt proves it was
     prepared, not handed off: one whose next step pushes (a retry, or a
     push that failed before) takes the revocation and read-only checks
-    first, as a fresh push does; its words verdict was taken with it."""
+    first, as a fresh push does; its words verdict was taken with it.
+
+    Where the endpoint decides reach (P5 O18 D8) a push of a peer frame is
+    the uplink's alone, on the endpoint's `deliver` (deliver_reach): such a
+    writer stops at that event, a receipt's retry too, left owed and listed
+    in `gated` like a person's words (ReachGate.needs: one owner's sessions
+    of this machine excepted)."""
     session = member.session
     result = {"delivered": 0, "pending": 0, "outcomes": []}
     if not session:
@@ -4291,6 +4424,7 @@ def deliver_next(project, member):
     policy = sibling_module("sminos_policy")
     outcomes = sibling_module("sminos_outcomes")
     gate = WordsGate(project) if sibling_module("sminos_rl10").cut_over() else None
+    reach = ReachGate(project) if gate is not None else None
     if gate is not None:
         result["gated"] = []
     with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
@@ -4319,7 +4453,8 @@ def deliver_next(project, member):
                         break
                     if outside and policy.read_only():
                         outcome = outcomes.READ_ONLY
-                    elif gate is not None and owed is None and gate.gated(e):
+                    elif gate is not None and owed is None and gate.gated(e) or reach is not None \
+                            and reach.needs(e, session, push_words(project, session, e, gate, owed)):
                         result["gated"].append(e)
                         result["pending"] += len(queue) - i
                         break
@@ -4347,7 +4482,9 @@ def _conclude(project, member, session, e, outcome, outside):
     next pass records it again — a push noted, so never made twice. The
     caller holds the session's delivery lock. A delivery whose receipt
     awaits its admission (O12 M4b), or whose process's mode cannot be read,
-    stays owed with no attempt counted."""
+    stays owed with no attempt counted, as does one the reach gate holds
+    (`held:reach`). A `refused-reach` is settled here alone: no outcome goes
+    back (P5 O18 D3: a refusal here stays here)."""
     outcomes = sibling_module("sminos_outcomes")
     if holder_waiting(outcome):
         return False
@@ -4356,7 +4493,7 @@ def _conclude(project, member, session, e, outcome, outside):
             return False
         daemon_log("gave up delivering %s (%s) to %s after %d attempts: %s" % (
             event_ref(e), project.name, session, DELIVERY_ATTEMPTS, outcome))
-    if outside and not outcomes.record(project, e, session, outcome, member):
+    if outside and outcome != outcomes.REFUSED_REACH and not outcomes.record(project, e, session, outcome, member):
         if outcome in PUSHED:
             delivered_pushed(project, session, e["writer"], e["seq"], outcome)
         return False
@@ -4455,8 +4592,11 @@ def holder_carry(plan, project, member, session, e, events, cursor, peer):
         return push_event(project, member, session, e, events, cursor, words=plan.words)
     text = frame_of(project, e, events, session, cursor) if plan.body == "full" else holder_wake(project, e)
     try:
-        control_module().push_live(peer, session, text, e, project.id,
+        # The receipt's verdict rides along: the reach gate tells a peer's push from a person's words by it.
+        control_module().push_live(peer, session, text, e, project.id, words=plan.words,
                                    marker=holder_module().marker(plan.receipt, plan.attempt, plan.body))
+    except ReachHeld as err:
+        return err.outcome()   # its receipt stays prepared: its next step is a push (HOLDER_RETRY)
     except SendFailed as err:
         if err.phase == "before":
             return "failed:%s" % err
@@ -4585,6 +4725,172 @@ class WordsGate:
                 "no append receipt bears it out" if own_operator_event(e) else "it came through a git mirror"))
 
 
+# Message reach (P5 O18 D3, D8; MAWS docs/doperpowers/plans/2026-11-05-p5-o18-message-reach.md). On a machine
+# whose endpoint advertises `reach` (sminos_audience.reach_capable), every log event handed to a session as a
+# peer frame is the endpoint's to admit at that moment: `reach? {id, project, session, event}`, answered on the
+# socket the uplink alone holds. So the gate sits inside the push primitives (push_live, resume_session), and
+# only the uplink can let a push through it: it grants a single-use permit for exactly the push the endpoint
+# answered `deliver` for, immediately before carrying it out, and clears it after (reach_permit). Every other
+# deliverer leaves such an event owed at its writer, as it leaves a person's words, for the uplink's reach pass
+# (reach_due, deliver_reach). No earlier answer, admission or receipt stands for a later push.
+#
+# One case needs no ask (the coordinator's ruling): a session of this machine messaging another session of this
+# machine whose record names literally the same owners — an identity comparison of two local records, `@machine`
+# on one machine being one owner set, never grade logic (same_owner_local) — in a log where the writer name is
+# this machine's provenance (own_writers_here): a git mirror's merge can bring a line under any name.
+
+_REACH_PERMITS = set()   # (project id, session, writer, seq, event hash): pushes the uplink may make now
+PROJECTLESS = "%s has no project, so only its owners' sessions reach it"
+
+
+def reach_key(project_id, session, e):
+    return (project_id, session, e.get("writer"), e.get("seq"), event_hash(e))
+
+
+@contextmanager
+def reach_permit(project, session, e):
+    """The push of `e` to `session` that the endpoint answered `deliver`
+    for, let through the reach gate for as long as the block runs, once:
+    the uplink's, around the one delivery it carries out."""
+    key = reach_key(project.id, session, e)
+    _REACH_PERMITS.add(key)
+    try:
+        yield
+    finally:
+        _REACH_PERMITS.discard(key)
+
+
+def own_writers_here(project):
+    """Whether a line under this machine's own name in `project`'s log was
+    written here: a project with no git remote that is a hub project of this
+    machine's org, where the hub brings this machine's writers back only as
+    its own signed echoes, or that nothing syncs. Not a project with a
+    remote, whatever its transport: a git mirror's merge can import a line
+    under any writer name, and `project init --hub` keeps the log and the
+    remote (its archive since), so a converted mirror still holds what git
+    imported. Not a project unknown here."""
+    if project is None or project.remote:
+        return False
+    if project.hub is not None:
+        e = enrollment()
+        return e is not None and project.hub.get("org") == e["org"]
+    return True
+
+
+def same_owner_local(e, session, project):
+    """Whether `e` is a session of this machine's own event (its writer
+    `<this machine's name>/<session>` or a stream of it, in a log where that
+    name is provenance: own_writers_here) to another session of this
+    machine, both records reading and naming the same owners: a person's
+    own sessions on one machine, which no reach ever restricts."""
+    if not own_writers_here(project):
+        return False
+    writer = str(e.get("writer") or "")
+    sender = writer_session(writer)
+    if not sender or writer_base(writer) != "%s/%s" % (host_name(), sender):
+        return False
+    records, au = records_module(), audience_module()
+    if not (au.is_local(sender) and au.is_local(session)):
+        return False
+    a, b = records.read(sender), records.read(session)
+    oa, ob = (a or {}).get("owners"), (b or {}).get("owners")
+    return isinstance(oa, list) and isinstance(ob, list) and bool(oa) and set(oa) == set(ob)
+
+
+class ReachGate:
+    """The one push check of message reach (P5 O18 D8), asked inside the
+    push primitives for each log event they hand over as a peer frame."""
+
+    def __init__(self, project):
+        self.project = project if isinstance(project, str) or project is None else project.id
+        self.home = project if isinstance(project, Project) else known_project(project) if project else None
+        self.capable = audience_module().reach_capable()
+
+    def applies(self, e, words=None):
+        """Whether the push of `e` is the gate's: a log event handed over as
+        a peer frame on a machine whose endpoint decides reach. A person's
+        words (`words` True, or with no verdict a writer push_live takes as
+        the owner's) are the words gate's."""
+        if not self.capable or e is None:
+            return False
+        return not (words if words is not None else owner_event(e))
+
+    def needs(self, e, session, words=None):
+        """Whether the push needs the endpoint's `deliver`: the gate's, and
+        not between one owner's sessions of this machine (same_owner_local).
+        What every deliverer but the uplink leaves owed."""
+        return self.applies(e, words) and not same_owner_local(e, session, self.home)
+
+    def held(self, e, session, words=None):
+        """None when the push may go; "owed" when it may not now — no permit
+        this process holds for exactly it (popped as it is checked), or a
+        recipient whose record cannot be read (D10: never asked about, owed
+        until it reads again). A refusal is settled where the answer comes
+        (deliver_reach), so the gate itself never answers "refused"."""
+        if not self.needs(e, session, words):
+            return None
+        if records_module().unreadable(session):
+            return "owed"
+        key = reach_key(self.project, session, e)
+        if key in _REACH_PERMITS:
+            _REACH_PERMITS.discard(key)
+            return None
+        return "owed"
+
+
+def reach_hold(project, session, events, words=None):
+    """The reach gate over every event a push carries: ReachHeld (nothing
+    handed over) when it holds any of them."""
+    events = [e for e in events if e is not None]
+    if not events:
+        return
+    gate = ReachGate(project)
+    if not gate.capable:
+        return
+    held = [e for e in events if gate.held(e, session, words) is not None]
+    if held:
+        raise ReachHeld("owed", held, "%s to %s waits for its endpoint's word on its reach" % (
+            ", ".join(event_ref(e) for e in held), session[:8]))
+
+
+def owners_meet(sender, recipient):
+    """Whether a push no log event stands for may go (D8's projectless
+    push): the sender's owners — the session's (`sender`), or with none the
+    operator's, the machine's (`@machine`) — meet the recipient session's.
+    The endpoint's resolved ids where both are known (the machine's as it
+    resolved a `@machine` session's: sminos_audience.machine_owners), else
+    the records' tokens; unknown is no."""
+    records, au = records_module(), audience_module()
+
+    def owners(sid):
+        if not sid:
+            resolved = au.machine_owners()
+            return (set(resolved) if resolved else None), {records.MACHINE}
+        resolved = au.owners_of(sid)
+        rec = records.read(sid) if au.is_local(sid) else None
+        tokens = rec.get("owners") if rec and isinstance(rec.get("owners"), list) else []
+        return (set(resolved) if resolved else None), set(tokens)
+    try:
+        rs, ts = owners(sender)
+        rr, tr = owners(recipient)
+    except au.StreamUnknown:
+        return False
+    if rs and rr:
+        return bool(rs & rr)
+    return bool(ts & tr)
+
+
+def projectless_refusal(recipient, alias):
+    """D8's refusal of a push with no log event to ask about, toward a
+    session whose owners the sender's do not meet; None when it may go (or
+    nothing here decides reach)."""
+    if not audience_module().reach_capable():
+        return None
+    if owners_meet(os.environ.get("CLAUDE_CODE_SESSION_ID", ""), recipient):
+        return None
+    return PROJECTLESS % alias
+
+
 def _first_owed(session, writer, events, record):
     return next((x for x in _owed(events, session, record) if x["writer"] == writer), None)
 
@@ -4690,6 +4996,115 @@ def words_due(project, members):
         if due:
             out[m.session] = due
     return out
+
+
+REACH_VERDICTS = ("deliver", "refuse")
+
+
+def reach_due(project, members):
+    """{session: [event]}: for each of the members, the first owed event of
+    each writer that a push would hand over as a peer frame the endpoint
+    must admit (ReachGate.needs) — the uplink's to ask `reach?` about. None
+    a person's words the words pass asks first (words_route "ask", with no
+    receipt), none noted as pushed, none whose receipt awaits its admission
+    or settles it (one whose next step is a push, HOLDER_RETRY, is due:
+    each push asks again), none to a session whose record cannot be read
+    (D10: owed, never asked), none an outside event on a read-only machine
+    (deliver_next settles it unasked). Read as words_due reads the log."""
+    policy = sibling_module("sminos_policy")
+    holder = holder_module()
+    records = records_module()
+    gate = ReachGate(project)
+    if not gate.capable:
+        return {}
+    words = WordsGate(project)
+    read_only = policy.read_only()
+    to = addressees(log_read(project))
+    out = {}
+    for m in members:
+        if not m.session or m.session not in to or records.unreadable(m.session):
+            continue
+        record = delivered_load(project, m.session)
+        firsts = {}
+        for e in _owed(to[m.session], m.session, record):
+            firsts.setdefault(e["writer"], e)
+        due = []
+        for w, e in sorted(firsts.items()):
+            if (_delivery(record, w).get("pushed") or [None])[0] == e["seq"] \
+                    or (read_only and policy.outside_origin(e)):
+                continue
+            if holder.exists(project.id, m.session, e):
+                peer = peer_for_session(m.session)
+                plan = holder.plan(project.id, m.session, e, event_hash(e), peer.get("pid") if peer else None,
+                                   existing_only=True, prepare=False)
+                if plan is None or plan.kind not in ("push", "legacy"):
+                    continue
+                verdict = holder.words_of(project.id, m.session, e)
+            elif words_route(project, e) == "ask":
+                continue
+            else:
+                verdict = words.words(e)
+            if gate.needs(e, m.session, verdict):
+                due.append(e)
+        if due:
+            out[m.session] = due
+    return out
+
+
+def deliver_reach(project, member, event, verdict, reason=None):
+    """The endpoint's `reach` answer on an owed event (`deliver` or
+    `refuse`, P5 O18 D3) carried out, as deliver_verdict carries out a words
+    verdict: under the session's delivery lock, and only while the event is
+    still its writer's first owed with the same body (None, nothing done,
+    else). The revocation set and the read-only policy are read again
+    first; a receipt held for it goes as holder_owed says. `deliver` pushes
+    it as deliver_next would (holder_push: a receipt first to a `gate`
+    process), the reach gate let through for this one push (reach_permit):
+    a `human` event as a peer's, the words verdict that sent it here having
+    been `peer`. `refuse` pushes nothing: it settles `refused-reach` on this
+    machine alone, said in one daemon.log line that names the position, the
+    recipient and the reason, never the text, and no outcome goes back. The
+    outcome, or None."""
+    session = member.session
+    if not session or verdict not in REACH_VERDICTS:
+        return None
+    policy = sibling_module("sminos_policy")
+    outcomes = sibling_module("sminos_outcomes")
+    with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
+        events = log_read(project)
+        record = delivered_load(project, session)
+        e = _first_owed(session, event["writer"], events, record)
+        if e is None or e["seq"] != event["seq"] or event_hash(e) != event_hash(event):
+            return None
+        outside = policy.outside_origin(e)
+        noted = _delivery(record, e["writer"]).get("pushed")
+        cursor = cursor_load(project, session)
+        if noted and noted[0] == e["seq"]:
+            outcome = noted[1]
+        elif (owed := holder_owed(project, member, session, e, events, cursor)) not in (None, HOLDER_RETRY):
+            outcome = owed
+        else:
+            gate = WordsGate(project)
+            held = gate.held(e, session)
+            if held == "revoked":
+                holder_module().settled(project.id, session, e)
+                return outcomes.REFUSED_REVOKED
+            if held is not None:
+                return None
+            if outside and policy.read_only():
+                outcome = outcomes.READ_ONLY
+            elif verdict == "refuse":
+                outcome = outcomes.REFUSED_REACH
+                daemon_log("the endpoint refused %s (%s) reach into %s: %s; nothing delivered" % (
+                    event_ref(e), project.name, session[:8], reason or "no reason given"))
+            else:
+                with reach_permit(project, session, e):
+                    outcome = holder_push(project, member, session, e, events, cursor, words=gate.words(e),
+                                          retry=owed is not None)
+                gate.said(e, outcome)
+        if _conclude(project, member, session, e, outcome, outside):
+            holder_module().settled(project.id, session, e)
+        return outcome
 
 
 def frame_of(project, e, events, session, cursor):
@@ -5109,7 +5524,9 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
     Given `session`, a seat that now holds another session is not this
     message's recipient: delivery goes by session id, so a replacement cannot
     misroute it. `words`: the endpoint's verdict on a person's words, which
-    push_live takes in place of the writer on a cut-over machine."""
+    push_live takes in place of the writer on a cut-over machine. A push the
+    reach gate holds (ReachHeld, inside push_live and resume_session) is
+    `held:reach …`, owed with no attempt counted."""
     session = session or member.session
     verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
     if member.seat is None:
@@ -5119,6 +5536,8 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
         try:
             control_module().push_live(peer, session, text, event, project, **verdict)
             return "sent"
+        except ReachHeld as e:
+            return e.outcome()
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
     seat_id = member.seat["seat_id"]
@@ -5144,6 +5563,8 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
         try:
             control_module().push_live(peer, fresh["current"], text, event, project, **verdict)
             return "sent"
+        except ReachHeld as e:
+            return e.outcome()
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
     if not tagged:
@@ -5172,7 +5593,9 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
         fresh = reload_seat(seat_id)
         if unreachable(fresh) or not fresh["current"]:
             return "recorded"
-        return resume_session(fresh, text, False, locks, quiet=True)
+        return resume_session(fresh, text, False, locks, quiet=True, event=event, project=project, words=words)
+    except ReachHeld as e:
+        return e.outcome()
     except ResumeRefused as e:
         return "failed:%s" % e.message
     finally:
@@ -8098,6 +8521,22 @@ class SendFailed(OSError):
         self.phase = phase
 
 
+class ReachHeld(SendFailed):
+    """A push the reach gate held (ReachGate, P5 O18 D8): nothing was handed
+    over, nothing stopped or launched (phase "before"). `verdict` the
+    gate's, "owed": no answer this process may act on, so the delivery is
+    left owed with no attempt counted; `events` the ones it held."""
+
+    def __init__(self, verdict, events, why):
+        super().__init__("before", why)
+        self.verdict, self.events = verdict, list(events)
+
+    def outcome(self):
+        """The delivery's outcome: `held:reach …`, which _conclude leaves
+        owed with no attempt counted."""
+        return "held:reach %s" % self
+
+
 PEER_TAG = "cross-session-message"
 # The engine's closing-tag escape for an envelope's body (2.1.300 `KXe`/`w`/`K`,
 # cli.pretty.js ≈ 941747-941780), rebuilt so the envelope round-trips its parser:
@@ -9768,7 +10207,8 @@ def warn_resume_flags(a):
                          "--model/--settings/--effort ignored (use fill without --resume to change them)\n")
 
 
-def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_launched=None):
+def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_launched=None, event=None, project=None,
+                   carried=None, words=None):
     """Process-level continuation of a seat's session.
 
     A live current turn is stopped first (`claude stop`, then a bounded wait
@@ -9793,7 +10233,22 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
     process — confirmed, or uncertain because no session id came back — and
     before any wait: `send` settles its delivery record there. At the same
     point a seat whose session was retired re-joins the project's family.
+
+    Message reach (P5 O18 D8), before anything is stopped or launched: a
+    message that carries log events (`event`, the last, in the log of the
+    project whose id is `project`; `carried`, every one, `[event]` by
+    default; `words` the verdict they go under, as push_live's) passes the
+    reach gate for each or raises ReachHeld; one that carries none (a
+    `resume`'s or a `fill --resume`'s task) goes only to a session whose
+    owners meet the sender's, else ResumeRefused (projectless_refusal).
     """
+    if event is not None:
+        reach_hold(project, s["current"], [event] if carried is None else carried, words)
+    elif msg and s["current"]:
+        refusal = projectless_refusal(s["current"], s["alias"])
+        if refusal:
+            raise ResumeRefused(refusal, EXIT_UNKNOWN)
+
     def launched():
         # The delivery settles first: a failed re-join (LogWriteFailed) must
         # not leave a launched message owed, to be pushed again. On a fan-out
@@ -10047,6 +10502,11 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         # of the running session, so nothing is sent.
         die(quiet_inbox_refusal(ref), EXIT_UNKNOWN)
     delivery = record(s) if record else None
+    refusal = projectless_refusal(s["current"], s["alias"]) if delivery is None else None
+    if refusal:
+        # No log event to ask the endpoint about (P5 O18 D8): only the recipient's owners' sessions reach it.
+        unlock(locks)
+        die(refusal, EXIT_UNKNOWN)
     if delivery and (delivery.held or not delivery.queue):
         # A concurrent deliverer pushed it between the append and our lock, or
         # it is held (O12 M6: a person's words the uplink delivers on the
@@ -10069,10 +10529,20 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         return
     settle = delivery.settle if delivery else None
 
+    def reach_held():
+        # The reach gate held the push (P5 O18 D8): nothing went, nothing was stopped; owed for the uplink.
+        delivery.held = "the endpoint decides its delivery"
+        delivery.recorded_owed(s["alias"])
+        unlock(locks)
+
     def resume(locks):
         try:
             resume_session(s, delivery.payload(False) if delivery else text, wait, locks,
-                           verb="sent to", on_launched=settle)
+                           verb="sent to", on_launched=settle,
+                           **({"event": delivery.queue[-1], "project": delivery.project.id,
+                               "carried": delivery.carried(False)} if delivery else {}))
+        except ReachHeld:
+            reach_held()
         except ResumeRefused:
             if delivery:
                 delivery.fail()
@@ -10089,9 +10559,12 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
     try:
         if delivery:
             control_module().push_live(peer, s["current"], delivery.payload(True), delivery.queue[-1],
-                                       delivery.project.id)
+                                       delivery.project.id, carried=delivery.carried(True))
         else:
             send_frame(sock, text, sender)
+    except ReachHeld:
+        reach_held()
+        return
     except SendFailed as e:
         if e.phase == "before":
             # Nothing reached the peer. A session that exited between the
@@ -10191,7 +10664,11 @@ class SendDelivery:
     last, on the endpoint's verdict. A session's is checked as every
     deliverer checks (checked): an earlier event signed by a revoked key is
     marked and left out, and one whose signer the unreadable set cannot clear
-    holds the send owed (`held` too), for the daemon to deliver in order."""
+    holds the send owed (`held` too), for the daemon to deliver in order.
+    Where the endpoint decides reach (P5 O18 D8) a queue holding any event
+    the endpoint must admit (ReachGate.needs) is `held` as well: the uplink
+    asks `reach?` about each, in order, and delivers each on its answer, so a
+    refused earlier one is left out and the later ones go."""
 
     def __init__(self, project, session, writer, event):
         self.project, self.session, self.writer, self.event = project, session, writer, event
@@ -10204,6 +10681,10 @@ class SendDelivery:
         self.skipped = []
         self.held = "the endpoint decides its delivery" if words_held(event) else (
             self.checked() if sibling_module("sminos_rl10").cut_over() else None)
+        if self.held is None and self.queue:
+            reach = ReachGate(project)
+            if any(reach.needs(e, session) for e in self.queue):
+                self.held = "the endpoint decides its delivery"   # P5 O18 D8: the uplink's, on its `reach` answer
 
     def checked(self):
         """The queue through the revocation set (WordsGate.held), under the
@@ -10223,6 +10704,11 @@ class SendDelivery:
                 kept.append(e)
         self.queue = kept
         return None
+
+    def carried(self, live):
+        """The events the push's text carries (payload), each of which the
+        reach gate checks."""
+        return [e for e in self.queue if live or not e.get("wake")]
 
     def payload(self, live):
         """The text of the one push. Ordinary delivery's policy applies: an
@@ -10354,7 +10840,12 @@ def send_to_member(project, m, sender, via, text, msg_id):
         print("sent to %s (%s)" % (m.alias, mine[0] if mine else "owed behind an earlier message"))
         return
     try:
-        control_module().push_live(peer, m.session, delivery.payload(True), delivery.queue[-1], project.id)
+        control_module().push_live(peer, m.session, delivery.payload(True), delivery.queue[-1], project.id,
+                                   carried=delivery.carried(True))
+    except ReachHeld:
+        delivery.held = "the endpoint decides its delivery"
+        delivery.recorded_owed(m.alias)
+        return
     except SendFailed as e:
         if e.phase == "after":
             delivery.settle()
@@ -11998,6 +12489,14 @@ def cmd_answer(a):
     control_module().cmd_answer(a)
 
 
+def cmd_access(a):
+    sibling_module("sminos_visibility").cmd_access(a)
+
+
+def cmd_share(a):
+    sibling_module("sminos_visibility").cmd_share(a)
+
+
 def tick(project):
     """One daemon tick of one project (§8): integrate, reconcile, publish,
     deliver, push. {"integrated", "reconciled", "published", "delivered",
@@ -12325,6 +12824,17 @@ def build_parser():
     rt.add_argument("seat")
     rt.add_argument("--purge", action="store_true")
     rt.set_defaults(fn=cmd_retire)
+
+    ac = sub.add_parser("access", add_help=False)
+    ac.add_argument("member")
+    ac.add_argument("level", choices=("private", "listed", "org-view", "org-converse"))
+    ac.set_defaults(fn=cmd_access)
+
+    sh = sub.add_parser("share", add_help=False)
+    sh.add_argument("member")
+    sh.add_argument("person")
+    sh.add_argument("grade", choices=("list", "view", "converse", "approve", "none"))
+    sh.set_defaults(fn=cmd_share)
 
     rm = sub.add_parser("remove", add_help=False)
     rm.add_argument("seat")
