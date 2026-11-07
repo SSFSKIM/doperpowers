@@ -2,8 +2,8 @@
 """devcloud: a host's status, its jobs, and its lifecycle.
 
   devcloud status            one line per boot step: name, state, when, detail;
-                             a deferred enrollment or provisioning and a departure, when
-                             there is one
+                             a deferred provisioning and a departure, when there is
+                             one
   devcloud reconcile         boot steps 5-11 against the configuration as fetched now,
                              then 13 (the MAWS endpoint's provisioning)
   devcloud pull-config       fetch and reset ~/.claude; reconcile when the commit moved
