@@ -429,10 +429,11 @@ def ensure_mirrored(project):
     reg = sminos.registration(project.id)
     root = str(reg.get("root") or "")
     for where in dict.fromkeys(r for r in (project.root, root) if r):
-        if sminos.names_hub(where, project.id):
+        if sminos.names_hub(where, project.id):   # None, a root not read here: the registration decides
             raise BecameHub("%s names a hub now: git no longer syncs %s" % (
                 os.path.join(where, sminos.SMNS), project.name))
-    if reg.get("hub") is not None and not (root and os.path.isdir(root)):
+    # A root this process may not read (sminos.read_refused) is as good as gone: the registration's hub stands.
+    if reg.get("hub") is not None and not (root and not sminos.read_refused(root) and os.path.isdir(root)):
         raise BecameHub("%s is registered as a hub project: git no longer syncs it" % project.name)
 
 
@@ -1159,7 +1160,9 @@ def tick_all(quiet=False):
     projects = {}
     for p in sminos.known_projects(all_seats):
         # A project read off its .smns as it is now: the remote may have moved.
-        fresh = sminos.resolve_project(p.root) if p.root and os.path.isdir(p.root) else None
+        # A root this process may not read is left as registered.
+        fresh = sminos.resolve_project(p.root) if p.root and not sminos.read_refused(p.root) \
+            and os.path.isdir(p.root) else None
         projects[p.id] = fresh if fresh is not None and fresh.id == p.id else p
     for p in sorted(projects.values(), key=lambda p: (p.name, p.id)):
         record = daemon_record(p)
@@ -1235,7 +1238,7 @@ def map_sessions():
             continue
         try:
             p = sminos.record_project(rec)
-            if p is not None:
+            if p is not None and not sminos.guessed(p):   # a project told is registered already
                 sminos.project_path(p, "log")
         except OSError as e:
             sminos.daemon_log("tick: registering the project of %s failed: %s" % (sid[:8], e))

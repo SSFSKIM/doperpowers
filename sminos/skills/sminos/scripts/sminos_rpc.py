@@ -940,7 +940,7 @@ class Rpcs:
             # joined cwd): only a literal absolute checkout is unambiguous.
             target = (args.get("args") or "").strip()  # shape admits absent/null optional args
             reason = "cd needs the absolute path of a known checkout of this project"
-            if not os.path.isabs(target):
+            if not os.path.isabs(target) or sminos.read_refused(target):   # no checkout here vouches for it
                 raise Refused("unknown-checkout", reason)
             try:
                 target = os.path.realpath(target)
@@ -1311,6 +1311,9 @@ class Rpcs:
         cwd = (out.get("result") or {}).get("cwd") if out.get("ok") else None
         if not (isinstance(cwd, str) and os.path.isabs(cwd)):
             raise Refused("failed", "the session did not say where it works: %s" % (out.get("error") or cwd))
+        if sminos.read_refused(cwd):
+            raise Refused("failed", "the session works in %s, a folder macOS asks the person about before this "
+                          "machine's daemon reads it: nothing was saved" % sminos.protected_folder(cwd))
         base = os.path.realpath(cwd)
         root = media.root_of(base, sid)
         names = [media.file_name(op, n, a["mediaType"]) for n, a in enumerate(args["attachments"])]
@@ -1758,7 +1761,8 @@ def admit_spawn(args, ceiling, checkouts):
     under, written into `args` (absent: the ceiling)."""
     checkout = args.get("checkout")
     known = {os.path.realpath(c["path"]) for c in checkouts}
-    if not (isinstance(checkout, str) and checkout and os.path.realpath(checkout) in known):
+    if not (isinstance(checkout, str) and checkout and not sminos.read_refused(checkout)
+            and os.path.realpath(checkout) in known):
         raise Refused("unknown-checkout", "%s is not a checkout of the project on this machine" % (checkout,))
     args["checkout"] = os.path.realpath(checkout)
     mode = args.get("permission_mode", ceiling)
@@ -2472,7 +2476,12 @@ def verb_env(member=None, proof=None):
 
 
 def run_verb(argv, cwd, timeout, member=None, proof=None):
-    """(exit code, stdout, stderr) of a `sminos` verb."""
+    """(exit code, stdout, stderr) of a `sminos` verb, run in `cwd` unless
+    this process may not look there (sminos.read_refused): a verb started
+    inside a protected folder would read it on this process's behalf, so it
+    runs in $SMINOS_HOME instead."""
+    if cwd and sminos.read_refused(cwd):
+        cwd = sminos.root()
     try:
         p = subprocess.run(SMINOS_CLI + argv, cwd=cwd, env=verb_env(member, proof), stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=timeout)
@@ -2639,7 +2648,8 @@ def resume(sid, cwd, lock, note):
         if live:
             raise Refused("session-live", "the session is running here (%s): only an ended session is resumed"
                           % held_by(live))
-        if not (cwd and os.path.isdir(cwd)):
+        # A directory this process may not look at is launched in unlooked-at.
+        if not (cwd and (sminos.read_refused(cwd) or os.path.isdir(cwd))):
             raise Refused("failed", "the session's working directory %r is gone: nothing was launched" % (cwd,))
         launched = time.time()
         try:
