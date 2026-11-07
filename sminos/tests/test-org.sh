@@ -17,7 +17,10 @@
 # of the org's directory (`follow`), holds it again (`follow` false) once a
 # local member comes, and a message tagged into a followed project lands in
 # its log at the hub; `projects` and `machines` read the directory, and one
-# the directory retires is left, then followed again when it is active.
+# the directory retires is left, then followed again when it is active. Last,
+# the cases of one machine and of two again on RL10: epsilon, cut over to its
+# endpoint_standin.py, and alpha and beta each cut over to its own, what one
+# endpoint took reaching the other as arrivals (rl10-machines.sh's hand-off).
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub; nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
@@ -680,6 +683,134 @@ assert_equals "$(e_row followed-x)" "followed-x hub 0 0 -" "and projects lists i
 kill "$E_DAEMON"
 set +e; wait "$E_DAEMON"; set -e
 assert_not_contains "$(cat "$SMINOS_HOME/daemon.log")" "Traceback" "nothing in epsilon's daemon.log is a traceback"
+unset MAWS_USER_DATA
+
+# ---- RL10: two machines through their endpoints (#153 M3d)
+# The cases above that need a second machine ("beta", "alpha reads both"),
+# composed on RL10: alpha and beta are real sminos homes, each with its
+# daemon and its endpoint_standin.py, never enrolled at a hub. What one
+# endpoint accepted reaches the other's connection as arrivals through the
+# stand-in's own echo (rl10_relay); the org's directory is the stand-ins'.
+# On RL10 a stray's <message> stays in its machine's host store and goes up
+# to the endpoint alone (the epsilon case above), so beta reads alpha's
+# stray as a member of alpha's machine project, not its <message>; and the
+# endpoint carries no presence, so `machines` names another machine by its
+# newest event.
+echo "RL10: two machines through their endpoints:"
+# shellcheck source=rl10-machines.sh
+. "$SCRIPT_DIR/rl10-machines.sh"
+rl10_as ya alpha
+rl10_cut_over
+YEPA=$EP
+YAMP="$(rl10_mp alpha)"
+YBARE="$T/ya/bare"
+mkdir -p "$YBARE"
+YSTRAY=6a000001-0000-4000-8000-0000000000a1
+live_pid
+session_record stray "$YSTRAY" "$LIVE_PID" "$YBARE" idle
+run_in "$YBARE" "$SMINOS" list
+YRO="$T/ya/orgproj"
+gitq init -q "$YRO"
+write_smns "$YRO" orgproj '{"org": "org-1"}'
+YOPID="$(smns_id "$YRO")"
+YMA=6a000002-0000-4000-8000-0000000000a2
+live_pid
+session_record ma "$YMA" "$LIVE_PID" "$YRO" idle
+run_in "$YRO" "$SMINOS" list
+YRK="$T/ya/chkproj"
+gitq init -q "$YRK"
+write_smns "$YRK" chkproj '{"org": "org-1"}'
+YKPID="$(smns_id "$YRK")"
+run_in "$YRK" "$SMINOS" say "chkproj exists"
+YFOLLOWX=0f0f0f0f-4444-4222-8333-444455556666
+YDIR="$(python3 - "$YOPID" "$YKPID" "$YAMP" "$(rl10_mp beta)" "$YFOLLOWX" <<'PY'
+import json, sys
+org, chk, amp, bmp, fx = sys.argv[1:6]
+print(json.dumps({"projects": [{"id": org, "name": "orgproj", "kind": "hub", "retired": False},
+                               {"id": chk, "name": "chkproj", "kind": "hub", "retired": False},
+                               {"id": amp, "name": "alpha", "kind": "machine", "machine": "alpha", "retired": False},
+                               {"id": bmp, "name": "beta", "kind": "machine", "machine": "beta", "retired": False},
+                               {"id": fx, "name": "followed-x", "kind": "hub", "retired": False}],
+                  "machines": [{"name": n, "online": False} for n in ("alpha", "beta", "testhost")]}))
+PY
+)"
+rl10_serve "\"org\": $YDIR"
+start_daemon
+rl10_as yb beta
+rl10_cut_over
+YEPB=$EP
+mkdir -p "$T/yb/bare"
+rl10_serve "\"org\": $YDIR"
+start_daemon
+y_relayed() { rl10_relay "$YEPA" "$YEPB"; "$@"; }
+y_follow() { # ep-dir pid → the follow of the live connection's last hello of the project: True | False | none
+  python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$1" opened \
+    | python3 -c 'import json, sys; o = json.load(sys.stdin)["projects"].get(sys.argv[1]); print(o["follow"] if o else "none")' "$2"
+}
+y_follows() { [ "$(y_follow "$1" "$2")" = "$3" ]; }
+until_true y_follows "$YEPB" "$YOPID" True || true
+assert_equals "$(y_follow "$YEPB" "$YOPID")" True "RL10: beta opens orgproj at its endpoint to follow, a project it has no checkout of"
+until_true y_follows "$YEPB" "$YAMP" True || true
+assert_equals "$(y_follow "$YEPB" "$YAMP")" True "RL10: and alpha's machine project"
+y_stray_up() { [ "$(rl10_q "$YEPA" "any(e['kind'] == 'joined' and e.get('session') == '$YSTRAY' for c, e in up('$YAMP'))")" = true ]; }
+until_true y_stray_up || true
+y_stray_up && pass "RL10: alpha's endpoint takes its stray's joined in alpha's machine project" \
+  || fail "RL10: alpha's endpoint takes its stray's joined in alpha's machine project"
+y_stray_read() { (cd "$T/yb/bare" && "$SMINOS" list alpha --json 2>/dev/null) | grep -q "\"session\": \"$YSTRAY\""; }
+until_true y_relayed y_stray_read || true
+y_stray_read && pass "RL10: beta reads alpha's stray in alpha's machine project" \
+  || fail "RL10: beta reads alpha's stray in alpha's machine project"
+YRB="$T/yb/orgproj"
+cp -R "$YRO" "$YRB"
+YWB=6b000004-0000-4000-8000-0000000000b4
+live_pid
+session_record wb "$YWB" "$LIVE_PID" "$YRB" waiting
+run_in "$YRB" "$SMINOS" list
+until_true y_follows "$YEPB" "$YOPID" False || true
+assert_equals "$(y_follow "$YEPB" "$YOPID")" False "RL10: once a session joins it there, beta holds orgproj: hello again with follow false"
+until_true y_follows "$YEPB" "$YKPID" True || true
+assert_equals "$(y_follow "$YEPB" "$YKPID")" True "RL10: beta follows chkproj, of which it has no checkout"
+YRKB="$T/yb/chkproj"
+cp -R "$YRK" "$YRKB"
+run_in "$YRKB" "$SMINOS" chat
+until_true y_follows "$YEPB" "$YKPID" False || true
+assert_equals "$(y_follow "$YEPB" "$YKPID")" False "RL10: a registered checkout, no session, makes beta hold it: hello again without follow"
+y_offered() {
+  [ "$(rl10_q "$YEPB" "any(f.get('t') == 'session' and f['message'].get('kind') == 'machine' and f['message'].get('project') == '$YKPID'
+                       and any(c['path'].endswith('/yb/chkproj') for c in f['message']['body'].get('checkouts', [])) for c, f in F)")" = true ]
+}
+until_true y_offered || true
+y_offered && pass "RL10: with the checkout in the machine presence it sends its endpoint" \
+  || fail "RL10: with the checkout in the machine presence it sends its endpoint"
+y_wb_up() { [ "$(rl10_q "$YEPB" "any(e['kind'] == 'state' and e.get('session') == '$YWB' and e.get('state') == 'waiting' for c, e in up('$YOPID'))")" = true ]; }
+until_true y_wb_up || true
+y_wb_up && pass "RL10: beta's endpoint takes wb's word in orgproj, waiting" || fail "RL10: beta's endpoint takes wb's word in orgproj, waiting"
+
+echo "RL10: alpha reads both:"
+rl10_as ya alpha
+y_wb_here() { (cd "$YRO" && "$SMINOS" list --json) | grep -q '"state": "waiting"'; }
+until_true y_relayed y_wb_here || true
+run_in "$YRO" "$SMINOS" list
+assert_equals "$(printf '%s\n' "$OUT" | head -1)" "orgproj" "RL10: list in orgproj prints one heading"
+assert_contains "$OUT" "ma [${YMA:0:8}]" "RL10: with alpha's member"
+assert_contains "$OUT" "wb [${YWB:0:8}]" "RL10: and beta's"
+run_in "$YBARE" "$SMINOS" list --machine beta --state waiting
+assert_contains "$OUT" "wb [${YWB:0:8}]" "RL10: --machine beta --state waiting from alpha prints beta's waiting session"
+assert_not_contains "$OUT" "ma [" "RL10: and nothing else"
+assert_not_contains "$OUT" "stray [" "RL10: nothing else at all"
+run_in "$YBARE" "$SMINOS" projects
+assert_equals "$(proj_row orgproj)" "orgproj hub 2 1 alpha, beta" "RL10: projects: orgproj a hub project, two live, one waiting, on alpha and beta"
+assert_equals "$(proj_row alpha)" "alpha machine 1 0 alpha" "RL10: alpha's machine project"
+assert_equals "$(proj_row beta)" "beta machine 0 0 -" "RL10: beta's"
+assert_equals "$(proj_row followed-x)" "followed-x hub 0 0 -" "RL10: and the project alpha only follows"
+run_in "$YBARE" "$SMINOS" machines
+assert_equals "$(mach_row alpha)" "alpha this machine 2 alpha, orgproj" "RL10: machines: alpha is this machine, with its sessions and their projects"
+assert_equals "$(mach_row beta | sed -E 's/last event [0-9]+[a-z]+ ago/last event … ago/')" "beta last event … ago 1 orgproj" \
+  "RL10: beta by its newest event alpha holds, with its live session and its project"
+assert_equals "$(mach_row testhost)" "testhost no event yet 0 -" "RL10: a machine nothing has come from"
+for m in ya yb; do
+  assert_not_contains "$(cat "$T/$m/s/daemon.log" 2>/dev/null)" "Traceback" "RL10: nothing in $m's daemon.log is a traceback"
+done
 unset MAWS_USER_DATA
 
 echo
