@@ -234,7 +234,7 @@ def audience_entry(frame):
     policyRev withdrew (as the endpoint checks an `unlisted` notice), kept
     with it when it names any (O18 M4)."""
     sid, owners, members, rev = frame.get("session"), frame.get("owners"), frame.get("members"), frame.get("policyRev")
-    if not (sminos.UUID_RE.match(str(sid or "")) and isinstance(owners, list)
+    if not (sminos.UUID_RE.fullmatch(str(sid or "")) and isinstance(owners, list)
             and all(isinstance(o, str) and o for o in owners) and type(rev) is int and rev >= 0):
         return None
     if members is not None:
@@ -295,7 +295,7 @@ def policy_of(rec):
 def is_local(sid):
     """Whether the session is this machine's: it has a record file here."""
     records = sminos.records_module()
-    return bool(sminos.UUID_RE.match(str(sid or ""))) and os.path.lexists(records.record_path(sid))
+    return bool(sminos.UUID_RE.fullmatch(str(sid or ""))) and os.path.lexists(records.record_path(sid))
 
 
 def audience_of(sid, held=None):

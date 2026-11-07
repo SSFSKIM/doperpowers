@@ -16,4 +16,6 @@ The skill's body is what a member acts on; machine setup (the project and its mi
 
 Design in `docs/doperpowers/specs/2026-10-13-smns-project-log-design.md`; the hub side in `docs/doperpowers/plans/2026-10-15-desk-dc4-uplink.md`, a child of the desk's composite design in MAWS, whose DX2 transport RL10 to the machine's endpoint superseded (board #153, `docs/doperpowers/specs/2026-11-07-sminos-phase1-removal-design.md`).
 
+A check that a value is whole (an id, a name or a word from a frame, a record or a file name) is `fullmatch`, never `match` against `^…$`: Python's `$` also matches before a trailing newline, so `match` passes `"x\n"` (board #179). The mods' JavaScript `$`, with no `m` flag, does not.
+
 Tests: `tests/run-sminos-tests.sh` (the `sminos` gate), `tests/mods/run.sh` (the `sminos-mods` gate).

@@ -1760,7 +1760,8 @@ class StaleSocket(unittest.TestCase):
 
 class FrameChecks(unittest.TestCase):
     """What the plane checks of a frame before it acts on it: `subscribe`'s
-    agentId is null or a whole subagent id, and a `read`'s `what` a whole
+    session is a whole session id and its agentId null or a whole subagent
+    id, a `read`'s `what` a whole word, and a bridge status's mode a whole
     word, never one with a newline after it."""
 
     def setUp(self):
@@ -1772,10 +1773,10 @@ class FrameChecks(unittest.TestCase):
     def tearDown(self):
         self.p.close()
 
-    def refusal(self, agent):
+    def refusal(self, agent, session=None):
         """The `end` message a subscribe for a session not here gets, `refresh` finding none."""
         with mock.patch.object(plane.Plane, "refresh", lambda _self, _project: None):
-            out = self.p.subscribe(self.project, {"session": self.sid, "agentId": agent, "sub": "s1"})
+            out = self.p.subscribe(self.project, {"session": session or self.sid, "agentId": agent, "sub": "s1"})
         [end] = out
         self.assertEqual((end["kind"], end["body"]["reason"]), ("end", "error"))
         return end["body"]["message"]
@@ -1786,6 +1787,15 @@ class FrameChecks(unittest.TestCase):
         self.assertEqual(self.refusal("a1\nx"), bad)
         for good in ("a1", None):
             self.assertTrue(self.refusal(good).startswith("no session "), "past the agentId check: %r" % good)
+
+    def test_a_session_id_with_a_trailing_newline_is_refused(self):
+        self.assertEqual(self.refusal(None, self.sid + "\n"), "session is a session id")
+        self.assertTrue(self.refusal(None).startswith("no session "), "a whole session id passes the check")
+
+    def test_a_mode_with_a_trailing_newline_is_no_mode(self):
+        status = {"permissionMode": "plan", "permissionModeAt": 1761000000000}
+        self.assertEqual(plane.mode_reading(status), {"mode": "plan", "at": 1761000000000})
+        self.assertIsNone(plane.mode_reading({**status, "permissionMode": "plan\n"}))
 
     def test_a_read_whose_what_has_a_trailing_newline_is_passed_by(self):
         # A subagent's subscription: a read that passes the frame's checks is answered `unsupported` at once.

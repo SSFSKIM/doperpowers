@@ -315,7 +315,7 @@ def headless_fork(project, m, prompt, *, tools, cache, timeout):
         if gate_w != -1:
             os.close(gate_w)
         for sid in {fork, str((obj or {}).get("session_id") or "")}:
-            path = S.transcript_now(sid) if S.UUID_RE.match(sid) and sid != m.session else ""
+            path = S.transcript_now(sid) if S.UUID_RE.fullmatch(sid) and sid != m.session else ""
             if path:
                 os.unlink(path)
         if marker:

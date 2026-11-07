@@ -1965,7 +1965,7 @@ class ChecksOnRl10(unittest.TestCase):
         o = self.outcome(rpc, timeout=60)
         self.assertEqual(o["state"], "done", o)
         sid, alias = o["result"]["session"], o["result"]["alias"]
-        self.assertTrue(sminos.UUID_RE.match(sid), o)
+        self.assertTrue(sminos.UUID_RE.fullmatch(sid), o)
         bg = launches(self.claude)[before:]
         self.assertEqual(len(bg), 1)
         argv = bg[0]

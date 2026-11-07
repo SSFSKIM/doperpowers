@@ -1235,7 +1235,7 @@ def map_sessions():
     internal = sminos.internal_pids()
     for rec in sminos.peer_records():
         sid = rec.get("sessionId")
-        if not (isinstance(sid, str) and sminos.UUID_RE.match(sid)) or str(rec.get("pid")) in internal \
+        if not (isinstance(sid, str) and sminos.UUID_RE.fullmatch(sid)) or str(rec.get("pid")) in internal \
                 or not sminos.peer_running(rec):
             continue
         try:

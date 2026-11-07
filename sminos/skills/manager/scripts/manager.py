@@ -65,10 +65,10 @@ def parse_time(text, now=None):
     """A local time as the owner writes one (the module's T), as an aware datetime."""
     now = now or datetime.datetime.now().astimezone()
     s = (text or "").strip()
-    m = DURATION_RE.match(s)
+    m = DURATION_RE.fullmatch(s)
     if m:
         return now - datetime.timedelta(**{DURATION_UNITS[m.group(2)]: float(m.group(1))})
-    m = CLOCK_RE.match(s)
+    m = CLOCK_RE.fullmatch(s)
     if m and (m.group(2) is not None or m.group(3)):
         hour, minute, half = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
         if half:
@@ -184,11 +184,11 @@ def resolve(q):
     """The member a name on the command line names, across every project on this machine (the order is the
     spec's: find_target first; a bare alias it does not find, among every project's local members; a full
     uuid membership no longer holds, historically)."""
-    bare = not (S.UUID_RE.match(q) or "/" in q or "#" in q or SHORT_RE.match(q))
+    bare = not (S.UUID_RE.fullmatch(q) or "/" in q or "#" in q or SHORT_RE.fullmatch(q))
     hit = S.find_target(q)
     if hit[0] == "none" and bare:
         hit = _alias_anywhere(q)
-    t = _from_hit(hit) or (historical(q) if S.UUID_RE.match(q) else None)
+    t = _from_hit(hit) or (historical(q) if S.UUID_RE.fullmatch(q) else None)
     if t is None:
         fail("no member matching '%s' on this machine" % q, S.EXIT_UNKNOWN)
     return t
@@ -199,7 +199,7 @@ def resolve_stored(entry):
     full uuid, on to the session it continued in; historically when membership no longer holds it. None when
     nothing on this machine knows it."""
     sid = str(entry.get("session") or "")
-    t = _from_hit(S.find_target(sid)) if S.UUID_RE.match(sid) else None
+    t = _from_hit(S.find_target(sid)) if S.UUID_RE.fullmatch(sid) else None
     return t or historical(sid, _project_by_id(entry.get("project")), str(entry.get("alias") or ""))
 
 

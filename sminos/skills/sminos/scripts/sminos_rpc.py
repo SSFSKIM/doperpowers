@@ -793,7 +793,7 @@ class Rpcs:
             return self.refuse_loose(rpc, "unknown-project",
                                      "%s is no hub project of this machine in its org" % pid)
         sid = args.get("session")
-        if name != "spawn" and not (isinstance(sid, str) and sminos.UUID_RE.match(sid)
+        if name != "spawn" and not (isinstance(sid, str) and sminos.UUID_RE.fullmatch(sid)
                                     and here.has_session(project, sid)):
             return self.refuse_loose(rpc, "no-session", "no session %s of %s on this machine" % (sid, project.name))
         rpc["target"] = target_of(rpc)   # derived from the RPC as checked, whatever the frame said
@@ -2404,7 +2404,7 @@ def spawn(args, op, checkout, member, proof=None):
     if found is not None:
         return found
     m = SEAT_RE.search(out)
-    if m and sminos.UUID_RE.match(m.group(1)):
+    if m and sminos.UUID_RE.fullmatch(m.group(1)):
         return done({"session": m.group(1), "alias": alias})
     raise Refused("failed", "sminos spawn named no session: %s" % last_line(out))
 
@@ -2417,7 +2417,7 @@ def spawned(op):
     failed. Seat records are read from their files, no cache."""
     for s in sminos.seats():
         if s.get("rpc_nonce") == op:
-            if s["current"] and sminos.UUID_RE.match(s["current"]):
+            if s["current"] and sminos.UUID_RE.fullmatch(s["current"]):
                 return done({"session": s["current"], "alias": s["alias"]})
             if s["status"] == "error":
                 return failed("failed", "the spawn started no session the harness named (seat %s)" % s["seat_id"])
