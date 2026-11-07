@@ -408,8 +408,8 @@ run_suites() {
     pass "message reach on the log plane: the hub stand-in's M1 rules, the admitted have, retries, dead writers and voids (test_reach.py)"
   else fail "message reach on the log plane: the hub stand-in's M1 rules, the admitted have, retries, dead writers and voids (test_reach.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_visibility.py"; then
-    pass "a session's reach set by its owner: access and share, widening at the operator's terminal alone, the unlisted notice before the snapshot, unlisting through the hub's filter (test_visibility.py)"
-  else fail "a session's reach set by its owner: access and share, widening at the operator's terminal alone, the unlisted notice before the snapshot, unlisting through the hub's filter (test_visibility.py)"; fi
+    pass "a session's reach set by its owner: access and share, widening at the operator's terminal alone and through the app once the endpoint serves its record acts, the unlisted notice before the snapshot, unlisting through the hub's filter (test_visibility.py)"
+  else fail "a session's reach set by its owner: access and share, widening at the operator's terminal alone and through the app once the endpoint serves its record acts, the unlisted notice before the snapshot, unlisting through the hub's filter (test_visibility.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_withheld.py"; then
     pass "the sender's side of a hub refusal: an own event settled withheld, its writer going on, its session told once, a withheld own snapshot restated once (test_withheld.py)"
   else fail "the sender's side of a hub refusal: an own event settled withheld, its writer going on, its session told once, a withheld own snapshot restated once (test_withheld.py)"; fi

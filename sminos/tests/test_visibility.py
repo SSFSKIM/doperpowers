@@ -3,7 +3,8 @@
 docs/doperpowers/plans/2026-11-05-p5-o18-message-reach.md D6, D10,
 Interfaces §C): `sminos access` and `sminos share` through set_visibility
 (narrowing from any shell, widening only from the operator's terminal,
-confirmed at /dev/tty); the transition a change writes once the endpoint
+confirmed at /dev/tty, and once the endpoint's welcome advertises `record`
+only through the app: the cutover); the transition a change writes once the endpoint
 gives the session's audience at its new policyRev (the `unlisted` notice of
 the members it withdrew, then the snapshot under the new stream, the notice
 first in upload order); and the reader's projection dropping a session at a
@@ -43,6 +44,7 @@ import sminos  # noqa: E402
 import sminos_audience as au  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
 import sminos_records as records  # noqa: E402
+import sminos_rl10 as rl10  # noqa: E402
 import sminos_rpc as rpcmod  # noqa: E402
 import sminos_visibility as vis  # noqa: E402
 
@@ -96,9 +98,10 @@ class Base(tw.Machine):
                               env=self.env(session), capture_output=True, text=True, timeout=60,
                               start_new_session=True)
 
-    def tty(self, answer, *args):
+    def tty(self, answer, *args, before=None):
         """The CLI on a controlling pty of its own, the operator answering
-        `answer` at the confirmation. (exit code, everything it printed)."""
+        `answer` at the confirmation (`before()` run first, while the prompt
+        waits). (exit code, everything it printed)."""
         env = self.env()
         pid, fd = pty.fork()
         if pid == 0:
@@ -120,6 +123,8 @@ class Base(tw.Machine):
                 break
             out += chunk
             if not sent and b"[y/N]" in out:
+                if before:
+                    before()
                 os.write(fd, answer.encode() + b"\n")
                 sent = True
         _, status = os.waitpid(pid, 0)
@@ -253,6 +258,120 @@ class Setters(Base):
         self.assertEqual((t["policyRev"], t["previous"]), (rev, [A, B, C]))
         self.assertEqual(vis.withdrawn_of(t, {"members": [A], "policyRev": rev}), ([B, C], ""),
                          "both changes' withdrawn members")
+
+
+class Cutover(Base):
+    """Widening moves to the app once this machine's endpoint serves the
+    Share sheet's record acts: its welcome advertised `record` (P5 Decision
+    Logs 231 and 232; the architect's ruling, sminos chat 1164). The CLI then
+    refuses every widening with "use MAWS", from a terminal too, and keeps
+    narrowing. The kept word is sticky; a machine not cut over to an
+    endpoint keeps the operator's terminal."""
+
+    def test_a_welcome_with_record_refuses_widening_at_the_terminal_and_keeps_narrowing(self):
+        au.keep_capabilities(["access", "reach", "record"])
+        self.local(S)
+        code, out = self.tty("y", "share", S, B, "view")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("use MAWS", out)
+        self.assertNotIn("[y/N]", out, "no confirmation asked: the terminal is no gate here")
+        self.assertEqual(self.policy(), ("listed", [], 0), "nothing written")
+        got = self.cli("access", S, "org-view", session=S)
+        self.assertNotEqual(got.returncode, 0)
+        self.assertIn("use MAWS", got.stderr, "an agent's shell is told the same")
+        got = self.cli("access", S, "private", session=S)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertEqual(self.policy(), ("private", [], 1), "narrowing still runs")
+        code, out = self.tty("y", "access", S, "listed")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("use MAWS", out)
+        self.assertEqual(self.policy()[0], "private")
+
+    def test_the_kept_word_stands_until_a_welcome_without_record(self):
+        """An endpoint that is away changes nothing kept, so the cutover
+        stays; only a later welcome without `record` (a MAWS rollback) gives
+        the terminal back."""
+        au.keep_capabilities(["access", "reach", "record"])
+        self.local(S, access="private")
+        code, out = self.tty("y", "access", S, "listed")
+        self.assertNotEqual(code, 0, out)
+        au.keep_capabilities(["access", "reach"])
+        code, out = self.tty("y", "access", S, "listed")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.policy()[0], "listed")
+
+    def test_a_welcome_not_kept_or_unreadable_counts_as_record(self):
+        """On a cut-over machine every welcome is kept, so a missing or
+        unreadable file is a word not yet known: widening waits (fail
+        closed), narrowing does not."""
+        self.local(S, access="private")
+        path = au.audiences_path()
+        os.unlink(path)
+        code, out = self.tty("y", "access", S, "listed")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("use MAWS", out)
+        self.assertNotIn("[y/N]", out)
+        with open(path, "w") as f:
+            f.write("{not json")
+        code, out = self.tty("y", "access", S, "listed")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("use MAWS", out)
+        self.assertEqual(self.policy()[0], "private")
+
+    def test_an_audience_frame_after_the_file_was_lost_stands_for_no_welcome(self):
+        """The file rebuilt by an `audience` frame after it went missing, or
+        could not be read, holds no capabilities: the word stays unknown
+        (widening waits, and so do the pushes `reach` decides) until a real
+        welcome says."""
+        au.keep_capabilities(["access", "reach", "record"])
+        self.local(S, access="private")
+        path = au.audiences_path()
+        for lose in (lambda: os.unlink(path), lambda: open(path, "w").write("{not json")):
+            lose()
+            self.audience(U, [B], [B], 3)
+            self.assertNotIn("capabilities", json.load(open(path)), "no welcome made up")
+            self.assertTrue(au.widening_through_app())
+            self.assertTrue(au.reach_capable(), "the pushes stay the endpoint's to decide")
+            code, out = self.tty("y", "access", S, "listed")
+            self.assertNotEqual(code, 0, out)
+            self.assertIn("use MAWS", out)
+            self.assertEqual(self.policy()[0], "private")
+        au.keep_capabilities(["access", "reach"])
+        self.assertEqual(json.load(open(path))["sessions"][U]["policyRev"], 3, "the frame kept")
+        code, out = self.tty("y", "access", S, "listed")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.policy()[0], "listed")
+
+    def test_a_welcome_with_record_kept_while_the_terminal_waits_refuses_at_the_write(self):
+        self.local(S, access="private")
+        code, out = self.tty("y", "access", S, "listed",
+                             before=lambda: au.keep_capabilities(["access", "reach", "record"]))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("[y/N]", out, "the prompt was asked before the welcome")
+        self.assertIn("use MAWS", out)
+        self.assertEqual(self.policy()[0], "private", "nothing written")
+
+    def test_a_machine_not_cut_over_to_an_endpoint_keeps_the_terminal(self):
+        """No endpoint, no welcome and no app path (a machine enrolled at no
+        hub, P5 Decision Log 231): a `record` kept from before stands for
+        nothing, and the operator's confirmed yes widens."""
+        au.keep_capabilities(["access", "reach", "record"])
+        self.local(S, access="private")
+        os.unlink(rl10.identity_path())
+        sminos.forget_caches()
+        code, out = self.tty("y", "access", S, "listed")
+        self.assertEqual(code, 0, out)
+        self.assertIn("[y/N]", out)
+        self.assertEqual(self.policy()[0], "listed")
+
+    def test_the_record_acts_still_widen(self):
+        """The cutover is the CLI's: the executor's set_visibility as the
+        operator (the endpoint verified the act's step-up) widens."""
+        au.keep_capabilities(["access", "reach", "record"])
+        self.local(S, access="private")
+        out = vis.set_visibility(S, access="listed", operator=True)
+        self.assertTrue(out["changed"])
+        self.assertEqual(self.policy()[0], "listed")
 
 
 # ------------------------------------------------------------- the transition

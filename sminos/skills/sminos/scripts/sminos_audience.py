@@ -154,11 +154,41 @@ def reach_capable():
     writes it at every welcome, an old endpoint's empty list included."""
     if not sminos.sibling_module("sminos_rl10").cut_over():
         return False
+    return _kept_word("reach")
+
+
+def _kept_word(capability):
+    """Whether the last welcome kept here advertised `capability`, a word
+    not known yet (no file, one that cannot be read, or one holding no
+    welcome's capabilities: _held_for_write never makes them up) counting as
+    advertised: the fail-closed reading of a cut-over machine's file."""
     try:
         d = _read_kept()   # one read decides: a welcome may write the file just after it
     except StreamUnknown:
         return True
-    return d is None or "reach" in (d.get("capabilities") or [])
+    caps = None if d is None else d.get("capabilities")
+    return not isinstance(caps, list) or capability in caps
+
+
+def widening_through_app():
+    """Whether widening a session's reach here is the app's alone, so the
+    CLI refuses it ("use MAWS") from a terminal too and keeps narrowing (P5
+    Decision Logs 231 and 232; the architect's ruling, sminos chat 1164):
+    the machine is cut over to its endpoint and that endpoint's welcome
+    advertised `record`, meaning it serves the Share sheet's `record.access`,
+    `record.shares` and `record.owners` acts, from any member's MAWS. The
+    word is the last welcome's, kept: an endpoint away, stopped or
+    unreachable leaves it standing, so stopping mawsd never hands widening
+    back to the terminal; only a later welcome without `record` (a MAWS
+    rollback) does. On a cut-over machine a file not there yet, one that
+    cannot be read, or one an `audience` frame rebuilt after either (no
+    capabilities in it) counts as `record`: every welcome writes them, so
+    the word is not known yet (fail closed). A machine not cut over has no endpoint to
+    carry an act, so the operator's terminal stays its gate (a machine
+    enrolled at no hub: no hub, no welcome)."""
+    if not sminos.sibling_module("sminos_rl10").cut_over():
+        return False
+    return _kept_word("record")
 
 
 def _write_audiences(d):
@@ -173,19 +203,25 @@ def _write_audiences(d):
 
 
 def _held_for_write():
+    """The kept file, to be written again. Its capabilities are only ever a
+    welcome's (keep_capabilities): a file that is not there or cannot be read
+    gives none, and the copy holds none, so an `audience` frame kept after
+    it never stands for a welcome that did not come (_kept_word)."""
     try:
         d = _read_audiences()
     except StreamUnknown:
         d = {}
-    return {"v": 1, "capabilities": list(d.get("capabilities") or []),
-            "sessions": dict(d.get("sessions") or {}) if isinstance(d.get("sessions"), dict) else {}}
+    held = {"v": 1, "sessions": dict(d.get("sessions") or {}) if isinstance(d.get("sessions"), dict) else {}}
+    if isinstance(d.get("capabilities"), list):
+        held["capabilities"] = list(d["capabilities"])
+    return held
 
 
 def keep_capabilities(capabilities):
     """The endpoint's welcome: what it advertised, kept (the uplink's)."""
     caps = sorted({c for c in capabilities if isinstance(c, str)}) if isinstance(capabilities, list) else []
     d = _held_for_write()
-    if d["capabilities"] != caps or not os.path.exists(audiences_path()):
+    if d.get("capabilities") != caps or not os.path.exists(audiences_path()):
         d["capabilities"] = caps
         _write_audiences(d)
 
