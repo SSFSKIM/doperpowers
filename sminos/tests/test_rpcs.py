@@ -14,9 +14,7 @@ Two halves.
   claims are reconciled from their traces.
 - `Uplink` runs `sminos daemon uplink` against the hub stand-in
   (hub_standin.py, unchanged: the test sends `rpc` and `rpc-ack` down and
-  reads the `rpc-result`s the uplink posted), or against DC3's local hub when
-  DESK_HUB names its stand-in for Access (the test is a browser of the
-  project, sending DX3 `rpc` and reading `rpc-state`): a cut after
+  reads the `rpc-result`s the uplink posted): a cut after
   execution and a restart between execution and report each resolve with
   the RPC executed once, and a spawn retried with its nonce after a cut
   yields one session.
@@ -3942,15 +3940,14 @@ class LaunchStart(unittest.TestCase):
 
 
 class Uplink(unittest.TestCase):
-    """RPCs through the uplink's stream: against the hub stand-in, or DC3's
-    local hub when DESK_HUB names its stand-in for Access."""
+    """RPCs through the uplink's stream, against the hub stand-in."""
 
     @classmethod
     def setUpClass(cls):
         cls.procs = []
         cls.claude = install_claude("uplink")
         os.environ["SMINOS_DERIVE_EVERY"] = "0"
-        cls.hub = tsp.make_hub(cls.spawn)
+        cls.hub = tsp.StandinHub(cls.spawn)
         cls.hub.enroll(CLI)
         with open(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json")) as f:
             cls.key = codes.b64url_bytes(json.load(f)["key"], 32)
@@ -3967,8 +3964,6 @@ class Uplink(unittest.TestCase):
                                          and m["body"]["bridge"] for m in ms), timeout=30)
         assert ok is not None, "the uplink connected and said the session's bridge"
         cls.member = MEMBER
-        if cls.local():
-            cls.member = next(f["member"] for f in cls.hub.socket.received() if f.get("t") == "welcome")
 
     @classmethod
     def spawn(cls, argv):
@@ -3980,8 +3975,6 @@ class Uplink(unittest.TestCase):
     def tearDownClass(cls):
         tpr.clear_policy()
         cls.mod.stop()
-        if cls.local():
-            cls.hub.close()
         for p in reversed(cls.procs):
             if p.poll() is None:
                 p.terminate()
@@ -3995,19 +3988,12 @@ class Uplink(unittest.TestCase):
         self.mod.turn = None
         self.mod.hold = 0.0
 
-    @classmethod
-    def local(cls):
-        return isinstance(cls.hub, tsp.LocalHub)
-
     def rpc(self, name, args, **kw):
         return sign(self.key, name, self.pid, args, machine=kw.pop("machine", self.hub.machine),
                     member=self.member, **kw)
 
     def send(self, rpc):
-        if self.local():
-            self.hub.socket.send({"t": "rpc", "rpc": rpc})
-        else:
-            self.hub.send({"t": "rpc", "rpc": rpc})
+        self.hub.send({"t": "rpc", "rpc": rpc})
         return rpc
 
     def posted(self, nonce):
@@ -4023,27 +4009,17 @@ class Uplink(unittest.TestCase):
                     out.append((int(p["generation"]), f["outcome"]))
         return out
 
-    def states(self, nonce):
-        """The local hub's record of the RPC, as its browser was shown it:
-        (state, outcome) in order."""
-        return [(f["state"], f.get("outcome")) for f in self.hub.socket.received()
-                if f.get("t") == "rpc-state" and f.get("nonce") == nonce]
-
     def outcome(self, rpc, timeout=30.0):
         """The RPC's outcome as the hub has it."""
         def got():
-            if self.local():
-                final = [o for s, o in self.states(rpc["nonce"]) if s in ("done", "failed")]
-            else:
-                final = [o for _, o in self.posted(rpc["nonce"])]
+            final = [o for _, o in self.posted(rpc["nonce"])]
             return final[-1] if final else None
         o = wait_for(got, timeout)
         self.assertIsNotNone(o, "the hub has %s's result" % rpc["rpc"])
         return o
 
     def ack(self, rpc):
-        if not self.local():
-            self.hub.send({"t": "rpc-ack", "project": self.pid, "nonce": rpc["nonce"]})
+        self.hub.send({"t": "rpc-ack", "project": self.pid, "nonce": rpc["nonce"]})
 
     def reconnected(self, since):
         """Whether the uplink's stream after `since` is open (it said its
@@ -4062,7 +4038,7 @@ class Uplink(unittest.TestCase):
         is taken (remote), and so is one made here (`sminos decide`)."""
         whole = {"file_path": "/w/huge", "content": "y" * (17 << 20)}
         count = len(self.hub.messages())
-        generation = None if self.local() else self.hub.state()["generation"]
+        generation = self.hub.state()["generation"]
         for rid in ("toolu_huge1", "toolu_huge2"):
             self.mod.raise_(rid, tool="Write", input_=whole)
 
@@ -4075,8 +4051,7 @@ class Uplink(unittest.TestCase):
             self.assertIsNotNone(body, "the raise reached the hub")
             self.assertEqual((body["input"], body["truncated"]),
                              ({"file_path": "/w/huge", "content": "y" * 1024}, True))
-        if generation is not None:
-            self.assertEqual(self.hub.state()["generation"], generation, "on the stream it was raised on")
+        self.assertEqual(self.hub.state()["generation"], generation, "on the stream it was raised on")
         remote = self.send(self.rpc("decide", {"session": self.sid, "decision": "allow",
                                                "digest": digest_of(self.sid, "toolu_huge1", "Write", bodies[0]["input"])}))
         self.assertEqual(self.outcome(remote), {"state": "done", "result": {}})
@@ -4089,8 +4064,7 @@ class Uplink(unittest.TestCase):
         self.assertEqual((status, got["decision"]["behavior"], got["by"]), (200, "deny", "cli"))
         self.mod.settle("toolu_huge2", outcome="deny", winner="cli", by="cli")
         self.assertEqual(local.wait(30), 0, local.communicate()[1])
-        if generation is not None:
-            self.assertEqual(self.hub.state()["generation"], generation, "the stream never dropped")
+        self.assertEqual(self.hub.state()["generation"], generation, "the stream never dropped")
 
     def test_a_steer_and_its_refusals_reach_the_hub(self):
         self.mod.turn = "turn-a"
@@ -4106,25 +4080,24 @@ class Uplink(unittest.TestCase):
         o = self.outcome(self.send(self.rpc("interrupt", {"session": self.sid})))
         self.assertEqual(o["error"]["code"], "read-only")
         tpr.clear_policy()
-        if not self.local():
-            # The hub routes by the machine an RPC names; only a hub that lies
-            # sends another machine's here, and only the stand-in can.
-            o = self.outcome(self.send(self.rpc("interrupt", {"session": self.sid}, machine="mini")))
-            self.assertEqual(o["error"]["code"], "wrong-machine")
-            self.assertEqual(self.mod.ops("interrupt"), [])
-            # Republished on every connect until acknowledged.
-            count = len(self.hub.messages())
-            self.hub.drop()
-            self.assertIsNotNone(self.reconnected(count))
-            self.assertIsNotNone(wait_for(lambda: len(self.posted(steer["nonce"])) >= 2, 15), "sent again")
-            self.ack(steer)
-            time.sleep(0.5)
-            sent = len(self.posted(steer["nonce"]))
-            count = len(self.hub.messages())
-            self.hub.drop()
-            self.assertIsNotNone(self.reconnected(count))
-            time.sleep(1.0)
-            self.assertEqual(len(self.posted(steer["nonce"])), sent, "acknowledged: not sent again")
+        # The hub routes by the machine an RPC names; only a hub that lies
+        # sends another machine's here, and only the stand-in can.
+        o = self.outcome(self.send(self.rpc("interrupt", {"session": self.sid}, machine="mini")))
+        self.assertEqual(o["error"]["code"], "wrong-machine")
+        self.assertEqual(self.mod.ops("interrupt"), [])
+        # Republished on every connect until acknowledged.
+        count = len(self.hub.messages())
+        self.hub.drop()
+        self.assertIsNotNone(self.reconnected(count))
+        self.assertIsNotNone(wait_for(lambda: len(self.posted(steer["nonce"])) >= 2, 15), "sent again")
+        self.ack(steer)
+        time.sleep(0.5)
+        sent = len(self.posted(steer["nonce"]))
+        count = len(self.hub.messages())
+        self.hub.drop()
+        self.assertIsNotNone(self.reconnected(count))
+        time.sleep(1.0)
+        self.assertEqual(len(self.posted(steer["nonce"])), sent, "acknowledged: not sent again")
 
     def test_b_a_cut_after_execution_shows_uncertain_then_resolves_executed_once(self):
         self.mod.turn = "turn-b"
@@ -4134,9 +4107,6 @@ class Uplink(unittest.TestCase):
         self.assertTrue(wait_for(lambda: len(self.mod.ops("steer")) > before, 15), "it reached the session")
         count = len(self.hub.messages())
         self.hub.drop()
-        if self.local():
-            self.assertTrue(wait_for(lambda: "uncertain" in [s for s, _ in self.states(steer["nonce"])], 15),
-                            "uncertain on the hub while the machine is away: %s" % self.states(steer["nonce"]))
         self.assertIsNotNone(self.reconnected(count))
         o = self.outcome(steer)
         self.assertEqual(o, {"state": "done", "result": {"row": self.mod.rows[-1]}}, "then resolved")
@@ -4161,28 +4131,25 @@ class Uplink(unittest.TestCase):
         steer = self.send(self.rpc("steer", {"session": self.sid, "text": "and the migration"}))
         self.assertTrue(wait_for(lambda: len(self.mod.ops("steer")) > before, 15), "it reached the session")
         self.restart_uplink()
-        if self.local():
-            self.assertIn("uncertain", [s for s, _ in self.states(steer["nonce"])], "uncertain while it was away")
         o = self.outcome(steer, timeout=45)
         self.assertEqual(o, {"state": "done", "result": {"row": self.mod.rows[-1]}}, "reconciled from its trace")
         self.assertEqual(len(self.mod.ops("steer")) - before, 1, "executed once")
         self.ack(steer)
-        if not self.local():
-            # Killed after the outcome was kept, its report held by the hub:
-            # the new uplink sends it after its hello.
-            self.mod.hold = 0.0
-            self.mod.turn = "turn-c2"
-            tsp.call(self.hub.url, "POST", "/control/post-fault", {"faults": [{"fault": "hold", "has": "rpc-result"}]})
-            n = len(self.mod.ops("interrupt"))
-            intr = self.send(self.rpc("interrupt", {"session": self.sid}))
-            self.assertTrue(wait_for(lambda: [p for p in self.hub.state()["posted"] if p["status"] == "held"], 15),
-                            "the report reached the hub and is held there")
-            self.restart_uplink()
-            tsp.call(self.hub.url, "POST", "/control/release", {})
-            o = self.outcome(intr)
-            self.assertEqual(o["result"]["turnId"], "turn-c2")
-            self.assertEqual(len(self.mod.ops("interrupt")) - n, 1, "executed once")
-            self.ack(intr)
+        # Killed after the outcome was kept, its report held by the hub:
+        # the new uplink sends it after its hello.
+        self.mod.hold = 0.0
+        self.mod.turn = "turn-c2"
+        tsp.call(self.hub.url, "POST", "/control/post-fault", {"faults": [{"fault": "hold", "has": "rpc-result"}]})
+        n = len(self.mod.ops("interrupt"))
+        intr = self.send(self.rpc("interrupt", {"session": self.sid}))
+        self.assertTrue(wait_for(lambda: [p for p in self.hub.state()["posted"] if p["status"] == "held"], 15),
+                        "the report reached the hub and is held there")
+        self.restart_uplink()
+        tsp.call(self.hub.url, "POST", "/control/release", {})
+        o = self.outcome(intr)
+        self.assertEqual(o["result"]["turnId"], "turn-c2")
+        self.assertEqual(len(self.mod.ops("interrupt")) - n, 1, "executed once")
+        self.ack(intr)
 
     def test_d_a_spawn_retried_with_its_nonce_after_a_cut_yields_one_session(self):
         with open(os.path.join(self.claude, "bg-sleep"), "w") as f:
@@ -4197,11 +4164,7 @@ class Uplink(unittest.TestCase):
             o = self.outcome(spawn, timeout=60)
             self.assertEqual(o["state"], "done", o)
             self.send(spawn)  # the browser's retry, with its nonce
-            if self.local():
-                self.assertTrue(wait_for(lambda: len([s for s, _ in self.states(spawn["nonce"]) if s == "done"]) >= 2,
-                                         15), "answered again: %s" % self.states(spawn["nonce"]))
-            else:
-                self.assertTrue(wait_for(lambda: len(self.posted(spawn["nonce"])) >= 2, 15), "answered again")
+            self.assertTrue(wait_for(lambda: len(self.posted(spawn["nonce"])) >= 2, 15), "answered again")
             self.assertEqual(self.outcome(spawn), o, "the same answer")
             time.sleep(1.0)
             self.assertEqual(len(launches(self.claude)) - before, 1, "one launch")
@@ -4234,17 +4197,8 @@ class Uplink(unittest.TestCase):
         self.ack(asked)
 
     def human_from_outside(self, sid, alias, text):
-        """A web `human` to the session: through a browser of the local hub,
-        or stored at the stand-in as the hub would store it. Its key."""
-        if self.local():
-            draft = {"kind": "human", "from": "human", "member": self.member, "text": text,
-                     "to": [{"session": sid, "alias": alias}], "created": sminos.now(ms=True)}
-            sealed = codes.seal(self.key, "log", self.pid, draft, codes.b64url(os.urandom(16)))
-            self.hub.socket.send({"t": "human", "event": sealed})
-            ack = wait_for(lambda: [f for f in self.hub.socket.received()
-                                    if f.get("t") == "human-ack" and f["nonce"] == sealed["mac"]["nonce"]])
-            self.assertTrue(ack, "the hub stored it")
-            return {"writer": ack[0]["writer"], "seq": ack[0]["seq"]}
+        """A web `human` to the session, stored at the stand-in as the hub
+        would store it. Its key."""
         e = tpr.hub_human(self.key, self.pid, sid, alias, text, 1)
         status, body = tsp.call(self.hub.url, "POST", "/control/inject", {"project": self.pid, "events": [e]})
         self.assertEqual(status, 200, body)
@@ -4294,8 +4248,6 @@ class Uplink(unittest.TestCase):
         """A machine project has no checkout anywhere: a stray's directory
         resolves to it, a session joins it from there, and still a spawn into
         it is refused (the org directory, §3)."""
-        if self.local():
-            self.skipTest("the stand-in's: a hub before machine projects knows none to route")
         stray_dir = os.path.join(T, "stray-dir")
         os.makedirs(stray_dir, exist_ok=True)
         stray = tpr.Session(stray_dir, inbox=False)

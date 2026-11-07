@@ -64,7 +64,6 @@ import bench_rig  # noqa: E402
 import dx4_consumer  # noqa: E402
 import fake_session  # noqa: E402
 import sminos_plane as plane  # noqa: E402
-import ws_client  # noqa: E402
 
 fake_session.READY_HOLD = 0.5
 PROJECT = "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59"
@@ -3299,7 +3298,7 @@ class BenchOpen(unittest.TestCase):
         def failing(hub, rig):
             made.append((hub.proc, rig.root))
             raise RuntimeError("injected")
-        a = types.SimpleNamespace(live=False, hub="standin", maws=None, keep=False)
+        a = types.SimpleNamespace(live=False, keep=False)
         with mock.patch.object(bench_rig.Standin, "enroll", failing), mock.patch.dict(os.environ, {
                 "HOME": os.path.join(T, "rig-home")}):
             with self.assertRaisesRegex(RuntimeError, "injected"):
@@ -3339,7 +3338,7 @@ class BenchOpen(unittest.TestCase):
     def test_a_run_against_the_stand_in(self):
         """bench_open.py itself, end to end: the real uplink against the
         stand-in, the fake session, two idle opens after the warm-up."""
-        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_open.py"), "--uplink", "--hub", "standin",
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_open.py"), "--uplink",
                             "--scenario", "idle", "--opens", "2"], capture_output=True, text=True, timeout=120,
                            env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")}
                            | {"HOME": os.path.join(T, "bench-home")})
@@ -3360,7 +3359,7 @@ class BenchOpen(unittest.TestCase):
     def test_a_mid_message_open_is_placed_among_the_events(self):
         """The scripted message's mid-message open: inside its window, and its
         snapshot placed by the event the uplink's tee saw follow it."""
-        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_open.py"), "--uplink", "--hub", "standin",
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_open.py"), "--uplink",
                             "--scenario", "mid-message", "--opens", "1"], capture_output=True, text=True, timeout=120,
                            env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")}
                            | {"HOME": os.path.join(T, "bench-home-mid")})
@@ -5653,92 +5652,8 @@ class StandinHub(Hub):
         return lambda: self.state()["generation"] > before
 
 
-class LocalHub(Hub):
-    """DC3's local hub behind its stand-in for Access (DESK_HUB, its URL): the
-    machine enrolls with a code the stand-in mints, and the test is a
-    browser of the project (DX3), subscribing over its socket."""
-
-    org = "local"
-
-    def __init__(self, url):
-        self.url = url.rstrip("/")
-        self.socket = None
-        # The hub keeps its machines across runs: a name of this run's own.
-        self.machine = "testhost-" + uuidlib.uuid4().hex[:6]
-
-    def enroll(self, sminos_cli):
-        status, body = call(self.url, "POST", "/standin/enrollment-code", {"machine": self.machine})
-        assert status == 200, body
-        r = subprocess.run([sminos_cli, "hub", "enroll", "--name", self.machine], input=body["code"].encode(),
-                           capture_output=True)
-        assert r.returncode == 0, (r.stdout + r.stderr).decode()
-
-    def follow(self, project):
-        """Opens the browser's socket once the uplink registered the project."""
-        ws_url = "ws" + self.url[len("http"):] + "/api/projects/%s/socket" % project
-        deadline = time.time() + 20
-        while True:
-            try:
-                self.socket = ws_client.WebSocket(ws_url)
-                return
-            except OSError:
-                if time.time() > deadline:
-                    raise
-                time.sleep(0.2)
-
-    def close(self):
-        if self.socket is not None:
-            self.socket.close()
-
-    def send(self, frame_):
-        """A down frame the test wants the machine to receive, as the browser
-        frame that makes the hub send it (DX3)."""
-        t = frame_["t"]
-        keep = {"subscribe": ("session", "agentId", "sub"), "unsubscribe": ("sub",), "rows": ("sub", "before", "limit"),
-                "diff": ("sub",)}[t]
-        out = {"t": t, **{k: frame_[k] for k in keep}}
-        if t == "subscribe":
-            out["machine"] = self.machine
-        self.socket.send(out)
-
-    def messages(self):
-        out = []
-        for f in self.socket.received():
-            if f.get("t") == "session":
-                out.append(f["message"])
-            elif f.get("t") == "machines":
-                out += [{"kind": "machine", "session": None, "sub": None, "machine": m["machine"],
-                         "body": {k: v for k, v in m.items() if k != "machine"}}
-                        for m in f["machines"] if m.get("machine") == self.machine]
-        return out
-
-    def drop(self):
-        """A second stream under the machine's credential ends the uplink's
-        (DX2: a new stream ends the previous one); the uplink reconnects and
-        ends it in turn. A predicate: whether the uplink's newer stream is
-        open, which the caller reads from its presence said again."""
-        with open(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json")) as f:
-            cred = json.load(f)
-        u = urllib.parse.urlsplit(self.url)
-        c = http.client.HTTPConnection(u.hostname, u.port, timeout=10)
-        c.request("GET", "/machine/stream", headers={"CF-Access-Client-Id": cred["client_id"],
-                                                     "CF-Access-Client-Secret": cred["client_secret"],
-                                                     "Accept": "text/event-stream"})
-        r = c.getresponse()
-        assert r.status == 200, r.status
-        r.fp.readline()  # its welcome: the uplink's stream is over
-        c.close()
-        return lambda: True
-
-
-def make_hub(spawn):
-    url = os.environ.get("DESK_HUB")
-    return LocalHub(url) if url else StandinHub(spawn)
-
-
 class Uplink(unittest.TestCase):
-    """The plane on the uplink's stream, against the hub stand-in, or against
-    DC3's local hub when DESK_HUB names its stand-in for Access."""
+    """The plane on the uplink's stream, against the hub stand-in."""
 
     @classmethod
     def setUpClass(cls):
@@ -5751,7 +5666,7 @@ class Uplink(unittest.TestCase):
         os.chmod(os.path.join(cls.bin, "claude"), 0o755)
         os.environ["PATH"] = cls.bin + os.pathsep + os.environ["PATH"]
         os.environ["SMINOS_DERIVE_EVERY"] = "0"
-        cls.hub = make_hub(cls.spawn)
+        cls.hub = StandinHub(cls.spawn)
         sminos_cli = os.path.join(SCRIPTS, "sminos")
         cls.hub.enroll(sminos_cli)
 
@@ -5802,8 +5717,6 @@ class Uplink(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.fake.stop_bridge()
-        if isinstance(cls.hub, LocalHub):
-            cls.hub.close()
         for p in reversed(cls.procs):
             p.terminate()
         for p in cls.procs:
@@ -5991,18 +5904,9 @@ class Uplink(unittest.TestCase):
         self.assertIn("+two", b.diff["text"])
         self.assertIn("+fresh", b.diff["text"])
         self.hub.send({"t": "unsubscribe", "project": self.project, "sub": b.sub})
-        if isinstance(self.hub, StandinHub):
-            # The stand-in shows what the machine posted: its end.
-            self.assertTrue(self.feed(b, lambda: b.end is not None))
-            self.assertEqual(b.end["reason"], "unsubscribed")
-        else:
-            # The hub drops the browser's route first, so the machine's end
-            # reaches nobody (relay: a message for a sub nobody holds); the
-            # sub falls silent while the session goes on.
-            seen = b.seen
-            self.fake.user_row("after the unsubscribe")
-            self.feed(b, lambda: False, timeout=1.0)
-            self.assertEqual(b.seen, seen, "nothing more for the sub")
+        # The stand-in shows what the machine posted: its end.
+        self.assertTrue(self.feed(b, lambda: b.end is not None))
+        self.assertEqual(b.end["reason"], "unsubscribed")
         self.assertEqual(b.errors, [])
 
     def test_c_unknown_session(self):
@@ -6265,8 +6169,6 @@ class Uplink(unittest.TestCase):
         session lane meanwhile, each within a second; released (and refused,
         as the stand-in answers a held POST), the stream ends as any lost
         POST ends it, and the next one serves opens again."""
-        if not isinstance(self.hub, StandinHub):
-            self.skipTest("the stand-in's hold")
         self.restart_uplink(SMINOS_ARCHIVE_EVERY="1")
         self.addCleanup(self.restart_uplink)
         state = self.hub.state()
@@ -6303,8 +6205,6 @@ class Uplink(unittest.TestCase):
         """A9 against the stand-in: the session lane's POSTs come on one
         connection; after a pause past SMINOS_IDLE_CLOSE the next comes on a
         new one, and daemon.log's connection lines say the same."""
-        if not isinstance(self.hub, StandinHub):
-            self.skipTest("the stand-in's connection numbers")
         self.restart_uplink(SMINOS_IDLE_CLOSE="1")
         self.addCleanup(self.restart_uplink)
         logged = len(read(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")).splitlines())

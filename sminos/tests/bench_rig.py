@@ -3,12 +3,8 @@
 spec, docs/doperpowers/specs/2026-10-20-desk-open-fast-design.md, M2):
 bench_open.py's runs and bench_scale.py's opens.
 
-- The hubs: hub_standin.py (`Standin`), or the hub's own Worker on a local
-  runtime from a MAWS worktree (`Local`: `pnpm --filter desk-hub local` with
-  a state directory of its own and a free port), each with its browser
-  client: the stand-in's `/control/send` and stamped `sessions`
-  (`StandinBrowser`), or the project's socket on the local hub
-  (`LocalBrowser`, ws_client).
+- The hub: hub_standin.py (`Standin`), with its browser client: the
+  stand-in's `/control/send` and stamped `sessions` (`StandinBrowser`).
 - The sessions: fake_session.py's scripted one or a synthetic transcript
   (`FakeKind`, `synthetic_transcript`), or an isolated headless live one
   (`LiveKind`, mods/live-bridge-check.py's Live) with a probe subscription
@@ -36,7 +32,6 @@ import queue
 import random
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
@@ -186,30 +181,11 @@ def wait_for(what, seconds, fn, every=0.05):
     raise TimeoutError("timed out after %ss waiting for %s" % (seconds, what))
 
 
-def free_pair():
-    """A port n with n and n + 1 free on 127.0.0.1 (the local hub takes both)."""
-    for _ in range(200):
-        n = random.randint(20000, 60000)
-        socks = []
-        try:
-            for p in (n, n + 1):
-                s = socket.socket()
-                s.bind(("127.0.0.1", p))
-                socks.append(s)
-            return n
-        except OSError:
-            continue
-        finally:
-            for s in socks:
-                s.close()
-    raise RuntimeError("no free port pair")
-
-
 def sub_id():
     return base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()   # DX3: 128 bits, base64url
 
 
-# ------------------------------------------------------------- the hubs and their browsers
+# ------------------------------------------------------------- the hub and its browser
 
 
 class StandinBrowser:
@@ -246,46 +222,6 @@ class StandinBrowser:
         pass
 
 
-class LocalBrowser:
-    """A browser of the project on the local hub: DX3 over its socket, each
-    frame stamped on arrival (ws_client)."""
-
-    def __init__(self, url, project, machine):
-        import ws_client
-        self.project, self.machine = project, machine
-        ws_url = "ws" + url[len("http"):] + "/api/projects/%s/socket" % project
-        self.ws = wait_for("the project's socket at the local hub", 30, lambda: self.connect(ws_client, ws_url), 0.2)
-        self.seen, self.msgs = 0, []
-
-    @staticmethod
-    def connect(ws_client, url):
-        try:
-            return ws_client.WebSocket(url)
-        except OSError:
-            return None
-
-    def send(self, frame_):
-        at = time.time()
-        self.ws.send(frame_)
-        return at
-
-    def poll(self):
-        got = self.ws.stamped(self.seen)
-        self.seen += len(got)
-        self.msgs += [(at, f["message"]) for at, f in got if f.get("t") == "session"]
-
-    def subscribe(self, session, agent=None):
-        sub = sub_id()
-        return sub, self.send({"t": "subscribe", "session": session, "agentId": agent, "sub": sub,
-                               "machine": self.machine})
-
-    def unsubscribe(self, sub):
-        self.send({"t": "unsubscribe", "sub": sub})
-
-    def close(self):
-        self.ws.close()
-
-
 class Standin:
     """hub_standin.py: one machine, `testhost`, enrolled already."""
 
@@ -308,81 +244,6 @@ class Standin:
 
     def close(self):
         pass
-
-
-class Local:
-    """The hub's own Worker on a local runtime behind its stand-in for Access
-    (`pnpm --filter desk-hub local`), from the MAWS worktree named, with a
-    state directory of its own and a free port; its stdout is read here line
-    by line, stamped, for its readiness and for what it said if it never came
-    up. (What the uplink posted is the pause proxy's census, by start: this
-    log stamps a request when it is answered and names no machine.)"""
-
-    name, org = "local", "local"
-
-    def __init__(self, rig, maws):
-        if not maws or not os.path.isdir(os.path.join(maws, "apps", "desk-hub")):
-            sys.exit("bench_open: --hub local needs --maws <a MAWS worktree with apps/desk-hub>")
-        port = free_pair()
-        self.url = "http://127.0.0.1:%d" % port
-        self.machine = "bench-" + uuidlib.uuid4().hex[:6]
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE_"))}
-        self.proc = subprocess.Popen(["pnpm", "--filter", "desk-hub", "local", "--state",
-                                      os.path.join(rig.root, "hubstate"), "--port", str(port)],
-                                     cwd=maws, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, start_new_session=True)
-        rig.hub = self
-        self.log, self.lock = [], threading.Lock()
-        self.ready = threading.Event()
-        threading.Thread(target=self.read, daemon=True).start()
-        if not self.ready.wait(180):
-            tail = "\n".join(l for _, l in self.log[-15:])
-            sys.exit("bench_open: the local hub did not come up in 180 s:\n" + tail)
-        self.key = None
-
-    def read(self):
-        for raw in iter(self.proc.stdout.readline, b""):
-            line = raw.decode("utf-8", "replace").rstrip("\n")
-            with self.lock:
-                self.log.append((time.time(), line))
-            if "Ready on http" in line:
-                self.ready.set()
-
-    def code(self, machine, key=None):
-        status, body = call(self.url, "POST", "/standin/enrollment-code",
-                            {"machine": machine, **({"key": key} if key else {})})
-        if status != 200:
-            raise RuntimeError("no enrollment code: %s %s" % (status, body))
-        return body
-
-    def enroll(self, rig):
-        body = self.code(self.machine)
-        self.key = body["key"]
-        r = subprocess.run([SMINOS, "hub", "enroll", "--name", self.machine], input=body["code"].encode(),
-                           env=rig.env, capture_output=True)
-        if r.returncode != 0:
-            raise RuntimeError("sminos hub enroll failed: %s" % (r.stdout + r.stderr).decode()[-500:])
-
-    def mint(self, machine):
-        """Another machine of the org, its credential redeemed here."""
-        body = self.code(machine, self.key)
-        status, cred = call(self.url, "POST", "/machine/enroll", {"token": body["token"], "machine": machine})
-        if status != 200:
-            raise RuntimeError("the redemption failed: %s %s" % (status, cred))
-        return cred
-
-    def browser(self, rig):
-        return LocalBrowser(self.url, rig.project, self.machine)
-
-    def close(self):
-        try:
-            os.killpg(self.proc.pid, signal.SIGTERM)
-            self.proc.wait(20)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(self.proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
 
 
 def _read(path):
@@ -681,10 +542,7 @@ class Rig:
                         PATH=stub + os.pathsep + os.environ.get("PATH", ""), SMINOS_DERIVE_EVERY="0",
                         PYTHONDONTWRITEBYTECODE="1")
         self.tee = os.path.join(self.root, "tee.jsonl")
-        if a.hub == "local":
-            Local(self, a.maws)     # each hub is the rig's (`rig.hub`) once its process exists
-        else:
-            Standin(self)
+        Standin(self)     # the hub is the rig's (`rig.hub`) once its process exists
         self.hub.enroll(self)
         if not a.live:
             git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]

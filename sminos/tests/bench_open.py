@@ -7,18 +7,14 @@ M2). An open runs from a browser client's `subscribe` to its receipt of the
 the uplink's reader to the snapshot's emission, is the plane's open line in
 daemon.log, reported beside E as a diagnostic.
 
-    bench_open.py --uplink --hub local --maws <MAWS worktree> [--live [--thinking] [--model M] | --synthetic-rows N]
-                  --scenario S --opens N [--pause-stream 4 --backlog 16m] [--keep]
-    bench_open.py --uplink --hub standin [...]
+    bench_open.py --uplink [--live [--thinking] [--model M] | --synthetic-rows N]
+                  --scenario S --opens N [--keep]
     bench_open.py --micro --session <id> --sminos-home <dir> [--home <dir>] [--opens N]
 
 The full path (`--uplink`): this checkout's `sminos daemon uplink` under a
-temporary HOME and SMINOS_HOME, enrolled at a hub this instrument starts —
-`--hub local`, the hub's own Worker on a local runtime (`pnpm --filter
-desk-hub local --state <tmp> --port <free>` in the `--maws` worktree), a
-browser client on the project's socket (ws_client); or `--hub standin`,
-hub_standin.py, its `/control/send` the client's subscribe and its stamped
-`sessions` what the client receives. The session is fake_session.py's
+temporary HOME and SMINOS_HOME, enrolled at the hub stand-in this instrument
+starts (hub_standin.py), its `/control/send` the client's subscribe and its
+stamped `sessions` what the client receives. The session is fake_session.py's
 scripted one by default; `--live` an isolated headless session as
 mods/live-bridge-check.py isolates one (it spends haiku calls: run by hand,
 with the gateway's keys in the environment; `--thinking` turns extended
@@ -30,8 +26,8 @@ session emitted (the fake session's posts, or a live session's probe
 subscription), with the bridge's snapshot line placed among them for each
 subscription the plane served (the uplink here runs under a bootstrap that
 tees each subscription's first bridge lines, its sub beside them: nothing of
-the uplink's behavior changes). What a run stands on — the hubs and their
-browser clients, the sessions, the machine and its uplink — is bench_rig.py.
+the uplink's behavior changes). What a run stands on — the hub and its
+browser client, the sessions, the machine and its uplink — is bench_rig.py.
 
 Scenarios: `idle` (opens between turns, after one uncounted open that builds
 the index), `after-prompt` (each open made on the prompt row's notice),
@@ -49,7 +45,8 @@ mod's STABLE_MS (a younger child's successor waits RESPAWN_STEP_MS by
 design, so back-to-back kills would measure the backoff), the client
 subscribing again on each `end`, measured from the kill to the successor's
 bridged snapshot), `restart` (the same open on a fresh uplink, then after each
-restart), `held` (local hub: A4's pair, in its order, each step observed
+restart), `held` (refused: it ran on the local hub, which this instrument
+no longer starts; A4's pair, in its order, each step observed
 before the next — a subscription's snapshot and first chunk; the pause
 proxy, between the uplink and the hub, armed; a second machine's upload of
 `--backlog` bytes answered 200, every POST; the proxy seen `paused` on its
@@ -397,7 +394,7 @@ class Bench:
         """The instrument's own unsubscribe before a re-subscribe, as the web
         makes it: every message the client holds for it taken first, then the
         unsubscribe; whatever comes for it after that is the successor's to
-        cover (the local hub drops it, its route gone), so its consumer is
+        cover (the hub drops it, its route gone), so its consumer is
         whole and in order when its drawing is handed on."""
         if o.end_at is None and o.released is None:
             o.released = time.time()
@@ -979,8 +976,8 @@ def sc_held(bench, a):
     module doc): a step not observed makes the run incomplete, and so does a
     pause behind which no hub write was seen to block (write_probe)."""
     rig, k = bench.rig, bench.kind
-    if rig.hub.name != "local" or k.name != "fake":
-        sys.exit("bench_open: --scenario held runs on --hub local with the fake session")
+    if k.name != "fake":
+        sys.exit("bench_open: --scenario held runs with the fake session")
     control = rig.proxy["control"]
     steps = []
 
@@ -1177,7 +1174,7 @@ def micro(a):
 
 
 def run(a):
-    print(json.dumps({"start": a.scenario, "hub": a.hub, "session": "live" if a.live else
+    print(json.dumps({"start": a.scenario, "hub": "standin", "session": "live" if a.live else
                       ("synthetic" if a.synthetic_rows else "fake"), "uptime": uptime()}), flush=True)
     rig = Rig(a)
     kind = None
@@ -1209,8 +1206,6 @@ def main():
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--uplink", action="store_true", help="the full path: the real uplink and a hub")
     mode.add_argument("--micro", action="store_true", help="one Subscription in-process: N_micro")
-    p.add_argument("--hub", choices=("local", "standin"), default="standin")
-    p.add_argument("--maws", help="the MAWS worktree whose apps/desk-hub runs as the local hub")
     p.add_argument("--live", action="store_true", help="an isolated headless session (spends haiku calls)")
     p.add_argument("--thinking", action="store_true", help="with --live: extended thinking on")
     p.add_argument("--model", default="haiku", help="with --live: the session's model")
@@ -1233,6 +1228,8 @@ def main():
         if not (a.session and a.sminos_home):
             p.error("--micro needs --session and --sminos-home")
         return micro(a)
+    if a.scenario == "held":
+        p.error("--scenario held ran on the local hub, which bench_open no longer starts")
     if a.live and a.synthetic_rows:
         p.error("--live and --synthetic-rows are two different sessions")
     if a.thinking and not a.live:

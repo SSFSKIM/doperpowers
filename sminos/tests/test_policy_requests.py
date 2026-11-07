@@ -14,11 +14,10 @@ outcomes of delivering what came from outside (DC7 M2 of the desk).
 - Requests: what the bridges raise and settle (DC2's real child, its DX5
   stream) becomes DX4 `raised` and `settled` with DX1's codes, and the
   machine's complete pending set.
-- Then the uplink against the hub stand-in, or DC3's local hub when DESK_HUB
-  names its stand-in for Access: requests and settlements reach the hub with
-  codes and the pending set is republished on a reconnect; delivery outcomes
-  reach it with codes; the policy is published in `machine` and again when
-  the owner changes it.
+- Then the uplink against the hub stand-in: requests and settlements reach
+  the hub with codes and the pending set is republished on a reconnect;
+  delivery outcomes reach it with codes; the policy is published in
+  `machine` and again when the owner changes it.
 
 Hermetic: HOME and SMINOS_HOME are temporary (test_session_plane's); nothing
 reaches beyond 127.0.0.1 and this directory.
@@ -1842,7 +1841,7 @@ class RelayedOnLanes(unittest.TestCase):
 
 
 class Uplink(unittest.TestCase):
-    """Against the hub stand-in, or DC3's local hub when DESK_HUB is set."""
+    """Against the hub stand-in."""
 
     @classmethod
     def setUpClass(cls):
@@ -1854,7 +1853,7 @@ class Uplink(unittest.TestCase):
         os.chmod(os.path.join(bindir, "claude"), 0o755)
         os.environ["PATH"] = bindir + os.pathsep + os.environ["PATH"]
         os.environ["SMINOS_DERIVE_EVERY"] = "0"
-        cls.hub = tsp.make_hub(cls.spawn)
+        cls.hub = tsp.StandinHub(cls.spawn)
         cls.hub.enroll(CLI)
         with open(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json")) as f:
             cls.key = codes.b64url_bytes(json.load(f)["key"], 32)
@@ -1882,8 +1881,6 @@ class Uplink(unittest.TestCase):
     def tearDownClass(cls):
         clear_policy()
         cls.bridge.stop()
-        if isinstance(cls.hub, tsp.LocalHub):
-            cls.hub.close()
         for p in reversed(cls.procs):
             p.terminate()
         for p in cls.procs:
@@ -1893,19 +1890,12 @@ class Uplink(unittest.TestCase):
     def tearDown(self):
         clear_policy()
 
-    def local(self):
-        return isinstance(self.hub, tsp.LocalHub)
-
     def mine(self, ms, kind):
         return [m for m in ms if m["kind"] == kind and m.get("session") == self.sid]
 
     def pending_sets(self):
         """The pending sets the hub holds for this machine, in order: from
-        DX2 `pending` frames the uplink posted (the stand-in), or DX3
-        `pending` frames a browser was sent (the local hub)."""
-        if self.local():
-            return [[r["raised"]["request"] for r in f["requests"] if r["machine"] == self.hub.machine]
-                    for f in self.hub.socket.received() if f.get("t") == "pending"]
+        DX2 `pending` frames the uplink posted (the stand-in)."""
         out = []
         for p in self.hub.state()["posted"]:
             for line in p["body"].splitlines():
@@ -1982,9 +1972,8 @@ class Uplink(unittest.TestCase):
         self.assertIsNotNone(self.hub.wait(lambda ms: [m for m in ms[count:] if m["kind"] == "presence"
                                                        and m["session"] == self.sid], timeout=20),
                              "the new uplink is connected")
-        if not self.local():
-            got = wait_for(lambda: self.pending_sets()[sets:], timeout=15)
-            self.assertTrue(got, "a set was published")
+        got = wait_for(lambda: self.pending_sets()[sets:], timeout=15)
+        self.assertTrue(got, "a set was published")
         time.sleep(1.0)
         after = self.pending_sets()[sets:]
         self.assertTrue(all("toolu_kept" in s for s in after),
@@ -1992,18 +1981,8 @@ class Uplink(unittest.TestCase):
         self.bridge.settle("toolu_kept")
 
     def deliver_from_outside(self, text):
-        """An outside-origin `human` to the session: through a browser of
-        the local hub, or stored at the stand-in as the hub would store it."""
-        if self.local():
-            member = next(f["member"] for f in self.hub.socket.received() if f.get("t") == "welcome")
-            draft = {"kind": "human", "from": "human", "member": member, "text": text,
-                     "to": [{"session": self.sid, "alias": self.alias}], "created": sminos.now(ms=True)}
-            sealed = codes.seal(self.key, "log", self.project, draft, codes.b64url(os.urandom(16)))
-            self.hub.socket.send({"t": "human", "event": sealed})
-            ack = wait_for(lambda: [f for f in self.hub.socket.received()
-                                    if f.get("t") == "human-ack" and f["nonce"] == sealed["mac"]["nonce"]])
-            self.assertTrue(ack, "the hub stored it")
-            return {"writer": ack[0]["writer"], "seq": ack[0]["seq"]}
+        """An outside-origin `human` to the session, stored at the stand-in
+        as the hub would store it."""
         Uplink.seq = getattr(Uplink, "seq", 0) + 1
         e = hub_human(self.key, self.project, self.sid, self.alias, text, Uplink.seq)
         status, body = tsp.call(self.hub.url, "POST", "/control/inject", {"project": self.project, "events": [e]})
