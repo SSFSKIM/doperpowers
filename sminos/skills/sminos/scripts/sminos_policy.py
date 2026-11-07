@@ -140,7 +140,9 @@ def known_checkouts(project, here=None):
     if sminos.project_kind(project) == "machine":
         return []
     paths = []
-    if project.root and os.path.isdir(project.root):
+    # A directory this process may not look at (sminos.read_refused) is no
+    # checkout it can vouch for.
+    if project.root and not sminos.read_refused(project.root) and os.path.isdir(project.root):
         root = sminos.resolve_project(project.root)
         if root is not None and root.id == project.id:
             paths.append(project.root)
@@ -152,7 +154,7 @@ def known_checkouts(project, here=None):
             if not machine or sminos.is_self(machine, sid):
                 here[sid] = str(j.get("cwd") or "")
     for cwd in dict.fromkeys(here.values()):
-        if not cwd or not os.path.isdir(cwd):
+        if not cwd or sminos.read_refused(cwd) or not os.path.isdir(cwd):
             continue
         p = sminos.resolve_project(cwd)
         if p is not None and p.id == project.id:
@@ -162,8 +164,11 @@ def known_checkouts(project, here=None):
 
 def git_branch(path):
     """The branch checked out at `path`, read from git's HEAD without running
-    git; "" when detached or not a checkout."""
+    git; "" when detached, not a checkout, or one whose metadata this
+    process may not read (sminos.git_refused)."""
     d = os.path.abspath(path)
+    if sminos.git_refused(d):
+        return ""
     while True:
         dot = os.path.join(d, ".git")
         if os.path.exists(dot):
@@ -178,6 +183,8 @@ def git_branch(path):
         if os.path.isfile(dot):
             line = sminos.file_bytes(dot).decode().strip()
             dot = os.path.join(d, line[len("gitdir:"):].strip()) if line.startswith("gitdir:") else ""
+        if sminos.read_refused(dot):
+            return ""
         head = sminos.file_bytes(os.path.join(dot, "HEAD")).decode().strip()
     except OSError:
         return ""
