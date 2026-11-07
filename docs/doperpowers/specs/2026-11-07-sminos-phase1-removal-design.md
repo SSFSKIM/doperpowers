@@ -12,7 +12,7 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) This spec.
 - [x] (2026-11-07) The spec's review: adversarial-reviewer on the design and on the execution section, one round each. Every finding was folded in (Decision Log, 2026-11-07, the review).
 - [x] (2026-11-07) M1: devcloud's DX2 enrollment out (devcloud 0.16.0, `1585356b`; review clean, devcloud gates GREEN, run 42338569325).
-- [ ] M2: the opt-in local-hub modes out (tests only).
+- [x] (2026-11-07) M2: the opt-in local-hub modes out (tests only; `0e2a69d6`; review clean, sminos gates GREEN, run 42339386393).
 - [ ] M3a: the unit flips (tests only).
 - [ ] M3b: the endpoint stand-in ports, the session plane and the RPCs (tests only).
 - [ ] M3c: the shell suites' one-machine cases (tests only).
@@ -248,6 +248,9 @@ This is after the branch review and the merge, and it is not part of the branch'
 - Observation (the review): refusing Resume on RL10 does not make its recovery unreachable. `Rpcs.__init__` reconciles the ledger whatever `coded` is, and an unfinished pre-cutover Resume claim reaches `launched_by`. A reviewer ran the extracted functions with `coded=False`: they reconciled, and with the helper deleted they raised `NameError`.
   Evidence: `sminos_rpc.py:783`, `:1600`, `:2738` at `904b0a35`.
 
+- Observation (M2): `bench_scale.py` never had the `--hub local` or `--maws` flags the spec and map §5 step 1 name; it needed no change in M2.
+  Evidence: `bench_scale.py`'s parsers at `0e2a69d6`.
+
 ## Decision Log
 
 - Decision (verification, at authoring): the design and the execution section each get one `doperpowers:adversarial-reviewer` pass before execution. The branch gets the xhigh panel through `doperpowers:review-code`: the diff runs to thousands of lines across many files, and most of the risk is coverage silently lost rather than a defect in what is added. Acceptance 8's daemon check closes it.
@@ -280,6 +283,12 @@ This is after the branch review and the merge, and it is not part of the branch'
   - The departure tests run on a cut-over VM whose endpoint holds a certificate; `test_the_desk_not_answering_the_leave_goes_on` (DX2 only) goes.
   - TECH-DEBT's desk-key expiry (2027-01-19) is deleted as the v1 key's. Whether the v2 code expires was not checked.
   Date/Author: 2026-11-07, plan-executor (M1).
+
+- Decision (M2, the executor):
+  - `bench_open --scenario held` is refused before any rig is built, and stays in the tree until M5. It only ever ran on the local hub (its uploader used `Local.mint`), and deleting it now would take `test_session_plane`'s two analyser tests (`probe_blocked`, `machine_vector`) with it.
+  - `make_hub` goes: the three Uplink classes call `StandinHub` directly. `Hub`, `StandinHub` and `call` stay until M5.
+  - `ws_client.py` goes with `LocalHub` and `LocalBrowser`, its only users.
+  Date/Author: 2026-11-07, plan-executor (M2).
 
 ## Outcomes & Retrospective
 
