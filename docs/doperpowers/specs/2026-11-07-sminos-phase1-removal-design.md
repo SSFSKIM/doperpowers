@@ -16,7 +16,7 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) M3a: the unit flips (tests only; `c9b0240d`, `673a7851`; review clean, sminos gates GREEN, run 42343036908).
 - [x] (2026-11-07) M3b: the endpoint stand-in ports, the session plane and the RPCs (tests only; `1ee32911..84417b8e`, fix `71ac14b0`; review clean, sminos gates GREEN on `84417b8e`, run 42344457872).
 - [ ] M3c: the shell suites' one-machine cases (tests only).
-- [ ] M3d: the two-machine compositions (tests only).
+- [x] (2026-11-07) M3d: the two-machine compositions (tests only; `65e8870c..95c94a7f`, fixes `289ca204`, `6e4397ff`, `e7121bd0`; review clean, sminos gates GREEN on `e7121bd0`, run 42354037484).
 - [ ] M3e: open latency on RL10 (tests only).
 - [ ] M4: the `hub` verbs and `hub.json` reduced (the sminos 1.40.0 bump).
 - [ ] M5: the DX2 transport and the supervisor's DX2 arm out.
@@ -253,6 +253,11 @@ This is after the branch review and the merge, and it is not part of the branch'
 
 - Observation (M3a): `test_rpcs` runs about 75 s locally instead of 36 s while both arms run, until M6. An existing race in `Checks::test_l_a_command_running_when_its_child_is_replaced_keeps_its_end` prints a thread traceback while the test passes; it is not fixed here.
   Evidence: task 3's report; sminos-suites took 22m33s on `673a7851` (run 42343036908).
+
+- Observation (M3d): sminos-suites ran 24–27.5 min across M3's heads, against its 30-minute timeout, while the DX2 and RL10 arms both run. M4 and M5 bring it down.
+  Evidence: runs 42351913496, 42352004893, 42352577867, 42354037484.
+- Observation (M3d): two DX2 cases have no RL10 form. A `<message>` stays in its machine's host store and goes only to its endpoint, so beta reading alpha's stray's message becomes the stray's membership; the endpoint carries no presence, so "last seen" becomes the `last event … ago` row.
+  Evidence: task 6's report.
 
 ## Decision Log
 
