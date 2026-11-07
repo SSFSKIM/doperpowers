@@ -55,10 +55,11 @@ for given, want in NAMES:
 if sminos.peer_envelope("t", "‍") != "<cross-session-message>\nt\n</cross-session-message>":
     failures += 1
     print("FAIL a name that strips to nothing leaves no attribute")
-HOSTILE = ['x"$(touch /tmp/pwn)"', "p`id`", 'a"; id; "', "a b", "p$IFS", "", "../x"]
+# "local-demo\n": an id-shaped word with a newline after it would end the frame's line early.
+HOSTILE = ['x"$(touch /tmp/pwn)"', "p`id`", 'a"; id; "', "a b", "p$IFS", "", "../x", "local-demo\n"]
 for bad in HOSTILE:
     line = sminos.reply_line("0123456789abcdef", bad)
-    if any(c in line.split("say ", 1)[1] for c in "$`;") or line.count('"') != 2 or "@0123" not in line:
+    if any(c in line.split("say ", 1)[1] for c in "$`;\n") or line.count('"') != 2 or "@0123" not in line:
         failures += 1
         print("FAIL hostile project %r reached the reply line: %r" % (bad, line))
 for good in ["local-demo", "0e1d2c3b-aaaa-bbbb-cccc-ddddeeeeffff"]:

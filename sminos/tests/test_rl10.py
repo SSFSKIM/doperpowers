@@ -234,6 +234,15 @@ class Welcome(Machine):
         self.assertIn("a welcome whose identity has no org, ref: the endpoint is not enrolled", daemon_log())
         self.assertEqual([f["t"] for f in ep.frames()], ["hello"] * len(ep.hellos), "nothing but the hello goes up")
 
+    def test_a_welcome_naming_a_machine_with_a_newline_after_it_is_refused(self):
+        # The name becomes the machine's writer and its directories' names.
+        ident = {"org": "org-1", "hub": "h", "name": "newname", "former": ["oldname"], "ref": "r",
+                 "enrolled": "2026-10-27T00:00:00.000Z"}
+        self.assertEqual(rl10.welcome_identity({"protocol": rl10.PROTOCOL, "identity": ident})["name"], "newname")
+        for bad in ({"name": "newname\n"}, {"former": ["oldname\n"]}):
+            with self.assertRaises(ValueError, msg=bad):
+                rl10.welcome_identity({"protocol": rl10.PROTOCOL, "identity": {**ident, **bad}})
+
     def probe(self):
         return subprocess.run([sys.executable, str(SCRIPTS / "sminos.py"), "daemon", "probe"], capture_output=True,
                               text=True, timeout=60)

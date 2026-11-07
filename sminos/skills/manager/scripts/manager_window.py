@@ -281,7 +281,7 @@ class Classifier:
         if block.get("is_error") is True or cid in self.calls:
             return False
         src = row.get("sourceToolAssistantUUID")
-        if self.lookup is not None and isinstance(src, str) and S.UUID_RE.match(src):
+        if self.lookup is not None and isinstance(src, str) and S.UUID_RE.fullmatch(src):
             call = self.lookup(src)
             if call is not None:
                 return any(b.get("id") == cid and _blocking_ask(b) for b in S._blocks(call, "tool_use"))

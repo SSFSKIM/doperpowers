@@ -127,13 +127,13 @@ def supervisor_key(cfg):
             key = f.read().strip()
     except OSError:
         return ""
-    return key if KEY_RE.match(key) else ""
+    return key if KEY_RE.fullmatch(key) else ""
 
 
 def bg_job(peer):
     """The --bg job a live session runs as (its 8-hex short), or ""."""
     short = str((peer or {}).get("jobId") or "")
-    return short if (peer or {}).get("kind") == "bg" and SHORT_RE.match(short) else ""
+    return short if (peer or {}).get("kind") == "bg" and SHORT_RE.fullmatch(short) else ""
 
 
 def supervisor_reply(short, text, session=""):

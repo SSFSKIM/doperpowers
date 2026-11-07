@@ -241,6 +241,11 @@ class Mode(Rig):
         self.assertEqual((rec["launch"], rec["by"], rec["session"]), ("launch-1", "activation", S1))
         self.assertEqual(hd.handoff(pid, S1), "gate", "a deliverer reads the record alone")
 
+    def test_an_activation_keeps_only_whole_receipt_ids(self):
+        rid = "0" * 24 + "." + "1" * 16
+        rec = self.gate(self.launch(S1), retained=[rid, rid + "\n", "not-an-id"])
+        self.assertEqual(rec["retained"], [rid], "an id with a newline after it is not kept")
+
     def test_reload_child_restart_and_clear_never_change_the_mode(self):
         pid = self.launch(S1)
         self.gate(pid)

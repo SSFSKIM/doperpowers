@@ -2582,7 +2582,7 @@ def mode_reading(status):
     its `read status` and heartbeat carry (`permissionModeAt`). None when it
     names none, or a word that is no mode."""
     mode, at = status.get("permissionMode"), status.get("permissionModeAt")
-    if not (isinstance(mode, str) and MODE_WORD.match(mode)):
+    if not (isinstance(mode, str) and MODE_WORD.fullmatch(mode)):
         return None
     if isinstance(at, bool) or not isinstance(at, (int, float)) or at != at or at in (float("inf"), float("-inf")):
         return None
@@ -2870,7 +2870,7 @@ class Plane:
             return out + [envelope(project.id, self.machine, sid if isinstance(sid, str) else "", "end", sub, 0,
                                    {"reason": "error", "message": message})]
 
-        if not (isinstance(sid, str) and sminos.UUID_RE.match(sid)):
+        if not (isinstance(sid, str) and sminos.UUID_RE.fullmatch(sid)):
             return refuse("session is a session id")
         if not (agent is None or (isinstance(agent, str) and AGENT_ID.fullmatch(agent))):
             return refuse("agentId is null or a subagent's id")

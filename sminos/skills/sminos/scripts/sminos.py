@@ -313,7 +313,7 @@ def note(msg):
 def valid_name(n):
     # '.' and '..' are path segments, not names: they would resolve to the
     # registry root itself. Names that merely contain dots (v1.2) are fine.
-    return bool(n) and n not in (".", "..") and bool(NAME_RE.match(n))
+    return bool(n) and n not in (".", "..") and bool(NAME_RE.fullmatch(n))
 
 
 def poll_interval():
@@ -1843,7 +1843,7 @@ def caller_project(caller=None):
     if caller:
         return seat_project(caller)
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    if UUID_RE.match(sid):
+    if UUID_RE.fullmatch(sid):
         return session_project(sid, launch_cwd(sid, fallback=os.getcwd()))
     return resolve_project(os.getcwd())
 
@@ -2090,7 +2090,7 @@ STREAM_RE = re.compile(r"^([^/]+/[^~]+)~([0-9a-f]{16})$")
 def stream_of(writer):
     """(the plain writer, the audience's digest) of a writer: (writer, None)
     for a plain one."""
-    m = STREAM_RE.match(writer) if isinstance(writer, str) else None
+    m = STREAM_RE.fullmatch(writer) if isinstance(writer, str) else None
     return (m.group(1), m.group(2)) if m else (writer, None)
 
 
@@ -2117,7 +2117,7 @@ def stream_writer(base, audience):
 
 def writer_session(writer):
     last = writer_base(writer).rsplit("/", 1)[-1]
-    return last if UUID_RE.match(last) else ""
+    return last if UUID_RE.fullmatch(last) else ""
 
 
 def owner_event(e):
@@ -3291,7 +3291,7 @@ def _lineage_scan(events):
         if not isinstance(sid, str) or e["kind"] not in MEMBERSHIP or writer_session(e["writer"]) != sid:
             continue
         membership[sid] = e["kind"]
-        if e["kind"] == "retired" and e.get("reason") == "continued" and UUID_RE.match(str(e.get("to") or "")):
+        if e["kind"] == "retired" and e.get("reason") == "continued" and UUID_RE.fullmatch(str(e.get("to") or "")):
             conts[e["to"]] = sid
         elif publishes(e):
             published[sid] = e
@@ -3645,7 +3645,7 @@ def _local_sessions(project, all_seats):
     internal = internal_pids()
     for rec in peer_records():
         sid, cwd = rec.get("sessionId"), rec.get("cwd")
-        if not (isinstance(sid, str) and UUID_RE.match(sid) and isinstance(cwd, str) and cwd):
+        if not (isinstance(sid, str) and UUID_RE.fullmatch(sid) and isinstance(cwd, str) and cwd):
             continue
         if str(rec.get("pid")) in internal:
             continue
@@ -4083,7 +4083,7 @@ def continued_in(session, fresh=False):
                 r = _record(line) or {}
                 if r.get("type") == "continued-in":
                     to = str(r.get("continuedInSessionId") or "")
-                    found = to if UUID_RE.match(to) and to != session else ""
+                    found = to if UUID_RE.fullmatch(to) and to != session else ""
                     break
                 if is_turn_record(r):
                     break
@@ -4124,7 +4124,7 @@ def predecessor(project, session):
     ends."""
     for rec in peer_records():
         old = rec.get("sessionId")
-        if (isinstance(old, str) and old != session and UUID_RE.match(old) and rec.get("kind") == "interactive"
+        if (isinstance(old, str) and old != session and UUID_RE.fullmatch(old) and rec.get("kind") == "interactive"
                 and peer_running(rec) and (p := record_project(rec)) is not None
                 and p.id == project.id and continued_in(old) == session):
             return old, rec
@@ -4280,7 +4280,7 @@ def _projection(events):
                         r["by"] = str(e["by"])
                     if publishes(e):
                         r["owned"] = e
-                elif e.get("reason") == "continued" and UUID_RE.match(str(e.get("to") or "")):
+                elif e.get("reason") == "continued" and UUID_RE.fullmatch(str(e.get("to") or "")):
                     r["to"] = str(e["to"])
             else:
                 r[kind] = e
@@ -6181,7 +6181,7 @@ TS_RE = re.compile(r"^(\d{4}-\d\d-\d\d)(?:[T ](\d\d):(\d\d)(?::(\d\d)(?:\.(\d{1,
 
 def normalize_ts(ts):
     """A user-given time as the log's ts shape, so string order is time order."""
-    m = TS_RE.match(ts.strip())
+    m = TS_RE.fullmatch(ts.strip())
     if not m:
         die("--since takes an ISO-8601 UTC time such as 2026-10-13T08:00:00Z: %s" % ts)
     day, hh, mm, ss, ms = m.groups()
@@ -6918,7 +6918,7 @@ def _askers(project, session, srcs):
             continue
         for name in names:
             other = name[len(prefix):-len(".jsonl")] if name.startswith(prefix) and name.endswith(".jsonl") else ""
-            if other == session or not UUID_RE.match(other):
+            if other == session or not UUID_RE.fullmatch(other):
                 continue
             try:
                 with open(os.path.join(where, name), "rb") as f:
@@ -7293,7 +7293,7 @@ def cmd_record(_a, payload=None):
         return
     session, cwd = str(payload.get("session_id") or ""), str(payload.get("cwd") or "")
     tpath, event = str(payload.get("transcript_path") or ""), str(payload.get("hook_event_name") or "")
-    if not (UUID_RE.match(session) and cwd and tpath):
+    if not (UUID_RE.fullmatch(session) and cwd and tpath):
         return
     try:
         # Its engine's config dir, from its own environment, before anything
@@ -7913,7 +7913,7 @@ def cmd_name_due(a):
     when it is due, nothing when not — the name mod's check before it applies
     one. Exits 0 but on a usage error: the mod reads stdout, and a prompt
     must never fail on it."""
-    if not UUID_RE.match(a.session):
+    if not UUID_RE.fullmatch(a.session):
         die("usage: sminos name-due --session <session id>")
     try:
         name = name_due(a.session)
@@ -8098,7 +8098,7 @@ def find_target(q):
         return exact("ambiguous" if len(hits) > 1 else "ok" if hits else "none", hits if len(hits) > 1 else
                      (hits[0] if hits else None))
 
-    if UUID_RE.match(q):
+    if UUID_RE.fullmatch(q):
         hit = exact(*find_seat(q))
         if hit:
             return hit
@@ -8136,7 +8136,7 @@ def find_target(q):
     # caller's project never hides one elsewhere; else the caller's project,
     # then a bare name as a short in every project known here. A bare alias
     # never leaves the caller's project.
-    if UUID_RE.match(q):
+    if UUID_RE.fullmatch(q):
         passes = [(known_projects(), False)]
     elif proj:
         passes = [([p], False) for p in tiers]
@@ -9550,7 +9550,7 @@ def convert_v2_nodes(r, lock_until=None):
             # keeps the tool's former name: this id must equal the one an
             # interrupted conversion already wrote for the same node.
             det_id = str(uuidlib.uuid5(uuidlib.NAMESPACE_URL, "agora:%s/%s" % (g, alias)))
-            seat_id = sess if UUID_RE.match(sess) else det_id
+            seat_id = sess if UUID_RE.fullmatch(sess) else det_id
             existing = None
             if os.path.exists(meta_path(seat_id)):
                 try:
@@ -9889,7 +9889,7 @@ def migrate(quiet=False, lock_until=None):
 def legacy_ts(ts):
     """A family chat's whole-second ts in the log's millisecond shape."""
     ts = str(ts or "")
-    return ts[:-1] + ".000Z" if re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$", ts) else ts
+    return ts[:-1] + ".000Z" if re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", ts) else ts
 
 
 def import_chats(lock_until=None):
@@ -10224,7 +10224,7 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
                           "history": history[-10:]},
                  remove=tuple(k for k in drop if k not in launch))
     polled = poll_uuid(short)
-    if not polled or not UUID_RE.match(polled[0]):
+    if not polled or not UUID_RE.fullmatch(polled[0]):
         meta_set(rec_id, {"status": "error", "pending_short": short, "updated": now()})
         sys.stderr.write("sminos: %s: session %s produced no usable session uuid; record %s kept "
                          "(status=error, pending_short)\n" % (verb, short, rec_id[:8]))
@@ -10394,7 +10394,7 @@ def cmd_seat_add(a):
     if a.alias in ("human", "all"):
         die("the alias '%s' is reserved" % a.alias)
     session = a.session or ""
-    if session and not UUID_RE.match(session):
+    if session and not UUID_RE.fullmatch(session):
         die("--session must be a session uuid (8-4-4-4-12 hex): %s" % session)
     locks = lock_names([seat_key(a.group, a.alias)])
     existing = [s for s in seats(a.group) if s["alias"] == a.alias]
@@ -11202,7 +11202,7 @@ def _send(a):
     tiers = project_tiers(proj) if proj else []
     if tiers:
         no_member(a.target, name, short, tiers, at="")
-    if scope is not None and not UUID_RE.match(a.target.lower()):
+    if scope is not None and not UUID_RE.fullmatch(a.target.lower()):
         no_member(a.target, name, short, [scope], () if short else
                   [(p, m) for p, m in match_members(name, "", org_scope(), ids=False) if p.id != scope.id], at="")
     # From no project on a machine not enrolled, the one unrecorded route: a
@@ -11229,7 +11229,7 @@ def _send(a):
     # through the whole thread history (63 s for 7,000 threads, observed), so a
     # mistyped alias must not pay that — names go through `codex:<name>`.
     codex_here = bool(shutil.which("codex"))
-    if codex_here and UUID_RE.match(a.target.lower()):
+    if codex_here and UUID_RE.fullmatch(a.target.lower()):
         tid, qid = codex_queue_send(a.target, text)
         if tid:
             report_codex_queued(tid, qid)
@@ -11629,7 +11629,7 @@ def unprojected_rows(members_known):
     out, seen, internal = [], set(members_known), internal_pids()
     for rec in peer_records():
         sid, cwd = rec.get("sessionId"), rec.get("cwd")
-        if not (isinstance(sid, str) and UUID_RE.match(sid) and isinstance(cwd, str) and cwd) or sid in seen:
+        if not (isinstance(sid, str) and UUID_RE.fullmatch(sid) and isinstance(cwd, str) and cwd) or sid in seen:
             continue
         if str(rec.get("pid")) in internal or not joinable(None, rec) or not peer_running(rec):
             continue
@@ -11682,7 +11682,7 @@ def other_live_sessions(shown):
     me, internal, out = os.environ.get("CLAUDE_CODE_SESSION_ID", ""), internal_pids(), []
     for rec in peer_records():
         sid = rec.get("sessionId")
-        if not (isinstance(sid, str) and UUID_RE.match(sid)) or sid in shown or sid == me:
+        if not (isinstance(sid, str) and UUID_RE.fullmatch(sid)) or sid in shown or sid == me:
             continue
         if str(rec.get("pid")) in internal or any(str(rec.get(k) or "") in UNCLAIMED_WORDS for k in ("kind", "status")):
             continue
@@ -11796,13 +11796,13 @@ def subagents_session(q):
     """The session `--subagents <member>` names on this machine, or exit 4
     saying why not (a member on another machine keeps its subagents
     there)."""
-    if UUID_RE.match(q):
+    if UUID_RE.fullmatch(q):
         return q
     target = find_target(q)
     if target[0] == "none":
         # A running session of this machine that is no member: by the engine's name for it, or its short.
         hits = {r["sessionId"] for r in peer_records()
-                if isinstance(r.get("sessionId"), str) and UUID_RE.match(r["sessionId"]) and peer_running(r)
+                if isinstance(r.get("sessionId"), str) and UUID_RE.fullmatch(r["sessionId"]) and peer_running(r)
                 and (r.get("name") == q or r["sessionId"].startswith(q.lower()) and len(q) >= 4)}
         if len(hits) == 1:
             return hits.pop()
@@ -12131,7 +12131,7 @@ def cmd_join(a):
     The move is written before the verb returns. A seat stays where it was
     spawned; a target must be one the session can sync in (join_refusal)."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    if not UUID_RE.match(sid):
+    if not UUID_RE.fullmatch(sid):
         die("join declares the calling session's project: run it from inside a session")
     if a.cwd and a.project:
         die("usage: sminos join <project> | --cwd | (nothing: which project this session is in)")
@@ -12320,7 +12320,7 @@ def _roster_exchanges(session, projects):
             ref = str(e.get("copy") or "%s:%s:%d" % (p.id, e["writer"], e["seq"]))
             if ref in seen:
                 continue
-            to = [r for r in to if isinstance(r, dict) and UUID_RE.match(str(r.get("session") or ""))]
+            to = [r for r in to if isinstance(r, dict) and UUID_RE.fullmatch(str(r.get("session") or ""))]
             if sender in mine:
                 seen.add(ref)
                 for r in to:
@@ -12462,7 +12462,7 @@ def cmd_guide(_a):
     if not isinstance(payload, dict):
         return
     session, cwd = str(payload.get("session_id") or ""), str(payload.get("cwd") or "")
-    if not UUID_RE.match(session):
+    if not UUID_RE.fullmatch(session):
         return
     text = ""
     try:
@@ -12499,7 +12499,7 @@ def session_address(session, fallback_cwd=""):
     for it — or "" when it has none: in no project, an internal fork, or no
     member (its log holds no membership and it is no member on sight,
     joinable). The alias is the one its own `say` signs with (guide_text's)."""
-    if os.environ.get("SMNS_INTERNAL") or not UUID_RE.match(session or ""):
+    if os.environ.get("SMNS_INTERNAL") or not UUID_RE.fullmatch(session or ""):
         return ""
     project = session_project(session, launch_cwd(session, fallback=fallback_cwd))
     if project is None:

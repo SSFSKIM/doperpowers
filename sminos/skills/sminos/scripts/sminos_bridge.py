@@ -1806,7 +1806,7 @@ def serve(session, lane=None, launch=None):
 
 
 def cmd_bridge(a):
-    if not S.UUID_RE.match(a.session or ""):
+    if not S.UUID_RE.fullmatch(a.session or ""):
         S.die("bridge: %r is not a session id" % (a.session or ""))
     serve(a.session, getattr(a, "lane", None), getattr(a, "launch", None))
 
@@ -1818,7 +1818,7 @@ def watch_session(q):
     """The session a member name names here, or exit 4 saying why not. A full
     session id is taken as given, or, when the harness sent it to the
     background and it no longer runs, as the session it continues in."""
-    if S.UUID_RE.match(q):
+    if S.UUID_RE.fullmatch(q):
         return successor(q)
     target = S.find_target(q)
     if target[0] == "none":

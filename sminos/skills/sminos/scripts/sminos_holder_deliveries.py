@@ -460,7 +460,7 @@ def activate(pid, launch, session, observer_started=False, retained=()):
         return observer_upgrade(pid)
     if not (isinstance(launch, str) and launch):
         raise ValueError("activation names the process's launch")
-    kept = [r for r in dict.fromkeys(retained) if isinstance(r, str) and ID_RE.match(r)][:RETAINED_MAX]
+    kept = [r for r in dict.fromkeys(retained) if isinstance(r, str) and ID_RE.fullmatch(r)][:RETAINED_MAX]
     rec = _choose(_process_of(pid), "gate", "activation", launch=launch, session=session, retained=kept)
     if rec["mode"] == "gate" and session:
         # Every session a gate process serves is marked (a /clear's too), for
@@ -594,7 +594,7 @@ def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only
         except Unreadable as err:
             return Plan("held", why=str(err))
         if r is not None and (r.get("hash") != event_hash or not isinstance(r.get("attempt"), dict)
-                              or not ID_RE.match(str(r.get("id") or ""))):
+                              or not ID_RE.fullmatch(str(r.get("id") or ""))):
             r = None   # another body at this position, or no whole receipt: none for this event
         if r is None and existing_only:
             return None
@@ -652,7 +652,7 @@ def pushed(receipt_id, attempt):
     """The attempt's text reached the session's inbox (or may have: an
     uncertain close-out). Best effort: an attempt left `prepared` is pushed
     again by the next pass, at least once."""
-    m = ID_RE.match(receipt_id or "")
+    m = ID_RE.fullmatch(receipt_id or "")
     if not m:
         return
     path = _receipt_path(m.group(1))
@@ -704,7 +704,7 @@ def _held_receipt(receipt_id, session):
     """(path, receipt) for an id this session may report, else (None,
     state). Raises Unreadable when the receipt is there and cannot be read:
     whether the id is valid is not known, and the report is not recorded."""
-    m = ID_RE.match(receipt_id) if isinstance(receipt_id, str) else None
+    m = ID_RE.fullmatch(receipt_id) if isinstance(receipt_id, str) else None
     if not m:
         return None, "unknown"
     path = _receipt_path(m.group(1))
@@ -812,7 +812,7 @@ def sweep(project_of):
     home()
     modes = receipts = 0
     for name in os.listdir(os.path.join(base, LAUNCHES)):
-        m = re.match(r"^(\d+)-([0-9a-f-]+)\.(json|lock|grace)$", name)
+        m = re.fullmatch(r"(\d+)-([0-9a-f-]+)\.(json|lock|grace)", name)
         if not m:
             continue
         # Only on proof the process ended: it is gone, or its pid now names
@@ -834,7 +834,7 @@ def sweep(project_of):
             pass
     with _receipts_lock():
         for name in os.listdir(base):
-            if not re.match(r"^[0-9a-f]{24}\.json$", name):
+            if not re.fullmatch(r"[0-9a-f]{24}\.json", name):
                 continue
             try:
                 r = _read(os.path.join(base, name))

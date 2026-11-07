@@ -74,6 +74,16 @@ class Vectors(unittest.TestCase):
         for v in VECTORS["writerSession"]:
             self.assertEqual(sminos.writer_session(v["writer"]) or None, v["session"], v["writer"])
 
+    def test_a_writer_with_a_newline_after_it_is_no_stream_and_no_sessions(self):
+        # MAWS's STREAM regex (JavaScript, no `m` flag) reads such a writer as a plain one.
+        streams = [v["writer"] for v in VECTORS["streamOf"] if v["digest"] is not None]
+        sessions = [v["writer"] for v in VECTORS["writerSession"] if v["session"] is not None]
+        self.assertTrue(streams and sessions)
+        for w in streams:
+            self.assertEqual(sminos.stream_of(w + "\n"), (w + "\n", None), w)
+        for w in sessions:
+            self.assertEqual(sminos.writer_session(w + "\n"), "", w)
+
     def test_session_refs(self):
         for v in VECTORS["sessionRefs"]:
             self.assertEqual(au.session_refs(v["event"]), v["refs"], v["event"])

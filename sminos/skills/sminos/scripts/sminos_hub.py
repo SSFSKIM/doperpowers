@@ -76,7 +76,7 @@ def sessions_under(name):
     prefix = name + "."
     for path in glob.glob(os.path.join(glob.escape(sminos.projects_root()), "*", "log", glob.escape(prefix) + "*.jsonl")):
         session = os.path.basename(path)[len(prefix):-len(".jsonl")]
-        if sminos.UUID_RE.match(session):
+        if sminos.UUID_RE.fullmatch(session):
             held_.add(session)
     for s in sminos.seats():
         if s.get("host") == name and s.get("current"):

@@ -1298,7 +1298,7 @@ class HubLog:
         if not writer.startswith(prefix):
             return False
         rest = sminos.writer_base(writer)[len(prefix):]
-        return rest == "human" or bool(sminos.UUID_RE.match(rest))
+        return rest == "human" or bool(sminos.UUID_RE.fullmatch(rest))
 
     def spend_own(self, writer, seq):
         """A refused position of one of this machine's own writers (is_own:
