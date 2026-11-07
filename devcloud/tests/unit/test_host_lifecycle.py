@@ -155,6 +155,31 @@ class ServicesStepTest(unittest.TestCase):
         self.assertEqual(self.converged, [1])
 
 
+class RetiredKeyTest(unittest.TestCase):
+    """A host whose boot.env still names the v1 desk key (a VM an older
+    driver made) loads it as before, and each run says once that it ignored
+    the key."""
+
+    def test_a_run_ignores_the_key_and_says_so_once(self):
+        text = ("DEVCLOUD_NAME=dc-linux-1e68\nDEVCLOUD_KIND=vm\nDEVCLOUD_ROLE=persistent\nDEVCLOUD_TAILSCALE=none\n"
+                "DEVCLOUD_SEED=gce-metadata\nDEVCLOUD_SM_PROJECT=example-project\n"
+                "DEVCLOUD_CONFIG_REPO=https://github.com/example/config.git\nDEVCLOUD_CONFIG_TOKEN_SECRET=config-token\n"
+                "DEVCLOUD_SMINOS_SECRET=desk-key\n")
+        said = []
+        with mock.patch.object(steps.descriptor, "load", lambda allow_http=False: steps.descriptor.parse(text)), \
+                mock.patch.object(steps.User, "from_image", lambda: USER), \
+                mock.patch.object(steps, "Tokens", lambda desc: None), \
+                mock.patch.object(steps.proc, "know_host", lambda *a, **kw: None), \
+                mock.patch.object(steps, "_say", said.append):
+            r = steps.Run("reconcile")
+            r.load()
+            r.load()
+        self.assertEqual(r.desc.name, "dc-linux-1e68")
+        self.assertEqual(said, ["boot descriptor: ignoring DEVCLOUD_SMINOS_SECRET, the desk's v1 provisioning key, "
+                                "which enrolled sminos on DX2: the desk refuses DX2, and a host's enrollment is its "
+                                "MAWS endpoint's"])
+
+
 class JobsDuringAHoldTest(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())

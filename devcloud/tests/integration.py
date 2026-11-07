@@ -697,7 +697,9 @@ def _systemd_diagnostics():
 def under_systemd():
     docker("build", "-t", SYSTEMD_IMAGE, "-", input=SYSTEMD_DOCKERFILE, timeout=900)
     desc = TMP / "boot-vm.env"
-    desc.write_text(descriptor("sbx-vm", projects="example/app").read_text().replace("KIND=container", "KIND=vm")
+    # As a live VM an older driver made: its boot.env still names the retired v1 desk key, which every run ignores.
+    desc.write_text(descriptor("sbx-vm", projects="example/app", extra="DEVCLOUD_SMINOS_SECRET=desk-provisioning-key\n")
+                    .read_text().replace("KIND=container", "KIND=vm")
                     .replace("ROLE=sandbox", "ROLE=persistent").replace("TAILSCALE=host", "TAILSCALE=none"))
     docker("run", "-d", "--name", VM, "--hostname", "sbx-vm", "--network", NET, "--privileged",
            "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw", "--tmpfs", "/run", "--tmpfs", "/run/lock",
@@ -755,6 +757,13 @@ def enrolled_daemon():
     reconciled = sh(VM, RECONCILE_WITH_STAND_INS, check_rc=False, timeout=600)
     check(reconciled.returncode == 0, f"reconcile exited {reconciled.returncode}: {reconciled.stdout[-800:]}\n"
           + _systemd_diagnostics())
+    # Its boot.env names the retired v1 desk key: ignored, said once, no step failed over it.
+    check((reconciled.stdout + reconciled.stderr).count("boot descriptor: ignoring DEVCLOUD_SMINOS_SECRET") == 1,
+          f"the reconcile did not say once that it ignored the v1 key: {reconciled.stdout[-800:]}")
+    ran = ("identity", "configuration", "tailnet-check", "secrets", "home", "apply", "settings-and-env", "services",
+           "maws")     # the boot's descriptor step and the reconcile's
+    check(not [s for s in steps(VM).values() if s["name"] in ran and s["state"] == "failed"],
+          f"a failed step: {steps(VM)}")
     detail = steps(VM)["services"]["detail"]
     check("sminos daemon: sminos-daemon.service enabled" in detail, detail)
     check(out(VM, f"loginctl show-user {USER} --property=Linger").strip() == "Linger=yes", "lingering is off")

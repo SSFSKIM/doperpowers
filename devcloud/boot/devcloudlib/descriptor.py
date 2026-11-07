@@ -27,10 +27,10 @@ OPTIONAL = ("DEVCLOUD_TS_SECRET", "DEVCLOUD_TS_AUTHKEY_FILE", "DEVCLOUD_CONFIG_B
 _HOSTNAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _PROJECT = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?(?:@\S+)?\Z")
 _SECRET_ID = re.compile(r"[A-Za-z0-9_-]{1,255}\Z")
-# Keys an older driver wrote that name what no longer exists: refused by name, saying so.
-_RETIRED = {"DEVCLOUD_SMINOS_SECRET": "the desk's v1 provisioning key, which enrolled sminos on DX2, is retired: "
-                                      "the desk refuses DX2, and a host's enrollment is its MAWS endpoint's "
-                                      "(DEVCLOUD_MAWS_SECRET); remove it"}
+# Keys an older driver wrote that name what no longer exists. A host still carrying one boots as
+# before: the key is ignored, and a run says so once (steps.Run.load). The driver writes none.
+RETIRED = {"DEVCLOUD_SMINOS_SECRET": "the desk's v1 provisioning key, which enrolled sminos on DX2: the desk "
+                                     "refuses DX2, and a host's enrollment is its MAWS endpoint's"}
 # A sminos tag a lease warning can reach: @alias, @alias#short, @short, @project/alias.
 _CREATOR = re.compile(r"@[A-Za-z0-9][A-Za-z0-9._/-]*(?:#[0-9a-f]+)?\Z")
 _UNIX = re.compile(r"[0-9]{1,12}\Z")
@@ -70,6 +70,7 @@ class Descriptor:
     hourly_price: float | None = None
     currency: str | None = None
     creator_project: str | None = None
+    ignored: tuple = ()              # the RETIRED keys it named, ignored
 
     @property
     def leased(self):
@@ -88,9 +89,9 @@ def parse(text, allow_http=False):
         values = envfile.parse(text)
     except ValueError as error:
         raise DescriptorError(f"boot descriptor: {error}") from None
-    retired = sorted(set(values) & set(_RETIRED))
-    if retired:
-        raise DescriptorError("; ".join(f"{key}: {_RETIRED[key]}" for key in retired))
+    ignored = tuple(sorted(set(values) & set(RETIRED)))
+    for key in ignored:
+        del values[key]
     unknown = sorted(set(values) - set(REQUIRED) - set(OPTIONAL))
     if unknown:
         raise DescriptorError(f"unknown key {', '.join(unknown)} in the boot descriptor")
@@ -152,7 +153,7 @@ def parse(text, allow_http=False):
         seed_kind=seed_kind, seed_path=seed_path, sm_project=values["DEVCLOUD_SM_PROJECT"],
         config_repo=repo, config_branch=values.get("DEVCLOUD_CONFIG_BRANCH") or "main",
         config_token_secret=token_secret, projects=projects,
-        mirror_dir=mirror_dir, **lifecycle, **_notice(values),
+        mirror_dir=mirror_dir, **lifecycle, **_notice(values), ignored=ignored,
     )
 
 

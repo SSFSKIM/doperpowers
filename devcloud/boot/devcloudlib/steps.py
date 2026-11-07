@@ -71,6 +71,8 @@ class Run:
     def load(self):
         if self.desc is None:
             self.desc = descriptor.load(allow_http=os.environ.get("DEVCLOUD_ALLOW_HTTP") == "1")
+            for key in self.desc.ignored:
+                _say(f"boot descriptor: ignoring {key}, {descriptor.RETIRED[key]}")
             self.user = User.from_image()
             self.tokens = Tokens(self.desc)
             proc.know_host(self.user, self.desc.seed_path if self.desc.seed_kind == "file" else None,

@@ -1,10 +1,11 @@
 """The driver's descriptor keys (Interfaces I12): the lease, its creator, the
 inbound policy, adoption, a spot VM and MAWS's provisioning code. Unknown
-keys stay refused, the retired DX2 provisioning key by name; a lease end in
-the past is accepted (a host rebooted after its lease must still boot, then
-depart); a sandbox carries none of the keys that would make it depart or
-enroll."""
+keys stay refused, but the retired DX2 provisioning key is ignored; a lease
+end in the past is accepted (a host rebooted after its lease must still
+boot, then depart); a sandbox carries none of the keys that would make it
+depart or enroll."""
 
+import dataclasses
 import unittest
 
 import _path  # noqa: F401
@@ -87,12 +88,14 @@ class LeaseKeysTest(unittest.TestCase):
             with self.subTest(key=key, value=value), self.assertRaisesRegex(descriptor.DescriptorError, key):
                 descriptor.parse(text(**dict(maws, **{key: value})))
 
-    def test_the_retired_dx2_provisioning_key_is_refused_by_name(self):
-        # The desk refuses DX2 enrollment: a descriptor naming the v1 key says so rather than enroll nothing.
+    def test_the_retired_dx2_provisioning_key_is_ignored_not_refused(self):
+        # A live VM an older driver made still names the v1 key: it boots as before, the key ignored.
         for base in (VM, SANDBOX):
-            with self.subTest(role=base["DEVCLOUD_ROLE"]), \
-                    self.assertRaisesRegex(descriptor.DescriptorError, "DEVCLOUD_SMINOS_SECRET.*retired"):
-                descriptor.parse(text(base, DEVCLOUD_SMINOS_SECRET="desk-key"))
+            with self.subTest(role=base["DEVCLOUD_ROLE"]):
+                d = descriptor.parse(text(base, DEVCLOUD_SMINOS_SECRET="desk-key"))
+                self.assertEqual(d.ignored, ("DEVCLOUD_SMINOS_SECRET",))
+                self.assertEqual(dataclasses.replace(d, ignored=()), descriptor.parse(text(base)))
+        self.assertEqual(descriptor.parse(text()).ignored, ())
 
     def test_unknown_keys_stay_refused(self):
         with self.assertRaisesRegex(descriptor.DescriptorError, "DEVCLOUD_LEASE"):
