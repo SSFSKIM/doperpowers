@@ -19,7 +19,7 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) M3d: the two-machine compositions (tests only; `65e8870c..95c94a7f`, fixes `289ca204`, `6e4397ff`, `e7121bd0`; review clean, sminos gates GREEN on `e7121bd0`, run 42354037484).
 - [x] (2026-11-07) M3e: open latency on RL10 (tests only; `a021ef36`, fix `9b402981`; review clean, sminos gates GREEN on `e433dec0`, run 42354783123). Every map §2.4 item has its RL10 test; the checklist is in the PR body.
 - [x] (2026-11-07) M4: the `hub` verbs and `hub.json` reduced (the sminos 1.40.0 bump; `d2a87149`, `a76f947e`; review clean, sminos gates GREEN on `a76f947e`, run 42358177740; replay 107 ok, 0 FAIL). origin/main merged at `8d5efdfd`.
-- [ ] M5: the DX2 transport and the supervisor's DX2 arm out.
+- [x] (2026-11-07) M5: the DX2 transport and the supervisor's DX2 arm out (`34538211`; review clean, sminos gates GREEN, run 42365283498; replay 107 ok, 0 FAIL).
 - [ ] M6: `coded` collapsed.
 - [ ] M7: docs and labels.
 - [ ] The branch review and the merge.
@@ -27,7 +27,7 @@ The detailed map this spec was written from, every module, function and test by 
 
 ## What changes and what doesn't (acceptance)
 
-1. **No sminos code path speaks DX2.** Shipped sminos has no HTTP/SSE uplink to the hub, no DX1 request codes, no `coded=True` branch, and nothing that enrolls a machine at the hub or reads `hub.json` as a credential. A grep of `sminos/skills/` and `sminos/hooks/` for `run_dx2`, `load_credential`, `Stream(`, `Sender(`, `hub_standin` and `coded=True` finds nothing.
+1. **No sminos code path speaks DX2.** Shipped sminos has no HTTP/SSE uplink to the hub, no DX1 request codes, no `coded=True` branch, and nothing that enrolls a machine at the hub or reads `hub.json` as a credential. A grep of `sminos/skills/` and `sminos/hooks/` for `run_dx2`, `load_credential`, `credential_path`, `Sender(`, `hub_standin` and `coded=True` finds nothing, and `Stream(` finds only `sminos_control.Stream` (the control socket's reader, which is not the hub's).
 2. **The RL10 path behaves exactly as before.** Two things stay fixed. First, MAWS's RL10 conversation frames: `sminos/tests/rl10-conversation.json` is byte-for-byte unchanged, and the conformance replay (`rl10_conformance.py`) keeps today's ok count with 0 FAIL. Second, the behavioural assertions of `test_rl10`, `test_words`, `test_reach_gate`, `test_visibility` and `test_streams`: none is removed or weakened. Those suites may change only by the mechanical migrations the constraints list, and each such change is named in the PR. The session plane DX4 defined is still served over RL10 (MAWS's `src/endpoint/plane-a.ts` subscribes to it): `sminos_plane.py` and `Link`'s session-lane dispatch stay (map §0.1).
 3. **`sminos hub`:**
    - `hub enroll`, `hub check` and `hub leave` print the line a cut-over machine prints today: this machine's enrollment is its endpoint's (`mawsd endpoint enroll|status`). They exit 1.
@@ -259,6 +259,10 @@ This is after the branch review and the merge, and it is not part of the branch'
 - Observation (M3d): two DX2 cases have no RL10 form. A `<message>` stays in its machine's host store and goes only to its endpoint, so beta reading alpha's stray's message becomes the stray's membership; the endpoint carries no presence, so "last seen" becomes the `last event … ago` row.
   Evidence: task 6's report.
 
+- Observation (M5): `Plane.say_again`, `Plane.again` and `GONE_KEEP` are unreachable on RL10, since `SocketLane.hold` always returns None. They belong with the no-op `hold`/`release` gates this change scopes out (Constraints, Scope).
+  Evidence: task 9's report.
+- Observation (M5): sminos-suites took 19m08s on `34538211` (run 42365283498), against 23m56s at M4 and ~20–22 min before the branch.
+
 ## Decision Log
 
 - Decision (verification, at authoring): the design and the execution section each get one `doperpowers:adversarial-reviewer` pass before execution. The branch gets the xhigh panel through `doperpowers:review-code`: the diff runs to thousands of lines across many files, and most of the risk is coverage silently lost rather than a defect in what is added. Acceptance 8's daemon check closes it.
@@ -346,6 +350,17 @@ This is after the branch review and the merge, and it is not part of the branch'
   Date/Author: 2026-11-07, plan-executor (M4).
 - Decision (the coordinator, 2026-11-07): origin/main (`fcf0b6a5`, PR #469, sminos 1.39.1, the macOS protected-folder guard) is merged into the branch, never rebased, before the whole-branch review. Where the branch deletes phase-1 code the deletion wins; the guards stay in whatever survives, and `test_protected.py` stays green (its `hub.json` fixture moves to `identity.json`). 1.40.0 stays above 1.39.1.
   Date/Author: 2026-11-07, p5-desk-track-owner (coordinator).
+
+- Decision (M5, the executor):
+  - test-uplink's four in-process coded `HubLog.take` cases stay for M6: they test the coded branch, not the transport. `on_welcome`'s coded arm loses only the `Sender` start; its generation and `kinds` lines are M6's.
+  - `uplink_change` keeps three cases; an undone cutover says "no uplink runs until a probe's welcome cuts this machine over again". `uplink_status` prints no uplink line on a machine that is not cut over.
+  - `HubLog.closed` goes with `refused_whole`, its only caller. `UPLOAD_AHEAD` is the literal `4 << 20` now that `POST_LIMIT` goes as a name.
+  - The DX2 base classes are folded into their RL10 classes, keeping the class and method names the M3 checklist cites. `bench_scale` runs RL10 by default and still accepts `--rl10` as a no-op; `bench_open` takes `--rl10 | --micro`.
+  - Two RL10 twins were added before their DX2 Lifecycle originals went (`Link.open`'s continuation: the marks move only once the hello is taken).
+  Date/Author: 2026-11-07, plan-executor (M5).
+
+- Decision (M5's review, 2026-11-07): acceptance 1's grep is revised. `Stream(` can never come up empty while `sminos_control.Stream` (`sminos_control.py:439`, `:487`) exists, and that class is the control socket's reader, not the hub's SSE `Stream`. The grep now names `credential_path` and expects `sminos_control.Stream` as its one `Stream(` hit. M6 adds an RL10 test that drives `SocketLane.send` past `SEND_QUEUE_MAX` into `NotDelivered`: the deleted `Lanes` test proved `Sender`'s copy of #149's bound, and no RL10 test went past it (a gap from before the branch).
+  Date/Author: 2026-11-07, plan-executor, on M5's review.
 
 ## Outcomes & Retrospective
 
