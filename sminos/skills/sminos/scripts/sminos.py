@@ -3247,12 +3247,23 @@ def publish_owners(project, sid, events=None):
     def guard(evs):
         return latest_membership(evs) == "joined" and missing(evs, published_provenance(sid))
 
+    return lifecycle(project, sid, "joined", guard=guard, required=False, **joined_again(own, sid))
+
+
+def joined_again(own, sid):
+    """The fields of a `joined` the session is joined again with
+    (publish_owners, and the daemon's restatement of a withheld one,
+    sminos_daemon.restate_withheld): its alias as its own events (`own`)
+    hold it, the rest as its last `joined` had them, `by` empty; None when
+    they hold no `joined`."""
+    last = next((e for e in reversed(own) if e["kind"] == "joined"), None)
+    if last is None:
+        return None
     alias, source = own_alias(own, sid)
-    fields = joined_fields(alias or str(last.get("alias") or sid[:8]),
-                           source or str(last.get("name_source") or "derived"), str(last.get("cwd") or ""),
-                           str(last.get("worktree") or ""), str(last.get("role") or ""), str(last.get("seat") or ""),
-                           "", str(last.get("session_kind") or ""), session=sid)
-    return lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
+    return joined_fields(alias or str(last.get("alias") or sid[:8]),
+                         source or str(last.get("name_source") or "derived"), str(last.get("cwd") or ""),
+                         str(last.get("worktree") or ""), str(last.get("role") or ""), str(last.get("seat") or ""),
+                         "", str(last.get("session_kind") or ""), session=sid)
 
 
 def latest_membership(events):
