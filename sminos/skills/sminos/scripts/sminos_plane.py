@@ -2284,8 +2284,10 @@ def project_key(cwd):
     (2.1.310's canonical git root): the nearest directory at or above `cwd`
     holding `.git`, and for a linked worktree its primary checkout (a bare
     repository's directory when the primary is bare); `cwd` itself outside
-    any repository."""
+    any repository, and where this process may not look (sminos.read_refused)."""
     at = os.path.normpath(cwd)
+    if sminos.read_refused(at):
+        return at
     while not os.path.isdir(os.path.join(at, ".git")) and not os.path.isfile(os.path.join(at, ".git")):
         up = os.path.dirname(at)
         if up == at:
@@ -2388,7 +2390,8 @@ def working_diff(cwd):
         return subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.quotepath=off", "-C", cwd, *args],
                               capture_output=True, timeout=GIT_TIMEOUT, env=env)
 
-    if not (cwd and os.path.isdir(cwd)) or git("rev-parse", "--is-inside-work-tree").returncode != 0:
+    if not (cwd and not sminos.read_refused(cwd) and os.path.isdir(cwd)) \
+            or git("rev-parse", "--is-inside-work-tree").returncode != 0:
         return {"base": "", "text": ""}
     head = git("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
     base = head.stdout.decode().strip() if head.returncode == 0 else ""

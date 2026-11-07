@@ -199,7 +199,10 @@ def save(base, session, nonce, attachments):
     names in order). Its root is recorded first, so the sweep finds what a
     crash leaves. When one cannot be saved, the files this upload made its
     own (created, or found holding its bytes) are removed and nothing else.
-    Raises Unsafe, or OSError."""
+    Raises Unsafe, or OSError: Unsafe too for a `base` in a protected folder
+    this process may not write in (sminos.read_refused)."""
+    if sminos.read_refused(base):
+        raise Unsafe("%s is in a protected folder, not written from here" % base)
     root = root_of(base, session)
     record(session, root)
     up = _walk(base, UPLOADS, True)
@@ -242,7 +245,10 @@ def remove(root, names=None):
     """The files `names` (every file, when None) under an upload root
     removed, its recorded path walked from `/` without following a link, so
     a link an ancestor became since leads nowhere; the root itself too when
-    that empties it. What cannot be reached safely is left."""
+    that empties it. What cannot be reached safely is left, as is a root in
+    a protected folder this process may not look at (sminos.read_refused)."""
+    if sminos.read_refused(root):
+        return
     path, session = os.path.split(root)
     try:
         up = _walk(path)
@@ -265,7 +271,10 @@ def exclude(base):
     (its common `info/exclude`, which every worktree of it reads): True once
     the line is there, False when `base` is in no repository. Raises Unsafe
     when `info` or `info/exclude` is a link or the exclude no regular file,
-    or OSError."""
+    or OSError. False, untouched, for a `base` this process may not look at
+    (sminos.read_refused)."""
+    if sminos.read_refused(base):
+        return False
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
     r = subprocess.run(["git", "-C", base, "rev-parse", "--path-format=absolute", "--git-common-dir"],
                        capture_output=True, text=True, timeout=GIT_TIMEOUT, env=env)

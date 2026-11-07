@@ -1313,7 +1313,8 @@ def hub_projects(cred):
         if p.id in out or not (isinstance(p.hub, dict) and p.hub.get("org") == cred["org"]) \
                 or sminos.org_retired(p.id):
             continue
-        fresh = sminos.resolve_project(p.root) if p.root and os.path.isdir(p.root) else None
+        fresh = sminos.resolve_project(p.root) if p.root and not sminos.read_refused(p.root) \
+            and os.path.isdir(p.root) else None
         out[p.id] = fresh if fresh is not None and fresh.id == p.id else p
     return out
 

@@ -698,7 +698,8 @@ class HubLog:
         except (OSError, SystemExit) as e:
             log("the checkouts of %s could not be read: %r" % (self.project.name, e))
             checkouts = [{"path": self.project.root, "branch": policy.git_branch(self.project.root)}] \
-                if self.project.root and os.path.isdir(self.project.root) else []
+                if self.project.root and not sminos.read_refused(self.project.root) \
+                and os.path.isdir(self.project.root) else []
         return {"t": "session", "message": {
             "project": self.project.id, "machine": self.machine, "session": None, "kind": "machine",
             "sub": None, "n": None,

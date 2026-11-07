@@ -459,6 +459,9 @@ run_suites() {
   if python3 "$SCRIPT_DIR/test_scale.py"; then
     pass "a machine that follows its whole org: no walk per session, no stale re-join, the directory first (test_scale.py)"
   else fail "a machine that follows its whole org: no walk per session, no stale re-join, the directory first (test_scale.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_protected.py"; then
+    pass "macOS's protected folders: a session there told from what is recorded, no member moved on a directory not read, no derive fork in or above one (test_protected.py)"
+  else fail "macOS's protected folders: a session there told from what is recorded, no member moved on a directory not read, no derive fork in or above one (test_protected.py)"; fi
   # What a session runs, from its rows: DX4's shared vectors pin the derivation (jobs_parity.py, vendored by DC9).
   while IFS= read -r line; do
     case "$line" in "ok "*) pass "jobs parity: ${line#ok }" ;; *) fail "jobs parity: ${line#FAIL }" ;; esac

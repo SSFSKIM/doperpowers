@@ -567,7 +567,7 @@ def find_seat(q, scope=None):
         return ("ok", hits[0]) if hits else ("none", None)
     stages = (
         lambda s: q in (s["seat_id"], s["current"]),
-        lambda s: s["alias"] == q and (scope is None or seat_project(s).id == scope.id),
+        lambda s: s["alias"] == q and (scope is None or getattr(seat_project(s), "id", None) == scope.id),
     )
     for match in stages:
         hits = [s for s in all_seats if match(s)]
@@ -657,6 +657,98 @@ def safe_name(name):
     return name if valid_name(name) else ""
 
 
+# ------------------------------------------- macOS's protected folders
+#
+# On macOS the first look a process takes inside a folder the privacy system
+# (TCC) protects asks the person, in a dialog charged to the responsible
+# process: for the daemon, a launchd agent, the daemon itself, whose grants
+# are not the Terminal's, and the dialog waits for someone at the screen (the
+# Mac mini's CI runner, 2026-11-07, held by one raised for derive's fork in
+# $HOME, which the engine's startup scans). So a sminos process reads inside
+# such a folder only when its own working directory is inside the same one —
+# a session's CLI and hooks, run where the session works under the grant it
+# holds — and a child it starts on its own initiative starts neither inside
+# one nor above one (launch_refused). Inside-ness is the absolute path's
+# string alone: any look at the path would be the touch. What a refused read
+# would have resolved is told from what this machine recorded (Guessed).
+
+TCC = sys.platform == "darwin"   # whether this platform's privacy folders ask (the tests set it)
+PROTECTED_IN_HOME = ("Desktop", "Documents", "Downloads", "Library/Mobile Documents", "Library/CloudStorage")
+_GUARD = threading.local()       # .refused: the reads this thread was refused, which taint a resolution
+
+
+def _abs(path):
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def _under(path, folder):
+    """Whether `path` is `folder` or inside it, by string, case-blind as
+    macOS's file system is."""
+    p, f = path.casefold(), folder.casefold().rstrip("/")
+    return p == f or p.startswith(f + "/")
+
+
+def protected_folders():
+    home = os.path.expanduser("~")
+    return [os.path.join(home, f) for f in PROTECTED_IN_HOME]
+
+
+def protected_folder(path):
+    """The protected folder an absolute path is in, or is ("/Volumes/<name>"
+    for a volume's), or ""."""
+    for f in protected_folders():
+        if _under(path, f):
+            return f
+    parts = path.split("/")
+    return "/".join(parts[:3]) if len(parts) > 2 and parts[1].casefold() == "volumes" and parts[2] else ""
+
+
+def _own_cwd():
+    try:
+        return os.getcwd()
+    except OSError:
+        return ""   # an unreadable working directory is outside every folder
+
+
+def read_refused(path):
+    """Whether this process may not look at `path`: on macOS, it is in a
+    protected folder its own working directory is not in. Each refusal is
+    counted for the thread (refusals), so a resolution that met one reads as
+    told rather than read."""
+    if not TCC or not path:
+        return False
+    folder = protected_folder(_abs(path))
+    here = _own_cwd()
+    if not folder or (here and _under(here, folder)):
+        return False
+    _GUARD.refused = refusals() + 1
+    return True
+
+
+def refusals():
+    return getattr(_GUARD, "refused", 0)
+
+
+def launch_refused(d):
+    """Why a child sminos starts on its own initiative may not start in `d`,
+    or "": on macOS, `d` is in a protected folder this process's working
+    directory is not in, or holds one ($HOME, /Users, /, /Volumes, a
+    folder's other ancestors), where the engine's startup scan of its
+    directory's children reaches into it — unless `d` is this process's own
+    working directory."""
+    if not TCC or not d:
+        return ""
+    d, here = _abs(d), _own_cwd()
+    if here and here.casefold().rstrip("/") == d.casefold().rstrip("/"):
+        return ""
+    folder = protected_folder(d)
+    if folder:
+        return "" if here and _under(here, folder) else \
+            "its directory is in %s, which macOS asks the person about before anyone reads it" % folder
+    held = next((f for f in protected_folders() + ["/Volumes"] if _under(f, d)), "")
+    return "its directory holds %s, which macOS asks the person about before anyone reads it" % held if held else ""
+
+
 def _common_git_dir_fs(d):
     """common_git_dir read off the filesystem, no process: the nearest `.git`
     upward — a directory is it; a file (a linked worktree) points at its
@@ -675,6 +767,8 @@ def _common_git_dir_fs(d):
             if not line.startswith("gitdir:"):
                 return None
             gitdir = os.path.join(d, line[len("gitdir:"):].strip())
+            if read_refused(gitdir):
+                return ""   # a linked worktree whose repository is in a protected folder: not read
             try:
                 with open(os.path.join(gitdir, "commondir")) as f:
                     common = os.path.join(gitdir, f.read().strip())
@@ -692,10 +786,13 @@ def _common_git_dir_fs(d):
 def common_git_dir(cwd):
     """The common git dir of a directory's checkout — for a linked worktree,
     the main checkout's — asked of its nearest existing ancestor, so a
-    removed worktree still resolves. "" outside git. Read off the filesystem
+    removed worktree still resolves. "" outside git, and for a directory
+    this process may not read (read_refused). Read off the filesystem
     when it can be: every reading verb resolves the cwd of every seat and
     live session, and a process per directory adds up."""
     d = os.path.abspath(cwd)
+    if read_refused(d):
+        return ""
     while not os.path.isdir(d):
         parent = os.path.dirname(d)
         if parent == d:
@@ -756,7 +853,10 @@ def read_smns(path):
 
 def names_hub(root, pid):
     """Whether the .smns at `root`, read as it is now, is project `pid`'s and
-    names a hub (well-formed or not: either bars git)."""
+    names a hub (well-formed or not: either bars git); None, unknown, for a
+    root this process may not read (read_refused)."""
+    if read_refused(root):
+        return None
     path = os.path.join(root, SMNS) if root else ""
     smns = read_smns(path) if path and os.path.isfile(path) else None
     return smns is not None and smns[0] == pid and smns[3] is not None
@@ -969,7 +1069,10 @@ def smns_at(cwd):
     """(directory, read_smns) of the first .smns walking up from cwd; else,
     for a linked worktree at a head that predates the file, its main
     checkout's (owning_repo), so an old branch never splits the repository
-    into two projects; else None."""
+    into two projects; else None, as for a directory this process may not
+    read (read_refused)."""
+    if read_refused(cwd):
+        return None
     d = cwd
     while True:
         path = os.path.join(d, SMNS)
@@ -981,7 +1084,7 @@ def smns_at(cwd):
             break
         d = parent
     repo = owning_repo(cwd)
-    path = os.path.join(repo, SMNS) if repo else ""
+    path = os.path.join(repo, SMNS) if repo and not read_refused(repo) else ""
     smns = read_smns(path) if path and os.path.isfile(path) else None
     return (repo, smns) if smns else None
 
@@ -1173,6 +1276,8 @@ def derivation(cwd, fresh=False):
     common = common_git_dir(os.path.abspath(os.path.expanduser(cwd or ".")))
     if not common:
         return Derivation("", "", "", "", "no git repository")
+    if read_refused(common):
+        return Derivation(os.path.dirname(common), "", "", "", "its repository is in a protected folder, not read here")
     if fresh or common not in _REPO_REMOTE:
         _REPO_REMOTE[common] = _derive(os.path.dirname(common), common)
     return _REPO_REMOTE[common]
@@ -1281,11 +1386,70 @@ def _registered_at(root):
     return _ROOTS[0].get(root, [])
 
 
+class Guessed(Project):
+    """A project told from what this machine recorded, for a directory this
+    process may not read (read_refused): shown and addressed as the project,
+    never what a reconciliation joins, moves or retires a session on."""
+    __slots__ = ()
+
+
+def guessed(project):
+    return isinstance(project, Guessed)
+
+
+def registered_guess(cwd):
+    """The project registered here whose root is `cwd` or its nearest
+    ancestor, by the path's string alone, as a Guessed — of several at one
+    root the latest registered, and on an enrolled machine never a local one
+    (no directory resolves to one there) — or None: unknown."""
+    _registered_at("")   # every registration read, once per cache generation
+    roots, local_ok = _ROOTS[0], enrollment() is None
+    d = _abs(cwd)
+    while True:
+        held = [p for p in (known_project(pid) for pid in roots.get(d, []))
+                if p is not None and (local_ok or not p.id.startswith("local-"))]
+        if held:
+            return Guessed(*max(held, key=lambda p: (mtime_of(os.path.join(p.home, "project.json")), p.id)))
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def mtime_of(path):
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return 0.0
+
+
+_RECORDED = {}   # session → the project its membership is recorded in, per cache generation (recorded_project)
+
+
+def recorded_project(session):
+    """The project whose log holds `session`, of this machine, as a member
+    now (its own latest membership `joined`) — of several, the one it joined
+    last — as a Guessed; None for none. What a session whose directory this
+    process may not read is told to be in."""
+    if session not in _RECORDED:
+        best, at = None, ""
+        for path in glob.glob(os.path.join(projects_root(), "*", "project.json")):
+            p = known_project(os.path.basename(os.path.dirname(path)))
+            last = next((e for e in reversed(_own_events(p, session)) if e["kind"] in MEMBERSHIP), None) \
+                if p is not None else None
+            if last is not None and last["kind"] == "joined" and str(last.get("ts") or "") >= at:
+                best, at = p, str(last.get("ts") or "")
+        _RECORDED[session] = Guessed(*best) if best is not None else None
+    return _RECORDED[session]
+
+
 def project_source(cwd):
     """Where resolve_project finds a directory's project, as `project show`
     says it: `.smns at <dir>`, `remote <name> → <key>`, the machine project
     and why no remote derives one, or a machine not enrolled's local project."""
     cwd = os.path.abspath(os.path.expanduser(cwd or "."))
+    if read_refused(cwd):
+        return "the registrations here: %s is in a protected folder, not read from here" % cwd
     found = smns_at(cwd)
     if found:
         return ".smns at %s" % found[0]
@@ -1295,16 +1459,37 @@ def project_source(cwd):
     return "remote %s → %s" % (d.remote, d.key) if d.key else "machine project: %s" % d.why
 
 
+UNREAD = object()   # a directory's project this process could not read and nothing recorded tells (_resolve)
+
+
 def resolve_project(cwd, fresh=False):
     """The project of a directory: the first .smns walking up (a linked
     worktree without one, its main checkout's); else, on an enrolled
     machine, the project its repository's remote derives (repo_project),
     else the machine's own project; else the local project of the owning
-    git repository; else None (no project). Kept for the cache generation;
-    `fresh` reads the directory as it is now."""
+    git repository; else None (no project). A directory this process may
+    not read, or whose resolution met one (read_refused), is told from the
+    registrations (registered_guess): a Guessed, else None. Kept for the
+    cache generation; `fresh` reads the directory as it is now."""
+    project = _resolve(cwd, fresh)
+    return None if project is UNREAD else project
+
+
+def _resolve(cwd, fresh=False):
+    """resolve_project's answer, UNREAD where it is unknown rather than no
+    project."""
     cwd = os.path.abspath(os.path.expanduser(cwd or "."))
     if not fresh and cwd in _PROJECTS:
         return _PROJECTS[cwd]
+    before = refusals()
+    project = None if read_refused(cwd) else _read_project(cwd, fresh)
+    if refusals() != before:
+        project = registered_guess(cwd) or UNREAD
+    _PROJECTS[cwd] = project
+    return project
+
+
+def _read_project(cwd, fresh):
     project = None
     found = smns_at(cwd)
     if found:
@@ -1317,7 +1502,6 @@ def resolve_project(cwd, fresh=False):
             if repo:
                 name = safe_name(os.path.basename(repo)) or "repo"
                 project = make_project("local-" + name, name, "", repo)
-    _PROJECTS[cwd] = project
     return project
 
 
@@ -1325,6 +1509,8 @@ def seat_project(seat, fresh=False):
     """A seat's project, from its recorded cwd. A seat spawned where there is
     no project belongs to the local project named after that directory: the
     seat record is the explicit registration automatic discovery never makes.
+    One whose directory this process may not read, and that nothing recorded
+    tells, is in none (None) rather than in one made up for it.
     A record with no cwd at all (written by hand, or before cwd was recorded)
     belongs to the local project named after its group, so it stays in view.
     Its directory is its session's launch directory (seat_cwd: where the
@@ -1345,8 +1531,10 @@ def seat_project(seat, fresh=False):
     key = (str(seat.get("current") or ""), cwd)
     if not fresh and key in _SEAT_PROJECTS:
         return _SEAT_PROJECTS[key]
-    project = session_project(key[0], seat_cwd(seat, fresh), fresh)
-    if project is None:
+    project = _session_project(key[0], seat_cwd(seat, fresh), fresh)
+    if project is UNREAD:
+        project = None   # in a directory this process may not read, nothing recorded telling: unknown, not local
+    elif project is None:
         name = safe_name(os.path.basename(os.path.normpath(cwd))) or "fleet"
         project = make_project("local-" + name, name, "", os.path.abspath(cwd))
     if _SEAT_PROJECTS.get(key, project) != project:
@@ -1384,9 +1572,14 @@ def kept_root(project, held):
     registration `held`: its registered root when that differs from the
     project's own and, as the directories are now, still resolves to this
     very project (another clone of the repository, another checkout of the
-    .smns, its name and hub the same); else the project's own."""
+    .smns, its name and hub the same), or one this process may not read
+    (read_refused); else the project's own."""
     root = str(held.get("root") or "") if isinstance(held, dict) else ""
-    if not project.root or not root or root == project.root or not os.path.isdir(root):
+    if not project.root or not root or root == project.root:
+        return project.root
+    if read_refused(root):
+        return root   # a registered root this process may not read stands as registered
+    if not os.path.isdir(root):
         return project.root
     there = resolve_project(root)
     return root if there is not None and there._replace(root=project.root) == project else project.root
@@ -1430,7 +1623,7 @@ def project_path(project, *parts):
                 info = info_for(held)
                 hub_elsewhere = project.hub is None and isinstance(held, dict) and held.get("hub") is not None \
                     and str(held.get("root") or "") != project.root \
-                    and names_hub(str(held.get("root") or ""), project.id)
+                    and names_hub(str(held.get("root") or ""), project.id) is not False
                 # A project known without a checkout (one the org's directory
                 # names, read before its checkout registered) never takes the
                 # root away: no checkout resolves to a rootless project.
@@ -1809,14 +2002,27 @@ def session_project(session, launch_cwd, fresh=False):
     """A session's project (§1): its join override, when the file names a
     project known here that it may be in (join_refusal; an ineligible one is
     read as absent, so the session moves back); else its launch directory's
-    (resolve_project; `fresh`: as it is now). None for a session in no
-    project."""
+    (resolve_project; `fresh`: as it is now). A launch directory this
+    process may not read (read_refused) tells nothing: the session is in the
+    project its membership is recorded in (recorded_project), else the one
+    the registrations tell for the directory, each a Guessed. None for a
+    session in no project, or in one nothing tells."""
+    project = _session_project(session, launch_cwd, fresh)
+    return None if project is UNREAD else project
+
+
+def _session_project(session, launch_cwd, fresh=False):
     pid = override_of(session) if session else ""
     if pid:
         target = known_project(pid)
         if target is not None and not join_refusal(target):
             return target
-    return resolve_project(launch_cwd, fresh) if launch_cwd else None
+    if not launch_cwd:
+        return None
+    project = _resolve(launch_cwd, fresh)
+    if session and (project is UNREAD or guessed(project)):
+        project = recorded_project(session) or project
+    return project
 
 
 def record_project(rec, fresh=False):
@@ -3410,10 +3616,12 @@ def _local_sessions(project, all_seats):
     """This machine's evidence of sessions in the project: {session: {"seat",
     "peer"}} for every seat whose cwd resolves to it and every running harness
     session whose project it is (record_project: its launch directory's, or
-    the one it joined), internal forks aside."""
+    the one it joined), internal forks aside. A session whose project was
+    told rather than read (Guessed: its directory is one this process may
+    not read) is evidence of nothing: what is recorded of it stands."""
     local = {}
     for s, pid in _seat_pids(all_seats):
-        if s["current"] and pid == project.id:
+        if s["current"] and pid == project.id and not guessed(seat_project(s)):
             local.setdefault(s["current"], {})["seat"] = s
     internal = internal_pids()
     for rec in peer_records():
@@ -3423,7 +3631,7 @@ def _local_sessions(project, all_seats):
         if str(rec.get("pid")) in internal:
             continue
         p = record_project(rec)
-        if p is not None and p.id == project.id and peer_running(rec):
+        if p is not None and not guessed(p) and p.id == project.id and peer_running(rec):
             local.setdefault(sid, {})["peer"] = rec
     return local
 
@@ -3529,26 +3737,28 @@ def here_now(project, ev):
     acceptance run)."""
     seat, peer = ev.get("seat"), ev.get("peer")
     for p in (seat_project(seat, fresh=True) if seat else None, record_project(peer, fresh=True) if peer else None):
-        if p is not None and p.id == project.id:
+        if p is not None and not guessed(p) and p.id == project.id:
             return project
     return None
 
 
 def retire_moved(project, sid, where, recheck=None):
     """`retired`, reason `moved`, for a member of the project whose project
-    is now `where`, naming it; nothing when `where` is the project itself or
-    no project (a session in none stays where it was). `recheck`, when
+    is now `where`, naming it; nothing when `where` is the project itself,
+    no project (a session in none stays where it was), or one told rather
+    than read (Guessed: its directory is one this process may not read, so
+    what is recorded stands). `recheck`, when
     given, resolves the session's project again under the session file's
     lock: what a reconciliation read a moment ago may have changed since (a
     `join` meanwhile), and the move is written only if it still holds."""
-    if where is None or where.id == project.id:
+    if where is None or guessed(where) or where.id == project.id:
         return []
 
     def guard(evs):
         if latest_membership(evs) != "joined":
             return False
         now_in = recheck() if recheck else where
-        return now_in is not None and now_in.id == where.id
+        return now_in is not None and not guessed(now_in) and now_in.id == where.id
 
     return lifecycle(project, sid, "retired", guard=guard, required=False, by="", reason="moved", project=where.id)
 
@@ -7270,6 +7480,10 @@ class DeriveFailed(Exception):
         self.reason, self.stderr = reason, stderr
 
 
+class DeriveSkipped(Exception):
+    """No fork may start where the member works (launch_refused)."""
+
+
 def model_tool_calls(path, enough):
     """How many tool calls the session's own model made in a transcript,
     counted up to `enough`: the tool_use blocks of its main conversation's
@@ -7331,10 +7545,13 @@ def derive_refusal(project, m):
 
 def member_cwd(project, m):
     """Where a member's session runs — where its fork must start for
-    `--resume` to find the transcript."""
+    `--resume` to find the transcript: the first of its directories that is
+    one, or that this process may not look at (read_refused), which
+    launch_refused then turns away."""
     candidates = [(m.seat or {}).get("cwd"), (session_running(m.session) or {}).get("cwd")]
     candidates += [e.get("cwd") for e in reversed(_own_events(project, m.session)) if e["kind"] == "joined"]
-    return next((c for c in candidates if isinstance(c, str) and c and os.path.isdir(c)), project.root or os.getcwd())
+    return next((c for c in candidates if isinstance(c, str) and c and (read_refused(c) or os.path.isdir(c))),
+                project.root or os.getcwd())
 
 
 def answer_text(text):
@@ -7507,7 +7724,8 @@ def derive_line(project, m, prompt=DERIVE_PROMPT):
     silent past the timeout, no line in its answer) falls back to the
     headless fork, as does a session with no such bridge: safe mode,
     uncached, persisting nothing, no tools (the section's note), so derive
-    succeeds wherever it did before. How it asked goes to stderr; a failure
+    succeeds wherever it did before, but where the fork may not start
+    (DeriveSkipped: launch_refused). How it asked goes to stderr; a failure
     of the headless fork says why (DeriveFailed)."""
     fork = sibling_module("sminos_fork")
     timeout = float(os.environ.get("SMINOS_DERIVE_TIMEOUT") or 120)
@@ -7522,6 +7740,9 @@ def derive_line(project, m, prompt=DERIVE_PROMPT):
             _derive_said(m, got)
             return line, got.text
         sys.stderr.write("sminos: derive %s: btw gave no line (%s); asking a headless fork\n" % (m.alias, why))
+    refused = launch_refused(member_cwd(project, m))
+    if refused:
+        raise DeriveSkipped(refused)
     try:
         got = fork.headless_fork(project, m, prompt, tools=False, cache=False, timeout=timeout)
     except fork.ForkFailed as e:
@@ -7562,7 +7783,7 @@ def cmd_derive(a):
         if target[0] == "seat":
             s = target[1]
             p = seat_project(s)
-            m = next((x for x in members(p) if x.seat and x.seat["seat_id"] == s["seat_id"]), None)
+            m = next((x for x in members(p) if x.seat and x.seat["seat_id"] == s["seat_id"]), None) if p else None
             if m is None:
                 die("%s/%s holds no member session to ask" % (s["group"], s["alias"]), EXIT_UNKNOWN)
             targets = [(p, m)]
@@ -7608,8 +7829,10 @@ def derive_member(project, m, held_off=False, refreshes_spent=None):
     on the in-charge event and is handed to the session (hand_name). A
     failed fork is stamped, and with `held_off` (--all) the member is not
     forked again until DERIVE_RETRY has passed; a derive that succeeds clears
-    the stamp. `refreshes_spent`, the run's cap on refreshes once it is
-    reached: a member that would be forked is left to the next run. Returns
+    the stamp. One whose fork may not start where it works (DeriveSkipped) is
+    refused, said once in daemon.log. `refreshes_spent`, the run's cap on
+    refreshes once it is reached: a member that would be forked is left to
+    the next run. Returns
     "refused", "deferred", "derived", or "failed" (nothing recorded)."""
     why = derive_refusal(project, m)
     if not why and held_off:
@@ -7625,6 +7848,17 @@ def derive_member(project, m, held_off=False, refreshes_spent=None):
     naming = charge_naming(project, m)
     try:
         line, answer = derive_line(project, m, naming_prompt(naming) if naming else DERIVE_PROMPT)
+    except DeriveSkipped as e:
+        # Said once per session (daemon.log), not with every run's refusals.
+        said = "derive %s (%s): no fork started, nothing recorded: %s" % (m.alias, m.session[:8], e)
+        if not said_once(project.id, "unforked-" + m.session):
+            try:
+                daemon_log(said)
+            except OSError:
+                pass
+        if not held_off:
+            print("%s: not derived — %s" % (m.alias, e))
+        return "refused"
     except DeriveFailed as e:
         tail = [x for x in (e.stderr or "").splitlines() if x.strip()][-5:]
         sys.stderr.write("sminos: derive %s failed: %s; nothing recorded\n%s" % (
@@ -7830,7 +8064,8 @@ def find_target(q):
             # in, so the record is read again after it, and a name that bound the
             # session the seat held binds the session it holds now.
             bound = res["current"] == q and res["seat_id"] != q
-            reconcile(seat_project(res))  # the verb reads the project; no liveness probe needed
+            if (p := seat_project(res)) is not None:
+                reconcile(p)  # the verb reads the project; no liveness probe needed
             res = reload_seat(res["seat_id"]) or res
             return ("seat", res, res["current"] if bound else "")
         return None
@@ -7928,7 +8163,7 @@ def derive_group(cwd):
     directory basename.
     """
     name = ""
-    if cwd and os.path.isdir(cwd):
+    if cwd and (read_refused(cwd) or os.path.isdir(cwd)):
         repo = owning_repo(cwd)
         name = os.path.basename(repo) if repo else os.path.basename(os.path.normpath(cwd))
     return safe_name(name) or "fleet"
@@ -8058,6 +8293,7 @@ def forget_caches():
     _ORG_DIR.clear()
     _SEAT_PIDS.clear()
     _ROOTS.clear()
+    _RECORDED.clear()
     _BOOT.clear()
     _GENERATION[0] += 1
 
@@ -8904,8 +9140,10 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 def run_claude_bg(args, cwd, settings):
     """Run `claude --bg …` in cwd; return (short, banner). short is "" on failure.
     cwd must be a real directory — callers validate with cwd_or_die; an
-    unattended worker is never silently launched somewhere else."""
-    if not (cwd and os.path.isdir(cwd)):
+    unattended worker is never silently launched somewhere else. One this
+    process may not look at (read_refused: a resume, on its seat's word) is
+    launched in unlooked-at."""
+    if not (cwd and (read_refused(cwd) or os.path.isdir(cwd))):
         die("launch cwd does not exist or is not a directory: %s" % cwd, EXIT_USAGE)
     try:
         p = subprocess.run(["claude"] + args, cwd=cwd, env=launch_env(settings),
@@ -9842,8 +10080,12 @@ def print_reply_block(seat_id):
 def cwd_or_die(cwd, verb):
     """Resolve a launch cwd, or die: an unattended auto-mode worker must run in a
     real directory. Never silently substitute HOME — that would drop the worker
-    into the wrong repo with no one watching."""
+    into the wrong repo with no one watching. Nor one this process may not
+    look at (read_refused): the launch is made from inside its folder."""
     cwd = os.path.abspath(cwd or os.getcwd())
+    if read_refused(cwd):
+        die("%s: %s is in %s, which macOS asks the person about before this process reads it: run sminos %s from "
+            "inside that folder" % (verb, cwd, protected_folder(cwd), verb), EXIT_USAGE)
     if not os.path.isdir(cwd):
         die("%s: cwd does not exist or is not a directory: %s" % (verb, cwd), EXIT_USAGE)
     return cwd
@@ -9899,6 +10141,9 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     first SessionStart, else by this spawn once the harness names it."""
     prev = reload_seat(seat_id) if seat_id else None
     project = seat_project({"cwd": cwd, "group": group})
+    if project is None:   # its repository is in a protected folder this process may not read (read_refused)
+        die("spawn: the project of %s is not read from here: its repository is in a folder macOS asks the person "
+            "about; run sminos spawn from inside that folder" % cwd, EXIT_USAGE)
     by = caller_alias()
     # A desk member is the human, whom the preamble calls "the operator".
     preamble = render_preamble(project.name, alias, "" if desk_member() else by)
@@ -10323,7 +10568,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
                                 s["group"], s["alias"], foreign, config_dir(), shlex.quote(foreign)), 1)
     # Where the engine keeps its session now (a /cd or EnterWorktree moved it), else where it was spawned.
     cwd = os.path.abspath(os.path.expanduser(seat_cwd(s)))
-    if not os.path.isdir(cwd):
+    if not read_refused(cwd) and not os.path.isdir(cwd):   # one this process may not look at is taken on its word
         raise ResumeRefused("resume of %s/%s: cwd does not exist or is not a directory: %s" % (
             s["group"], s["alias"], cwd), EXIT_USAGE)
     lock_path = os.path.join(root(), s["seat_id"] + ".resume.lock")
@@ -11916,6 +12161,9 @@ def cmd_join(a):
         if not held:
             print("%s has no override: it is in %s" % (me, home_line))
             return
+        if guessed(home) or _resolve(launch) is UNREAD:   # its project would be told, not read
+            die("its launch directory, %s, is in a folder macOS asks the person about before this process reads it: "
+                "run sminos join --cwd from inside that folder" % launch, 1)
         remove_override(sid)
         move_session(sid, now_in, home, "join")
         print("%s is back in %s" % (me, home_line))
