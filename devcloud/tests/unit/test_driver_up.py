@@ -18,7 +18,7 @@ HOUR = 3600
 
 def opts(**kw):
     base = dict(label=None, project=[], account=None, type=None, location=None, disk=None, ttl=None, keep=False,
-                spot=False, enroll_code=None, confirmed=False, dry_run=False)
+                spot=False, confirmed=False, dry_run=False)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -169,8 +169,8 @@ class MawsTest(UpBase):
         create, desc = self.created()
         self.assertEqual(create["name"], "dc2-vm-7f3a")
         self.assertEqual(create["labels"]["devcloud-enroll"], "key")
-        self.assertEqual((desc.maws_secret, desc.maws_delegation_id, desc.sminos_secret),
-                         ("desk-provisioning-v2", self.DELEGATION, None))
+        self.assertEqual((desc.maws_secret, desc.maws_delegation_id),
+                         ("desk-provisioning-v2", self.DELEGATION))
 
     def test_a_vm_without_the_maws_project_is_not_enrolled(self):
         self.assertEqual(self.up(project=["example/repo"]), 0)
@@ -178,12 +178,6 @@ class MawsTest(UpBase):
         self.assertNotIn("devcloud-enroll", create["labels"])
         self.assertIsNone(desc.maws_secret)
         self.assertEqual(create["name"], "dc2-vm-7f3a", "the prefix is every name's")
-
-    def test_a_one_time_dx2_code_is_refused_for_a_vm_that_provisions(self):
-        code, message = self.refused(project=["maws"], enroll_code=b"smns-enroll-v1.madeup\n")
-        self.assertEqual(code, 2)
-        self.assertIn("--enroll-code", message)
-        self.assertEqual(self.servers(), {}, "a VM was created for a boot that would fail")
 
     def test_a_deferred_provisioning_is_said(self):
         from devcloudlib import status
@@ -301,67 +295,6 @@ class CreateTest(UpBase):
         self.assertEqual(code, 3)
         self.assertIn("(limit)", message)
         self.assertEqual(self.servers(), {})
-
-    def code_host(self, reconcile_code=0, writes_services=True, services_state="ok"):
-        """A booted host whose `devcloud reconcile` exits `reconcile_code` and,
-        when `writes_services`, records a services entry of its own."""
-        from driver.ssh import Result
-        from devcloudlib import status
-        seen = {"reconciled": False}
-
-        def progress(target, command):
-            steps = [{"name": n, "state": "ok", "at": "2026-10-21T08:00:00Z", "detail": ""} for n in status.STEPS]
-            if seen["reconciled"] and writes_services:
-                steps[status.STEPS.index("services")] = {"name": "services", "state": services_state,
-                                                          "at": "2026-10-21T08:05:00Z", "detail": "enrolled"}
-            return Result(0, json.dumps({"steps": steps}) + "\nactive", "", False)
-
-        def reconcile(target, command):
-            seen["reconciled"] = True
-            return Result(reconcile_code, "", "", False)
-
-        self.remote.rules = [r for r in self.remote.rules if r["needle"] not in ("status.json", "devcloud reconcile")]
-        self.remote.on("status.json", fn=progress)
-        self.remote.on("devcloud reconcile", fn=reconcile)
-
-    def test_the_enrollment_code_after_the_boot(self):
-        self.code_host()
-        self.assertEqual(self.up(enroll_code=b"smns-enroll-v1.madeup\n"), 0)
-        create = [c for c in self.state()["calls"] if c["op"] == "create"][0]["input"]
-        self.assertEqual(create["labels"]["devcloud-enroll"], "code")
-        commands = self.remote.commands()
-        ledger = next(i for i, c in enumerate(commands)
-                      if "ledger add /etc/devcloud/enroll-code /etc/devcloud/enroll-code.tmp" in c)
-        write = next(i for i, c in enumerate(commands) if "cat > /etc/devcloud/enroll-code.tmp" in c)
-        reconcile = next(i for i, c in enumerate(commands) if c == "devcloud reconcile")
-        self.assertLess(ledger, write)
-        self.assertLess(write, reconcile)
-        code_call = next(c for c in self.remote.calls if "cat > /etc/devcloud/enroll-code.tmp" in c["command"])
-        self.assertEqual(code_call["input"], b"smns-enroll-v1.madeup\n")
-        self.assertEqual(code_call["target"], "dc-vm-7f3a", "over the tailnet")
-        self.assertIn("enroll    dc-vm-7f3a: enrolled", self.out.getvalue())
-
-    def test_a_reconcile_that_failed_or_dropped_is_no_enrollment(self):
-        for code, why in ((1, "devcloud reconcile exited 1"), (255, "the connection dropped")):
-            with self.subTest(code=code):
-                self.hexes = iter(["7f3a", "7f3b"])
-                self.remote.calls = []
-                self.code_host(reconcile_code=code)
-                code_, message = self.refused(enroll_code=b"smns-enroll-v1.madeup\n")
-                self.assertEqual(code_, 1)
-                self.assertIn(why, message)
-
-    def test_the_boots_old_services_entry_is_no_enrollment(self):
-        self.code_host(writes_services=False)
-        code, message = self.refused(enroll_code=b"smns-enroll-v1.madeup\n")
-        self.assertEqual(code, 1)
-        self.assertIn("unconfirmed", message)
-
-    def test_a_failed_services_entry_from_the_reconcile_is_a_failure(self):
-        self.code_host(services_state="failed")
-        code, message = self.refused(enroll_code=b"smns-enroll-v1.madeup\n")
-        self.assertEqual(code, 1)
-        self.assertIn("failed", message)
 
 
 class ImageTest(UpBase):

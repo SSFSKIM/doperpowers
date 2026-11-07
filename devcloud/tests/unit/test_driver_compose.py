@@ -19,11 +19,9 @@ SEED_PRIVATE = "-----BEGIN PRIVATE KEY-----\nmadeUpSeedKeyBodyForTheScanOnly0123
 DELEGATION = "0123456789abcdef" * 2
 
 
-def a_profile(desk=False, maws=False):
+def a_profile(maws=False):
     d = pathlib.Path(tempfile.mkdtemp(prefix="devcloud-compose-"))
     text = DRIVER_TOML.replace("{state}", "/tmp/x").replace("{registered}", "ab" * 32)
-    if desk:
-        text += '\n[desk]\nprovisioning_secret = "desk-key"\n'
     if maws:
         text += f'\n[desk]\nprovisioning_secret_v2 = "desk-provisioning-v2"\ndelegation_id = "{DELEGATION}"\n'
     (d / "driver.toml").write_text(text)
@@ -46,7 +44,6 @@ class DescriptorTest(unittest.TestCase):
         self.assertEqual((d.expires, d.creator, d.inbound), (NOW + 3600, "@abcd1234", "tailnet"))
         self.assertEqual((d.sm_project, d.config_token_secret), ("example-project", "config-token"))
         self.assertFalse(d.spot or d.adopted)
-        self.assertIsNone(d.sminos_secret)
 
     def test_a_vm_with_the_maws_project_carries_the_v2_code_and_its_delegation(self):
         for projects in (["maws"], ["SSFSKIM/MAWS@main"], ["example/repo", "maws@p5"]):
@@ -66,17 +63,15 @@ class DescriptorTest(unittest.TestCase):
         self.assertEqual(d.seed_kind, "file")
         self.assertEqual(d.inbound, "tailnet")
 
-    def test_keep_spot_metadata_seed_and_the_desk_key(self):
-        d = descriptor.parse(self.compose(expires=None, creator=None, spot=True, seed="gce-metadata",
-                                          profile=a_profile(desk=True)))
+    def test_keep_spot_and_metadata_seed(self):
+        d = descriptor.parse(self.compose(expires=None, creator=None, spot=True, seed="gce-metadata"))
         self.assertIsNone(d.expires)
         self.assertIsNone(d.creator)
         self.assertTrue(d.spot)
         self.assertEqual(d.seed_kind, "gce-metadata")
-        self.assertEqual(d.sminos_secret, "desk-key")
 
     def test_ids_never_values(self):
-        text = self.compose(profile=a_profile(desk=True))
+        text = self.compose(profile=a_profile(maws=True), projects=["maws"])
         self.assertNotIn(TOKEN, text)
         for line in text.splitlines():
             key, _, value = line.partition("=")
@@ -85,7 +80,7 @@ class DescriptorTest(unittest.TestCase):
 
 class UserDataTest(unittest.TestCase):
     def test_keys_and_the_staged_descriptor_with_no_secret_value(self):
-        desc = compose.descriptor(name="dc-a-0001", profile=a_profile(desk=True), projects=[], expires=NOW,
+        desc = compose.descriptor(name="dc-a-0001", profile=a_profile(), projects=[], expires=NOW,
                                   creator=None, spot=False, seed="file")
         data = compose.user_data(desc, [KEY])
         self.assertTrue(data.startswith("#cloud-config\n"))
@@ -111,7 +106,7 @@ class BootUserDataTest(unittest.TestCase):
     BUILD = {"DEVCLOUD_USER": "dev", "DEVCLOUD_UID": "1001", "DEVCLOUD_HOME": "/Users/dev"}
 
     def compose(self, recipe=True):
-        desc = compose.descriptor(name="dc-a-0001", profile=a_profile(desk=True), projects=[], expires=NOW,
+        desc = compose.descriptor(name="dc-a-0001", profile=a_profile(), projects=[], expires=NOW,
                                   creator=None, spot=False, seed="gce-metadata")
         data = compose.boot_user_data(desc, [KEY], recipe=compose.recipe_archive(_path.DEVCLOUD) if recipe else None,
                                       build=self.BUILD)

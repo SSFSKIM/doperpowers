@@ -126,18 +126,16 @@ class SecondGuardTest(unittest.TestCase):
 
 class ServicesStepTest(unittest.TestCase):
     """The step under the lifecycle lock: with a departure started, the
-    daemon is neither enrolled nor started."""
+    daemon is not started."""
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
         self.status = self.tmp / "status.json"
-        self.converged, self.enrolled = [], []
+        self.converged = []
         for patch in (mock.patch.object(status, "PATH", self.status),
                       mock.patch.object(lease, "LOCK", self.tmp / "lifecycle.lock"),
                       mock.patch.object(steps, "_read_env", lambda path: {}),
                       mock.patch.object(steps, "_devcloud_services", lambda r, record: f"systemd ({record})"),
-                      mock.patch.object(steps, "_enroll", lambda r, env: self.enrolled.append(1) or
-                                        sminos_host.Enrollment("none", "")),
                       mock.patch.object(sminos_host, "converge", lambda *a, **kw: self.converged.append(1) or "daemon")):
             patch.start()
             self.addCleanup(patch.stop)
@@ -149,12 +147,12 @@ class ServicesStepTest(unittest.TestCase):
             with self.subTest(state=state):
                 status.set_lifecycle("depart", state, state)
                 result = steps.services_step(self.r)
-                self.assertEqual((self.converged, self.enrolled), ([], []))
+                self.assertEqual(self.converged, [])
                 self.assertIn("the daemon stays stopped", result[1])
 
-    def test_with_no_departure_it_enrolls_and_starts_the_daemon(self):
+    def test_with_no_departure_it_starts_the_daemon(self):
         self.assertEqual(steps.services_step(self.r)[0], "ok")
-        self.assertEqual((self.converged, self.enrolled), ([1], [1]))
+        self.assertEqual(self.converged, [1])
 
 
 class JobsDuringAHoldTest(unittest.TestCase):
@@ -171,7 +169,7 @@ class JobsDuringAHoldTest(unittest.TestCase):
 
     def test_every_job_exits_at_once_without_restarting_the_daemon(self):
         status.set_lifecycle("depart", "held", "held (ship failed)")
-        status.set_enroll_deferred(True)
+        status.set_maws_deferred(True)
         for job in (steps.refresh_secrets, steps.reconcile, steps.pull_config, steps.refresh_mirrors, steps.enroll):
             with self.subTest(job=job.__name__):
                 self.assertEqual(job(), 0)
@@ -181,24 +179,29 @@ class StatusRecordsTest(unittest.TestCase):
     def setUp(self):
         self.path = pathlib.Path(tempfile.mkdtemp()) / "status.json"
 
-    def test_a_boots_reset_keeps_the_lifecycle_and_a_deferred_enrollment(self):
+    def test_a_boots_reset_keeps_the_lifecycle_and_a_deferred_provisioning(self):
         status.record("seed", "ok", "", path=self.path)
         status.set_lifecycle("depart", "held", "held (ship failed)", steps=[{"name": "ship"}], path=self.path)
-        status.set_enroll_deferred(True, path=self.path)
+        status.set_maws_deferred(True, path=self.path)
+        # An older devcloud's deferred DX2 enrollment, which nothing finishes any more.
+        data = status.load(self.path)
+        data["enroll"] = {"state": "deferred", "since": "2026-10-01T00:00:00Z"}
+        self.path.write_text(json.dumps(data))
         status.reset(path=self.path)
         data = status.load(self.path)
         self.assertEqual(data["steps"], [])
         self.assertEqual(data["lifecycle"]["state"], "held")
-        self.assertEqual(data["enroll"]["state"], "deferred")
+        self.assertEqual(data["maws"]["state"], "deferred")
+        self.assertNotIn("enroll", data)
         self.assertTrue(status.departure_started(self.path))
 
     def test_render_shows_the_deferral_and_the_departure(self):
-        status.record("services", "deferred", "sminos: undecided", path=self.path)
-        status.set_enroll_deferred(True, path=self.path)
+        status.record("maws", "deferred", "hub-confirmed, its certificate not yet live", path=self.path)
+        status.set_maws_deferred(True, path=self.path)
         status.set_lifecycle("depart", "held", "held (sessions keep starting)", path=self.path)
         lines = status.render(status.load(self.path)).splitlines()
-        self.assertRegex(lines[0], r"^services\s+deferred\s")
-        self.assertRegex(lines[1], r"^enroll deferred since \d{4}-")
+        self.assertRegex(lines[0], r"^maws\s+deferred\s")
+        self.assertRegex(lines[1], r"^maws provisioning deferred since \d{4}-")
         self.assertRegex(lines[2], r"^depart\s+held\s+\S+\s+held \(sessions keep starting\)$")
 
     def test_deferred_counts_as_done(self):

@@ -7,11 +7,11 @@ sminos daemon, stopped and disabled); 1 end the user's `claude` processes;
 2 stop the continuous shipper and ship once, then end and ship again while
 sessions keep appearing, three rounds at most; 3 leave the desk: a machine
 MAWS's endpoint certified under the devcloud delegation retires its
-certificate and frees its hub row (`mawsd endpoint retire`), one on DX2 runs
-`sminos hub leave`; 4 the flushed line `devcloud-depart: ready-to-logout`,
-then `tailscale logout`, and the node's removal through the Tailscale API
-when the logout leaves it listed (a node not known to be ephemeral: its id is
-read before the logout, board #118); 5 stop devcloud's services (not the
+certificate and frees its hub row (`mawsd endpoint retire`); 4 the flushed
+line `devcloud-depart: ready-to-logout`, then `tailscale logout`, and the
+node's removal through the Tailscale API when the logout leaves it listed (a
+node not known to be ephemeral: its id is read before the logout, board
+#118); 5 stop devcloud's services (not the
 transient unit this runs in) and `mawsd`; 6 power off.
 A failed ship, or sessions still there after the third round, holds the
 departure before step 3 — no leave, no logout, no power-off — and exits 4; the
@@ -55,7 +55,7 @@ READY = "devcloud-depart: ready-to-logout"
 ROUNDS = 3
 SESSION_GRACE = 30
 SHIP_TIMEOUT = 300
-LEAVE_TIMEOUT = 180     # I15: one `hub` call can take about 150 s
+LEAVE_TIMEOUT = 180     # the leave's bound, the endpoint's retirement run under it
 ADOPT_DIR = pathlib.Path("/var/lib/devcloud-adopt")
 INBOUND_UNIT = "devcloud-inbound.service"
 SHIPPER_UNIT = "devcloud-session-mirror.service"
@@ -343,11 +343,10 @@ def leave(run, d, timeout=LEAVE_TIMEOUT):
     the step fails naming the owner's `machine drop`, and the departure goes
     on. So does an attended enrollment (a member's code), whose key only an
     admin retires. Such an unsettled word is kept (DESK_RESIDUE) and said
-    again by every rerun until a retirement succeeds. A machine cut over
-    whose endpoint holds nothing is not enrolled. A machine on DX2 runs
-    `sminos hub leave`; 0 and 1 both go on. The desk revokes nothing for
-    being offline, so on 1 the machine stays in its Machines until someone
-    removes it, which the driver tells the person."""
+    again by every rerun until a retirement succeeds. A machine whose
+    endpoint holds nothing, or that has none, is not enrolled: a phase-1
+    `hub.json` left on it names nothing to leave, since the desk refuses
+    DX2."""
     host = run.host
     env = host.user_env()
     residue = host.state_dir / DESK_RESIDUE
@@ -380,20 +379,7 @@ def _endpoint_leave(run, d, env, timeout, residue):
                         f"admin retires; run: {maws_host.drop_command(d.name)}")
     if residue.exists():
         raise StepError(residue.read_text().strip())
-    if cut_over:
-        return "not enrolled"
-    if not (sminos_host.sminos_home(host.user, env) / "daemon/hub.json").is_file():
-        return "not enrolled"
-    program = sminos_host.cli(host.user)
-    if program is None:
-        raise StepError("enrolled, but the sminos CLI is absent")
-    code, _, err = host.call([sminos_host.PYTHON, str(program), "hub", "leave"], user=host.user, env=env,
-                             log="lifecycle", timeout=run.bound(timeout))
-    if code == 0:
-        return "left the desk"
-    if code == 1:
-        return f"the desk did not answer the leave ({err or 'exit 1'}); it stays in the desk's Machines until someone removes it"
-    raise StepError(f"sminos hub leave exited {code}" + (f": {err}" if err else ""))
+    return "not enrolled"
 
 
 def logout(run, d, confirm=False):

@@ -62,7 +62,7 @@ class Record:
     created: int
     ready: int | None = None
     creator: str | None = None  # the creating session's short id
-    enroll: str | None = None   # "key" when its boot enrolls at the desk with a provisioning key (v1 or MAWS's v2)
+    enroll: str | None = None   # "key" when its boot provisions its endpoint at the desk with MAWS's v2 code
 
     @property
     def host(self):
@@ -178,7 +178,7 @@ def run(ctx, opts):
         _, short = ctx.creator()
         now = int(ctx.clock())
         projects = list(opts.project or [])
-        enrolls = ctx.profile.desk_secret or compose.provisions(ctx.profile, projects)
+        enrolls = compose.provisions(ctx.profile, projects)
         record = Record(name=names.draw(label, ctx.taken_names(servers), ctx.token_hex, ctx.profile.name_prefix),
                         address=address, user=user, lifetime="ttl" if lease else "keep",
                         expires=now + lease if lease else None, projects=projects, phase="preparing", created=now,

@@ -168,9 +168,9 @@ class DeliveryTest(IdleBase):
     def deliver(self, results, creator="@abcd1234", project="example"):
         from devcloudlib import notices
         calls, said = [], []
-        hub = self.user.home / ".claude/sminos/daemon/hub.json"
-        hub.parent.mkdir(parents=True, exist_ok=True)
-        hub.write_text("{}")
+        identity = self.user.home / ".claude/sminos/daemon/identity.json"
+        identity.parent.mkdir(parents=True, exist_ok=True)
+        identity.write_text("{}")
         d = dataclasses.replace(self.d, creator=creator, creator_project=project)
         def call(argv, **kw):
             calls.append((argv, kw))

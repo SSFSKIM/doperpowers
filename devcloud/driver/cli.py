@@ -1,7 +1,7 @@
 """`devcloud vm`: the command line (I16).
 
   devcloud vm up [--label L] [--project owner/repo[@ref]]... [--account A] [--type T] [--location L]
-                 [--disk GB] [--ttl D | --keep] [--spot] [--enroll-code -] [--confirmed] [--dry-run]
+                 [--disk GB] [--ttl D | --keep] [--spot] [--confirmed] [--dry-run]
   devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
   devcloud vm ls [--json]
   devcloud vm ssh <name> [--root] [-- command...]
@@ -57,7 +57,6 @@ def parser():
     life.add_argument("--ttl")
     life.add_argument("--keep", action="store_true")
     p.add_argument("--spot", action="store_true")
-    p.add_argument("--enroll-code", dest="enroll_code", choices=["-"])
     p.add_argument("--confirmed", action="store_true")
     p.add_argument("--dry-run", dest="dry_run", action="store_true")
     p = sub.add_parser("adopt", help="make a machine the driver did not make a host, until released")
@@ -97,13 +96,8 @@ def parser():
     return top
 
 
-def _dispatch(ctx, args, command, stdin):
+def _dispatch(ctx, args, command):
     if args.command == "up":
-        if args.enroll_code == "-":
-            code = stdin.read()
-            if not code.strip():
-                raise DriverError(USAGE, "--enroll-code -: no code on stdin")
-            args.enroll_code = code
         return up.run(ctx, args)
     if args.command == "adopt":
         return adopt.run(ctx, args)
@@ -124,7 +118,7 @@ def _dispatch(ctx, args, command, stdin):
     return conformance.test(ctx, args.account)
 
 
-def main(argv, env=None, ctx=None, host_marker=HOST_MARKER, stdin=None):
+def main(argv, env=None, ctx=None, host_marker=HOST_MARKER):
     env = dict(os.environ if env is None else env)
     err = ctx.err if ctx is not None else sys.stderr
     if os.path.exists(host_marker):
@@ -143,7 +137,7 @@ def main(argv, env=None, ctx=None, host_marker=HOST_MARKER, stdin=None):
         if not ctx.paths.seed.exists():
             raise DriverError(NOT_DRIVER, f"no seed key at {ctx.paths.seed} ($DEVCLOUD_SEED_FILE, else "
                                           "~/.config/devcloud/seed.json): this machine is not a driver")
-        return _dispatch(ctx, args, command, stdin or sys.stdin.buffer)
+        return _dispatch(ctx, args, command)
     except DriverError as error:
         print(f"devcloud vm: {error}", file=err)
         return error.code

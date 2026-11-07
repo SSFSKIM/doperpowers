@@ -21,7 +21,7 @@ GCLOUD_SKIP = ("logs", "cache", "configurations", "surface_data", "virtenv")
 # A sminos enrollment ($SMINOS_HOME/daemon/, its default under each home).
 SMINOS_DAEMON = ".claude/sminos/daemon"
 # What only a booted host, or the driver's first contact, holds.
-HOST_PATHS = ("/etc/devcloud/boot.env", "/etc/devcloud/enroll-code", "/var/lib/devcloud", "/var/lib/devcloud-stage")
+HOST_PATHS = ("/etc/devcloud/boot.env", "/var/lib/devcloud", "/var/lib/devcloud-stage")
 SEED_DIR = "/etc/devcloud/seed"
 
 

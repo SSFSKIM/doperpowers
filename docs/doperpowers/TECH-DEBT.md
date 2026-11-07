@@ -686,7 +686,6 @@ This is what the devcloud VM driver left behind (`docs/doperpowers/specs/2026-10
 - **A refused rejoin is retried every 5 minutes without backoff.** One example is an OAuth client that lacks `devices:core`. Each lease-service run fetches the client and a token, is refused, and journals it; the node stays as it was. Board #115. T3. Trigger: a noisy `devcloud-rejoin` journal on a host.
 - **A Stopped node whose rejoin is refused stays Stopped.** Nothing runs `up` to resume it as its old kind. This only matters when something ran `tailscale down` on a host. Board #115. T3. Trigger: a host found Stopped on the tailnet.
 - **Two node-kind messages read loosely when only a removal is pending.** `lease set` prints `rejoin <kind>`, and the lease service says "the tailnet node is not <kind>", though the kind is right. The record's detail for a `-1` node still blames an older node after the API removed it. Board #115. T3. Trigger: the next edit to those messages.
-- **The desk key expires on 2027-01-19.** After that date `up` cannot enroll. Before it, a new `dc-` key goes into a new version of the same secret; the VMs read the latest version. T1. Trigger: 2027-01-05.
 
 ## `sminos daemon owed` and a conflict lost to a failed write (2026-10-27, sminos 1.27.0)
 

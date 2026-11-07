@@ -19,14 +19,18 @@ REQUIRED = ("DEVCLOUD_NAME", "DEVCLOUD_KIND", "DEVCLOUD_ROLE", "DEVCLOUD_TAILSCA
             "DEVCLOUD_SM_PROJECT", "DEVCLOUD_CONFIG_REPO", "DEVCLOUD_CONFIG_TOKEN_SECRET")
 OPTIONAL = ("DEVCLOUD_TS_SECRET", "DEVCLOUD_TS_AUTHKEY_FILE", "DEVCLOUD_CONFIG_BRANCH", "DEVCLOUD_PROJECTS", "DEVCLOUD_MIRROR_DIR",
             # I12, the driver's: the lease and who hears of its end, the inbound policy, adoption,
-            # the desk's provisioning key, a spot VM; MAWS's provisioning code and its delegation (P5 O14).
-            "DEVCLOUD_EXPIRES", "DEVCLOUD_CREATOR", "DEVCLOUD_INBOUND", "DEVCLOUD_ADOPTED", "DEVCLOUD_SMINOS_SECRET",
+            # a spot VM; MAWS's provisioning code and its delegation (P5 O14).
+            "DEVCLOUD_EXPIRES", "DEVCLOUD_CREATOR", "DEVCLOUD_INBOUND", "DEVCLOUD_ADOPTED",
             "DEVCLOUD_SPOT", "DEVCLOUD_MAWS_SECRET", "DEVCLOUD_MAWS_DELEGATION_ID",
             "DEVCLOUD_CREATED", "DEVCLOUD_HOURLY_PRICE", "DEVCLOUD_CURRENCY", "DEVCLOUD_CREATOR_PROJECT")
 
 _HOSTNAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _PROJECT = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?(?:@\S+)?\Z")
 _SECRET_ID = re.compile(r"[A-Za-z0-9_-]{1,255}\Z")
+# Keys an older driver wrote that name what no longer exists: refused by name, saying so.
+_RETIRED = {"DEVCLOUD_SMINOS_SECRET": "the desk's v1 provisioning key, which enrolled sminos on DX2, is retired: "
+                                      "the desk refuses DX2, and a host's enrollment is its MAWS endpoint's "
+                                      "(DEVCLOUD_MAWS_SECRET); remove it"}
 # A sminos tag a lease warning can reach: @alias, @alias#short, @short, @project/alias.
 _CREATOR = re.compile(r"@[A-Za-z0-9][A-Za-z0-9._/-]*(?:#[0-9a-f]+)?\Z")
 _UNIX = re.compile(r"[0-9]{1,12}\Z")
@@ -58,7 +62,6 @@ class Descriptor:
     creator: str | None = None       # the sminos tag the lease warning goes to
     inbound: str = "open"            # tailnet: the public port closes once the tailnet is up
     adopted: bool = False            # the lease end, and down, run release
-    sminos_secret: str | None = None  # the desk provisioning key's Secret Manager id
     spot: bool = False               # a spot VM: the reclaim unit is enabled
     maws_secret: str | None = None   # the MAWS provisioning code's Secret Manager id (boot step 13)
     maws_delegation_id: str | None = None  # its delegation's id, the prefix of the machine's ref
@@ -85,6 +88,9 @@ def parse(text, allow_http=False):
         values = envfile.parse(text)
     except ValueError as error:
         raise DescriptorError(f"boot descriptor: {error}") from None
+    retired = sorted(set(values) & set(_RETIRED))
+    if retired:
+        raise DescriptorError("; ".join(f"{key}: {_RETIRED[key]}" for key in retired))
     unknown = sorted(set(values) - set(REQUIRED) - set(OPTIONAL))
     if unknown:
         raise DescriptorError(f"unknown key {', '.join(unknown)} in the boot descriptor")
@@ -179,26 +185,20 @@ def _lifecycle(values, role, tailscale):
                               "DEVCLOUD_TAILSCALE=join")
     adopted = _flag(values, "DEVCLOUD_ADOPTED")
     spot = _flag(values, "DEVCLOUD_SPOT")
-    sminos_secret = values.get("DEVCLOUD_SMINOS_SECRET") or None
-    if sminos_secret is not None and not _SECRET_ID.match(sminos_secret):
-        raise DescriptorError("DEVCLOUD_SMINOS_SECRET is not a Secret Manager secret id")
-    maws_secret, delegation = _maws(values, sminos_secret)
+    maws_secret, delegation = _maws(values)
     if role == "sandbox":
         for key, present in (("DEVCLOUD_EXPIRES", expires is not None), ("DEVCLOUD_ADOPTED", adopted),
-                             ("DEVCLOUD_SMINOS_SECRET", sminos_secret), ("DEVCLOUD_SPOT", spot),
-                             ("DEVCLOUD_MAWS_SECRET", maws_secret)):
+                             ("DEVCLOUD_SPOT", spot), ("DEVCLOUD_MAWS_SECRET", maws_secret)):
             if present:
                 raise DescriptorError(f"{key} is for a persistent host: a sandbox never carries a lease, "
                                       "is never adopted, a spot VM or enrolled")
     return dict(expires=expires, creator=creator, inbound=inbound, adopted=adopted,
-                sminos_secret=sminos_secret, spot=spot, maws_secret=maws_secret, maws_delegation_id=delegation)
+                spot=spot, maws_secret=maws_secret, maws_delegation_id=delegation)
 
 
-def _maws(values, sminos_secret):
+def _maws(values):
     """MAWS's provisioning code and its delegation's id, both or neither: the
-    code is redeemed only under a ref the id prefixes. A host that enrolls
-    sminos on DX2 holds a phase-1 row under its name, which refuses the
-    certificate (409 name-taken), so it never names the code as well."""
+    code is redeemed only under a ref the id prefixes."""
     secret = values.get("DEVCLOUD_MAWS_SECRET") or None
     delegation = values.get("DEVCLOUD_MAWS_DELEGATION_ID") or None
     if (secret is None) != (delegation is None):
@@ -207,9 +207,6 @@ def _maws(values, sminos_secret):
         raise DescriptorError("DEVCLOUD_MAWS_SECRET is not a Secret Manager secret id")
     if delegation is not None and not _DELEGATION_ID.match(delegation):
         raise DescriptorError("DEVCLOUD_MAWS_DELEGATION_ID is not a delegation id (32 lower-case hex digits)")
-    if secret is not None and sminos_secret is not None:
-        raise DescriptorError("DEVCLOUD_SMINOS_SECRET enrolls sminos on DX2, whose row under the name refuses the "
-                              "certificate DEVCLOUD_MAWS_SECRET provisions: name one of them")
     return secret, delegation
 
 
