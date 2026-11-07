@@ -1,0 +1,31 @@
+# The version-bump gate (.github/ci-kit.yml) checks a PR against its base and
+# a ci-gate run against its merge-base with main, but ci-kit plans no gate on
+# a push to main. This checks each push to main against main's tip before it,
+# which catches what no PR run sees: a commit pushed straight to main, and a
+# PR whose base took its version number after the PR's last run.
+name: version-bump
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  since-before:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Every plugin whose shipped files changed is above main's earlier tip
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [[ $BEFORE =~ ^0+$ ]]; then echo "a new branch: no earlier tip to compare"; exit 0; fi
+          # Retry a transient fetch failure, but never pass without a comparison.
+          if ! git fetch --no-tags --depth=1 origin "$BEFORE"; then
+            sleep 2
+            if ! git fetch --no-tags --depth=1 origin "$BEFORE"; then
+              echo "::error::main's earlier tip $BEFORE could not be fetched after two attempts"
+              exit 1
+            fi
+          fi
+          bash scripts/bump-version.sh --since "$BEFORE" HEAD

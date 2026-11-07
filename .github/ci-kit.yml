@@ -30,6 +30,18 @@ gates:
       scripts/lint-shell.sh "${files[@]}"
     timeout: 10
 
+  - name: version-bump
+    # A plugin whose shipped files this change touched must carry a version
+    # above its base's, or the marketplace, which updates by number alone,
+    # never installs it (.version-bump.json names each plugin's root and the
+    # paths that never ship). ci-kit plans no gate on a push to main;
+    # workflows/version-bump.yml runs the same check there.
+    setup: false
+    run: |
+      if [ -z "$CI_KIT_BASE" ]; then echo "a dispatch has no change basis: nothing to compare"; exit 0; fi
+      bash scripts/bump-version.sh --since "$CI_KIT_BASE" "$CI_KIT_HEAD"
+    timeout: 5
+
   # The sminos plugin's suite in its two parts, run side by side (about 26 min
   # serial: core about 7, suites 18 to 20 on 2026-11-02).
   - name: sminos
