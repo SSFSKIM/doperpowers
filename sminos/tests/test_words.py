@@ -131,10 +131,7 @@ class Machine(unittest.TestCase):
         for d in (os.environ["HOME"] + "/.claude/sessions", os.environ["SMINOS_HOME"] + "/daemon"):
             os.makedirs(d, mode=0o700)
         self.epdir = os.path.join(os.environ["MAWS_USER_DATA"], "mawsd", "endpoint")
-        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json"),
-                          {"hub": "http://127.0.0.1:9", "org": "org-1", "machine": "testhost", "client_id": "c",
-                           "client_secret": "s", "key": KEY, "former": {}, "enrolled": "2026-10-01T00:00:00Z"},
-                          mode=0o600)
+        os.environ["DAEMON_HOST"] = "testhost"   # its name until a welcome cuts it over (identity.json)
         sminos.forget_caches()
         rl10._SAID.update(find=None, revoked=None)
 

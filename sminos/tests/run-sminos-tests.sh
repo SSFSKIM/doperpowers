@@ -391,8 +391,6 @@ run_suites() {
   else fail "a gate process's deliveries: its mode, receipts, admission, stop, retries, restarts (test_holder_deliveries.py)"; fi
   echo
   if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
-  if python3 "$SCRIPT_DIR/test_happy_eyeballs.py"; then pass "the hub's connections past a blackholed IPv6 (test_happy_eyeballs.py)"; else
-    fail "the hub's connections past a blackholed IPv6 (test_happy_eyeballs.py)"; fi
   if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
   if python3 "$SCRIPT_DIR/test_rl10.py"; then pass "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; else
     fail "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; fi

@@ -724,13 +724,10 @@ class Unlisting(Base):
         got = [{k: v for k, v in e.items() if k != "mac"} for f in self.machines[machine].hello(self.p.id)
                if f["t"] == "events" for e in f["events"]]
         home = tempfile.mkdtemp(dir=self.home)
-        env = {**self.env(), "HOME": os.path.join(home, "h"), "SMINOS_HOME": os.path.join(home, "s")}
+        env = {**self.env(), "HOME": os.path.join(home, "h"), "SMINOS_HOME": os.path.join(home, "s"),
+               "DAEMON_HOST": machine}
         os.makedirs(os.path.join(env["SMINOS_HOME"], "daemon"))
         os.makedirs(os.path.join(env["HOME"], ".claude", "sessions"))
-        sminos.write_json(os.path.join(env["SMINOS_HOME"], "daemon", "hub.json"),
-                          {"hub": "http://127.0.0.1:9", "org": "org-1", "machine": machine, "client_id": "c",
-                           "client_secret": "s", "key": tw.KEY, "former": {}, "enrolled": "2026-10-01T00:00:00Z"},
-                          mode=0o600)
         reg = json.loads(Path(self.p.home, "project.json").read_text())
         pdir = os.path.join(env["SMINOS_HOME"], "projects", self.p.id)
         os.makedirs(os.path.join(pdir, "log"))

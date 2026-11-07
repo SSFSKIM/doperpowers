@@ -150,32 +150,11 @@ class Rows:
         self.assertNotIn("hidden", text)
 
 
-class Hub(Rows, unittest.TestCase):
-    """Enrolled at the hub (DX2): hub.json."""
-
-    def enroll(self):
-        write(os.path.join(self.sh, "daemon", "hub.json"),
-              {"hub": "http://127.0.0.1:9", "org": ORG, "machine": "testhost", "client_id": "c", "client_secret": "s",
-               "former": {}, "enrolled": "2026-10-01T00:00:00Z"})
-
-    def test_machines(self):
-        self.directory([{"name": "testhost", "online": True, "seen": None},
-                        {"name": "delta", "online": False, "seen": ago(7200)},
-                        {"name": "echo", "online": False, "seen": None},
-                        {"name": "dc-gone", "online": False, "seen": ago(86400), "retired": True}],
-                       at=ago(3 * 3600))
-        text = self.cli("machines")
-        self.assertEqual(self.machine_row(text, "dc-gone"), "dc-gone retired 0 -")
-        self.assertEqual(self.machine_row(text, "testhost"), "testhost online 0 -")
-        self.assertEqual(self.machine_row(text, "delta"), "delta last seen 2h ago 1 pg")
-        self.assertEqual(self.machine_row(text, "echo"), "echo never seen 0 -")
-        self.assertIn("(the org's directory is 3h old: the daemon's stream has said nothing newer)", text)
-
-
 class CutOver(Rows, unittest.TestCase):
-    """Cut over to its endpoint (RL10): identity.json in place of hub.json,
-    and a directory as RL10's endpoint builds it, every machine `online:
-    false` and `seen` only as of its last restatement."""
+    """Cut over to its endpoint (RL10): identity.json, and a directory as
+    RL10's endpoint builds it, every machine `online: false` and `seen` only
+    as of its last restatement. (Its DX2 twin, a hub.json enrolment with the
+    hub's presence, went in #153 M4.)"""
 
     def enroll(self):
         write(os.path.join(self.sh, "daemon", "identity.json"),

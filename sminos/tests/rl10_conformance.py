@@ -455,11 +455,13 @@ def spent(p):
 
 
 def stage_machine():
-    """The conversation's machine before its first connection: hub.json's
-    credential (org-local, rl10-host, the DX1 key the endpoint asks for), P
-    (relayed, named maws, its checkout on main) and Q (local), S1-S5 with
-    their records, titles and bridges, P's own events of case 4, the ledger's
-    entry from before RL10."""
+    """The conversation's machine before its first connection: named
+    rl10-host (DAEMON_HOST, set before any project or writer is made, since
+    no identity.json names it until the welcome), hub.json holding the DX1
+    key the endpoint asks for (org-local), P (relayed, named maws, its
+    checkout on main) and Q (local), S1-S5 with their records, titles and
+    bridges, P's own events of case 4, the ledger's entry from before RL10."""
+    os.environ["DAEMON_HOST"] = B["name"]
     sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json"),
                       {"hub": B["hub"], "org": B["org"], "machine": B["name"], "client_id": "c", "client_secret": "s",
                        "key": B["legacyKey"], "former": {}, "enrolled": B["enrolled"]}, mode=0o600)

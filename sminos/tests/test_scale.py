@@ -42,11 +42,13 @@ with open(os.path.join(T, "bin", "claude"), "w") as f:
 os.chmod(os.path.join(T, "bin", "claude"), 0o755)
 os.environ["PATH"] = os.path.join(T, "bin") + os.pathsep + os.environ["PATH"]
 ORG, MACHINE, OTHER = "org-1", "testhost", "mini"
-with open(os.path.join(SH, "daemon", "hub.json"), "w") as f:
-    json.dump({"hub": "http://127.0.0.1:9", "org": ORG, "machine": MACHINE}, f)
 sys.path.insert(0, SCRIPTS)
+sys.path.insert(0, HERE)
 
 import sminos  # noqa: E402
+from rl10_identity import write_identity  # noqa: E402
+
+write_identity(SH, MACHINE, org=ORG)   # cut over: enrolled in ORG, its own project MACHINE's
 
 daemon = sminos.daemon_module()
 uplink = sminos.sibling_module("sminos_uplink")

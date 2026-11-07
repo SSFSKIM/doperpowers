@@ -11,12 +11,12 @@
 # message into another project is recorded where it delivers and copied into
 # the sender's own log (`copy`, `to[].project`), and the copy delivers
 # nothing; a reply through the frame's reply line crosses back the same way;
-# `send` on an enrolled machine never takes the raw-name route. Two machines
-# simulated on one Mac — two SMINOS_HOMEs enrolled as alpha and beta against
-# hub_standin.py — each with its daemon, delivering to scripted inboxes; then
-# the same cases on RL10, two more homes each cut over to its own
-# endpoint_standin.py, what one endpoint took reaching the other as arrivals
-# (rl10-machines.sh's hand-off).
+# `send` on a machine cut over never takes the raw-name route. Two machines
+# simulated on one Mac — two SMINOS_HOMEs, alpha and beta, each cut over to
+# its own endpoint_standin.py and running its daemon, delivering to scripted
+# inboxes — what one endpoint took reaching the other as arrivals
+# (rl10-machines.sh's hand-off); then a third home whose logs alone pin the
+# resolution rules.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub; nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
@@ -108,31 +108,6 @@ live_session() { # name session dir [entrypoint] [inbox, else the name]
 received() { cat "$T/$1.received" 2>/dev/null || true; }
 got() { received "$1" | grep -Fq -- "$2"; }   # name text — whether the inbox holds a frame carrying the text
 
-python3 "$SCRIPT_DIR/hub_standin.py" "$T/hub.port" cid-0 secret-0 1000 & PIDS+=("$!")
-until_true test -s "$T/hub.port"
-HUB="http://127.0.0.1:$(cat "$T/hub.port")"
-KEY="$(python3 -c 'import base64; print(base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode())')"
-
-cat > "$T/ctl.py" <<'PY'
-import base64, http.client, json, sys
-port = int(open(sys.argv[1]).read())
-
-def call(method, path, body=None):
-    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    c.request(method, path, body=None if body is None else json.dumps(body), headers={"Content-Type": "application/json"})
-    r = c.getresponse()
-    return r.status, json.loads(r.read() or b"{}")
-
-cmd, args = sys.argv[2], sys.argv[3:]
-if cmd == "token":
-    print(call("POST", "/control/enrollment", {})[1]["token"])
-elif cmd == "code":  # hub token machine key
-    body = json.dumps(dict(zip(("hub", "org", "token", "machine", "key"), [args[0], "org-1", *args[1:4]])),
-                      separators=(",", ":")).encode()
-    print("smns-enroll-v1." + base64.urlsafe_b64encode(body).rstrip(b"=").decode())
-PY
-ctl() { python3 "$T/ctl.py" "$T/hub.port" "$@"; }
-mp_of() { python3 -c 'import sys, uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "smns-machine:org-1:" + sys.argv[1].lower()))' "$1"; }
 smns_id() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$1/.smns"; }
 write_smns() { # dir name — a .smns naming only the org
   python3 -c 'import json, sys, uuid
@@ -159,239 +134,9 @@ member_of() { # project session → whether this machine's log of the project ho
 }
 mkdir -p "$T/x"
 
-# ---- alpha: projA with the sender, a stray in a bare directory
-as a alpha
-"$SMINOS" hub enroll <<<"$(ctl code "$HUB" "$(ctl token)" alpha "$KEY")" >/dev/null
-AMP="$(mp_of alpha)"
-RA="$T/a/projA"
-gitq init -q "$RA"
-write_smns "$RA" projA
-AID="$(smns_id "$RA")"
-SA=5a00000a-0000-4000-8000-0000000000a1
-live_session sa "$SA" "$RA"
-ABARE="$T/a/bare"
-mkdir -p "$ABARE"
-WD=5a00000d-0000-4000-8000-0000000000a4
-live_session wand "$WD" "$ABARE"
-run_in "$RA" "$SMINOS" list
-run_in "$ABARE" "$SMINOS" list
-start_daemon
-
-# ---- beta: projB with rb, two strays in its home directory
-as b beta
-"$SMINOS" hub enroll <<<"$(ctl code "$HUB" "$(ctl token)" beta "$KEY")" >/dev/null
-BMP="$(mp_of beta)"
-RB="$T/b/projB"
-gitq init -q "$RB"
-write_smns "$RB" projB
-BID="$(smns_id "$RB")"
-RBS=5b00000b-0000-4000-8000-0000000000b1
-live_session rb "$RBS" "$RB"
-BHOME="$T/b/home"
-M7=5b00007c-0000-4000-8000-0000000000b7
-live_session mini-7c "$M7" "$BHOME"
-M8=5b00008c-0000-4000-8000-0000000000b8
-live_session m8 "$M8" "$BHOME"
-run_in "$RB" "$SMINOS" list
-run_in "$BHOME" "$SMINOS" list
-start_daemon
-
-as a alpha
-until_true member_of "$BID" "$RBS" || true
-member_of "$BID" "$RBS" && pass "alpha follows projB and reads rb there" || fail "alpha follows projB and reads rb there"
-until_true member_of "$BMP" "$M7" || true
-until_true member_of "$BMP" "$M8" || true
-member_of "$BMP" "$M7" && pass "and beta's strays in beta's machine project" || fail "and beta's strays in beta's machine project"
-
-# ---- a bare name stays in the project
-echo "a bare name:"
-in_session "$SA" "$RA" "$SMINOS" say "@rb are you there"
-assert_rc 4 "$RC" "@alias of another project's member is refused"
-assert_contains "$OUT" "@projB/rb#${RBS:0:8}" "naming the member as @<project>/<alias>#<short>"
-assert_contains "$OUT" "a bare name reaches only your project; @short reaches anyone" "and how to reach anyone"
-in_session "$SA" "$RA" "$SMINOS" say "@mini-7c are you there"
-assert_rc 4 "$RC" "@alias of a stray on another machine is refused"
-assert_contains "$OUT" "@beta/mini-7c#${M7:0:8}" "naming it by its machine: @<machine>/<alias>#<short>"
-assert_equals "$(events_with "$BID" "are you there")$(events_with "$AID" "are you there")" "" "a refused message is recorded nowhere"
-
-# ---- @<project>/<alias>: delivered in its project, copied into the sender's
-echo "@<project>/<alias> and the copy:"
-in_session "$SA" "$RA" "$SMINOS" say "@projB/rb hello B"
-assert_rc 0 "$RC" "@projB/rb is accepted"
-assert_contains "$OUT" "rb: recorded (on beta)" "for beta's daemon to deliver"
-DEST="$(events_with "$BID" "hello B")"
-COPY="$(events_with "$AID" "hello B")"
-assert_equals "$(field_of "$DEST" from_project)" "\"$AID\"" "the delivering event is in projB's log, from projA"
-assert_equals "$(field_of "$COPY" copy)" "\"$BID:alpha/$SA:$(field_of "$DEST" seq)\"" \
-  "the copy in projA's log names the delivering event: <project>:<writer>:<seq>"
-assert_equals "$(field_of "$COPY" to)" "[{\"session\": \"$RBS\", \"alias\": \"rb\", \"project\": \"$BID\"}]" \
-  "its recipients carry their project"
-assert_equals "$(field_of "$COPY" ts)$(field_of "$COPY" from)$(field_of "$COPY" text)" \
-  "$(field_of "$DEST" ts)$(field_of "$DEST" from)$(field_of "$DEST" text)" "with the same ts, from and text"
-assert_equals "$(field_of "$COPY" from_project)" "null" "and no from_project: it is in the sender's own project"
-assert_equals "$(field_of "$DEST" copy)" "null" "the delivering event is no copy"
-assert_equals "$(python3 - "$AID" "$RBS" <<'PY'
-import os, sys
-sys.path.insert(0, os.environ["SCRIPTS"])
-import sminos
-p = sminos.find_project(sys.argv[1])
-print([e["text"] for e in sminos._owed(sminos.log_read(p), sys.argv[2], {})])
-PY
-)" "[]" "the copy, whose to names rb, is owed to no one in projA's log"
-run_in "$RA" "$SMINOS" chat projA -n 5
-assert_contains "$OUT" "sa → @rb → projB  @projB/rb hello B" "chat in projA shows the copy marked with its destination"
-as b beta
-until_true got rb "hello B" || true
-got rb "hello B" && pass "rb receives it on beta" || fail "rb receives it on beta"
-REPLY="$(python3 - "$T/rb.received" <<'PY'
-import json, re, sys
-for line in open(sys.argv[1]):
-    if "hello B" in line:
-        m = re.search(r"\[To reply, run in Bash: (.*) <your reply>\"\]", json.loads(line)["message"]["content"])
-        print(m.group(1) if m else "")
-PY
-)"
-assert_contains "$REPLY" "say \"@$AID/${SA:0:8}" "its reply line names the sender in projA"
-
-# ---- @short, across machines and projects
-echo "@short:"
-as a alpha
-in_session "$SA" "$RA" "$SMINOS" say "@${RBS:0:8} by short"
-assert_rc 0 "$RC" "@short resolves to a member of another project"
-assert_contains "$OUT" "in projB" "recorded in its project"
-assert_contains "$(events_with "$AID" "by short")" "\"copy\": \"$BID:alpha/$SA:" "with its copy in the sender's"
-as b beta
-until_true got rb "by short" || true
-got rb "by short" && pass "and delivered" || fail "and delivered"
-assert_equals "$(received rb | grep -c "hello B")" 1 "the copy is never pushed: rb's inbox holds the message once"
-
-# ---- the reply line, from beta back into projA
-echo "the reply:"
-in_session "$RBS" "$RB" bash -c "$REPLY back from rb\""
-assert_rc 0 "$RC" "the reply line runs as written"
-assert_contains "$OUT" "in projA" "into projA"
-assert_contains "$(events_with "$BID" "back from rb")" "\"copy\": \"$AID:beta/$RBS:" "its copy in rb's own project"
-as a alpha
-until_true got sa "back from rb" || true
-got sa "back from rb" && pass "sa receives the reply on alpha" || fail "sa receives the reply on alpha"
-
-# ---- a stray, by its machine
-echo "@<machine>/<alias>:"
-in_session "$SA" "$RA" "$SMINOS" say "@beta/mini-7c did the image build"
-assert_rc 0 "$RC" "@beta/mini-7c is accepted"
-assert_contains "$OUT" "in beta" "into beta's machine project"
-assert_contains "$(events_with "$BMP" "did the image build")" "\"from_project\": \"$AID\"" "recorded in its log"
-assert_contains "$(events_with "$AID" "did the image build")" "\"copy\": \"$BMP:alpha/$SA:" "and copied into projA"
-as b beta
-until_true got mini-7c "did the image build" || true
-got mini-7c "did the image build" && pass "the stray receives it on beta" || fail "the stray receives it on beta"
-
-# ---- a session that moved away
-echo "a session that moved:"
-as a alpha
-in_session "$WD" "$ABARE" "$SMINOS" join projA
-assert_rc 0 "$RC" "wand joins projA"
-as b beta
-moved_here() { [ -n "$(events_with "$AMP" '"reason": "moved"')" ]; }
-until_true moved_here || true
-in_session "$RBS" "$RB" "$SMINOS" say "@alpha/wand still there"
-assert_rc 4 "$RC" "a tag naming its former project is refused"
-assert_contains "$OUT" "moved to projA" "saying where it went"
-in_session "$RBS" "$RB" "$SMINOS" say "@${WD:0:8} found you"
-assert_rc 0 "$RC" "@short reaches it"
-assert_contains "$OUT" "in projA" "in the project it moved to"
-as a alpha
-until_true got wand "found you" || true
-got wand "found you" && pass "and delivers on alpha" || fail "and delivers on alpha"
-
-# ---- a short two sessions share; a bare 8-hex name that is an alias here
-echo "shorts:"
-X1=5d0000dd-0000-4000-8000-000000000001
-X2=5d0000dd-0000-4000-8000-000000000002
-live_session x1 "$X1" "$ABARE"
-live_session x2 "$X2" "$RA"
-run_in "$ABARE" "$SMINOS" list
-in_session "$SA" "$RA" "$SMINOS" say "@5d0000dd which one"
-assert_rc 4 "$RC" "a short two sessions share is refused"
-assert_contains "$OUT" "@alpha/x1#5d0000dd" "naming one with its project"
-assert_contains "$OUT" "@projA/x2#5d0000dd" "and the other"
-H8=5a0000e8-0000-4000-8000-0000000000e8
-live_session 5d0000dd "$H8" "$RA"
-in_session "$SA" "$RA" "$SMINOS" say "@5d0000dd the alias"
-assert_rc 0 "$RC" "a bare 8-hex name a member of the sender's project has as alias is that alias"
-assert_contains "$(events_with "$AID" "the alias")" "\"session\": \"$H8\"" "the member, not the short"
-
-# ---- a project and a machine of one name
-echo "a project named after a machine:"
-RN="$T/a/named-beta"
-gitq init -q "$RN"
-write_smns "$RN" beta
-NID="$(smns_id "$RN")"
-N7=5a0000f7-0000-4000-8000-0000000000f7
-live_session mini-7c "$N7" "$RN" cli mini-7c-alpha
-run_in "$RN" "$SMINOS" list
-in_session "$SA" "$RA" "$SMINOS" say "@beta/mini-7c which beta"
-assert_rc 0 "$RC" "@beta/mini-7c resolves"
-assert_contains "$(events_with "$NID" "which beta")" "\"session\": \"$N7\"" "to the ordinary project's member first"
-assert_equals "$(events_with "$BMP" "which beta")" "" "not the machine project's"
-in_session "$SA" "$RA" "$SMINOS" say "@beta/m8 only on the machine"
-assert_rc 0 "$RC" "@beta/m8, which the project named beta has not"
-assert_contains "$(events_with "$BMP" "only on the machine")" "\"session\": \"$M8\"" "falls back to the machine project"
-
-# ---- send never takes the raw-name route on an enrolled machine
-echo "send:"
-HL=5a0000c1-0000-4000-8000-0000000000c1
-live_session hl "$HL" "$ABARE" sdk-cli
-run_in "$RA" "$SMINOS" send hl "raw by name"
-assert_rc 4 "$RC" "send to a harness name no member answers to is refused"
-in_session "$SA" "$ABARE" "$SMINOS" send hl "raw from a session"
-assert_rc 4 "$RC" "from a session too"
-assert_equals "$(received hl)" "" "and nothing reaches the session by its raw name"
-run_in "$RA" "$SMINOS" send rb "a bare send"
-assert_rc 4 "$RC" "send to another project's member by its bare name is refused"
-assert_contains "$OUT" "projB/rb#${RBS:0:8}" "naming it as <project>/<alias>#<short>"
-in_session "$SA" "$RA" "$SMINOS" send "projB/rb" "sent across"
-assert_rc 0 "$RC" "send <project>/<alias> records for the member"
-assert_contains "$(events_with "$AID" "sent across")" "\"copy\": \"$BID:alpha/$SA:" "with its copy in the sender's project"
-as b beta
-until_true got rb "sent across" || true
-got rb "sent across" && pass "and beta delivers it" || fail "and beta delivers it"
-
-# ---- a member verb's alias#short: one org-wide pass, never the caller's project first
-echo "send alias#short:"
-as a alpha
-P1=dddd00e1-0000-4000-8000-000000000001
-P2=dddd00e1-0000-4000-8000-000000000002
-live_session peer "$P1" "$RA" cli peer-a
-live_session peer "$P2" "$ABARE" cli peer-b
-run_in "$ABARE" "$SMINOS" list
-run_in "$RA" "$SMINOS" list
-in_session "$SA" "$RA" "$SMINOS" send "peer#dddd00e1" "which peer"
-assert_rc 4 "$RC" "send alias#short two sessions answer to is refused, one of them in the caller's project"
-assert_contains "$OUT" "alpha/peer#dddd00e1" "naming the one in the machine project"
-assert_contains "$OUT" "projA/peer#dddd00e1" "and the one in the caller's"
-assert_equals "$(received peer-a)$(received peer-b)" "" "and sends nothing"
-in_session "$SA" "$RA" "$SMINOS" send "x1#5d0000dd" "x1 across"
-assert_rc 0 "$RC" "send alias#short reaches a session of another project when it is the only one"
-assert_contains "$(events_with "$AMP" "x1 across")" "\"session\": \"$X1\"" "in its project's log"
-
-# ---- a copy that cannot be written: a warning, the message delivered
-echo "a copy that cannot be written:"
-SAW="$SMINOS_HOME/projects/$AID/log/alpha.$SA.jsonl"
-chmod 400 "$SAW"
-in_session "$SA" "$RA" "$SMINOS" say "@projB/rb no copy of this"
-chmod 600 "$SAW"
-assert_rc 0 "$RC" "a say whose copy cannot be written still succeeds"
-assert_contains "$OUT" "delivered, but its copy could not be recorded in projA" "warning that the copy is missing"
-assert_equals "$(events_with "$AID" "no copy of this")" "" "no copy is in projA's log"
-assert_contains "$(events_with "$BID" "no copy of this")" "\"from_project\": \"$AID\"" "the delivering event is in projB's"
-as b beta
-until_true got rb "no copy of this" || true
-got rb "no copy of this" && pass "and rb receives it" || fail "and rb receives it"
-
-# ---- RL10: the same two machines' addressing, each cut over to its endpoint (#153 M3d)
-# Every case above, composed on RL10: alpha and beta are real sminos homes,
-# each with its daemon and its endpoint_standin.py, never enrolled at a hub.
+# ---- RL10: two machines' addressing, each cut over to its endpoint (#153 M3d)
+# alpha and beta are real sminos homes, each with its daemon and its
+# endpoint_standin.py, never enrolled at a hub.
 # What one endpoint accepted reaches the other's connection as arrivals
 # through the stand-in's own echo (rl10_relay); each case asserts what the
 # producer's endpoint took (its half) and what the consumer resolved,
@@ -497,6 +242,16 @@ assert_equals "$(field_of "$COPY" copy)" "\"$RBID:alpha/$RSA:$(field_of "$DEST" 
 assert_equals "$(field_of "$COPY" to)" "[{\"session\": \"$RRBS\", \"alias\": \"rb\", \"project\": \"$RBID\"}]" \
   "RL10: its recipients carry their project"
 assert_equals "$(field_of "$COPY" from_project)$(field_of "$DEST" copy)" "nullnull" "RL10: the copy names no from_project, the delivering event no copy"
+assert_equals "$(field_of "$COPY" ts)$(field_of "$COPY" from)$(field_of "$COPY" text)" \
+  "$(field_of "$DEST" ts)$(field_of "$DEST" from)$(field_of "$DEST" text)" "RL10: with the same ts, from and text"
+assert_equals "$(python3 - "$RAID" "$RRBS" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+p = sminos.find_project(sys.argv[1])
+print([e["text"] for e in sminos._owed(sminos.log_read(p), sys.argv[2], {})])
+PY
+)" "[]" "RL10: the copy, whose to names rb, is owed to no one in projA's log"
 until_true r_up "$EPA" "$RBID" "hello B" || true
 DEST_UP="$(rl10_up "$EPA" "$RBID" "hello B")"
 assert_equals "$(field_of "$DEST_UP" from_project) $(field_of "$DEST_UP" seq)" "\"$RAID\" $(field_of "$DEST" seq)" \
@@ -802,7 +557,7 @@ if [ "$FAILURES" -eq 0 ]; then
   echo "test-address: all $PASSES assertions passed"
 else
   echo "test-address: $FAILURES of $((PASSES + FAILURES)) assertions FAILED"
-  for f in "$T"/a/s/daemon.log "$T"/b/s/daemon.log "$T"/a/s/run.out "$T"/b/s/run.out; do
+  for f in "$T"/ra/s/daemon.log "$T"/rb/s/daemon.log "$T"/ra/s/run.out "$T"/rb/s/run.out; do
     [ -f "$f" ] && { echo "--- $f"; tail -30 "$f"; }
   done
   exit 1

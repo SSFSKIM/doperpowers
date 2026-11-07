@@ -50,8 +50,8 @@ import sminos_audience  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
 import endpoint_standin  # noqa: E402
+from rl10_identity import write_identity  # noqa: E402
 
-KEY = base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode()
 RAW_KEY = bytes(range(32))
 SID = "6e000001-0000-4000-8000-0000000000a1"
 OTHER_SID = "6e000001-0000-4000-8000-0000000000b2"
@@ -376,18 +376,16 @@ class HubStandin(unittest.TestCase):
 
 
 class Plane(unittest.TestCase):
-    """A fresh installation per test, `testhost` enrolled in org-1 (DX2's
-    hub.json), with one hub project, `work`, whose remote archives it."""
+    """A fresh installation per test, `testhost` cut over into org-1 (its
+    endpoint's identity, `oldname` a former name), with one hub project,
+    `work`, whose remote archives it."""
 
     def setUp(self):
         home = tempfile.mkdtemp(dir=BASE)
         os.environ.update(HOME=os.path.join(home, "h"), SMINOS_HOME=os.path.join(home, "s"))
         for d in (os.environ["HOME"] + "/.claude/sessions", os.environ["SMINOS_HOME"] + "/daemon"):
             os.makedirs(d, mode=0o700)
-        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json"),
-                          {"hub": "http://127.0.0.1:9", "org": "org-1", "machine": "testhost", "client_id": "c",
-                           "client_secret": "s", "key": KEY, "former": {"oldname": []},
-                           "enrolled": "2026-10-28T00:00:00Z"}, mode=0o600)
+        write_identity(os.environ["SMINOS_HOME"], former={"oldname": []})
         sminos.forget_caches()
         self.p = sminos.make_project("6e000004-0000-4000-8000-000000000001", "work", "", "",
                                      {"url": "http://127.0.0.1:9", "org": "org-1"})
@@ -419,7 +417,10 @@ class Plane(unittest.TestCase):
         return json.loads(Path(self.p.home, hublog.STATE_FILE).read_text())
 
 
-class Admitted(Plane):
+class Admitted:
+    """What a `have` confirms for the archive, run by AdmittedOnRl10 (its
+    coded DX2 arm went in #153 M4)."""
+
     def copied(self, writer, archived=None):
         """`archived`: the lines the archive's clone already holds for `writer` (the remote's file)."""
         clone = tempfile.mkdtemp(dir=BASE)
@@ -597,7 +598,7 @@ class Admitted(Plane):
                          "the confirmed prefix is the log's, and past what this machine or the hub held, nothing")
 
 
-class AdmittedOnRl10(Admitted):
+class AdmittedOnRl10(Admitted, Plane):
     """Admitted's tests uncoded, as a machine cut over to its endpoint runs
     them (RL10, #153 M3a): the endpoint relays the hub's `have`, its
     `withheld` and `archive` among it."""

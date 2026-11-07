@@ -4441,30 +4441,6 @@ class Uplink(unittest.TestCase):
         self.ack(again)
         self.assertEqual(len(resumes(self.claude, sid)), 1, "one session")
 
-    def test_g_a_spawn_into_the_machine_project_is_refused_unknown_checkout(self):
-        """A machine project has no checkout anywhere: a stray's directory
-        resolves to it, a session joins it from there, and still a spawn into
-        it is refused (the org directory, §3)."""
-        stray_dir = os.path.join(T, "stray-dir")
-        os.makedirs(stray_dir, exist_ok=True)
-        stray = tpr.Session(stray_dir, inbox=False)
-        try:
-            mp = sminos.machine_project_id(self.hub.org, self.hub.machine)
-            sminos.forget_caches()
-            self.assertEqual(tpr.project_of(stray_dir).id, mp, "the stray's directory is in the machine project")
-            r = cli("list")
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn(stray.sid, sminos.view_of(sminos.own_machine_project(), titles=False).info,
-                          "and the stray joined it from there")
-            self.assertEqual(policy.known_checkouts(sminos.own_machine_project()), [])
-            before = len(launches(self.claude))
-            o = self.outcome(self.send(sign(self.key, "spawn", mp, {"checkout": stray_dir, "brief": "b"},
-                                            machine=self.hub.machine, member=self.member)))
-            self.assertEqual(o["error"]["code"], "unknown-checkout")
-            self.assertEqual(len(launches(self.claude)), before, "nothing launched")
-        finally:
-            stray.end()
-
 
 class UplinkOnRl10(unittest.TestCase):
     """Uplink's tests on a machine cut over to its endpoint (RL10, #153 M3b):

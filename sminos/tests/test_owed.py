@@ -19,7 +19,6 @@ directory.
 Run: python3 -B sminos/tests/test_owed.py
 """
 
-import base64
 import json
 import os
 import shutil
@@ -45,8 +44,8 @@ import sminos_hublog as hublog  # noqa: E402
 import sminos_outcomes as outcomes  # noqa: E402
 import sminos_rl10 as rl10  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
+from rl10_identity import write_identity  # noqa: E402
 
-KEY = base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode()
 S1 = "6e000001-0000-4000-8000-0000000000e1"
 S2 = "6e000002-0000-4000-8000-0000000000e2"
 S3 = "6e000003-0000-4000-8000-0000000000e3"
@@ -92,29 +91,25 @@ class Lane:
 
 
 class Machine(unittest.TestCase):
-    """A fresh installation per test, `testhost` enrolled in org-1 (DX2's
-    hub.json); `cut_over` makes it a cut-over one."""
+    """A fresh installation per test, `testhost` cut over into org-1 (its
+    endpoint's identity), or with `enrolled` False not enrolled, its name
+    DAEMON_HOST's."""
+
+    enrolled = True
 
     def setUp(self):
         home = tempfile.mkdtemp(dir=BASE)
-        os.environ.update(HOME=os.path.join(home, "h"), SMINOS_HOME=os.path.join(home, "s"))
+        os.environ.update(HOME=os.path.join(home, "h"), SMINOS_HOME=os.path.join(home, "s"), DAEMON_HOST="testhost")
+        self.addCleanup(os.environ.pop, "DAEMON_HOST", None)
         for d in (os.environ["HOME"] + "/.claude/sessions", os.environ["SMINOS_HOME"] + "/daemon"):
             os.makedirs(d, mode=0o700)
-        self.enrol()
+        sminos.forget_caches()
+        if self.enrolled:
+            self.cut_over()
         rl10._SAID.update(find=None, revoked=None)
 
-    def enrol(self):
-        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json"),
-                          {"hub": "http://127.0.0.1:9", "org": "org-1", "machine": "testhost", "client_id": "c",
-                           "client_secret": "s", "key": KEY, "former": {}, "enrolled": "2026-10-01T00:00:00Z"},
-                          mode=0o600)
-        sminos.forget_caches()
-
     def cut_over(self):
-        sminos.write_json(rl10.identity_path(), {
-            "org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {},
-            "ref": "machine-ref-1", "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z",
-            "build": "b"}, mode=0o600)
+        write_identity(os.environ["SMINOS_HOME"])
         sminos.forget_caches()
 
     def project(self, name, hub=True):
@@ -203,6 +198,8 @@ class Nothing(Machine):
 
 
 class Deliveries(Machine):
+    enrolled = False
+
     def test_one_owed_to_a_local_member_then_none(self):
         p = self.project("work")
         self.member(p, S1, "alpha")
@@ -299,7 +296,7 @@ class Upload(Machine):
     def test_a_machine_not_enrolled_owes_nothing_upstream(self):
         p = self.project("work")
         self.own(p)
-        os.unlink(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json"))
+        os.unlink(rl10.identity_path())
         self.assertEqual(self.owed(), (0, "nothing owed\n"))
 
     def test_on_a_cut_over_machine_too(self):
@@ -382,26 +379,22 @@ class ReadOnly(Machine):
         self.assertEqual(tree(), before, "nothing written: no file made, changed or touched")
 
 
-class Taken(Machine):
+class Taken:
     """The uplink's `taken`: what a process beside it reads for the upload
-    kind. `coded`: DX2's Link and HubLog, under the org key's codes; the
-    OnRl10 twins run the same tests uncoded, as a machine cut over to its
-    endpoint does (#153)."""
-
-    coded = True
+    kind, uncoded as a machine cut over to its endpoint runs it (#153; its
+    coded DX2 arm went in M4). Run by TakenOnRl10, as each rig below is by
+    its OnRl10 class."""
 
     def link(self):
-        cred = {"org": "org-1", "hub": "http://127.0.0.1:9", "machine": "testhost",
-                "key": base64.urlsafe_b64decode(KEY + "=") if self.coded else None}
-        link = uplink.Link(cred, {}, transport=mock.Mock(number=1), coded=self.coded)
+        cred = {"org": "org-1", "hub": "http://127.0.0.1:9", "machine": "testhost", "key": None}
+        link = uplink.Link(cred, {}, transport=mock.Mock(number=1), coded=False)
         self.addCleanup(link.close)
         link.generation = 1
         link.log_lane = link.session_lane = Lane()
         return link
 
     def log_plane(self, p):
-        return hublog.HubLog(p, {"key": base64.urlsafe_b64decode(KEY + "=") if self.coded else None,
-                                 "machine": "testhost"}, coded=self.coded)
+        return hublog.HubLog(p, {"key": None, "machine": "testhost"}, coded=False)
 
     def test_the_hubs_have_and_each_upload_it_took(self):
         p = self.project("work")
@@ -426,7 +419,7 @@ class Taken(Machine):
         self.assertEqual(self.owed(), (0, "nothing owed\n"))
 
 
-class TakenBounds(Machine):
+class TakenBounds:
     """A writer the upstream refused, or asked again from a seq, bounds
     `taken` against an upload's continuation that runs after it: the 200 (or
     the socket's write) says the frame arrived, not that every event in it
@@ -443,7 +436,7 @@ class TakenBounds(Machine):
         self.lane = self.link().log_lane
         self.lane.hold_thens = True
 
-    coded, link, log_plane = Taken.coded, Taken.link, Taken.log_plane
+    link, log_plane = Taken.link, Taken.log_plane
 
     def upload(self):
         link = self.link()
@@ -593,7 +586,7 @@ class Uninspectable(Machine):
         self.assert_named(path)
 
 
-class TakenRig(Machine):
+class TakenRig:
     """A hub project with three events of one of this machine's writers, its
     log plane opened (an empty `have`), and a lane."""
 
@@ -607,7 +600,7 @@ class TakenRig(Machine):
         self.hl.on_have({"have": {}})
         self.lane = self.link().log_lane
 
-    coded, link, log_plane = Taken.coded, Taken.link, Taken.log_plane
+    link, log_plane = Taken.link, Taken.log_plane
 
     def upload(self):
         link = self.link()
@@ -708,24 +701,24 @@ class TakenWrites(TakenRig):
         self.assertEqual(self.owed()[0], 1)
 
 
-# The same tests uncoded, as a machine cut over to its endpoint runs them
-# (RL10, #153 M3a): each beside its DX2 twin above, which goes with `coded`.
+# The Taken tests, as a machine cut over to its endpoint runs them (RL10,
+# #153 M3a; their coded DX2 twins went in M4).
 
 
-class TakenOnRl10(Taken):
-    coded = False
+class TakenOnRl10(Taken, Machine):
+    pass
 
 
-class TakenBoundsOnRl10(TakenBounds):
-    coded = False
+class TakenBoundsOnRl10(TakenBounds, Machine):
+    pass
 
 
-class TakenResumesOnRl10(TakenResumes):
-    coded = False
+class TakenResumesOnRl10(TakenResumes, Machine):
+    pass
 
 
-class TakenWritesOnRl10(TakenWrites):
-    coded = False
+class TakenWritesOnRl10(TakenWrites, Machine):
+    pass
 
 
 class Enrollment(Machine):
@@ -733,19 +726,6 @@ class Enrollment(Machine):
         rc, out = self.owed()
         self.assertEqual(rc, 1, out)
         self.assertIn("%s: cannot be inspected" % path, out)
-
-    def test_an_unreadable_hub_credential(self):
-        self.project("work")
-        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json")
-        os.chmod(path, 0)
-        self.addCleanup(os.chmod, path, 0o600)
-        self.assert_named(path)
-
-    def test_a_hub_credential_without_its_fields(self):
-        self.project("work")
-        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json")
-        Path(path).write_text(json.dumps({"hub": 1, "key": SECRET}))
-        self.assert_named(path)
 
     def test_an_identity_that_is_not_one(self):
         self.project("work")

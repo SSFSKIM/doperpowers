@@ -47,7 +47,9 @@ gitq() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL SMNS_MEMBER DAEMON_HOME AGORA_HOME CLAUDE_PLUGIN_ROOT CLAUDE_PROJECT_DIR
 export HOME="$T/home" SMINOS_HOME="$T/s" DAEMON_HOST=alpha DAEMON_BOOT_ID=boot-current SMINOS_DERIVE_EVERY=0
 mkdir -p "$HOME/.claude/sessions" "$SMINOS_HOME/daemon"
-printf '{"hub":"http://127.0.0.1:9","org":"org-1","machine":"alpha"}\n' > "$SMINOS_HOME/daemon/hub.json"
+# shellcheck source=rl10-machines.sh
+source "$SCRIPT_DIR/rl10-machines.sh"
+rl10_cut_over   # enrolled in org-1 as alpha: identity.json, as a welcome leaves it
 
 transcript() { # session cwd — a transcript launched in cwd
   local sid=$1
@@ -91,13 +93,13 @@ who --session "$S5"
 assert_equals "$OUT|$RC" "|0" "a headless run that is no member: nothing, exit 0"
 NOPROJ="$T/noproj"
 mkdir -p "$NOPROJ"
-rm "$SMINOS_HOME/daemon/hub.json"
+rm "$SMINOS_HOME/daemon/identity.json"
 S6=6f000006-0000-4000-8000-000000000006
 transcript "$S6" "$NOPROJ"
 record stray "$S6" "$NOPROJ"
 set +e; OUT="$(cd "$NOPROJ" && "$SMINOS" who --session "$S6" 2>/dev/null)"; RC=$?; set -e
 assert_equals "$OUT|$RC" "|0" "a session in no project (unenrolled, no repository): nothing"
-printf '{"hub":"http://127.0.0.1:9","org":"org-1","machine":"alpha"}\n' > "$SMINOS_HOME/daemon/hub.json"
+rl10_cut_over
 
 S7=7a000007-0000-4000-8000-000000000007
 transcript "$S7" "$REPO"

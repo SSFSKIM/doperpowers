@@ -16,7 +16,6 @@ one temporary directory; nothing listens beyond a Unix socket there.
 Run: python3 -B sminos/tests/test_snapshots.py
 """
 
-import base64
 import json
 import os
 import shutil
@@ -45,7 +44,6 @@ import sminos_hublog as hublog  # noqa: E402
 import sminos_rl10 as rl10  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
 
-KEY = base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode()
 DIGEST = "0123456789abcdef"
 DEV = {"kind": "device", "member": "mem-1", "device": "dev-a", "keyId": "k-dev-a"}
 
@@ -116,10 +114,6 @@ class Machine(unittest.TestCase):
         for d in (os.environ["HOME"] + "/.claude/sessions", os.environ["SMINOS_HOME"] + "/daemon"):
             os.makedirs(d, mode=0o700)
         self.epdir = os.path.join(os.environ["MAWS_USER_DATA"], "mawsd", "endpoint")
-        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json"),
-                          {"hub": "http://127.0.0.1:9", "org": "org-1", "machine": "testhost", "client_id": "c",
-                           "client_secret": "s", "key": KEY, "former": {}, "enrolled": "2026-10-01T00:00:00Z"},
-                          mode=0o600)
         sminos.write_json(rl10.identity_path(), {
             "org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {"oldhost": []},
             "ref": "machine-ref-1", "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z",

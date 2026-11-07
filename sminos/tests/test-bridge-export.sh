@@ -531,7 +531,8 @@ assert_equals "$(ctl status "$SMINOS_HOME/bridge/$SC.sock")" "200 ready" "and a 
 
 echo "an enrollment while the child runs:"
 # The hub admits only the writers of the name this machine enrolled under: an
-# export after the enrollment goes there, though the child began before it.
+# export after the enrollment (its endpoint's welcome, which names the machine
+# anew) goes there, though the child began before it.
 SE=5b000001-0000-4000-8000-0000000000e5
 peer "$SE" exren interactive cli
 start_child "$SE"
@@ -539,24 +540,36 @@ ctl post "$SMINOS_HOME/bridge/$SE.sock" "[{\"type\":\"session\",\"phase\":\"star
 ctl post "$SMINOS_HOME/bridge/$SE.sock" "$(rows export before-enrolling)" >/dev/null
 until_true 100 has "$SE" "message:before-enrolling#0" || true
 assert_contains "$(events_of "$SE")" "message:before-enrolling#0" "before the enrollment, an export goes under the host's name"
-mkdir -p "$SMINOS_HOME/daemon"
-printf '{"machine": "enrolled", "former": {"testhost": ["%s"]}}\n' "$SE" > "$SMINOS_HOME/daemon/hub.json"
+# shellcheck source=rl10-machines.sh
+source "$SCRIPT_DIR/rl10-machines.sh"
+DAEMON_HOST=enrolled rl10_cut_over "{\"testhost\": [\"$SE\"]}"
 ctl post "$SMINOS_HOME/bridge/$SE.sock" "$(rows export after-enrolling)" >/dev/null
 until_true 100 grep -q after-enrolling "$LOG/enrolled.$SE.jsonl" 2>/dev/null || true
 assert_contains "$(cat "$LOG/enrolled.$SE.jsonl" 2>/dev/null)" '"src": "after-enrolling#0"' \
   "after it, under the enrolled name: the child reads the machine's identity afresh at each export"
 assert_not_contains "$(events_of "$SE")" "after-enrolling" "and not under the name it began with"
-rm -f "$SMINOS_HOME/daemon/hub.json"
+rm -f "$SMINOS_HOME/daemon/identity.json"
 
 echo "a checkout that becomes a hub project while the child runs:"
 # A session in a checkout with no .smns exports to the repository's local
-# project. The machine enrolls, the checkout gets a .smns naming the hub, and
-# the session's next export goes to that project under the enrolled name: the
-# child, which began before both, resolves the project afresh at each export.
+# project. The machine enrolls (its endpoint's welcome cuts it over), the
+# checkout gets a .smns naming the hub, and the session's next export goes to
+# that project under the enrolled name — to its host store, where a cut-over
+# machine keeps a hub project's host events: the child, which began before
+# both, resolves the project afresh at each export.
 SG=5b000001-0000-4000-8000-0000000000e6
 R2="$T/walk"
 mkdir -p "$R2/sub"
 git -c init.defaultBranch=main init -q "$R2"
+store_events() { # project-id file-stem → "kind[:src]" words of that writer's file in the host store
+  python3 -c 'import json, sys
+try:
+    lines = open(sys.argv[1]).read().splitlines()
+except OSError:
+    lines = []
+print(" ".join(json.loads(l)["kind"] + (":" + json.loads(l)["src"] if json.loads(l).get("src") else "") for l in lines))' \
+    "$SMINOS_HOME/projects/$1/host/$2.jsonl"
+}
 writer_events() { # project-id file-stem → "kind[:src]" words of that writer file
   python3 -c 'import json, sys
 try:
@@ -574,22 +587,22 @@ local_has() { [[ " $(writer_events local-walk "testhost.$SG") " == *" message:be
 until_true 100 local_has || true
 assert_equals "$(writer_events local-walk "testhost.$SG")" "joined message:before-smns#0" \
   "before the .smns, an export goes to the repository's local project"
-mkdir -p "$SMINOS_HOME/daemon"
-printf '{"hub": "https://hub.test", "org": "org-a", "machine": "enrolled", "former": {"testhost": ["%s"]}}\n' "$SG" \
-  > "$SMINOS_HOME/daemon/hub.json"
+DAEMON_HOST=enrolled rl10_cut_over "{\"testhost\": [\"$SG\"]}"
 (cd "$R2" && "$SMINOS" project init --hub --name walk >/dev/null)
 HUBP="$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d["project"] if d.get("hub") else "")' "$R2/.smns")"
 assert_contains "$HUBP" "-" "project init --hub wrote a .smns naming the hub"
 ctl post "$SMINOS_HOME/bridge/$SG.sock" "$(rows export after-hub)" >/dev/null
-hub_has() { [[ " $(writer_events "$HUBP" "enrolled.$SG") " == *" message:after-hub#0 "* ]]; }
+hub_has() { [[ " $(store_events "$HUBP" "enrolled.$SG") " == *" message:after-hub#0 "* ]]; }
 until_true 100 hub_has || true
-assert_equals "$(writer_events "$HUBP" "enrolled.$SG")" "joined message:after-hub#0" \
-  "after it, the next export goes to the hub project, under the enrolled name, the session joined there on sight"
+assert_equals "$(writer_events "$HUBP" "enrolled.$SG")" "joined" \
+  "after it, the session joins the hub project on sight, under the enrolled name"
+assert_equals "$(store_events "$HUBP" "enrolled.$SG")" "message:after-hub#0" \
+  "and the next export goes to that project, under the enrolled name"
 assert_not_contains "$(writer_events local-walk "testhost.$SG") $(writer_events local-walk "enrolled.$SG")" "after-hub" \
   "and nothing more to the local project"
 assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("hub"))' "$SMINOS_HOME/projects/$HUBP/project.json")" \
-  "{'url': 'https://hub.test', 'org': 'org-a'}" "the hub project is registered with its hub"
-rm -f "$SMINOS_HOME/daemon/hub.json"
+  "{'url': 'http://127.0.0.1:9', 'org': 'org-1'}" "the hub project is registered with its hub"
+rm -f "$SMINOS_HOME/daemon/identity.json"
 
 echo "a machine cut over to its endpoint (RL10): the host store:"
 # daemon/identity.json is what the first RL10 welcome writes: from then on a
@@ -604,15 +617,6 @@ mkdir -p "$RC3"
 git -c init.defaultBranch=main init -q "$RC3"
 (cd "$RC3" && "$SMINOS" project init --hub --name cut >/dev/null)
 CUTP="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$RC3/.smns")"
-store_events() { # project-id file-stem → "kind[:src]" words of that writer's file in the host store
-  python3 -c 'import json, sys
-try:
-    lines = open(sys.argv[1]).read().splitlines()
-except OSError:
-    lines = []
-print(" ".join(json.loads(l)["kind"] + (":" + json.loads(l)["src"] if json.loads(l).get("src") else "") for l in lines))' \
-    "$SMINOS_HOME/projects/$1/host/$2.jsonl"
-}
 hook_in() { # cwd event session transcript
   printf '{"session_id":"%s","cwd":"%s","transcript_path":"%s","hook_event_name":"%s","source":"startup"}' \
     "$3" "$1" "$4" "$2" | "$SMINOS" record

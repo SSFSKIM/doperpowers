@@ -280,10 +280,19 @@ class Env:
                         "to": [{"session": s["sid"], "alias": "live%d" % i}], "text": "words %d for %d" % (k, i),
                         "verified": {"signer": {"kind": "device", "member": "mem-%d" % k, "device": "dev-%d" % k,
                                                 "keyId": "k-dev-%d" % k}}}])
-        write(os.path.join(self.sh, "daemon", "hub.json"), {
-            "hub": hub_url, "org": ORG, "machine": MACHINE, "client_id": "cid-1", "client_secret": "secret-1",
-            "key": KEY, "enrolled": "2026-10-01T00:00:00Z"})
-        os.chmod(os.path.join(self.sh, "daemon", "hub.json"), 0o600)
+        # Its enrolment. `run` and `opens` on DX2 (until #153 M5) enrol at the hub stand-in, by hub.json, its
+        # credential; with --rl10 the probe's welcome cuts the machine over, so before it the machine is named
+        # by DAEMON_HOST alone (below); `tick`, `profile` and `verbs` measure a machine cut over, as the
+        # owner's Macs are.
+        rl10 = getattr(a, "rl10", False)
+        if a.mode in ("run", "opens") and not rl10:
+            write(os.path.join(self.sh, "daemon", "hub.json"), {
+                "hub": hub_url, "org": ORG, "machine": MACHINE, "client_id": "cid-1", "client_secret": "secret-1",
+                "key": KEY, "enrolled": "2026-10-01T00:00:00Z"})
+            os.chmod(os.path.join(self.sh, "daemon", "hub.json"), 0o600)
+        elif not rl10:
+            from rl10_identity import write_identity
+            write_identity(self.sh, MACHINE, org=ORG, hub=hub_url)
         names = {p: n for n, (p, _) in hubs.items()}
         names.update({own: MACHINE, mini: OTHER, follow: "phone walk"})
         write(os.path.join(self.sh, "daemon", "org.json"), {
@@ -299,7 +308,7 @@ class Env:
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(("CLAUDE_CODE_", "SMNS_", "SMINOS_", "DAEMON_"))}
         self.env.update(HOME=self.home, SMINOS_HOME=self.sh, PATH=stub + os.pathsep + os.environ["PATH"],
-                        SMINOS_DERIVE_EVERY="0")
+                        SMINOS_DERIVE_EVERY="0", DAEMON_HOST=MACHINE)
 
     def close(self):
         for p in self.sleepers:

@@ -13,7 +13,9 @@
 #
 #   rl10_as <dir> <host>     the machine in $T/<dir>, as `as` names it, with
 #                            its MAWS_USER_DATA; EP its endpoint's directory
-#   rl10_cut_over            this machine cut over as $DAEMON_HOST of org-1
+#   rl10_cut_over [<former>] this machine cut over as $DAEMON_HOST of org-1;
+#                            <former> its former names, a JSON object of
+#                            name → sessions (default none)
 #   rl10_serve [<fields>]    its stand-in up, with that identity; a person's
 #                            words delivered on its `words` verdict; <fields>
 #                            more of its config, a JSON object's members (one
@@ -48,10 +50,11 @@ rl10_identity() { # host → the identity the endpoint enrolled it under
 rl10_cut_over() {
   mkdir -p "$SMINOS_HOME/daemon"
   chmod 700 "$SMINOS_HOME" "$SMINOS_HOME/daemon"
-  python3 - "$SMINOS_HOME/daemon/identity.json" "$(rl10_identity "$DAEMON_HOST")" <<'PY'
+  python3 - "$SMINOS_HOME/daemon/identity.json" "$(rl10_identity "$DAEMON_HOST")" "${1:-{\}}" <<'PY'
 import json, os, sys
 with open(sys.argv[1], "w") as f:
-    json.dump({**json.loads(sys.argv[2]), "former": {}, "cutover": "2026-11-05T00:00:01.000Z", "build": "b"}, f)
+    json.dump({**json.loads(sys.argv[2]), "former": json.loads(sys.argv[3]), "cutover": "2026-11-05T00:00:01.000Z",
+               "build": "b"}, f)
 os.chmod(sys.argv[1], 0o600)
 PY
 }
