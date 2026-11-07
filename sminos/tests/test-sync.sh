@@ -1078,6 +1078,33 @@ assert_equals "$(printf '%s\n' "$OUT" | python3 -c 'import json, sys
 print(sorted((r["alias"], r["machine"], r["local"]) for r in json.load(sys.stdin)))')" \
   "[('mb', 'beta', True), ('nb-renamed', 'beta', True)]" "RL10: beta keeps mb and nb-renamed its own"
 
+# ---- RL10 twin of test-hub.sh's "the rename" (its L279-352: the seat, the
+# session, send, retirement and new writers after a machine is renamed):
+# here the endpoint's welcome renamed it. What reaches a session from this
+# machine's terminal goes on the endpoint's verdict (`words`); the seat's
+# retirement, and the session of a machine now named betaold, are at the end
+# of this file's RL10 cases, which deliver to mb until then.
+echo "RL10: after the rename:"
+run "$SMINOS" send mb "after the rename"
+assert_equals "$RC" 0 "RL10: send reaches the seat"
+until_true 200 grep -q "after the rename" "$T/rmb.received" || true
+assert_contains "$(cat "$T/rmb.received")" "after the rename" "RL10: through its inbox"
+assert_equals "$(rq "[f['event']['text'] for c, f in F if f.get('t') == 'words?' and f['event'].get('text') == 'after the rename']")" \
+  '["after the rename"]' "RL10: on the endpoint's verdict, asked with words?"
+rl_writers_here() { find "$RLOG" -name "$1.*.jsonl" | wc -l | tr -d ' '; }
+BETAOLD_WRITERS="$(rl_writers_here betaold)"
+kill "$RNB_PID"
+set +e; wait "$RNB_PID" 2>/dev/null; set -e
+rl_nb_retired() { grep -q '"reason": "ended"' "$RLOG/beta.$RNB.jsonl" 2>/dev/null; }
+(cd "$RR" && "$SMINOS" list --all --json >/dev/null)
+until_true 200 rl_nb_retired || true
+assert_equals "$(rl_nb_retired && echo retired)" retired \
+  "RL10: a session that joined as betaold and ended is retired as this machine's own, under beta"
+assert_not_contains "$(cat "$RLOG/betaold.$RNB.jsonl")" '"retired"' "RL10: and nothing is written under the former name"
+"$SMINOS" say "said as beta" >/dev/null
+assert_contains "$(cat "$RLOG/beta.human.jsonl")" "said as beta" "RL10: new events are written under beta"
+assert_equals "$(rl_writers_here betaold)" "$BETAOLD_WRITERS" "RL10: and no new betaold/ writer appears"
+
 # ---- RL10 twin of "ob joins syncproj while beta's stream is open, written as betaold"
 echo "RL10: a member joined as betaold on an open connection:"
 R_CONN="$(rq "d['current']")"
@@ -1146,8 +1173,16 @@ for q, change in (("q1", lambda d: d.update(hub={"url": "https://elsewhere.examp
     path = "%s/%s/.smns" % (sys.argv[1], q)
     d = json.load(open(path)); change(d); json.dump(d, open(path, "w"))
 PY
-rl_reconnected() { local c; c="$(rq "d['current']")"; [[ "$c" != null && "$c" -gt "$1" ]]; }
-until_true 200 rl_reconnected "$R_CONN" || true
+# Left, whichever scans saw the three edits: daemon.log has named each one,
+# and the connection up now, made since, has opened rlproj and none of them.
+rl_left() {
+  local said q
+  said="$(grep "no longer a hub project of org org-1" "$T/r/s/daemon.log" || true)"
+  for q in q1 q2 q3; do grep -Eq "[ ,]$q(,|:|$)" <<<"$said" || return 1; done
+  [ "$(rq "d['current'] is not None and d['current'] > $R_CONN and any(c == d['current'] and f.get('t') == 'hello' and f.get('project') == '$RPID' for c, f in F) and not any(c == d['current'] and f.get('t') == 'hello' and f.get('project') in ('$RQ1', '$RQ2', '$RQ3') for c, f in F)")" = true ]
+}
+until_true 200 rl_left || true
+R_LEFT="$(rq "d['current'] or 0")"   # the connection made once all three had left
 for q in q1 q2 q3; do
   (cd "$T/r/$q" && "$SMINOS" say "after $q left the hub" >/dev/null 2>&1)
 done
@@ -1162,7 +1197,7 @@ done
 assert_contains "$(grep "no longer a hub project of org org-1" "$T/r/s/daemon.log")" "q1" "RL10: a malformed hub ends the project's sync, saying so"
 assert_contains "$(grep "no longer a hub project of org org-1" "$T/r/s/daemon.log")" "q2" "RL10: so does a hub of another org"
 assert_contains "$(grep "no longer a hub project of org org-1" "$T/r/s/daemon.log")" "q3" "RL10: and a .smns that names no hub"
-assert_equals "$(rq "sorted({f['project'] for c, f in F if c > $R_CONN and f.get('t') == 'hello' and f.get('project') in ('$RQ1', '$RQ2', '$RQ3')})")" "[]" \
+assert_equals "$(rq "sorted({f['project'] for c, f in F if c >= $R_LEFT and f.get('t') == 'hello' and f.get('project') in ('$RQ1', '$RQ2', '$RQ3')})")" "[]" \
   "RL10: beta's new connection opens none of them at the endpoint"
 
 # ---- RL10 twin of "refused before the log" (the DX2 forgeries are DX1
@@ -1307,6 +1342,43 @@ assert_equals "$(rl_big_ups)" 1 "RL10: beta does not upload it again on this con
 assert_contains "$(cat "$T/r/s/daemon.log")" "the hub refused in rlproj: too-large beta/$RBIG:1" "RL10: daemon.log says the endpoint refused it"
 assert_contains "$(cat "$T/r/s/daemon.log")" "the hub asks beta/$RBIG of rlproj again from 1, where it refused it" \
   "RL10: and that the resend after it is not followed"
+
+# ---- the rest of test-hub.sh's "the rename" twin (see "after the rename"
+# above): a session of the machine now named betaold is that machine's, and
+# the seat that joined as betaold is retired as this machine's own, stopping
+# the session it recorded then.
+echo "RL10: after the rename, the former name's other holder and the seat's retirement:"
+RSA=5d00000a-0000-4000-8000-0000000000aa
+python3 - "$RSA" "$RR" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+p = sminos.resolve_project(sys.argv[2])
+sminos.log_append(p, "betaold/" + sys.argv[1], "joined", session=sys.argv[1], alias="a-term", name_source="derived",
+                  machine="betaold", cwd="/elsewhere", worktree="", role="", seat="", by="")
+PY
+run "$SMINOS" list --all --json
+assert_contains "$(printf '%s\n' "$OUT" | python3 -c 'import json, sys
+print(sorted((r["alias"], r["machine"], r["local"]) for r in json.load(sys.stdin)))')" "('a-term', 'betaold', False)" \
+  "RL10: a session of the machine now named betaold is that machine's, not this one's"
+r_ticks 2
+assert_equals "$(test -e "$RLOG/beta.$RSA.jsonl" && echo there || echo none)" none "RL10: and this machine never retires it"
+# claude, as this file's stub, recording each `stop`.
+mkdir -p "$T/r/bin"
+cat > "$T/r/bin/claude" <<STUB
+#!/usr/bin/env bash
+[ "\${1:-}" = stop ] && { echo "\$2" >> "\$STUB_STATE/stops"; exit 0; }
+exec "$T/bin/claude" "\$@"
+STUB
+chmod +x "$T/r/bin/claude"
+echo "[]" > "$STUB_STATE/agents.json"
+R_PATH="$PATH"
+export PATH="$T/r/bin:$PATH"
+run "$SMINOS" retire mb
+export PATH="$R_PATH"
+assert_equals "$RC" 0 "RL10: retire acts on the seat"
+assert_equals "$(cat "$STUB_STATE/stops" 2>/dev/null)" "mbshort" "RL10: stopping the session it recorded as betaold"
+assert_contains "$(cat "$RLOG/beta.$RMB.jsonl")" '"kind": "retired"' "RL10: its retirement written under beta"
 
 kill "$R_DAEMON"
 set +e; wait "$R_DAEMON"; set -e
