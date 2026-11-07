@@ -23,11 +23,11 @@ the hub once it is cut over.
   less cuts nothing over) writes `daemon/identity.json`
   ({org, hub, name, former, ref, enrolled, cutover, build}, 0600, whole),
   whose presence is the cutover: from then on the machine's identity is read
-  from it before hub.json (`sminos.enrollment`, `sminos.machine_identity`,
+  from it alone (`sminos.enrollment`, `sminos.machine_identity`,
   `sminos_daemon.enrolled_at`, `hub show`), and the daemon runs the uplink in
   RL10 mode only. `former` is this machine's own map of names to the
-  sessions it held under them (is_self's evidence), copied from hub.json at
-  the first welcome; a welcome that renames the machine adds the sessions
+  sessions it held under them (is_self's evidence), empty at the first
+  welcome; a welcome that renames the machine adds the sessions
   held under the old name (`sminos_hub.sessions_under`) before the identity
   is replaced, and a former name the welcome lists that the file lacks is
   added with what `sessions_under` finds now. `cutover` is the first
@@ -402,8 +402,8 @@ def welcomed(frame):
     with hub_mod.credential_lock():
         held = cutover()
         if held is None:
-            # The first welcome: the name and the former names are hub.json's
-            # (or the host's), read before identity.json exists.
+            # The first welcome: the name is the one this machine wrote under
+            # before it (DAEMON_HOST's, or the host's), with no former names.
             sminos.forget_caches()
             local, former_now = sminos.machine_identity()
             former = {n: sorted(s) for n, s in former_now.items()}

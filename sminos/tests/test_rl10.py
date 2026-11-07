@@ -90,6 +90,7 @@ class Machine(unittest.TestCase):
         os.environ.update(HOME=os.path.join(home, "h"), SMINOS_HOME=os.path.join(home, "s"),
                           MAWS_USER_DATA=os.path.join(home, "m"))
         os.environ.pop("SMINOS_RL10", None)
+        os.environ.pop("DAEMON_HOST", None)
         for d in (os.environ["HOME"] + "/.claude/sessions", os.environ["SMINOS_HOME"] + "/daemon"):
             os.makedirs(d, mode=0o700)
         self.epdir = os.path.join(os.environ["MAWS_USER_DATA"], "mawsd", "endpoint")
@@ -97,6 +98,10 @@ class Machine(unittest.TestCase):
         rl10._SAID.update(find=None, revoked=None)
 
     def hub_json(self, machine="testhost", org="org-1", former=None):
+        """The machine before its first welcome: named `machine`
+        (DAEMON_HOST), hub.json left as `hub enroll` wrote it, whose org and
+        key `legacy-key?` reads and which enrolls nothing."""
+        os.environ["DAEMON_HOST"] = machine
         path = os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json")
         sminos.write_json(path, {"hub": "http://127.0.0.1:9", "org": org, "machine": machine, "client_id": "c",
                                  "client_secret": "s", "key": KEY, "former": former or {},
@@ -274,14 +279,14 @@ class Welcome(Machine):
         self.assertEqual(stat.S_IMODE(os.stat(rl10.identity_path()).st_mode), 0o600)
         self.assertEqual({k: ident[k] for k in ("org", "hub", "name", "ref", "enrolled", "build", "former")},
                          {"org": "org-1", "hub": ep.identity["hub"], "name": "testhost", "ref": "machine-ref-1",
-                          "enrolled": ep.identity["enrolled"], "build": ep.build, "former": {"older": [S0]}},
-                         "the welcome's identity, and hub.json's former names with their sessions")
+                          "enrolled": ep.identity["enrolled"], "build": ep.build, "former": {}},
+                         "the welcome's identity; a stray hub.json's former names are no enrollment's, and none is kept")
         self.assertTrue(ident["cutover"])
         sminos.forget_caches()
         self.assertEqual(sminos.enrollment(), {"url": ep.identity["hub"], "org": "org-1", "machine": "testhost"},
                          "enrollment() reads identity.json, not hub.json's hub")
-        self.assertEqual(sminos.machine_identity(), ("testhost", {"older": frozenset({S0})}))
-        self.assertTrue(sminos.is_self("older", S0))
+        self.assertEqual(sminos.machine_identity(), ("testhost", {}))
+        self.assertFalse(sminos.is_self("older", S0), "a session under a name only hub.json lists is another machine's")
         self.assertEqual(daemon.enrolled_at(), sminos._ts_epoch(ep.identity["enrolled"]))
         self.assertTrue(rl10.cut_over())
         self.assertIn("rl10: cut over: this machine is testhost of org org-1", daemon_log())

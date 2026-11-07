@@ -789,7 +789,7 @@ def hub_synced(hub):
 
 # ------------------------------------------- the enrollment and the org's directory
 #
-# On an enrolled machine (daemon/hub.json names a hub, an org and a machine)
+# On an enrolled machine (daemon/identity.json names a hub, an org and a machine)
 # a .smns names only the org; the URL is the enrollment's, so moving the hub
 # never means editing committed files. Every session there is in a project the
 # hub syncs: a directory no .smns claims is in the machine's own project. The
@@ -813,20 +813,13 @@ _SAID = set()    # (marker, project id) said or checked in this invocation
 
 def enrollment():
     """This machine's enrollment as resolution reads it, {url, org, machine}:
-    on a machine cut over to its endpoint, daemon/identity.json's (RL10's
-    welcome, sminos_rl10.cutover); else daemon/hub.json's; None when it is
-    not enrolled (hub.json absent, unreadable, or lacking one of the three)."""
+    daemon/identity.json's, the identity its endpoint gave at a welcome
+    (sminos_rl10.cutover); None when it is not enrolled (no identity.json,
+    or one that cannot be read as an identity). A hub.json is none."""
     if not _ENROLLED:
         ident = sibling_module("sminos_rl10").cutover()
-        if ident is not None:
-            _ENROLLED.append({"url": ident["hub"], "org": ident["org"], "machine": ident["name"]})
-            return _ENROLLED[0]
-        try:
-            d = json_at(os.path.join(root(), "daemon", "hub.json"))   # written whole, by rename
-        except (OSError, ValueError):
-            d = None
-        ok = isinstance(d, dict) and all(isinstance(d.get(k), str) and d[k] for k in ("hub", "org", "machine"))
-        _ENROLLED.append({"url": d["hub"], "org": d["org"], "machine": d["machine"]} if ok else None)
+        _ENROLLED.append({"url": ident["hub"], "org": ident["org"], "machine": ident["name"]}
+                         if ident is not None else None)
     return _ENROLLED[0]
 
 
@@ -2008,17 +2001,10 @@ QUEUED = "queued"
 
 
 def enrolment_stamp():
-    """(name, enrolled) of this machine's enrolment now: identity.json's on a
-    cut-over machine, else hub.json's; None when it is not enrolled."""
+    """(name, enrolled) of this machine's enrolment now, identity.json's;
+    None when it is not enrolled."""
     ident = sibling_module("sminos_rl10").cutover()
-    if ident is not None:
-        return ident["name"], ident.get("enrolled")
-    try:
-        with open(os.path.join(root(), "daemon", "hub.json")) as f:
-            d = json.load(f)
-    except (OSError, ValueError):
-        return None
-    return (d["machine"], d.get("enrolled")) if isinstance(d, dict) and isinstance(d.get("machine"), str) else None
+    return (ident["name"], ident.get("enrolled")) if ident is not None else None
 
 
 def _marks():
@@ -2147,17 +2133,6 @@ def namesake(writer, name):
     stream of the same digest for a stream."""
     digest = stream_of(writer)[1]
     return "%s/human" % name if digest is None else "%s/human~%s" % (name, digest)
-
-
-def queued_counts():
-    """[(project name, events)] of every project with appends that wait for a
-    head, in name order."""
-    out = []
-    for p in sorted(known_projects(all_seats=[]), key=lambda p: (p.name, p.id)):
-        n = sum(len(queued_events(path)) for path in glob.glob(os.path.join(glob.escape(p.home), QUEUED, "*.jsonl")))
-        if n:
-            out.append((p.name, n))
-    return out
 
 
 def said_order(queues):
@@ -8773,27 +8748,16 @@ _SELF = None  # (this machine's name, {former name: its sessions}), per invocati
 def machine_identity():
     """(name, former): this installation's machine name — the name its
     endpoint gave it (daemon/identity.json, on a machine cut over to RL10),
-    else the name it enrolled under at a desk hub (daemon/hub.json, written by
-    `hub enroll`), else DAEMON_HOST, else the system's host name — and, for
-    each name it wrote under before, the sessions it held under that name
-    then ({name: frozenset}, oldest name first)."""
+    else DAEMON_HOST, else the system's host name — and, for each name it
+    wrote under before, the sessions it held under that name then ({name:
+    frozenset}, oldest name first; none before the cutover)."""
     global _SELF
     if _SELF is None:
         ident = sibling_module("sminos_rl10").cutover()
         if ident is not None:
             _SELF = (ident["name"], {n: frozenset(ss) for n, ss in ident["former"].items()})
-            return _SELF
-        try:
-            d = json_at(os.path.join(root(), "daemon", "hub.json"))
-        except (OSError, ValueError):
-            d = None
-        name, former = "", {}
-        if isinstance(d, dict) and isinstance(d.get("machine"), str) and valid_name(d["machine"]):
-            name = d["machine"]
-            if isinstance(d.get("former"), dict):
-                former = {n: frozenset(s for s in ss if isinstance(s, str) and s)
-                          for n, ss in d["former"].items() if n and isinstance(ss, list)}
-        _SELF = (name or os.environ.get("DAEMON_HOST") or socket.gethostname(), former)
+        else:
+            _SELF = (os.environ.get("DAEMON_HOST") or socket.gethostname(), {})
     return _SELF
 
 

@@ -194,6 +194,12 @@ def credential_path():
     return daemon.daemon_path("hub.json")
 
 
+def legacy_key_path():
+    """hub.json, as `legacy-key?` reads it: its `org` and DX1 `key`, nothing
+    else (Link.on_legacy_key). No enrollment and no credential."""
+    return daemon.daemon_path("hub.json")
+
+
 def hub_admitted(hub):
     """Whether a hub URL may carry the service token: https, or http on this
     machine only (DX7's local runtime) — the token travels in every request."""
@@ -1934,7 +1940,7 @@ class Link:
         while hub.json holds it (one logical handover: an endpoint that died
         before keeping it asks again). The key is in no log line."""
         try:
-            with open(credential_path()) as f:
+            with open(legacy_key_path()) as f:
                 held = json.load(f)
         except FileNotFoundError:
             log("legacy-key?: this machine holds no DX1 key (no hub.json): not answered")

@@ -756,17 +756,10 @@ def rejoin_former(project, view=None):
 
 def enrolled_at():
     """When this machine enrolled at its hub (daemon/identity.json's
-    `enrolled` on a machine cut over to its endpoint, else daemon/hub.json's,
-    whole seconds), in epoch seconds; None when it is not known."""
+    `enrolled`, whole seconds), in epoch seconds; None when it is not
+    known."""
     ident = rl10.cutover()
-    if ident is not None:
-        return sminos._ts_epoch(ident.get("enrolled"))
-    try:
-        with open(daemon_path("hub.json")) as f:
-            d = json.load(f)
-    except (OSError, ValueError):
-        return None
-    return sminos._ts_epoch(d.get("enrolled")) if isinstance(d, dict) else None
+    return sminos._ts_epoch(ident.get("enrolled")) if ident is not None else None
 
 
 def notice_former_writers(project, view, record):
@@ -2343,22 +2336,15 @@ def owed_line(name, items, what):
 
 
 def enrollment_inspected(failed):
-    """sminos.enrollment(), once the file it is read from is inspected: a
-    cut-over machine's identity.json, else hub.json. One there that cannot be
-    read as one goes to `failed`, and no upstream is read (sminos.enrollment
-    would read an unreadable identity as none, and fall back to hub.json);
-    only absence is "not enrolled"."""
+    """sminos.enrollment(), once the file it is read from, identity.json, is
+    inspected. One there that cannot be read as an identity goes to `failed`,
+    and no upstream is read (sminos.enrollment would read it as none); only
+    absence is "not enrolled"."""
     try:
         if rl10.cut_over():
             path = rl10.identity_path()
             if not rl10.valid_identity(inspected(path)):
                 raise Uninspectable(path, "not an identity")
-        else:
-            path = daemon_path("hub.json")
-            d = inspected(path)
-            if d is not None and not (isinstance(d, dict) and all(isinstance(d.get(k), str) and d[k]
-                                                                  for k in ("hub", "org", "machine"))):
-                raise Uninspectable(path, "not a hub credential")
     except Uninspectable as e:
         failed.append(e)
         return None
