@@ -165,8 +165,7 @@ it last read (`mode`, mode_reading), and a `read` frame is
 the bridge's answer to the read, asked on a thread of its own (at most
 READS_IN_FLIGHT per subscription; the rest answered `busy`), answered on the
 sub as DX4 `read` — after its snapshot, if it came before — or as why there
-is none (`no-bridge`, `unsupported`, `timeout`, `busy`, `failed`). `read` goes
-only to a hub whose welcome lists it (`kinds`).
+is none (`no-bridge`, `unsupported`, `timeout`, `busy`, `failed`).
 """
 
 import collections
@@ -1524,13 +1523,13 @@ class Subscription:
         self.project, self.machine, self.session, self.agent, self.sub = project, machine, session, agent, sub
         self.locate = locate          # () → the session's main transcript path, "" while there is none
         # () → the session's host events, in order (sminos.host_events_of),
-        # on a cut-over machine's main subscription; None where there are
-        # none to carry (DX2, a subagent's loop): its snapshot then has no
-        # `host`, and its stream no `host` message.
+        # on a main subscription; None where there are none to carry (a
+        # subagent's loop): its snapshot then has no `host`, and its stream
+        # no `host` message.
         self.host = host
         self.host_at = {}             # writer → the last seq of its host events this subscription carried
         self.reader = reader
-        self.catalog_allowed = catalog_allowed  # the current stream negotiated DX4 catalog
+        self.catalog_allowed = catalog_allowed  # () → whether DX4 catalog goes (the plane's subscriptions: always)
         self.presence = presence      # () → DX4 presence body
         self.alive = alive            # () → whether the session's process runs
         self.clock = clock
@@ -2630,12 +2629,9 @@ class Plane:
     subscriptions it serves. Made anew with every stream; `close` lets the
     readers go."""
 
-    def __init__(self, machine, wake, bridges=None, transcripts=None, disk=None, warmer=None, host=False,
-                 launches=False):
+    def __init__(self, machine, wake, bridges=None, transcripts=None, disk=None, warmer=None):
         self.machine = machine
         self.wake = wake
-        self.host = host          # RL10: the sessions' host store is carried by their main subscriptions
-        self.launches = launches  # RL10: a bridged session's presence names its launch (O12 M7)
         self.bridges = bridges or Bridges()   # kept across streams by the uplink: no answer is relearned
         self.bridges.wake = wake
         self.transcripts = transcripts or TRANSCRIPTS   # the process's: no index is rebuilt across streams
@@ -2661,7 +2657,6 @@ class Plane:
         self.diffs = queue.Queue()
         self.read_answers = queue.Queue()   # (sub, DX4 read body) from the reads' threads
         self.reading = collections.Counter()   # sub → its reads not answered yet
-        self.kinds = frozenset()  # the session kinds the stream's welcome listed (DX2): `read` goes only if listed
         self.read_for = None      # the running sessions the members were last read for
         self.next_members = 0.0
         self.next_whole = 0.0     # when every project's members are read again, whatever their inputs (stale)
@@ -2760,7 +2755,7 @@ class Plane:
             body["capabilities"] = caps
         # A sibling of `bridge`, never under it: the hub refuses a `bridge`
         # that is not a boolean (desk-hub's SessionPresence).
-        launch = self.bridges.launch(sid) if self.launches and body["bridge"] else None
+        launch = self.bridges.launch(sid) if body["bridge"] else None   # O12 M7: what a remote action is fenced to
         if launch is not None:
             body["launch"] = launch
         # Absent until the bridge has read one, so an older reader sees the
@@ -2900,8 +2895,8 @@ class Plane:
             locate=lambda: sminos.transcript_now(sid),   # asked until found, every LOCATE_EVERY
             presence=lambda: self.presence_of(sid, time.monotonic()), alive=lambda: self.running(sid),
             transcripts=self.transcripts, wake=self.wake, disk=self.disk, received=received,
-            catalog_allowed=lambda: "catalog" in self.kinds,
-            host=(lambda: sminos.host_events_of(project, sid)) if self.host and agent is None else None)
+            catalog_allowed=lambda: True,
+            host=(lambda: sminos.host_events_of(project, sid)) if agent is None else None)
         return out + self.pump_one(sub)
 
     def running(self, sid):
@@ -2958,11 +2953,10 @@ class Plane:
     def read(self, frame_):
         """DX2 `read`: the session's bridge asked on a thread of its own,
         answered on the sub as DX4 `read`. A frame out of DX3's form, or on a
-        sub this stream does not serve, is passed by, as the hub refuses it;
-        so is every one while the hub lists no `read`."""
+        sub this stream does not serve, is passed by, as the hub refuses it."""
         s = self.subs.get(frame_.get("sub"))
         rid, what, args = frame_.get("id"), frame_.get("what"), frame_.get("args")
-        if s is None or "read" not in self.kinds or not (isinstance(rid, str) and 1 <= len(rid) <= READ_ID_MAX) \
+        if s is None or not (isinstance(rid, str) and 1 <= len(rid) <= READ_ID_MAX) \
                 or not (isinstance(what, str) and READ_WHAT.match(what)) \
                 or not (args is None or (isinstance(args, dict) and len(json.dumps(args)) <= READ_ARGS_MAX)):
             return []

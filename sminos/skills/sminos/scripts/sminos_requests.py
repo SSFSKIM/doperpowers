@@ -12,9 +12,8 @@ stream (`GET /events`) and takes from it only those: the snapshot's
 mod's whole state again, which replaces the bridge's pending set). Chunks
 and everything else are passed over unparsed.
 
-What goes up, each sealed with the org key under a fresh nonce (DX1), and
-nothing without one — the daemon signs only what its bridges reported, as
-they reported it:
+What goes up, each as its draft (RL10 carries no code), the daemon
+saying only what its bridges reported, as they reported it:
 
 - DX4 `raised` `{request, session, tool, input, agentId?, truncated?,
   deadline?, async?, toolUseId?}` (composite 6fa2252d, 43a27604): the
@@ -273,8 +272,7 @@ class Requests:
     messages owed to the hub about them. Kept across streams by the uplink;
     `wake` is the current stream's."""
 
-    def __init__(self, key, machine, wake=lambda: None, clock=time.monotonic):
-        self.key = key
+    def __init__(self, machine, wake=lambda: None, clock=time.monotonic):
         self.machine = machine
         self.wake = wake
         self.clock = clock
@@ -285,7 +283,7 @@ class Requests:
         self.fails = {}       # session → readers in a row that ended without a snapshot
         self.followed = {}    # session → project id: the open projects' sessions with an endpoint
         self.project_of = {}  # session → project id, kept while it holds requests
-        self.pending = {}     # session → {request: sealed DX4 raised}, in the order raised
+        self.pending = {}     # session → {request: its DX4 raised body}, in the order raised
         self.synced = set()   # sessions whose bridge's state is known: a snapshot read, or none to be had
         self.outbox = []      # [(project id, frame)]: raised and settled messages not yet sent, in order
         self.stale = set()    # project ids whose complete pending set is owed
@@ -301,8 +299,8 @@ class Requests:
 
     def restore(self):
         """The settlements a stopped uplink still owed, back in the outbox
-        in their order, but those done with since. With no key (RL10) each
-        goes as this machine's draft, whatever the hub's uplink sealed and
+        in their order, but those done with since. Each goes as this
+        machine's draft (`uncoded`), whatever the hub's uplink sealed and
         kept before the cutover."""
         for item in self.kept.load():
             try:
@@ -317,8 +315,7 @@ class Requests:
             if not ok:
                 log("an owed settlement in %s that is none: passed by" % self.kept.path)
             elif not self.seen(key):
-                if self.key is None:
-                    frame = self.uncoded(frame)
+                frame = self.uncoded(frame)
                 self.queued[key] = frame
                 self.outbox.append((pid, frame))
 
@@ -449,15 +446,8 @@ class Requests:
         return out
 
     def seal(self, kind, pid, draft):
-        """A body as it goes up: sealed under the org key (DX1), or, with no
-        key (RL10, where nothing carries a code), its draft as it is."""
-        if self.key is None:
-            return draft
-        try:
-            return codes.seal(self.key, kind, pid, draft, codes.b64url(os.urandom(codes.NONCE_BYTES)))
-        except codes.NotCanonical as e:
-            log("a %s of %s has no canonical form (%s): not sent" % (kind, draft.get("session") or "", e))
-            return None
+        """A body as it goes up: its draft as it is (RL10 carries no code)."""
+        return draft
 
     def queue(self, pid, sid, kind, body):
         frame = {"t": "session", "message": {
@@ -488,9 +478,8 @@ class Requests:
         if old is not None and {k: v for k, v in old.items() if k != "mac"} == draft:
             return
         body = self.seal("raised", pid, draft)
-        if body is not None:
-            held[draft["request"]] = body
-            self.queue(pid, sid, "raised", body)
+        held[draft["request"]] = body
+        self.queue(pid, sid, "raised", body)
 
     def seen(self, key):
         return key in self.queued or key[1:] in self.relayed.get(key[0], ())
@@ -527,10 +516,8 @@ class Requests:
             # It went before, or waits to: any raise held here came after it, and stays.
             return
         self.pending.get(sid, {}).pop(draft["request"], None)
-        body = self.seal("settled", pid, draft)
-        if body is not None:
-            self.queued[key] = self.queue(pid, sid, "settled", body)
-            self.keep()
+        self.queued[key] = self.queue(pid, sid, "settled", self.seal("settled", pid, draft))
+        self.keep()
 
     def reconcile(self, sid, pid, pending, settled):
         """A snapshot or a resync: the session's pending set as the bridge

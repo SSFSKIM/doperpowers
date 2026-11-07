@@ -230,7 +230,7 @@ class Machine(unittest.TestCase):
     def link(self):
         """One RL10 Link, its lane keeping what it is sent."""
         cred = {"org": "org-1", "hub": "http://127.0.0.1:9", "machine": "testhost", "key": None}
-        link = uplink.Link(cred, {}, transport=mock.Mock(number=1), coded=False)
+        link = uplink.Link(cred, {}, transport=mock.Mock(number=1))
         self.addCleanup(link.close)
         link.generation = 1
         link.log_lane = link.session_lane = Lane()

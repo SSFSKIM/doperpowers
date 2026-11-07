@@ -5,8 +5,8 @@ sminos's side of the hub's refusals and admission.
 
 - Admitted: what a `have` confirms for the archive (`archive_have`), and the
   projection copy_log writes from it.
-- Retry: a `state-unavailable` position on a direct stream goes up again
-  after the wait, with no reconnect and no further write.
+- Retry: a `state-unavailable` refusal stops nothing (the endpoint
+  rewinds), and a new stream starts again from the have.
 - Dead: an `audience` refusal stops its writer past the stream; an event
   appended to it revives it, a `void` at each refused position; a `void`
   from elsewhere is nothing to a reader.
@@ -23,13 +23,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent / "skills" / "sminos" / "scripts"
 BASE = tempfile.mkdtemp(prefix="smr.", dir="/tmp")
 for var in ("SMINOS_RL10", "MAWS_USER_DATA", "CLAUDE_CODE_SESSION_ID", "DAEMON_HOME", "AGORA_HOME", "DAEMON_HOST",
-            "MAWS_LANE", "SMNS_MEMBER", "SMNS_INTERNAL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "SMINOS_ASK_MS"):
+            "MAWS_LANE", "SMNS_MEMBER", "SMNS_INTERNAL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR"):
     os.environ.pop(var, None)
 os.environ.update(HOME=os.path.join(BASE, "home"), SMINOS_HOME=os.path.join(BASE, "s"), SMINOS_DERIVE_EVERY="0")
 sys.path.insert(0, str(SCRIPTS))
@@ -43,7 +42,6 @@ import sminos_hublog as hublog  # noqa: E402
 import endpoint_standin  # noqa: E402
 from rl10_identity import write_identity  # noqa: E402
 
-RAW_KEY = bytes(range(32))
 SID = "6e000001-0000-4000-8000-0000000000a1"
 OTHER_SID = "6e000001-0000-4000-8000-0000000000b2"
 M1, M2 = "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c", "5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d"
@@ -68,12 +66,9 @@ class Plane(unittest.TestCase):
                                      {"url": "http://127.0.0.1:9", "org": "org-1"})
         sminos.project_path(self.p, "log")
 
-    coded = True   # DX2's codes; an OnRl10 twin runs the same tests uncoded, as a cut-over machine does (#153)
-
-    def hl(self, coded=None, machine="testhost"):
+    def hl(self, machine="testhost"):
         """`machine`: another name than this machine's now, as the uplink saw it before a rename."""
-        coded = self.coded if coded is None else coded
-        return hublog.HubLog(self.p, {"key": RAW_KEY if coded else None, "machine": machine}, coded=coded)
+        return hublog.HubLog(self.p, {"machine": machine})
 
     def put(self, writer, *events):
         """Events as they are, into a writer file (another machine's as imported, an own one as written)."""
@@ -94,9 +89,10 @@ class Plane(unittest.TestCase):
         return json.loads(Path(self.p.home, hublog.STATE_FILE).read_text())
 
 
-class Admitted:
-    """What a `have` confirms for the archive, run by AdmittedOnRl10 (its
-    coded DX2 arm went in #153 M4)."""
+class AdmittedOnRl10(Plane):
+    """What a `have` confirms for the archive, as a machine cut over to its
+    endpoint takes it (RL10, #153): the endpoint relays the hub's `have`,
+    its `withheld` and `archive` among it."""
 
     def copied(self, writer, archived=None):
         """`archived`: the lines the archive's clone already holds for `writer` (the remote's file)."""
@@ -275,56 +271,20 @@ class Admitted:
                          "the confirmed prefix is the log's, and past what this machine or the hub held, nothing")
 
 
-class AdmittedOnRl10(Admitted, Plane):
-    """Admitted's tests uncoded, as a machine cut over to its endpoint runs
-    them (RL10, #153 M3a): the endpoint relays the hub's `have`, its
-    `withheld` and `archive` among it."""
-
-    coded = False
-
-
 class Retry(Plane):
     def refuse(self, hl, writer, seq, reason="state-unavailable"):
         hl.on_refused({"t": "refused", "project": self.p.id,
                        "refusal": {"reason": reason, "writer": writer, "seq": seq, "message": "m"}})
 
-    def test_a_position_the_registry_could_not_check_goes_up_again_after_the_wait(self):
-        os.environ["SMINOS_ASK_MS"] = "30000"
-        self.addCleanup(os.environ.pop, "SMINOS_ASK_MS")
-        own = "testhost/human"
-        for i in (1, 2, 3):
-            self.say(own, "s%d" % i)
-        hl = self.hl()
-        hl.on_have({"have": {own: 1}})
-        self.assertEqual([x[1] for x in self.uploaded(hl)], [2, 3])
-        hl.took({own: 3})
-        clock = [1000.0]
-        with mock.patch.object(hublog.time, "monotonic", lambda: clock[0]):
-            self.refuse(hl, own, 2)
-            self.assertEqual(self.uploaded(hl), [], "nothing before the wait")
-            hl.on_resend({"project": self.p.id, "writer": own, "from": 2})   # a later frame's gap
-            self.assertEqual(self.uploaded(hl), [], "a resend meanwhile does not cut the wait short")
-            clock[0] += 29.9
-            self.assertEqual(self.uploaded(hl), [])
-            clock[0] += 0.2
-            self.assertEqual([x[1] for x in self.uploaded(hl)], [2, 3], "from the refused position, unasked")
-            hl.took({own: 3})
-            self.refuse(hl, own, 2)
-            self.refuse(hl, own, 3)
-            clock[0] += 15
-            self.refuse(hl, own, 2)   # another refusal within the wait: the retry stays where it was
-            clock[0] += 15.1
-            self.assertEqual([x[1] for x in self.uploaded(hl)], [2, 3], "one retry per writer per wait")
-        self.assertEqual(hl.taken().get(own, 0), 1, "never taken past what the hub could not check")
-
     def test_the_endpoint_rewinds_on_rl10_and_a_new_stream_starts_from_the_have(self):
         own = "testhost/human"
         self.say(own, "s1")
-        hl = self.hl(coded=False)
+        hl = self.hl()
         hl.on_have({"have": {}})
         hl.took({own: 1})
         self.refuse(hl, own, 1)
-        self.assertEqual(hl.paused, {}, "RL10: no pause here; the endpoint opens the hole")
+        hl.on_resend({"project": self.p.id, "writer": own, "from": 1})
+        self.assertEqual([x[1] for x in self.uploaded(hl)], [1], "RL10: no pause here; the endpoint opens the hole")
         hl = self.hl()
         hl.on_have({"have": {}})
         hl.took({own: 1})
@@ -342,7 +302,7 @@ class Dead(Plane):
     def check_revival(self, writer, audience=None):
         sminos_audience.keep_stream(self.p, writer, audience)
         self.say(writer, "one")
-        hl = self.hl(coded=False)
+        hl = self.hl()
         hl.on_have({"have": {}})
         self.assertEqual([x[1] for x in self.uploaded(hl)], [1])
         hl.took({writer: 1})
@@ -378,7 +338,7 @@ class Dead(Plane):
         a reconnect or revived by a later event."""
         writer = "testhost/" + SID
         self.say(writer, "one")
-        hl = self.hl(coded=False)
+        hl = self.hl()
         hl.on_have({"have": {}})
         hl.took({writer: 1})
         self.refuse(hl, writer, 1)
@@ -404,29 +364,16 @@ class Dead(Plane):
     def test_a_stream_whose_audience_is_not_known_here_stays_put(self):
         writer = "testhost/%s~%s" % (SID, sminos.audience_digest([M1]))
         self.say(writer, "one")
-        hl = self.hl(coded=False)
+        hl = self.hl()
         hl.on_have({"have": {}})
         hl.took({writer: 1})
         self.refuse(hl, writer, 1)
         self.say(writer, "two")
         self.assertEqual(self.uploaded(hl), [], "no claim to make: nothing goes up in its place")
 
-    def test_a_void_from_elsewhere_is_nothing_to_a_reader(self):
-        hl = self.hl()
-        hl.on_have({"have": {}})
-        v = hublog.seal(RAW_KEY, self.p.id, {"ts": "2026-11-05T00:00:01.000Z", "writer": "other/" + OTHER_SID,
-                                              "seq": 1, "kind": "void", "of": 1, "audience": [M1]})
-        self.assertEqual(hl.take([v]), (1, []), "imported as the hub sent it")
-        sminos.forget_caches()
-        self.assertEqual(sminos.view_of(self.p, titles=False).members, [], "no member of it")
-        out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "chat", "work", "-n", "5"],
-                             capture_output=True, text=True, timeout=60, cwd=BASE)
-        self.assertIn("(no messages)", out.stdout, out.stdout + out.stderr)
-        self.assertEqual(sminos._owed(sminos.log_read(self.p), SID, {}), [], "owed to no one")
-
     def test_a_void_from_elsewhere_is_nothing_to_a_reader_on_rl10(self):
         """The same void as the endpoint sends it down (RL10), verified."""
-        hl = self.hl(coded=False)
+        hl = self.hl()
         hl.on_have({"have": {}})
         v = endpoint_standin.Endpoint.arriving({"ts": "2026-11-05T00:00:01.000Z", "writer": "other/" + OTHER_SID,
                                                "seq": 1, "kind": "void", "of": 1, "audience": [M1]})
@@ -437,17 +384,6 @@ class Dead(Plane):
                              capture_output=True, text=True, timeout=60, cwd=BASE)
         self.assertIn("(no messages)", out.stdout, out.stdout + out.stderr)
         self.assertEqual(sminos._owed(sminos.log_read(self.p), SID, {}), [], "owed to no one")
-
-    def test_a_tombstone_the_hub_sends_is_a_spent_position_never_reported(self):
-        hl = self.hl()
-        hl.on_have({"have": {}})
-        w = "other/human"
-        after = hublog.seal(RAW_KEY, self.p.id, {"ts": "2026-11-05T00:00:02.000Z", "writer": w, "seq": 2,
-                                                  "kind": "say", "from": "o", "to": "*", "text": "after"})
-        self.assertEqual(hl.take([{"writer": w, "seq": 1, "withheld": True}, after]), (1, []),
-                         "the tombstone spent, nothing rejected, the writer's next event appended")
-        self.assertEqual(hl.spent(), {w: {1}})
-        self.assertEqual(hl.vector()[w], 2)
 
 
 def tearDownModule():

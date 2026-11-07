@@ -408,7 +408,7 @@ class Transitions(Base):
 
     def upload_order(self):
         """This machine's own events in the order an upload draws them."""
-        hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"})
         hl.have = {}
         return [(e["writer"], e["kind"]) for frame, _ in hl.uploads() for e in frame["events"]]
 
@@ -537,7 +537,7 @@ class Transitions(Base):
         early = "testhost/00000000-0000-4000-8000-000000000000"   # sorts before every stream of S
         for n in (1, 2):
             sminos.log_append(self.p, early, "status", session=early.split("/")[1], status="n%d" % n)
-        hl = link.logs[self.p.id] = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
+        hl = link.logs[self.p.id] = hublog.HubLog(self.p, {"key": None, "machine": "testhost"})
         hl.have = {}
         frames = []
 
@@ -682,7 +682,7 @@ class UnlistingOnRl10(Base):
         self.readers = {"other": [B], "third": [C]}
         self.ep = endpoint_standin.Endpoint(self.epdir)
         self.signed = {}   # (writer, seq) → what the endpoint signed into the event
-        self.hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
+        self.hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"})
         self.hl.have = {}
 
     def upload(self, rev):
@@ -1161,8 +1161,6 @@ class RecordRpcs(Base):
         self.assertEqual(self.policy()[0], "private")
 
     def test_dx2_never_carries_them(self):
-        self.assertIn("record.access", rpcmod.RL10_ONLY)
-        self.assertNotIn("record.owners", rpcmod.RPC_NAMES)
         self.assertIsNone(rpcmod.context_refusal({"rpc": "record.owners", "args": {"session": S}}),
                           "launch-independent, as a spawn is")
 

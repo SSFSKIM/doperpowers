@@ -439,9 +439,8 @@ def welcomed(frame):
 
 
 def credential(identity):
-    """What the uplink's Link runs on in RL10 mode: the identity's hub, org
-    and name, and no key."""
-    return {"hub": identity["hub"], "org": identity["org"], "machine": identity["name"], "key": None}
+    """What the uplink's Link runs on: the identity's hub, org and name."""
+    return {"hub": identity["hub"], "org": identity["org"], "machine": identity["name"]}
 
 
 # ------------------------------------------------------------- the revocation set

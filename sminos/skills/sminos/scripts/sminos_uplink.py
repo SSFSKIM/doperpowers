@@ -77,9 +77,9 @@ refused going with or after that hello (sminos_owed). The stream's own
 `refused` of a frame the answer named is only said.
 Frames larger than a frame's bound travel as parts, both ways.
 
-On a machine cut over to its endpoint (sminos_rl10) the same Link runs with
-`coded` off over RL10's socket (SocketTransport): no hub, no generation, no
-codes; one SocketLane in place of both senders, a frame written being a
+On a machine cut over to its endpoint (sminos_rl10) the Link runs over
+RL10's socket (SocketTransport): no hub, no generation, no codes; one
+SocketLane in place of both senders, a frame written being a
 frame taken, so every continuation runs once its frame is written, and
 everything a reconnect restates goes again after each welcome, closed by
 `restated {}` once the whole of it is queued (Link.restated_due): the
@@ -161,8 +161,6 @@ SNAPSHOT_KINDS = ("joined", "state")
 # RL10: a file each words pass appends one line to ({at, wall, cpu, asks}), when set: the measurement
 # O14's B2 gates the cutover on (sminos/tests/bench_scale.py run --rl10), and nothing else's
 WORDS_TIMES = "SMINOS_WORDS_TIMES"
-# What a reused connection's send raises when the hub closed it while idle:
-# nothing of the request reached it, so it goes once more on a fresh one.
 
 
 def legacy_key_path():
@@ -287,17 +285,6 @@ def by_project(frames):
 # ------------------------------------------------------------- RL10's lane
 
 
-class EveryKind(frozenset):
-    """RL10's kinds: the endpoint is on this machine and relays the session
-    lane whole, so every kind goes (DX2's `kinds` named those a hub took)."""
-
-    def __contains__(self, kind):
-        return True
-
-
-EVERY_KIND = EveryKind()
-
-
 class SocketLane(threading.Thread):
     """RL10's one lane, the counterpart of DX2's two Senders: a thread that
     writes, in FIFO order, what the main thread queues (`send`) on the
@@ -408,10 +395,6 @@ class SocketTransport:
 
     def start(self):
         self.reader.start()
-
-    def take_org(self):
-        """The org frame comes in its place on the one stream."""
-        return None
 
     def lane(self):
         if self.lane_ is not None:
@@ -607,38 +590,31 @@ class Here:
 
 
 class Link:
-    """One stream's conversation with the hub. Frames down are dispatched by
-    `t`: the log plane's here, the session plane's to `self.plane`, the RPCs
-    to `self.rpcs`. Frames up go on the stream's two sender lanes (Sender),
-    under its generation: the log lane carries the log plane's — the
-    connect's bundle, uploads, delivery outcomes, rejections, the machine's
-    presence and every re-`hello` — and the session lane the session plane's,
-    the requests' and the RPC results. A POST not answered 200 ends the
-    stream: the next one redoes the handshake, which is idempotent, rather
-    than assume anything landed. So a mark the handshake heals is placed
-    when its frames are queued; one it does not — the presence tombstone,
-    rejections reported, outcomes dropped — in the continuation that runs
-    after the 200 of the POST that carried them, its producer not taking the
-    same again meanwhile (`reporting`, `delivering`); settlements and
-    compaction messages, in flight from `sending`, leave their outbox in that
-    continuation. What the answer names refused `not-open` is not taken: it
-    stays owed, and its project is opened again (`refused_whole`). A
-    continuation
-    clears its in-flight flags and opens the session gate whatever its local
-    writes meet; a write that fails is kept and done on a later pass
-    (settle_marks), so a disk error never holds the network back. `wake` asks the main thread for a tick
-    now."""
+    """One connection's conversation with the endpoint (RL10). Frames down
+    are dispatched by `t`: the log plane's here, the session plane's to
+    `self.plane`, the RPCs to `self.rpcs`, and the endpoint's own (its
+    policy, revocations, verdicts, asks). Frames up go on the connection's
+    one SocketLane (`log_lane` and `session_lane` name it both): the log
+    plane's — the connect's bundle, uploads, delivery outcomes, rejections,
+    the machine's presence and every re-`hello` — and the session plane's,
+    the members', the requests' and the RPC results. A write that fails ends
+    the connection: the next one redoes the handshake, which is idempotent,
+    rather than assume anything landed. So a mark the handshake heals is
+    placed when its frames are queued; one it does not — the presence
+    tombstone, rejections reported, outcomes dropped — in the continuation
+    that runs once the frame carrying them is written, its producer not
+    taking the same again meanwhile (`reporting`, `delivering`); settlements
+    and compaction messages, in flight from `sending`, leave their outbox in
+    that continuation. A continuation clears its in-flight flags whatever
+    its local writes meet; a write that fails is kept and done on a later
+    pass (settle_marks), so a disk error never holds the network back.
+    `wake` asks the main thread for a tick now."""
 
     def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None, reqs=None, rpcs=None,
-                 warmer=None, transport=None, coded=True):
+                 warmer=None, *, transport):
         self.cred = cred
         self.ended = ended
-        # DX2 (coded: the hub's stream, its frames under the org key's codes,
-        # the lanes made on each frame's stream at its welcome) or RL10 (the
-        # endpoint's socket, `transport`, whose one lane carries everything,
-        # with no code on anything).
-        self.transport = transport
-        self.coded = coded
+        self.transport = transport   # the endpoint's socket (SocketTransport), whose one lane carries everything
         self.policy_asked = None  # RL10: the policy-set last sent on this connection, until the endpoint's `policy`
         self.revoked_whole = False  # RL10: the next revocation set is the welcome's, kept whole
         self.revoked_due = False  # RL10: a revocation set was kept that the owed events have not been marked by
@@ -671,12 +647,10 @@ class Link:
         self.passed = set()
         self.received = None      # when the reader took the frame being dispatched (epoch s), when known
         self.failing = self.plane_failing = ""
-        self.plane = plane.Plane(cred["machine"], wake, bridges, warmer=warmer,   # the warmer kept across streams
-                                 host=not coded,   # RL10: the host store rides the sessions' subscriptions
-                                 launches=not coded)   # and a bridged session's presence names its launch
-        self.requests = reqs or requests.Requests(cred["key"], cred["machine"])  # kept across streams by the uplink
+        self.plane = plane.Plane(cred["machine"], wake, bridges, warmer=warmer)   # the warmer kept across streams
+        self.requests = reqs or requests.Requests(cred["machine"])  # kept across streams by the uplink
         self.requests.wake = wake
-        self.rpcs = rpcs or rpc.Rpcs(cred["key"], cred["machine"], coded=coded)  # kept across streams by the uplink
+        self.rpcs = rpcs or rpc.Rpcs(cred["machine"])  # kept across streams by the uplink
         self.rpcs.wake = wake
         self.machine_sent = {}    # project id → the `machine` body last posted on this stream
         self.next_checkouts = 0.0
@@ -699,17 +673,15 @@ class Link:
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
                          "rows": self.on_rows, "diff": self.on_diff, "output": self.on_output, "read": self.on_read,
                          "rpc": self.on_rpc,
-                         "rpc-ack": self.on_rpc_ack, "org": self.on_org}
-        if not coded:
-            # What only the endpoint sends: its policy, its revocations, its
-            # ask for the machine's DX1 key, a device's query and tombstone,
-            # the verdicts on words, and the positions it spent (RL10, O10
-            # Interfaces §D).
-            self.handlers.update({"policy": self.on_policy, "revoked": self.on_revoked,
-                                  "legacy-key?": self.on_legacy_key, "query": self.on_query,
-                                  "tombstone": self.on_tombstone, "words": self.on_words, "reach": self.on_reach,
-                                  "spent": self.on_spent, "audience": self.on_audience,
-                                  "snapshots?": self.on_snapshots})
+                         "rpc-ack": self.on_rpc_ack, "org": self.on_org,
+                         # The endpoint's own (RL10, O10 Interfaces §D): its policy, its revocations, its ask
+                         # for the machine's DX1 key, a device's query and tombstone, the verdicts on words
+                         # and reach, the positions it spent, an audience change and a snapshots ask.
+                         "policy": self.on_policy, "revoked": self.on_revoked,
+                         "legacy-key?": self.on_legacy_key, "query": self.on_query,
+                         "tombstone": self.on_tombstone, "words": self.on_words, "reach": self.on_reach,
+                         "spent": self.on_spent, "audience": self.on_audience,
+                         "snapshots?": self.on_snapshots}
 
     def post_session(self, messages):
         if messages:
@@ -743,7 +715,7 @@ class Link:
 
     def dispatch(self, frame, stream):
         t = frame.get("t") if isinstance(frame, dict) else None
-        if t not in ("events", "hb", "part", "org"):
+        if t not in ("events", "part", "org"):
             # Whatever this frame does comes after what the events before it
             # imported reached their members, as the frames came.
             self.deliver_imports()
@@ -767,27 +739,14 @@ class Link:
             return None
         hl = self.logs.get(pid)
         if hl is None:
-            hl = self.logs[pid] = hublog.HubLog(project, self.cred, coded=self.coded)
+            hl = self.logs[pid] = hublog.HubLog(project, self.cred)
         hl.project = project
         return hl
 
     # ---------------------------------------------------- frames down
 
     def on_welcome(self, frame, stream):
-        if self.coded:
-            generation = frame.get("generation")
-            self.generation = generation if type(generation) is int else None
-            # The session kinds this hub relays (DX2 `welcome.kinds`): a kind added
-            # since (`read`, `op`) goes only to a hub that lists it, which one
-            # from before the list does not.
-            kinds = frame.get("kinds")
-            kinds = frozenset(k for k in kinds if isinstance(k, str)) if isinstance(kinds, list) else frozenset()
-        else:
-            # RL10 has no generation and no kind filter: the endpoint, on
-            # this machine, relays the session lane whole.
-            self.generation = self.transport.number
-            kinds = EVERY_KIND
-        self.plane.kinds = self.rpcs.kinds = kinds
+        self.generation = self.transport.number
         self.opened.clear()
         self.machine_sent.clear()
         self.follows.clear()
@@ -813,13 +772,12 @@ class Link:
         self.words_due = True
         self.host_queued.clear()
         self.host_owed.clear()
-        self.restating = not self.coded
+        self.restating = True
         self.restate_scanned = self.members_whole = False
-        if not self.coded:
-            self.log_lane = self.session_lane = self.transport.lane()
-            log("connected to the endpoint (RL10, local-only) as %s (connection %d)"
-                % (self.cred["machine"], self.generation))
-            self.welcomed_rl10(frame)
+        self.log_lane = self.session_lane = self.transport.lane()
+        log("connected to the endpoint (RL10, local-only) as %s (connection %d)"
+            % (self.cred["machine"], self.generation))
+        self.welcomed_rl10(frame)
 
     # ---------------------------------------------------- RL10's own frames down
 
@@ -1144,9 +1102,8 @@ class Link:
             return
         refusal = frame.get("refusal") if isinstance(frame.get("refusal"), dict) else {}
         if refusal.get("reason") == "not-open":
-            # A frame refused whole: its POST's answer named it, and what it
-            # owes was done there (refused_whole). This copy may come long
-            # after (a session frame's goes unawaited), past the re-open.
+            # DX2's refusal of a frame whose project its stream did not hold
+            # open, which a lane's own answer carried: passed by.
             return
         hl.on_refused(frame)
 
@@ -1218,8 +1175,7 @@ class Link:
         if not self.imported:
             return
         imported, self.imported = self.imported, {}
-        if not self.coded:
-            self.words_due = True
+        self.words_due = True
         for hl in imported.values():
             try:
                 hl.deliver()
@@ -1330,8 +1286,7 @@ class Link:
         if not follow:
             self.machine_sent[pid] = machine["message"]["body"]
         self.deliveries(hl)
-        if not self.coded:
-            self.host_pass(hl, again=True)
+        self.host_pass(hl, again=True)
 
     def report(self, hl, rejections):
         """Rejections up, reported once the hub answered them."""
@@ -1393,15 +1348,14 @@ class Link:
             if got is None:
                 return
             frame, reach = got
-            if not self.coded:
-                try:
-                    out = self.members_before(hl.project, {sminos.writer_session(e["writer"]) for e in frame["events"]})
-                except BaseException:
-                    hl.undraw()
-                    raise
-                if not out:
-                    hl.undraw()
-                    return
+            try:
+                out = self.members_before(hl.project, {sminos.writer_session(e["writer"]) for e in frame["events"]})
+            except BaseException:
+                hl.undraw()
+                raise
+            if not out:
+                hl.undraw()
+                return
             epochs = {w: hl.epoch(w) for w in reach}
             self.log_lane.send([frame], then=lambda refused, frame=frame, reach=reach, epochs=epochs: self.uploaded(
                 hl, frame, reach, epochs, refused))
@@ -1430,8 +1384,7 @@ class Link:
         if not box.waiting():
             return
         records, lines = box.take()
-        frames = [f for f in (outcomes.message(self.cred["key"], self.cred["machine"], pid, r)
-                              for r in records) if f is not None]
+        frames = [outcomes.message(self.cred["machine"], pid, r) for r in records]
         if not frames:
             self.undropped[pid] = (box, lines)
             self.settle_marks(hl)
@@ -1530,7 +1483,7 @@ class Link:
         project's at once when the plane's read moved the directories its
         sessions joined from since they were drawn; `machine` goes again for
         each held project whose body changed."""
-        current = policy.machine_policy() if self.coded else policy.wire_policy()   # as HubLog.presence says it
+        current = policy.wire_policy()   # as HubLog.presence says it
         fresh = now >= self.next_checkouts or any(self.machine_sent.get(pid, {}).get("policy") != current
                                                   for pid in self.opened if not self.follows.get(pid))
         if fresh:
@@ -1932,8 +1885,8 @@ class Link:
         now = time.time()
         nudge = daemon.nudged_at()
         nudged, self.nudge = nudge != self.nudge, nudge
-        words = not self.coded and self.words_now(nudged)
-        held = not self.coded   # until the member set is published (a failure there holds the tick)
+        words = self.words_now(nudged)
+        held = True   # until the member set is published (a failure there holds the tick)
         try:
             scan = now >= self.next_scan or nudged
             if scan:
@@ -1949,17 +1902,15 @@ class Link:
                     # most of an idle uplink's work on a machine with a
                     # history (2026-10-28).
                     sminos.forget_caches()
-            if not self.coded:
-                self.members(time.monotonic())
-                # The member set is published in bounded entries: until the
-                # rest of it is queued, nothing that depends on it goes.
-                held = bool(self.members_unsent)
-                if held and scan:
-                    self.next_scan = 0.0
+            self.members(time.monotonic())
+            # The member set is published in bounded entries: until the
+            # rest of it is queued, nothing that depends on it goes.
+            held = bool(self.members_unsent)
+            if held and scan:
+                self.next_scan = 0.0
             self.complete_transitions()   # a policy change whose audience was kept before a restart
             if scan and not held:
-                if not self.coded:
-                    self.sync_policy()
+                self.sync_policy()
                 register_own(self.cred)
                 known = hub_projects(self.cred)
                 gone = sorted(self.opened - set(known))
@@ -2003,8 +1954,7 @@ class Link:
                     self.upload(self.logs[pid], live)
                     self.deliveries(self.logs[pid])
                     self.logs[pid].show_notices()   # what the hub withheld, told its sending session (P5 O18 D5)
-                    if not self.coded:
-                        self.host_pass(self.logs[pid])
+                    self.host_pass(self.logs[pid])
             self.failing = ""
         except EndStream:
             raise
@@ -2016,15 +1966,14 @@ class Link:
             self.post_session(self.plane.tick({pid: self.logs[pid].project for pid in self.opened}))
             self.relay_requests()
             self.relay_rpcs()
-            if not self.coded:
-                known = self.members(time.monotonic())
-                if self.revoked_due:
-                    self.mark_revoked(known)
-                if words and not held:
-                    self.words_pass(known)   # behind the upload pass, which a held tick did not run
-                if self.restating and self.restated_due():
-                    self.session_lane.send([{"t": "restated"}])
-                    self.restating = False
+            known = self.members(time.monotonic())
+            if self.revoked_due:
+                self.mark_revoked(known)
+            if words and not held:
+                self.words_pass(known)   # behind the upload pass, which a held tick did not run
+            if self.restating and self.restated_due():
+                self.session_lane.send([{"t": "restated"}])
+                self.restating = False
             self.plane_failing = ""
         except EndStream:
             raise
@@ -2034,11 +1983,11 @@ class Link:
                 log("the session plane failed: %r" % e)
 
 
-def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None, warmer=None, coded=True):
-    """Handle one stream's frames until it closes, a POST is not delivered,
-    or the uplink ends; whether the hub welcomed it. A wake (the session
-    plane's readers) is a tick after the batch in hand; at most one waits.
-    Uncoded, `stream` is RL10's SocketTransport, its welcome first."""
+def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None, warmer=None):
+    """Handle one connection's frames until it closes, a write is not
+    delivered, or the uplink ends; whether the endpoint welcomed it. A wake
+    (the session plane's readers) is a tick after the batch in hand; at most
+    one waits. `stream` is RL10's SocketTransport, its welcome first."""
     woken = threading.Event()
 
     def wake():
@@ -2046,7 +1995,7 @@ def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None, warmer=
             woken.set()
             stream.items.put(("wake",))
 
-    link = Link(cred, logs, ended, wake, bridges, reqs, rpcs, warmer, transport=None if coded else stream, coded=coded)
+    link = Link(cred, logs, ended, wake, bridges, reqs, rpcs, warmer, transport=stream)
     try:
         return serve_link(link, stream, ended, woken)
     finally:
@@ -2054,23 +2003,14 @@ def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None, warmer=
 
 
 def serve_link(link, stream, ended, woken):
-    """serve's loop: the stream's frames, the wakes and the lanes' answers in
-    arrival order — ("sent", thens) runs the continuations of what the hub
-    answered 200, ("closed", NotDelivered) ends the stream. What is queued
+    """serve's loop: the connection's frames, the wakes and the lane's
+    answers in arrival order — ("sent", thens) runs the continuations of what
+    was written, ("closed", NotDelivered) ends the connection. What is queued
     when the main thread looks up is one batch (DRAIN_FRAMES, DRAIN_FOR), its
     imports delivered once, then one tick: a tick can be slow (its reads of
     the fleet, a delivery to a slow session), and one a frame would let a
-    burst from the hub queue for minutes. The org's directory is handled
-    before each item, ahead of whatever is queued (Stream.take_org)."""
+    burst queue for minutes."""
     welcomed = False
-
-    def org_now():
-        data = stream.take_org()
-        if data is not None:
-            try:
-                link.dispatch(codes.loads(data), stream)
-            except ValueError as e:
-                log("an org frame that is not JSON (%s): ignored" % e)
 
     while True:
         # Before every frame, not only when the stream is quiet: a hub that
@@ -2085,7 +2025,6 @@ def serve_link(link, stream, ended, woken):
             try:
                 taken, until = 0, time.monotonic() + DRAIN_FOR
                 while item is not None:
-                    org_now()
                     if item[0] == "closed":
                         if isinstance(item[1], EndStream):
                             raise item[1]   # a lane's POST not delivered
@@ -2095,8 +2034,6 @@ def serve_link(link, stream, ended, woken):
                         link.ran(item[1])
                     elif item[0] == "wake":
                         woken.clear()
-                    elif item[0] == "org":
-                        pass   # taken just now
                     else:
                         try:
                             frame = codes.loads(item[2])
@@ -2167,8 +2104,8 @@ class Kept:
     def __init__(self, cred):
         self.bridges, self.warmer = plane.Bridges(), plane.Warmer()
         self.cred = None
-        self.reqs = requests.Requests(cred["key"], cred["machine"])
-        self.rpcs = rpc.Rpcs(cred["key"], cred["machine"], coded=cred["key"] is not None)   # RL10's has no key
+        self.reqs = requests.Requests(cred["machine"])
+        self.rpcs = rpc.Rpcs(cred["machine"])
         self.adopt(cred)
 
     def adopt(self, cred):
@@ -2212,7 +2149,7 @@ def rl10_connection(info, kept, ended):
     transport = SocketTransport(conn, welcome, ended)
     transport.start()
     try:
-        serve(transport, cred, ended, kept.logs, kept.bridges, kept.reqs, kept.rpcs, kept.warmer, coded=False)
+        serve(transport, cred, ended, kept.logs, kept.bridges, kept.reqs, kept.rpcs, kept.warmer)
     finally:
         transport.close()
     return kept

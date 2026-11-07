@@ -382,7 +382,7 @@ class Streams(tw.Machine):
         self.assertIn("waits", got.stdout)
         self.assertEqual(self.events(writer), [], "no seq taken before the stream's head is known")
         self.assertEqual([e["text"] for e in sminos.queued_read(self.p, writer)], ["@private hi"])
-        hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"})
         hl.on_have({"have": {writer: 2}})
         self.assertEqual(self.events(writer), [])
         for seq in (1, 2):

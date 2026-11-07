@@ -527,7 +527,7 @@ stranger = sys.argv[1]
 project = sminos.resolve_project(os.getcwd())
 e = sminos.log_append(project, "delta/human", "say", **{"from": "human", "to": "*", "text": "delta, raced"})
 # The endpoint's have that confirms the run admits it (the archive copies an own writer up to that vector alone).
-hublog.HubLog(project, {"key": None, "machine": "delta"}, coded=False).on_have(
+hublog.HubLog(project, {"key": None, "machine": "delta"}).on_have(
     {"have": {"delta/human": e["seq"]}, "archive": True})
 real, raced, answers = archive.push_once, [], []
 
@@ -558,7 +558,7 @@ assert_equals "$(python3 - <<'PY'
 import json, os, sys
 sys.path.insert(0, os.environ["SCRIPTS"])
 import sminos, sminos_hublog as hublog
-hl = hublog.HubLog(sminos.resolve_project(os.getcwd()), {"key": None, "machine": "delta"}, coded=False)
+hl = hublog.HubLog(sminos.resolve_project(os.getcwd()), {"key": None, "machine": "delta"})
 hl.on_have({"have": {"delta/human": 5, "beta/human": 9}, "archive": False})
 opened = [dict(hl.sent), sorted(hl.stuck)]
 hl.stuck.add("delta/human")  # the endpoint refused it on this connection

@@ -52,7 +52,6 @@ gates:
   - name: sminos-suites
     run: SMINOS_PART=suites bash sminos/tests/run-sminos-tests.sh
     timeout: 30
-    # test_rpcs.py runs the live checks' call paths (sminos/tests/mods/live-*) against its fake engine.
     paths: ["sminos/**", ".github/**"]
 
   # The sminos plugin's mods (the bridge, the ask, the address), installed as the mods gate is.

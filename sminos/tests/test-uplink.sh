@@ -264,53 +264,54 @@ kill "$RUN"
 set +e; wait "$RUN"; set -e
 
 # ---- a position of this machine's own writer, refused, and what it writes next
-# A lying hub holds a forgery at testhost/<session>:1, which this machine
-# refuses, spending the position. Its own next event there takes 2, which it
-# uploads past the hub's 1, and whose echo it imports as present.
+# In-process, on the log plane as the endpoint feeds it (each event wrapped
+# `{event, signer}`, #153 M6). A lying upstream sends a malformed event at
+# testhost/<session>:1, which this machine refuses, spending the position. Its
+# own next event there takes 2, which it uploads past the upstream's 1, and
+# whose echo it imports as present.
 echo "a refused position of this machine's own writer:"
 OWN="$(python3 - "$SCRIPTS" "$HP" <<'PY'
-import json, os, sys, time
+import json, sys, time
 sys.path.insert(0, sys.argv[1])
-import sminos, sminos_codes as codes, sminos_hublog as hublog
+import sminos, sminos_hublog as hublog
 p = sminos.find_project(sys.argv[2])
-key = bytes(range(32))
-hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+hl = hublog.HubLog(p, {"machine": "testhost"})
+signer = {"kind": "machine", "name": "testhost"}
 w = "testhost/5a000002-0000-4000-8000-0000000000b2"
 ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
-forged = codes.seal(bytes(32), "log", p.id, {"ts": ts, "writer": w, "seq": 1, "kind": "say", "from": "x", "to": "*",
-                                             "text": "forged"}, codes.b64url(os.urandom(16)))
+forged = {"event": {"ts": ts, "writer": w, "seq": 1, "from": "x", "to": "*", "text": "forged"}, "signer": signer}
 _, refused = hl.take([forged])
 mine = sminos.log_append(p, w, "say", **{"from": "k", "to": "*", "text": "this machine's own"})
 hl.have, hl.sent = {w: 1}, {w: 1}
 uploaded = [e["seq"] for frame, _ in hl.uploads() for e in frame["events"] if e["writer"] == w]
-appended, echoed = hl.take([hublog.seal(key, p.id, mine)])
+appended, echoed = hl.take([{"event": mine, "signer": signer}])
 print(json.dumps([[f["reason"] for f in refused], mine["seq"], uploaded, appended, [f["reason"] for f in echoed]]))
 PY
 )"
-assert_equals "$OWN" '[["bad-code"], 2, [2], 0, []]' \
-  "the forgery is refused, the machine's next event takes the position after it, uploads past the hub's 1, and its echo imports as present"
+assert_equals "$OWN" '[["bad-shape"], 2, [2], 0, []]' \
+  "the malformed event is refused, the machine's next event takes the position after it, uploads past the upstream's 1, and its echo imports as present"
 
 # A writer under this machine's prefix that it never allocates is no file the
 # allocator can open: the frame still yields its rejection and the valid event.
 echo "a refused position under this machine's prefix that it does not allocate:"
 LONG="$(python3 - "$SCRIPTS" "$HP" <<'PY'
-import json, os, sys, time
+import json, sys, time
 sys.path.insert(0, sys.argv[1])
-import sminos, sminos_codes as codes, sminos_hublog as hublog
+import sminos, sminos_hublog as hublog
 p = sminos.find_project(sys.argv[2])
-key = bytes(range(32))
-hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+hl = hublog.HubLog(p, {"machine": "testhost"})
+signer = {"kind": "machine", "name": "other"}
 ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
-junk = codes.seal(bytes(32), "log", p.id, {"ts": ts, "writer": "testhost/" + "x" * 300, "seq": 1, "kind": "say",
-                                           "from": "x", "to": "*", "text": "junk"}, codes.b64url(os.urandom(16)))
-good = hublog.seal(key, p.id, {"ts": ts, "writer": "other/5a000003-0000-4000-8000-0000000000c3", "seq": 1,
-                               "kind": "say", "from": "o", "to": "*", "text": "valid"})
+junk = {"event": {"ts": ts, "writer": "testhost/" + "x" * 300, "seq": 1, "from": "x", "to": "*", "text": "junk"},
+        "signer": signer}
+good = {"event": {"ts": ts, "writer": "other/5a000003-0000-4000-8000-0000000000c3", "seq": 1, "kind": "say",
+                  "from": "o", "to": "*", "text": "valid"}, "signer": signer}
 appended, refused = hl.take([junk, good])
 print(json.dumps([[f["reason"] for f in refused], appended]))
 PY
 )"
-assert_equals "$LONG" '[["bad-code"], 1]' \
-  "an unusable writer under the machine's prefix is refused as bad-code and the valid event after it in the frame is appended"
+assert_equals "$LONG" '[["bad-shape"], 1]' \
+  "an unusable writer under the machine's prefix is refused and the valid event after it in the frame is appended"
 
 # A malformed event at a position this machine's own event holds is refused
 # bad-shape, but its position is coordinated like any own-writer refusal: it is
@@ -321,40 +322,40 @@ import json, sys
 sys.path.insert(0, sys.argv[1])
 import sminos, sminos_hublog as hublog
 p = sminos.find_project(sys.argv[2])
-key = bytes(range(32))
-hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+hl = hublog.HubLog(p, {"machine": "testhost"})
+signer = {"kind": "machine", "name": "testhost"}
 w = "testhost/5a000004-0000-4000-8000-0000000000d4"
 mine = sminos.log_append(p, w, "say", **{"from": "k", "to": "*", "text": "this machine's own"})
-_, refused = hl.take([{"writer": w, "seq": mine["seq"], "ts": None, "kind": "say"}])
-appended, echoed = hl.take([hublog.seal(key, p.id, mine)])
+_, refused = hl.take([{"event": {"writer": w, "seq": mine["seq"], "ts": None, "kind": "say"}, "signer": signer}])
+appended, echoed = hl.take([{"event": mine, "signer": signer}])
 print(json.dumps([mine["seq"], [f["reason"] for f in refused], appended, [f["reason"] for f in echoed]]))
 PY
 )"
 assert_equals "$HELD" '[1, ["bad-shape"], 0, []]' \
   "the malformed event is refused bad-shape, and the genuine event's echo imports as present, not refused as spent"
 
-# An event whose code verifies, at a position another event holds here, is
-# refused `conflict` (DX2): its code is good, its position taken. The position
-# stays the held event's, whose echo still imports as present.
-echo "an event that verifies, at a position another event holds:"
+# An event at a position another event holds here is refused `conflict`: its
+# shape is good, its position taken. The position stays the held event's,
+# whose echo still imports as present.
+echo "an event at a position another event holds:"
 CONFLICT="$(python3 - "$SCRIPTS" "$HP" <<'PY'
 import json, sys
 sys.path.insert(0, sys.argv[1])
 import sminos, sminos_hublog as hublog
 p = sminos.find_project(sys.argv[2])
-key = bytes(range(32))
-hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+hl = hublog.HubLog(p, {"machine": "testhost"})
+signer = {"kind": "machine", "name": "testhost"}
 w = "testhost/5a000005-0000-4000-8000-0000000000e5"
 mine = sminos.log_append(p, w, "say", **{"from": "k", "to": "*", "text": "this machine's own"})
-other = hublog.seal(key, p.id, {**mine, "text": "another event at the same position"})
+other = {"event": {**mine, "text": "another event at the same position"}, "signer": signer}
 appended, refused = hl.take([other])
-echo_appended, echoed = hl.take([hublog.seal(key, p.id, mine)])
+echo_appended, echoed = hl.take([{"event": mine, "signer": signer}])
 print(json.dumps([mine["seq"], appended, [[f["reason"], f["event"]] for f in refused], echo_appended,
                   [f["reason"] for f in echoed]]))
 PY
 )"
 assert_equals "$CONFLICT" '[1, 0, [["conflict", {"writer": "testhost/5a000005-0000-4000-8000-0000000000e5", "seq": 1}]], 0, []]' \
-  "a different event that verifies at a held position is refused conflict, not bad-code, and the held event's echo imports as present"
+  "a different event at a held position is refused conflict, and the held event's echo imports as present"
 
 # ---- RL10: the machine cuts over to its endpoint (O12 M5)
 # The endpoint stand-in (endpoint_standin.py) writes rl10.json where

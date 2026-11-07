@@ -160,7 +160,7 @@ class OverRl10(Sender):
         super().setUp()
         self.reach = Reach()
         self.ep = endpoint_standin.Endpoint(self.epdir, withhold=self.reach)
-        self.hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
+        self.hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"})
 
     def project(self, name, hub=False):
         self.cut_over()

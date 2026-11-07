@@ -613,10 +613,9 @@ class LogPlane(Machine):
                          [{**event, "verified": {"signer": {"kind": "legacy"}}}], "owners only as the endpoint sent them")
 
     def test_no_nonce_index_on_rl10(self):
-        hl = hublog.HubLog(self.own, {"key": None, "machine": "testhost"}, coded=False)
-        with mock.patch.object(hl, "nonce_index", side_effect=AssertionError("no nonce index on RL10")):
-            got = hl.take([{"event": {"ts": "2026-10-27T01:00:00.123Z", "writer": OTHER, "seq": 1, "kind": "say",
-                                      "to": [], "text": "x"}, "signer": {"kind": "legacy"}}])
+        hl = hublog.HubLog(self.own, {"key": None, "machine": "testhost"})
+        got = hl.take([{"event": {"ts": "2026-10-27T01:00:00.123Z", "writer": OTHER, "seq": 1, "kind": "say",
+                                  "to": [], "text": "x"}, "signer": {"kind": "legacy"}}])
         self.assertEqual(got, (1, []))
 
 
@@ -656,7 +655,7 @@ class Spent(Machine):
             return [json.loads(line)["seq"] for line in f if line.strip()]
 
     def hublog(self):
-        return hublog.HubLog(self.own, {"key": None, "machine": "testhost"}, coded=False)
+        return hublog.HubLog(self.own, {"key": None, "machine": "testhost"})
 
     def status(self):
         r = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "daemon", "status"],
@@ -1042,34 +1041,33 @@ class HostStore(Machine):
 
 class Drafts(unittest.TestCase):
     def test_no_key_no_code(self):
-        reqs = requests.Requests(None, "testhost")
+        reqs = requests.Requests("testhost")
         try:
             draft = {"session": S1, "request": "r1", "tool": "Bash"}
             self.assertEqual(reqs.seal("raised", "p", draft), draft, "a raise goes as its draft")
         finally:
             reqs.close()
         r = {"event": {"writer": "hub/m", "seq": 1}, "session": S1, "outcome": "delivered", "reason": None}
-        self.assertEqual(outcomes.message(None, "testhost", "p", r)["message"]["body"],
+        self.assertEqual(outcomes.message("testhost", "p", r)["message"]["body"],
                          {"event": r["event"], "session": S1, "outcome": "delivered", "reason": None})
 
 
     def test_settlements_a_dx2_uplink_left_owed_go_as_drafts(self):
         """A cutover with settlements still owed (daemon/requests-owed.json,
         kept by the hub's uplink, sealed): the RL10 child sends them with no
-        code; restored on DX2 they are as they were kept."""
+        code."""
         home = tempfile.mkdtemp(dir=BASE)
         os.environ.update(HOME=os.path.join(home, "h"), SMINOS_HOME=os.path.join(home, "s"))
         sminos.forget_caches()
-        settled = {"request": "r1", "t": 1, "winner": "desk", "outcome": "allow", "by": "mem-1"}
-        keyed = requests.Requests(bytes(range(32)), "testhost")
-        keyed.settled(S1, "p1", settled)
-        keyed.close()
-        sealed = keyed.outbox[0][1]["message"]["body"]
-        self.assertIn("mac", sealed, "kept sealed by the hub's uplink")
-        again = requests.Requests(bytes(range(32)), "testhost")
-        self.assertEqual(again.opening("p1")[0]["message"]["body"], sealed, "DX2 restores it as it was kept")
-        again.close()
-        rl = requests.Requests(None, "testhost")
+        # The file as the hub's uplink kept it before the cutover (sminos 1.39's Requests(org key).settled).
+        sealed = {"request": "r1", "winner": "desk", "outcome": "allow", "by": "mem-1",
+                  "mac": {"nonce": "rl-ghZqu5FEoDm5l-PKVrg", "value": "TEp9AoFqGSO_A7VQ1_Hd7adV6TD8zUeLSFlxdTMts3Y"}}
+        os.makedirs(os.path.join(os.environ["SMINOS_HOME"], "daemon"))
+        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", requests.OWED_FILE), {
+            "version": 1, "owed": [{"session": S1, "request": "r1", "t": 1, "project": "p1", "frame": {
+                "t": "session", "message": {"project": "p1", "machine": "testhost", "session": S1, "kind": "settled",
+                                            "sub": None, "n": None, "body": sealed}}}]})
+        rl = requests.Requests("testhost")
         body = rl.opening("p1")[0]["message"]["body"]
         rl.close()
         self.assertEqual(body, {k: v for k, v in sealed.items() if k != "mac"}, "RL10 sends its draft")
@@ -1114,7 +1112,7 @@ class Rpcs(Machine):
 
     def test_the_entry_keeps_the_remote_fields_and_a_derived_target(self):
         policy.take_endpoint({"read_only": True, "ceiling": "default"})   # every RPC refused, and kept
-        rpcs = rpc.Rpcs(None, "testhost", coded=False)
+        rpcs = rpc.Rpcs("testhost")
         here = FakeHere(self.own, {S1})
         now = endpoint_standin.iso()
         base = {"project": self.own.id, "machine": "testhost", "member": "mem-1", "device": "dev-1", "created": now,

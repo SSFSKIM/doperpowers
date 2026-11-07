@@ -12,7 +12,7 @@ outcomes of delivering what came from outside (DC7 M2 of the desk).
   its outcome for the uplink (`delivered`, `recorded`, `refused-read-only`,
   `failed`).
 - Requests: what the bridges raise and settle (DC2's real child, its DX5
-  stream) becomes DX4 `raised` and `settled` with DX1's codes, and the
+  stream) becomes DX4 `raised` and `settled`, as drafts, and the
   machine's complete pending set.
 - What the relay marks when a write is lost (`RelayedOnRl10`: the Link on
   RL10's own lane over a socket).
@@ -56,8 +56,6 @@ import sminos_requests as requests  # noqa: E402
 import sminos_rpc as rpc  # noqa: E402
 
 T = tsp.T
-KEY_B64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
-KEY = codes.b64url_bytes(KEY_B64, 32)
 CLI = os.path.join(tsp.SCRIPTS, "sminos")
 MEMBER = "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c"
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]
@@ -186,13 +184,14 @@ def clear_policy():
         pass
 
 
-def hub_human(key, project_id, sid, alias, text, seq):
-    """A web `human` as the hub stores it: sealed by the browser, then given
-    its writer, seq, and ts (DX1)."""
-    draft = {"kind": "human", "from": "human", "member": MEMBER, "to": [{"session": sid, "alias": alias}],
-             "text": text, "created": "2026-10-15T08:04:59.870Z"}
-    sealed = codes.seal(key, "log", project_id, draft, codes.b64url(os.urandom(16)))
-    return {**sealed, "writer": "hub/" + MEMBER, "seq": seq, "ts": "2026-10-15T08:05:%02d.000Z" % (seq % 60)}
+def hub_human(sid, alias, text, seq):
+    """A web `human` as an RL10 import stores it (HubLog.take): the event
+    with its writer, seq, and ts, and the endpoint's verdict added as
+    `verified`."""
+    return {"kind": "human", "from": "human", "member": MEMBER, "to": [{"session": sid, "alias": alias}],
+            "text": text, "created": "2026-10-15T08:04:59.870Z", "writer": "hub/" + MEMBER, "seq": seq,
+            "ts": "2026-10-15T08:05:%02d.000Z" % (seq % 60),
+            "verified": {"signer": {"kind": "device", "member": MEMBER, "device": "dev-1", "keyId": "k-dev-1"}}}
 
 
 # ---------------------------------------------------------------- the policy
@@ -288,7 +287,7 @@ class Delivery(unittest.TestCase):
 
     def human_from_hub(self, text):
         Delivery.hub_seq += 1
-        e = hub_human(KEY, self.pid, self.live.sid, self.alias, text, self.hub_seq)
+        e = hub_human(self.live.sid, self.alias, text, self.hub_seq)
         path = sminos.writer_path(self.project, e["writer"])
         with open(path, "a") as f:
             f.write(json.dumps(e) + "\n")
@@ -662,7 +661,7 @@ class Refusals(unittest.TestCase):
 
     def human_from_hub(self, text, sid=None, alias=None):
         Refusals.hub_seq += 1
-        e = hub_human(KEY, self.pid, sid or self.sid, alias or self.alias, text, self.hub_seq)
+        e = hub_human(sid or self.sid, alias or self.alias, text, self.hub_seq)
         with open(sminos.writer_path(self.project, e["writer"]), "a") as f:
             f.write(json.dumps(e) + "\n")
         return e
@@ -837,24 +836,21 @@ class Refusals(unittest.TestCase):
                 pass
 
 
-class Requests(unittest.TestCase):
-    """The relay of requests, against the real bridge child. `key`: DX2's
-    org key, each message sealed under it; RequestsOnRl10 runs the same
-    tests with none, as a machine cut over to its endpoint does (#153)."""
+class RequestsOnRl10(unittest.TestCase):
+    """The relay of requests, against the real bridge child, as a machine
+    cut over to its endpoint relays them (#153): every message a draft."""
 
     PID = "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f"
-    key = KEY
 
     def assert_code(self, kind, body, msg=None):
-        """The message's body as it goes up: under DX1's code (DX2)."""
-        self.assertTrue(codes.verifies(KEY, kind, self.PID, body), msg)
+        self.assertNotIn("mac", body, "RL10: a draft, with no code")
 
     def setUp(self):
         forget_owed()
         self.addCleanup(forget_owed)
         self.sid = str(uuidlib.uuid4())
         self.bridge = Bridge(self.sid)
-        self.r = requests.Requests(self.key, "testhost")
+        self.r = requests.Requests("testhost")
         self.r.follow({self.sid: self.PID})
 
     def tearDown(self):
@@ -1012,7 +1008,7 @@ class Requests(unittest.TestCase):
         recent settlements carry it, and it goes up once — not again on the
         next snapshot, nor from a Requests that starts anew (a restart)."""
         self.r.close()
-        self.r = requests.Requests(self.key, "testhost")
+        self.r = requests.Requests("testhost")
         self.bridge.raise_("toolu_quick")
         self.bridge.settle("toolu_quick", outcome="allow", winner="other", by="cli")
         self.r.follow({self.sid: self.PID})
@@ -1020,7 +1016,7 @@ class Requests(unittest.TestCase):
         self.assertEqual([m["body"]["request"] for m in messages(frames, "settled")], ["toolu_quick"])
         self.assertEqual(messages(frames, "raised"), [])
         self.r.sent(frames)
-        again = requests.Requests(self.key, "testhost")
+        again = requests.Requests("testhost")
         try:
             again.follow({self.sid: self.PID})
             self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
@@ -1057,7 +1053,7 @@ class Requests(unittest.TestCase):
         send(lambda fs: messages(fs, "settled"))
         self.assertEqual(relayed, [("toolu_ask", "withdrawn"), ("toolu_ask", "answered")])
         self.assertEqual(self.r.pending_frame(self.PID)["raised"], [])
-        again = requests.Requests(self.key, "testhost")
+        again = requests.Requests("testhost")
         try:
             again.follow({self.sid: self.PID})
             self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
@@ -1116,12 +1112,12 @@ class Requests(unittest.TestCase):
         self.assertIsNotNone(wait_for(lambda: old.proc.poll() is not None), "the old child leaves")
         self.bridge.raise_("toolu_ask", **self.ASK)
         self.bridge.settle("toolu_ask", outcome="answered", winner="web", by=MEMBER)
-        self.r = requests.Requests(self.key, "testhost")
+        self.r = requests.Requests("testhost")
         self.r.follow({self.sid: self.PID})
         frames = self.due(lambda fs: messages(fs, "settled"))
         self.assertEqual(self.settled_by(frames), [("toolu_ask", "answered")])
         self.r.sent(frames)
-        again = requests.Requests(self.key, "testhost")
+        again = requests.Requests("testhost")
         try:
             again.follow({self.sid: self.PID})
             self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
@@ -1169,7 +1165,7 @@ class Requests(unittest.TestCase):
         self.r.sent(frames)
         self.resubscribe()
         self.assertEqual(self.settled_by(self.r.due({self.PID})), [], "the snapshot lists it: not sent")
-        again = requests.Requests(self.key, "testhost")
+        again = requests.Requests("testhost")
         try:
             again.follow({self.sid: self.PID})
             self.assertTrue(wait_for(lambda: again.take() or self.sid in again.synced))
@@ -1189,7 +1185,7 @@ class Requests(unittest.TestCase):
                "async": True, "t": 1}
         self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
                           "delivered": {}, "pending": [ask], "settled": []})
-        self.r = requests.Requests(self.key, "testhost")
+        self.r = requests.Requests("testhost")
         self.r.follow({self.sid: self.PID})
         frames = self.due(lambda fs: messages(fs, "raised"))
         self.assertEqual(self.settled_by(frames), [])
@@ -1217,7 +1213,7 @@ class Requests(unittest.TestCase):
             self.bridge.settle("toolu_old", outcome="allow", winner="other", by="cli")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             sminos.write_json(path, {self.sid: ["toolu_old"]})
-            self.r = requests.Requests(self.key, "testhost")
+            self.r = requests.Requests("testhost")
             self.r.follow({self.sid: self.PID})
             frames = self.due(lambda fs: messages(fs, "settled"))
             self.assertEqual(self.settled_by(frames), [("toolu_old", "allow")])
@@ -1262,7 +1258,7 @@ class Requests(unittest.TestCase):
         self.r.close()
         self.bridge.raise_("toolu_before")
         clock = [100.0]
-        self.r = requests.Requests(self.key, "testhost", clock=lambda: clock[0])
+        self.r = requests.Requests("testhost", clock=lambda: clock[0])
         self.r.follow({self.sid: self.PID})
         first = self.r.opening(self.PID)
         self.assertEqual([f for f in first if f.get("t") == "pending"], [], "no set before its bridge is read")
@@ -1334,8 +1330,8 @@ class Requests(unittest.TestCase):
         """#149: a permission's input past RAISED_INPUT_MAX goes up as the
         mod's resync cuts one — each string held to RESYNC_INPUT_CAP (1,024
         UTF-16 units, a pair never split) and the request marked
-        `truncated` — in its `raised` and in the complete set, sealed
-        (DX2) or as a draft (RL10). The child keeps the input whole; a
+        `truncated` — in its `raised` and in the complete set, as a
+        draft. The child keeps the input whole; a
         decision's digest drawn from the input shown, or from the whole
         one, finds the request pending, and any other is refused."""
         whole = {"file_path": "/w/huge", "content": "y" * (17 << 20), "tail": "x" + "\U0001F600" * 600}
@@ -1349,7 +1345,7 @@ class Requests(unittest.TestCase):
         self.assertLess(len(json.dumps(body).encode()), requests.RAISED_INPUT_MAX)
         self.r.sent(frames)
         self.assertEqual(self.r.pending_frame(self.PID)["raised"], [body], "the complete set carries it so")
-        drafts = requests.Requests(None, "testhost")
+        drafts = requests.Requests("testhost")
         self.addCleanup(drafts.close)
         drafts.follow({self.sid: self.PID})
         got = wait_for(lambda: drafts.take() or messages(drafts.due({self.PID}), "raised"))
@@ -1394,15 +1390,6 @@ class Requests(unittest.TestCase):
                          allow)
 
 
-class RequestsOnRl10(Requests):
-    """Requests' tests with no key (RL10, #153 M3a): every message a draft."""
-
-    key = None
-
-    def assert_code(self, kind, body, msg=None):
-        self.assertNotIn("mac", body, "RL10: a draft, with no code")
-
-
 # ---------------------------------------------------------------- the uplink
 
 
@@ -1416,11 +1403,9 @@ def forget_owed():
             pass
 
 
-class Owed(unittest.TestCase):
-    """sminos_owed's file, through its owners: under DX2's org key; OwedOnRl10
-    runs the same with none, as a machine cut over to its endpoint (#153)."""
-
-    key, coded = KEY, True
+class OwedOnRl10(unittest.TestCase):
+    """sminos_owed's file, through its owners, as a machine cut over to its
+    endpoint keeps it (#153)."""
 
     def setUp(self):
         forget_owed()
@@ -1435,7 +1420,7 @@ class Owed(unittest.TestCase):
                                                          "frame": frame}]})
         said = []
         with mock.patch.object(requests, "log", said.append):
-            r = requests.Requests(self.key, "testhost")
+            r = requests.Requests("testhost")
         self.addCleanup(r.close)
         self.assertEqual((r.outbox, r.queued), ([], {}), "nothing taken from a newer version's file")
         self.assertTrue(any("not version 1's (2)" in line for line in said), said)
@@ -1445,11 +1430,7 @@ class Owed(unittest.TestCase):
         rpc_path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpc.OWED_FILE)
         sminos.write_json(rpc_path, {"version": 2, "owed": [{**frame, "message": {**frame["message"],
                                                                                   "kind": "compact", "body": {}}}]})
-        self.assertEqual(rpc.Rpcs(self.key, "testhost", coded=self.coded).messages, [], "nor a compaction message")
-
-
-class OwedOnRl10(Owed):
-    key, coded = None, False
+        self.assertEqual(rpc.Rpcs("testhost").messages, [], "nor a compaction message")
 
 
 class RelayedOnRl10(unittest.TestCase):
@@ -1481,7 +1462,7 @@ class RelayedOnRl10(unittest.TestCase):
         self.addCleanup(self.bridge.stop)
 
     def requests(self):
-        r = requests.Requests(None, "testhost")
+        r = requests.Requests("testhost")
         self.addCleanup(r.close)
         return r
 
@@ -1508,8 +1489,8 @@ class RelayedOnRl10(unittest.TestCase):
                 wire.lost += data
                 raise BrokenPipeError("the endpoint's socket is gone")
             near.write(data)
-        link = self.uplink.Link(self.cred, {self.pid: self.hublog.HubLog(self.project, self.cred, coded=False)},
-                                reqs=reqs, rpcs=rpcs, transport=mock.Mock(number=generation), coded=False)
+        link = self.uplink.Link(self.cred, {self.pid: self.hublog.HubLog(self.project, self.cred)},
+                                reqs=reqs, rpcs=rpcs, transport=mock.Mock(number=generation))
         link.bridged = lambda pids: {self.sid: self.pid} if self.pid in pids else {}
         items = queue.Queue()
         link.generation = generation
@@ -1518,7 +1499,7 @@ class RelayedOnRl10(unittest.TestCase):
         link.log_lane.start()
         link.wire, link.far = wire, far
         self.addCleanup(link.close)
-        # What Link.on_welcome does for these at every stream, whatever `coded` is: what the last stream's lane
+        # What Link.on_welcome does for these at every stream: what the last stream's lane
         # held in flight is owed as it stands. (The rest of an RL10 welcome, welcomed_rl10, writes this
         # machine's identity, which this module's shared SMINOS_HOME must not take.)
         link.requests.reset()
@@ -1635,7 +1616,7 @@ class RelayedOnRl10(unittest.TestCase):
         follows the next hello, under its opId and nonce, until `rpc-ack`,
         and the compaction's message, read back from daemon/rpcs-owed.json,
         goes again; written, it is owed no more."""
-        rp = rpc.Rpcs(None, "testhost", coded=False)
+        rp = rpc.Rpcs("testhost")
         r = self.requests()
         link, items, _ = self.stream(1, r, rp)
         nonce, op = (codes.b64url(os.urandom(n)) for n in (codes.NONCE_BYTES, 18))
@@ -1654,7 +1635,7 @@ class RelayedOnRl10(unittest.TestCase):
         lost = self.lose(link, items, link.relay_rpcs, "cut")
         self.assertTrue(result_in(lost) and compact_in(lost), "both were in the write lost: %s" % lost)
         self.assertEqual(result_in(lost)[0]["opId"], op)
-        rp = rpc.Rpcs(None, "testhost", coded=False)   # the uplink restarts
+        rp = rpc.Rpcs("testhost")   # the uplink restarts
         self.assertEqual([m["message"]["body"]["rpc"] for m in rp.messages], [op], "owed, from disk")
         link, items, hello = self.stream(2, r, rp)
         self.assertTrue(result_in(hello), "the result follows the next hello (until rpc-ack)")
@@ -1663,7 +1644,7 @@ class RelayedOnRl10(unittest.TestCase):
         self.assertTrue(compact_in(hello + self.read(link.far)), "the compaction's message goes again")
         self.assertEqual(rp.messages, [], "written: owed no more")
         self.assertEqual(rp.due({self.pid}), [], "neither is due again on this stream")
-        self.assertEqual(rpc.Rpcs(None, "testhost", coded=False).messages, [], "nor owed on disk")
+        self.assertEqual(rpc.Rpcs("testhost").messages, [], "nor owed on disk")
         link.close()
         link, items, hello = self.stream(3, r, rp)
         self.assertTrue(result_in(hello), "not acknowledged: the next stream's hello carries it again")

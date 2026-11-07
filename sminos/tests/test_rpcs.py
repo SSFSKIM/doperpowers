@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""The RPCs on the machine side (DC7 M3 of the desk): DX6's RPCs verified,
-bound to where they run, checked against the machine's policy, executed at
-most once through DC2's bridge (or `sminos` for spawn and retire), and
-answered as DX2 `rpc-result`, republished until `rpc-ack`.
+"""The RPCs on the machine side (DC7 M3 of the desk): DX6's RPCs as a
+machine cut over to its endpoint receives them (RL10), bound to where they
+run, checked against the machine's policy, executed at most once through
+DC2's bridge (or `sminos` for spawn), and answered as `rpc-result`,
+republished until `rpc-ack`.
 
 Two halves.
 
-- `Checks` drives `sminos_rpc.Rpcs` in this process against DC2's real
-  bridge child, with this test as its mod (`Mod`: commands answered as
+- `ChecksOnRl10` drives `sminos_rpc.Rpcs` in this process against DC2's
+  real bridge child, with this test as its mod (`Mod`: commands answered as
   bridge.tsx answers them), and a `claude` stand-in (fake_claude.py) for
-  spawn, retire, and resume.
+  spawn and for the processes a Resume claimed before the cutover left.
   Each refusal of DX6's order is produced on purpose, and the ledger's
-  claims are reconciled from their traces. `ChecksOnRl10` runs the same
-  tests as a machine cut over to its endpoint runs them (no code, the
-  endpoint's RPCs).
+  claims are reconciled from their traces.
 - `UplinkOnRl10` runs `sminos daemon uplink` on a machine cut over to its
   endpoint, against the endpoint stand-in (endpoint_standin.py), each RPC
   sent down as the endpoint sends it and its `rpc-result` keyed by its
@@ -31,11 +30,10 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
-import sys
-import tempfile
 import threading
 import time
 import unittest
@@ -55,7 +53,6 @@ import sminos_requests as requests  # noqa: E402
 import sminos_rpc as rpcs  # noqa: E402
 
 T = tsp.T
-KEY = tpr.KEY
 CLI = tpr.CLI
 MEMBER = tpr.MEMBER
 GIT = tpr.GIT
@@ -67,6 +64,7 @@ PDF = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n"
 TURN_UNKNOWN = "turn state unknown since the bridge reloaded; retry after the next model request"
 LAUNCH = "-Lm7launch0000000000AA"   # the bridged session's launch (O12 M7): base64url, here starting with `-`
 STALE = "Lm7launch-before-reopen"  # a launch the session ran under before it was reopened
+BG_SHORT_RE = re.compile(r"backgrounded · ([0-9a-f]+)")   # the job `claude --bg` names (fake_claude.py)
 
 
 def install_claude(name):
@@ -95,17 +93,6 @@ def stop_holders(state):
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
-
-
-def resumes(state, sid):
-    """The `--bg --resume` launches the stand-in saw for the session:
-    [{args, cwd}]."""
-    try:
-        with open(os.path.join(state, "resumes.log")) as f:
-            calls = [json.loads(line) for line in f if line.strip()]
-    except OSError:
-        return []
-    return [c for c in calls if c["args"][c["args"].index("--resume") + 1] == sid]
 
 
 def holders_of(sid):
@@ -151,19 +138,6 @@ def iso(epoch):
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(epoch)) + ".%03dZ" % int((epoch % 1) * 1000)
 
 
-def sign(key, name, project, args, machine="testhost", created=None, nonce=None, member=MEMBER, op_id=None,
-         op_created=None):
-    """An RPC as the browser seals it (DX6, DX1); with `op_id` (and
-    `op_created`), as an app keying it by an operation id (RL4) seals it."""
-    draft = {"rpc": name, "project": project, "machine": machine, "member": member,
-             "created": created or iso(time.time()), "nonce": nonce or codes.b64url(os.urandom(16)), "args": args}
-    if op_id is not None:
-        draft["opId"] = op_id
-    if op_created is not None:
-        draft["opCreated"] = op_created
-    return codes.seal(key, "rpc", project, draft, None)
-
-
 def new_op():
     """An operation id as an app chooses one: 128 random bits, base64url."""
     return codes.b64url(os.urandom(16)) + "op"
@@ -182,38 +156,6 @@ def transcript(sid):
 def append_row(sid, row):
     with open(transcript(sid), "a") as f:
         f.write(json.dumps(row) + "\n")
-
-
-def start_job(sid, task, kind="shell", agent=None):
-    """A background shell's or monitor's start, as the engine writes it: the
-    call, then its result naming the task (in a subagent's own transcript
-    for `agent`)."""
-    path = transcript(sid)
-    if agent:
-        path = os.path.join(path[:-len(".jsonl")], "subagents", "agent-%s.jsonl" % agent)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-    call = "toolu_" + task
-    tool, tur, text = (("Bash", {"backgroundTaskId": task},
-                        "Command running in background with ID: %s. Output is being written to: /tmp/%s.output"
-                        % (task, task)) if kind == "shell"
-                       else ("Monitor", {"taskId": task, "timeoutMs": 300000, "persistent": False},
-                             "Monitor started (task %s, timeout 300000ms)." % task))
-    now = iso(time.time())
-    with open(path, "a") as f:
-        f.write(json.dumps({"type": "assistant", "uuid": str(uuidlib.uuid4()), "timestamp": now, "message": {
-            "role": "assistant", "content": [{"type": "tool_use", "id": call, "name": tool,
-                                              "input": {"command": "sleep 600", "description": task}}]}}) + "\n")
-        f.write(json.dumps({"type": "user", "uuid": str(uuidlib.uuid4()), "timestamp": now, "toolUseResult": tur,
-                            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call,
-                                                                     "content": text}]}}) + "\n")
-
-
-def end_job(sid, task, status):
-    """A task's notification, as the engine queues it when the task ends."""
-    append_row(sid, {"type": "attachment", "uuid": str(uuidlib.uuid4()), "timestamp": iso(time.time()),
-                     "attachment": {"type": "queued_command", "commandMode": "task-notification",
-                                    "prompt": "<task-notification>\n<task-id>%s</task-id>\n<status>%s</status>\n"
-                                              "<summary>done</summary>\n</task-notification>" % (task, status)}})
 
 
 class Mod(tpr.Bridge):
@@ -518,10 +460,19 @@ class LaneVerdict(unittest.TestCase):
             zombie.wait()
 
 
-class Checks(unittest.TestCase):
-    """DX6's checks in order, and execution through the real bridge child."""
+class ChecksOnRl10(unittest.TestCase):
+    """DX6's checks in order, and execution through the real bridge child,
+    as a machine cut over to its endpoint runs them (RL10, #153 M3a): no
+    code, each RPC as the endpoint sends it down (O10 §D) — its sender's
+    member and device, the operation's fingerprint and id, and on a session
+    a lane A context naming the bridged session's launch. A copy sent again
+    under its nonce is the same op (its opId is the nonce's here). Resume,
+    Retire and Stop run outside the bridge's fence and are not offered
+    (`unsupported`); what stays of them is the recovery of a claim kept
+    before the cutover (the reconciliations under "a claim kept before the
+    cutover")."""
 
-    PROJECT = "rpcproj"
+    PROJECT = "rpcproj-rl10"
 
     @classmethod
     def setUpClass(cls):
@@ -532,7 +483,7 @@ class Checks(unittest.TestCase):
         cls.bridged = tpr.Session(cls.root)
         cls.plain = tpr.Session(cls.root)
         # The module names its process's launch, as bridge.tsx does (O12 M7):
-        # a DX2 RPC names none, and runs as it always did.
+        # RL10 runs a session's RPC only under it.
         cls.mod = Mod(cls.bridged.sid, launch=LAUNCH)
         r = cli("daemon", "tick")
         assert r.returncode == 0, r.stderr
@@ -584,22 +535,31 @@ class Checks(unittest.TestCase):
         tpr.clear_policy()
 
     def started(self):
-        """The machine's RPCs as its uplink starts them: under the org key's
-        code (DX2). ChecksOnRl10 starts them as a cut-over machine does."""
-        return rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        return rpcs.Rpcs("testhost", clock=lambda: self.clock[0])
 
-    def rpc(self, name, args, project=None, **kw):
-        """An RPC as it comes down to this machine: sealed by the browser (DX2)."""
-        return sign(KEY, name, project or self.pid, args, **kw)
+    def rpc(self, name, args, project=None, machine="testhost", created=None, nonce=None, member=MEMBER,
+            op_id=None, op_created=None, launch=LAUNCH, device="dev-1", fingerprint="fp-1"):
+        """`op_id` given, `op_created` is the test's to give (a malformed op
+        among them); else the op is the nonce's, created with the RPC."""
+        created = created or iso(time.time())
+        nonce = nonce or codes.b64url(os.urandom(16))
+        if op_id is None:
+            op_id, op_created = self.op_for(nonce), op_created or created
+        rpc = {"rpc": name, "project": project or self.pid, "machine": machine, "member": member, "device": device,
+               "created": created, "nonce": nonce, "opId": op_id, "args": args, "fingerprint": fingerprint}
+        if op_created is not None:
+            rpc["opCreated"] = op_created
+        if name != "spawn":
+            rpc["context"] = {"lane": "A", "session": args.get("session"), "launch": launch}
+        return rpc
 
     def relay(self):
-        """The machine's relay of requests, as its uplink starts it: under the org key (DX2)."""
-        return requests.Requests(KEY, "testhost")
+        return requests.Requests("testhost")
 
-    def no_bridge(self, _name):
-        """What an RPC to a session no bridge serves is refused: on DX2,
-        what the session cannot do without one."""
-        return "unsupported"
+    def no_bridge(self, name):
+        """RL10 runs nothing around the bridge (O12 M7): `context`, and what
+        runs outside its fence is not offered at all."""
+        return "unsupported" if name in rpcs.UNFENCED else "context"
 
     def send(self, name, args, **kw):
         rpc = self.rpc(name, args, **kw)
@@ -625,13 +585,10 @@ class Checks(unittest.TestCase):
         return o
 
     def op_for(self, nonce):
-        """The op an RPC this test sends with `nonce` is kept under: on DX2, its nonce."""
-        return nonce
+        return nonce + "op"
 
     def bound(self, rpc):
-        """What RL4's query and tombstone answer beside an op's state, of who
-        sent it and what it acts on: on DX2, nothing (rpcs.binding_of)."""
-        return {}
+        return self.binding(rpc["args"]["session"], rpc["member"], rpc["fingerprint"])
 
     @staticmethod
     def keyed(rpc):
@@ -648,18 +605,6 @@ class Checks(unittest.TestCase):
             return {}
 
     # ------------------------------------------------ before the ledger
-
-    def test_a_bad_code_is_refused_and_kept_out_of_the_ledger(self):
-        rpc = sign(KEY, "steer", self.pid, {"session": self.bridged.sid, "text": "go"})
-        rpc["args"]["text"] = "something else"
-        self.mod.turn = "t1"
-        self.r.receive(rpc, self.here)
-        self.refused(rpc, "bad-code")
-        self.assertNotIn(rpcs.op_of(rpc), self.ledger())
-        self.assertEqual(self.mod.ops("steer"), [], "nothing ran")
-        other = sign(b"\x01" * 32, "steer", self.pid, {"session": self.bridged.sid, "text": "go"})
-        self.r.receive(other, self.here)
-        self.refused(other, "bad-code")
 
     def test_b_where_it_runs_is_checked_before_the_ledger_and_freshness(self):
         stale = iso(time.time() - 600)
@@ -1010,72 +955,6 @@ class Checks(unittest.TestCase):
             self.refused(self.send(name, args), self.no_bridge(name))
         self.assertEqual(self.mod.commands, [], "nothing reached a bridge")
 
-    # ------------------------------------------------ stop a job (DC10)
-
-    def test_k_stop_a_running_job_the_main_loops_or_a_subagents(self):
-        """DX6 `stop`: a background shell of the main loop and a monitor of a
-        subagent, each the session's jobs hold as running, stopped through
-        the bridge (DX5 `stop`), answered `{taskId}`."""
-        start_job(self.bridged.sid, "bmain1")
-        start_job(self.bridged.sid, "magent1", kind="monitor", agent="a1b2c3")
-        for task in ("bmain1", "magent1"):
-            o = self.outcome(self.send("stop", {"session": self.bridged.sid, "taskId": task}))
-            self.assertEqual(o, {"state": "done", "result": {"taskId": task}})
-        self.assertEqual([(c["taskId"], c.get("from")) for c in self.mod.ops("stop")],
-                         [("bmain1", "desk"), ("magent1", "desk")])
-        # Stopped, recorded in the session's rows: a second Stop of either finds no running task.
-        for task in ("bmain1", "magent1"):
-            self.refused(self.send("stop", {"session": self.bridged.sid, "taskId": task}), "unknown-task")
-        self.assertEqual(len(self.mod.ops("stop")), 2)
-
-    def test_k_a_task_the_jobs_do_not_hold_running_is_unknown_task_before_the_claim(self):
-        """G3: a task never started, one that ended, one of another session,
-        a subagent's call that started nothing: refused `unknown-task`, never
-        sent to the bridge, and the nonce never claimed."""
-        start_job(self.bridged.sid, "bdone1")
-        end_job(self.bridged.sid, "bdone1", "completed")
-        start_job(self.bridged.sid, "bkill1")
-        end_job(self.bridged.sid, "bkill1", "killed")
-        start_job(self.plain.sid, "bother1")
-        claims = []
-        real = rpcs.Ledger.put
-
-        def put(ledger, nonce, entry):
-            if "outcome" not in entry:
-                claims.append(nonce)
-            return real(ledger, nonce, entry)
-
-        with mock.patch.object(rpcs.Ledger, "put", put):
-            for task in ("bnever1", "bdone1", "bkill1", "bother1"):
-                self.refused(self.send("stop", {"session": self.bridged.sid, "taskId": task}), "unknown-task")
-        self.assertEqual(claims, [], "refused before any claim")
-        self.assertEqual(self.mod.ops("stop"), [])
-
-    def test_k_a_malformed_task_id_is_bad_shape(self):
-        for task in ("", "a" * 65, "b 1", "b.1", None, 7):
-            self.refused(self.send("stop", {"session": self.bridged.sid, "taskId": task}), "bad-shape")
-        self.refused(self.send("stop", {"session": self.bridged.sid}), "bad-shape")
-        self.assertEqual(self.mod.ops("stop"), [])
-
-    def test_k_an_engine_refusal_fails_the_rpc_in_its_words(self):
-        """G4: TaskStop's error is the RPC's `failed`, with the engine's own
-        message."""
-        start_job(self.bridged.sid, "bstuck1")
-        self.mod.stop_fails["bstuck1"] = "Task bstuck1 is not running (status: completed)"
-        o = self.outcome(self.send("stop", {"session": self.bridged.sid, "taskId": "bstuck1"}))
-        self.assertEqual(o, {"state": "failed", "error": {"code": "failed",
-                                                          "message": "Task bstuck1 is not running (status: completed)"}})
-
-    def test_k_a_retried_nonce_never_stops_twice(self):
-        start_job(self.bridged.sid, "bonce1")
-        nonce = codes.b64url(os.urandom(16))
-        first = self.send("stop", {"session": self.bridged.sid, "taskId": "bonce1"}, nonce=nonce)
-        self.assertEqual(self.outcome(first)["state"], "done")
-        self.r.reset()
-        self.send("stop", {"session": self.bridged.sid, "taskId": "bonce1"}, nonce=nonce)
-        self.assertEqual(len(results(self.r.opening(self.pid), nonce)), 1, "answered from the ledger")
-        self.assertEqual(len(self.mod.ops("stop")), 1, "TaskStop ran once")
-
     # ------------------------------------------------ one agent stopped or told (MW4)
 
     def spawn_agent(self, agent_id, name=None, stopped=False):
@@ -1292,18 +1171,6 @@ class Checks(unittest.TestCase):
             self.assertEqual(self.outcome(self.send(name, args)),
                              {"state": "failed", "error": {"code": "failed", "message": TURN_UNKNOWN}}, name)
 
-    def test_f_a_steer_to_a_session_without_a_bridge_takes_sminos_steer(self):
-        # Its engine record says idle: no turn runs, so nothing is steered (composite 21c32db7).
-        self.here.live[self.plain.sid]["status"] = "idle"
-        self.refused(self.send("steer", {"session": self.plain.sid, "text": "not now"}), "idle")
-        self.assertNotIn("not now", self.plain.inbox.texts())
-        self.here.live[self.plain.sid]["status"] = "busy"
-        rpc = self.send("steer", {"session": self.plain.sid, "text": "-n also the changelog"})
-        self.assertEqual(self.outcome(rpc, timeout=30), {"state": "done", "result": {"row": None}},
-                         "delivered; no row is named without a bridge")
-        self.assertTrue(wait_for(lambda: "-n also the changelog" in self.plain.inbox.texts()),
-                        "as a cross-session frame on its inbox (§5): %r" % self.plain.inbox.texts())
-
     def test_f_compact_answers_at_once_and_its_outcome_follows_carrying_the_nonce(self):
         reqs = self.relay()
         reqs.follow({self.bridged.sid: self.pid})
@@ -1364,16 +1231,12 @@ class Checks(unittest.TestCase):
         self.assertEqual(len(self.mod.ops("command")), 1)
 
     def test_m1_cd_malformed_paths_fail_under_the_nonce_and_leave_the_receiver_usable(self):
-        for path in (self.root + "/\x00bad", self.root + "/없는-경로"):
+        """With no code to check, a lone surrogate in the path is the path
+        check's to refuse, as any path no checkout is."""
+        for path in (self.root + "/\x00bad", self.root + "/없는-경로", self.root + "/\ud800"):
             with self.subTest(path=path):
                 self.refused(self.send("command", {"session": self.bridged.sid, "name": "cd", "args": path}),
                              "unknown-checkout")
-        # Lone surrogates have no canonical signed representation: a wire
-        # request holding one is refused by the code check, before path APIs.
-        invalid = self.rpc("command", {"session": self.bridged.sid, "name": "cd", "args": self.root})
-        invalid["args"]["args"] = self.root + "/\ud800"
-        self.r.receive(invalid, self.here)
-        self.refused(invalid, "bad-code")
         self.assertEqual(self.mod.ops("command"), [])
         valid = self.send("command", {"session": self.bridged.sid, "name": "cd", "args": self.root})
         self.assertEqual(self.outcome(valid)["state"], "done")
@@ -1397,7 +1260,6 @@ class Checks(unittest.TestCase):
 
     def test_l_a_command_answers_at_once_and_its_run_follows_as_op_carrying_the_nonce(self):
         reqs = self.following()
-        self.r.kinds = frozenset({"op"})
         asked = self.send("command", {"session": self.bridged.sid, "name": "rename", "args": "desk-m0"})
         o = self.outcome(asked)
         cmd = self.mod.ops("command")[-1]
@@ -1425,15 +1287,6 @@ class Checks(unittest.TestCase):
                          "panel: opens a panel in the terminal; it would hold the session's queue")
         self.assertNotIn("op_id", self.ledger()[rpcs.op_of(asked)], "nothing ran: nothing is kept for its run")
 
-    def test_l_a_hub_that_lists_no_op_is_sent_none(self):
-        reqs = self.following()
-        asked = self.send("command", {"session": self.bridged.sid, "name": "rename", "args": "x"})
-        self.assertEqual(self.outcome(asked)["state"], "done")
-        self.assertTrue(wait_for(lambda: reqs.take() or any(e.get("phase") == "end" for _, _, e in reqs.ops)),
-                        "the run's end was read")
-        self.assertEqual(self.op_messages(reqs), [], "none goes up")
-        self.assertEqual(self.r.messages, [], "and none is owed")
-
     def test_l_a_restart_between_queued_and_ran_keeps_the_nonce(self):
         """A8: the daemon restarts while the command waits for its turn; its
         run's end still goes up under the RPC's nonce, read from the stream."""
@@ -1443,7 +1296,6 @@ class Checks(unittest.TestCase):
         self.assertEqual(self.outcome(asked)["state"], "done")
         self.assertEqual(self.ledger()[rpcs.op_of(asked)]["op_id"], self.mod.ops("command")[-1]["id"], "kept on the claim")
         self.r = self.started()   # the daemon restarted
-        self.r.kinds = frozenset({"op"})
         self.frames = []
         self.mod.post(*self.mod.held_runs)
         got = wait_for(lambda: [m for m in self.op_messages(reqs) if m["body"]["phase"] == "end"])
@@ -1460,7 +1312,6 @@ class Checks(unittest.TestCase):
         kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(rpcs.op_of(asked)) or {}).get("end")
         self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
         self.r = self.started()   # and starts again
-        self.r.kinds = frozenset({"op"})
         self.frames = []
         got = wait_for(lambda: self.op_messages())
         self.assertTrue(got, "the end, read from the bridge's file")
@@ -1497,7 +1348,6 @@ class Checks(unittest.TestCase):
         command's id on it, and sends the end the child kept meanwhile."""
         asked, cid = self.claimed_before_a_stop()
         self.r = self.started()   # the restart reconciles the claim
-        self.r.kinds = frozenset({"op"})
         self.frames = []
         self.assertEqual(self.outcome(asked), {"state": "done", "result": {"queued": True, "route": "run", "id": cid}})
         got = wait_for(lambda: self.op_messages())
@@ -1520,7 +1370,6 @@ class Checks(unittest.TestCase):
         self.assertEqual((e.get("op_id"), e.get("op_name"), e.get("op_args")), (cid, "rename", "in-the-gap"),
                          "the command's id kept before the claim was answered")
         self.r = self.started()   # the second restart
-        self.r.kinds = frozenset({"op"})
         self.frames = []
         self.assertEqual(self.outcome(asked), {"state": "done", "result": {"queued": True, "route": "run", "id": cid}})
         got = wait_for(lambda: self.op_messages())
@@ -1541,7 +1390,6 @@ class Checks(unittest.TestCase):
             return real(ledger, nonce, entry)
         with mock.patch.object(rpcs.Ledger, "change", refused):
             self.r = self.started()
-        self.r.kinds = frozenset({"op"})
         e = self.ledger()[rpcs.op_of(asked)]
         self.assertNotIn("outcome", e, "not answered while its id is not kept")
         self.assertNotIn("op_id", e)
@@ -1566,7 +1414,6 @@ class Checks(unittest.TestCase):
         reqs.follow({session.sid: self.pid})
         self.addCleanup(reqs.close)
         self.assertTrue(wait_for(lambda: reqs.take() or session.sid in reqs.synced))
-        self.r.kinds = frozenset({"op"})
         status, out = bridgemod.request(mod.sock, "POST", "/command?wait=5000", {"op": "command", "name": "reload-plugins"})
         self.assertEqual((status, out["ok"]), (200, True))
         starts = wait_for(lambda: [m for m in self.op_messages(reqs) if m["body"]["phase"] == "start"])
@@ -1598,7 +1445,6 @@ class Checks(unittest.TestCase):
         """The real child relays text; the daemon arbitrates it against a
         fresh successor and the deadline. CLI ops have no nonce to dedupe by."""
         reqs = self.following()
-        self.r.kinds = frozenset({"op"})
         text = "Reloaded: 10 plugins · 23 skills · 17 agents · 13 hooks"
         for rpc in (True, False):
             for winner in ("text", "effect"):
@@ -1646,7 +1492,6 @@ class Checks(unittest.TestCase):
 
     def test_l_reload_plugins_is_done_by_another_child_answering_or_fails_at_its_bound(self):
         reqs = self.following()
-        self.r.kinds = frozenset({"op"})
         same = [os.stat(self.mod.sock).st_ino, self.mod.proc.pid]
         reload = self.send("command", {"session": self.bridged.sid, "name": "reload-plugins"})
         self.assertEqual(self.outcome(reload)["state"], "done")
@@ -1669,7 +1514,6 @@ class Checks(unittest.TestCase):
         again = self.send("command", {"session": self.bridged.sid, "name": "reload-plugins"})
         self.assertEqual(self.outcome(again)["state"], "done")
         self.r = self.started()
-        self.r.kinds = frozenset({"op"})
         self.frames = []
         probes.answer(same)
         self.r.effects(probes.answering)
@@ -1695,7 +1539,6 @@ class Checks(unittest.TestCase):
         mod = Mod(session.sid, launch=LAUNCH)
         self.here.sessions.add(session.sid)
         self.here.live[session.sid] = {"pid": session.holder.pid, "kind": "interactive", "status": "busy"}
-        self.r.kinds = frozenset({"op"})
         bridges, now = plane.Bridges(), [0.0]
 
         def probed(child):
@@ -1734,7 +1577,6 @@ class Checks(unittest.TestCase):
         kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(rpcs.op_of(reload)) or {}).get("end")
         self.assertTrue(wait_for(kept))
         self.r = self.started()
-        self.r.kinds = frozenset({"op"})
         self.clock[0] += rpcs.RELOAD_WAIT_S
         self.r.effects(Probes().answering)
         self.r.recover_ops()
@@ -1757,7 +1599,6 @@ class Checks(unittest.TestCase):
         kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(rpcs.op_of(reload)) or {}).get("end")
         self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
         self.r = self.started()   # the restart
-        self.r.kinds = frozenset({"op"})
         ends = lambda: [f["message"]["body"] for f in self.r.messages
                         if f["message"]["kind"] == "op" and f["message"]["body"]["phase"] == "end"]
         self.assertEqual([(b["rpc"], b["id"], b["name"], b["settled"], b["readback"]) for b in ends()],
@@ -1802,7 +1643,6 @@ class Checks(unittest.TestCase):
 
     def test_m2_a_side_question_answers_started_and_its_answer_follows_as_op_carrying_the_nonce(self):
         reqs = self.following()
-        self.r.kinds = frozenset({"op"})
         prompt = "what did we decide\nabout the cache?"
         asked = self.send("btw", {"session": self.bridged.sid, "prompt": prompt})
         o = self.outcome(asked)
@@ -1824,7 +1664,6 @@ class Checks(unittest.TestCase):
         its own subscription) has no follower on the desk (desk-web passes over an op with no nonce, the hub keeps no
         `btw` op), so it does not go up, and its question and answer stay on the machine; a desk RPC's still does."""
         reqs = self.following()
-        self.r.kinds = frozenset({"op"})
         self.mod.post({"type": "btw", "phase": "start", "id": "c-derive", "t": 0},
                       {"type": "btw", "phase": "end", "id": "c-derive", "text": "Owns the derive fixture.",
                        "usage": {"input": 1, "output": 2, "cacheRead": 3, "cacheWrite": 0}, "t": 0})
@@ -1859,7 +1698,6 @@ class Checks(unittest.TestCase):
         kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(rpcs.op_of(asked)) or {}).get("end")
         self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
         self.r = self.started()   # and starts again
-        self.r.kinds = frozenset({"op"})
         self.frames = []
         got = wait_for(lambda: self.op_messages())
         self.assertTrue(got, "the end, read from the bridge's file")
@@ -1885,7 +1723,6 @@ class Checks(unittest.TestCase):
         kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(rpcs.op_of(asked)) or {}).get("end")
         self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
         self.r = self.started()   # the restart reconciles the claim
-        self.r.kinds = frozenset({"op"})
         self.frames = []
         self.assertEqual(self.outcome(asked), {"state": "done", "result": {"started": True, "id": bid}})
         got = wait_for(lambda: self.op_messages())
@@ -1965,7 +1802,6 @@ class Checks(unittest.TestCase):
 
     def test_m5_an_uploads_states_go_up_as_op_carrying_the_nonce(self):
         reqs = self.following()
-        self.r.kinds = frozenset({"op"})
         asked = self.upload()
         n = rpcs.op_of(asked)
         self.assertEqual(self.outcome(asked)["state"], "done")
@@ -2085,7 +1921,6 @@ class Checks(unittest.TestCase):
         kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(n) or {}).get("end")
         self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
         self.r = self.started()
-        self.r.kinds = frozenset({"op"})
         self.frames = []
         self.assertEqual(self.outcome(asked), first, "the same answer, root and paths included")
         got = wait_for(lambda: self.op_messages())
@@ -2121,14 +1956,10 @@ class Checks(unittest.TestCase):
 
 
     def test_g_spawn_and_retire_through_sminos(self):
+        """The spawn half: retire runs outside the bridge's fence, not offered (unsupported)."""
         sid = self.spawned_through_sminos()
         self.here.sessions.add(sid)
-        retire = self.send("retire", {"session": sid})
-        self.assertEqual(self.outcome(retire, timeout=60), {"state": "done", "result": {}})
-        sminos.forget_caches()
-        latest = sminos.view_of(self.project, titles=False).info[sid]["latest"]
-        self.assertEqual(latest["kind"], "retired", "recorded as sminos retire records it")
-        self.assertEqual(latest["by"], MEMBER, "retired by the member who asked")
+        self.refused(self.send("retire", {"session": sid}), "unsupported")
 
     def spawned_through_sminos(self):
         """A spawn through sminos, checked, and retried: its session."""
@@ -2459,47 +2290,7 @@ class Checks(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.collect() is not None and not self.r.flight), "nothing left in flight")
         self.mod.settle("toolu_cut", outcome="deny", winner="terminal", by="terminal")
 
-    # ------------------------------------------------ resume
-
-    def test_j_resume_brings_an_ended_terminal_session_back_under_its_id(self):
-        sid = ended_session(self.root)
-        self.here.sessions.add(sid)
-        rpc = self.send("resume", {"session": sid})
-        self.assertEqual(self.outcome(rpc, timeout=60), {"state": "done", "result": {"session": sid}})
-        self.assertEqual(resumes(self.claude, sid), [{"args": ["--bg", "--resume", sid], "cwd": os.path.realpath(
-            self.root)}], "claude --bg --resume <session> in its working directory, no other flag")
-        self.assertEqual([(r["kind"], r.get("jobId")) for r in holders_of(sid)], [("bg", sid[:8])],
-                         "a --bg job holds it, under its own id")
-        sminos.reconcile(tpr.project_of(self.root))
-        latest = sminos.view_of(tpr.project_of(self.root), titles=False).info[sid]["latest"]
-        self.assertEqual(latest["kind"], "joined", "it rejoins")
-        self.r.receive(rpc, self.here)
-        self.assertTrue(wait_for(lambda: len(results(self.collect(), rpc["nonce"])) >= 2))
-        again = self.send("resume", {"session": sid})
-        self.assertIn("running here", self.refused(again, "session-live")["error"]["message"])
-        self.assertEqual(len(resumes(self.claude, sid)), 1, "launched once")
-
-    def test_j_a_session_whose_last_launch_was_lane_b_is_not_resumed_from_the_desk(self):
-        """O12 M3: reopening a MAWS lane B session is MAWS's. A session that
-        ran as lane A and was later reopened by MAWS as lane B, under the same
-        id, has its record's controller at B (each launch's bridge verdict),
-        and the desk's Resume of it after it ends is refused `lane-b`, nothing
-        launched; its controller back at A, it resumes as any ended session."""
-        sid = ended_session(self.root)
-        self.here.sessions.add(sid)
-        self.assertIsNotNone(sminos.session_record(sid), "the session has its record (O12 M1)")
-        self.assertTrue(sminos.set_session_controller(sid, "A"), "it ran as lane A")
-        self.assertTrue(sminos.set_session_controller(sid, "B"), "then MAWS reopened it as lane B")
-        rpc = self.send("resume", {"session": sid})
-        o = self.refused(rpc, "lane-b")
-        self.assertIn("MAWS", o["error"]["message"])
-        self.assertEqual(resumes(self.claude, sid), [], "nothing launched")
-        self.assertNotIn("launched_at", self.ledger()[rpcs.op_of(rpc)], "refused before the claim")
-        self.assertTrue(sminos.set_session_controller(sid, "A"))
-        self.assertEqual(self.outcome(self.send("resume", {"session": sid}), timeout=60),
-                         {"state": "done", "result": {"session": sid}})
-        for h in holders_of(sid):
-            os.kill(h["pid"], signal.SIGKILL)
+    # ------------------------------------------------ a lane B observer; a claim kept before the cutover
 
     def test_j_an_observers_refusal_is_the_rpcs_answer_lane_b(self):
         """O12 M3: the bridge of a MAWS lane B session refuses every control
@@ -2520,102 +2311,6 @@ class Checks(unittest.TestCase):
             with self.assertRaises(rpcs.Refused) as r:
                 rpcs.decide(rpcs.bridge.endpoint(self.bridged.sid), "toolu_x", {"behavior": "allow", "by": MEMBER})
         self.assertEqual(r.exception.outcome["error"]["code"], "lane-b")
-
-    def test_j_a_session_this_machine_holds_no_transcript_of_is_not_resumed(self):
-        """A --bg copy that ended before it wrote a row: `claude --resume`
-        would start an empty session under its id and call it done."""
-        sid = ended_session(self.root)
-        os.unlink(transcript(sid))
-        self.here.sessions.add(sid)
-        rpc = self.send("resume", {"session": sid})
-        o = self.refused(rpc, "unsupported")
-        self.assertIn("no transcript", o["error"]["message"])
-        self.assertEqual(resumes(self.claude, sid), [], "nothing launched")
-        self.assertNotIn("launched_at", self.ledger()[rpcs.op_of(rpc)], "refused before the claim")
-
-    def test_j_a_session_under_another_config_dir_is_not_resumed_from_here(self):
-        """Its engine ran under a config dir of its own, which its hook
-        recorded, and its transcript is there: `claude --resume` launched
-        from here would look in this process's own config dir and run on its
-        credentials. Refused, nothing launched."""
-        sid = ended_session(self.root)
-        cfg = tempfile.mkdtemp(prefix="cfg.", dir=T)
-        moved = os.path.join(cfg, "projects", "-rpc-test", sid + ".jsonl")
-        os.makedirs(os.path.dirname(moved))
-        os.replace(transcript(sid), moved)
-        payload = {"session_id": sid, "transcript_path": moved, "cwd": self.root, "hook_event_name": "SessionStart",
-                   "source": "resume"}
-        subprocess.run([CLI, "record"], input=json.dumps(payload), text=True, capture_output=True,
-                       env={**os.environ, "CLAUDE_CONFIG_DIR": cfg}, check=True)
-        sminos.forget_caches()
-        self.here.sessions.add(sid)
-        rpc = self.send("resume", {"session": sid})
-        o = self.refused(rpc, "unsupported")
-        self.assertIn("runs under %s" % cfg, o["error"]["message"])
-        self.assertEqual(resumes(self.claude, sid), [], "nothing launched")
-
-    def test_j_resume_is_refused_while_the_session_is_live(self):
-        self.refused(self.send("resume", {"session": self.plain.sid}), "session-live")
-        self.refused(self.send("resume", {"session": self.bridged.sid}), "session-live")
-        self.assertEqual(resumes(self.claude, self.plain.sid) + resumes(self.claude, self.bridged.sid), [])
-
-    def test_j_two_resumes_at_once_start_one_session(self):
-        sid = ended_session(self.root)
-        self.here.sessions.add(sid)
-        with open(os.path.join(self.claude, "bg-sleep"), "w") as f:
-            f.write("1.5")
-        try:
-            a = self.send("resume", {"session": sid})
-            b = self.send("resume", {"session": sid})
-            got = sorted((o["state"], (o.get("error") or {}).get("code")) for o in (self.outcome(a, 60),
-                                                                                      self.outcome(b, 60)))
-        finally:
-            os.unlink(os.path.join(self.claude, "bg-sleep"))
-        self.assertEqual(got, [("done", None), ("failed", "session-live")])
-        self.assertEqual(len(resumes(self.claude, sid)), 1, "one launch")
-        self.assertEqual(len(holders_of(sid)), 1, "one session holds the id")
-
-    def test_j_a_resume_racing_the_owner_reopening_stops_the_copy(self):
-        sid = ended_session(self.root)
-        self.here.sessions.add(sid)
-        open(os.path.join(self.claude, "reopen-first"), "w").close()
-        o = self.refused(self.send("resume", {"session": sid}), "copy-started")
-        self.assertIn("stopped", o["error"]["message"])
-        self.assertEqual([r["kind"] for r in holders_of(sid)], ["interactive"],
-                         "one session holds the id: the owner's")
-        copies = [c for c in launches(self.claude) if c[-1] == sid]
-        self.assertEqual(len(copies), 1)
-        with open(os.path.join(self.claude, "calls.log")) as f:
-            stops = [json.loads(line) for line in f if json.loads(line)[:1] == ["stop"]]
-        copy = [r for r in json.loads(subprocess.run(["claude", "agents"], capture_output=True, text=True).stdout)
-                if r["name"] == "resumed" and r["sessionId"] != sid and ["stop", r["id"]] in stops]
-        self.assertEqual([r["state"] for r in copy], ["stopped"], "the copy was stopped")
-        self.assertEqual([h for h in holders_of(copy[0]["sessionId"])], [], "and its process is gone")
-        for h in holders_of(sid):
-            os.kill(h["pid"], signal.SIGKILL)
-
-    def test_j_a_stopped_seat_resumes_and_a_retired_one_is_refused(self):
-        sid = str(uuidlib.uuid4())
-        sminos.meta_set(sid, {"uuid": sid, "current": sid, "alias": "resumable", "group": self.PROJECT, "cwd": self.root,
-                              "status": "idle"})
-        append_row(sid, {"type": "user", "uuid": str(uuidlib.uuid4()), "timestamp": iso(time.time()),
-                         "cwd": self.root, "message": {"role": "user", "content": "hello"}})
-        sminos.forget_caches()
-        sminos.reconcile(tpr.project_of(self.root))
-        self.here.sessions.add(sid)
-        self.assertEqual(self.outcome(self.send("resume", {"session": sid}), 60),
-                         {"state": "done", "result": {"session": sid}})
-        sminos.forget_caches()
-        self.assertNotEqual(sminos.state(sminos.reload_seat(sid)), "stopped", "the seat reads as running")
-        for h in holders_of(sid):
-            os.kill(h["pid"], signal.SIGKILL)
-        gone = str(uuidlib.uuid4())
-        sminos.meta_set(gone, {"uuid": gone, "current": gone, "alias": "retiredone", "group": self.PROJECT,
-                               "cwd": self.root, "status": "retired"})
-        self.here.sessions.add(gone)
-        o = self.refused(self.send("resume", {"session": gone}), "unsupported")
-        self.assertIn("retired", o["error"]["message"])
-        self.assertEqual(resumes(self.claude, gone), [])
 
     def test_j_a_claimed_resume_is_reconciled_from_its_own_launch(self):
         """A claimed Resume ran if a --bg process of its launch holds the
@@ -2714,7 +2409,7 @@ class Checks(unittest.TestCase):
         launched = time.time()
         out = subprocess.run(["claude", "--bg", "--resume", sid, "--model", "sonnet"], cwd=self.root,
                              capture_output=True, text=True, check=True).stdout
-        short = rpcs.BG_SHORT_RE.search(out).group(1)
+        short = BG_SHORT_RE.search(out).group(1)
         rows = json.loads(subprocess.run(["claude", "agents"], capture_output=True, text=True, check=True).stdout)
         copy = next(row["sessionId"] for row in rows if row["id"] == short)
         self.assertNotEqual(copy, sid)
@@ -2733,99 +2428,35 @@ class Checks(unittest.TestCase):
             # Its stopped row would read as another test's stopped copy.
             os.unlink(os.path.join(self.claude, "agents", short + ".json"))
 
-    def test_j_the_launch_is_kept_before_it_runs(self):
-        sid = ended_session(self.root)
-        self.here.sessions.add(sid)
-        before = time.time()
-        rpc = self.send("resume", {"session": sid})
-        self.assertEqual(self.outcome(rpc, timeout=60)["state"], "done")
-        e = self.ledger()[rpcs.op_of(rpc)]
-        self.assertGreaterEqual(e["launched_at"], before - 1)
-        self.assertEqual(e["job"], sid[:8], "the job it started")
-        for h in holders_of(sid):
-            os.kill(h["pid"], signal.SIGKILL)
-
-    def test_j_the_live_checks_call_path_runs_against_the_stand_in(self):
-        """tests/mods/live-resume-check.py's own calls, run here against the
-        `claude` stand-in: its daemon's side of a Resume (RESUME) in each of
-        its modes, and its reads and writes of sminos (SMINOS). A change to
-        any of their call paths breaks this, not only a by-hand engine run."""
-        import importlib.util
-        path = os.path.join(tsp.HERE, "mods", "live-resume-check.py")
-        spec = importlib.util.spec_from_file_location("live_resume_check", path)
-        live = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(live)
-
-        def run(script, op, *args):
-            r = subprocess.run([sys.executable, "-c", script, tsp.SCRIPTS, op, self.root, *args],
-                               capture_output=True, text=True, timeout=120)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            return [json.loads(line) for line in r.stdout.splitlines() if line.strip()]
-
-        def stop(sid):
-            for h in holders_of(sid):
-                os.kill(h["pid"], signal.SIGKILL)
-
-        rows = os.path.join(self.claude, "agents")
-        os.makedirs(rows, exist_ok=True)
-        before = set(os.listdir(rows))
-        sid = ended_session(self.root)
-        try:
-            _, got = run(live.RESUME, "resume", sid, sid)
-            self.assertEqual(sorted(map(str, map(live.code_of, got))),
-                             [str(("done", None)), str(("failed", "session-live"))], "two at once: one session")
-            self.assertEqual([e["job"] for e in got if "launched_at" in e], [sid[:8]], "one launch, its job kept")
-            stop(sid)
-            [[nonce]] = run(live.RESUME, "die-before-job", sid)
-            self.assertEqual(sorted(k for k in ("launched_at", "job", "outcome") if k in self.ledger()[nonce]),
-                             ["launched_at"], "stopped once its launch returned, before its job was kept")
-            [got] = run(live.RESUME, "restart", "20", nonce)
-            self.assertEqual(got[0]["outcome"], {"state": "done", "result": {"session": sid}})
-            stop(sid)
-            [[nonce]] = run(live.RESUME, "die-after-job", sid)
-            self.assertEqual(self.ledger()[nonce]["job"], sid[:8], "stopped once its job was kept")
-            self.assertNotIn("outcome", self.ledger()[nonce])
-            [got] = run(live.RESUME, "restart-past-window", "20", nonce)
-            self.assertEqual(got[0]["outcome"], {"state": "done", "result": {"session": sid}})
-            stop(sid)
-            open(os.path.join(self.claude, "reopen-first"), "w").close()
-            _, got = run(live.RESUME, "skip-check", sid)
-            self.assertEqual(live.code_of(got[0]), ("failed", "copy-started"))
-        finally:
-            stop(sid)
-            # A copy's stopped row would read as another test's stopped copy.
-            for name in set(os.listdir(rows)) - before:
-                os.unlink(os.path.join(rows, name))
-
-        gone = ended_session(self.root)
-        [keys] = run(live.SMINOS, "send", gone, "from far away", "from the desk")
-        self.assertEqual(len(keys), 2)
-        r = cli("daemon", "tick")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        [got] = run(live.SMINOS, "outcomes", gone)
-        self.assertEqual(sorted((o["event"]["writer"], o["event"]["seq"], o["outcome"]) for o in got),
-                         sorted((w, s, "recorded") for w, s in keys))
-        self.assertEqual(run(live.SMINOS, "latest", gone), [{"kind": "retired", "reason": "ended"}])
-        self.assertEqual(run(live.SMINOS, "seat", gone), [None])
-        sminos.meta_set(gone, {"uuid": gone, "current": gone, "alias": "pinned", "group": self.PROJECT, "cwd": self.root,
-                               "status": "retired"})
-        try:
-            self.assertEqual(run(live.SMINOS, "seat", gone), [{"alias": "pinned", "status": "retired",
-                                                               "state": "retired"}])
-        finally:
-            sminos.unlink_seat_files(gone)
-
-    def test_j_a_job_whose_process_never_holds_the_session_is_a_failure(self):
-        sid = ended_session(self.root)
-        self.here.sessions.add(sid)
-        open(os.path.join(self.claude, "no-hold"), "w").close()
-        try:
-            with mock.patch.object(rpcs, "RESUME_HELD_S", 1.0):
-                o = self.refused(self.send("resume", {"session": sid}), "failed")
-        finally:
-            os.unlink(os.path.join(self.claude, "no-hold"))
-        self.assertIn(sid[:8], o["error"]["message"], "naming the job")
-        self.assertEqual(holders_of(sid), [])
+    def test_j_an_unfinished_retire_or_stop_claim_is_reconciled_interrupted(self):
+        """A Retire and a Stop claimed before the cutover (DX2 kept the
+        ledger under the RPC's nonce), the daemon stopped before either was
+        answered: the RL10 controller's first reconciliation answers each
+        `interrupted` at once (neither leaves a trace to wait for), keeps the
+        outcome, and sends it under the nonce the claim was kept by, its
+        opId null (an op keyed by its nonce). An answered one, and a
+        tombstoned one, are left as they are."""
+        now = self.clock[0]
+        retire, stop, answered, gone = (c * 21 + "A" for c in "WXYZ")
+        self.claim(retire, "retire", self.bridged.sid, now - 5)
+        self.claim(stop, "stop", self.bridged.sid, now - 5, task="bmain1")
+        self.claim(answered, "retire", self.bridged.sid, now - 60, outcome={"state": "done", "result": {}},
+                   done_at=now - 59)
+        self.claim(gone, "stop", self.bridged.sid, now - 60, tombstone=True)
+        r = self.started()
+        frames = r.due({self.pid})
+        for key in (retire, stop):
+            [got] = [f for f in frames if f.get("t") == "rpc-result" and f.get("nonce") == key]
+            self.assertEqual((got["opId"], got["project"], got["outcome"]["state"], got["outcome"]["error"]["code"]),
+                             (None, self.pid, "failed", "interrupted"), key)
+            self.assertEqual(self.ledger()[key]["outcome"], got["outcome"], "kept before it goes")
+        self.assertEqual(results(frames, answered), [{"state": "done", "result": {}}],
+                         "an answered claim is sent as it was answered")
+        self.assertEqual(results(frames, gone), [], "a tombstoned one never goes")
+        self.assertNotIn("outcome", self.ledger()[gone])
+        self.assertEqual(self.mod.ops("stop"), [], "nothing run again")
+        self.assertIn("retire %s, claimed before a stop, reconciled: failed" % retire, tsp.read(
+            os.path.join(os.environ["SMINOS_HOME"], "daemon.log")))
 
     def test_i_results_are_republished_until_acknowledged(self):
         self.mod.turn = "t9"
@@ -2880,14 +2511,13 @@ class Checks(unittest.TestCase):
         return self.send(name, args, op_id=op or new_op(), op_created=op_created or created, **kw)
 
     def test_o_an_op_id_keys_the_ledger_and_its_nonce_answers_the_hub(self):
-        """The opId is the ledger's key and the bridge command's `rpc`; the
-        hub's rpc-result and rpc-ack stay the nonce's, which the entry keeps.
-        An RPC without one is keyed by its nonce, as before."""
+        """Every RPC down RL10 carries its opId: the op keys the ledger and
+        the bridge command, the nonce the result and its ack (Checks' twin
+        without its RPC keyed by its nonce, which only DX2 sends)."""
         self.mod.turn = "t-o1"
         rpc = self.send_op("steer", {"session": self.bridged.sid, "text": "by op"})
         op = rpc["opId"]
-        o = self.outcome(rpc)
-        self.assertEqual(o["state"], "done", o)
+        self.assertEqual(self.outcome(rpc)["state"], "done")
         self.assertEqual(self.mod.ops("steer")[-1]["rpc"], op, "the child keeps its answer under the op")
         e = self.ledger()[op]
         self.assertEqual(e["nonce"], rpc["nonce"])
@@ -2895,9 +2525,6 @@ class Checks(unittest.TestCase):
         self.assertNotIn(rpc["nonce"], self.ledger())
         self.r.ack({"t": "rpc-ack", "project": self.pid, "nonce": rpc["nonce"]})
         self.assertTrue(self.ledger()[op]["acked"], "acknowledged by its nonce")
-        legacy = self.send("interrupt", {"session": self.bridged.sid})
-        self.assertEqual(self.outcome(legacy)["state"], "done")
-        self.assertNotIn("nonce", self.ledger()[rpcs.op_of(legacy)], "keyed by its nonce, as today")
 
     def test_o_a_reseal_of_an_answered_op_is_answered_from_the_ledger_under_its_own_nonce(self):
         self.mod.turn = "t-o2"
@@ -3187,27 +2814,6 @@ class Checks(unittest.TestCase):
         self.assertEqual(results(self.collect(), held["nonce"]), [])
         self.assertEqual(len(self.mod.ops("steer")), 2, "each op run once")
 
-    def test_q_a_reseal_of_an_op_its_worker_then_refuses_is_answered_under_its_nonce(self):
-        """Ticket 11a: the worker refuses the op inside `plan` (a live
-        session is not resumed) after a reseal arrived: the refusal is kept
-        under the reseal's nonce."""
-        reached, gate = threading.Event(), threading.Event()
-        plan = self.r.plan
-
-        def paused(rpc, facts):
-            reached.set()
-            gate.wait(10)
-            return plan(rpc, facts)
-
-        self.r.plan = paused
-        first = self.send_op("resume", {"session": self.plain.sid})
-        self.assertTrue(reached.wait(10))
-        again = self.send_op("resume", {"session": self.plain.sid}, op=first["opId"], op_created=first["opCreated"])
-        gate.set()
-        self.refused(again, "session-live")
-        self.assertEqual(results(self.collect(), first["nonce"]), [])
-        self.assertEqual(self.ledger()[first["opId"]]["nonce"], again["nonce"])
-
     def test_q_a_reseal_of_a_claim_awaiting_reconciliation_is_answered_under_its_nonce(self):
         """Ticket 11a: a claim a stop left, no trace of it yet, resealed after
         the restart: nothing runs again, and once its trace answers it, the
@@ -3262,7 +2868,7 @@ class Checks(unittest.TestCase):
     def remote_mode(self):
         """The RPCs as a machine cut over to its endpoint runs them (RL10):
         no code, every RPC carrying who sent it."""
-        self.r = rpcs.Rpcs(None, "testhost", clock=lambda: self.clock[0], coded=False)
+        self.r = rpcs.Rpcs("testhost", clock=lambda: self.clock[0])
 
     def remote(self, name, args, launch=LAUNCH, member=MEMBER, device="dev-1", fingerprint="fp-1", op=None,
                op_created=None, nonce=None, **fields):
@@ -3344,16 +2950,12 @@ class Checks(unittest.TestCase):
         it; resume, retire and stop, which O10 does not offer, are
         `unsupported`, a bridged stop too."""
         self.remote_mode()
-        with mock.patch.object(rpcs, "steer_without_bridge", side_effect=AssertionError("unfenced")) as around, \
-                mock.patch.object(rpcs, "retire", side_effect=AssertionError("retired")), \
-                mock.patch.object(rpcs, "resume", side_effect=AssertionError("resumed")):
-            o = self.refused(self.remote("steer", {"session": self.plain.sid, "text": "x"}), "context")
-            self.assertIn("no bridge", o["error"]["message"])
-            self.refused(self.remote("interrupt", {"session": self.plain.sid}), "context")
-            self.refused(self.remote("resume", {"session": self.ended}), "unsupported")
-            self.refused(self.remote("retire", {"session": self.plain.sid}), "unsupported")
-            self.refused(self.remote("stop", {"session": self.bridged.sid, "taskId": "bremote1"}), "unsupported")
-        around.assert_not_called()
+        o = self.refused(self.remote("steer", {"session": self.plain.sid, "text": "x"}), "context")
+        self.assertIn("no bridge", o["error"]["message"])
+        self.refused(self.remote("interrupt", {"session": self.plain.sid}), "context")
+        self.refused(self.remote("resume", {"session": self.ended}), "unsupported")
+        self.refused(self.remote("retire", {"session": self.plain.sid}), "unsupported")
+        self.refused(self.remote("stop", {"session": self.bridged.sid, "taskId": "bremote1"}), "unsupported")
         self.assertEqual(self.mod.ops("stop"), [], "the bridged stop never reached the bridge")
 
     def test_r_a_remote_rpc_on_a_session_without_its_context_is_bad_shape(self):
@@ -3594,17 +3196,12 @@ class Checks(unittest.TestCase):
         self.assertEqual([len(c["text"]) for c in self.mod.ops("deliver")], [rpcs.SEND_TEXT_MAX, 16])
 
     def test_s_send_is_offered_through_the_endpoint_alone(self):
-        """DX2 does not carry `send`: from the hub it is `unsupported`, loose,
-        and never runs; the machine's desk lists it on RL10 alone, as the
-        record RPCs."""
+        """The machine's desk lists `send` among the RPCs it runs, after
+        DX6's and before the record RPCs, as the endpoint offers them."""
         import sminos_hublog as hublog
-        rpc = self.send("send", {"session": self.bridged.sid, "text": "hello"})
-        o = self.refused(rpc, "unsupported")
-        self.assertIn("endpoint", o["error"]["message"])
-        self.assertNotIn(rpc["nonce"], self.ledger(), "a refusal before the ledger")
-        self.assertEqual(self.mod.ops("deliver"), [])
-        self.assertNotIn("send", hublog.desk()["rpcs"])
-        self.assertEqual(hublog.desk(True)["rpcs"], list(rpcs.RPC_NAMES) + ["send", *rpcs.RECORD])
+        self.assertEqual(hublog.desk()["rpcs"], ["steer", "interrupt", "answer", "decide", "model", "compact", "spawn",
+                                                 "retire", "resume", "stop", "command", "btw", "stop-agent", "tell",
+                                                 "media", "send", "record.access", "record.shares", "record.owners"])
 
     def test_s_a_send_needs_the_sessions_bridge_its_launch_and_the_project(self):
         """Fenced as every bridge command (O12 M7): a session with no bridge is
@@ -3758,146 +3355,6 @@ class Checks(unittest.TestCase):
                          ["interrupted"])
 
 
-class ChecksOnRl10(Checks):
-    """Checks' tests as a machine cut over to its endpoint runs them (RL10,
-    #153 M3a): no code, each RPC as the endpoint sends it down (O10 §D) —
-    its sender's member and device, the operation's fingerprint and id, and
-    on a session a lane A context naming the bridged session's launch. A
-    copy sent again under its nonce is the same op (its opId is the
-    nonce's here). Not run here (set to None below): what runs on RL10
-    already (r, s), what DX2 alone does (DX2_ONLY), Stop and Resume, which
-    RL10 does not offer (UNFENCED_ONLY), and what no RPC controller takes
-    part in (MODE_FREE)."""
-
-    PROJECT = "rpcproj-rl10"
-
-    def started(self):
-        return rpcs.Rpcs(None, "testhost", clock=lambda: self.clock[0], coded=False)
-
-    def rpc(self, name, args, project=None, machine="testhost", created=None, nonce=None, member=MEMBER,
-            op_id=None, op_created=None, launch=LAUNCH, device="dev-1", fingerprint="fp-1"):
-        """`op_id` given, `op_created` is the test's to give (a malformed op
-        among them); else the op is the nonce's, created with the RPC."""
-        created = created or iso(time.time())
-        nonce = nonce or codes.b64url(os.urandom(16))
-        if op_id is None:
-            op_id, op_created = self.op_for(nonce), op_created or created
-        rpc = {"rpc": name, "project": project or self.pid, "machine": machine, "member": member, "device": device,
-               "created": created, "nonce": nonce, "opId": op_id, "args": args, "fingerprint": fingerprint}
-        if op_created is not None:
-            rpc["opCreated"] = op_created
-        if name != "spawn":
-            rpc["context"] = {"lane": "A", "session": args.get("session"), "launch": launch}
-        return rpc
-
-    def op_for(self, nonce):
-        return nonce + "op"
-
-    def bound(self, rpc):
-        return self.binding(rpc["args"]["session"], rpc["member"], rpc["fingerprint"])
-
-    def relay(self):
-        return requests.Requests(None, "testhost")
-
-    def no_bridge(self, name):
-        """RL10 runs nothing around the bridge (O12 M7): `context`, and what
-        runs outside its fence is not offered at all."""
-        return "unsupported" if name in rpcs.UNFENCED else "context"
-
-    def test_m1_cd_malformed_paths_fail_under_the_nonce_and_leave_the_receiver_usable(self):
-        """With no code to check, a lone surrogate in the path is the path
-        check's to refuse, as any path no checkout is."""
-        for path in (self.root + "/\x00bad", self.root + "/없는-경로", self.root + "/\ud800"):
-            with self.subTest(path=path):
-                self.refused(self.send("command", {"session": self.bridged.sid, "name": "cd", "args": path}),
-                             "unknown-checkout")
-        self.assertEqual(self.mod.ops("command"), [])
-        valid = self.send("command", {"session": self.bridged.sid, "name": "cd", "args": self.root})
-        self.assertEqual(self.outcome(valid)["state"], "done")
-        self.assertEqual(len(self.mod.ops("command")), 1)
-
-    def test_g_spawn_and_retire_through_sminos(self):
-        """The spawn half: retire runs outside the bridge's fence, not offered (unsupported)."""
-        sid = self.spawned_through_sminos()
-        self.here.sessions.add(sid)
-        self.refused(self.send("retire", {"session": sid}), "unsupported")
-
-    def test_o_an_op_id_keys_the_ledger_and_its_nonce_answers_the_hub(self):
-        """Every RPC down RL10 carries its opId: the op keys the ledger and
-        the bridge command, the nonce the result and its ack (Checks' twin
-        without its RPC keyed by its nonce, which only DX2 sends)."""
-        self.mod.turn = "t-o1"
-        rpc = self.send_op("steer", {"session": self.bridged.sid, "text": "by op"})
-        op = rpc["opId"]
-        self.assertEqual(self.outcome(rpc)["state"], "done")
-        self.assertEqual(self.mod.ops("steer")[-1]["rpc"], op, "the child keeps its answer under the op")
-        e = self.ledger()[op]
-        self.assertEqual(e["nonce"], rpc["nonce"])
-        self.assertAlmostEqual(e["op_created"], rpcs.created_at(rpc["opCreated"]), places=3)
-        self.assertNotIn(rpc["nonce"], self.ledger())
-        self.r.ack({"t": "rpc-ack", "project": self.pid, "nonce": rpc["nonce"]})
-        self.assertTrue(self.ledger()[op]["acked"], "acknowledged by its nonce")
-
-    def test_j_an_unfinished_retire_or_stop_claim_is_reconciled_interrupted(self):
-        """A Retire and a Stop claimed before the cutover (DX2 kept the
-        ledger under the RPC's nonce), the daemon stopped before either was
-        answered: the RL10 controller's first reconciliation answers each
-        `interrupted` at once (neither leaves a trace to wait for), keeps the
-        outcome, and sends it under the nonce the claim was kept by, its
-        opId null (an op keyed by its nonce). An answered one, and a
-        tombstoned one, are left as they are."""
-        now = self.clock[0]
-        retire, stop, answered, gone = (c * 21 + "A" for c in "WXYZ")
-        self.claim(retire, "retire", self.bridged.sid, now - 5)
-        self.claim(stop, "stop", self.bridged.sid, now - 5, task="bmain1")
-        self.claim(answered, "retire", self.bridged.sid, now - 60, outcome={"state": "done", "result": {}},
-                   done_at=now - 59)
-        self.claim(gone, "stop", self.bridged.sid, now - 60, tombstone=True)
-        r = self.started()
-        frames = r.due({self.pid})
-        for key in (retire, stop):
-            [got] = [f for f in frames if f.get("t") == "rpc-result" and f.get("nonce") == key]
-            self.assertEqual((got["opId"], got["project"], got["outcome"]["state"], got["outcome"]["error"]["code"]),
-                             (None, self.pid, "failed", "interrupted"), key)
-            self.assertEqual(self.ledger()[key]["outcome"], got["outcome"], "kept before it goes")
-        self.assertEqual(results(frames, answered), [{"state": "done", "result": {}}],
-                         "an answered claim is sent as it was answered")
-        self.assertEqual(results(frames, gone), [], "a tombstoned one never goes")
-        self.assertNotIn("outcome", self.ledger()[gone])
-        self.assertEqual(self.mod.ops("stop"), [], "nothing run again")
-        self.assertIn("retire %s, claimed before a stop, reconciled: failed" % retire, tsp.read(
-            os.path.join(os.environ["SMINOS_HOME"], "daemon.log")))
-
-
-DX2_ONLY = (
-    "test_a_bad_code_is_refused_and_kept_out_of_the_ledger",   # DX1's code
-    "test_f_a_steer_to_a_session_without_a_bridge_takes_sminos_steer",   # unfenced: RL10 refuses it `context`
-    "test_l_a_hub_that_lists_no_op_is_sent_none",   # DX2's welcome.kinds
-)
-# Stop (k) and Resume (j) run outside the bridge's launch fence: RL10
-# refuses them `unsupported` (test_r_a_remote_rpc_never_takes_a_path_around_the_bridge),
-# and they go with `coded` (the architect's ruling, #153). An observer's
-# refusal is every bridge command's, and runs. So does the recovery of a
-# Resume claimed before a stop (RECOVERED): Rpcs reconciles the ledger at
-# every start, whatever `coded` is, and a claim kept before the cutover
-# reaches launched_by and the copy check on RL10 too — the recovery that
-# stays (#153 M3b; Retire's and Stop's: test_j_an_unfinished_retire_or_stop_claim_…).
-OBSERVED = "test_j_an_observers_refusal_is_the_rpcs_answer_lane_b"
-RECOVERED = ("test_j_a_claimed_resume_is_reconciled_from_its_own_launch",
-             "test_j_a_holder_older_than_the_claimed_launch_is_no_evidence",
-             "test_j_a_claimed_resume_whose_job_is_a_copy_has_the_copy_stopped")
-UNFENCED_ONLY = tuple(n for n in dir(Checks) if n.startswith(("test_j_", "test_k_"))
-                      and n != OBSERVED and n not in RECOVERED) + (
-    "test_q_a_reseal_of_an_op_its_worker_then_refuses_is_answered_under_its_nonce",   # Resume's live-session refusal
-)
-# What no RPC controller takes part in (a function, or the bridge child
-# alone): the same on either path, run once above.
-MODE_FREE = ("test_e_a_decision_refused_by_the_bridge_says_who_won_as_fields",
-             "test_l_a_command_running_when_its_child_is_replaced_keeps_its_end",
-             "test_m5_an_upload_the_bridge_already_holds_counts_as_held")
-for _name in [n for n in dir(Checks) if n.startswith(("test_r_", "test_s_"))] + list(DX2_ONLY + UNFENCED_ONLY
-                                                                                    + MODE_FREE):
-    setattr(ChecksOnRl10, _name, None)
 
 
 class SendsPruned(unittest.TestCase):
@@ -4068,11 +3525,12 @@ class CopyNames(unittest.TestCase):
 
 
 class LaunchStart(unittest.TestCase):
-    """When the engine's record carries no start, `launched_by` reads the
-    process's own. On Linux `ps -o lstart` adds the start's offset to
-    /proc/stat's boot time, truncated to the second: a process begun 0.2 s
-    after the launch reads as begun the second before it, and a Resume
-    refused its own job. A /proc stand-in reproduces such a boot (its true
+    """When the engine's record carries no start, `launched_by` (the
+    reconciliation of a Resume claimed before a stop) reads the process's
+    own. On Linux `ps -o lstart` adds the start's offset to /proc/stat's
+    boot time, truncated to the second: a process begun 0.2 s after the
+    launch reads as begun the second before it, and the claim's own job is
+    taken for no evidence. A /proc stand-in reproduces such a boot (its true
     instant 0.7 s past the second btime names), with `ps` answering as it
     would."""
 
@@ -4143,8 +3601,8 @@ class UplinkOnRl10(unittest.TestCase):
     stand-in acknowledges nothing here (ack_results off): each test acks by
     hand.
 
-    Not here: Resume, which RL10 refuses `unsupported` and which goes with
-    `coded` (the architect's ruling, #153), and #149's raise past the lane's
+    Not here: Resume, which RL10 refuses `unsupported` (its execution went
+    with `coded`, the architect's ruling, #153), and #149's raise past the lane's
     bound, which is test_rl10's
     Raised.test_a_raise_past_the_lanes_bound_keeps_the_socket_and_is_decided_from_its_draw."""
 

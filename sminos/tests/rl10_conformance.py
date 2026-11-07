@@ -451,7 +451,7 @@ def held(p, writer):
 
 
 def spent(p):
-    return hublog.HubLog(p, {"key": None, "machine": B["name"]}, coded=False).spent()
+    return hublog.HubLog(p, {"key": None, "machine": B["name"]}).spent()
 
 
 def stage_machine():
@@ -674,7 +674,7 @@ def check_stored(writer, seq, signer_kind):
 
 def check_vector(writer, seq):
     def check():
-        return wait_for(lambda: hublog.HubLog(P_, {"key": None, "machine": B["name"]}, coded=False)
+        return wait_for(lambda: hublog.HubLog(P_, {"key": None, "machine": B["name"]})
                         .vector().get(writer, 0) >= seq, timeout=10), "the vector of %s is past %d" % (writer, seq)
     return check
 

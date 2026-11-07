@@ -314,12 +314,12 @@ class Engine(Session):
                          "the older five are not sent after it")
 
     def test_no_host_where_none_is_carried(self):
-        """DX2, and a subagent's loop: no `host` in the snapshot or the stream."""
+        """A subscription with none to carry, and a subagent's loop: no `host` in the snapshot or the stream."""
         self.fake.user_row("before", post=False)
         sub, _ = self.subscribe(bridge=False)
         got = self.messages(sub, lambda out: any(m["kind"] == "snapshot" for m in out))
         self.assertNotIn("host", next(m for m in got if m["kind"] == "snapshot")["body"])
-        machine = plane.Plane("testhost", lambda: None, host=True)
+        machine = plane.Plane("testhost", lambda: None)
         self.addCleanup(machine.close)
         project = types.SimpleNamespace(id=PROJECT, name="p")
         machine.here[PROJECT] = {self.sid: ""}
@@ -1710,7 +1710,7 @@ class StaleSocket(unittest.TestCase):
                        "status": "busy"}, f)
         self.p = plane.Plane("testhost", lambda: None, transcripts=plane.Transcripts(), disk=plane.Disk())
         self.p.here = {PROJECT: {self.sid: self.fake.dir}}
-        self.project = types.SimpleNamespace(id=PROJECT, name="stale")
+        self.project = types.SimpleNamespace(id=PROJECT, name="stale", home=tempfile.mkdtemp(dir=T))
 
     def tearDown(self):
         self.p.close()
@@ -1782,7 +1782,7 @@ class ConfigDirSession(unittest.TestCase):
         plane.sminos.forget_caches()   # a new cache generation, as the plane's next members read begins one
         self.p = plane.Plane("testhost", lambda: None, transcripts=plane.Transcripts(), disk=plane.Disk())
         self.p.here = {PROJECT: {self.sid: self.fake.dir}}
-        self.project = types.SimpleNamespace(id=PROJECT, name="configured")
+        self.project = types.SimpleNamespace(id=PROJECT, name="configured", home=tempfile.mkdtemp(dir=T))
 
     def tearDown(self):
         self.p.close()
@@ -1896,7 +1896,6 @@ class ConfigDirSession(unittest.TestCase):
             json.dump({"projects": {self.fake.dir: {"disabledMcpServers": ["parked"]}}}, f)
         self.fake.start_bridge()
         self.fake.user_row("before")
-        self.p.kinds = frozenset({"read"})
         self.p.subscribe(self.project, {"session": self.sid, "agentId": None, "sub": "s1"})
         self.p.read({"sub": "s1", "id": "r1", "what": "mcp"})
         _, body = self.p.read_answers.get(timeout=10)
@@ -2473,14 +2472,12 @@ class Desk(unittest.TestCase):
         """O12 M7: the child's status names its process's launch; the probe
         keeps it, a cut-over machine's presence carries it beside `bridge`
         (the hub refuses a `bridge` that is not a boolean), and a relaunch's
-        child names another. A machine not cut over says presence as before."""
+        child names another."""
         self.fake.launch = "launch-one"
         self.fake.start_bridge()
         self.assertTrue(self.probed(lambda: self.bridges.launch(self.sid) == "launch-one"))
-        rl10 = plane.Plane("testhost", lambda: None, self.bridges, launches=True)
+        rl10 = plane.Plane("testhost", lambda: None, self.bridges)
         self.assertEqual(rl10.presence_of(self.sid, self.now), {"record": None, "bridge": True, "launch": "launch-one"})
-        dx2 = plane.Plane("testhost", lambda: None, self.bridges)
-        self.assertEqual(dx2.presence_of(self.sid, self.now), {"record": None, "bridge": True})
         self.fake.launch = "launch-two"   # the session relaunched: its new process's module names another
         self.fake.kill_child()
         self.fake.respawn_child()
@@ -2502,9 +2499,8 @@ class Desk(unittest.TestCase):
         self.fake.real = True
         self.fake.start_bridge()
         self.assertTrue(self.probed(lambda: self.bridges.known(self.sid)))
-        dx2 = plane.Plane("testhost", lambda: None, self.bridges)
-        rl10 = plane.Plane("testhost", lambda: None, self.bridges, launches=True)
-        self.assertEqual(dx2.presence_of(self.sid, self.now), {"record": None, "bridge": True}, "no report yet")
+        rl10 = plane.Plane("testhost", lambda: None, self.bridges)
+        self.assertEqual(rl10.presence_of(self.sid, self.now), {"record": None, "bridge": True}, "no report yet")
         woken = []
         self.bridges.wake = lambda: woken.append(1)
 
@@ -2517,7 +2513,7 @@ class Desk(unittest.TestCase):
         beat("acceptEdits", 1761000000000)
         self.assertTrue(self.probed(lambda: self.bridges.mode(self.sid) is not None))
         reading = {"mode": "acceptEdits", "at": 1761000000000}
-        self.assertEqual(dx2.presence_of(self.sid, self.now), {"record": None, "bridge": True, "mode": reading})
+        self.assertEqual(rl10.presence_of(self.sid, self.now), {"record": None, "bridge": True, "mode": reading})
         self.assertEqual(rl10.presence_of(self.sid, self.now)["mode"], reading, "a cut-over machine's too")
         self.assertTrue(woken, "a probe whose answer moved by the mode alone wakes the uplink")
 
@@ -2527,19 +2523,19 @@ class Desk(unittest.TestCase):
         beat("acceptEdits", 1761000000000)
         begun = self.bridges.answering(self.sid)[2]
         self.assertTrue(self.probed(lambda: self.bridges.answering(self.sid)[1] > begun + 1), "two probes since")
-        self.assertEqual(dx2.presence_of(self.sid, self.now)["mode"], reading)
+        self.assertEqual(rl10.presence_of(self.sid, self.now)["mode"], reading)
         self.assertEqual(woken, [], "a re-read of the same reading wakes nothing")
 
         beat("plan", 1761000004000)   # Shift+Tab
         self.assertTrue(self.probed(lambda: (self.bridges.mode(self.sid) or {}).get("mode") == "plan"))
-        self.assertEqual(dx2.presence_of(self.sid, self.now)["mode"], {"mode": "plan", "at": 1761000004000})
+        self.assertEqual(rl10.presence_of(self.sid, self.now)["mode"], {"mode": "plan", "at": 1761000004000})
         self.assertTrue(woken)
 
         beat("not a mode!", 1761000005000)
         self.assertTrue(self.probed(lambda: self.bridges.mode(self.sid) is None), "a word that is no mode")
         beat()
         self.assertTrue(self.probed(lambda: self.bridges.mode(self.sid) is None))
-        self.assertNotIn("mode", dx2.presence_of(self.sid, self.now), "a heartbeat with none carries none")
+        self.assertNotIn("mode", rl10.presence_of(self.sid, self.now), "a heartbeat with none carries none")
 
         # A module reload: its child knows the mode from the first resync,
         # not five seconds later at the first beat.
@@ -2553,7 +2549,7 @@ class Desk(unittest.TestCase):
         self.fake.stop_bridge()
         self.assertTrue(self.probed(lambda: not self.bridges.known(self.sid)))
         self.assertIsNone(self.bridges.mode(self.sid), "no bridge, no mode")
-        self.assertNotIn("mode", dx2.presence_of(self.sid, self.now))
+        self.assertNotIn("mode", rl10.presence_of(self.sid, self.now))
 
     def test_a_bridge_gone_answers_nothing(self):
         self.fake.capabilities = CAPS
@@ -3160,7 +3156,7 @@ class FixtureOutput(unittest.TestCase):
                     p = plane.Plane("testhost", lambda: None, transcripts=plane.Transcripts(), disk=plane.Disk())
                     try:
                         p.here = {PROJECT: {self.SID: self.LAUNCH}}
-                        out = p.subscribe(types.SimpleNamespace(id=PROJECT, name="fixture"),
+                        out = p.subscribe(types.SimpleNamespace(id=PROJECT, name="fixture", home=tempfile.mkdtemp(dir=T)),
                                           {"session": self.SID, "agentId": None, "sub": "fx"})
                         self.pump(p, lambda ms: any(m["kind"] == "snapshot" for m in out + ms))
                         self.assertEqual(p.live[self.SID]["cwd"], self.WORKTREE, "the engine record is read")
@@ -4094,18 +4090,18 @@ class Lifecycle(unittest.TestCase):
 
     def test_the_ceiling_is_the_settings_default_mode(self):
         settings = os.path.join(os.environ["HOME"], ".claude", "settings.json")
-        import sminos_hublog as hublog
+        import sminos_policy as policy
         try:
-            self.assertEqual(hublog.machine_policy(), {"read_only": False, "ceiling": "default"},
+            self.assertEqual(policy.machine_policy(), {"read_only": False, "ceiling": "default"},
                              "no settings: the engine's own default")
             with open(settings, "w") as f:
                 json.dump({"permissions": {"defaultMode": "acceptEdits"}}, f)
             before = os.stat(settings).st_mtime_ns
-            self.assertEqual(hublog.machine_policy()["ceiling"], "acceptEdits", "the settings' defaultMode")
+            self.assertEqual(policy.machine_policy()["ceiling"], "acceptEdits", "the settings' defaultMode")
             self.assertEqual(os.stat(settings).st_mtime_ns, before, "read, never written")
             with open(settings, "w") as f:
                 json.dump({"permissions": {"allow": ["Bash"]}}, f)
-            self.assertEqual(hublog.machine_policy()["ceiling"], "default", "settings that name no mode")
+            self.assertEqual(policy.machine_policy()["ceiling"], "default", "settings that name no mode")
         finally:
             if os.path.exists(settings):
                 os.unlink(settings)
@@ -4203,8 +4199,8 @@ class Lifecycle(unittest.TestCase):
         self.addCleanup(near.sock.close)
         conn = near if write is None else types.SimpleNamespace(write=lambda data: write(near.write, data))
         cred = {"machine": "testhost", "org": "org-1", "key": None, "hub": "http://127.0.0.1:9"}
-        hl = hublog.HubLog(project, cred, coded=False)
-        link = uplink.Link(cred, {project.id: hl}, transport=mock.Mock(number=1), coded=False)
+        hl = hublog.HubLog(project, cred)
+        link = uplink.Link(cred, {project.id: hl}, transport=mock.Mock(number=1))
         link.plane.wall = wall or (lambda: time.time() + 3600)
         items = queue.Queue()
         link.generation = 1
@@ -4345,6 +4341,47 @@ class Lifecycle(unittest.TestCase):
         self.assertIsInstance(err, uplink.NotDelivered)
         self.assertIn("hello", [json.loads(line)["t"] for line in writes[1].splitlines()], "the second hello was in it")
         self.assertEqual(self.marks()[project.id], first, "the mark is the read the written hello carried")
+
+    def test_a_lane_holding_more_than_its_bound_unsent_ends_the_connection_on_rl10(self):
+        """#149's bound on RL10's one lane (#153 M6: the deleted Sender's copy
+        of it had the only test that went past it). While the endpoint takes
+        nothing, the lane holds what is queued up to SEND_QUEUE_MAX unsent;
+        the send that passes it closes the lane and raises NotDelivered, so
+        nothing it held is written after and a later send is dropped; and the
+        uplink's loop ends the connection on it, a frame handler's failure
+        not swallowing it."""
+        import sminos_uplink as uplink
+        project, _, _ = self.ended_presence_project("bound-rl10")
+        reached, release = threading.Event(), threading.Event()
+
+        def write(real, data):   # the endpoint takes nothing while the first write is held
+            reached.set()
+            release.wait(10)
+            real(data)
+        link, items, _hl, far = self.on_socket(project, write=write)
+        self.addCleanup(release.set)
+        lane = link.session_lane
+        lane.send([{"t": "first"}])
+        self.assertTrue(reached.wait(10), "the first frame is being written")
+        for i in range(15):
+            lane.send([{"t": "filler", "i": i, "data": "x" * (1 << 20)}])
+        self.assertGreater(lane.queued(), 15 << 20, "fifteen MiB unsent: the lane holds them")
+        self.assertLess(lane.queued(), uplink.SEND_QUEUE_MAX, "under its bound")
+        link.handlers["past"] = lambda _frame, _stream: lane.send([{"t": "filler", "data": "x" * (2 << 20)}])
+        stream = types.SimpleNamespace(items=queue.Queue())
+        stream.items.put(("frame", None, json.dumps({"t": "past"}), time.time()))
+        given_up = time.monotonic() + 20   # past it the loop is ended, and the log below says why it was not
+        self.assertFalse(uplink.serve_link(link, stream, lambda: time.monotonic() > given_up, threading.Event()),
+                         "the connection ends, never welcomed")
+        said = read(os.path.join(os.environ["SMINOS_HOME"], "daemon.log"))
+        self.assertIn("not delivered (the RL10 lane holds more than %d MiB unsent: the endpoint is not taking frames)"
+                      % (uplink.SEND_QUEUE_MAX >> 20), said)
+        self.assertEqual(lane.queued(), 0, "what the lane held is dropped")
+        lane.send([{"t": "after"}])   # dropped by the closed lane, raising nothing
+        release.set()
+        lane.join(10)
+        self.assertFalse(lane.is_alive(), "the lane's thread ends")
+        self.assertEqual([f["t"] for f in self.written(far)], ["first"], "nothing after the frame being written")
 
     def test_a_failed_rejection_write_releases_the_gate_and_is_written_later_on_rl10(self):
         """The same on RL10, where a frame written to the endpoint is taken:

@@ -71,7 +71,7 @@ class Machine(unittest.TestCase):
 
     def endpoint_log(self, machine="testhost"):
         """The project's log plane as the uplink holds it on RL10: no code."""
-        return hublog.HubLog(self.p, {"key": None, "machine": machine}, coded=False)
+        return hublog.HubLog(self.p, {"key": None, "machine": machine})
 
     def say(self, text):
         return sminos.log_append(self.p, W, "human", **{"from": "human", "to": "*", "text": text})
@@ -232,7 +232,7 @@ class Streams(Machine):
         rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
         new1 = self.stream(self.D1, "renamed")
         self.assertIsNone(self.append(new1, "stream as renamed")["seq"])
-        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False)
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"})
         hl.on_have({"have": {new1: 1}})
         self.assertEqual(self.held("renamed/human"), [(1, "plain as testhost")], "the plain into the plain")
         self.assertEqual(self.held(new1), [], "the stream waits for its own head")
@@ -255,7 +255,7 @@ class Rl10(Machine):
         self.assertEqual(self.say("before the cutover")["seq"], 1)
         rl10.welcomed(self.WELCOME)
         self.assertIsNone(self.say("early")["seq"], "the welcome marked the enrolment")
-        hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"})
         hl.on_have({"have": {W: 4}})
         self.assertIsNone(self.say("between")["seq"])
         for seq in (2, 3, 4):
@@ -270,7 +270,7 @@ class Rl10(Machine):
 
     def test_a_renaming_welcome_holds_the_new_names_writer(self):
         rl10.welcomed(self.WELCOME)
-        hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False).on_have({"have": {}})
+        hublog.HubLog(self.p, {"key": None, "machine": "testhost"}).on_have({"have": {}})
         self.assertEqual(self.say("as testhost")["seq"], 1)
         rl10.welcomed({**self.WELCOME, "identity": {**self.WELCOME["identity"], "name": "renamed"}})
         e = sminos.log_append(self.p, "renamed/human", "human", **{"from": "human", "to": "*", "text": "as renamed"})
@@ -327,7 +327,7 @@ class Renamed(Machine):
         rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
         self.assertIsNone(sminos.log_append(self.p, "renamed/human", "human",
                                             **{"from": "human", "to": "*", "text": "as renamed"})["seq"])
-        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False)
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"})
         hl.on_have({"have": {"renamed/human": 2}})
         for seq in (1, 2):
             hl.spend("renamed/human", seq, "conflict")
@@ -349,7 +349,7 @@ class Renamed(Machine):
             for text in ("renamed 1", "renamed 2"):
                 self.assertIsNone(sminos.log_append(self.p, "renamed/human", "human",
                                                     **{"from": "human", "to": "*", "text": text})["seq"])
-        hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False).on_have({"have": {}})
+        hublog.HubLog(self.p, {"key": None, "machine": "renamed"}).on_have({"have": {}})
         self.assertEqual([(e["seq"], e["text"]) for e in sminos.log_read(self.p) if e["writer"] == "renamed/human"],
                          [(1, "testhost 1"), (2, "testhost 2"), (3, "renamed 1"), (4, "renamed 2")])
 
@@ -372,7 +372,7 @@ class Renamed(Machine):
         self.rename_after_first_welcome()
         self.say("first")
         rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
-        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False)
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"})
         old = sminos.writer_path(self.p, W)
         stale = sminos.writer_locks(old)
         stale.__enter__()
@@ -390,11 +390,11 @@ class Renamed(Machine):
         self.rename_after_first_welcome()
         self.say("early")
         kept = Path(sminos.queued_path(self.p, W)).read_text()
-        hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False).on_have({"have": {}})
+        hublog.HubLog(self.p, {"key": None, "machine": "testhost"}).on_have({"have": {}})
         self.assertEqual([(e["writer"], e["text"]) for e in sminos.log_read(self.p)], [(W, "early")])
         Path(sminos.queued_path(self.p, W)).write_text(kept)   # a crash before the queue's removal
         rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
-        hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False).on_have({"have": {}})
+        hublog.HubLog(self.p, {"key": None, "machine": "renamed"}).on_have({"have": {}})
         self.assertEqual([(e["writer"], e["text"]) for e in sminos.log_read(self.p)], [(W, "early")],
                          "the former writer's log holds it: not appended again under the new name")
         self.assertEqual(sminos.queued_operators(self.p), {})
@@ -421,7 +421,7 @@ class Renamed(Machine):
     def test_a_queue_made_after_the_release_by_a_command_from_before_a_rename_is_drained(self):
         self.rename_after_first_welcome()
         rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
-        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False)
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"})
         hl.on_have({"have": {}})
         hl.on_have({"have": {}})   # a periodic have: nothing waits now
         sminos._queue(self.p, W, [{"kind": "human", "from": "human", "to": "*", "text": "late"}])   # still as testhost

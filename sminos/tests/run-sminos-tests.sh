@@ -4745,7 +4745,7 @@ else
   fail "the inbox stand-in and send_frame keep the engine's receiver contract (test_inbox_contract.py)"
   sed 's/^/    /' "$TEST_ROOT/inbox-contract.out"
 fi
-# The desk's codes are the hub's: DX1's shared vectors pin them (codes_parity.py).
+# The desk's canonical JSON is the hub's: DX1's shared numbers and digests pin it (codes_parity.py).
 while IFS= read -r line; do
   case "$line" in "ok "*) pass "codes parity: ${line#ok }" ;; *) fail "codes parity: ${line#FAIL }" ;; esac
 done < <(python3 "$SCRIPT_DIR/codes_parity.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/dx1-codes.json" 2>&1)

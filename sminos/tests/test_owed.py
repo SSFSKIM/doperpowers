@@ -387,14 +387,14 @@ class Taken:
 
     def link(self):
         cred = {"org": "org-1", "hub": "http://127.0.0.1:9", "machine": "testhost", "key": None}
-        link = uplink.Link(cred, {}, transport=mock.Mock(number=1), coded=False)
+        link = uplink.Link(cred, {}, transport=mock.Mock(number=1))
         self.addCleanup(link.close)
         link.generation = 1
         link.log_lane = link.session_lane = Lane()
         return link
 
     def log_plane(self, p):
-        return hublog.HubLog(p, {"key": None, "machine": "testhost"}, coded=False)
+        return hublog.HubLog(p, {"key": None, "machine": "testhost"})
 
     def test_the_hubs_have_and_each_upload_it_took(self):
         p = self.project("work")
@@ -655,7 +655,7 @@ class TakenResumes(TakenRig):
 
     def test_the_upstream_holding_the_same_event_resolves_a_conflict(self):
         ep = __import__("endpoint_standin")
-        hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"})
         hl.on_have({"have": {}})
         hl.on_refused({"refusal": {"reason": "conflict", "writer": self.w, "seq": 2}})
         self.assertIn("refused 1", self.line(self.owed()[1], "work"))
