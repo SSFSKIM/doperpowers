@@ -789,6 +789,94 @@ HEAD_BEFORE_D="$(git -C "$BARE3" rev-parse main)"
 d_confirmations 2 || true
 assert_equals "$(d_commits)" "$N" "delta, no longer designated, pushes nothing at its next schedules"
 assert_equals "$(git -C "$BARE3" rev-parse main)" "$HEAD_BEFORE_D" "with the designation moved or cleared, nobody pushes"
+
+# ---- the designation moved to this machine: the other half of DX2's "the
+# designation moves to beta" (L332-353), where the new archiver starts on an
+# archive another machine wrote. Another project, rlmoved, whose remote holds
+# beta's archive commits before delta is ever designated for it: beta's
+# writer, delta's own writer as beta held it (one position past what the
+# endpoint has admitted of it to delta, which delta's run must not take back),
+# and a third machine's file delta never held. Designated, delta fetches,
+# commits on top and pushes fast-forward: every prior commit and file kept,
+# no position the archive held lost, and no ref update ever a force.
+echo "  the designation moved to delta, onto another archiver's history:"
+RD2="$T/d/moved"
+BARE4="$T/rl10-moved.git"
+gitq init -q --bare "$BARE4"
+UPDATES="$T/d/moved-updates"
+: > "$UPDATES"
+cat > "$BARE4/hooks/update" <<HOOK
+#!/bin/sh
+# Every ref update the remote takes, a fast-forward or not.
+if [ "\$2" = 0000000000000000000000000000000000000000 ] || git merge-base --is-ancestor "\$2" "\$3"; then
+  echo "ff \$1" >> "$UPDATES"
+else
+  echo "non-ff \$1" >> "$UPDATES"
+fi
+HOOK
+chmod +x "$BARE4/hooks/update"
+mkdir -p "$RD2"
+gitq init -q "$RD2"
+(cd "$RD2" && "$SMINOS" project init --name rlmoved --hub --remote "$BARE4" >/dev/null)
+PID4="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$RD2/.smns")"
+DLOG4="$T/d/s/projects/$PID4/log"
+opened_d4() { [ "$(epq_d "any(f['frame'].get('t') == 'hello' and f['frame'].get('project') == '$PID4' for f in d['received'])")" = true ]; }
+until_true 300 opened_d4 || true
+d4_taken() { python3 -c 'import json, sys
+try: print(json.load(open(sys.argv[1])).get("taken", {}).get("delta/human", 0))
+except (OSError, ValueError): print(0)' "$T/d/s/projects/$PID4/uplink-taken.json"; }
+d4_taken_past() { [ "$(d4_taken)" -ge "$1" ]; }
+for i in 1 2; do (cd "$RD2" && "$SMINOS" say "delta moved $i" >/dev/null); done
+until_true 200 d4_taken_past 2 || true
+ep_d set '{"admit": false}'
+(cd "$RD2" && "$SMINOS" say "delta moved 3" >/dev/null)
+until_true 200 d4_taken_past 3 || true
+ep_d send "$(python3 "$T/arrivals.py" "$PID4" "$MEMBER")"
+d4_holds() { grep -q '"beta 3"' "$DLOG4/beta.human.jsonl" 2>/dev/null && [ "$(d_seqs "$DLOG4/delta.human.jsonl")" = "1,2,3" ]; }
+until_true 300 d4_holds || true
+assert_equals "$(d4_holds && echo yes)" yes "delta holds its three says in rlmoved, the endpoint's have admitting two, and beta's"
+# beta's archive, as beta wrote it before the designation moved: its own
+# writer, delta's as beta imported it (all three positions), a third
+# machine's, in two commits.
+BETA_ARCHIVE="$T/d/beta-archive"
+gitq clone -q "$BARE4" "$BETA_ARCHIVE" 2>/dev/null
+python3 - "$BETA_ARCHIVE/beta.human.jsonl" <<'PY'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    for i in (1, 2, 3):
+        f.write(json.dumps({"ts": "2026-11-05T00:00:0%d.000Z" % i, "writer": "beta/human", "seq": i, "kind": "say",
+                            "from": "human", "to": "*", "text": "beta %d" % i}) + "\n")
+PY
+gitq -C "$BETA_ARCHIVE" add -A
+gitq -C "$BETA_ARCHIVE" -c user.name=sminos -c user.email=sminos@beta commit -q -m "sminos: beta archives rlmoved"
+cp "$DLOG4/delta.human.jsonl" "$BETA_ARCHIVE/delta.human.jsonl"
+printf '%s\n' '{"ts":"2026-11-05T00:00:00.000Z","writer":"gamma/human","seq":1,"kind":"say","from":"human","to":"*","text":"gamma, archived by beta"}' \
+  > "$BETA_ARCHIVE/gamma.human.jsonl"
+gitq -C "$BETA_ARCHIVE" add -A
+gitq -C "$BETA_ARCHIVE" -c user.name=sminos -c user.email=sminos@beta commit -q -m "sminos: beta archives rlmoved"
+gitq -C "$BETA_ARCHIVE" push -q origin HEAD:main
+BETA_HEAD="$(git -C "$BARE4" rev-parse main)"
+BETA_COMMITS="$(git -C "$BARE4" rev-list main | sort | tr '\n' ' ')"
+cp "$BETA_ARCHIVE/gamma.human.jsonl" "$T/d/gamma-before"
+ep_d set "{\"archive\": {\"$PID4\": true}}"
+d4_pushed() { git -C "$BARE4" log --format=%ce main 2>/dev/null | grep -q "^sminos@delta\$"; }
+until_true 300 d4_pushed || true
+assert_equals "$(d4_pushed && echo yes)" yes "delta, designated for rlmoved, writes its archive"
+assert_equals "$(git -C "$BARE4" merge-base --is-ancestor "$BETA_HEAD" main && echo on-top)" on-top \
+  "on top of beta's history: beta's head is an ancestor of the new main"
+assert_equals "$(comm -23 <(tr ' ' '\n' <<<"$BETA_COMMITS" | grep .) <(git -C "$BARE4" rev-list main | sort) | wc -l | tr -d ' ')" 0 \
+  "every commit beta wrote stays in the history"
+assert_equals "$(( $(grep -c '^ff ' "$UPDATES" || true) >= 2 )) $(grep -c '^non-ff' "$UPDATES" || true)" "1 0" \
+  "the remote took beta's push and delta's, every ref update a fast-forward: no force"
+assert_equals "$(git -C "$BARE4" show main:gamma.human.jsonl | cmp -s - "$T/d/gamma-before" && echo kept)" kept \
+  "a file delta's log lacks stays as beta archived it"
+assert_equals "$(git -C "$BARE4" show main:delta.human.jsonl | python3 -c 'import json, sys
+print([e["seq"] for e in map(json.loads, sys.stdin)])')" "[1, 2, 3]" \
+  "delta's writer keeps the position beta archived past what the endpoint has admitted to delta: the frontier never moves back"
+assert_equals "$(git -C "$BARE4" show main:beta.human.jsonl | python3 -c 'import json, sys
+print(sorted({"verified" in e for e in map(json.loads, sys.stdin)}))')" "[True]" \
+  "and beta's writer as delta's log holds it, imported"
+ep_d set '{"admit": true}'
 kill "$D_DAEMON"
 set +e; wait "$D_DAEMON"; set -e
 assert_not_contains "$(cat "$T/d/s/daemon.log")" "Traceback" "nothing in delta's daemon.log is a traceback"
