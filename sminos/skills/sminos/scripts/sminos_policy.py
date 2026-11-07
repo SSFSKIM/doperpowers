@@ -164,10 +164,10 @@ def known_checkouts(project, here=None):
 
 def git_branch(path):
     """The branch checked out at `path`, read from git's HEAD without running
-    git; "" when detached, not a checkout, or one this process may not read
-    (sminos.read_refused)."""
+    git; "" when detached, not a checkout, or one whose metadata this
+    process may not read (sminos.git_refused)."""
     d = os.path.abspath(path)
-    if sminos.read_refused(d):
+    if sminos.git_refused(d):
         return ""
     while True:
         dot = os.path.join(d, ".git")

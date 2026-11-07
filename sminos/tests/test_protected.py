@@ -149,6 +149,7 @@ class Touches:
     def __init__(self, *prefixes):
         self.prefixes = [p.casefold().rstrip("/") for p in prefixes]
         self.seen = []
+        self.children = []   # every child's argv, wherever it starts
 
     def note(self, path):
         if isinstance(path, int):
@@ -179,6 +180,7 @@ class Touches:
                 if k.get("cwd"):
                     touches.note(k["cwd"])
                 argv = list(args) if isinstance(args, (list, tuple)) else [args]
+                touches.children.append(argv)
                 for i, x in enumerate(argv[:-1]):
                     if x == "-C":
                         touches.note(argv[i + 1])
@@ -289,6 +291,87 @@ class DaemonView(unittest.TestCase):
         self.assertEqual((p.id, sminos.guessed(p)), (pid, False), "read off its .smns, as before")
         self.assertNotEqual(t.seen, [])
         self.assertEqual((refused, launch), (False, ""))
+
+
+def worktree_into(main, name):
+    """A linked worktree outside the folders whose repository, `main`, is in
+    one: its `.git` file names a gitdir under main's `.git/worktrees`."""
+    os.makedirs(os.path.join(main, ".git", "worktrees", name), exist_ok=True)
+    with open(os.path.join(main, ".git", "HEAD"), "w") as f:
+        f.write("ref: refs/heads/main\n")
+    wt = os.path.join(T, "r", name)
+    os.makedirs(wt)
+    gitdir = os.path.join(main, ".git", "worktrees", name)
+    for fname, text in (("commondir", "../..\n"), ("gitdir", os.path.join(wt, ".git") + "\n"),
+                        ("HEAD", "ref: refs/heads/wt\n")):
+        with open(os.path.join(gitdir, fname), "w") as f:
+            f.write(text)
+    with open(os.path.join(wt, ".git"), "w") as f:
+        f.write("gitdir: %s\n" % gitdir)
+    return wt
+
+
+class GitThroughAWorktree(unittest.TestCase):
+    """git, and every read of a checkout's metadata, follows a linked
+    worktree's `.git` file to its gitdir and commondir: a worktree outside
+    the folders whose repository is in one is not looked through."""
+
+    def test_a_worktree_into_downloads_is_not_followed(self):
+        wt = worktree_into(os.path.join(DOWNLOADS, "main"), "wt-%s" % uuid.uuid4().hex[:6])
+        plane, media = sminos.sibling_module("sminos_plane"), sminos.sibling_module("sminos_media")
+        policy = sminos.sibling_module("sminos_policy")
+        with tcc(), in_dir(T), Touches(DOWNLOADS) as t:
+            key = plane.project_key(wt)
+            diff = plane.working_diff(wt)
+            excluded = media.exclude(wt)
+            branch = policy.git_branch(wt)
+        self.assertEqual(t.seen, [], "nothing under ~/Downloads was looked at")
+        self.assertEqual([a for a in t.children if a and a[0] == "git"], [], "no git ran through the worktree")
+        self.assertEqual((key, diff, excluded, branch), (wt, {"base": "", "text": ""}, False, ""))
+
+    def test_linux_follows_it_as_before(self):
+        main = os.path.join(DOWNLOADS, "main-linux")
+        wt = worktree_into(main, "wt-%s" % uuid.uuid4().hex[:6])
+        plane = sminos.sibling_module("sminos_plane")
+        with tcc(False), in_dir(T):
+            self.assertEqual(plane.project_key(wt), main)
+
+
+class HubFence(unittest.TestCase):
+    """A tick holding a git-mirrored project, whose registration has since
+    recorded a hub, stops at the fence though the checkout cannot be read."""
+
+    def test_a_hub_registration_bars_git_for_a_root_not_read(self):
+        pid = str(uuid.uuid4())
+        d = checkout(os.path.join(DOWNLOADS, "hubbed-%s" % pid[:6]), pid, "hubbed")
+        register(pid, "hubbed", d)   # registered with a hub: `project init --hub` ran there
+        stale = sminos.make_project(pid, "hubbed", "file:///nowhere/log.git", d)   # what the tick read before
+        with tcc(), in_dir(T), Touches(DOWNLOADS) as t:
+            with self.assertRaises(daemon.BecameHub):
+                daemon.ensure_mirrored(stale)
+        self.assertEqual(t.seen, [])
+
+
+class NoJoinOnAGuess(unittest.TestCase):
+    """A hook or the bridge's export run outside the folder joins nothing on
+    a project told rather than read."""
+
+    def test_a_hook_outside_the_folder_does_not_join_a_guessed_project(self):
+        a, b = str(uuid.uuid4()), str(uuid.uuid4())
+        d = checkout(os.path.join(DOWNLOADS, "moved-%s" % a[:6]), b, "bee")   # its .smns names B now
+        register(a, "ay", d)   # the registration still names A there
+        sid, rec = live_session(d)
+        with tcc(), in_dir(T):
+            sminos.forget_caches()
+            project = sminos.session_project(sid, d)
+            self.assertEqual((project.id, sminos.guessed(project)), (a, True))
+            tpath = sminos.transcript_path(sid)
+            quietly(sminos.record_session, project, sid, tpath, "SessionStart")
+            quietly(sminos.export_live, d, sid, [])
+            self.assertEqual(sminos.join_on_sight(project, sid, None, rec, True), [])
+            quietly(sminos.join_seat, {"alias": "ay", "group": "fleet", "current": sid, "cwd": d, "status": "idle",
+                                       "seat_id": str(uuid.uuid4()), "worktree": "", "role": ""})
+        self.assertEqual(own_events(sminos.known_project(a), sid), [], "nothing joined A on a guess")
 
 
 class Derive(unittest.TestCase):

@@ -729,6 +729,45 @@ def refusals():
     return getattr(_GUARD, "refused", 0)
 
 
+def git_refused(d):
+    """Whether git run in `d`, or a read through its checkout's metadata,
+    would look where this process may not (read_refused): `d` itself, or
+    the gitdir a linked worktree's `.git` file names, or that gitdir's
+    commondir. The `.git` file is read where it is, beside the checkout,
+    never followed first. Every site that runs git in, or reads git's files
+    for, a session's directory asks this."""
+    if not TCC:
+        return False
+    d = _abs(d)
+    if read_refused(d):
+        return True
+    while True:
+        dot = os.path.join(d, ".git")
+        if os.path.isdir(dot):
+            return False
+        if os.path.isfile(dot):
+            try:
+                with open(dot) as f:
+                    line = f.readline().strip()
+            except OSError:
+                return False
+            if not line.startswith("gitdir:"):
+                return False
+            gitdir = os.path.join(d, line[len("gitdir:"):].strip())
+            if read_refused(gitdir):
+                return True
+            try:
+                with open(os.path.join(gitdir, "commondir")) as f:
+                    common = f.read().strip()
+            except OSError:
+                return False
+            return bool(common) and read_refused(os.path.join(gitdir, common))
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
 def launch_refused(d):
     """Why a child sminos starts on its own initiative may not start in `d`,
     or "": on macOS, `d` is in a protected folder this process's working
@@ -801,6 +840,8 @@ def common_git_dir(cwd):
     common = _common_git_dir_fs(d)
     if common is not None:
         return common
+    if git_refused(d):
+        return ""
     try:
         p = subprocess.run(["git", "-C", d, "rev-parse", "--git-common-dir"],
                            capture_output=True, text=True, timeout=10)
@@ -3528,8 +3569,9 @@ def lifecycle(log_project, session, kind, guard=None, required=True, **fields):
     the session's events under this machine's former names first: a rename
     moves where its lifecycle goes on, not what it is. (`log_project` is
     the log written to: an event's own `project` field, a `moved`
-    retirement's, is one of `fields`.)"""
-    if log_project is None or not session:
+    retirement's, is one of `fields`.) No `joined` goes into a project told
+    rather than read (Guessed), whoever asks."""
+    if log_project is None or not session or (kind == "joined" and guessed(log_project)):
         return []
     try:
         writer, aud = own_stream(log_project, session)
@@ -3570,6 +3612,8 @@ def join_seat(seat, by=""):
     if not seat or not seat["current"]:
         return []
     project = seat_project(seat)
+    if guessed(project):
+        return []   # told, not read: its session's own hook joins it where it runs
     if project is not None:
         ensure_record(project, seat["current"], seat)
     return lifecycle(project, seat["current"], "joined",
@@ -3905,8 +3949,10 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
     join is written only if it is still this one (retire_moved). `marked`:
     its host marked it (member_mark). Its record is made sure of first
     (ensure_record, with the hook's `evidence` when the hook joins it), so
-    the joined carries what it publishes once it is final."""
-    if not joinable(seat, peer, marked):
+    the joined carries what it publishes once it is final. Never into a
+    project told rather than read (Guessed): the session's own process joins
+    it where it works."""
+    if guessed(project) or not joinable(seat, peer, marked):
         return []
 
     def guard(evs):

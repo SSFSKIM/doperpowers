@@ -271,9 +271,9 @@ def exclude(base):
     (its common `info/exclude`, which every worktree of it reads): True once
     the line is there, False when `base` is in no repository. Raises Unsafe
     when `info` or `info/exclude` is a link or the exclude no regular file,
-    or OSError. False, untouched, for a `base` this process may not look at
-    (sminos.read_refused)."""
-    if sminos.read_refused(base):
+    or OSError. False, untouched, for a `base` git would read somewhere this
+    process may not look (sminos.git_refused)."""
+    if sminos.git_refused(base):
         return False
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"}
     r = subprocess.run(["git", "-C", base, "rev-parse", "--path-format=absolute", "--git-common-dir"],

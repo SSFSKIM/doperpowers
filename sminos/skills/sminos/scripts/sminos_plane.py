@@ -2284,9 +2284,10 @@ def project_key(cwd):
     (2.1.310's canonical git root): the nearest directory at or above `cwd`
     holding `.git`, and for a linked worktree its primary checkout (a bare
     repository's directory when the primary is bare); `cwd` itself outside
-    any repository, and where this process may not look (sminos.read_refused)."""
+    any repository; where this process may not look, or a worktree whose
+    metadata is somewhere it may not (sminos.git_refused), `cwd` unfollowed."""
     at = os.path.normpath(cwd)
-    if sminos.read_refused(at):
+    if sminos.git_refused(at):
         return at
     while not os.path.isdir(os.path.join(at, ".git")) and not os.path.isfile(os.path.join(at, ".git")):
         up = os.path.dirname(at)
@@ -2313,7 +2314,8 @@ def _canonical_root(root):
     if os.path.dirname(gitdir) != os.path.join(common, "worktrees"):
         return root
     back = _read_text(os.path.join(gitdir, "gitdir"))
-    if not back or os.path.realpath(os.path.join(gitdir, back)) != os.path.join(os.path.realpath(root), ".git"):
+    if not back or sminos.read_refused(os.path.join(gitdir, back)) \
+            or os.path.realpath(os.path.join(gitdir, back)) != os.path.join(os.path.realpath(root), ".git"):
         return root
     if os.path.basename(common) != ".git":
         return root if os.path.exists(os.path.join(common, ".git")) else common
@@ -2390,7 +2392,7 @@ def working_diff(cwd):
         return subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.quotepath=off", "-C", cwd, *args],
                               capture_output=True, timeout=GIT_TIMEOUT, env=env)
 
-    if not (cwd and not sminos.read_refused(cwd) and os.path.isdir(cwd)) \
+    if not (cwd and not sminos.git_refused(cwd) and os.path.isdir(cwd)) \
             or git("rev-parse", "--is-inside-work-tree").returncode != 0:
         return {"base": "", "text": ""}
     head = git("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")

@@ -429,10 +429,11 @@ def ensure_mirrored(project):
     reg = sminos.registration(project.id)
     root = str(reg.get("root") or "")
     for where in dict.fromkeys(r for r in (project.root, root) if r):
-        if sminos.names_hub(where, project.id):   # None, a root not read here: as registered
+        if sminos.names_hub(where, project.id):   # None, a root not read here: the registration decides
             raise BecameHub("%s names a hub now: git no longer syncs %s" % (
                 os.path.join(where, sminos.SMNS), project.name))
-    if reg.get("hub") is not None and not (root and (sminos.read_refused(root) or os.path.isdir(root))):
+    # A root this process may not read (sminos.read_refused) is as good as gone: the registration's hub stands.
+    if reg.get("hub") is not None and not (root and not sminos.read_refused(root) and os.path.isdir(root)):
         raise BecameHub("%s is registered as a hub project: git no longer syncs it" % project.name)
 
 
