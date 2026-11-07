@@ -269,13 +269,13 @@ def by_project(frames):
 
 
 class SocketLane(threading.Thread):
-    """RL10's one lane: a thread that writes, in FIFO order, what the main thread queues (`send`) on the
-    endpoint's socket. The socket is one ordered stream with no per-frame
-    answer, so a frame written is taken: once an entry's lines are written,
-    ("sent", [then, ...]) goes on the transport's items for the main loop to
-    run, each continuation told nothing was refused. A write that fails, or
-    more than SEND_QUEUE_MAX unsent, ends the lane: ("closed", NotDelivered)
-    is put once, and the connection ends.
+    """RL10's one lane: a thread that writes, in FIFO order, what the main
+    thread queues (`send`) on the endpoint's socket. The socket is one ordered
+    stream with no per-frame answer, so a frame written is taken: once an
+    entry's lines are written, ("sent", [then, ...]) goes on the transport's
+    items for the main loop to run, each continuation told nothing was
+    refused. A write that fails, or more than SEND_QUEUE_MAX unsent, ends the
+    lane: ("closed", NotDelivered) is put once, and the connection ends.
     Being one stream, it needs no gate: a project's `hello` goes before
     whatever is queued behind it, so `release` and `hold` change nothing."""
 
@@ -1197,20 +1197,15 @@ class Link:
         the leavers'. A live member that joined under a former name of this
         machine joins again first, so the vector and the upload carry it.
 
-        The bundle goes as one entry of the log lane, and the project's
-        session messages wait (the session lane's gate, closed again on a
-        project opened anew) until the hub answered it; what the session lane
-        still held of a project opened anew that this hello sends as it is
-        now (`renewed`: its pending set, presence, requests and RPCs) is
-        dropped, so no older copy follows it, and a settlement so dropped
-        goes in this hello's bundle, ahead of the set. Then the gate opens,
-        before any local bookkeeping, and the bookkeeping follows, for what
-        the answer does not name refused: the settlements it carried kept as
-        relayed, the read its presence's leavers were drawn from marked taken
-        (the tombstone mark), its rejections recorded as reported. What
-        `deliveries` posts after it follows it on the same connection, so the
-        hub applies it after the hello, and a hello that fails ends the
-        stream before any continuation behind it runs. While a hello of the project is out
+        The bundle goes as one entry of the lane, ahead of whatever is queued
+        behind it on the one ordered stream (the lane's `hold` and `release`
+        do nothing). Once it is written its continuation runs: the
+        settlements it carried kept as relayed, the read its presence's
+        leavers were drawn from marked taken (the tombstone mark), its
+        rejections recorded as reported. What `deliveries` queues after it
+        follows it on the same connection, so the endpoint takes it after the
+        hello, and a write that fails ends the connection before any
+        continuation behind it runs. While a hello of the project is out
         (`opening`), a refusal does not open it again."""
         pid = hl.project.id
         self.opening.add(pid)
@@ -1238,7 +1233,7 @@ class Link:
 
         def answered(refused):
             self.opening.discard(pid)
-            self.session_lane.release(pid)   # the hub has it open: what the network waited for comes first
+            self.session_lane.release(pid)   # no gate on one ordered stream
             if flying is not None:
                 # A session-lane body of the project was out at the re-open:
                 # the hub may apply it after this hello, its older set and
@@ -1247,12 +1242,12 @@ class Link:
                 # since that body's oldest line was queued.
                 self.requests.stale.add(pid)
                 self.plane.say_again(pid, flying)
-            # Applied behind the hello, the project open: the hub's (a write that fails is said, and costs a resend).
+            # Written behind the hello, the project open (a local write that fails is said, and costs a resend).
             self.requests.delivered(owed, refused)
             self.rpcs.delivered(results, refused)
             try:
                 if read is not None and not any(id(f) in refused for f in sessions):
-                    self.plane.accepted(pid, read)   # the hub took these leavers: only later ones are said again
+                    self.plane.accepted(pid, read)   # these leavers were written: only later ones are said again
             finally:
                 if unreported:
                     self.reported(hl, unreported, refused)
@@ -1267,14 +1262,15 @@ class Link:
         self.host_pass(hl, again=True)
 
     def report(self, hl, rejections):
-        """Rejections up, reported once the hub answered them."""
+        """Rejections up, reported once they are written."""
         self.reporting[hl.project.id] += 1
         self.log_lane.send(rejections, then=lambda refused: self.reported(hl, rejections, refused))
 
     def reported(self, hl, rejections, refused):
-        """The hub answered the rejections: no longer in flight, and those
-        it did not refuse `not-open` recorded as reported (settle_marks); one
-        it did stays unreported, for the hello that opens its project again."""
+        """The rejections were written: no longer in flight, and recorded
+        as reported (settle_marks), but one `refused` names `not-open`
+        (never, on one ordered stream), which stays unreported for the hello
+        that opens its project again."""
         pid = hl.project.id
         self.reporting[pid] -= 1
         owed = self.unrecorded.setdefault(pid, [])

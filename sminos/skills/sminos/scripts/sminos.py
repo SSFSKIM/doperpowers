@@ -90,7 +90,7 @@ member too, seat-less, from the first call that reads its project.
                    machine admits from outside. Read-only records what is written elsewhere and delivers
                    none of it; the ceiling bounds a spawn. A session reports it, never changes it unasked
     sminos hub      show                                  # this machine's name, hub and org, as its endpoint
-                   gave them at its first welcome: its name there is its name everywhere (the writer host
+                   gave them at its latest welcome: its name there is its name everywhere (the writer host
                    of what it writes). Enrolling is the endpoint's: mawsd endpoint enroll|status
     sminos rpc-query [--created T] -- <opId>              # what became of a desk RPC, as the daemon's ledger
                    file holds it (RL4's query, JSON): done, refused, in-progress, expired, not-received;
@@ -12009,18 +12009,14 @@ def print_table(header, rows):
 
 
 def org_age_line():
-    """The age of daemon/org.json when it is older than a minute: the
-    directory is the hub's as of then, the hub restating it at every change
-    (a machine's presence among them), so an old one is a silent stream. On
-    a machine cut over to its endpoint (RL10) an old one is no fault: the
-    endpoint restates it only at a connection and at a new head or
-    certificate set."""
+    """The age of daemon/org.json when it is older than a minute. An old
+    one is no fault: the endpoint restates it only at a connection and at a
+    new head or certificate set."""
     d = org_directory()
     at = _ts_epoch(d["at"]) if d else None
     if at is not None and time.time() - at > 60:
-        why = "the endpoint restates it only when the org changes or the daemon reconnects" \
-            if sibling_module("sminos_rl10").cut_over() else "the daemon's stream has said nothing newer"
-        print("(the org's directory is %s old: %s)" % (short_age(time.time() - at), why))
+        print("(the org's directory is %s old: the endpoint restates it only when the org changes or the daemon "
+              "reconnects)" % short_age(time.time() - at))
 
 
 def cmd_projects(a):

@@ -182,6 +182,17 @@ class CutOver(Rows, unittest.TestCase):
         self.assertNotIn("said nothing newer", text)
         self.assertIn(line, self.cli("projects"))
 
+    def test_an_old_directory_left_by_an_undone_cutover_reads_as_the_endpoints(self):
+        """`projects` says the directory's age without an enrollment check:
+        with identity.json gone (the cutover undone), an old org.json still
+        gets the endpoint's line, never one of a stream."""
+        self.directory([{"name": "testhost", "online": False, "seen": None}], at=ago(3 * 3600))
+        os.unlink(os.path.join(self.sh, "daemon", "identity.json"))
+        text = self.cli("projects")
+        self.assertIn("(the org's directory is 3h old: the endpoint restates it only when the org changes or the "
+                      "daemon reconnects)", text)
+        self.assertNotIn("stream", text)
+
     def test_no_directory_yet(self):
         text = self.cli("machines")
         self.assertIn("no org directory yet: the endpoint has not sent one", text)

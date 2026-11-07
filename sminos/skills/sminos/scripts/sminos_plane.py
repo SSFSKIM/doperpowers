@@ -2959,7 +2959,7 @@ class Plane:
         s = self.subs.get(frame_.get("sub"))
         rid, what, args = frame_.get("id"), frame_.get("what"), frame_.get("args")
         if s is None or not (isinstance(rid, str) and 1 <= len(rid) <= READ_ID_MAX) \
-                or not (isinstance(what, str) and READ_WHAT.match(what)) \
+                or not (isinstance(what, str) and READ_WHAT.fullmatch(what)) \
                 or not (args is None or (isinstance(args, dict) and len(json.dumps(args)) <= READ_ARGS_MAX)):
             return []
         if s.agent is not None:

@@ -48,16 +48,16 @@ daemon saying only what its bridges reported, as they reported it:
 
 The state outlives the connection (the uplink keeps one Requests): a
 settlement made while the endpoint is out of reach goes up after the next
-connect, ahead of the complete set, and is never dropped; a raise made then
-is in that set. A message queued on the lane (`sending`) is in flight,
-neither due nor opened again, until its frame is written (`delivered`): it
-leaves the outbox then. A settlement leaves for `daemon/requests.json`
-(relayed); a connection cut first leaves it owed (`reset`). The settlements owed are
-kept in `daemon/requests-owed.json` as they change, so a restarted uplink
-sends them again even when their bridge is gone; the bridge's snapshot
-brings back, while the bridge runs, what was not yet read. A reader whose
-stream ends while the bridge still answers subscribes again, and its
-snapshot is reconciled against what was held.
+connect, ahead of the complete set, and is never dropped; a raise made then is
+in that set. A message queued on the lane (`sending`) is in flight, neither
+due nor opened again, until its frame is written (`delivered`): it leaves the
+outbox then. A settlement leaves for `daemon/requests.json` (relayed); a
+connection cut first leaves it owed (`reset`). The settlements owed are kept
+in `daemon/requests-owed.json` as they change, so a restarted uplink sends
+them again even when their bridge is gone; the bridge's snapshot brings back,
+while the bridge runs, what was not yet read. A reader whose stream ends while
+the bridge still answers subscribes again, and its snapshot is reconciled
+against what was held.
 
 Readers only read the bridge's socket and queue what they read; everything
 else runs on the uplink's main thread.

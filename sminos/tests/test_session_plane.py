@@ -1758,9 +1758,10 @@ class StaleSocket(unittest.TestCase):
         self.assertLess(took, plane.STALE_WAIT, "no redial for a session that does not run")
 
 
-class SubscribeChecks(unittest.TestCase):
-    """What `subscribe` refuses before it opens anything: the agentId is
-    null or a whole subagent id, never one with a newline after it."""
+class FrameChecks(unittest.TestCase):
+    """What the plane checks of a frame before it acts on it: `subscribe`'s
+    agentId is null or a whole subagent id, and a `read`'s `what` a whole
+    word, never one with a newline after it."""
 
     def setUp(self):
         self.sid = new_session()
@@ -1785,6 +1786,14 @@ class SubscribeChecks(unittest.TestCase):
         self.assertEqual(self.refusal("a1\nx"), bad)
         for good in ("a1", None):
             self.assertTrue(self.refusal(good).startswith("no session "), "past the agentId check: %r" % good)
+
+    def test_a_read_whose_what_has_a_trailing_newline_is_passed_by(self):
+        # A subagent's subscription: a read that passes the frame's checks is answered `unsupported` at once.
+        self.p.subs["s1"] = types.SimpleNamespace(agent="a1", sub="s1", read_answered=lambda body: [body],
+                                                close=lambda: None)
+        self.assertEqual(self.p.read({"sub": "s1", "id": "r1", "what": "mcp\n"}), [], "passed by, as out of form")
+        [answer] = self.p.read({"sub": "s1", "id": "r1", "what": "mcp"})
+        self.assertEqual(answer["error"]["code"], "unsupported", "a whole word passes the check")
 
 
 class ConfigDirSession(unittest.TestCase):

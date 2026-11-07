@@ -13,9 +13,10 @@ order, and the first that fails is its answer, as DX6's error code:
    `opId` is 16-128 characters of base64url's alphabet (`bad-op-id`), and
    carries `opCreated`, the app's time when it chose the id, kept across
    reseals, no later than `created` by more than FRESH_S (`bad-op-created`);
-2. where it runs: `machine` is this machine's enrolled name (`wrong-machine`), `project` a hub project
-   of this machine in its org (`unknown-project`), the session one that
-   joined that project from this machine, ended or not (`no-session`);
+2. where it runs: `machine` is this machine's enrolled name
+   (`wrong-machine`), `project` a hub project of this machine in its org
+   (`unknown-project`), the session one that joined that project from this
+   machine, ended or not (`no-session`);
 3. the ledger, keyed by the op: the `opId`, else the nonce (an RPC without
    one, as DX6 defined it). An op it knows is answered from it and never run
    again; one it holds a tombstone for is refused `tombstoned`; one whose

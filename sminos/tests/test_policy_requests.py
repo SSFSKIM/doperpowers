@@ -1724,10 +1724,17 @@ class EndpointHome:
         return messages(self.ep.frames()[since:], kind)
 
     def restated(self, since):
-        """Waited for: a connection after `since` finished its restatement
-        (its `restated`, which the uplink sends once that tick's hellos,
-        results and pending sets are queued ahead of it)."""
-        return wait_for(lambda: [f for f in self.ep.frames()[since:] if f["t"] == "restated"], timeout=30)
+        """Waited for: a connection opened after `since` finished its
+        restatement (its `restated`, which the uplink sends once that tick's
+        hellos, results and pending sets are queued ahead of it). A late
+        `restated` of a connection already open at `since` is not it."""
+        def new():
+            with self.ep.cv:
+                received = list(self.ep.received)
+            before = {n for n, _ in received[:since]}
+            return [f for n, f in received[since:] if n not in before and f.get("t") == "restated"]
+
+        return wait_for(new, timeout=30)
 
     def opened(self, project, since):
         """Whether a connection after `since` opened the project (its
