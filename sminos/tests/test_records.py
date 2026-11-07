@@ -31,6 +31,7 @@ SCRIPTS = HERE.parent / "skills" / "sminos" / "scripts"
 CLI = SCRIPTS / "sminos.py"
 MEMBER = "0123456789abcdef0123456789abcdef"
 OTHER = "fedcba9876543210fedcba9876543210"
+THIRD = "00112233445566778899aabbccddeeff"
 SECRET = "sk-test-not-a-real-token-5b1e"
 SEAT_RE = re.compile(r"\[[0-9a-f]+ / ([0-9a-f-]{36})\]")
 
@@ -933,23 +934,22 @@ class TheStore(unittest.TestCase):
         self.assertTrue(os.path.exists(R.pending_path("d" * 32)))
         self.assertIsNone(R.claim("../x", T0))
 
-    def test_owners_never_mix_the_machine_with_members(self):
+    def test_the_machine_stands_beside_members_once_and_never_twice(self):
+        """An owner added by a `manage` act is a member id beside `@machine`
+        (the remote layer's §5.8): every writer takes the mixed list; the
+        token twice, an empty list or an empty owner, none."""
         R = self.R
         mixed = dict(R.default_provenance(source="launch"), owners=["@machine", MEMBER])
-        with self.assertRaises(ValueError):
-            R.establish(T0, mixed)
-        self.assertIsNone(R.read(T0))
-        with self.assertRaises(ValueError):
-            R.write_pending("e" * 32, mixed)
-        self.assertFalse(os.path.exists(R.pending_path("e" * 32)))
-        R.establish(T0, R.default_provenance())
-        with self.assertRaises(ValueError):
-            R.establish(T0, dict(mixed, source="lineage"))
-        self.assertEqual(R.read(T0)["owners"], ["@machine"], "a provisional record is not replaced by a mixed list")
-        for bad in ([], ["@machine", "@machine"], [""], "@machine"):
+        rec, changed = R.establish(T0, mixed)
+        self.assertTrue(changed)
+        self.assertEqual(R.read(T0)["owners"], ["@machine", MEMBER])
+        R.write_pending("e" * 32, mixed)
+        self.assertTrue(os.path.exists(R.pending_path("e" * 32)))
+        for bad in ([], ["@machine", "@machine"], ["@machine", MEMBER, "@machine"], [""], "@machine"):
             with self.assertRaises(ValueError):
                 R.checked_owners(bad)
         self.assertEqual(R.checked_owners([MEMBER, "f" * 32]), [MEMBER, "f" * 32])
+        mixed = dict(mixed, owners=["@machine", "@machine"])
         # A pending file this code never wrote: the claim stands, its owners do not.
         os.makedirs(os.path.dirname(R.pending_path("a" * 32)), exist_ok=True)
         with open(R.pending_path("a" * 32), "w") as f:
@@ -1261,6 +1261,14 @@ def policy(rec):
     return {k: rec[k] for k in ("access", "shares", "policyRev") if k in (rec or {})}
 
 
+def owner_act(sid, member):
+    """A `record.owners` act adding `member`, as the record keeps it."""
+    return {"v": 1, "org": "org-1", "machine": "machine-ref-1", "device": "dev-1", "opId": "o" * 16,
+            "opCreated": "2026-11-05T00:00:00.000Z", "action": "record.owners",
+            "args": {"session": sid, "add": True, "member": member}, "nonce": "n" * 22,
+            "created": "2026-11-05T00:00:00.000Z", "stepUp": "s" * 86}
+
+
 def set_private(m, sid):
     """The session made private with one share, through the setter (M4's
     set_visibility calls it), in the machine's own environment."""
@@ -1307,6 +1315,73 @@ class ThePolicy(unittest.TestCase):
         # One that has none, from a provenance that has none, has none: the defaults.
         R.establish(TX, R.default_provenance(source="hook"))
         self.assertEqual(policy(R.establish(TX, dict(R.default_provenance(source="lineage")))[0]), {})
+
+    def test_an_owner_added_to_a_provisional_record_survives_its_hook(self):
+        """The reconciler's provisional record, an owner added to it by a
+        `record.owners` act, then the session's hook: its evidence replaces
+        the record, and the added owner stays with its act, as the policy."""
+        m = Machine(self)
+        m.peer(T0, "late")
+        m.transcript(T0)
+        m.rows()
+        self.assertEqual(m.record(T0)["source"], "default")
+        act = owner_act(T0, OTHER)
+        m.py("import json, sminos_records as R\nR.add_owner(sys.argv[1], sys.argv[2], json.loads(sys.argv[3]))",
+             T0, OTHER, json.dumps(act))
+        m.hook("Stop", T0, source="")
+        rec = m.record(T0)
+        self.assertEqual(rec["source"], "hook", "the hook's evidence replaced the provisional record")
+        self.assertEqual((rec["owners"], rec["ownersProof"], rec["policyRev"]), (["@machine", OTHER], [act], 1))
+
+    def test_owners_added_by_acts_are_kept_beside_the_evidences(self):
+        R = self.store()
+        R.establish(T0, R.default_provenance(source="hook"))
+        act = owner_act(T0, OTHER)
+        R.add_owner(T0, OTHER, act)
+        spawn = {"action": "sminos.spawn", "args": {}, "opId": "s" * 16}
+        lineage = dict(R.default_provenance(source="lineage"), owners=[MEMBER], ownersProof=[spawn])
+        rec, changed = R.establish(T0, lineage)
+        self.assertTrue(changed)
+        self.assertEqual((rec["owners"], rec["ownersProof"], rec["policyRev"]), ([MEMBER, OTHER], [spawn, act], 1),
+                         "the evidence's owners and proof first, the added owner and its act after")
+        # A launch whose evidence names the added owner already: no second copy of it, its act still kept, so an
+        # owner the session gained stays proven whatever evidence comes next; the proofs behind it kept too.
+        spawn2 = {"action": "sminos.spawn", "args": {}, "opId": "t" * 16}
+        launch = dict(R.default_provenance(source="launch"), owners=[OTHER], ownersProof=[spawn2])
+        R.write_pending("c" * 32, launch)
+        R.bind("c" * 32, T0)
+        rec = R.claim("c" * 32, T0)
+        self.assertEqual((rec["owners"], rec["ownersProof"]), ([OTHER], [spawn2, spawn, act]),
+                         "MEMBER was the lineage's evidence, not an added owner: not an owner again")
+        # Only an owner whose own act is in the proof is carried.
+        R.establish(TB, R.default_provenance())
+        R.add_owner(TB, OTHER, owner_act(TB, MEMBER))
+        rec, _ = R.establish(TB, dict(R.default_provenance(source="hook"), owners=[MEMBER]))
+        self.assertEqual((rec["owners"], rec["ownersProof"]), ([MEMBER], []),
+                         "an owner proven by another member's act is not carried, nor that act")
+
+    def test_an_added_owners_chain_of_proof_is_kept(self):
+        """A owns the session by a spawn's proof and adds B; stronger evidence
+        then makes it C's. B stays, with A's add act and the spawn proof
+        behind it: MAWS's attestation check (org-protocol attest.ts) verifies
+        the proofs in order, an add only when its signer is the machine's
+        owner or proven by an earlier proof, so C's spawn, A's spawn, A's add
+        of B verifies, and A, proven, need not be an owner."""
+        R = self.store()
+        spawn_a = {"action": "sminos.spawn", "args": {}, "opId": "a" * 16, "device": "dev-a"}
+        R.establish(T0, dict(R.default_provenance(source="lineage"), owners=[MEMBER], ownersProof=[spawn_a]))
+        add_b = dict(owner_act(T0, OTHER), device="dev-a")
+        R.add_owner(T0, OTHER, add_b)
+        spawn_c = {"action": "session.spawn", "args": {}, "opId": "c" * 16, "device": "dev-c"}
+        R.write_pending("e" * 32, dict(R.default_provenance(source="launch"), owners=[THIRD], ownersProof=[spawn_c]))
+        R.bind("e" * 32, T0)
+        rec = R.claim("e" * 32, T0)
+        self.assertEqual(rec["owners"], [THIRD, OTHER], "A, proven only, is not made an owner again")
+        self.assertEqual(rec["ownersProof"], [spawn_c, spawn_a, add_b], "the evidence's, then the old in its order")
+        # With no act to carry, the evidence's proof alone, as before.
+        R.establish(TB, dict(R.default_provenance(source="hook"), owners=[MEMBER], ownersProof=[spawn_a]))
+        rec, _ = R.establish(TB, dict(R.default_provenance(source="lineage"), owners=[THIRD], ownersProof=[spawn_c]))
+        self.assertEqual((rec["owners"], rec["ownersProof"]), ([THIRD], [spawn_c]))
 
     def test_the_setter(self):
         R = self.store()

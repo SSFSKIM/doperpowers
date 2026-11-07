@@ -2990,16 +2990,22 @@ def published_provenance(sid):
     """What a `joined` of the session carries of its record, once the record
     is final: its `origin`, and its `owners` when they name members only.
     `@machine` never leaves the machine (RL6, the remote layer's Decision
-    Log 17): owners that hold it are left off, and every reader takes a
-    member that publishes none as the machine's, the same value. Nothing for
-    a provisional record or none, so readers elsewhere fall back to the
-    machine's default without being bound to it."""
+    Log 17): owners that are the token alone are left off, and every reader
+    takes a member that publishes none as the machine's, the same value.
+    Owners an owner added beside the token (sminos_records.add_owner) are
+    published as the endpoint resolved them at the record's policyRev
+    (mixed_owners), and left off while it has not: a reader then takes them
+    as the machine's alone, never as a member list missing the machine's.
+    Nothing for a provisional record or none, so readers elsewhere fall
+    back to the machine's default without being bound to it."""
     records = records_module()
     rec = records.read(sid) if sid else None
     if not records.is_final(rec):
         return {}
     owners = list(rec["owners"])
-    pub = {**({"owners": owners} if records.MACHINE not in owners else {}), "origin": dict(rec["origin"])}
+    if records.MACHINE in owners:
+        owners = mixed_owners(sid, rec) if owners != [records.MACHINE] else None
+    pub = {**({"owners": owners} if owners else {}), "origin": dict(rec["origin"])}
     if isinstance(pub["origin"].get("spawnerSession"), str):
         # A spawner whose audience does not contain the session's own is named to no one (P5 O18 D4): the
         # session's `joined` carries it null. A session whose own audience cannot be told carries it null too.
@@ -3010,6 +3016,23 @@ def published_provenance(sid):
         else:
             published_redacted(pub, aud)
     return pub
+
+
+def mixed_owners(sid, rec):
+    """A record's owners holding `@machine` beside member ids, as member ids:
+    the owners the endpoint gave for the session at the record's policyRev
+    (sminos_audience's kept word, where `@machine` is resolved), when they
+    hold every member beside the token; else None."""
+    au = audience_module()
+    try:
+        entry = au.entry_of(sid)
+    except au.StreamUnknown:
+        return None
+    resolved = (entry or {}).get("owners")
+    if not (isinstance(resolved, list) and resolved and entry.get("policyRev") == au.policy_of(rec)[2]):
+        return None
+    beside = [o for o in rec["owners"] if o != records_module().MACHINE]
+    return sorted(set(resolved)) if set(beside) <= set(resolved) else None
 
 
 _LINEAGE_INDEX = [None, -1, None]   # the events last indexed, their count, (continuations, publications, memberships)
@@ -3218,7 +3241,9 @@ def publish_owners(project, sid, events=None):
     earlier publication's append failed) is joined again, carrying it: its
     alias as the log holds it, the rest as its last `joined` had them, `by`
     empty. Once per change of the record, which only moves up (default,
-    hook, lineage, launch). With `events` (a reconciliation's log), a member
+    hook, lineage, launch), or gains an owner: while a change of it waits for
+    the endpoint's audience (a pending transition, sminos_visibility), it is
+    that transition's snapshot that publishes it, not this. With `events` (a reconciliation's log), a member
     whose publication is current is told from the log's index, no scan.
     Under the session file's lock the record is read again (lifecycle), so
     what is appended is the record as it is then, and nothing is appended
@@ -3243,6 +3268,9 @@ def publish_owners(project, sid, events=None):
 
     if not missing(own, pub):
         return []
+    held = sibling_module("sminos_visibility").transitions().get(sid)
+    if held is not None and not held.get("done"):
+        return []   # an owner added (sminos_visibility.add_owner): its pending transition's snapshot carries it
 
     def guard(evs):
         return latest_membership(evs) == "joined" and missing(evs, published_provenance(sid))

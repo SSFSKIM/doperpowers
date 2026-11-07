@@ -18,6 +18,7 @@ endpoint's frames dispatched to it.
 Run: python3 -B sminos/tests/test_visibility.py
 """
 
+import base64
 import json
 import os
 import pty
@@ -42,6 +43,7 @@ import sminos  # noqa: E402
 import sminos_audience as au  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
 import sminos_records as records  # noqa: E402
+import sminos_rpc as rpcmod  # noqa: E402
 import sminos_visibility as vis  # noqa: E402
 
 SCRIPTS = tw.SCRIPTS
@@ -682,6 +684,387 @@ class Unlisting(Base):
         self.upload(rec["policyRev"] + 2)
         env, _ = self.reader("other")
         self.assertIn(self.sid, self.listed(env), "shared again: its snapshot at a later policyRev")
+
+
+
+# ------------------------------------------------------------- the record RPCs (MAWS O8 M6b, M5b; O18 Interfaces §C)
+
+
+def iso(epoch):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(epoch)) + ".%03dZ" % int((epoch % 1) * 1000)
+
+
+def b64(n=16):
+    return base64.urlsafe_b64encode(os.urandom(n)).rstrip(b"=").decode()
+
+
+class RecordRpcs(Base):
+    """`record.access`, `record.shares` and `record.owners` as the endpoint
+    sends them down RL10 (an `rpc` frame with no context, the signed act as
+    `proof`), dispatched to the Link and run through sminos_rpc's checks and
+    ledger to set_visibility (or the owners' add) with operator=True."""
+
+    start, published, answer, kinds = Transitions.start, Transitions.published, Transitions.answer, Transitions.kinds
+
+    def setUp(self):
+        super().setUp()
+        self.session(self.p, S, name="kept")
+        policy_file = rpcmod.policy.policy_path()
+        if os.path.exists(policy_file):
+            os.unlink(policy_file)
+
+    def act(self, name, change, sid=S, op=None, created=None, op_created=None, member=A, device="dev-1", **fields):
+        """The frame's RPC for a record act, its proof the act as signed."""
+        created = created or iso(time.time())
+        op = op or b64() + "op"
+        target = {"session": sid}
+        action = {"v": 1, "org": "org-1", "machine": "machine-ref-1", "device": device, "opId": op,
+                  "opCreated": op_created or created, "action": name, "args": {**target, **change}, "nonce": b64(),
+                  "created": created, "stepUp": b64(64)}
+        rpc = {"rpc": name, "project": self.p.id, "machine": "testhost", "member": member, "device": device,
+               "created": created, "nonce": b64(), "opId": op, "opCreated": op_created or created,
+               "args": {"session": sid, **change}, "fingerprint": "fp-" + op, "proof": action, **fields}
+        return {k: v for k, v in rpc.items() if v is not None}
+
+    def send(self, link, rpc):
+        link.dispatch({"t": "rpc", "rpc": rpc}, None)
+        return rpc
+
+    def outcome(self, link, rpc):
+        """The op's one answer, as the ledger keeps it (a refusal before the
+        ledger: its loose result)."""
+        end = time.monotonic() + 15
+        while time.monotonic() < end:
+            link.rpcs.take()
+            view = link.rpcs.query(rpc["opId"])
+            if view["state"] in ("done", "refused"):
+                return view["outcome"]
+            loose = link.rpcs.loose.get(rpc["nonce"])
+            if loose is not None:
+                return loose[1]
+            time.sleep(0.02)
+        self.fail("no outcome for %s" % rpc["rpc"])
+
+    def refused(self, link, rpc, code):
+        o = self.outcome(link, rpc)
+        self.assertEqual((o["state"], o["error"]["code"]), ("failed", code), o)
+        self.assertTrue(o["error"]["message"])
+        return o
+
+    def answer_owners(self, link, owners, members, rev):
+        link.dispatch({"t": "audience", **endpoint_standin.audience_frame(S, owners, members, rev)}, None)
+
+    def no_notice(self):
+        return [n for n in os.listdir(os.path.join(self.p.home, "log"))
+                if "unlisted" in Path(self.p.home, "log", n).read_text()]
+
+    # ---- success
+
+    def test_record_access_widens_as_the_operator_where_a_shell_could_not(self):
+        link, rec = self.start(access="private")
+        with self.assertRaises(vis.Widening):
+            vis.set_visibility(S, access="org-view", operator=False)
+        rpc = self.send(link, self.act("record.access", {"access": "org-view"}))
+        rev = rec["policyRev"] + 1
+        self.assertEqual(self.outcome(link, rpc), {"state": "done", "result": {"changed": True, "policyRev": rev}})
+        self.assertEqual(self.policy(), ("org-view", [], rev))
+        self.assertEqual(vis.transitions()[S]["policyRev"], rev, "the same pending transition as the CLI's")
+        self.assertEqual(link.rpcs.ledger.get(rpc["opId"])["proof"], rpc["proof"], "the ledger keeps the act")
+        again = self.send(link, self.act("record.access", {"access": "org-view"}))
+        self.assertEqual(self.outcome(link, again), {"state": "done", "result": {"changed": False, "policyRev": rev}})
+
+    def test_record_shares_adds_a_share_and_null_removes_it(self):
+        link, rec = self.start(access="private")
+        with self.assertRaises(vis.Widening):
+            vis.set_visibility(S, share=(B, "converse"), operator=False)
+        rpc = self.send(link, self.act("record.shares", {"member": B, "grade": "converse"}))
+        rev = rec["policyRev"] + 1
+        self.assertEqual(self.outcome(link, rpc), {"state": "done", "result": {"changed": True, "policyRev": rev}})
+        self.assertEqual(self.policy(), ("private", [{"member": B, "grade": "converse"}], rev))
+        self.published(link, rev)
+        self.answer(link, [A, B], rev)
+        self.assertEqual(self.kinds(stream(S, [A, B])), ["joined", "state"], "its snapshot under the new stream")
+        gone = self.send(link, self.act("record.shares", {"member": B, "grade": None}))
+        self.assertEqual(self.outcome(link, gone), {"state": "done", "result": {"changed": True, "policyRev": rev + 1}})
+        self.assertEqual(self.policy(), ("private", [], rev + 1))
+
+    def test_record_owners_adds_an_owner_moving_a_private_sessions_audience(self):
+        link, rec = self.start(access="private")
+        rpc = self.send(link, self.act("record.owners", {"add": True, "member": B}))
+        rev = rec["policyRev"] + 1
+        self.assertEqual(self.outcome(link, rpc), {"state": "done", "result": {"changed": True, "policyRev": rev}})
+        now = records.read(S)
+        self.assertEqual(now["owners"], [A, B])
+        self.assertEqual(now["ownersProof"], [rpc["proof"]], "the act appended verbatim")
+        self.assertEqual(au.policy_of(now), ("private", [], rev), "its revision bumped, its policy as it was")
+        t = vis.transitions()[S]
+        self.assertEqual((t["policyRev"], t["previous"]), (rev, [A]), "the transition set_visibility records")
+        frame = [f for f in self.take_members(link) if f.get("session") == S]
+        self.assertEqual([(f["owners"], f["policyRev"], f["ownersProof"]) for f in frame],
+                         [([A, B], rev, [rpc["proof"]])], "the member frame the endpoint re-lists from")
+        self.answer_owners(link, [A, B], [A, B], rev)
+        self.assertEqual(self.kinds(stream(S, [A, B])), ["joined", "state"], "the snapshot under the new stream")
+        self.assertEqual(self.no_notice(), [], "adding an owner withdraws no one: no unlisted notice")
+        self.assertEqual(vis.transitions()[S]["notice"], "")
+        self.assertTrue(vis.transitions()[S].get("done"))
+        self.assertEqual(self.events(stream(S, [A, B]))[0]["owners"], [A, B], "its joined names both owners")
+
+    def test_record_owners_bumps_a_listed_sessions_revision_too(self):
+        link, rec = self.start(access="listed")
+        rpc = self.send(link, self.act("record.owners", {"add": True, "member": B}))
+        rev = rec.get("policyRev", 0) + 1
+        self.assertEqual(self.outcome(link, rpc), {"state": "done", "result": {"changed": True, "policyRev": rev}})
+        self.published(link, rev)
+        self.answer_owners(link, [A, B], None, rev)
+        self.assertEqual(self.kinds("testhost/" + S)[-2:], ["joined", "state"])
+        self.assertEqual(self.events("testhost/" + S)[-2]["owners"], [A, B], "the new owners published")
+
+    def test_an_owner_beside_the_machines_owners(self):
+        """A terminal session is `@machine`'s: the member is added beside the
+        token (RL §5.8), and its joined names the owners the endpoint
+        resolved, never the token."""
+        records.establish(S, records.default_provenance("hook"))
+        self.audience(S, [C], None, 0)   # the endpoint resolved @machine to C
+        sminos.view_of(self.p)
+        link = self.link()
+        link.welcomed_rl10({"t": "welcome", "capabilities": ["access", "reach"], "policy": None})
+        link.members(0.0)
+        link.log_lane.take()
+        rpc = self.send(link, self.act("record.owners", {"add": True, "member": B}, member=C))
+        self.assertEqual(self.outcome(link, rpc), {"state": "done", "result": {"changed": True, "policyRev": 1}})
+        self.assertEqual(records.read(S)["owners"], ["@machine", B])
+        self.published(link, 1)
+        self.answer_owners(link, [B, C], None, 1)
+        joined = [e for e in self.events("testhost/" + S) if e["kind"] == "joined"][-1]
+        self.assertEqual(sorted(joined["owners"]), [B, C], "the endpoint's resolution, not the token")
+        self.assertNotIn("@machine", json.dumps(self.events("testhost/" + S)))
+        again = self.send(link, self.act("record.owners", {"add": True, "member": B}, member=C))
+        self.assertEqual(self.outcome(link, again), {"state": "done", "result": {"changed": False, "policyRev": 1}})
+
+    def test_an_owner_already_an_owner_is_no_change(self):
+        link, rec = self.start(access="private")
+        before = records.read(S)
+        rpc = self.send(link, self.act("record.owners", {"add": True, "member": A}))
+        self.assertEqual(self.outcome(link, rpc),
+                         {"state": "done", "result": {"changed": False, "policyRev": rec["policyRev"]}})
+        self.assertEqual(records.read(S), before, "no revision, no proof appended")
+        self.assertNotIn(S, vis.transitions(), "no transition")
+
+    # ---- the ledger
+
+    def test_a_repeated_op_is_answered_from_the_ledger_and_never_runs_again(self):
+        link, rec = self.start(access="private")
+        first = self.act("record.shares", {"member": B, "grade": "view"})
+        self.assertEqual(self.outcome(link, self.send(link, first))["state"], "done")
+        resealed = {**first, "nonce": b64(), "created": iso(time.time())}
+        with mock.patch.object(vis, "set_visibility", side_effect=AssertionError("ran again")) as ran:
+            self.send(link, resealed)
+            link.rpcs.take()
+            self.assertEqual(self.outcome(link, resealed)["result"], {"changed": True, "policyRev": rec["policyRev"] + 1})
+        ran.assert_not_called()
+        self.assertEqual(self.policy()[2], rec["policyRev"] + 1, "one revision")
+        frames = link.rpcs.due({self.p.id})
+        self.assertIn(resealed["nonce"], [f["nonce"] for f in frames if f.get("t") == "rpc-result"],
+                      "its answer goes up under the copy's nonce")
+
+    # ---- refusals
+
+    def test_refusals(self):
+        link, rec = self.start(access="private")
+        cases = [
+            ("bad access", self.act("record.access", {"access": "public"}), "bad-shape"),
+            ("no access", self.act("record.access", {}), "bad-shape"),
+            ("bad grade", self.act("record.shares", {"member": B, "grade": "manage"}), "bad-shape"),
+            ("no grade", self.act("record.shares", {"member": B}), "bad-shape"),
+            ("bad member", self.act("record.shares", {"member": "bob", "grade": "view"}), "bad-shape"),
+            ("owner by email", self.act("record.owners", {"add": True, "member": "b@example.org"}), "bad-shape"),
+            ("the machine token", self.act("record.owners", {"add": True, "member": "@machine"}), "bad-shape"),
+            ("no add", self.act("record.owners", {"member": B}), "bad-shape"),
+            ("no proof", self.act("record.owners", {"add": True, "member": B}, proof=None), "bad-shape"),
+            ("stale", self.act("record.access", {"access": "listed"}, created=iso(time.time() - 600),
+                               op_created=iso(time.time() - 600)), "stale"),
+        ]
+        wrong = self.act("record.owners", {"add": True, "member": B})
+        wrong["proof"] = {**wrong["proof"], "args": {"session": S, "add": True, "member": C}}
+        cases.append(("a proof for another member", wrong, "bad-shape"))
+        other_op = self.act("record.owners", {"add": True, "member": B})
+        other_op["proof"] = {**other_op["proof"], "opId": b64() + "op"}
+        cases.append(("a proof for another op", other_op, "bad-shape"))
+
+        def proof(what, name="record.owners", change=None, **fields):
+            """A record act whose proof is the signed act with `fields`
+            (a field None: left out), refused before anything is written."""
+            rpc = self.act(name, change or {"add": True, "member": B})
+            rpc["proof"] = {k: v for k, v in {**rpc["proof"], **fields}.items() if v is not None}
+            cases.append((what, rpc, "bad-shape"))
+        proof("a proof with no step-up", stepUp=None)
+        proof("a proof with an empty step-up", stepUp="")
+        proof("a truncated proof", nonce=None, created=None)
+        proof("a proof with a session", session=S)
+        proof("a proof with a context", context={"lane": "A", "session": S, "launch": "l"})
+        proof("a proof with a request digest", requestDigest={})
+        proof("a proof for another machine", machine="machine-ref-2")
+        proof("a proof for another org", org="org-2")
+        proof("a proof of another op's first sealing", opCreated=iso(time.time() - 30))
+        proof("a proof of another version", v=2)
+        proof("a proof with no org", org="")
+        # Bound to its target and its change, for all three.
+        access, shares = ("record.access", {"access": "org-view"}), ("record.shares", {"member": B, "grade": "view"})
+        for name, change in (access, shares, ("record.owners", {"add": True, "member": B})):
+            proof("%s: a proof for another session" % name, name, change, args={"session": U, **change})
+            proof("%s: a proof of another action" % name, name, change,
+                  action="record.shares" if name == "record.access" else "record.access")
+            proof("%s: a proof with two targets" % name, name, change,
+                  args={"session": S, "appSessionId": "app-1", **change})
+            proof("%s: a proof with no target" % name, name, change, args=dict(change))
+            proof("%s: a proof with more" % name, name, change, args={"session": S, "note": "x", **change})
+            proof("%s: a proof for an empty app session" % name, name, change, args={"appSessionId": "", **change})
+        proof("record.access: a proof for another level", *access, args={"session": S, "access": "listed"})
+        proof("record.shares: a proof for another grade", *shares,
+              args={"session": S, "member": B, "grade": "converse"})
+        proof("record.shares: a proof for another member", *shares, args={"session": S, "member": C, "grade": "view"})
+        proof("record.shares: a proof removing the share", *shares, args={"session": S, "member": B, "grade": None})
+        proof("record.owners: a proof whose add is 1", "record.owners", None,
+              args={"session": S, "add": 1, "member": B})
+        for name, change in (access, shares):
+            cases.append(("%s: no proof" % name, self.act(name, change, proof=None), "bad-shape"))
+        for what, rpc, code in cases:
+            with self.subTest(what):
+                self.refused(link, self.send(link, rpc), code)
+        self.assertEqual(records.read(S)["owners"], [A], "nothing changed")
+        self.assertEqual(self.policy(), ("private", [], rec["policyRev"]))
+
+    def test_a_record_rpc_without_an_opid_is_refused(self):
+        """op_refusal admits a nonce-keyed RPC with no opId (DX6's legacy
+        shape), but an act without one is no act isAction takes: refused
+        before anything is written, whatever opId the proof carries."""
+        rpc = self.act("record.owners", {"add": True, "member": B})
+        for what, op, proof_op in (("no opId", None, None), ("a null opId", "null", None),
+                                   ("a null opId, the proof's a string", "null", rpc["opId"])):
+            got = {k: v for k, v in rpc.items() if k != "opId"}
+            if op == "null":
+                got["opId"] = None
+            got["proof"] = {**rpc["proof"], "opId": proof_op}
+            with self.subTest(what), self.assertRaises(rpcmod.Refused) as refused:
+                rpcmod.record_proof(got)
+            self.assertEqual(refused.exception.outcome["error"]["code"], "bad-shape")
+        with self.assertRaises(rpcmod.Refused):
+            rpcmod.record_proof({**rpc, "opId": "short", "proof": {**rpc["proof"], "opId": "short"}})
+
+    def test_a_record_proof_is_checked_against_this_machines_identity(self):
+        rpc = self.act("record.owners", {"add": True, "member": B})
+        rpcmod.record_proof(rpc)
+        rpcmod.record_proof({**rpc, "proof": {**rpc["proof"], "webauthn": {
+            "credentialId": b64(), "authenticatorData": b64(37), "clientDataJSON": b64(120), "signature": b64(70)}}})
+        with mock.patch.object(rpcmod.rl10, "cutover", return_value=None):
+            with self.assertRaises(rpcmod.Refused) as got:
+                rpcmod.record_proof(rpc)
+        self.assertEqual(got.exception.outcome["error"]["code"], "bad-shape", "no identity: no act is this machine's")
+        for webauthn in ({"signature": b64()}, None, {"credentialId": b64(), "authenticatorData": b64(),
+                                                      "clientDataJSON": b64(), "signature": b64() + "="},
+                         {"credentialId": "", "authenticatorData": b64(), "clientDataJSON": b64(), "signature": b64()}):
+            with self.subTest(webauthn=webauthn), self.assertRaises(rpcmod.Refused):
+                rpcmod.record_proof({**rpc, "proof": {**rpc["proof"], "webauthn": webauthn}})
+
+    def test_a_record_proofs_fields_are_in_maws_formats(self):
+        """action.ts's isAction, field by field: what it refuses, refused here
+        before anything is written."""
+        op = "2026-11-05T10:01:00.000Z"
+        rpc = self.act("record.owners", {"add": True, "member": B}, created=op)
+        a = rpc["proof"]
+        # The bounds themselves pass: opCreated 60 s after created, texts at 512 UTF-16 units.
+        rpcmod.record_proof({**rpc, "proof": {**a, "created": "2026-11-05T10:00:00.000Z"}})
+        rpcmod.record_proof({**rpc, "device": "d" * 512, "proof": {**a, "device": "d" * 512}})
+        rpcmod.record_proof({**rpc, "device": "\U0001F600" * 256, "proof": {**a, "device": "\U0001F600" * 256}})
+        last = a["stepUp"][:-1] + {"A": "B", "Q": "R", "g": "h", "w": "x"}.get(a["stepUp"][-1], "B")
+        bad = [
+            ("a nonce of 15 bytes", {"nonce": b64(15)}),
+            ("a nonce of 17 bytes", {"nonce": b64(17)}),
+            ("a padded nonce", {"nonce": b64() + "=="}),
+            ("a nonce in base64's alphabet", {"nonce": "+/" + b64()[2:]}),
+            ("a step-up of 63 bytes", {"stepUp": b64(63)}),
+            ("a step-up with spare bits set", {"stepUp": last}),
+            ("created without milliseconds", {"created": op[:19] + "Z"}),
+            ("created on no calendar day", {"created": "2026-02-30T00:00:00.000Z"}),
+            ("created at hour 24", {"created": "2026-11-05T24:00:00.000Z"}),
+            ("opCreated more than 60 s after created", {"created": "2026-11-05T09:59:59.999Z"}),
+        ]
+        for what, change in bad:
+            with self.subTest(what), self.assertRaises(rpcmod.Refused):
+                rpcmod.record_proof({**rpc, "proof": {**a, **change}})
+        for what, field, value in (("a device of 513", "device", "d" * 513),
+                                   ("a device of 513 UTF-16 units", "device", "\U0001F600" * 256 + "d"),
+                                   ("a device no canonical JSON holds (a lone surrogate)", "device", "dev-\ud800")):
+            with self.subTest(what), self.assertRaises(rpcmod.Refused):
+                rpcmod.record_proof({**rpc, field: value, "proof": {**a, field: value}})
+        with self.subTest("an org of 513"), self.assertRaises(rpcmod.Refused), \
+                mock.patch.object(rpcmod.rl10, "cutover", return_value={"org": "o" * 513, "ref": "machine-ref-1"}):
+            rpcmod.record_proof({**rpc, "proof": {**a, "org": "o" * 513}})
+        with mock.patch.object(rpcmod.rl10, "cutover", return_value={"org": "o" * 512, "ref": "machine-ref-1"}):
+            rpcmod.record_proof({**rpc, "proof": {**a, "org": "o" * 512}})
+
+    def test_a_proof_for_a_lane_b_app_session_is_accepted(self):
+        """A lane B act names its app session: the endpoint placed it on this
+        record through its members join, which sminos cannot check."""
+        link, rec = self.start(access="private")
+        rpc = self.act("record.shares", {"member": B, "grade": "view"})
+        rpc["proof"]["args"] = {"appSessionId": "app-session-1", "member": B, "grade": "view"}
+        self.assertEqual(self.outcome(link, self.send(link, rpc)),
+                         {"state": "done", "result": {"changed": True, "policyRev": rec["policyRev"] + 1}})
+
+    def test_no_session_without_a_readable_record_or_outside_the_project(self):
+        link, _ = self.start(access="private")
+        self.refused(link, self.send(link, self.act("record.access", {"access": "listed"}, sid=U)), "no-session")
+        Path(records.record_path(S)).write_text("{not json")
+        sminos.forget_caches()
+        for rpc in (self.act("record.access", {"access": "listed"}),
+                    self.act("record.shares", {"member": B, "grade": None}),
+                    self.act("record.owners", {"add": True, "member": B})):
+            with self.subTest(rpc["rpc"]):
+                o = self.refused(link, self.send(link, rpc), "no-session")
+                self.assertIn("cannot be read", o["error"]["message"])
+        os.unlink(records.record_path(S))
+        self.refused(link, self.send(link, self.act("record.access", {"access": "private"})), "no-session")
+
+    def test_unsupported_when_the_endpoint_cannot_carry_visibility(self):
+        link, rec = self.start(access="private")
+        au.keep_capabilities([])
+        self.refused(link, self.send(link, self.act("record.shares", {"member": B, "grade": "view"})), "unsupported")
+        self.assertEqual(self.policy(), ("private", [], rec["policyRev"]))
+        o = self.outcome(link, self.send(link, self.act("record.access", {"access": "listed"})))
+        self.assertEqual(o["result"]["changed"], True, "going listed: what it can carry")
+
+    def test_read_only_refuses_every_record_rpc_narrowing_included(self):
+        link, rec = self.start(access="listed", shares=())
+        records.set_policy(S, lambda a, s: (a, [{"member": B, "grade": "view"}]))
+        with open(rpcmod.policy.policy_path(), "w") as f:
+            json.dump({"read_only": True, "ceiling": "default"}, f)
+        for rpc in (self.act("record.access", {"access": "private"}),
+                    self.act("record.shares", {"member": B, "grade": None}),
+                    self.act("record.owners", {"add": True, "member": C})):
+            with self.subTest(rpc["rpc"]):
+                self.refused(link, self.send(link, rpc), "read-only")
+        self.assertEqual(self.policy()[:2], ("listed", [{"member": B, "grade": "view"}]))
+
+    def test_expired_and_tombstoned(self):
+        link, _ = self.start(access="private")
+        old = iso(time.time() - rpcmod.OP_HORIZON - 60)
+        self.refused(link, self.send(link, self.act("record.access", {"access": "listed"}, op_created=old)),
+                     "expired")
+        given_up = self.act("record.access", {"access": "listed"})
+        self.assertEqual(link.rpcs.tombstone(given_up["opId"]), {"ok": True})
+        self.refused(link, self.send(link, given_up), "tombstoned")
+        self.assertEqual(self.policy()[0], "private")
+
+    def test_dx2_never_carries_them(self):
+        self.assertIn("record.access", rpcmod.RL10_ONLY)
+        self.assertNotIn("record.owners", rpcmod.RPC_NAMES)
+        self.assertIsNone(rpcmod.context_refusal({"rpc": "record.owners", "args": {"session": S}}),
+                          "launch-independent, as a spawn is")
+
+    def take_members(self, link):
+        link.members(0.0)
+        return [f for f in link.log_lane.take() if f.get("t") == "member"]
 
 
 if __name__ == "__main__":

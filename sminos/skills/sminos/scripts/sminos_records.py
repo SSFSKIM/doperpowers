@@ -19,9 +19,21 @@ atomically (sminos._write_record) under one lock for every change here:
   the machine's defaults). `source` is the basis when the evidence is final
   and `default` when it is provisional: the defaults, or a launch or a
   continuation that copied a provisional record. A record is replaced, its
-  `controller` kept, only by strictly stronger evidence (strength: the
-  basis's rank, then final over provisional), so it moves up at most a few
-  times and never back.
+  `controller`, its policy and the owners an act added kept, only by
+  strictly stronger evidence (strength: the basis's rank, then final over
+  provisional), so it moves up at most a few times and never back.
+- An owner an owner's act added (add_owner: a member of `owners` whose
+  `record.owners` act adding it is in `ownersProof`) is the session's
+  current state, as the policy is, not its evidence's: a record replaced by
+  stronger evidence takes the provenance's owners and ownersProof, then each
+  such member not already among them (added_by_acts) and, when there is
+  one, every proof of the old record not already in its proof, in the old
+  order: an add verifies only when its signer is the machine's owner or
+  proven by an earlier proof (MAWS org-protocol's attest.ts), so the chain
+  behind it is kept, though the members it proves are not made owners
+  again. So an owner gained while the record was provisional or weaker is
+  never lost to the evidence that replaces it. The `@machine` token stays
+  the evidence's, and with no such owner the proof is the evidence's alone.
 - `controller {lane, since}` is current state, not provenance: set at each
   launch by the bridge's lane verdict (set_controller) and never copied.
 - The policy (O18 D10): `access` (ACCESS, absent: listed), `shares`
@@ -32,15 +44,18 @@ atomically (sminos._write_record) under one lock for every change here:
   provenance carries its predecessor's (inherited), and a sminos spawn its
   spawner's access and shares (sminos.spawn_provenance), so a background
   copy, a resume or a seat never widens reach. It changes only through
-  set_policy, which bumps policyRev. A record whose policy fields do not
-  read as these is no record (read gives None: unreadable, fail closed).
-- `@machine`, as an owner or a principal, stands for this machine's owners,
-  and as an owner it stands alone: a list that mixes it with member ids is
-  refused by every writer here (checked_owners), since `joined` leaves the
-  token off and its readers would lose the members beside it;
+  set_policy, which bumps policyRev (as add_owner does). A record whose
+  policy fields do not read as these is no record (read gives None:
+  unreadable, fail closed).
+- `@machine`, as an owner or a principal, stands for this machine's owners;
   the endpoint resolves it against the org state, and it never leaves the
-  machine. Nothing here leaves the machine but `origin`, and `owners` that
-  hold no `@machine`, on a final record's `joined` (sminos.published_provenance).
+  machine. As an owner it may stand once, first, beside the member ids an
+  owner's `manage` act added (add_owner; the remote layer's §5.8: the token
+  follows the machine's owners, the added member is proven by its act in
+  `ownersProof`). Nothing here leaves the machine but `origin`, and `owners`
+  as member ids, on a final record's `joined` (sminos.published_provenance:
+  a list holding the token publishes the endpoint's resolution of it, or
+  none).
 - No secret is ever in a record: a route names a file (the merged launch
   settings a seat ran with) or a gateway's scheme, host and port.
 
@@ -209,23 +224,45 @@ def _locked(deadline=None):
 
 
 def checked_owners(owners):
-    """`owners` when it is a record's: a non-empty list of strings, either
-    exactly `@machine` or member ids only; otherwise ValueError."""
+    """`owners` when it is a record's: a non-empty list of strings, `@machine`
+    at most once and only first (the members an owner added stand beside
+    it); otherwise ValueError."""
     if not (isinstance(owners, list) and owners and all(isinstance(o, str) and o for o in owners)):
         raise ValueError("owners must be a non-empty list of strings: %r" % (owners,))
-    if MACHINE in owners and owners != [MACHINE]:
-        raise ValueError("owners mixes %s with member ids: %r" % (MACHINE, owners))
+    if MACHINE in owners[1:]:
+        raise ValueError("owners holds %s other than once, first: %r" % (MACHINE, owners))
     return owners
+
+
+def added_by_acts(rec):
+    """The owners of `rec` an owner's act added, in its order: each a member
+    of its `owners` whose `record.owners` act adding it is in its
+    `ownersProof`."""
+    owners = rec.get("owners") if isinstance(rec.get("owners"), list) else []
+    proofs = rec.get("ownersProof") if isinstance(rec.get("ownersProof"), list) else []
+    added = {p["args"].get("member") for p in proofs if isinstance(p, dict) and p.get("action") == "record.owners"
+             and isinstance(p.get("args"), dict) and isinstance(p["args"].get("member"), str)}
+    return [o for o in owners if o in added and o != MACHINE]
 
 
 def _record(sid, prov, created=None, have=None):
     """A record of `prov`, replacing `have` (the session's record, or None):
-    its `controller` kept, and its policy kept whole when it carries one,
-    else the provenance's (a continuation's or a spawn's)."""
+    its `controller` kept, its policy kept whole when it carries one, else
+    the provenance's (a continuation's or a spawn's), and the owners an act
+    added kept beside the provenance's (added_by_acts), with every proof of
+    `have` after the provenance's, the chain behind their acts."""
     checked_owners(prov.get("owners"))
     rec = {"session": sid, "source": prov.get("source") or "default", "basis": basis(prov)}
     for k in PROVENANCE:
         rec[k] = prov[k]
+    members = added_by_acts(have or {})
+    if members:
+        rec["owners"] = checked_owners(list(rec["owners"]) + [m for m in members if m not in rec["owners"]])
+        proof = list(rec["ownersProof"]) if isinstance(rec["ownersProof"], list) else []
+        for p in have["ownersProof"]:
+            if p not in proof:
+                proof.append(p)
+        rec["ownersProof"] = proof
     controller = (have or {}).get("controller")
     if controller:
         rec["controller"] = controller
@@ -286,6 +323,27 @@ def set_policy(sid, mutate, deadline=None):
         if new == checked_policy(access, shares):
             return rec, False
         rec["access"], rec["shares"], rec["policyRev"] = new[0], new[1], rev + 1
+        sminos._write_record(record_path(sid), rec)
+        return rec, True
+
+
+def add_owner(sid, member, proof, deadline=None):
+    """(record, changed): `member` added to the session's owners under the
+    records' lock, its act (`proof`, verbatim) appended to `ownersProof`,
+    policyRev bumped (an owner change moves a private session's audience,
+    owners and shares, and every owner change republishes its `joined`); the
+    record written whole, everything else as read. A member already an owner
+    changes nothing and writes nothing. NoRecord as set_policy's."""
+    with _locked(deadline):
+        rec = read(sid)
+        if rec is None:
+            raise NoRecord("session %s has %s" % (str(sid)[:8], "a record that cannot be read"
+                                                   if unreadable(sid) else "no record"))
+        if member in rec["owners"]:
+            return rec, False
+        rec["owners"] = checked_owners(list(rec["owners"]) + [member])
+        rec["ownersProof"] = (list(rec["ownersProof"]) if isinstance(rec.get("ownersProof"), list) else []) + [proof]
+        rec["policyRev"] = sminos_audience.policy_of(rec)[2] + 1
         sminos._write_record(record_path(sid), rec)
         return rec, True
 
