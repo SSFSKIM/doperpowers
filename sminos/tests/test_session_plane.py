@@ -62,6 +62,7 @@ sys.path.insert(0, HERE)
 import bench_open  # noqa: E402
 import bench_rig  # noqa: E402
 import dx4_consumer  # noqa: E402
+import endpoint_standin  # noqa: E402
 import fake_session  # noqa: E402
 import sminos_plane as plane  # noqa: E402
 
@@ -5817,22 +5818,38 @@ class StandinHub(Hub):
 class Uplink(unittest.TestCase):
     """The plane on the uplink's stream, against the hub stand-in."""
 
+    base = T   # where the class keeps its fake `claude` and its project
+    # The machine presence's policy: DX2's, the ceiling the user's settings
+    # resolve to (sminos_policy.machine_policy); UplinkOnRl10 says RL10's.
+    POLICY = {"read_only": False, "ceiling": "default"}
+
+    @classmethod
+    def make_hub(cls):
+        """The hub stand-in, and this machine enrolled at it (hub.json)."""
+        hub = StandinHub(cls.spawn)
+        hub.enroll(os.path.join(SCRIPTS, "sminos"))
+        return hub
+
+    def desk_rpcs(self):
+        """The RPCs the machine presence's `desk` says it runs: DX2's."""
+        import sminos_rpc
+        return list(sminos_rpc.RPC_NAMES)
+
     @classmethod
     def setUpClass(cls):
         cls.procs = []
         home, sh = os.environ["HOME"], os.environ["SMINOS_HOME"]
-        cls.bin = os.path.join(T, "bin")
+        cls.bin = os.path.join(cls.base, "bin")
         os.makedirs(cls.bin)
         with open(os.path.join(cls.bin, "claude"), "w") as f:
             f.write('#!/bin/sh\n[ "$1" = agents ] && echo "[]"\nexit 0\n')
         os.chmod(os.path.join(cls.bin, "claude"), 0o755)
         os.environ["PATH"] = cls.bin + os.pathsep + os.environ["PATH"]
         os.environ["SMINOS_DERIVE_EVERY"] = "0"
-        cls.hub = StandinHub(cls.spawn)
+        cls.hub = cls.make_hub()
         sminos_cli = os.path.join(SCRIPTS, "sminos")
-        cls.hub.enroll(sminos_cli)
 
-        cls.root = os.path.join(T, "hp")
+        cls.root = os.path.join(cls.base, "hp")
         git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]
         subprocess.run(git + ["init", "-q", cls.root], check=True)
         subprocess.run([sminos_cli, "project", "init", "--name", "hubproj"], cwd=cls.root, check=True,
@@ -5943,7 +5960,7 @@ class Uplink(unittest.TestCase):
         ms = self.hub.messages()
         machine = [m for m in ms if m["kind"] == "machine"]
         self.assertTrue(machine, "machine presence on connect")
-        self.assertEqual(machine[-1]["body"]["policy"], {"read_only": False, "ceiling": "default"})
+        self.assertEqual(machine[-1]["body"]["policy"], self.POLICY)
         self.assertEqual(self.presences(ms)[0], {"record": {"status": "idle"}, "bridge": False})
         count = len(ms)
         t0 = time.time()
@@ -6395,13 +6412,11 @@ class Uplink(unittest.TestCase):
         `read` down, DX4 `read` up on the sub that asked: the bridge's answer,
         a kind it does not serve, the machine's wait run out, more than four in
         flight, a malformed frame passed by, a session with no bridge."""
-        import sminos_rpc
         ms = self.hub.messages()
         with open(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json")) as f:
             version = json.load(f)["version"]
         machine = [m for m in ms if m["kind"] == "machine"]
-        self.assertEqual(machine[-1]["body"]["desk"], {"sminos": version, "rpcs": list(sminos_rpc.RPC_NAMES),
-                                                       "reads": []})
+        self.assertEqual(machine[-1]["body"]["desk"], {"sminos": version, "rpcs": self.desk_rpcs(), "reads": []})
 
         def read(b, frame):
             self.hub.send({"t": "read", "project": self.project, "session": self.sid, "agentId": None, "sub": b.sub,
@@ -6484,6 +6499,103 @@ class Uplink(unittest.TestCase):
         self.assertEqual(self.presences(self.hub.messages()[count:]), [],
                          "the same reading, read again, sends no presence")
         self.assertLess(reaches("plan", 1761000004000), plane.BRIDGE_RECHECK + 1.5)
+
+
+class EndpointHub(Hub):
+    """endpoint_standin.py (RL10's machine side), in this process: every
+    message a `session` frame carried up, and any frame sent down the live
+    connection as the test asks. The .smns names the identity's hub and org,
+    so the uplink holds the project."""
+
+    url, org = "http://127.0.0.1:9", "org-1"
+
+    def __init__(self, directory):
+        self.ep = endpoint_standin.Endpoint(directory)
+        self.ep.start()
+
+    def follow(self, _project):
+        pass
+
+    def send(self, frame_):
+        self.ep.send(frame_)
+
+    def messages(self):
+        return [f["message"] for f in self.ep.frames("session")]
+
+    def drop(self):
+        """Closes the uplink's connection; a predicate: whether a newer one was welcomed."""
+        before = len(self.ep.hellos)
+        self.ep.drop()
+        return lambda: len(self.ep.hellos) > before
+
+
+class UplinkOnRl10(Uplink):
+    """Uplink's cases as a machine cut over to its endpoint runs them (RL10,
+    #153 M3b): the real `sminos daemon uplink` child picks run_rl10 on the
+    identity.json written here, its session plane's messages go up as
+    `session` frames (plane.frame), and subscribe, rows, diff, output, read
+    and unsubscribe come down from the stand-in. The class has its own HOME,
+    SMINOS_HOME and MAWS_USER_DATA for its lifetime, so Uplink's hub.json
+    (DX2) and this class's identity.json never meet, in either order. Not
+    run here (set to None below): the HTTP lanes' cases, h and i, which RL10
+    does not have (one ordered socket, no POSTs, no lane connections)."""
+
+    # RL10 says the policy as the endpoint takes it (sminos_policy.wire_policy):
+    # with no policy file naming a ceiling, `settings`, not the mode it resolves to.
+    POLICY = {"read_only": False, "ceiling": "settings"}
+
+    def desk_rpcs(self):
+        """RL10's (sminos_hublog.desk(rl10=True)): the endpoint offers RPCs the hub does not."""
+        import sminos_rpc
+        return list(sminos_rpc.RL10_RPC_NAMES)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.base = tempfile.mkdtemp(prefix="smq.", dir="/tmp")   # short: a Unix socket's path is bounded
+        cls.addClassCleanup(shutil.rmtree, cls.base, ignore_errors=True)
+        names = ("HOME", "SMINOS_HOME", "MAWS_USER_DATA", "SMINOS_RL10", "PATH", "SMINOS_DERIVE_EVERY")
+        was = {k: os.environ.get(k) for k in names}
+
+        def restore():
+            for k, v in was.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            plane.sminos.forget_caches()
+        cls.addClassCleanup(restore)
+        os.environ.pop("SMINOS_RL10", None)
+        os.environ.update(HOME=os.path.join(cls.base, "h"), SMINOS_HOME=os.path.join(cls.base, "s"),
+                          MAWS_USER_DATA=os.path.join(cls.base, "m"))
+        os.makedirs(os.path.join(os.environ["HOME"], ".claude", "sessions"))
+        os.makedirs(os.path.join(os.environ["SMINOS_HOME"], "daemon"), mode=0o700)
+        plane.sminos.forget_caches()
+
+        def reap():   # a setup that failed runs no tearDownClass: its uplink and holders end here
+            for p in cls.__dict__.get("procs", []):
+                if p.poll() is None:
+                    p.kill()
+                    p.wait(10)
+        cls.addClassCleanup(reap)
+        super().setUpClass()
+
+    @classmethod
+    def make_hub(cls):
+        """The endpoint stand-in, and this machine cut over to it: identity.json
+        as test_words.Machine.cut_over writes it (the first welcome's), with
+        the capabilities that welcome kept (none, an endpoint before O18's)."""
+        import sminos_rl10
+        hub = EndpointHub(os.path.join(os.environ["MAWS_USER_DATA"], "mawsd", "endpoint"))
+        cls.addClassCleanup(hub.ep.stop)
+        plane.sminos.write_json(sminos_rl10.identity_path(), {
+            "org": hub.org, "hub": hub.url, "name": hub.machine, "former": {}, "ref": "machine-ref-1",
+            "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"}, mode=0o600)
+        plane.sminos.audience_module().keep_capabilities([])
+        plane.sminos.forget_caches()
+        return hub
+
+    test_h_a_held_hello_on_the_log_lane_delays_no_open = None   # DX2's log lane POST held: RL10 has no POSTs
+    test_i_a_lanes_posts_share_a_connection_until_it_idles = None   # DX2's lane connections: RL10 has one socket
 
 
 if __name__ == "__main__":
