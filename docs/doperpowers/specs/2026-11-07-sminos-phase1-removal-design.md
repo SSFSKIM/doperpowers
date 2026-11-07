@@ -21,7 +21,7 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) M4: the `hub` verbs and `hub.json` reduced (the sminos 1.40.0 bump; `d2a87149`, `a76f947e`; review clean, sminos gates GREEN on `a76f947e`, run 42358177740; replay 107 ok, 0 FAIL). origin/main merged at `8d5efdfd`.
 - [x] (2026-11-07) M5: the DX2 transport and the supervisor's DX2 arm out (`34538211`; review clean, sminos gates GREEN, run 42365283498; replay 107 ok, 0 FAIL).
 - [x] (2026-11-07) M6: `coded` collapsed (`e9afa4e8`, fix `f9bd7b49`; review clean, sminos gates GREEN on `f9bd7b49`, run 42377347462; replay 107 ok, 0 FAIL; sminos-suites 18m54s).
-- [ ] M7: docs and labels.
+- [x] (2026-11-07) M7: docs and labels (`b6df7a2e..1c2adcae`, the deferred minors `6b20b662`, `ca0039f3`; review clean; gates on `ca0039f3` GREEN, sminos run 42380437461 (sminos-suites 16m12s), devcloud run 42380463408).
 - [ ] The branch review and the merge.
 - [ ] M8: the release verified (both Macs' daemons, the gate's runtime).
 
@@ -374,6 +374,29 @@ This is after the branch review and the merge, and it is not part of the branch'
   - The review found that dropping the MAC half's position vectors took the only tests of `is_log_seq`'s and `is_iso_millis`'s edge branches, which RL10 runs (acceptance 6). They come back as direct checks, with Stop's RL10 shape check, in M6's fix.
   Date/Author: 2026-11-07, plan-executor (M6 and its review).
 
+- Decision (M7, the executor; reviewed):
+  - #149's residue (a complete `pending` set past 16 MiB at about sixty requests) was not in TECH-DEBT.md; "DX2's lane" appeared nowhere in the tree. It is logged as a new TECH-DEBT section against the RL10 lane.
+  - test-uplink's speed-claim bullet in TECH-DEBT is reworded, not dropped: its RL10 twin (`test-uplink.sh:747`) makes the same claim. The struck `hub_standin` entry is deleted, since its file is gone.
+  - `cmd_machines`' DX2 presence branch goes here: `enrollment()` reads `identity.json` alone, so its presence makes `cut_over()` true. `org_age_line`'s "stream has said nothing newer" arm goes too.
+  - "hub" stays in docstrings where it names the desk hub or a hub project; only prose describing the DX2 transport, or a hub sminos talks to directly, is reworded. The log lines that said POST say write. Test class names like `Dx2OnRl10` stay, since the checklist cites them.
+  - From the review: `Plane.read`'s `READ_WHAT` check becomes `fullmatch` too, beside `subscribe`'s `AGENT_ID`, each with a trailing-newline test. devcloud's `enroll` unit description, status docstring and desk-test fixtures name the provisioning alone and what `sminos machines` prints now. M3b's `restated(since)` barrier is scoped to the new connection.
+  - The SKILL.md edit had its sanity read through `doperpowers:writing-skills` (task 11's report).
+  Date/Author: 2026-11-07, plan-executor (M7 and its review).
+
 ## Outcomes & Retrospective
 
-(At completion.)
+**M1–M7 (2026-11-07, plan-executor).** The branch removes sminos's phase-1 hub path from `543b77ce`. At `ca0039f3`, against main, it touches 113 files under `sminos/` and `devcloud/` (+6,863 / −17,622): shipped sminos code and hooks −2,931 / +741, tests −13,773 / +5,771. sminos is 1.40.0 and devcloud 0.16.0, and origin/main (`fcf0b6a5`, 1.39.1) is merged at `8d5efdfd`.
+- Acceptance 1: the grep is clean, and its one `Stream(` hit is `sminos_control.Stream` (revised in the Decision Log).
+- Acceptance 2: `rl10-conversation.json` is byte-identical, and the replay stays at 107 ok, 0 FAIL at every milestone. The suites changed only by the listed migrations, plus three named ones: `test_rl10.py:282`'s first-welcome inversion (M4), the nonce-index patch (M6), and test_visibility's nine M5 edits, each recorded in the task reports.
+- Acceptance 3 and 4 have their tests (M4, and M5 for the supervisor's `waiting`).
+- Acceptance 5: all 18 of map §2.4's items are checked against RL10 tests. The two-machine items run as real-sminos compositions.
+- Acceptance 6: removed tests are listed per file in the PR's evidence. Where the removal took the only tests of something RL10 runs, they came back: the shape helpers' vectors, Stop's shape check, and the lane bound.
+- Acceptance 7: devcloud calls no `hub` verb. A host that still carries the v1 key boots as before.
+- sminos-suites fell from ~20–22 min to 16m12s on `ca0039f3`, after reaching 27.5 min while both arms ran in M3.
+
+Acceptance 8 and 9 are M8's, after the merge.
+
+What the retrospective should keep:
+- M3's batch lists were written from the map's per-file view, and some behaviours fell between batches: test-hub's rename half, item 7's two-machine half, and item 2's view from the other machine. Others fell under no batch: M4's five twins and M5's two. Executors found every one at deletion time, because the rule "a DX2 behaviour with no replacement is a stop" made them look. A checklist written per behaviour, not per file, would have caught them before M4.
+- The second-archiver case (item 6) was not the first designation's path. The coordinator's design memory caught it. An executor's "same code path" judgement is weakest exactly where history differs.
+- Running both arms during M3 put sminos-suites within 2.5 minutes of its 30-minute timeout. A longer M3 would have needed the timeout raised.
