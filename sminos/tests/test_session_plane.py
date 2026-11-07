@@ -90,7 +90,8 @@ def new_session():
     return str(uuidlib.uuid4())
 
 
-FIXTURE = json.load(open(os.path.join(HERE, "dx4-jobs.json"), encoding="utf-8"))
+with open(os.path.join(HERE, "dx4-jobs.json"), encoding="utf-8") as _f:
+    FIXTURE = json.load(_f)
 
 
 class Rows:
@@ -3424,12 +3425,17 @@ class BenchOpenOnRl10(unittest.TestCase):
 
     def test_opens_after_the_uplinks_restart(self):
         """The open on a fresh uplink, then after each restart: every
-        restarted uplink reconnects to the endpoint and serves the open whole."""
+        restarted uplink reconnects to the endpoint and serves the open whole,
+        from the build the uplink before it saved (`loaded`), whatever the
+        load on the machine: no timed moment stands between it and the open."""
         out = run_bench_open(self, "rl10-home-restart", "--rl10", "--scenario", "restart", "--opens", "2")
         opens = self.opens(out)
         self.assertEqual([o["moment"] for o in opens], ["first start", "after restart 1"])
         for o in opens:
             self.assertWhole(o)
+        self.assertIn(opens[0]["build"], ("cold", "warm"),
+                      "a fresh machine holds no saved build: parsed by its first open, or by the warmer before it")
+        self.assertEqual(opens[1]["build"], "loaded", "after the restart, the build the first uplink saved")
         self.assertTrue(out[-1]["complete"])
 
     def test_a_rig_that_fails_to_cut_over_leaves_nothing_behind(self):
@@ -3573,7 +3579,8 @@ class FixtureOutput(unittest.TestCase):
                 self.assertEqual(got, want)
 
 
-STREAM = json.load(open(os.path.join(HERE, "dx4-stream.json"), encoding="utf-8"))
+with open(os.path.join(HERE, "dx4-stream.json"), encoding="utf-8") as _f:
+    STREAM = json.load(_f)
 
 
 class StreamFixture(unittest.TestCase):
