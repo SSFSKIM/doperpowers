@@ -84,9 +84,10 @@ The detailed map this spec was written from, every module, function and test by 
 - **The RL10 path is untouched in behaviour** (acceptance 2). These are the only allowed changes to its suites, and each is named in the PR:
   - a constructor argument that no longer exists is dropped (`coded=False` on `Link`, `HubLog`, `Rpcs`, `Requests`);
   - a fixture that wrote `hub.json` to name or enroll a machine writes `identity.json` through one shared helper, or sets `DAEMON_HOST`;
-  - a test of a historical persisted format keeps its data and loses only the DX2 machinery that built it.
+  - a test of a historical persisted format keeps its data and loses only the DX2 machinery that built it;
+  - an assertion whose subject is a DX2-only behaviour goes with that behaviour. There are two known ones: `test_rl10.py:1064–1065`, where DX2's restoration keeps a sealed outbox unchanged, and `test_visibility.py:1178–1180`, the `RL10_ONLY` set and DX2's RPC-name exclusion. Both files' neighbouring RL10 assertions stay: the sealed outbox restored as an RL10 draft, and the launch-independent `context_refusal` at `test_visibility.py:1181–1182`. Any other assertion that goes is named in the PR, with the DX2 behaviour that is its subject.
 
-  An assertion is never removed or loosened to make a migration pass. Anything beyond these changes is a design change, recorded in the Decision Log.
+  An assertion about RL10 is never removed or loosened to make a migration pass. Anything beyond these changes is a design change, recorded in the Decision Log.
 - **Tests never touch the real registry.** Every test runs with a temporary `HOME` and `SMINOS_HOME`. A working copy's CLI never runs against `~/.claude/sminos` or `~/.claude.json`.
 - **Gates run on GitHub Actions through `ci-gate`:**
   - for sminos, `--gates sminos,sminos-suites,sminos-mods,mods-types,repo-checks,version-bump`;
@@ -153,6 +154,7 @@ This is the code and tests of map §5 step 5. It comes before the transport's re
 - `sminos.enrollment`, `enrolment_stamp`, `machine_identity`, `sminos_daemon.enrolled_at` and `enrollment_inspected` read `identity.json` alone. `hooks/smns-guide.sh` and `smns-record.sh` test `identity.json` alone.
 - `on_legacy_key` reads `hub.json`'s `org` and `key` through a small path helper of its own, so that it no longer depends on `credential_path`, which M5 removes.
 - test-hub's enrollment assertions, `enroll_parity.py` and `dx7-enroll-codes.*` go. In their place are the tests for acceptance 3 and 4: the pointer, `show`, and the hooks with a stray `hub.json`.
+- **The DX2 integration cases whose machines enroll at the hub go here too, not in M5.** They can't take the `identity.json` fixture, because `cmd_uplink` then selects RL10 instead of their hub stand-in (`sminos_uplink.py:3219–3223`), and `DAEMON_HOST` doesn't replace an enrollment. They include test-sync's DX2 cases (`hub enroll` at `test-sync.sh:248`), the other shell suites' DX2 blocks that enroll, `test_happy_eyeballs.py` (it calls `hub.redeem_once` and `hub.TIMEOUT`, `:133–139`), and the benches that enroll. Each goes only after its M3 replacement is checked. Before committing, grep the tests and benches for `hub enroll`, `redeem_once`, `hub.TIMEOUT` and `enroll_with`. M5 is left with what tests the transport alone.
 - Every fixture that wrote `hub.json` to name or enroll a machine writes `identity.json` through one shared helper, or sets `DAEMON_HOST` (map §2.5). Where delivery is asserted, it uses the endpoint stand-in or a kept `audiences.json`.
 - **`rl10_conformance.stage_machine`** sets `DAEMON_HOST=rl10-host` before it creates any project or writer, so the staged writers come out as `rl10-host`. It keeps the `hub.json` that `legacy-key` answers from. It leaves `identity.json` absent until the replay's welcome, the transition `rl10_conformance.py:610–619` checks. Run the replay and `test_words` first.
 
@@ -167,7 +169,7 @@ This is map §5 step 3:
 - `sminos_uplink.py`'s (a) list (map §1.1), with `credential_path`;
 - `cmd_uplink`'s credential branch;
 - `sminos_daemon`'s `credential_bytes`, `LEFT_THE_HUB`, the `dx2` arms of `uplink_wanted` and `uplink_change`, and `uplink_status`'s `hub.json` line;
-- the DX2 tests the step lists;
+- the DX2 tests the step lists that M4 hasn't already retired: those of the transport alone;
 - `hub_standin.py`, `pause_proxy.py`, `bench_codes.py`, `bench_rig.py`'s DX2 parts, `bench_open --uplink`/`held`, `bench_scale run` without `--rl10`, `bench_scale opens` without `--rl10`, and `measure_pages` part 2.
 
 Each DX2 test goes only after its M3 replacement is checked.
@@ -192,7 +194,7 @@ This is map §5 step 4:
 
 The admission and execution of Resume, Retire and Stop go, with steer without a bridge, their tests and `live-resume-check.py`. Before any function goes, list its callers, the ledger's `reconcile` and `trace` paths included. The recovery of a persisted claim stays, `launched_by` with it, under M3b's tests.
 
-Acceptance 2's suites change only by the listed migration: the dropped `coded=False` argument (`test_rl10.py:1112`, `rl10_conformance.py:454`, `test_words.py:233`). Their old sealed-outbox test (`test_rl10.py:1051–1070`) keeps its persisted data and loses only the DX2 request builder.
+Acceptance 2's suites change only by the listed migration: the dropped `coded=False` argument (`test_rl10.py:1112`, `rl10_conformance.py:454`, `test_words.py:233`). Their old sealed-outbox test (`test_rl10.py:1051–1070`) keeps its persisted data and its RL10-draft assertion. It loses the DX2 request builder and the DX2 restoration's assertion (`:1064–1065`), and `test_visibility.py:1178–1180` goes with `RL10_ONLY`, as the constraints list.
 
 **Proof:** acceptance 2 holds, which is the milestone's whole claim (behaviour-neutral on RL10); M3b's recovery tests are green; both parts are green.
 
@@ -267,6 +269,7 @@ This is after the branch review and the merge, and it is not part of the branch'
   - The recovery of persisted Resume, Retire and Stop claims stays and is tested on RL10.
   - M3 is split into five batches, each with its own proof.
   - The release's evidence is a milestone of its own (M8).
+  - From the execution reviewer's re-check: the DX2 integration cases that enroll go in M4, with the enrollment, not in M5. The DX2-only assertions inside acceptance 2's suites that may go are listed by file and line.
   Date/Author: 2026-11-07, p5-desk-track-owner, on the two reviews.
 
 ## Outcomes & Retrospective
