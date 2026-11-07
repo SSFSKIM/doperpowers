@@ -581,8 +581,8 @@ class Requests:
     def sending(self, frames):
         """`frames` were queued on a lane. A complete set is taken now (every
         connect, and every re-open, sends one again); the messages are in
-        flight — not due, not opened again — until `delivered`, `unsent`, or
-        the next stream's `reset`."""
+        flight — not due, not opened again — until `delivered` or the next
+        stream's `reset`."""
         for f in frames:
             if f.get("t") == "pending":
                 self.stale.discard(f["project"])
@@ -590,35 +590,13 @@ class Requests:
             else:
                 self.flying[id(f)] = f
 
-    def delivered(self, frames, refused):
-        """The frame carrying `frames` was written, `refused` naming
-        ({id(frame): reason}) those refused whole (none: the lane refuses
-        nothing). A message it took
-        leaves the outbox, a settlement kept as relayed; one refused
-        `not-open` stays owed (its project is opened again, and it goes with
-        or after that hello), and a complete set so refused is owed again;
-        one refused otherwise would be refused again, and leaves as if
-        taken, said."""
-        took = []
-        for f in frames:
-            reason = refused.get(id(f))
-            if f.get("t") == "pending":
-                if reason == "not-open":
-                    self.stale.add(f["project"])
-            elif self.flying.pop(id(f), None) is not None and reason != "not-open":
-                took.append(f)
-                if reason is not None:
-                    log("the hub refused a %s of %s (%s): not sent again" % (
-                        f["message"]["kind"], f["message"]["session"], reason))
+    def delivered(self, frames):
+        """The frame carrying `frames` was written: a message it took leaves
+        the outbox, a settlement kept as relayed."""
+        took = [f for f in frames if f.get("t") != "pending" and self.flying.pop(id(f), None) is not None]
         ids = {id(f) for f in took}
         self.outbox = [(p, f) for p, f in self.outbox if id(f) not in ids]
         self.relay(took)
-
-    def unsent(self, frames):
-        """Frames dropped from a lane before they were written (a
-        re-open's `hold`): no longer in flight, owed as they stand."""
-        for f in frames:
-            self.flying.pop(id(f), None)
 
     def relay(self, frames):
         """Settlements the hub has, kept as relayed. One that a raise
@@ -635,7 +613,7 @@ class Requests:
     def sent(self, frames):
         """`frames` reached the hub (queued and answered at once)."""
         self.sending(frames)
-        self.delivered(frames, {})
+        self.delivered(frames)
 
     def reset(self):
         """A new stream: the lanes that held what was in flight are gone,

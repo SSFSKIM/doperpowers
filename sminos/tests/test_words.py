@@ -96,7 +96,7 @@ class Lane:
     def send(self, frames, then=None):
         self.sent += frames
         if then is not None:
-            then({})
+            then()
 
     def take(self):
         out, self.sent = self.sent, []
@@ -107,12 +107,6 @@ class Lane:
 
     def queued(self):
         return 0   # written as taken: nothing waits
-
-    def hold(self, _project):
-        return None, []   # one ordered lane: no gate (SocketLane)
-
-    def release(self, _project):
-        pass
 
     def close(self):
         pass

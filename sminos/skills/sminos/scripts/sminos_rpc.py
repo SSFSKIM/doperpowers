@@ -1598,48 +1598,25 @@ class Rpcs:
         """`frames` were queued on a lane. A result is taken as sent on this
         stream now (every connect sends it again until `rpc-ack`, and so does
         every re-open); a compact or op message, which nothing rebuilds, is in
-        flight until `delivered`, `unsent`, or the next stream's `reset`."""
+        flight until `delivered` or the next stream's `reset`."""
         for f in frames:
             if f.get("t") == "rpc-result":
                 self.sent_here.add(f["nonce"])
             else:
                 self.flying[id(f)] = f
 
-    def delivered(self, frames, refused):
-        """The frame carrying `frames` was written, `refused` naming
-        ({id(frame): reason}) those refused whole (none: the lane refuses
-        nothing): a compact or op
-        message it took leaves `messages`; one refused `not-open` stays owed (its
-        project is opened again), and a result so refused goes again; one
-        refused otherwise would be refused again, and leaves, said."""
-        took = set()
-        for f in frames:
-            reason = refused.get(id(f))
-            if f.get("t") == "rpc-result":
-                if reason == "not-open":
-                    self.sent_here.discard(f["nonce"])
-            elif self.flying.pop(id(f), None) is not None and reason != "not-open":
-                took.add(id(f))
-                if reason is not None:
-                    log("the hub refused a %s message of %s (%s): not sent again" % (
-                        f["message"]["kind"], f["message"]["session"], reason))
+    def delivered(self, frames):
+        """The frame carrying `frames` was written: a compact or op message
+        it took leaves `messages`."""
+        took = {id(f) for f in frames if f.get("t") != "rpc-result" and self.flying.pop(id(f), None) is not None}
         if took:
             self.messages = [f for f in self.messages if id(f) not in took]
             self.kept.save(self.messages)
 
-    def unsent(self, frames):
-        """Frames dropped from a lane before they were written (a
-        re-open's `hold`): no longer in flight, owed as they stand."""
-        for f in frames:
-            if f.get("t") == "rpc-result":
-                self.sent_here.discard(f["nonce"])
-            else:
-                self.flying.pop(id(f), None)
-
     def sent(self, frames):
         """`frames` reached the hub (queued and answered at once)."""
         self.sending(frames)
-        self.delivered(frames, {})
+        self.delivered(frames)
 
     def reset(self):
         """A new stream: nothing is taken as sent on it yet, and what was in

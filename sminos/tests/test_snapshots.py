@@ -84,19 +84,13 @@ class Lane:
     def send(self, frames, then=None):
         self.sent += frames
         if then is not None:
-            then({})
+            then()
 
     def posting(self):
         return False
 
     def queued(self):
         return 0
-
-    def hold(self, _project):
-        return None, []
-
-    def release(self, _project):
-        pass
 
     def close(self):
         pass

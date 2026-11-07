@@ -217,10 +217,6 @@ MEMBERS_WHOLE = 60.0      # s: how often they are read again whatever their inpu
 IDENTITY_EVERY = 10.0     # s: how stale a running pid's identity may be (its start time read this often)
 TOMBSTONE_FILE = "presence.json"  # under daemon/: project id → the time its sessions' leaving was last said and taken
 TOMBSTONE_MARGIN = 60.0   # s: a session that left this long before that time is said again (clock steps, a write in flight)
-# s: how long a leaver is kept for a re-open's heal (say_again), a bound on memory alone: which leavers a
-# heal says again is decided by when the body it heals was queued, not by age. A body out an hour after its
-# oldest line was queued would have ended its lane long before (16 MiB queued).
-GONE_KEEP = 3600.0
 DIFF_MAX = 4 << 20        # bytes of diff text; the rest is cut and said so
 GIT_TIMEOUT = 30
 PROBE_TIMEOUT = 1.0
@@ -2653,8 +2649,6 @@ class Plane:
         self.tombstoned = {}      # project id → the read whose leavers a connect said, until the hub takes them
         self.wall = time.time
         self.sent = {}            # (project id, session) → presence body last sent
-        self.again = {}           # project id → since: its presence said again at the next look (say_again)
-        self.gone = {}            # project id → {session: when first said not running}, not seen back (GONE_KEEP)
         self.subs = {}            # sub → Subscription
         self.diffs = queue.Queue()
         self.read_answers = queue.Queue()   # (sub, DX4 read body) from the reads' threads
@@ -2785,10 +2779,8 @@ class Plane:
         now = time.monotonic() if now is None else now
         out = []
         members = self.members.get(pid, ())
-        gone = self.gone[pid] = {sid: at for sid, at in self.gone.get(pid, {}).items() if now - at <= GONE_KEEP}
 
         def not_running(sid):
-            gone.setdefault(sid, now)   # when it was first said gone: a later say does not keep it longer
             out.append(envelope(pid, self.machine, sid, "presence", None, None, {"record": None, "bridge": False}))
         if force:
             self.live = self.records.scan()
@@ -2800,35 +2792,16 @@ class Plane:
             if pid in self.read_at:
                 self.tombstoned[pid] = self.read_at[pid]
         socks = bridge_socks() if socks is None else socks
-        since = self.again.pop(pid, None)
-        again = since is not None
-        if again:
-            said = {m["session"] for m in out}
-            for sid in sorted(sid for sid, at in gone.items() if at >= since and sid not in members and sid not in said):
-                not_running(sid)
         for sid in sorted(members):
             body = self.presence_of(sid, now, socks)
-            if force or again or self.sent.get((pid, sid)) != body:
+            if force or self.sent.get((pid, sid)) != body:
                 self.sent[(pid, sid)] = body
-                gone.pop(sid, None)
                 out.append(envelope(pid, self.machine, sid, "presence", None, None, body))
         for key in [k for k in self.sent if k[0] == pid and k[1] not in members]:
             body = self.sent.pop(key)
             if body["record"] is not None or body["bridge"]:
                 not_running(key[1])
         return out
-
-    def say_again(self, pid, since):
-        """The project's presence is said again at its next look, changed or
-        not, since a copy older than the one last sent may reach the hub
-        after it (a body in flight at a re-open, applied after the hello,
-        whose oldest line of the project was queued at `since`, monotonic):
-        every member's, and every leaver this plane first said gone at or
-        after `since` and has not seen back. One said gone before can carry
-        no live presence in that body, its live presence having been queued
-        before its tombstone, however long either waited. A leaver said twice
-        is harmless."""
-        self.again[pid] = min(since, self.again.get(pid, since))
 
     def take_read(self, pid):
         """The read the forced presence just drawn for the project said its

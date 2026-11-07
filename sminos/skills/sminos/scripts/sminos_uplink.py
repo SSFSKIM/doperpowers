@@ -101,7 +101,6 @@ session writer, plain and stream (on_snapshots, snapshot_page; O18 D7).
 
 import collections
 import fcntl
-import functools
 import glob
 import itertools
 import json
@@ -273,11 +272,9 @@ class SocketLane(threading.Thread):
     thread queues (`send`) on the endpoint's socket. The socket is one ordered
     stream with no per-frame answer, so a frame written is taken: once an
     entry's lines are written, ("sent", [then, ...]) goes on the transport's
-    items for the main loop to run, each continuation told nothing was
-    refused. A write that fails, or more than SEND_QUEUE_MAX unsent, ends the
-    lane: ("closed", NotDelivered) is put once, and the connection ends.
-    Being one stream, it needs no gate: a project's `hello` goes before
-    whatever is queued behind it, so `release` and `hold` change nothing."""
+    items for the main loop to run. A write that fails, or more than
+    SEND_QUEUE_MAX unsent, ends the lane: ("closed", NotDelivered) is put
+    once, and the connection ends."""
 
     def __init__(self, conn, put, ended):
         super().__init__(name="uplink-rl10-lane", daemon=True)
@@ -305,13 +302,6 @@ class SocketLane(threading.Thread):
 
     def warm(self):
         """Nothing to dial: the socket is open."""
-
-    def release(self, project):
-        """No gate on one ordered stream."""
-
-    def hold(self, project):
-        """No gate on one ordered stream: nothing in flight, nothing dropped."""
-        return None, []
 
     def posting(self):
         return self.state == "writing"
@@ -354,7 +344,7 @@ class SocketLane(threading.Thread):
                 self.unsent -= size
                 if self.state == "writing":
                     self.state = "idle"
-            thens = [functools.partial(then, {}) for _, then in taken if then is not None]
+            thens = [then for _, then in taken if then is not None]
             if thens:
                 self.put(("sent", thens))
 
@@ -640,7 +630,6 @@ class Link:
         self.log_lane = self.session_lane = None  # the stream's senders, from its welcome on
         self.reporting = collections.Counter()   # project id → frames of its rejections not yet written
         self.delivering = set()   # project ids whose delivery outcomes are in a frame not yet written
-        self.opening = set()      # project ids whose `hello` is out: a refusal does not open them again
         self.unrecorded = {}      # project id → rejections the hub took, their record not yet written
         self.undropped = {}       # project id → (outbox, lines) the hub took, their drop not yet done
         self.unsettled = {}       # (project id, what) → the failure last said (settle_marks)
@@ -741,7 +730,6 @@ class Link:
         self.close_lanes()
         self.reporting.clear()
         self.delivering.clear()
-        self.opening.clear()
         self.members_sent = {}
         self.members_unsent = set()
         self.asks.clear()         # an ask is answered on its own connection, or never
@@ -1198,20 +1186,14 @@ class Link:
         machine joins again first, so the vector and the upload carry it.
 
         The bundle goes as one entry of the lane, ahead of whatever is queued
-        behind it on the one ordered stream (the lane's `hold` and `release`
-        do nothing). Once it is written its continuation runs: the
-        settlements it carried kept as relayed, the read its presence's
-        leavers were drawn from marked taken (the tombstone mark), its
-        rejections recorded as reported. What `deliveries` queues after it
-        follows it on the same connection, so the endpoint takes it after the
-        hello, and a write that fails ends the connection before any
-        continuation behind it runs. While a hello of the project is out
-        (`opening`), a refusal does not open it again."""
+        behind it on the one ordered stream. Once it is written its
+        continuation runs: the settlements it carried kept as relayed, the
+        read its presence's leavers were drawn from marked taken (the
+        tombstone mark), its rejections recorded as reported. What
+        `deliveries` queues after it follows it on the same connection, so
+        the endpoint takes it after the hello, and a write that fails ends
+        the connection before any continuation behind it runs."""
         pid = hl.project.id
-        self.opening.add(pid)
-        flying, dropped = self.session_lane.hold(pid)
-        self.requests.unsent(dropped)
-        self.rpcs.unsent(dropped)
         hl.rejoin_former()
         unreported = [] if self.reporting[pid] else [f for f in hl.unreported()
                                                        if f not in self.unrecorded.get(pid, ())]
@@ -1231,26 +1213,16 @@ class Link:
         self.requests.sending(owed)
         self.rpcs.sending(results)
 
-        def answered(refused):
-            self.opening.discard(pid)
-            self.session_lane.release(pid)   # no gate on one ordered stream
-            if flying is not None:
-                # A session-lane body of the project was out at the re-open:
-                # the hub may apply it after this hello, its older set and
-                # presence over the new. Both go again, behind it on its lane:
-                # the presence of the members, and of every leaver said gone
-                # since that body's oldest line was queued.
-                self.requests.stale.add(pid)
-                self.plane.say_again(pid, flying)
+        def answered():
             # Written behind the hello, the project open (a local write that fails is said, and costs a resend).
-            self.requests.delivered(owed, refused)
-            self.rpcs.delivered(results, refused)
+            self.requests.delivered(owed)
+            self.rpcs.delivered(results)
             try:
-                if read is not None and not any(id(f) in refused for f in sessions):
+                if read is not None:
                     self.plane.accepted(pid, read)   # these leavers were written: only later ones are said again
             finally:
                 if unreported:
-                    self.reported(hl, unreported, refused)
+                    self.reported(hl, unreported)
 
         self.log_lane.send([hl.hello(follow)] + ([] if follow else [machine]) + sessions + unreported + owed + results,
                            then=answered)
@@ -1264,17 +1236,15 @@ class Link:
     def report(self, hl, rejections):
         """Rejections up, reported once they are written."""
         self.reporting[hl.project.id] += 1
-        self.log_lane.send(rejections, then=lambda refused: self.reported(hl, rejections, refused))
+        self.log_lane.send(rejections, then=lambda: self.reported(hl, rejections))
 
-    def reported(self, hl, rejections, refused):
+    def reported(self, hl, rejections):
         """The rejections were written: no longer in flight, and recorded
-        as reported (settle_marks), but one `refused` names `not-open`
-        (never, on one ordered stream), which stays unreported for the hello
-        that opens its project again."""
+        as reported (settle_marks)."""
         pid = hl.project.id
         self.reporting[pid] -= 1
         owed = self.unrecorded.setdefault(pid, [])
-        owed.extend(f for f in rejections if f not in owed and refused.get(id(f)) != "not-open")
+        owed.extend(f for f in rejections if f not in owed)
         self.settle_marks(hl)
 
     def settle_marks(self, hl):
@@ -1331,18 +1301,10 @@ class Link:
                 hl.undraw()
                 return
             epochs = {w: hl.epoch(w) for w in reach}
-            self.log_lane.send([frame], then=lambda refused, frame=frame, reach=reach, epochs=epochs: self.uploaded(
-                hl, frame, reach, epochs, refused))
+            # Once written, taken (`taken`, what `daemon owed` reads) for each writer the upstream
+            # neither refused nor asked again for since it was sent (HubLog.keep_taken's epochs).
+            self.log_lane.send([frame], then=lambda reach=reach, epochs=epochs: hl.keep_taken(reach, epochs=epochs))
             hl.took(reach)
-
-    @staticmethod
-    def uploaded(hl, frame, reach, epochs, refused):
-        """An upload written to the endpoint: taken (`taken`, what `daemon
-        owed` reads), unless `refused` names it (never, on one ordered
-        stream), and for no writer the upstream refused or
-        asked again for since it was sent (HubLog.keep_taken's epochs)."""
-        if id(frame) not in refused:
-            hl.keep_taken(reach, epochs=epochs)
 
     def deliveries(self, hl):
         """What delivery made of the events from outside, as DX4 `delivery`
@@ -1364,10 +1326,8 @@ class Link:
             return
         self.delivering.add(pid)
 
-        def answered(refused):
+        def answered():
             self.delivering.discard(pid)
-            if "not-open" in refused.values():
-                return   # kept whole, and taken again once the project is open again
             self.undropped[pid] = (box, lines)
             self.settle_marks(hl)
 
@@ -1444,7 +1404,7 @@ class Link:
             owed.pop(key, None)
             reach[key[0]] = max(key[1], reach.get(key[0], 0))
             queued[key[0]] = max(key[1], queued.get(key[0], 0))
-        self.session_lane.send([frame for _, frame in batch], then=lambda _refused: hl.keep_host_sent(reach))
+        self.session_lane.send([frame for _, frame in batch], then=lambda: hl.keep_host_sent(reach))
 
     def machine_presence(self, now):
         """Each open project held or followed, as it is now, and the machine's
@@ -1506,7 +1466,7 @@ class Link:
         self.requests.take()
         for frames in by_project(self.requests.due(self.opened)):
             self.requests.sending(frames)
-            self.session_lane.send(frames, then=lambda refused, f=frames: self.requests.delivered(f, refused))
+            self.session_lane.send(frames, then=lambda f=frames: self.requests.delivered(f))
 
     def relay_rpcs(self):
         """The RPCs' results, their compactions' progress and their desk
@@ -1519,7 +1479,7 @@ class Link:
         self.rpcs.effects(self.plane.bridges.answering)
         for frames in by_project(self.rpcs.due(self.opened)):
             self.rpcs.sending(frames)
-            self.session_lane.send(frames, then=lambda refused, f=frames: self.rpcs.delivered(f, refused))
+            self.session_lane.send(frames, then=lambda f=frames: self.rpcs.delivered(f))
 
     def members(self, now):
         """RL10's `member` frames up (member_frame): this machine's sessions
