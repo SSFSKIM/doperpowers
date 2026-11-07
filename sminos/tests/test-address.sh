@@ -13,7 +13,10 @@
 # nothing; a reply through the frame's reply line crosses back the same way;
 # `send` on an enrolled machine never takes the raw-name route. Two machines
 # simulated on one Mac — two SMINOS_HOMEs enrolled as alpha and beta against
-# hub_standin.py — each with its daemon, delivering to scripted inboxes.
+# hub_standin.py — each with its daemon, delivering to scripted inboxes; then
+# the same cases on RL10, two more homes each cut over to its own
+# endpoint_standin.py, what one endpoint took reaching the other as arrivals
+# (rl10-machines.sh's hand-off).
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub; nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
@@ -385,6 +388,292 @@ assert_contains "$(events_with "$BID" "no copy of this")" "\"from_project\": \"$
 as b beta
 until_true got rb "no copy of this" || true
 got rb "no copy of this" && pass "and rb receives it" || fail "and rb receives it"
+
+# ---- RL10: the same two machines' addressing, each cut over to its endpoint (#153 M3d)
+# Every case above, composed on RL10: alpha and beta are real sminos homes,
+# each with its daemon and its endpoint_standin.py, never enrolled at a hub.
+# What one endpoint accepted reaches the other's connection as arrivals
+# through the stand-in's own echo (rl10_relay); each case asserts what the
+# producer's endpoint took (its half) and what the consumer resolved,
+# recorded or delivered (the other's). The org's directory is the
+# stand-ins': both projects and both machine projects.
+echo "RL10: two machines through their endpoints:"
+# shellcheck source=rl10-machines.sh
+. "$SCRIPT_DIR/rl10-machines.sh"
+rl10_as ra alpha
+rl10_cut_over
+EPA=$EP
+RRA="$T/ra/projA"
+gitq init -q "$RRA"
+write_smns "$RRA" projA
+RAID="$(smns_id "$RRA")"
+RAMP="$(rl10_mp alpha)"
+RSA=6a00000a-0000-4000-8000-0000000000a1
+live_session sa "$RSA" "$RRA" cli r-sa
+RABARE="$T/ra/bare"
+mkdir -p "$RABARE"
+RWD=6a00000d-0000-4000-8000-0000000000a4
+live_session wand "$RWD" "$RABARE" cli r-wand
+run_in "$RRA" "$SMINOS" list
+run_in "$RABARE" "$SMINOS" list
+rl10_as rb beta
+rl10_cut_over
+EPB=$EP
+RRB="$T/rb/projB"
+gitq init -q "$RRB"
+write_smns "$RRB" projB
+RBID="$(smns_id "$RRB")"
+RBMP="$(rl10_mp beta)"
+RRBS=6b00000b-0000-4000-8000-0000000000b1
+live_session rb "$RRBS" "$RRB" cli r-rb
+RBHOME="$T/rb/home"
+RM7=6b00007c-0000-4000-8000-0000000000b7
+live_session mini-7c "$RM7" "$RBHOME" cli r-mini-7c
+RM8=6b00008c-0000-4000-8000-0000000000b8
+live_session m8 "$RM8" "$RBHOME" cli r-m8
+run_in "$RRB" "$SMINOS" list
+run_in "$RBHOME" "$SMINOS" list
+RDIR="$(python3 - "$RAID" "$RBID" "$RAMP" "$RBMP" <<'PY'
+import json, sys
+a, b, amp, bmp = sys.argv[1:5]
+print(json.dumps({"projects": [{"id": a, "name": "projA", "kind": "hub", "retired": False},
+                               {"id": b, "name": "projB", "kind": "hub", "retired": False},
+                               {"id": amp, "name": "alpha", "kind": "machine", "machine": "alpha", "retired": False},
+                               {"id": bmp, "name": "beta", "kind": "machine", "machine": "beta", "retired": False}],
+                  "machines": [{"name": "alpha", "online": True}, {"name": "beta", "online": True}]}))
+PY
+)"
+rl10_as ra alpha
+rl10_serve "\"org\": $RDIR"
+start_daemon
+rl10_as rb beta
+rl10_serve "\"org\": $RDIR"
+start_daemon
+relayed() { rl10_relay "$EPA" "$EPB"; "$@"; }
+r_up() { [ -n "$(rl10_up "$@")" ]; }   # ep-dir pid text — the endpoint took an event of the project carrying it
+r_signer() { # json-line → the name of the machine the endpoint verified it from
+  python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("verified", {}).get("signer", {}).get("name"))' "$1"
+}
+r_joined_up() { [ "$(rl10_q "$1" "any(e['kind'] == 'joined' and e.get('session') == '$3' for c, e in up('$2'))")" = true ]; }
+
+rl10_as ra alpha
+until_true r_joined_up "$EPB" "$RBID" "$RRBS" || true
+r_joined_up "$EPB" "$RBID" "$RRBS" && pass "RL10: beta's endpoint takes rb's joined in projB" \
+  || fail "RL10: beta's endpoint takes rb's joined in projB"
+until_true relayed member_of "$RBID" "$RRBS" || true
+member_of "$RBID" "$RRBS" && pass "RL10: alpha follows projB and reads rb there" || fail "RL10: alpha follows projB and reads rb there"
+until_true relayed member_of "$RBMP" "$RM7" || true
+until_true relayed member_of "$RBMP" "$RM8" || true
+member_of "$RBMP" "$RM7" && pass "RL10: and beta's strays in beta's machine project" \
+  || fail "RL10: and beta's strays in beta's machine project"
+assert_equals "$(r_signer "$(events_with "$RBID" "\"session\": \"$RRBS\"" | head -1)")" beta \
+  "RL10: rb's joined is held on alpha as the endpoint verified it, from beta"
+# Every session's joined in every project goes both ways before the cases below read them.
+until_true relayed r_joined_up "$EPA" "$RAID" "$RSA" || true
+rl10_as rb beta
+until_true relayed member_of "$RAID" "$RSA" || true
+until_true relayed member_of "$RAMP" "$RWD" || true
+
+echo "RL10: a bare name:"
+rl10_as ra alpha
+in_session "$RSA" "$RRA" "$SMINOS" say "@rb are you there"
+assert_rc 4 "$RC" "RL10: @alias of another project's member is refused"
+assert_contains "$OUT" "@projB/rb#${RRBS:0:8}" "RL10: naming the member as @<project>/<alias>#<short>"
+assert_contains "$OUT" "a bare name reaches only your project; @short reaches anyone" "RL10: and how to reach anyone"
+in_session "$RSA" "$RRA" "$SMINOS" say "@mini-7c are you there"
+assert_rc 4 "$RC" "RL10: @alias of a stray on another machine is refused"
+assert_contains "$OUT" "@beta/mini-7c#${RM7:0:8}" "RL10: naming it by its machine: @<machine>/<alias>#<short>"
+assert_equals "$(events_with "$RBID" "are you there")$(events_with "$RAID" "are you there")" "" "RL10: a refused message is recorded nowhere"
+
+echo "RL10: @<project>/<alias> and the copy:"
+in_session "$RSA" "$RRA" "$SMINOS" say "@projB/rb hello B"
+assert_rc 0 "$RC" "RL10: @projB/rb is accepted"
+assert_contains "$OUT" "rb: recorded (on beta)" "RL10: for beta's daemon to deliver"
+DEST="$(events_with "$RBID" "hello B")"
+COPY="$(events_with "$RAID" "hello B")"
+assert_equals "$(field_of "$DEST" from_project)" "\"$RAID\"" "RL10: the delivering event is in projB's log, from projA"
+assert_equals "$(field_of "$COPY" copy)" "\"$RBID:alpha/$RSA:$(field_of "$DEST" seq)\"" \
+  "RL10: the copy in projA's log names the delivering event: <project>:<writer>:<seq>"
+assert_equals "$(field_of "$COPY" to)" "[{\"session\": \"$RRBS\", \"alias\": \"rb\", \"project\": \"$RBID\"}]" \
+  "RL10: its recipients carry their project"
+assert_equals "$(field_of "$COPY" from_project)$(field_of "$DEST" copy)" "nullnull" "RL10: the copy names no from_project, the delivering event no copy"
+until_true r_up "$EPA" "$RBID" "hello B" || true
+DEST_UP="$(rl10_up "$EPA" "$RBID" "hello B")"
+assert_equals "$(field_of "$DEST_UP" from_project) $(field_of "$DEST_UP" seq)" "\"$RAID\" $(field_of "$DEST" seq)" \
+  "RL10: alpha's endpoint takes the delivering event in projB, at its position"
+until_true r_up "$EPA" "$RAID" "hello B" || true
+assert_equals "$(field_of "$(rl10_up "$EPA" "$RAID" "hello B")" copy)" "$(field_of "$COPY" copy)" \
+  "RL10: and the copy in projA"
+run_in "$RRA" "$SMINOS" chat projA -n 5
+assert_contains "$OUT" "sa → @rb → projB  @projB/rb hello B" "RL10: chat in projA shows the copy marked with its destination"
+rl10_as rb beta
+until_true relayed got r-rb "hello B" || true
+got r-rb "hello B" && pass "RL10: rb receives it on beta" || fail "RL10: rb receives it on beta"
+assert_equals "$(r_signer "$(events_with "$RBID" "hello B")")" alpha "RL10: from the event beta holds as the endpoint verified it, from alpha"
+assert_equals "$(received r-rb | grep -c "hello B")" 1 "RL10: once"
+REPLY="$(python3 - "$T/r-rb.received" <<'PY'
+import json, re, sys
+for line in open(sys.argv[1]):
+    if "hello B" in line:
+        m = re.search(r"\[To reply, run in Bash: (.*) <your reply>\"\]", json.loads(line)["message"]["content"])
+        print(m.group(1) if m else "")
+PY
+)"
+assert_contains "$REPLY" "say \"@$RAID/${RSA:0:8}" "RL10: its reply line names the sender in projA"
+
+echo "RL10: @short:"
+rl10_as ra alpha
+in_session "$RSA" "$RRA" "$SMINOS" say "@${RRBS:0:8} by short"
+assert_rc 0 "$RC" "RL10: @short resolves to a member of another project"
+assert_contains "$OUT" "in projB" "RL10: recorded in its project"
+assert_contains "$(events_with "$RAID" "by short")" "\"copy\": \"$RBID:alpha/$RSA:" "RL10: with its copy in the sender's"
+until_true r_up "$EPA" "$RBID" "by short" || true
+r_up "$EPA" "$RBID" "by short" && pass "RL10: alpha's endpoint takes it in projB" || fail "RL10: alpha's endpoint takes it in projB"
+rl10_as rb beta
+until_true relayed got r-rb "by short" || true
+got r-rb "by short" && pass "RL10: and beta delivers it" || fail "RL10: and beta delivers it"
+assert_equals "$(received r-rb | grep -c "hello B")" 1 "RL10: the copy is never pushed: rb's inbox holds the message once"
+
+echo "RL10: the reply:"
+in_session "$RRBS" "$RRB" bash -c "$REPLY back from rb\""
+assert_rc 0 "$RC" "RL10: the reply line runs as written"
+assert_contains "$OUT" "in projA" "RL10: into projA"
+assert_contains "$(events_with "$RBID" "back from rb")" "\"copy\": \"$RAID:beta/$RRBS:" "RL10: its copy in rb's own project"
+until_true r_up "$EPB" "$RAID" "back from rb" || true
+r_up "$EPB" "$RAID" "back from rb" && pass "RL10: beta's endpoint takes the reply in projA" \
+  || fail "RL10: beta's endpoint takes the reply in projA"
+rl10_as ra alpha
+until_true relayed got r-sa "back from rb" || true
+got r-sa "back from rb" && pass "RL10: sa receives the reply on alpha" || fail "RL10: sa receives the reply on alpha"
+
+echo "RL10: @<machine>/<alias>:"
+in_session "$RSA" "$RRA" "$SMINOS" say "@beta/mini-7c did the image build"
+assert_rc 0 "$RC" "RL10: @beta/mini-7c is accepted"
+assert_contains "$OUT" "in beta" "RL10: into beta's machine project"
+assert_contains "$(events_with "$RBMP" "did the image build")" "\"from_project\": \"$RAID\"" "RL10: recorded in its log"
+assert_contains "$(events_with "$RAID" "did the image build")" "\"copy\": \"$RBMP:alpha/$RSA:" "RL10: and copied into projA"
+until_true r_up "$EPA" "$RBMP" "did the image build" || true
+r_up "$EPA" "$RBMP" "did the image build" && pass "RL10: alpha's endpoint takes it in beta's machine project" \
+  || fail "RL10: alpha's endpoint takes it in beta's machine project"
+rl10_as rb beta
+until_true relayed got r-mini-7c "did the image build" || true
+got r-mini-7c "did the image build" && pass "RL10: the stray receives it on beta" || fail "RL10: the stray receives it on beta"
+
+echo "RL10: a session that moved:"
+rl10_as ra alpha
+in_session "$RWD" "$RABARE" "$SMINOS" join projA
+assert_rc 0 "$RC" "RL10: wand joins projA"
+r_moved_up() { [ "$(rl10_q "$EPA" "any(e['kind'] == 'retired' and e.get('reason') == 'moved' and e.get('session') == '$RWD' for c, e in up('$RAMP'))")" = true ]; }
+until_true r_moved_up || true
+r_moved_up && pass "RL10: alpha's endpoint takes wand's moved retirement in alpha's machine project" \
+  || fail "RL10: alpha's endpoint takes wand's moved retirement in alpha's machine project"
+rl10_as rb beta
+r_moved_here() { [ -n "$(events_with "$RAMP" '"reason": "moved"')" ] && member_of "$RAID" "$RWD"; }
+until_true relayed r_moved_here || true
+in_session "$RRBS" "$RRB" "$SMINOS" say "@alpha/wand still there"
+assert_rc 4 "$RC" "RL10: on beta, a tag naming its former project is refused"
+assert_contains "$OUT" "moved to projA" "RL10: saying where it went"
+in_session "$RRBS" "$RRB" "$SMINOS" say "@${RWD:0:8} found you"
+assert_rc 0 "$RC" "RL10: @short reaches it"
+assert_contains "$OUT" "in projA" "RL10: in the project it moved to"
+until_true r_up "$EPB" "$RAID" "found you" || true
+r_up "$EPB" "$RAID" "found you" && pass "RL10: beta's endpoint takes it in projA" || fail "RL10: beta's endpoint takes it in projA"
+rl10_as ra alpha
+until_true relayed got r-wand "found you" || true
+got r-wand "found you" && pass "RL10: and it delivers on alpha" || fail "RL10: and it delivers on alpha"
+
+echo "RL10: shorts:"
+RX1=6d0000dd-0000-4000-8000-000000000001
+RX2=6d0000dd-0000-4000-8000-000000000002
+live_session x1 "$RX1" "$RABARE" cli r-x1
+live_session x2 "$RX2" "$RRA" cli r-x2
+run_in "$RABARE" "$SMINOS" list
+in_session "$RSA" "$RRA" "$SMINOS" say "@6d0000dd which one"
+assert_rc 4 "$RC" "RL10: a short two sessions share is refused"
+assert_contains "$OUT" "@alpha/x1#6d0000dd" "RL10: naming one with its project"
+assert_contains "$OUT" "@projA/x2#6d0000dd" "RL10: and the other"
+RH8=6a0000e8-0000-4000-8000-0000000000e8
+live_session 6d0000dd "$RH8" "$RRA" cli r-6d0000dd
+in_session "$RSA" "$RRA" "$SMINOS" say "@6d0000dd the alias"
+assert_rc 0 "$RC" "RL10: a bare 8-hex name a member of the sender's project has as alias is that alias"
+assert_contains "$(events_with "$RAID" "the alias")" "\"session\": \"$RH8\"" "RL10: the member, not the short"
+
+echo "RL10: a project named after a machine:"
+RRN="$T/ra/named-beta"
+gitq init -q "$RRN"
+write_smns "$RRN" beta
+RNID="$(smns_id "$RRN")"
+RN7=6a0000f7-0000-4000-8000-0000000000f7
+live_session mini-7c "$RN7" "$RRN" cli r-mini-7c-alpha
+run_in "$RRN" "$SMINOS" list
+in_session "$RSA" "$RRA" "$SMINOS" say "@beta/mini-7c which beta"
+assert_rc 0 "$RC" "RL10: @beta/mini-7c resolves"
+assert_contains "$(events_with "$RNID" "which beta")" "\"session\": \"$RN7\"" "RL10: to the ordinary project's member first"
+assert_equals "$(events_with "$RBMP" "which beta")" "" "RL10: not the machine project's"
+in_session "$RSA" "$RRA" "$SMINOS" say "@beta/m8 only on the machine"
+assert_rc 0 "$RC" "RL10: @beta/m8, which the project named beta has not"
+assert_contains "$(events_with "$RBMP" "only on the machine")" "\"session\": \"$RM8\"" "RL10: falls back to the machine project"
+rl10_as rb beta
+until_true relayed got r-m8 "only on the machine" || true
+got r-m8 "only on the machine" && pass "RL10: and m8 receives it on beta" || fail "RL10: and m8 receives it on beta"
+
+echo "RL10: send:"
+rl10_as ra alpha
+RHL=6a0000c1-0000-4000-8000-0000000000c1
+live_session hl "$RHL" "$RABARE" sdk-cli r-hl
+run_in "$RRA" "$SMINOS" send hl "raw by name"
+assert_rc 4 "$RC" "RL10: send to a harness name no member answers to is refused on a machine cut over"
+in_session "$RSA" "$RABARE" "$SMINOS" send hl "raw from a session"
+assert_rc 4 "$RC" "RL10: from a session too"
+assert_equals "$(received r-hl)" "" "RL10: and nothing reaches the session by its raw name"
+run_in "$RRA" "$SMINOS" send rb "a bare send"
+assert_rc 4 "$RC" "RL10: send to another project's member by its bare name is refused"
+assert_contains "$OUT" "projB/rb#${RRBS:0:8}" "RL10: naming it as <project>/<alias>#<short>"
+in_session "$RSA" "$RRA" "$SMINOS" send "projB/rb" "sent across"
+assert_rc 0 "$RC" "RL10: send <project>/<alias> records for the member"
+assert_contains "$(events_with "$RAID" "sent across")" "\"copy\": \"$RBID:alpha/$RSA:" "RL10: with its copy in the sender's project"
+until_true r_up "$EPA" "$RBID" "sent across" || true
+r_up "$EPA" "$RBID" "sent across" && pass "RL10: alpha's endpoint takes it in projB" || fail "RL10: alpha's endpoint takes it in projB"
+rl10_as rb beta
+until_true relayed got r-rb "sent across" || true
+got r-rb "sent across" && pass "RL10: and beta delivers it" || fail "RL10: and beta delivers it"
+
+echo "RL10: send alias#short:"
+rl10_as ra alpha
+RP1=dddd00e2-0000-4000-8000-000000000001
+RP2=dddd00e2-0000-4000-8000-000000000002
+live_session peer "$RP1" "$RRA" cli r-peer-a
+live_session peer "$RP2" "$RABARE" cli r-peer-b
+run_in "$RABARE" "$SMINOS" list
+run_in "$RRA" "$SMINOS" list
+in_session "$RSA" "$RRA" "$SMINOS" send "peer#dddd00e2" "which peer"
+assert_rc 4 "$RC" "RL10: send alias#short two sessions answer to is refused, one of them in the caller's project"
+assert_contains "$OUT" "alpha/peer#dddd00e2" "RL10: naming the one in the machine project"
+assert_contains "$OUT" "projA/peer#dddd00e2" "RL10: and the one in the caller's"
+assert_equals "$(received r-peer-a)$(received r-peer-b)" "" "RL10: and sends nothing"
+in_session "$RSA" "$RRA" "$SMINOS" send "x1#6d0000dd" "x1 across"
+assert_rc 0 "$RC" "RL10: send alias#short reaches a session of another project when it is the only one"
+assert_contains "$(events_with "$RAMP" "x1 across")" "\"session\": \"$RX1\"" "RL10: in its project's log"
+
+echo "RL10: a copy that cannot be written:"
+RSAW="$SMINOS_HOME/projects/$RAID/log/alpha.$RSA.jsonl"
+chmod 400 "$RSAW"
+in_session "$RSA" "$RRA" "$SMINOS" say "@projB/rb no copy of this"
+chmod 600 "$RSAW"
+assert_rc 0 "$RC" "RL10: a say whose copy cannot be written still succeeds"
+assert_contains "$OUT" "delivered, but its copy could not be recorded in projA" "RL10: warning that the copy is missing"
+assert_equals "$(events_with "$RAID" "no copy of this")" "" "RL10: no copy is in projA's log"
+assert_contains "$(events_with "$RBID" "no copy of this")" "\"from_project\": \"$RAID\"" "RL10: the delivering event is in projB's"
+until_true r_up "$EPA" "$RBID" "no copy of this" || true
+r_up "$EPA" "$RBID" "no copy of this" && pass "RL10: alpha's endpoint takes it" || fail "RL10: alpha's endpoint takes it"
+assert_equals "$(rl10_up "$EPA" "$RAID" "no copy of this")" "" "RL10: and no copy of it"
+rl10_as rb beta
+until_true relayed got r-rb "no copy of this" || true
+got r-rb "no copy of this" && pass "RL10: and rb receives it" || fail "RL10: and rb receives it"
+for m in ra rb; do
+  assert_not_contains "$(cat "$T/$m/s/daemon.log" 2>/dev/null)" "Traceback" "RL10: nothing in $m's daemon.log is a traceback"
+done
+unset MAWS_USER_DATA
 
 # ---- decisions pinned on one machine's logs alone, in a home of their own
 echo "the logs alone:"
