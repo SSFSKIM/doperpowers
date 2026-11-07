@@ -1354,14 +1354,21 @@ assert_contains "$(cat "$T/r/s/daemon.log")" "the hub asks beta/$RBIG of rlproj 
 # the session it recorded then.
 echo "RL10: after the rename, the former name's other holder and the seat's retirement:"
 RSA=5d00000a-0000-4000-8000-0000000000aa
-python3 - "$RSA" "$RR" <<'PY'
-import os, sys
-sys.path.insert(0, os.environ["SCRIPTS"])
-import sminos
-p = sminos.resolve_project(sys.argv[2])
-sminos.log_append(p, "betaold/" + sys.argv[1], "joined", session=sys.argv[1], alias="a-term", name_source="derived",
-                  machine="betaold", cwd="/elsewhere", worktree="", role="", seat="", by="")
+# Its joined, as the endpoint relays the other machine's event down: wrapped, that machine its signer.
+rl_send "$(python3 - "$RSA" "$RPID" <<'PY'
+import json, sys, time
+sid, pid = sys.argv[1], sys.argv[2]
+ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+e = {"ts": ts, "writer": "betaold/" + sid, "seq": 1, "kind": "joined", "session": sid, "alias": "a-term",
+     "name_source": "derived", "machine": "betaold", "cwd": "/elsewhere", "worktree": "", "role": "", "seat": "",
+     "by": "", "created": ts, "sig": {"kid": "k-betaold", "sig": "AA"}}
+signer = {"kind": "machine", "ref": "ref-betaold", "name": "betaold", "keyId": "k-betaold"}
+print(json.dumps([{"t": "events", "project": pid, "events": [{"event": e, "signer": signer, "owners": []}]}]))
 PY
+)"
+rl_rsa_imported() { grep -q '"verified": {"signer": {"kind": "machine"' "$RLOG/betaold.$RSA.jsonl" 2>/dev/null; }
+until_true 200 rl_rsa_imported || true
+assert_equals "$(rl_rsa_imported && echo imported)" imported "RL10: the other betaold's joined arrives from the endpoint, verified"
 run "$SMINOS" list --all --json
 assert_contains "$(printf '%s\n' "$OUT" | python3 -c 'import json, sys
 print(sorted((r["alias"], r["machine"], r["local"]) for r in json.load(sys.stdin)))')" "('a-term', 'betaold', False)" \
