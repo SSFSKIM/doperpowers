@@ -1026,14 +1026,6 @@ class HubLog:
                 log("the hub asks %s of %s again from %d" % (writer, self.project.name, start))
             self.bound(writer, start - 1)   # the hub lacks it from `start`, whatever an answer said before
 
-    def closed(self):
-        """The hub no longer holds the project open on this stream (it
-        refused a frame of it `not-open`): nothing is uploaded until the
-        `have` of the hello that opens it again, which the upload goes on
-        from."""
-        self.have = None
-        self.drawing = None
-
     def on_refused(self, frame):
         """The hub refused what this machine sent; said in daemon.log. A
         writer refused stops uploading on this stream (sending it again would

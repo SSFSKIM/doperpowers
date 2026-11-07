@@ -4,21 +4,18 @@ project of its org (F1 of the org directory's acceptance run, 2026-10-19):
 a member on another machine costs no look for a transcript here; a session
 with none here (an old seat's) costs no walk of ~/.claude/projects per ask;
 a reconciliation deciding on a resolution older than a move does not undo
-the move (F3); and the uplink takes the org's directory ahead of the frames
-queued before it. Hermetic: HOME and SMINOS_HOME are temporary.
+the move (F3). Hermetic: HOME and SMINOS_HOME are temporary.
 """
 
 import errno
 import glob
 import json
 import os
-import queue
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import types
 import unittest
@@ -1022,47 +1019,22 @@ class WholeReads(unittest.TestCase):
         self.assertEqual(sminos.log_read(self.project)[-1]["session"], after.events[-1]["session"])
 
 
-class OrgAhead(unittest.TestCase):
-    """The org's directory is handled before the frames queued ahead of it."""
-
-    def test_org_frame_is_taken_before_the_queue(self):
-        stream = uplink.Stream({"hub": "http://127.0.0.1:9"})
-        seen = []
-
-        class Link:
-            def dispatch(self, frame, _stream):
-                seen.append(frame["t"])
-
-            def deliver_imports(self):
-                pass
-
-            def tick(self):
-                seen.append("tick")
-
-        for _ in range(5):
-            stream.items.put(("frame", "events", json.dumps({"t": "events", "project": "p", "events": []})))
-        stream.org = json.dumps({"t": "org", "projects": [], "machines": []})
-        stream.items.put(("org",))
-        stream.items.put(("closed", "done"))
-        uplink.serve_link(Link(), stream, lambda: False, threading.Event())
-        self.assertEqual(seen[0], "org")
-        self.assertEqual(seen.count("org"), 1)
-        self.assertEqual(seen[1:], ["events"] * 5)
-
-
-class BenchOpens(unittest.TestCase):
-    """bench_scale.py opens on a small synthetic machine: an open of a
-    large and of a small live session at +0.5 s, every live session in
-    sequence after the warm-up, then the pair again after a restart; each
-    line with its moment, size and E."""
-
-    MODE = ()   # DX2: the hub stand-in; BenchOpensOnRl10's, RL10
+class BenchOpensOnRl10(unittest.TestCase):
+    """bench_scale.py opens on a small synthetic machine cut over to its
+    endpoint (#153 M3e): the real uplink child on RL10's session lane
+    against endpoint_standin, its subscribes sent down the connection and E
+    read off the `session` frames the stand-in received. An open of a large
+    and of a small live session at +0.5 s, every live session in sequence
+    after the warm-up, then the pair again after a restart; each line with
+    its moment, size and E, and the build each must show: cold at +0.5 s,
+    warm at +1 s, and after the restart the build the first uplink saved,
+    loaded."""
 
     def test_the_opens_at_their_moments(self):
         r = subprocess.run([sys.executable, os.path.join(HERE, "bench_scale.py"), "opens", SCRIPTS, "--dirs", "3",
                             "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "1", "--mini", "1",
                             "--says", "2", "--own", "2", "--live", "5", "--large", "1", "--large-rows", "600",
-                            "--warm-after", "1", *self.MODE],
+                            "--warm-after", "1", "--rl10"],
                            capture_output=True, text=True, timeout=300,
                            env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")})
         lines = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
@@ -1093,37 +1065,6 @@ class BenchOpens(unittest.TestCase):
         restarted = [o for o in large if o["moment"] == "restart +0.5 s"]
         for o in restarted:
             self.assertEqual(o["build"], "loaded", "after the restart, the build the first uplink saved")
-
-    def test_a_stand_in_that_fails_to_start_is_ended(self):
-        """bench_scale's stand-in is ended when its setup fails after it
-        started (here: the machine has no credential to point at it)."""
-        sys.path.insert(0, HERE)
-        import bench_scale
-        started = []
-        real = subprocess.Popen
-
-        def popen(*args, **kwargs):
-            p = real(*args, **kwargs)
-            started.append(p)
-            return p
-        root = tempfile.mkdtemp(dir=T)
-        env = types.SimpleNamespace(root=root, sh=os.path.join(root, "s"))
-        with mock.patch.object(bench_scale.subprocess, "Popen", popen):
-            with self.assertRaises(OSError):
-                bench_scale.standin(env)
-        self.assertEqual(len(started), 1)
-        self.assertIsNotNone(started[0].poll(), "the stand-in did not outlive its failed setup")
-
-
-class BenchOpensOnRl10(BenchOpens):
-    """BenchOpens on a machine cut over to its endpoint (#153 M3e):
-    `bench_scale.py opens --rl10`, the real uplink child on RL10's session
-    lane against endpoint_standin, its subscribes sent down the connection
-    and E read off the `session` frames the stand-in received. The same
-    moments and the same build each must show: cold at +0.5 s, warm at +1 s,
-    and after the restart the build the first uplink saved, loaded."""
-
-    MODE = ("--rl10",)
 
     def test_a_stand_in_that_fails_to_start_is_ended(self):
         """The endpoint stand-in is stopped when the machine's cut-over
@@ -1233,13 +1174,9 @@ class BenchStops(unittest.TestCase):
                     shutil.rmtree(line.split()[1], ignore_errors=True)
 
     def mid_warmup(self, sig, *mode):
-        standin = "endpoint_standin.py" if mode else "hub_standin.py"
         self.stopped(sig, ["run", SCRIPTS, *mode, "--warmup", "120", "--seconds", "60"], lambda commands, _: (
-            any("daemon uplink" in c for c in commands) and any(standin in c for c in commands)
+            any("daemon uplink" in c for c in commands) and any("endpoint_standin.py" in c for c in commands)
             and sum(c.startswith("sleep 86399") for c in commands) == 3))
-
-    def test_sigterm_on_dx2(self):
-        self.mid_warmup(signal.SIGTERM)
 
     def test_sigterm_on_rl10(self):
         self.mid_warmup(signal.SIGTERM, "--rl10")

@@ -6,10 +6,14 @@ with `git archive`), so a change is measured before and after.
 
     python3 bench_scale.py tick    <scripts-dir> [--ticks N]
     python3 bench_scale.py profile <scripts-dir> <out.prof>
-    python3 bench_scale.py run     <scripts-dir> [--rl10 [--words W]] [--seconds S] [--warmup W]
+    python3 bench_scale.py run     <scripts-dir> [--words W] [--seconds S] [--warmup W]
                                                  [--import-events N] [--profile-uplink OUT]
     python3 bench_scale.py verbs   <scripts-dir>
-    python3 bench_scale.py opens   <scripts-dir> [--rl10] [--large G] [--large-rows N] [--warm-after S]
+    python3 bench_scale.py opens   <scripts-dir> [--large G] [--large-rows N] [--warm-after S]
+
+`run` and `opens` run on RL10, against the endpoint stand-in: the DX2 hub's
+arms went with #153 M5. Each still accepts --rl10, which the commands of
+#153 M3e and O14's B2 name, and which changes nothing.
 
 Every mode takes the scale's flags (--dirs, --seats, ...; --help lists them)
 and --joined-by <scripts-dir>, which makes the first tick, the one that joins
@@ -36,16 +40,13 @@ kept as history.
   does it (sminos_daemon.tick_all), its first tick (which joins the live
   sessions) apart; each tick's wall time and CPU time.
 - `profile`: one steady-state tick under cProfile, written to <out.prof>.
-- `run`: `daemon run --interval 5` and its uplink against the hub stand-in
-  (hub_standin.py) for S seconds after a W-second warm-up; each process's
-  CPU over the window, as a share of one core, and how many ticks ended;
-  then, with --import-events, how long N events of the other machine take
-  from the hub, one `events` frame each, into the log here.
-  --profile-uplink runs the uplink alone under cProfile instead.
-  With --rl10 (O14's B2 step 2, O12 M7c), against the endpoint stand-in
-  (endpoint_standin.py) in place of the hub's: the machine is cut over by
-  the stand-in's complete welcome to a probe (`daemon probe`, the
-  supervisor's) before `daemon run` starts, its uplink the RL10 child. Each live session in a hub checkout is owed W `human` events,
+- `run` (O14's B2 step 2, O12 M7c): `daemon run --interval 5` and its
+  uplink against the endpoint stand-in (endpoint_standin.py) for S seconds
+  after a W-second warm-up; the machine is cut over by the stand-in's
+  complete welcome to a probe (`daemon probe`, the supervisor's) before
+  `daemon run` starts, its uplink the RL10 child. --profile-uplink runs the
+  uplink alone under cProfile instead. Each live session in a hub checkout
+  is owed W `human` events,
   one from each of W members (`hub/mem-<k>`, stored with their `verified`
   signer as an arrival over RL10 is), which the stand-in never answers: each
   stays owed through the window, asked `words?` again at every pass once its
@@ -62,26 +63,23 @@ kept as history.
 - `opens` (the desk open-fast spec's A3): G of the live sessions in hub
   checkouts get a transcript of N rows (15,000, shaped as bench_rig.py
   shapes one for bench_open.py) in place of their short one; the uplink
-  alone, started fresh against the stand-in once a tick has joined the live
-  sessions; subscribes
-  sent through the stand-in's `/control/send` at +0.5 s (a large session and
+  alone, started fresh against the endpoint stand-in (bench_rig's
+  EndpointHub, in this process; the machine cut over by its welcome to
+  `daemon probe` before the tick) once a tick has joined the live sessions;
+  subscribes, each a frame the stand-in writes down the uplink's
+  connection, at +0.5 s (a large session and
   a small one, together: the small one opens while the large one builds),
   at +S s (every live session, in sequence), then the uplink restarted (the
   same SMINOS_HOME: whatever it keeps on disk stays) and the +0.5 s pair
   again. One JSON line per open — its moment,
-  size, rows and E (the snapshot's arrival at the stand-in less the
-  subscribe's write, both the stand-in's stamps), with N and the build from
+  size, rows and E (the snapshot's `session` frame's arrival at the
+  stand-in less the subscribe's write), with N and the build from
   the plane's open line — and a summary per moment and size; each line says
   when, after the uplink's start, it went (`sent`). A +0.5 s pair goes only
-  if the uplink's stream has opened the sessions' projects by then: else the
-  moment is said missing, with when the stream was ready, never sampled
-  late under its name, and the run ends with status 3.
-  With --rl10 (#153 M3e), against the endpoint stand-in (bench_rig's
-  EndpointHub, in this process) in place of the hub's, the machine cut over
-  by its welcome to `daemon probe` before the tick: each subscribe a frame
-  it writes down the uplink's connection, E the snapshot's `session` frame's
-  arrival at it less that write, and a stream ready once a connection newer
-  than the last has sent the projects' hellos.
+  if the uplink's connection is ready by then — a connection newer than the
+  last has sent the projects' hellos: else the moment is said missing, with
+  when it was ready, never sampled late under its name, and the run ends
+  with status 3.
 """
 
 import argparse
@@ -99,7 +97,6 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ORG, MACHINE, OTHER = "org-1", "testhost", "mini"
-KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"  # bytes(range(32)), base64url
 HUB_ROOTED = ("doperpowers", "MAWS", "desk-walk", "scratch")
 TS = "2026-10-18T%02d:%02d:%02d.000Z"
 
@@ -268,10 +265,10 @@ class Env:
         for pid in self.hub_ids:
             n = a.mini if pid == mini else a.remote
             self.remote_members(pid, n, a.says if pid != mini else 0)
-        # RL10 (run --rl10): a person's words owed to each live session in a hub checkout, one event from each
-        # of WORDS members' devices, stored as an arrival over RL10 is (its signer under `verified`).
+        # `run`: a person's words owed to each live session in a hub checkout, one event from each of WORDS
+        # members' devices, stored as an arrival over RL10 is (its signer under `verified`).
         self.words_owed = 0
-        if getattr(a, "rl10", False) and a.mode == "run":
+        if a.mode == "run":
             for i, s in enumerate(x for x in self.live_sessions if x["project"] in project_of.values()):
                 self.words_owed += a.words
                 for k in range(a.words):
@@ -280,17 +277,10 @@ class Env:
                         "to": [{"session": s["sid"], "alias": "live%d" % i}], "text": "words %d for %d" % (k, i),
                         "verified": {"signer": {"kind": "device", "member": "mem-%d" % k, "device": "dev-%d" % k,
                                                 "keyId": "k-dev-%d" % k}}}])
-        # Its enrolment. `run` and `opens` on DX2 (until #153 M5) enrol at the hub stand-in, by hub.json, its
-        # credential; with --rl10 the probe's welcome cuts the machine over, so before it the machine is named
-        # by DAEMON_HOST alone (below); `tick`, `profile` and `verbs` measure a machine cut over, as the
-        # owner's Macs are.
-        rl10 = getattr(a, "rl10", False)
-        if a.mode in ("run", "opens") and not rl10:
-            write(os.path.join(self.sh, "daemon", "hub.json"), {
-                "hub": hub_url, "org": ORG, "machine": MACHINE, "client_id": "cid-1", "client_secret": "secret-1",
-                "key": KEY, "enrolled": "2026-10-01T00:00:00Z"})
-            os.chmod(os.path.join(self.sh, "daemon", "hub.json"), 0o600)
-        elif not rl10:
+        # Its enrolment. `run` and `opens` cut the machine over by the endpoint stand-in's welcome to a probe,
+        # so before it the machine is named by DAEMON_HOST alone (below); `tick`, `profile` and `verbs`
+        # measure a machine cut over, as the owner's Macs are.
+        if a.mode not in ("run", "opens"):
             from rl10_identity import write_identity
             write_identity(self.sh, MACHINE, org=ORG, hub=hub_url)
         names = {p: n for n, (p, _) in hubs.items()}
@@ -411,110 +401,6 @@ def ticks_ended(env):
     return out
 
 
-def import_burst(a, env, url, n, give_up=120.0):
-    """`n` events of a new session of the other machine, sealed with the
-    org's key, sent down the stream by the stand-in one frame each into the
-    other machine's project (one this machine follows); (seconds until the
-    last is in the log here, how many arrived)."""
-    import base64
-    import urllib.request
-    sys.path.insert(0, os.path.abspath(a.scripts))
-    import sminos_codes as codes
-    key = base64.urlsafe_b64decode(KEY + "=")
-    pid, sid = machine_project_id(ORG, OTHER), str(uuid.uuid4())
-    writer = "%s/%s" % (OTHER, sid)
-    path = os.path.join(env.sh, "projects", pid, "log", writer.replace("/", ".") + ".jsonl")
-
-    def arrived():
-        try:
-            with open(path) as f:
-                return sum(1 for line in f if line.strip())
-        except OSError:
-            return 0
-
-    t0 = time.time()
-    for seq in range(1, n + 1):
-        ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
-        draft = {"ts": ts, "writer": writer, "seq": seq, "kind": "say", "session": sid, "to": [],
-                 "text": "burst %d" % seq}
-        e = codes.seal(key, "log", pid, draft, codes.b64url(os.urandom(16)))
-        req = urllib.request.Request(url + "/control/inject", method="POST",
-                                     data=json.dumps({"project": pid, "events": [e]}).encode(),
-                                     headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=30).read()
-    while arrived() < n and time.time() - t0 < give_up:
-        time.sleep(0.1)
-    return time.time() - t0, arrived()
-
-
-def cmd_run(a, env):
-    if a.rl10:
-        return cmd_run_rl10(a, env)
-    port_file = os.path.join(env.root, "hub.port")
-    hub = spawn([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1",
-                 "15000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    run = None
-    try:
-        while not (os.path.exists(port_file) and open(port_file).read().strip()):
-            time.sleep(0.05)
-        url = "http://127.0.0.1:%s" % open(port_file).read().strip()
-        cred = os.path.join(env.sh, "daemon", "hub.json")
-        d = json.load(open(cred))
-        d["hub"] = url
-        write(cred, d)
-        os.chmod(cred, 0o600)
-        import urllib.request
-        req = urllib.request.Request(url + "/control/register", method="POST", data=json.dumps(
-            {"project": machine_project_id(ORG, OTHER), "name": OTHER, "kind": "machine"}).encode(),
-            headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=10).read()
-        log = open(os.path.join(env.root, "run.out"), "w")
-        if a.profile_uplink:
-            # The uplink alone, this process its parent, under cProfile, once a
-            # tick has joined the live sessions: no tick loop beside it.
-            run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            run = spawn([sys.executable, os.path.abspath(__file__), "_profiled", a.scripts,
-                         a.profile_uplink, "daemon", "uplink"], env=env.env, stdout=log,
-                        stderr=subprocess.STDOUT)
-            time.sleep(a.warmup + a.seconds)
-            return
-        run = spawn([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "run", "--interval",
-                     "5"], env=env.env, stdout=log, stderr=subprocess.STDOUT)
-        time.sleep(a.warmup)
-        up = int(open(os.path.join(env.sh, "daemon", "uplink.lock")).read().split()[1])
-        r0, u0, t0, seen = cpu_seconds(run.pid), cpu_seconds(up), time.time(), ticks_ended(env)
-        stamps = set()
-        while time.time() - t0 < a.seconds:
-            time.sleep(0.5)
-            stamps |= ticks_ended(env) - seen
-        r1, u1, dt = cpu_seconds(run.pid), cpu_seconds(up), time.time() - t0
-        per_project = {}
-        for pid, _ in stamps:
-            per_project[pid] = per_project.get(pid, 0) + 1
-        ticks = max(per_project.values(), default=0)
-        print("window %.0f s after a %.0f s warm-up; %d ticks ended in it (interval 5 s)" % (dt, a.warmup, ticks))
-        print("daemon run: %.1f CPU-s, %.1f%% of a core" % (r1 - r0, 100 * (r1 - r0) / dt))
-        print("uplink:     %.1f CPU-s, %.1f%% of a core" % (u1 - u0, 100 * (u1 - u0) / dt))
-        if a.import_events:
-            took, got = import_burst(a, env, url, a.import_events)
-            print("import: %d of %d events from the hub, one frame each, in the log after %.1f s%s" % (
-                got, a.import_events, took, "" if got == a.import_events else " (gave up)"))
-        with open(os.path.join(env.sh, "daemon.log")) as f:
-            failed = [line for line in f if "failed" in line]
-        if failed:
-            print("daemon.log says %d failures, the first: %s" % (len(failed), failed[0].strip()))
-    finally:
-        if run is not None:
-            run.send_signal(signal.SIGTERM)
-            try:
-                run.wait(60)
-            except subprocess.TimeoutExpired:
-                run.kill()
-        hub.kill()
-        hub.wait()
-
-
 class EndpointStandin:
     """endpoint_standin.py serving the machine's RL10 socket, its identity
     complete (so its welcome cuts the machine over), answering no `words?`;
@@ -563,7 +449,7 @@ class EndpointStandin:
         self.proc.wait()
 
 
-def import_burst_rl10(env, ep, n, give_up=120.0):
+def import_burst(env, ep, n, give_up=120.0):
     """`n` events of a new session of the other machine, sent down the RL10
     socket by the stand-in, one `events` frame each, each wrapped as the
     endpoint sends another's event (`{event, signer}`), into the other
@@ -615,8 +501,8 @@ def cut_over(env):
     return os.path.exists(os.path.join(env.sh, "daemon", "identity.json"))
 
 
-def cmd_run_rl10(a, env):
-    """`run --rl10`: see the module's docstring. Exit status 1 when B2's gate fails."""
+def cmd_run(a, env):
+    """`run`: see the module's docstring. Exit status 1 when B2's gate fails."""
     ep = EndpointStandin(env)
     times = os.path.join(env.root, "words-passes.jsonl")
     env.env["SMINOS_WORDS_TIMES"] = times
@@ -624,7 +510,7 @@ def cmd_run_rl10(a, env):
     try:
         log = open(os.path.join(env.root, "run.out"), "w")
         # Cut over first, by the stand-in's welcome to a probe (what `daemon run`'s supervisor runs): a first
-        # tick on DX2 would deliver the owed words as a machine not cut over does, before the probe's welcome.
+        # tick before it would deliver the owed words as a machine not cut over does, before the probe's welcome.
         run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "probe"], env=env.env,
                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if not cut_over(env):
@@ -682,7 +568,7 @@ def cmd_run_rl10(a, env):
             p95 = None
             print("words pass: no pass in the window (longest gap %.2f s)" % gap)
         if a.import_events:
-            took, got = import_burst_rl10(env, ep, a.import_events)
+            took, got = import_burst(env, ep, a.import_events)
             print("import: %d of %d events from the endpoint, one RL10 events frame each, in the log after %.1f s%s"
                   % (got, a.import_events, took, "" if got == a.import_events else " (gave up)"))
         with open(os.path.join(env.sh, "daemon.log")) as f:
@@ -709,45 +595,10 @@ def cmd_run_rl10(a, env):
         ep.stop()
 
 
-def standin(env):
-    """hub_standin.py for the machine, its URL in the credential, the other
-    machine's project registered. The process is ended if anything after its
-    start fails, so a setup that raises leaves none behind."""
-    import urllib.request
-    port_file = os.path.join(env.root, "hub.port")
-    hub = spawn([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1",
-                 "15000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        deadline, port = time.time() + 10, ""
-        while not port:
-            if os.path.exists(port_file):
-                with open(port_file) as f:
-                    port = f.read().strip()
-            if not port and (time.time() > deadline or hub.poll() is not None):
-                raise RuntimeError("the stand-in wrote no port in 10 s")
-            if not port:
-                time.sleep(0.05)
-        url = "http://127.0.0.1:%s" % port
-        cred = os.path.join(env.sh, "daemon", "hub.json")
-        with open(cred) as f:
-            d = json.load(f)
-        d["hub"] = url
-        write(cred, d)
-        os.chmod(cred, 0o600)
-        req = urllib.request.Request(url + "/control/register", method="POST", data=json.dumps(
-            {"project": machine_project_id(ORG, OTHER), "name": OTHER, "kind": "machine"}).encode(),
-            headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=10).read()
-    except BaseException:
-        stop(hub)
-        raise
-    return hub, url
-
-
 def endpoint_host(env, scripts):
     """bench_rig's EndpointHub for the machine (in this process, its
     `session` frames stamped on arrival), the machine cut over by its
-    welcome to `daemon probe`, as `run --rl10`'s is. The stand-in is stopped
+    welcome to `daemon probe`, as `run`'s is. The stand-in is stopped
     if the cut-over fails, so a setup that raises leaves it listening
     nowhere."""
     import bench_rig
@@ -762,36 +613,8 @@ def endpoint_host(env, scripts):
     return host
 
 
-class HubOpens:
-    """Where `opens` sends its subscribes on DX2: the hub stand-in, its
-    stream's generation the mark a restart's stream is newer than."""
-
-    def __init__(self, env, _scripts):
-        import bench_rig
-        self.hub, self.url = standin(env)
-        self.browser = bench_rig.StandinBrowser(self.url, None, MACHINE)
-
-    def state(self):
-        import bench_rig
-        return bench_rig.call(self.url, "GET", "/control/state")[1]
-
-    def mark(self):
-        return self.state()["generation"]
-
-    def ready(self, after, pids):
-        """A stream newer than generation `after`, once it opened every project named."""
-        st = self.state()
-        gen = st["generation"]
-        return gen > after and st["connected"] and all(
-            st["projects"].get(pid, {}).get("open", {}).get(MACHINE) == gen for pid in pids)
-
-    def close(self):
-        self.hub.kill()
-        self.hub.wait()
-
-
 class EndpointOpens:
-    """Where `opens --rl10` sends its subscribes: the endpoint stand-in
+    """Where `opens` sends its subscribes: the endpoint stand-in
     (endpoint_host), its live connection's number the mark a restart's
     connection is newer than."""
 
@@ -815,7 +638,7 @@ class EndpointOpens:
 def cmd_opens(a, env):
     import bench_open as bo
     import bench_rig as rig
-    where = (EndpointOpens if a.rl10 else HubOpens)(env, a.scripts)
+    where = EndpointOpens(env, a.scripts)
     up = [None]
     try:
         run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
@@ -1032,21 +855,21 @@ def main():
     sub.choices["run"].add_argument("--seconds", type=float, default=60)
     sub.choices["run"].add_argument("--warmup", type=float, default=30)
     sub.choices["run"].add_argument("--import-events", type=int, default=0, metavar="N",
-                                    help="after the window, time N events from the hub, one frame each, into the log")
+                                    help="after the window, time N events from the endpoint, one frame each, into "
+                                         "the log")
     sub.choices["run"].add_argument("--profile-uplink", metavar="OUT",
                                     help="run the uplink alone under cProfile for warmup + seconds, its profile to OUT")
-    sub.choices["run"].add_argument("--rl10", action="store_true",
-                                    help="against the RL10 endpoint stand-in, the machine cut over; B2's gate checked")
     sub.choices["run"].add_argument("--words", type=int, default=2, metavar="W",
-                                    help="--rl10: words-gated events owed to each live session in a hub checkout, "
+                                    help="words-gated events owed to each live session in a hub checkout, "
                                          "one from each of W members, never answered")
     sub.choices["opens"].add_argument("--large", type=int, default=6, metavar="G",
                                       help="live sessions in hub checkouts given a large transcript")
     sub.choices["opens"].add_argument("--large-rows", type=int, default=15000, metavar="N")
     sub.choices["opens"].add_argument("--warm-after", type=float, default=30.0, metavar="S",
                                       help="when, after the uplink's start, every live session is opened in sequence")
-    sub.choices["opens"].add_argument("--rl10", action="store_true",
-                                      help="against the RL10 endpoint stand-in, the machine cut over")
+    for mode in ("run", "opens"):
+        sub.choices[mode].add_argument("--rl10", action="store_true",
+                                       help="accepted, and changes nothing: RL10 is the only path (#153 M5)")
     a = p.parse_args()
     stop_on_signals()
     root = env = None

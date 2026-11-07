@@ -8,9 +8,8 @@ only through the app: the cutover); the transition a change writes once the endp
 gives the session's audience at its new policyRev (the `unlisted` notice of
 the members it withdrew, then the snapshot under the new stream, the notice
 first in upload order); and the reader's projection dropping a session at a
-notice it sees, through the hub stand-in's filter (Unlisting), and on RL10
-through the endpoint stand-in's echo and the relay's reader check
-(UnlistingOnRl10, #153 M3b).
+notice it sees, through the endpoint stand-in's echo and the relay's reader
+check (UnlistingOnRl10, #153 M3b).
 
 Each test is a fresh machine (test_words.Machine: its own HOME and
 SMINOS_HOME), `testhost` of org-1, cut over to its endpoint. The CLI runs as
@@ -39,7 +38,6 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import test_words as tw  # noqa: E402 — its machine: HOME, SMINOS_HOME, the enrollment, sessions, a Link
-import test_reach as tr  # noqa: E402 — the hub stand-in as two machines meet it over DX2
 
 import endpoint_standin  # noqa: E402
 import sminos  # noqa: E402
@@ -658,81 +656,70 @@ class Recovered(Base):
         return [e["kind"] for e in self.events(writer)]
 
 
-# ------------------------------------------------------------- unlisting, through the hub stand-in's filter
+# ------------------------------------------------------------- unlisting, through the endpoint stand-in's echo
 
 
-class Unlisting(Base):
-    """testhost (this machine, its sessions owned by A) uploads what sminos
-    wrote, `audience` and `policyRev` added as its endpoint signs them, to
-    the hub stand-in over DX2; `other` (B's) and `third` (C's) read through
-    its filter. Each reader's log is what the stand-in serves it, laid into
-    a sminos installation of its own, whose CLI is asked."""
+def may_read(owners, writer, audience):
+    """The relay's one reader check (MAWS's mayRead): a plain writer is everyone's; a stream a reader's
+    whose owners meet the audience its endpoint signed."""
+    return not sminos.is_stream(writer) or any(o in (audience or ()) for o in owners)
 
-    @classmethod
-    def setUpClass(cls):
-        cls.hub = tr.Hub()
-        token = cls.hub.call("POST", "/control/enrollment", {})[1]["token"]
-        got = cls.hub.call("POST", "/machine/enroll", {"token": token, "machine": "third"})[1]
-        cls.hub.creds["third"] = (got["client_id"], got["client_secret"])
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.hub.stop()
+class UnlistingOnRl10(Base):
+    """Unlisting on RL10 (#153 M3b): testhost (this machine, its sessions
+    owned by A) has what sminos wrote taken by endpoint_standin's own
+    admission; `other` (B's) and `third` (C's) each read what its endpoint
+    passes down of them — the stand-in's echo of each event, the audience
+    and policyRev its endpoint signs into it, unwrapped and stored as sminos
+    stores an RL10 arrival (hublog.unwrapped) — chosen by the relay's reader
+    check (may_read). Each reader is a sminos installation of its own, cut
+    over to its endpoint, whose CLI is asked."""
 
     def setUp(self):
         super().setUp()
-        # The stand-in's registry is the org's, across tests: a session of its own for each.
-        self.sid = "6d%06x-0000-4000-8000-0000000000a1" % (int(time.time() * 1e3) % (1 << 24))
+        self.sid = "6d0000c3-0000-4000-8000-0000000000a1"
         self.session(self.p, self.sid, name="kept")
-        self.readers = {"testhost": [A], "other": [B], "third": [C]}
-        for machine, owners in self.readers.items():
-            self.hub.call("POST", "/control/reader", {"machine": machine, "owners": owners,
-                                                      "streams": machine != "testhost"})
-        self.machines = {m: tr.Machine(self.hub, m) for m in self.readers}
-        for m in self.machines.values():
-            m.hello(self.p.id)
+        self.readers = {"other": [B], "third": [C]}
+        self.ep = endpoint_standin.Endpoint(self.epdir)
+        self.signed = {}   # (writer, seq) → what the endpoint signed into the event
         self.hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
         self.hl.have = {}
 
-    def tearDown(self):
-        for machine in self.readers:
-            self.hub.call("POST", "/control/reader", {"machine": machine, "owners": [], "streams": False})
-
     def upload(self, rev):
-        """What this machine owes the hub, each event as its endpoint signs
-        it: its stream's audience, and `rev` on a snapshot or notice."""
-        a = self.machines["testhost"]
-        m = a.mark()
+        """What this machine owes, taken by its endpoint; what the endpoint
+        signs into each (its stream's audience, `rev` on a snapshot or
+        notice) kept for its echo."""
         for frame, reach in self.hl.uploads():
-            events = []
+            self.assertEqual(self.ep.take(self.p.id, frame["events"]), [], "the endpoint admits each")
             for e in frame["events"]:
-                e = {**e, "mac": tr.mac()}
                 aud = au.stream_audience(self.p, e["writer"])
-                if aud is not None:
-                    e["audience"] = aud
-                if e["kind"] in ("joined", "state", "unlisted"):
-                    e["policyRev"] = rev
-                events.append(e)
-            a.post({"t": "events", "project": self.p.id, "events": events})
+                self.signed[(e["writer"], e["seq"])] = {
+                    **({"audience": aud} if aud is not None else {}),
+                    **({"policyRev": rev} if e["kind"] in ("joined", "state", "unlisted") else {})}
             self.hl.took(reach)
-        time.sleep(0.2)
-        self.assertEqual(a.since(m, "refused"), [], "the hub admits each")
 
     def reader(self, machine):
-        """A sminos installation for `machine` holding what the hub serves it
-        of the project: (its env, the events)."""
-        got = [{k: v for k, v in e.items() if k != "mac"} for f in self.machines[machine].hello(self.p.id)
-               if f["t"] == "events" for e in f["events"]]
+        got = []
+        for writer, held in sorted(self.ep.logs.get(self.p.id, {}).items()):
+            for seq in sorted(held):
+                signed = self.signed[(writer, seq)]
+                if not may_read(self.readers[machine], writer, signed.get("audience")):
+                    continue
+                e, verified, reason, why = hublog.unwrapped(self.ep.echo(self.p.id, writer, seq, **signed))
+                self.assertIsNone(reason, why)
+                got.append({**e, "verified": verified})
         home = tempfile.mkdtemp(dir=self.home)
-        env = {**self.env(), "HOME": os.path.join(home, "h"), "SMINOS_HOME": os.path.join(home, "s"),
-               "DAEMON_HOST": machine}
+        env = {**self.env(), "HOME": os.path.join(home, "h"), "SMINOS_HOME": os.path.join(home, "s")}
         os.makedirs(os.path.join(env["SMINOS_HOME"], "daemon"))
         os.makedirs(os.path.join(env["HOME"], ".claude", "sessions"))
+        sminos.write_json(os.path.join(env["SMINOS_HOME"], "daemon", "identity.json"), {
+            "org": "org-1", "hub": "http://127.0.0.1:9", "name": machine, "former": {}, "ref": "ref-" + machine,
+            "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"}, mode=0o600)
         reg = json.loads(Path(self.p.home, "project.json").read_text())
         pdir = os.path.join(env["SMINOS_HOME"], "projects", self.p.id)
         os.makedirs(os.path.join(pdir, "log"))
         Path(pdir, "project.json").write_text(json.dumps({**reg, "root": ""}))
-        for e in sorted(got, key=lambda e: (e["writer"], e["seq"])):
+        for e in got:
             with open(os.path.join(pdir, "log", e["writer"].replace("/", ".") + ".jsonl"), "a") as f:
                 f.write(json.dumps(e) + "\n")
         return env, got
@@ -802,84 +789,6 @@ class Unlisting(Base):
         self.upload(rec["policyRev"] + 2)
         env, _ = self.reader("other")
         self.assertIn(self.sid, self.listed(env), "shared again: its snapshot at a later policyRev")
-
-
-def may_read(owners, writer, audience):
-    """The relay's one reader check, as hub_standin.py's may_read makes it
-    (MAWS's mayRead): a plain writer is everyone's; a stream a reader's
-    whose owners meet the audience its endpoint signed."""
-    return not sminos.is_stream(writer) or any(o in (audience or ()) for o in owners)
-
-
-class UnlistingOnRl10(Unlisting):
-    """Unlisting's cases on RL10 (#153 M3b): testhost's uploads taken by
-    endpoint_standin's own admission, and each reader's log what its
-    endpoint passes down of them — the stand-in's echo of each event, the
-    audience and policyRev its endpoint signs into it, unwrapped and stored
-    as sminos stores an RL10 arrival (hublog.unwrapped) — chosen by the
-    relay's reader check (may_read). Each reader is a sminos installation
-    of its own, cut over to its endpoint, whose CLI is asked."""
-
-    @classmethod
-    def setUpClass(cls):
-        pass   # no hub: each test's stand-in is its own
-
-    @classmethod
-    def tearDownClass(cls):
-        pass
-
-    def setUp(self):
-        Base.setUp(self)
-        self.sid = "6d0000c3-0000-4000-8000-0000000000a1"
-        self.session(self.p, self.sid, name="kept")
-        self.readers = {"other": [B], "third": [C]}
-        self.ep = endpoint_standin.Endpoint(self.epdir)
-        self.signed = {}   # (writer, seq) → what the endpoint signed into the event
-        self.hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
-        self.hl.have = {}
-
-    def tearDown(self):
-        pass
-
-    def upload(self, rev):
-        """What this machine owes, taken by its endpoint; what the endpoint
-        signs into each (its stream's audience, `rev` on a snapshot or
-        notice) kept for its echo."""
-        for frame, reach in self.hl.uploads():
-            self.assertEqual(self.ep.take(self.p.id, frame["events"]), [], "the endpoint admits each")
-            for e in frame["events"]:
-                aud = au.stream_audience(self.p, e["writer"])
-                self.signed[(e["writer"], e["seq"])] = {
-                    **({"audience": aud} if aud is not None else {}),
-                    **({"policyRev": rev} if e["kind"] in ("joined", "state", "unlisted") else {})}
-            self.hl.took(reach)
-
-    def reader(self, machine):
-        got = []
-        for writer, held in sorted(self.ep.logs.get(self.p.id, {}).items()):
-            for seq in sorted(held):
-                signed = self.signed[(writer, seq)]
-                if not may_read(self.readers[machine], writer, signed.get("audience")):
-                    continue
-                e, verified, reason, why = hublog.unwrapped(self.ep.echo(self.p.id, writer, seq, **signed))
-                self.assertIsNone(reason, why)
-                got.append({**e, "verified": verified})
-        home = tempfile.mkdtemp(dir=self.home)
-        env = {**self.env(), "HOME": os.path.join(home, "h"), "SMINOS_HOME": os.path.join(home, "s")}
-        os.makedirs(os.path.join(env["SMINOS_HOME"], "daemon"))
-        os.makedirs(os.path.join(env["HOME"], ".claude", "sessions"))
-        sminos.write_json(os.path.join(env["SMINOS_HOME"], "daemon", "identity.json"), {
-            "org": "org-1", "hub": "http://127.0.0.1:9", "name": machine, "former": {}, "ref": "ref-" + machine,
-            "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"}, mode=0o600)
-        reg = json.loads(Path(self.p.home, "project.json").read_text())
-        pdir = os.path.join(env["SMINOS_HOME"], "projects", self.p.id)
-        os.makedirs(os.path.join(pdir, "log"))
-        Path(pdir, "project.json").write_text(json.dumps({**reg, "root": ""}))
-        for e in got:
-            with open(os.path.join(pdir, "log", e["writer"].replace("/", ".") + ".jsonl"), "a") as f:
-                f.write(json.dumps(e) + "\n")
-        return env, got
-
 
 
 # ------------------------------------------------------------- the record RPCs (MAWS O8 M6b, M5b; O18 Interfaces §C)
