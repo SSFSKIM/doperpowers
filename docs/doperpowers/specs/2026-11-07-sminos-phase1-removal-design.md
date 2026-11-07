@@ -362,6 +362,15 @@ This is after the branch review and the merge, and it is not part of the branch'
 - Decision (M5's review, 2026-11-07): acceptance 1's grep is revised. `Stream(` can never come up empty while `sminos_control.Stream` (`sminos_control.py:439`, `:487`) exists, and that class is the control socket's reader, not the hub's SSE `Stream`. The grep now names `credential_path` and expects `sminos_control.Stream` as its one `Stream(` hit. M6 adds an RL10 test that drives `SocketLane.send` past `SEND_QUEUE_MAX` into `NotDelivered`: the deleted `Lanes` test proved `Sender`'s copy of #149's bound, and no RL10 test went past it (a gap from before the branch).
   Date/Author: 2026-11-07, plan-executor, on M5's review.
 
+- Decision (M6, the executor; reviewed):
+  - `policy.machine_policy` stays, against the design's list: test_rl10 (`:398`, `:450`) and rl10_conformance (`:638`) assert through it, and it is RL10's resolved-policy reader. `hublog.machine_policy`, the DX2 wrapper, goes.
+  - Resume, Retire and Stop stay offered, shape-checked and refused `unsupported`, which is what RL10 did and what acceptance 2 pins. Only their admission and execution go, with the `dispatch` facts only they read. `live-stop-check.py` goes with `live-resume-check.py` (it drives `rpc.stop`). `LaunchStart` stays: it tests `launched_by`'s start-time path in the recovery that stays.
+  - `Link`'s `transport` is a required keyword. `Requests.seal` stays and returns the draft. `on_refused`'s `not-open` return and `Subscription`'s `catalog_allowed` switch stay (behaviour-neutral, in the scoped-out refused-map area).
+  - `is_hub_writer`/`HUB_PREFIX` and `hublog.is_tombstone` go, against the map's class (c): their only callers were the MAC half and the coded `take`. The credential's `"key"` leaves shipped code; test dicts keep `"key": None`.
+  - test-uplink's four coded `take` cases are ported to RL10, not deleted. The lane-bound test (`SocketLane.send` past `SEND_QUEUE_MAX`) lives in test_session_plane's `Lifecycle`. test_rl10's nonce-index patch is the one acceptance-2 migration beyond the list, forced by the method's removal; the PR names it. test_reach's kept Retry test trades `hl.paused == {}` for a behavioural check.
+  - The review found that dropping the MAC half's position vectors took the only tests of `is_log_seq`'s and `is_iso_millis`'s edge branches, which RL10 runs (acceptance 6). They come back as direct checks, with Stop's RL10 shape check, in M6's fix.
+  Date/Author: 2026-11-07, plan-executor (M6 and its review).
+
 ## Outcomes & Retrospective
 
 (At completion.)
