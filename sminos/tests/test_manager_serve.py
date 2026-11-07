@@ -376,8 +376,18 @@ class NewCode(unittest.TestCase):
             while "restarting" not in s.stderr() and time.time() < end:
                 time.sleep(0.2)
             self.assertIn("restarting", s.stderr())
-            s.wait_up()
-            self.assertEqual(s.request("/")[0], 200)
+            # The old server can hold the port a moment after it says so (wait_up may connect to it as it goes down,
+            # and the request is then refused or reset), so the page is asked again until the executed-again one answers.
+            end = time.time() + 15
+            while True:
+                try:
+                    status = s.request("/")[0]
+                    break
+                except ConnectionError:  # refused, reset, or closed before a reply
+                    if time.time() > end or s.proc.poll() is not None:
+                        raise
+                    time.sleep(0.1)
+            self.assertEqual(status, 200)
             self.assertIsNone(s.proc.poll())                              # the same process, executed again
         finally:
             s.stop()
