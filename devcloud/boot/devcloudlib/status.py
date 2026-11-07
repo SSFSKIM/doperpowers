@@ -67,7 +67,7 @@ def now():
 
 def reset(path=None):
     """A boot starts its steps from nothing; the lifecycle and a deferred
-    enrollment or provisioning stay."""
+    provisioning stay."""
     data = load(path)
     _write({"steps": [], **{k: data[k] for k in ("lifecycle",) + DEFERRALS if k in data}}, path)
 
