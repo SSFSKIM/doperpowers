@@ -73,34 +73,31 @@ rl10_directory() {
   done
 }
 
-rl10_relay() {
-  local s d
-  for s in "$@"; do
-    for d in "$@"; do
-      [ "$s" = "$d" ] || python3 "$SCRIPT_DIR/endpoint_standin.py" hand "$s" "$d" >/dev/null 2>&1 || true
-    done
-  done
-}
+rl10_relay() { python3 "$SCRIPT_DIR/endpoint_standin.py" relay "$@" >/dev/null 2>&1 || true; }
 
 rl10_q() {
-  python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$1" state | python3 -c 'import json, sys
-d = json.load(sys.stdin)
+  python3 -B -c 'import json, sys
+sys.path.insert(0, sys.argv[1])
+import endpoint_standin
+d = json.loads(endpoint_standin.ctl_call(sys.argv[2], "state", {}))
 F = [(r["conn"], r["frame"]) for r in d["received"]]
 def up(pid):
     return [(c, e) for c, f in F if f.get("t") == "events" and f.get("project") == pid for e in f.get("events", [])]
-print(json.dumps(eval(sys.argv[1])))' "$2"
+print(json.dumps(eval(sys.argv[3])))' "$SCRIPT_DIR" "$1" "$2"
 }
 
 rl10_up() {
-  python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$1" state | python3 -c 'import json, sys
-d = json.load(sys.stdin)
+  python3 -B -c 'import json, sys
+sys.path.insert(0, sys.argv[1])
+import endpoint_standin
+d = json.loads(endpoint_standin.ctl_call(sys.argv[2], "state", {}))
 for r in d["received"]:
     f = r["frame"]
-    if f.get("t") == "events" and f.get("project") == sys.argv[1]:
+    if f.get("t") == "events" and f.get("project") == sys.argv[3]:
         for e in f.get("events", []):
-            if sys.argv[2] in json.dumps(e, ensure_ascii=False):
+            if sys.argv[4] in json.dumps(e, ensure_ascii=False):
                 print(json.dumps(e, ensure_ascii=False))
-                sys.exit(0)' "$2" "$3"
+                sys.exit(0)' "$SCRIPT_DIR" "$1" "$2" "$3"
 }
 
 rl10_mp() { python3 -c 'import sys, uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "smns-machine:org-1:" + sys.argv[1].lower()))' "$1"; }

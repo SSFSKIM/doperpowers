@@ -249,8 +249,32 @@ class HandThroughCtl(unittest.TestCase):
         again = subprocess.run([sys.executable, "-B", str(HERE / "endpoint_standin.py"), "hand", a, b],
                                capture_output=True, text=True, check=True)
         self.assertEqual(again.stdout.strip(), "0", "the cursor is kept between runs")
-        up.close()
-        down.close()
+        up.up({"t": "events", "project": P, "events": [ev(WA, 3)]})
+        down.up({"t": "events", "project": P, "events": [ev("beta/human", 1)]})
+        deadline = time.monotonic() + 10
+        while len(self.ctl(a, "accepted", {"project": P})["events"]) < 3 \
+                or not self.ctl(b, "accepted", {"project": P})["events"]:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+        back = Client(a, self.ctl(a, "state")["token"])   # alpha reconnects: its own connection opens nothing yet
+        while self.ctl(a, "opened")["conn"] != 2:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+        both = subprocess.run([sys.executable, "-B", str(HERE / "endpoint_standin.py"), "relay", a, b],
+                              capture_output=True, text=True, check=True)
+        self.assertEqual(both.stdout.strip(), "1", "relay: each way, alpha's to beta's connection; beta's waits "
+                                                   "for a hello on alpha's")
+        self.assertEqual(down.events(P), [(WA, 1), (WA, 2), (WA, 3)])
+        back.up({"t": "hello", "project": P, "name": "p", "have": {WA: 3}})
+        while P not in self.ctl(a, "opened")["projects"]:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+        both = subprocess.run([sys.executable, "-B", str(HERE / "endpoint_standin.py"), "relay", a, b],
+                              capture_output=True, text=True, check=True)
+        self.assertEqual(both.stdout.strip(), "1")
+        self.assertEqual(back.events(P), [("beta/human", 1)], "beta's upload reaches alpha's new connection")
+        for c in (up, down, back):
+            c.close()
 
 
 def tearDownModule():

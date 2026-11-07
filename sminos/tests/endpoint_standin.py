@@ -17,6 +17,7 @@ As a subprocess (the shell suites):
     python3 endpoint_standin.py serve <directory> [<config JSON>]
     python3 endpoint_standin.py ctl <directory> <op> [<JSON>]
     python3 endpoint_standin.py hand <source directory> <dest directory>
+    python3 endpoint_standin.py relay <directory> <directory>...
 
 `serve` also listens on <directory>/ctl.sock, and writes it last, so its
 presence says the stand-in is up. `ctl`'s ops: `state` (everything below,
@@ -103,7 +104,8 @@ Two machines, each its sminos and its stand-in (#153 M3d's compositions):
 `hand(source, dest, cursor)` (the `hand` command for two stand-ins `serve`
 runs) is one pass of that relay: source's accepted events into dest's live
 connection as arrivals, for each project it opened, past what its last hello
-holds and what was handed since. What carries them between endpoints in
+holds and what was handed since; the `relay` command is a pass each way
+between every two of the stand-ins it names. What carries them between endpoints in
 production is MAWS's relay; the hand-off carries the frames themselves,
 never one written by hand.
 
@@ -840,12 +842,27 @@ def hand(source, dest, cursor_path):
     return handed
 
 
-def hand_main(source_dir, dest_dir):
-    """`hand <source> <dest>`: one pass, the cursor kept in dest's
-    directory under source's path, the count printed."""
+def hand_served(source_dir, dest_dir):
+    """`hand` between two stand-ins `serve` runs, the cursor kept in dest's
+    directory under source's path."""
     import hashlib
     tag = hashlib.sha256(os.path.abspath(source_dir).encode()).hexdigest()[:12]
-    print(hand(Served(source_dir), Served(dest_dir), os.path.join(dest_dir, "handed-%s.json" % tag)))
+    return hand(Served(source_dir), Served(dest_dir), os.path.join(dest_dir, "handed-%s.json" % tag))
+
+
+def relay_main(directories):
+    """`relay <directory>...`: one hand pass each way between every two, a
+    pass whose connection went meanwhile skipped (the next relay hands it);
+    the count printed."""
+    handed = 0
+    for source in directories:
+        for dest in directories:
+            if source != dest:
+                try:
+                    handed += hand_served(source, dest)
+                except (OSError, RuntimeError, ValueError):
+                    pass
+    print(handed)
 
 
 if __name__ == "__main__":
@@ -854,7 +871,9 @@ if __name__ == "__main__":
     elif len(sys.argv) >= 4 and sys.argv[1] == "ctl":
         ctl_main(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]) if len(sys.argv) > 4 else {})
     elif len(sys.argv) == 4 and sys.argv[1] == "hand":
-        hand_main(sys.argv[2], sys.argv[3])
+        print(hand_served(sys.argv[2], sys.argv[3]))
+    elif len(sys.argv) >= 4 and sys.argv[1] == "relay":
+        relay_main(sys.argv[2:])
     else:
         sys.exit("usage: endpoint_standin.py serve <directory> [<config JSON>] | ctl <directory> <op> [<JSON>]"
-                 " | hand <source directory> <dest directory>")
+                 " | hand <source directory> <dest directory> | relay <directory> <directory>...")
