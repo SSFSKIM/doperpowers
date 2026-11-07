@@ -225,6 +225,13 @@ class DaemonView(unittest.TestCase):
         self.assertEqual(found.id, pid, "a directory below a registered root is that project's")
         self.assertEqual(own_events(project, sid), held, "its record is as it was")
         self.assertEqual(own_events(sminos.own_machine_project(), sid), [], "and it joined nowhere else")
+        with tcc(), in_dir(T), unreadable(d):
+            sminos.forget_caches()
+            row = next(m for m in sminos.members(project) if m.session == sid)
+        joined = next(e for e in sminos._own_events(project, sid) if e["kind"] == "joined")
+        self.assertEqual((row.repo, row.branch), (joined.get("repo") or "", joined.get("branch") or ""),
+                         "its row shows the repository its join recorded")
+        self.assertEqual(row.repo, "app")
 
     def test_one_nothing_registered_tells_is_unknown_and_its_member_stays_as_recorded(self):
         # A clone of a project whose registered root is another clone: no

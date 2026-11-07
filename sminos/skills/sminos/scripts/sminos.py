@@ -4417,7 +4417,9 @@ def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
     else:
         kind = str(j.get("session_kind") or "")
     cwd = str(j.get("cwd") or "") or (seat or {}).get("cwd") or str((rec or {}).get("cwd") or "")
-    repo, branch = repo_branch(cwd) if local else (str(j.get("repo") or ""), str(j.get("branch") or ""))
+    # Read where it works, but where this process may not look: as its join recorded them.
+    repo, branch = repo_branch(cwd) if local and not read_refused(cwd) else \
+        (str(j.get("repo") or ""), str(j.get("branch") or ""))
     status = max((x["status"] for x in chain if x["status"]), key=lambda e: e["ts"], default=None)
     worktree = next((str((x["joined"] or {}).get("worktree") or "") for x in chain
                      if (x["joined"] or {}).get("worktree")), "")
