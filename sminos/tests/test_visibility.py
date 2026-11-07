@@ -8,7 +8,9 @@ only through the app: the cutover); the transition a change writes once the endp
 gives the session's audience at its new policyRev (the `unlisted` notice of
 the members it withdrew, then the snapshot under the new stream, the notice
 first in upload order); and the reader's projection dropping a session at a
-notice it sees, through the hub stand-in's filter.
+notice it sees, through the hub stand-in's filter (Unlisting), and on RL10
+through the endpoint stand-in's echo and the relay's reader check
+(UnlistingOnRl10, #153 M3b).
 
 Each test is a fresh machine (test_words.Machine: its own HOME and
 SMINOS_HOME), `testhost` of org-1, cut over to its endpoint. The CLI runs as
@@ -803,6 +805,83 @@ class Unlisting(Base):
         self.upload(rec["policyRev"] + 2)
         env, _ = self.reader("other")
         self.assertIn(self.sid, self.listed(env), "shared again: its snapshot at a later policyRev")
+
+
+def may_read(owners, writer, audience):
+    """The relay's one reader check, as hub_standin.py's may_read makes it
+    (MAWS's mayRead): a plain writer is everyone's; a stream a reader's
+    whose owners meet the audience its endpoint signed."""
+    return not sminos.is_stream(writer) or any(o in (audience or ()) for o in owners)
+
+
+class UnlistingOnRl10(Unlisting):
+    """Unlisting's cases on RL10 (#153 M3b): testhost's uploads taken by
+    endpoint_standin's own admission, and each reader's log what its
+    endpoint passes down of them — the stand-in's echo of each event, the
+    audience and policyRev its endpoint signs into it, unwrapped and stored
+    as sminos stores an RL10 arrival (hublog.unwrapped) — chosen by the
+    relay's reader check (may_read). Each reader is a sminos installation
+    of its own, cut over to its endpoint, whose CLI is asked."""
+
+    @classmethod
+    def setUpClass(cls):
+        pass   # no hub: each test's stand-in is its own
+
+    @classmethod
+    def tearDownClass(cls):
+        pass
+
+    def setUp(self):
+        Base.setUp(self)
+        self.sid = "6d0000c3-0000-4000-8000-0000000000a1"
+        self.session(self.p, self.sid, name="kept")
+        self.readers = {"other": [B], "third": [C]}
+        self.ep = endpoint_standin.Endpoint(self.epdir)
+        self.signed = {}   # (writer, seq) → what the endpoint signed into the event
+        self.hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
+        self.hl.have = {}
+
+    def tearDown(self):
+        pass
+
+    def upload(self, rev):
+        """What this machine owes, taken by its endpoint; what the endpoint
+        signs into each (its stream's audience, `rev` on a snapshot or
+        notice) kept for its echo."""
+        for frame, reach in self.hl.uploads():
+            self.assertEqual(self.ep.take(self.p.id, frame["events"]), [], "the endpoint admits each")
+            for e in frame["events"]:
+                aud = au.stream_audience(self.p, e["writer"])
+                self.signed[(e["writer"], e["seq"])] = {
+                    **({"audience": aud} if aud is not None else {}),
+                    **({"policyRev": rev} if e["kind"] in ("joined", "state", "unlisted") else {})}
+            self.hl.took(reach)
+
+    def reader(self, machine):
+        got = []
+        for writer, held in sorted(self.ep.logs.get(self.p.id, {}).items()):
+            for seq in sorted(held):
+                signed = self.signed[(writer, seq)]
+                if not may_read(self.readers[machine], writer, signed.get("audience")):
+                    continue
+                e, verified, reason, why = hublog.unwrapped(self.ep.echo(self.p.id, writer, seq, **signed))
+                self.assertIsNone(reason, why)
+                got.append({**e, "verified": verified})
+        home = tempfile.mkdtemp(dir=self.home)
+        env = {**self.env(), "HOME": os.path.join(home, "h"), "SMINOS_HOME": os.path.join(home, "s")}
+        os.makedirs(os.path.join(env["SMINOS_HOME"], "daemon"))
+        os.makedirs(os.path.join(env["HOME"], ".claude", "sessions"))
+        sminos.write_json(os.path.join(env["SMINOS_HOME"], "daemon", "identity.json"), {
+            "org": "org-1", "hub": "http://127.0.0.1:9", "name": machine, "former": {}, "ref": "ref-" + machine,
+            "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"}, mode=0o600)
+        reg = json.loads(Path(self.p.home, "project.json").read_text())
+        pdir = os.path.join(env["SMINOS_HOME"], "projects", self.p.id)
+        os.makedirs(os.path.join(pdir, "log"))
+        Path(pdir, "project.json").write_text(json.dumps({**reg, "root": ""}))
+        for e in got:
+            with open(os.path.join(pdir, "log", e["writer"].replace("/", ".") + ".jsonl"), "a") as f:
+                f.write(json.dumps(e) + "\n")
+        return env, got
 
 
 
