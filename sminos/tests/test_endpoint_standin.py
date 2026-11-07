@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -275,6 +276,67 @@ class HandThroughCtl(unittest.TestCase):
         self.assertEqual(back.events(P), [("beta/human", 1)], "beta's upload reaches alpha's new connection")
         for c in (up, down, back):
             c.close()
+
+
+class RelayFailures(unittest.TestCase):
+    """Only a connection that went is passed over; any other failure of a
+    stand-in's control or of its answer fails the hand-off, saying why."""
+
+    def test_a_connection_gone_mid_pass_is_passed_over(self):
+        a = started("gone-a")
+        self.addCleanup(a.stop)
+        a.take(P, [ev(WA, 1)])
+
+        class Gone:
+            def opened(self):
+                return {"conn": 1, "projects": {P: {"name": "p", "have": {}, "follow": False, "at": 0}}}
+
+            def events(self, project, wrapped):
+                raise endpoint_standin.Disconnected("the connection is closed")
+
+        self.assertEqual(endpoint_standin.hand(a, Gone(), os.path.join(BASE, "gone-cursor.json")), 0)
+
+    def answering(self, name, answer):
+        """A ctl socket that answers every request with `answer`."""
+        d = os.path.join(BASE, name)
+        os.makedirs(d, exist_ok=True)
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(os.path.join(d, "ctl.sock"))
+        srv.listen(8)
+        self.addCleanup(srv.close)
+
+        def serve():
+            while True:
+                try:
+                    c, _ = srv.accept()
+                except OSError:
+                    return
+                with c:
+                    c.recv(1 << 16)
+                    c.sendall(answer)
+        threading.Thread(target=serve, daemon=True).start()
+        return d
+
+    def relay(self, *dirs):
+        return subprocess.run([sys.executable, "-B", str(HERE / "endpoint_standin.py"), "relay", *dirs],
+                              capture_output=True, text=True)
+
+    def test_a_control_error_or_an_answer_that_is_no_json_fails_the_relay(self):
+        a = self.answering("err-a", b'{"error": "KeyError(\'project\')"}\n')
+        b = self.answering("err-b", b'{"conn": 1, "projects": {}}\n')
+        out = self.relay(a, b)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("KeyError", out.stderr)
+        c = self.answering("garbled", b"not json\n")
+        out = self.relay(c, b)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("JSONDecodeError", out.stderr)
+
+    def test_a_stand_in_not_there_fails_the_relay(self):
+        b = self.answering("there", b'{"conn": null, "projects": {}}\n')
+        out = self.relay(os.path.join(BASE, "nowhere"), b)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("nowhere", out.stderr + out.stdout)
 
 
 def tearDownModule():

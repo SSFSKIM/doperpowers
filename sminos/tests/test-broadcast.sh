@@ -170,10 +170,11 @@ in_session() { # session dir command... — the command as that session runs it,
   set +e; OUT="$(cd "$d" && env CLAUDE_CODE_SESSION_ID="$sid" "$@" 2>&1)"; RC=$?; set -e
 }
 # Whether this machine reads the session as a live member of the project (its
-# word, for another machine's, the one that machine published).
+# word, for another machine's, the one that machine published); a list that
+# is not there yet (no JSON) is none.
 live_in() { # project session
   (cd "$T/x" && "$SMINOS" list "$1" --json --all 2>/dev/null) | python3 -c 'import json, sys
-print(any(m["session"] == sys.argv[1] and m["state"] in ("busy", "idle", "waiting") for m in json.load(sys.stdin)))' "$2" \
+print(any(m["session"] == sys.argv[1] and m["state"] in ("busy", "idle", "waiting") for m in json.load(sys.stdin)))' "$2" 2>/dev/null \
     | grep -q True
 }
 mkdir -p "$T/x"

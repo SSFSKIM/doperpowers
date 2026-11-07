@@ -205,6 +205,12 @@ def lines_of(frame):
             for i, p in enumerate(pieces)]
 
 
+class Disconnected(OSError):
+    """A frame down found no live connection: none, or it closed under the
+    write. The one failure the hand-off passes over (the next pass reads the
+    next connection's hellos)."""
+
+
 class Conn:
     """One accepted connection: its number, its socket, its reads and writes."""
 
@@ -219,8 +225,11 @@ class Conn:
         data = b"".join(line.encode("utf-8") + b"\n" for line in lines_of(frame))
         with self.lock:
             if self.closed:
-                raise OSError("the connection is closed")
-            self.sock.sendall(data)
+                raise Disconnected("the connection is closed")
+            try:
+                self.sock.sendall(data)
+            except OSError as e:
+                raise Disconnected("the connection went: %r" % e) from e
 
     def read_line(self, timeout=None):
         self.sock.settimeout(timeout)
@@ -392,7 +401,7 @@ class Endpoint:
         with self.cv:
             conn = self.current
         if conn is None:
-            raise OSError("no connection to send on")
+            raise Disconnected("no connection to send on")
         for frame in frames:
             conn.write(frame)
 
@@ -732,7 +741,10 @@ def control(ep, req):
     if op == "state":
         return ep.state()
     if op == "send":
-        ep.send(*arg["frames"])
+        try:
+            ep.send(*arg["frames"])
+        except Disconnected as e:
+            return {"error": repr(e), "disconnected": True}
     elif op == "set":
         ep.set(**arg)
     elif op == "drop":
@@ -760,7 +772,12 @@ def control(ep, req):
 def ctl_call(directory, op, arg):
     """One ctl request to the stand-in serving `directory`: its answer's text."""
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(os.path.join(directory, "ctl.sock"))
+    path = os.path.join(directory, "ctl.sock")
+    try:
+        sock.connect(path)
+    except OSError as e:
+        sock.close()
+        raise OSError(e.errno, "no stand-in answers at %s: %s" % (path, e.strerror)) from e
     sock.sendall((json.dumps({"op": op, "arg": arg}) + "\n").encode("utf-8"))
     # The answer is read whole, to the stand-in's close: a state holding the
     # uploads of a machine's projects is past RL10's line bound, which is no
@@ -792,6 +809,8 @@ class Served:
 
     def call(self, op, arg):
         answer = json.loads(ctl_call(self.dir, op, arg))
+        if answer.get("disconnected") is True:
+            raise Disconnected("the stand-in at %s: %s" % (self.dir, answer["error"]))
         if "error" in answer:
             raise RuntimeError("the stand-in at %s: %s" % (self.dir, answer["error"]))
         return answer
@@ -830,7 +849,7 @@ def hand(source, dest, cursor_path):
         if wrapped:
             try:
                 dest.events(project, wrapped)
-            except (OSError, RuntimeError):
+            except Disconnected:
                 break   # the connection went: the next pass reads the next one's hellos
             for w in wrapped:
                 e = w["event"]
@@ -852,16 +871,14 @@ def hand_served(source_dir, dest_dir):
 
 def relay_main(directories):
     """`relay <directory>...`: one hand pass each way between every two, a
-    pass whose connection went meanwhile skipped (the next relay hands it);
-    the count printed."""
+    pass whose connection went meanwhile cut short (hand: the next relay
+    hands the rest); the count printed. Any other failure — a stand-in not
+    there, a control error, an answer that is no JSON — ends it, said."""
     handed = 0
     for source in directories:
         for dest in directories:
             if source != dest:
-                try:
-                    handed += hand_served(source, dest)
-                except (OSError, RuntimeError, ValueError):
-                    pass
+                handed += hand_served(source, dest)
     print(handed)
 
 

@@ -20,7 +20,9 @@
 #   rl10_directory <body> <ep-dir>...  the org's directory (an `org` frame's
 #                            body) the stand-ins hold, sent down each live
 #                            connection
-#   rl10_relay <ep-dir>...   one hand-off pass each way between every two
+#   rl10_relay <ep-dir>...   one hand-off pass each way between every two; a
+#                            failure other than a connection gone says why on
+#                            stderr and returns non-zero
 #   rl10_q <ep-dir> <expr>   a Python expression over a stand-in's state, as
 #                            JSON: d the state, F its frames [(connection,
 #                            frame)], up(pid) the events uploaded in a project
@@ -73,7 +75,7 @@ rl10_directory() {
   done
 }
 
-rl10_relay() { python3 "$SCRIPT_DIR/endpoint_standin.py" relay "$@" >/dev/null 2>&1 || true; }
+rl10_relay() { python3 "$SCRIPT_DIR/endpoint_standin.py" relay "$@" >/dev/null; }
 
 rl10_q() {
   python3 -B -c 'import json, sys
