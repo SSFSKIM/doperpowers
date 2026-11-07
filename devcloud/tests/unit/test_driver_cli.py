@@ -1,7 +1,6 @@
 """The `devcloud vm` command line (I16): parsing and exit codes, the refusals
 that make a machine not a driver, and the entry chain bin/devcloud →
 boot/devcloud → the driver."""
-import io
 import os
 import pathlib
 import signal
@@ -17,9 +16,8 @@ from driver_fixtures import DriverBase, vm_labels, NOW
 
 
 class CliTest(DriverBase):
-    def main(self, *argv, stdin=b"", host_marker=None):
-        return cli.main(list(argv), ctx=self.ctx, host_marker=host_marker or self.tmp / "no-boot.env",
-                        stdin=io.BytesIO(stdin))
+    def main(self, *argv, host_marker=None):
+        return cli.main(list(argv), ctx=self.ctx, host_marker=host_marker or self.tmp / "no-boot.env")
 
     def test_on_a_host_vm_refuses_with_6_and_calls_no_provider(self):
         marker = self.tmp / "boot.env"
@@ -52,7 +50,7 @@ class CliTest(DriverBase):
 
     def test_usage_is_2(self):
         for argv in ([], ["fly"], ["up", "--keep", "--ttl", "3h"], ["up", "--disk", "lots"], ["lease", "x"],
-                     ["up", "--enroll-code", "abc"], ["provider", "register"], ["image"], ["image", "bake"]):
+                     ["up", "--enroll-code", "-"], ["provider", "register"], ["image"], ["image", "bake"]):
             with self.subTest(argv=argv):
                 self.assertEqual(self.main(*argv), 2)
 
@@ -84,10 +82,6 @@ class CliTest(DriverBase):
                                    "--dry-run"), 0)
         self.assertIn("root@203.0.113.50 as a new dc-adp-", self.out.getvalue())
         self.assertEqual(self.main("adopt"), 2)
-
-    def test_enroll_code_reads_stdin(self):
-        self.assertEqual(self.main("up", "--enroll-code", "-", "--dry-run", stdin=b"smns-enroll-v1.x\n"), 0)
-        self.assertEqual(self.main("up", "--enroll-code", "-", "--dry-run", stdin=b""), 2)
 
 
 class EntryTest(unittest.TestCase):

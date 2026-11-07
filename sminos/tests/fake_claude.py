@@ -11,12 +11,8 @@ runs is a process of its own (fake_holder.py) that the engine's record
 names, kind `bg`, carrying `startedAt` (ms) as the engine's does, with an
 inbox socket whose frames it keeps; `stop` ends it. Every `--bg` job is
 named by its session id's first 8 characters, a fresh launch's as a resumed
-one's (2.1.304, live-resume-check.py: one job per session, its every Resume
-under the same id). `reopen-first` in the state directory makes the owner
-reopen the session (a terminal process holding it) just before the engine
-looks, as a reopen racing the launch does; `no-hold` makes a resumed job
-whose process never holds the session (a start that failed); `bg-sleep`
-holds every launch that many seconds."""
+one's (2.1.304: one job per session, its every resume under the same id).
+`bg-sleep` in the state directory holds every launch that many seconds."""
 import glob
 import json
 import os
@@ -122,12 +118,6 @@ if "--bg" in args:
         pass
     if "--resume" in args:
         sid = args[args.index("--resume") + 1]
-        with open(os.path.join(state, "resumes.log"), "a") as f:
-            f.write(json.dumps({"args": args, "cwd": os.getcwd()}) + "\n")
-        reopen = os.path.join(state, "reopen-first")
-        if os.path.exists(reopen):
-            os.unlink(reopen)
-            hold(sid, "interactive")
         note = ""
         if held(sid):
             note = "note: session %s is open in another Claude Code process, so this started a copy as %s. " \
@@ -137,8 +127,7 @@ if "--bg" in args:
                    "copy as %s. Without flags, the same command continues it itself."
         new = str(uuid.uuid4()) if note else sid
         short = new[:8]
-        if not os.path.exists(os.path.join(state, "no-hold")):
-            hold(new, "bg", short)
+        hold(new, "bg", short)
         row(short, new, "resumed")
         print("backgrounded · %s · resumed" % short)
         if note:

@@ -16,13 +16,16 @@ As a subprocess (the shell suites):
 
     python3 endpoint_standin.py serve <directory> [<config JSON>]
     python3 endpoint_standin.py ctl <directory> <op> [<JSON>]
+    python3 endpoint_standin.py hand <source directory> <dest directory>
+    python3 endpoint_standin.py relay <directory> <directory>...
 
 `serve` also listens on <directory>/ctl.sock, and writes it last, so its
 presence says the stand-in is up. `ctl`'s ops: `state` (everything below,
 as JSON), `send` {frames}, `set` {field: value} (the fields below), `drop`,
 `restart`, `rl10` {field: value, mode?} (rl10.json rewritten with those
 fields; `mode` its permission bits), `refuse` {project, writer, seq,
-reason?}, `unlink-rl10`, `stop`.
+reason?}, `accepted` {project, after?} and `opened` (below), `unlink-rl10`,
+`stop`.
 
 What it does on each connection, one at a time (a new one replaces the last,
 as sminos's reconnect does):
@@ -84,11 +87,33 @@ over, as the endpoint refuses a stream it does not sign. `refuse_upload` (ctl
 `refuse` {project, writer, seq, reason?}) sends `refused {project, refusal:
 {reason, writer, seq}}`, `not-reachable` by default, with no message.
 
+The hub's reach judgement (P5 O18 D5), in-process: `withhold`, a callable
+(project, event in its upload form) → truthy, withholds the upload it holds
+for at a position not yet held, as the hub withholds an event out of reach:
+the position is added to `withheld` (so the next `have` lists it and counts
+it), the body kept aside, and `refused {reason: not-reachable, writer, seq}`
+sent with no message; the writer goes on. A resend there is refused
+`not-reachable` again with the same body, `conflict` with another. None (the
+default) withholds nothing.
+
+Two machines, each its sminos and its stand-in (#153 M3d's compositions):
+`accepted(project, after)` is what a stand-in took of a project, past
+`after` ({writer: seq}) and up to what is admitted, each event in its
+`echo` form, as the relay carries it to another machine's endpoint;
+`opened()` the live connection's number and the projects its hellos opened.
+`hand(source, dest, cursor)` (the `hand` command for two stand-ins `serve`
+runs) is one pass of that relay: source's accepted events into dest's live
+connection as arrivals, for each project it opened, past what its last hello
+holds and what was handed since; the `relay` command is a pass each way
+between every two of the stand-ins it names. What carries them between
+endpoints in production is MAWS's relay; the hand-off carries the frames
+themselves, never one written by hand.
+
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
 persist_legacy, answer_policy, ack_results, verdicts, verdict,
 reach_verdicts, reach_verdict, relay, capabilities, audiences, admit,
-withheld, archive, refuse_audience.
+withheld, archive, refuse_audience, withhold.
 """
 
 import base64
@@ -105,7 +130,7 @@ LINE_MAX = 1 << 20   # a line at most 1 MiB of UTF-8 (O10 §D); larger text goes
 FIELDS = ("token", "identity", "policy", "revoked", "org", "build", "state_version", "refuse_reason", "ask_legacy",
           "persist_legacy", "answer_policy", "ack_results", "verdicts", "verdict", "reach_verdicts", "reach_verdict",
           "relay", "capabilities",
-          "audiences", "admit", "withheld", "archive", "refuse_audience")
+          "audiences", "admit", "withheld", "archive", "refuse_audience", "withhold")
 TS_MS = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 TS_S = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
@@ -180,6 +205,12 @@ def lines_of(frame):
             for i, p in enumerate(pieces)]
 
 
+class Disconnected(OSError):
+    """A frame down found no live connection: none, or it closed under the
+    write. The one failure the hand-off passes over (the next pass reads the
+    next connection's hellos)."""
+
+
 class Conn:
     """One accepted connection: its number, its socket, its reads and writes."""
 
@@ -194,8 +225,11 @@ class Conn:
         data = b"".join(line.encode("utf-8") + b"\n" for line in lines_of(frame))
         with self.lock:
             if self.closed:
-                raise OSError("the connection is closed")
-            self.sock.sendall(data)
+                raise Disconnected("the connection is closed")
+            try:
+                self.sock.sendall(data)
+            except OSError as e:
+                raise Disconnected("the connection went: %r" % e) from e
 
     def read_line(self, timeout=None):
         self.sock.settimeout(timeout)
@@ -268,6 +302,8 @@ class Endpoint:
         self.withheld = {}
         self.archive = False
         self.refuse_audience = []
+        self.withhold = None
+        self.withheld_bodies = {}   # (project id, writer, seq) → the body withheld there (withhold)
         self.unadmitted = {}    # project id → {writer: {seq}}: taken while admission was held back
         self.handler = None
         self.cv = threading.Condition()
@@ -365,7 +401,7 @@ class Endpoint:
         with self.cv:
             conn = self.current
         if conn is None:
-            raise OSError("no connection to send on")
+            raise Disconnected("no connection to send on")
         for frame in frames:
             conn.write(frame)
 
@@ -515,8 +551,15 @@ class Endpoint:
                 elif writer in (self.refuse_audience or ()):
                     reason, message = "audience", "the stream's audience is not this session's"
                     stopped.add(writer)
+                elif (project, writer, seq) in self.withheld_bodies:
+                    # A withheld position sent again: the same body withheld again, another a conflict.
+                    reason = "not-reachable" if self.withheld_bodies[(project, writer, seq)] == form else "conflict"
                 elif seq in held.get(writer, {}) and held[writer][seq] != form:
                     reason = "conflict"
+                elif seq not in held.get(writer, {}) and self.withhold is not None and self.withhold(project, form):
+                    self.withheld_bodies[(project, writer, seq)] = form
+                    self.withheld.setdefault(project, {}).setdefault(writer, []).append(seq)
+                    reason = "not-reachable"
                 else:
                     held.setdefault(writer, {})[seq] = form
                     if not self.admit:
@@ -589,6 +632,39 @@ class Endpoint:
 
     def tombstone(self, op):
         self.send({"t": "tombstone", "opId": op})
+
+    # ---------------------------------------------------- between two machines (hand)
+
+    def accepted(self, project, after=None):
+        """What this endpoint accepted of `project` as it would relay it to
+        another machine's endpoint: each event held and admitted past
+        `after` ({writer: seq}), in its `echo` form, writer by writer in seq
+        order; a writer stops at a position held back from admission."""
+        after = after or {}
+        with self.cv:
+            held = self.logs.get(project, {})
+            back = self.unadmitted.get(project, {})
+            positions = []
+            for w in sorted(held):
+                for s in sorted(held[w]):
+                    if s in back.get(w, ()):
+                        break
+                    if s > after.get(w, 0):
+                        positions.append((w, s))
+        return [self.echo(project, w, s) for w, s in positions]
+
+    def opened(self):
+        """The live connection's number and the projects its hellos opened:
+        {conn, projects: {project: {name, have, follow, at}}}, each the last
+        hello of it (`at` its place among the frames received)."""
+        with self.cv:
+            conn = self.current.number if self.current is not None else None
+            projects = {}
+            for at, (n, f) in enumerate(self.received):
+                if n == conn and f.get("t") == "hello" and isinstance(f.get("project"), str):
+                    projects[f["project"]] = {"name": f.get("name"), "have": dict(f.get("have") or {}),
+                                              "follow": f.get("follow") is True, "at": at}
+            return {"conn": conn, "projects": projects}
 
     # ---------------------------------------------------- the test's reads
 
@@ -665,7 +741,10 @@ def control(ep, req):
     if op == "state":
         return ep.state()
     if op == "send":
-        ep.send(*arg["frames"])
+        try:
+            ep.send(*arg["frames"])
+        except Disconnected as e:
+            return {"error": repr(e), "disconnected": True}
     elif op == "set":
         ep.set(**arg)
     elif op == "drop":
@@ -677,6 +756,10 @@ def control(ep, req):
         ep.write_rl10(mode, **arg)
     elif op == "refuse":
         ep.refuse_upload(arg["project"], arg["writer"], arg["seq"], arg.get("reason", "not-reachable"))
+    elif op == "accepted":
+        return {"events": ep.accepted(arg["project"], arg.get("after"))}
+    elif op == "opened":
+        return ep.opened()
     elif op == "unlink-rl10":
         os.unlink(ep.rl10_path())
     elif op == "stop":
@@ -686,9 +769,15 @@ def control(ep, req):
     return {"ok": True}
 
 
-def ctl_main(directory, op, arg):
+def ctl_call(directory, op, arg):
+    """One ctl request to the stand-in serving `directory`: its answer's text."""
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(os.path.join(directory, "ctl.sock"))
+    path = os.path.join(directory, "ctl.sock")
+    try:
+        sock.connect(path)
+    except OSError as e:
+        sock.close()
+        raise OSError(e.errno, "no stand-in answers at %s: %s" % (path, e.strerror)) from e
     sock.sendall((json.dumps({"op": op, "arg": arg}) + "\n").encode("utf-8"))
     # The answer is read whole, to the stand-in's close: a state holding the
     # uploads of a machine's projects is past RL10's line bound, which is no
@@ -700,8 +789,97 @@ def ctl_main(directory, op, arg):
         if not chunk:
             break
         data += chunk
-    print(data.decode("utf-8").rstrip("\n"))
     sock.close()
+    return data.decode("utf-8").rstrip("\n")
+
+
+def ctl_main(directory, op, arg):
+    print(ctl_call(directory, op, arg))
+
+
+# ------------------------------------------------------------- two machines
+
+
+class Served:
+    """A stand-in `serve` runs, through its ctl socket: the parts of an
+    Endpoint that `hand` reads and sends through."""
+
+    def __init__(self, directory):
+        self.dir = directory
+
+    def call(self, op, arg):
+        answer = json.loads(ctl_call(self.dir, op, arg))
+        if answer.get("disconnected") is True:
+            raise Disconnected("the stand-in at %s: %s" % (self.dir, answer["error"]))
+        if "error" in answer:
+            raise RuntimeError("the stand-in at %s: %s" % (self.dir, answer["error"]))
+        return answer
+
+    def accepted(self, project, after=None):
+        return self.call("accepted", {"project": project, "after": after or {}})["events"]
+
+    def opened(self):
+        return self.call("opened", {})
+
+    def events(self, project, wrapped):
+        self.call("send", {"frames": [{"t": "events", "project": project, "events": list(wrapped)}]})
+
+
+def hand(source, dest, cursor_path):
+    """One pass of the relay between two machines' endpoints, for the
+    two-machine compositions (#153 M3d): what `source` accepted reaches the
+    live connection of `dest` as arrivals, one `events` frame per project
+    that connection opened, each event in the form source's `echo` gives
+    it, past what the project's last hello said it holds and what was
+    handed since that hello (kept at cursor_path, so a later pass sends
+    only what is new; a new connection or a new hello starts again from
+    its `have`, as the hub sends what a hello lacks). `source` and `dest`
+    are Endpoints, or Served for a stand-in `serve` runs. How many events
+    were handed."""
+    opened = dest.opened()
+    cursor = read_json(cursor_path) or {}
+    if cursor.get("conn") != opened["conn"]:
+        cursor = {"conn": opened["conn"], "projects": {}}
+    handed = 0
+    for project, hello in sorted(opened["projects"].items()):
+        held = cursor["projects"].get(project)
+        if held is None or held.get("at") != hello["at"]:
+            held = {"at": hello["at"], "after": dict(hello["have"])}
+        wrapped = source.accepted(project, held["after"])
+        if wrapped:
+            try:
+                dest.events(project, wrapped)
+            except Disconnected:
+                break   # the connection went: the next pass reads the next one's hellos
+            for w in wrapped:
+                e = w["event"]
+                held["after"][e["writer"]] = max(held["after"].get(e["writer"], 0), e["seq"])
+            handed += len(wrapped)
+        cursor["projects"][project] = held
+    if opened["conn"] is not None:
+        write_private(cursor_path, cursor)
+    return handed
+
+
+def hand_served(source_dir, dest_dir):
+    """`hand` between two stand-ins `serve` runs, the cursor kept in dest's
+    directory under source's path."""
+    import hashlib
+    tag = hashlib.sha256(os.path.abspath(source_dir).encode()).hexdigest()[:12]
+    return hand(Served(source_dir), Served(dest_dir), os.path.join(dest_dir, "handed-%s.json" % tag))
+
+
+def relay_main(directories):
+    """`relay <directory>...`: one hand pass each way between every two, a
+    pass whose connection went meanwhile cut short (hand: the next relay
+    hands the rest); the count printed. Any other failure — a stand-in not
+    there, a control error, an answer that is no JSON — ends it, said."""
+    handed = 0
+    for source in directories:
+        for dest in directories:
+            if source != dest:
+                handed += hand_served(source, dest)
+    print(handed)
 
 
 if __name__ == "__main__":
@@ -709,5 +887,10 @@ if __name__ == "__main__":
         serve_main(sys.argv[2], json.loads(sys.argv[3]) if len(sys.argv) > 3 else {})
     elif len(sys.argv) >= 4 and sys.argv[1] == "ctl":
         ctl_main(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]) if len(sys.argv) > 4 else {})
+    elif len(sys.argv) == 4 and sys.argv[1] == "hand":
+        print(hand_served(sys.argv[2], sys.argv[3]))
+    elif len(sys.argv) >= 4 and sys.argv[1] == "relay":
+        relay_main(sys.argv[2:])
     else:
-        sys.exit("usage: endpoint_standin.py serve <directory> [<config JSON>] | ctl <directory> <op> [<JSON>]")
+        sys.exit("usage: endpoint_standin.py serve <directory> [<config JSON>] | ctl <directory> <op> [<JSON>]"
+                 " | hand <source directory> <dest directory> | relay <directory> <directory>...")

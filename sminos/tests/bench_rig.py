@@ -3,31 +3,28 @@
 spec, docs/doperpowers/specs/2026-10-20-desk-open-fast-design.md, M2):
 bench_open.py's runs and bench_scale.py's opens.
 
-- The hubs: hub_standin.py (`Standin`), or the hub's own Worker on a local
-  runtime from a MAWS worktree (`Local`: `pnpm --filter desk-hub local` with
-  a state directory of its own and a free port), each with its browser
-  client: the stand-in's `/control/send` and stamped `sessions`
-  (`StandinBrowser`), or the project's socket on the local hub
-  (`LocalBrowser`, ws_client).
+- The endpoint (#153 M3e): endpoint_standin.py in this process
+  (`EndpointHub`), the machine cut over by its welcome to `daemon probe`,
+  with its browser client: frames written down the uplink's connection, and
+  the `session` frames received, stamped on arrival (`EndpointBrowser`).
 - The sessions: fake_session.py's scripted one or a synthetic transcript
   (`FakeKind`, `synthetic_transcript`), or an isolated headless live one
   (`LiveKind`, mods/live-bridge-check.py's Live) with a probe subscription
   on its bridge from the start, each of its reconnects a gap in the DX5
   source said whole or lost (`probe_gaps`).
 - The machine (`Rig`): a temporary HOME and SMINOS_HOME (a live session's
-  own), the enrollment, the project, and this checkout's uplink, run under
-  a bootstrap (`python3 bench_rig.py _uplink <scripts> <tee>`) that tees
-  each subscription's first bridge lines' keys, its sub beside them, from
-  the plane's reader thread after the plane's own put, written by a thread
-  of its own (`install_tee`, read back by `read_tees`): the plane's code
-  wrapped, not changed. Everything the rig starts is its own from the
+  own), the cut-over, the project, and this checkout's
+  uplink, run under a bootstrap (`python3 bench_rig.py _uplink <scripts>
+  <tee>`) that tees each subscription's first bridge lines' keys, its sub
+  beside them, from the plane's reader thread after the plane's own put,
+  written by a thread of its own (`install_tee`, read back by
+  `read_tees`): the plane's code wrapped, not changed. Everything the rig starts is its own from the
   moment it exists, so a construction that fails part way leaves nothing.
 """
 
 import base64
 import collections
 import glob
-import http.client
 import importlib.util
 import itertools
 import json
@@ -36,13 +33,11 @@ import queue
 import random
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-import urllib.parse
 import uuid as uuidlib
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -51,7 +46,6 @@ SCRIPTS = os.path.join(PLUGIN_ROOT, "skills", "sminos", "scripts")
 SMINOS = os.path.join(SCRIPTS, "sminos")
 sys.path.insert(0, HERE)
 
-KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"   # the stand-in's org key: bytes(range(32)), base64url
 BASE_KEYS = ("PATH", "TERM", "LANG", "USER", "LOGNAME", "SHELL", "TMPDIR")
 TEE_LINES = 3          # bridge lines teed per subscription: its snapshot, and what follows to place it
 
@@ -157,23 +151,7 @@ def read_tees(path):
     return [{"sub": s, "lines": [(at, obj) for _, at, obj in sorted(v, key=lambda x: x[0])]} for s, v in by.items()]
 
 
-# ------------------------------------------------------------- http
-
-
-def call(url, method, path, body=None, headers=None, timeout=30):
-    u = urllib.parse.urlsplit(url)
-    c = http.client.HTTPConnection(u.hostname, u.port, timeout=timeout)
-    data = body if isinstance(body, (bytes, type(None))) else json.dumps(body).encode()
-    c.request(method, path, body=data, headers={"Content-Type": "application/json", **(headers or {})})
-    try:
-        r = c.getresponse()
-        raw = r.read()
-        try:
-            return r.status, json.loads(raw or b"{}")
-        except ValueError:
-            return r.status, {"raw": raw.decode("utf-8", "replace")[:300]}
-    finally:
-        c.close()
+# ------------------------------------------------------------- waits
 
 
 def wait_for(what, seconds, fn, every=0.05):
@@ -186,53 +164,31 @@ def wait_for(what, seconds, fn, every=0.05):
     raise TimeoutError("timed out after %ss waiting for %s" % (seconds, what))
 
 
-def free_pair():
-    """A port n with n and n + 1 free on 127.0.0.1 (the local hub takes both)."""
-    for _ in range(200):
-        n = random.randint(20000, 60000)
-        socks = []
-        try:
-            for p in (n, n + 1):
-                s = socket.socket()
-                s.bind(("127.0.0.1", p))
-                socks.append(s)
-            return n
-        except OSError:
-            continue
-        finally:
-            for s in socks:
-                s.close()
-    raise RuntimeError("no free port pair")
-
-
 def sub_id():
     return base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()   # DX3: 128 bits, base64url
 
 
-# ------------------------------------------------------------- the hubs and their browsers
+# ------------------------------------------------------------- the endpoint and its browser
 
 
-class StandinBrowser:
-    """A browser of the project as the stand-in plays it: a subscribe is a
-    frame written down the uplink's stream (its `at`, when flushed, the
-    open's start), and what the uplink posted is the stand-in's stamped
-    `sessions`."""
+class EndpointBrowser:
+    """A browser of the project on RL10 (#153 M3e): a subscribe is a frame
+    written down the uplink's connection by the endpoint stand-in (its `at`,
+    once written, the open's start), and what the uplink sent up is the
+    `session` frames the stand-in received, each stamped as it arrived."""
 
-    def __init__(self, url, project, machine):
-        self.url, self.project, self.machine = url, project, machine
+    def __init__(self, hub, project, machine):
+        self.hub, self.project, self.machine = hub, project, machine
         self.seen, self.msgs = 0, []
 
     def send(self, frame_):
-        status, body = call(self.url, "POST", "/control/send", {"frames": [frame_]})
-        if status != 200:
-            raise RuntimeError("the stand-in did not write the frame: %s %s" % (status, body))
-        return body.get("at") or time.time()
+        self.hub.ep.send(frame_)
+        return time.time()
 
     def poll(self):
-        status, body = call(self.url, "GET", "/control/since?sessions=%d" % self.seen)
-        got = body.get("sessions") or []
+        got = self.hub.arrived(self.seen)
         self.seen += len(got)
-        self.msgs += [(e.get("at") or e.get("received"), e["message"]) for e in got]
+        self.msgs += got
 
     def subscribe(self, session, agent=None):
         sub = sub_id()
@@ -246,151 +202,55 @@ class StandinBrowser:
         pass
 
 
-class LocalBrowser:
-    """A browser of the project on the local hub: DX3 over its socket, each
-    frame stamped on arrival (ws_client)."""
+class EndpointHub:
+    """endpoint_standin.py in this process, listening in `root`/ep, and
+    `env` (a machine's) pointed at it: SMINOS_RL10 its rl10.json, DAEMON_HOST
+    its identity's name (`testhost` of `org-1`; the hub the .smns names is its
+    identity's). Each `session` frame's message is stamped on arrival
+    (`arrived`) through the stand-in's own handler hook, so what the
+    stand-in keeps is unchanged. bench_scale.py's opens use it too."""
 
-    def __init__(self, url, project, machine):
-        import ws_client
-        self.project, self.machine = project, machine
-        ws_url = "ws" + url[len("http"):] + "/api/projects/%s/socket" % project
-        self.ws = wait_for("the project's socket at the local hub", 30, lambda: self.connect(ws_client, ws_url), 0.2)
-        self.seen, self.msgs = 0, []
+    name, org, machine = "endpoint", "org-1", "testhost"
+    url = "http://127.0.0.1:9"   # the stand-in identity's hub
+
+    def __init__(self, root, env):
+        import endpoint_standin
+        self.ep = endpoint_standin.Endpoint(os.path.join(root, "ep"))
+        self.lock = threading.Lock()
+        self.stamped = []    # [(arrival, the `session` frame's message)]
+        self.ep.handler = self.stamp
+        self.ep.start()
+        env.update(SMINOS_RL10=self.ep.rl10_path(), DAEMON_HOST=self.machine)
+
+    def stamp(self, frame):
+        if frame.get("t") == "session" and isinstance(frame.get("message"), dict):
+            at = time.time()
+            with self.lock:
+                self.stamped.append((at, frame["message"]))
+        return None
+
+    def arrived(self, since):
+        with self.lock:
+            return self.stamped[since:]
 
     @staticmethod
-    def connect(ws_client, url):
-        try:
-            return ws_client.WebSocket(url)
-        except OSError:
-            return None
-
-    def send(self, frame_):
-        at = time.time()
-        self.ws.send(frame_)
-        return at
-
-    def poll(self):
-        got = self.ws.stamped(self.seen)
-        self.seen += len(got)
-        self.msgs += [(at, f["message"]) for at, f in got if f.get("t") == "session"]
-
-    def subscribe(self, session, agent=None):
-        sub = sub_id()
-        return sub, self.send({"t": "subscribe", "session": session, "agentId": agent, "sub": sub,
-                               "machine": self.machine})
-
-    def unsubscribe(self, sub):
-        self.send({"t": "unsubscribe", "sub": sub})
-
-    def close(self):
-        self.ws.close()
-
-
-class Standin:
-    """hub_standin.py: one machine, `testhost`, enrolled already."""
-
-    name, org, machine = "standin", "org-1", "testhost"
-
-    def __init__(self, rig):
-        port_file = os.path.join(rig.root, "hub.port")
-        self.proc = rig.spawn([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1",
-                               "2000"], log="standin.out")
-        rig.hub = self
-        self.url = "http://127.0.0.1:%s" % wait_for("the stand-in's port", 10, lambda: _read(port_file))
-        self.key = KEY
+    def check_cut_over(smh, said):
+        """Raises unless the probe's welcome wrote smh's identity.json."""
+        if not os.path.exists(os.path.join(smh, "daemon", "identity.json")):
+            raise RuntimeError("the endpoint stand-in's welcome did not cut the machine over: %s"
+                               % (said or "").strip())
 
     def enroll(self, rig):
-        rig.write_credential({"hub": self.url, "org": self.org, "machine": self.machine, "client_id": "cid-1",
-                              "client_secret": "secret-1", "key": KEY})
+        """Cut over as a machine is: `daemon probe` (the supervisor's) dials
+        the endpoint, and its whole welcome writes identity.json."""
+        r = subprocess.run([SMINOS, "daemon", "probe"], env=rig.env, capture_output=True, text=True)
+        self.check_cut_over(rig.smh, r.stdout + r.stderr)
 
     def browser(self, rig):
-        return StandinBrowser(self.url, rig.project, self.machine)
+        return EndpointBrowser(self, rig.project, self.machine)
 
     def close(self):
-        pass
-
-
-class Local:
-    """The hub's own Worker on a local runtime behind its stand-in for Access
-    (`pnpm --filter desk-hub local`), from the MAWS worktree named, with a
-    state directory of its own and a free port; its stdout is read here line
-    by line, stamped, for its readiness and for what it said if it never came
-    up. (What the uplink posted is the pause proxy's census, by start: this
-    log stamps a request when it is answered and names no machine.)"""
-
-    name, org = "local", "local"
-
-    def __init__(self, rig, maws):
-        if not maws or not os.path.isdir(os.path.join(maws, "apps", "desk-hub")):
-            sys.exit("bench_open: --hub local needs --maws <a MAWS worktree with apps/desk-hub>")
-        port = free_pair()
-        self.url = "http://127.0.0.1:%d" % port
-        self.machine = "bench-" + uuidlib.uuid4().hex[:6]
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE_"))}
-        self.proc = subprocess.Popen(["pnpm", "--filter", "desk-hub", "local", "--state",
-                                      os.path.join(rig.root, "hubstate"), "--port", str(port)],
-                                     cwd=maws, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, start_new_session=True)
-        rig.hub = self
-        self.log, self.lock = [], threading.Lock()
-        self.ready = threading.Event()
-        threading.Thread(target=self.read, daemon=True).start()
-        if not self.ready.wait(180):
-            tail = "\n".join(l for _, l in self.log[-15:])
-            sys.exit("bench_open: the local hub did not come up in 180 s:\n" + tail)
-        self.key = None
-
-    def read(self):
-        for raw in iter(self.proc.stdout.readline, b""):
-            line = raw.decode("utf-8", "replace").rstrip("\n")
-            with self.lock:
-                self.log.append((time.time(), line))
-            if "Ready on http" in line:
-                self.ready.set()
-
-    def code(self, machine, key=None):
-        status, body = call(self.url, "POST", "/standin/enrollment-code",
-                            {"machine": machine, **({"key": key} if key else {})})
-        if status != 200:
-            raise RuntimeError("no enrollment code: %s %s" % (status, body))
-        return body
-
-    def enroll(self, rig):
-        body = self.code(self.machine)
-        self.key = body["key"]
-        r = subprocess.run([SMINOS, "hub", "enroll", "--name", self.machine], input=body["code"].encode(),
-                           env=rig.env, capture_output=True)
-        if r.returncode != 0:
-            raise RuntimeError("sminos hub enroll failed: %s" % (r.stdout + r.stderr).decode()[-500:])
-
-    def mint(self, machine):
-        """Another machine of the org, its credential redeemed here."""
-        body = self.code(machine, self.key)
-        status, cred = call(self.url, "POST", "/machine/enroll", {"token": body["token"], "machine": machine})
-        if status != 200:
-            raise RuntimeError("the redemption failed: %s %s" % (status, cred))
-        return cred
-
-    def browser(self, rig):
-        return LocalBrowser(self.url, rig.project, self.machine)
-
-    def close(self):
-        try:
-            os.killpg(self.proc.pid, signal.SIGTERM)
-            self.proc.wait(20)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(self.proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-
-
-def _read(path):
-    try:
-        with open(path) as f:
-            return f.read().strip()
-    except OSError:
-        return ""
+        self.ep.stop()
 
 
 # ------------------------------------------------------------- the transcript shapes
@@ -681,10 +541,7 @@ class Rig:
                         PATH=stub + os.pathsep + os.environ.get("PATH", ""), SMINOS_DERIVE_EVERY="0",
                         PYTHONDONTWRITEBYTECODE="1")
         self.tee = os.path.join(self.root, "tee.jsonl")
-        if a.hub == "local":
-            Local(self, a.maws)     # each hub is the rig's (`rig.hub`) once its process exists
-        else:
-            Standin(self)
+        self.hub = EndpointHub(self.root, self.env)   # the rig's once its socket listens
         self.hub.enroll(self)
         if not a.live:
             git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]
@@ -711,22 +568,6 @@ class Rig:
 
     def sminos(self, *args):
         return subprocess.run([SMINOS, *args], cwd=self.work, env=self.env, capture_output=True, check=True)
-
-    def write_credential(self, cred):
-        path = os.path.join(self.smh, "daemon", "hub.json")
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(cred, f)
-        os.replace(path + ".tmp", path)
-
-    def point_uplink_at(self, url):
-        """The credential's hub (the pause proxy's URL, for `held`)."""
-        path = os.path.join(self.smh, "daemon", "hub.json")
-        with open(path) as f:
-            cred = json.load(f)
-        cred["hub"] = url
-        self.write_credential(cred)
 
     def daemon_log(self):
         return os.path.join(self.smh, "daemon.log")

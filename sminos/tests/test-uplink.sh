@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 #
-# The uplink (DC4 M1 of the desk): `sminos daemon uplink`, the process `daemon
-# run` keeps beside its tick loop, holding the stream down from the hub
-# (hub_standin.py stands in for DX2). Pins DC4.G4: the stream is drained and
-# an event from the hub reaches a local member within a second while the tick
-# sits in a hung git fetch of a hub-less project, and while a derivation runs;
-# a burst from the hub costs a few ticks, not a tick a frame, however slow
-# each POST is; what fails its code or its shape never enters the log; the uplink and the
-# tick loop restart and fail apart; a machine that leaves the hub (hub.json
-# gone) stops its uplink and says so; the run lock holds, and a change of the
-# daemon's code restarts it in place, the uplink back within seconds; an event the uplink imports while a tick is
-# mid-delivery to the same member is delivered once; the machine's lease at the
-# hub never lapses while the main thread is held, and lapses once the stream
-# is silent.
+# The uplink: `sminos daemon uplink`, the process `daemon run` keeps beside
+# its tick loop, which speaks RL10 to the machine's endpoint once the machine
+# is cut over (endpoint_standin.py stands in for mawsd's endpoint), and runs
+# on nothing before: a machine with no identity.json starts no uplink,
+# whatever a stray hub.json says. Pins DC4.G4 on RL10: what the endpoint
+# sends is drained and an event reaches a local member within a second while
+# the tick sits in a hung git fetch of a hub-less project, and while a
+# derivation runs; what fails its shape never enters the log; the uplink and
+# the tick loop restart and fail apart; the run lock holds, and a change of
+# the daemon's code restarts it in place, the uplink back within seconds; an
+# event the uplink imports while a tick is mid-delivery to the same member is
+# delivered once. And the cutover itself: an endpoint probed while no uplink
+# runs, a whole welcome cutting the machine over for good, and the cutover
+# undone.
 # Hermetic: HOME and SMINOS_HOME are temporary (short, for the inbox sockets),
 # `claude` is a stub, and nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
@@ -111,105 +112,12 @@ python3 "$SCRIPT_DIR/inbox_standin.py" "$T/in-m.sock" "$INBOX" & INBOX_PID=$!
 PIDS+=("$INBOX_PID")
 until_true 100 test -S "$T/in-m.sock"
 
-# The hub stand-in, heartbeat every 2 s.
-python3 "$SCRIPT_DIR/hub_standin.py" "$T/hub.port" cid-1 secret-1 2000 & PIDS+=("$!")
-until_true 100 test -s "$T/hub.port"
-HUB="http://127.0.0.1:$(cat "$T/hub.port")"
 
-# The test's hands on the stand-in: state, a send, a burst, and a send timed
-# until its text reaches the inbox.
-cat > "$T/ctl.py" <<'PY'
-import http.client, json, sys, time
-port = int(open(sys.argv[1]).read())
-
-def call(method, path, body=None):
-    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    c.request(method, path, body=None if body is None else json.dumps(body), headers={"Content-Type": "application/json"})
-    r = c.getresponse()
-    return r.status, json.loads(r.read() or b"{}")
-
-cmd = sys.argv[2]
-if cmd == "generation":
-    print(call("GET", "/control/state")[1]["generation"])
-elif cmd == "send":
-    status, body = call("POST", "/control/send", {"frames": [json.loads(sys.argv[3])]})
-    print(status)
-elif cmd == "burst":
-    frame = {"t": "hb", "at": "2026-10-15T00:00:00.000Z", "pad": "x" * int(sys.argv[4])}
-    status, body = call("POST", "/control/send", {"frames": [frame], "repeat": int(sys.argv[3])})
-    print("%d %.2f" % (status, body.get("took", -1)))
-elif cmd == "flow":  # an hb every 50 ms until the file named goes away, to whichever stream is open
-    while __import__("os").path.exists(sys.argv[3]):
-        try:
-            call("POST", "/control/send", {"frames": [{"t": "hb", "at": "2026-10-15T00:00:00.000Z"}]})
-        except OSError:
-            pass
-        time.sleep(0.05)
-elif cmd == "fault":  # has fault — the next POST carrying a frame of `has` meets it
-    call("POST", "/control/post-fault", {"faults": [{"has": sys.argv[3], "fault": sys.argv[4]}]})
-elif cmd == "release":
-    call("POST", "/control/release", {})
-elif cmd == "post-delay":  # seconds — every frame POST waits this long from now on
-    call("POST", "/control/post-delay", {"seconds": float(sys.argv[3])})
-elif cmd == "opened":  # project — whether the stream opened last has it open
-    d = call("GET", "/control/state")[1]
-    print("yes" if d["projects"].get(sys.argv[3], {}).get("open", {}).get("testhost") == d["generation"] else "no")
-elif cmd == "lease":  # testhost's current lease: its generation and whether it is online
-    lease = call("GET", "/control/state")[1]["leases"].get("testhost")
-    print("%s %s" % (lease["generation"], "online" if lease["online"] else "offline") if lease else "none")
-elif cmd == "lapses":  # generation — how many times testhost's lease of that stream lapsed
-    print(len([x for x in call("GET", "/control/state")[1]["lapses"]
-               if x["machine"] == "testhost" and str(x["generation"]) == sys.argv[3]]))
-elif cmd == "acks":  # generation — how many hb-acks of that stream testhost posted
-    print(len([a for a in call("GET", "/control/state")[1]["hb_acks"]
-               if a["machine"] == "testhost" and str(a["generation"]) == sys.argv[3]]))
-elif cmd == "mute":
-    call("POST", "/control/mute", {"machine": "testhost"})
-elif cmd == "held":  # the generation of each POST held, in order
-    print(" ".join(p["generation"] for p in call("GET", "/control/state")[1]["posted"] if p["status"] == "held"))
-elif cmd == "after-held":  # POSTs of events on the generation of the last held one, after it
-    posted = call("GET", "/control/state")[1]["posted"]
-    i = max(i for i, p in enumerate(posted) if p["status"] == "held")
-    print(len([p for p in posted[i + 1:] if p["generation"] == posted[i]["generation"] and '"t":"events"' in p["body"]]))
-elif cmd == "deliver":
-    inbox, text = sys.argv[4], sys.argv[5].encode()
-    t0 = time.time()
-    status, _ = call("POST", "/control/send", {"frames": [json.loads(sys.argv[3])]})
-    while status == 200 and time.time() - t0 < 5:
-        if text in open(inbox, "rb").read():
-            print("%.2f" % (time.time() - t0))
-            sys.exit(0)
-        time.sleep(0.02)
-    print("never")
-PY
-ctl() { python3 "$T/ctl.py" "$T/hub.port" "$@"; }
-
-# Events as the hub would carry them: a web `human` to m, sealed with the org
-# key under the hub project, and its forgeries.
-cat > "$T/seal.py" <<'PY'
-import json, os, sys, time
-sys.path.insert(0, os.environ["SCRIPTS"])
-import sminos_codes as codes
-variant, seq, text = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-project, other, member, session = os.environ["HP"], os.environ["OTHER_PROJECT"], os.environ["MEMBER"], os.environ["M"]
-ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
-draft = {"ts": ts, "writer": "hub/" + member, "seq": seq, "kind": "human", "from": "human", "member": member,
-         "to": [{"session": session, "alias": "m"}], "text": text, "created": ts}
-e = codes.seal(bytes(range(32)), "log", other if variant == "other-project" else project, draft,
-               codes.b64url(os.urandom(16)))
-if variant == "bad-code":
-    e["text"] = text + " (changed on the way)"
-elif variant == "moved":
-    e["writer"] = "hub/0123456789abcdef0123456789abcdef"
-elif variant == "via":
-    e["via"] = "doperpowers-1e"
-elif variant == "padded":
-    e["mac"]["value"] += "="
-print(json.dumps({"t": "events", "project": other if variant == "unknown-project" else project, "events": [e]}))
-PY
-export SCRIPTS
-seal() { python3 "$T/seal.py" "$@"; }
-deliver_time() { ctl deliver "$(seal ok "$1" "$2")" "$INBOX" "$2"; }
+# The hub the hub project names, as the endpoint's welcome names it too:
+# nothing serves it, and nothing here dials it (the endpoint is the machine's
+# one upstream).
+HUB="http://127.0.0.1:9"
+export SCRIPTS   # the scripts' directory, for the helpers below that import sminos
 
 # ---- a hub project with one live member, m, and a hub-less project mirrored over a stand-in ssh
 HPR="$T/hp"
@@ -255,173 +163,19 @@ run "$SMINOS" daemon tick
 assert_contains "$OUT" "stall: synced" "the hub-less project syncs over its remote"
 assert_contains "$OUT" "hubproj: reconciled 1" "m joins the hub project"
 
-# ---- the credential
-echo "the credential:"
-run "$SMINOS" daemon uplink
-assert_rc 0 "$RC" "with no credential, the uplink exits 0"
-assert_contains "$(cat "$DLOG")" "uplink: no credential" "saying there is nothing to connect"
-KEY="$(python3 -c 'import base64; print(base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode())')"
-write_cred() { # hub-url
-  printf '{"hub": "%s", "org": "org-1", "machine": "testhost", "client_id": "cid-1", "client_secret": "secret-1", "key": "%s"}\n' \
-    "$1" "$KEY" > "$SMINOS_HOME/daemon/hub.json"
-  chmod 600 "$SMINOS_HOME/daemon/hub.json"
-}
-write_cred "http://hub.example.com"
-run "$SMINOS" daemon uplink
-assert_rc 1 "$RC" "a hub over plain http off this machine is refused"
-assert_contains "$OUT" "neither https nor on this machine" "saying why"
-write_cred "$HUB"
-
-# ---- daemon run keeps the uplink beside the tick loop
-echo "daemon run and its uplink:"
-env SMINOS_DERIVE_EVERY=1 STUB_FORK_SLEEP=8 "$SMINOS" daemon run --interval 1 > "$T/run.out" 2>&1 & RUN=$!
-PIDS+=("$RUN")
-gen_is() { [ "$(ctl generation)" = "$1" ]; }
-until_true 200 gen_is 1 || true
-assert_equals "$(ctl generation)" 1 "daemon run starts the uplink, which opens the stream with the service token"
+# ---- the helpers the cases below share
 uplink_pid() { sed -n 's/^pid \([0-9]*\) .*/\1/p' "$SMINOS_HOME/daemon/uplink.lock" 2>/dev/null || true; }
-UP="$(uplink_pid)"
-if [[ -n "$UP" && "$UP" != "$RUN" ]] && alive "$UP"; then pass "the uplink is a process of its own ($UP)"; else
-  fail "the uplink is a process of its own"; echo "    uplink pid '$UP', run $RUN"; fi
-run "$SMINOS" daemon status
-assert_contains "$OUT" "uplink: running (pid $UP" "daemon status shows it"
-run "$SMINOS" daemon run --interval 1
-assert_rc 1 "$RC" "a second daemon run is refused"
-assert_contains "$OUT" "a daemon already runs" "by the run lock"
-run "$SMINOS" daemon uplink
-assert_rc 1 "$RC" "a second uplink is refused"
-assert_contains "$OUT" "an uplink already runs" "by the uplink lock"
-
-# ---- while a derivation runs
-echo "while a derivation runs:"
-until_true 200 test -f "$STUB_STATE/fork-started" || true
-assert_contains "$(cat "$DLOG")" "derive --all started" "the tick loop starts a derivation, whose fork sleeps"
-TOOK="$(deliver_time 1 "said from the web during the derivation")"
-assert_within "$TOOK" 1.0 "an event from the hub reaches m within a second while the derivation runs"
-if [ ! -f "$STUB_STATE/fork-ended" ]; then pass "the derivation still runs"; else fail "the derivation still runs"; fi
-
-# ---- while the tick sits in a hung fetch
-echo "while a fetch hangs:"
-rm -f "$T/ssh-entered"
-touch "$T/ssh-gate" "$SMINOS_HOME/daemon/nudge"
-until_true 200 test -f "$T/ssh-entered" || true
-assert_equals "$(test -f "$T/ssh-entered" && echo in)" in "the tick loop is inside a fetch of the hub-less project that hangs"
 # The loop marks each tick's end on daemon/ticked's mtime; a quiet project's record is not written.
 ticked() { python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$SMINOS_HOME/daemon/ticked" 2>/dev/null || true; }
-TICKED="$(ticked)"
-read -r STATUS BURST_TOOK <<<"$(ctl burst 4000 1000)"
-assert_equals "$STATUS" 200 "4 MB of frames from the hub are drained while the fetch hangs"
-assert_within "$BURST_TOOK" 5.0 "promptly"
-TOOK="$(deliver_time 2 "said from the web during the hung fetch")"
-assert_within "$TOOK" 1.0 "an event from the hub reaches m within a second while the fetch hangs"
-assert_contains "$(cat "$DLOG")" "uplink: delivered 1 in hubproj to m" "delivered by the uplink itself"
-assert_contains "$(cat "$HPLOG/hub.$MEMBER.jsonl")" '"mac": {"nonce": "' "stored with the code it arrived with"
-for variant in bad-code moved via padded other-project unknown-project; do
-  ctl send "$(seal "$variant" 3 "forged: $variant")" >/dev/null
-done
-until_true 100 grep -q "events for project '$OTHER_PROJECT'" "$DLOG" || true
-assert_not_contains "$(cat "$HPLOG"/*.jsonl)" "forged:" "no forged event enters the log"
-assert_not_contains "$(cat "$INBOX")" "forged:" "or reaches m"
-assert_contains "$(cat "$DLOG")" "in hubproj: its code does not verify" "a changed field fails the code, and is logged"
-assert_contains "$(cat "$DLOG")" "uplink: refused 'hub/0123456789abcdef0123456789abcdef':3" "a hub/ event moved to another member's feed is refused"
-assert_contains "$(cat "$DLOG")" "fails its shape" "by its shape, though its code verifies"
-assert_contains "$(cat "$DLOG")" "its code or nonce is not the canonical base64url of 32 and 16 bytes" "a code in another spelling of its bytes is refused before any HMAC"
-assert_equals "$(grep -c "its code does not verify" "$DLOG")" 3 "a changed field, an uncovered field (via), and an event of another project all fail the code"
-assert_contains "$(cat "$DLOG")" "events for project '$OTHER_PROJECT', which is no hub project of org org-1 known here: ignored" "a frame for a project not known here is ignored"
-assert_equals "$(ticked)" "$TICKED" "the tick loop is still in the fetch all along"
-if alive "$RUN"; then pass "and daemon run is alive"; else fail "and daemon run is alive"; fi
-rm -f "$T/ssh-gate"
 ticked_since() { [ "$(ticked)" != "$1" ]; }
-until_true 200 ticked_since "$TICKED" || true
-if ticked_since "$TICKED"; then pass "released, the tick loop goes on"; else fail "released, the tick loop goes on"; fi
-
-# ---- the uplink imports while a tick is mid-delivery to the same member
-echo "an import during a tick's delivery:"
-python3 - "$SCRIPTS/sminos.py" "$HP" "$M" <<'PY'
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
-p = mod.find_project(sys.argv[2])
-mod.log_append(p, "testhost/0f000000-0000-4000-8000-0000000000f0", "say",
-               **{"from": "k", "to": [{"session": sys.argv[3], "alias": "m"}], "text": "a say the tick delivers"})
-PY
-rm -f "$INBOX.held"
-touch "$INBOX.hold" "$SMINOS_HOME/daemon/nudge"
-until_true 200 test -f "$INBOX.held" || true
-assert_contains "$(cat "$INBOX")" "a say the tick delivers" "a tick is pushing an owed say to m, its close held"
-# Seq 4: the forgeries above spent hub/$MEMBER's position 3, a tombstone nothing is appended at.
-ctl send "$(seal ok 4 "said from the web mid-delivery")" >/dev/null
-until_true 100 grep -q "said from the web mid-delivery" "$HPLOG/hub.$MEMBER.jsonl" || true
-assert_contains "$(cat "$HPLOG/hub.$MEMBER.jsonl")" "said from the web mid-delivery" "the uplink imports a human for m meanwhile"
-sleep 0.5
-assert_not_contains "$(cat "$INBOX")" "said from the web mid-delivery" "and waits on m's delivery lock"
-rm -f "$INBOX.hold"
-until_true 100 grep -q "said from the web mid-delivery" "$INBOX" || true
-TICKED="$(ticked)"
-touch "$SMINOS_HOME/daemon/nudge"
-until_true 200 ticked_since "$TICKED" || true
-touch "$SMINOS_HOME/daemon/nudge"
-TICKED="$(ticked)"
-until_true 200 ticked_since "$TICKED" || true
-assert_equals "$(grep -o "said from the web mid-delivery" "$INBOX" | wc -l | tr -d ' ')" 1 "the human reaches m once, two ticks later"
-assert_equals "$(grep -o "a say the tick delivers" "$INBOX" | wc -l | tr -d ' ')" 1 "and the say once"
-assert_equals "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d[sys.argv[2]], d[sys.argv[3]]["settled"])' \
-  "$SMINOS_HOME/projects/$HP/delivered/$M.json" "hub/$MEMBER" "testhost/0f000000-0000-4000-8000-0000000000f0")" \
-  "{'settled': 4, 'pending': None, 'attempts': 0} 1" "each writer's delivery settled at its event, nothing pending"
-assert_not_contains "$(cat "$DLOG")" "out of order" "no deliverer settled out of order"
-
-# ---- a tick that fails does not stop the uplink
-echo "the two fail apart:"
 # The running loop takes the derivation lock (a file) every tick, so it can come
 # back between the rm and the mkdir: retried until the directory is in place.
 derive_lock_is_a_dir() { rm -f "$SMINOS_HOME/daemon/derive.lock"; mkdir "$SMINOS_HOME/daemon/derive.lock" 2>/dev/null; }
-until_true 200 derive_lock_is_a_dir || true
-until_true 200 grep -q "tick failed" "$DLOG" || true
-assert_contains "$(cat "$DLOG")" "tick failed: IsADirectoryError" "a tick fails (its derivation lock is a directory)"
-TOOK="$(deliver_time 5 "said from the web while ticks fail")"
-assert_within "$TOOK" 1.0 "the uplink still delivers within a second"
-assert_equals "$(uplink_pid)" "$UP" "the same uplink"
-rmdir "$SMINOS_HOME/daemon/derive.lock"
-# A killed uplink is restarted, and the tick loop goes on.
-kill -9 "$UP"
-until_true 200 gen_is 2 || true
-assert_equals "$(ctl generation)" 2 "a killed uplink is restarted, and opens a new stream"
-NEW_UP="$(uplink_pid)"
-if [[ -n "$NEW_UP" && "$NEW_UP" != "$UP" ]] && alive "$NEW_UP"; then pass "a new uplink process ($NEW_UP)"; else
-  fail "a new uplink process"; echo "    uplink pid '$NEW_UP', was $UP"; fi
-assert_contains "$(cat "$DLOG")" "uplink (pid $UP) exited on signal 9; restarting in 1s" "daemon.log says so"
-TICKED="$(ticked)"
-until_true 200 ticked_since "$TICKED" || true
-if ticked_since "$TICKED" && alive "$RUN"; then pass "the tick loop goes on"; else fail "the tick loop goes on"; fi
-TOOK="$(deliver_time 6 "said from the web to the new uplink")"
-assert_within "$TOOK" 1.0 "the new uplink delivers"
-
-# ---- stopping
-echo "stopping:"
-kill "$RUN"
-set +e; wait "$RUN"; set -e
-until_true 100 dead "$NEW_UP" || true
-if dead "$NEW_UP"; then pass "SIGTERM to daemon run stops its uplink"; else fail "SIGTERM to daemon run stops its uplink"; fi
-assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $NEW_UP)" "which says so"
-"$SMINOS" daemon run --interval 1 > "$T/run2.out" 2>&1 & RUN=$!
-PIDS+=("$RUN")
-until_true 200 gen_is 3 || true
-UP="$(uplink_pid)"
-kill -9 "$RUN"
-set +e; wait "$RUN" 2>/dev/null; set -e
-until_true 100 dead "$UP" || true
-if [[ -n "$UP" ]] && dead "$UP"; then pass "an uplink whose daemon run was killed ends on its own"; else
-  fail "an uplink whose daemon run was killed ends on its own"; echo "    uplink pid '$UP'"; fi
-assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP): its daemon is gone" "saying its daemon is gone"
-
-# ---- daemon run restarts in place on a change to its code: the same pid on
-# the new code, never an exit a service manager would throttle, and the uplink
+# daemon run restarts in place on a change to its code: the same pid on the
+# new code, never an exit a service manager would throttle, and the uplink
 # back within seconds. What a change brings is seen: each changed script
-# marks, as it is imported, which process imported it.
-echo "a change of code:"
-CACHE="$T/cache"
-mkdir -p "$CACHE"
-cp -R "$PLUGIN_ROOT/skills/sminos" "$CACHE/"
-CODE="$CACHE/sminos/scripts"
+# (under $CODE, a copy of the code) marks, as it is imported, which process
+# imported it.
 change() { # script — new code in it, marking each import
   printf '\nopen("%s/imported-%%s-%%d" %% (__name__, os.getpid()), "w").close()\n' "$T" >> "$CODE/$1"
 }
@@ -436,7 +190,7 @@ for line in open(sys.argv[1]):
         print("%.3f" % (calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%S")) + int(ms) / 1000))
 PY
 }
-gap() { # pid — seconds from its last restart in place to the next stream its uplink opened
+gap() { # pid — seconds from its last restart in place to the next connection its uplink opened
   python3 - "$DLOG" "$1" <<'PY'
 import datetime, sys
 lines = open(sys.argv[1]).read().splitlines()
@@ -448,70 +202,10 @@ print("never" if j is None else "%.2f" % (at(lines[j]) - at(lines[i])).total_sec
 PY
 }
 started_in() { grep -Fc "daemon run started (pid $1," "$DLOG" || true; }
-"$CACHE/sminos/scripts/sminos" daemon run --interval 1 > "$T/run-code.out" 2>&1 & RUNC=$!
-PIDS+=("$RUNC")
-GEN=4
-until_true 200 gen_is "$GEN" || true
-UP="$(uplink_pid)"
-# A marketplace update re-clones the marketplace: every script a new file with
-# a new mtime, the same bytes where sminos did not change. Nothing restarts,
-# and the uplink keeps its stream.
-for f in "$CODE"/*.py; do cp "$f" "$f.new" && mv "$f.new" "$f"; done
-sleep 4  # a tick (1 s) and the settle (1 s) would have restarted it by now
-if alive "$RUNC" && [ "$(started_in "$RUNC")" = 1 ] && [ "$(uplink_pid)" = "$UP" ] && gen_is "$GEN"; then
-  pass "scripts re-made with the same bytes restart nothing: the uplink ($UP) keeps its stream"; else
-  fail "scripts re-made with the same bytes restart nothing"
-  echo "    starts: $(started_in "$RUNC"), uplink $UP -> '$(uplink_pid)', generation $(ctl generation)"; fi
-# sminos_jobs.py: imported by the uplink alone (through the plane and the
-# RPCs), and once missing from the daemon's list of its own code.
-change sminos_jobs.py
-GEN=5
-until_true 200 gen_is "$GEN" || true
-NEW_UP="$(uplink_pid)"
-if alive "$RUNC" && [ "$(started_in "$RUNC")" = 2 ]; then pass "run restarts in place once sminos_jobs.py changes (pid $RUNC)"; else
-  fail "run restarts in place once sminos_jobs.py changes"; echo "    alive: $(alive "$RUNC" && echo yes || echo no), starts: $(started_in "$RUNC")"; fi
-assert_contains "$(cat "$T/run-code.out")" "its code changed: restarting in place" "saying why"
-if [[ "$NEW_UP" != "$UP" ]] && dead "$UP" && grep -Fq "uplink: stopped (pid $UP)" "$DLOG" && imported sminos_jobs "$NEW_UP"; then
-  pass "its uplink ($UP) ended on its SIGTERM, and a new one ($NEW_UP) runs the new code"; else
-  fail "its uplink ended on its SIGTERM, and a new one runs the new code"; echo "    uplink $UP -> '$NEW_UP'"; fi
-assert_within "$(gap "$RUNC")" 5 "the uplink is back on a new stream within seconds of the restart"
-# A pull in progress: the daemon's own script first, the uplink's last, a
-# script every quarter second between. It restarts once, after the last.
-UP="$NEW_UP"
-change sminos_daemon.py
-for f in sminos_codes.py sminos_hublog.py sminos_plane.py sminos_rpc.py sminos_bridge.py sminos_policy.py; do
-  sleep 0.25; printf '\n' >> "$CODE/$f"
-done
-sleep 0.25; change sminos_uplink.py
-PULLED="$(python3 -c 'import time; print("%.3f" % time.time())')"
-GEN=6
-until_true 200 gen_is "$GEN" || true
-NEW_UP="$(uplink_pid)"
-AT="$(restarts "$RUNC" | sed -n 2p)"
-if alive "$RUNC" && imported sminos_daemon "$RUNC" && [ "$(started_in "$RUNC")" = 3 ]; then
-  pass "a pull restarts it in place again, the same pid on the new code"; else
-  fail "a pull restarts it in place again, the same pid on the new code"
-  echo "    alive: $(alive "$RUNC" && echo yes || echo no), starts: $(started_in "$RUNC")"; fi
-if [[ -n "$AT" ]] && python3 -c 'import sys; sys.exit(float(sys.argv[1]) < float(sys.argv[2]))' "$AT" "$PULLED"; then
-  pass "once, after the pull's last script"; else fail "once, after the pull's last script"; echo "    at '$AT', pulled $PULLED"; fi
-if [[ "$NEW_UP" != "$UP" ]] && dead "$UP" && imported sminos_uplink "$NEW_UP"; then
-  pass "a new uplink ($NEW_UP) on the pull's code"; else fail "a new uplink on the pull's code"; echo "    uplink $UP -> '$NEW_UP'"; fi
-assert_within "$(gap "$RUNC")" 5 "back on a new stream within seconds"
-run "$SMINOS" daemon status
-assert_contains "$OUT" "daemon: running (pid $RUNC " "the restarted loop holds the run lock again"
-kill "$RUNC"
-set +e; wait "$RUNC"; RUNC_RC=$?; set -e
-assert_rc 0 "$RUNC_RC" "and SIGTERM ends it as before"
-until_true 100 dead "$NEW_UP" || true
-if dead "$NEW_UP"; then pass "its uplink with it"; else fail "its uplink with it"; fi
-assert_equals "$(restarts "$RUNC" | wc -l | tr -d ' ')" 2 "two restarts in place in all: the pull cost one"
-
-# ---- an uplink whose supervisor died while it started
-# The supervisor names itself at spawn: a parent that is gone before the
-# uplink could look (orphaned in its startup, imports, or credential read) is
-# never mistaken for the supervisor, so the orphan neither serves nor holds
-# uplink.lock.
-echo "orphaned while it starts:"
+# An uplink whose supervisor died while it started: the supervisor names
+# itself at spawn, so a parent gone before the uplink could look (orphaned in
+# its startup or imports) is never mistaken for it, and the orphan neither
+# serves nor holds uplink.lock.
 cat > "$T/launch.py" <<'PY'
 import os, subprocess, sys
 # daemon run's spawn of its uplink, then gone at once.
@@ -519,301 +213,105 @@ p = subprocess.Popen([sys.argv[1], "daemon", "uplink"], env={**os.environ, "SMIN
                      stdin=subprocess.DEVNULL, stdout=open(sys.argv[2], "a"), stderr=subprocess.STDOUT)
 print(p.pid)
 PY
-GEN_BEFORE="$(ctl generation)"
-ORPHAN="$(python3 "$T/launch.py" "$SMINOS" "$T/orphan.out")"
-until_true 100 dead "$ORPHAN" || true
-if [[ -n "$ORPHAN" ]] && dead "$ORPHAN"; then pass "an uplink whose supervisor is gone before it looked ends at once"; else
-  fail "an uplink whose supervisor is gone before it looked ends at once"; echo "    uplink pid '$ORPHAN'"
-  kill "$ORPHAN" 2>/dev/null || true; fi
-assert_equals "$(ctl generation)" "$GEN_BEFORE" "without opening a stream"
-assert_contains "$(cat "$DLOG")" "uplink: not started (pid $ORPHAN): its daemon (pid" "saying its daemon is gone"
-run "$SMINOS" daemon status
-assert_contains "$OUT" "uplink: not running" "and uplink.lock is free"
-
-# ---- an uplink ends promptly under a stream that never pauses
-echo "ending under steady traffic:"
-start_run() { # → RUN, UP: a daemon run whose uplink holds a new stream
-  local gen; gen=$(( $(ctl generation) + 1 ))
-  "$SMINOS" daemon run --interval 1 >> "$T/run3.out" 2>&1 & RUN=$!
-  PIDS+=("$RUN")
-  until_true 200 gen_is "$gen" || true
-  UP="$(uplink_pid)"
-}
-uplink_free() { "$SMINOS" daemon status | grep -q "uplink: not running"; }
-start_run
-touch "$T/flowing"
-ctl flow "$T/flowing" & FLOW=$!
-PIDS+=("$FLOW")
-sleep 0.5
-kill -9 "$RUN"
-set +e; wait "$RUN" 2>/dev/null; set -e
-until_true 40 dead "$UP" || true
-if [[ -n "$UP" ]] && dead "$UP"; then pass "with an hb every 50 ms, the orphan of a killed daemon run ends within 2 s"; else
-  fail "with an hb every 50 ms, the orphan of a killed daemon run ends within 2 s"; echo "    uplink pid '$UP'"; fi
-until_true 40 uplink_free || true
-if uplink_free; then pass "and releases uplink.lock"; else fail "and releases uplink.lock"; fi
-OLD_UP="$UP"
-start_run
-if [[ -n "$UP" && "$UP" != "$OLD_UP" ]] && alive "$UP"; then pass "a new daemon run's uplink takes the stream ($UP)"; else
-  fail "a new daemon run's uplink takes the stream"; echo "    uplink pid '$UP', was $OLD_UP"; fi
-kill "$UP"
-until_true 20 dead "$UP" || true
-if dead "$UP"; then pass "SIGTERM ends the uplink within a second under the same flow"; else
-  fail "SIGTERM ends the uplink within a second under the same flow"; fi
-assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP)" "on its own, not by the supervisor's kill"
-assert_contains "$(cat "$DLOG")" "uplink (pid $UP) exited with 0" "the supervisor saw it exit cleanly"
 restarted_after() { local p; p="$(uplink_pid)"; [[ -n "$p" && "$p" != "$1" ]] && alive "$p"; }
-until_true 100 restarted_after "$UP" || true
-UP="$(uplink_pid)"
-kill "$RUN"
-set +e; wait "$RUN"; set -e
-if dead "$UP"; then pass "SIGTERM to daemon run under the flow ends its uplink"; else fail "SIGTERM to daemon run under the flow ends its uplink"; fi
-assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP)" "which stopped on the supervisor's SIGTERM, before any kill"
-rm -f "$T/flowing"
-set +e; wait "$FLOW"; set -e
+status_has() { "$SMINOS" daemon status | grep -Fq "$1"; }
+run_started() { grep -Fq "daemon run started (pid $RUN," "$DLOG"; }
+start_run() { # → RUN: a daemon run, its start said in daemon.log
+  "$SMINOS" daemon run --interval 1 >> "$T/run.out" 2>&1 & RUN=$!
+  PIDS+=("$RUN")
+  until_true 200 run_started || true
+}
+# The uplink child of the daemon run that is RUN, if one runs.
+uplink_child() { pgrep -P "$RUN" -f "daemon uplink" || true; }
 
-# ---- the machine leaves the hub: hub.json removed under a running supervisor
-# (`sminos hub leave`) stops the uplink for good, and daemon.log says the
-# machine left rather than that the uplink restarts; an enrollment (hub.json
-# written again) brings it back. A change of hub.json that keeps a credential
-# keeps its own line (test-sync.sh pins it).
-echo "the machine leaves the hub:"
-LEFT="this machine left the hub (hub.json is gone): the uplink stays stopped until the machine is enrolled again"
+# ---- a machine not cut over: no uplink, whatever a stray hub.json says (#153)
+# Before the cutover there is nothing to connect to: the uplink exits at once,
+# and daemon run's supervisor starts none (it waits, probing an endpoint when
+# rl10.json names one). A hub.json, which enrolled a machine at the desk hub
+# before RL10, is no credential: it holds the DX1 key the endpoint may ask for
+# (legacy-key?, below), and nothing reads it as an enrollment.
+echo "a machine not cut over:"
+"$SMINOS" daemon uplink > "$T/uplink-none.out" 2>&1 & LONE=$!
+until_true 100 dead "$LONE" || true
+if dead "$LONE"; then pass "with no identity.json, the uplink exits at once"; else fail "with no identity.json, the uplink exits at once"; kill "$LONE"; fi
+set +e; wait "$LONE"; RC=$?; set -e
+assert_rc 0 "$RC" "with 0"
+assert_contains "$(cat "$DLOG")" "uplink: this machine is not cut over to an endpoint (no $SMINOS_HOME/daemon/identity.json): nothing to connect" \
+  "saying there is nothing to connect"
+KEY="$(python3 -c 'import base64; print(base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode())')"
+printf '{"hub": "%s", "org": "org-1", "machine": "testhost", "client_id": "cid-1", "client_secret": "secret-1", "key": "%s"}\n' \
+  "$HUB" "$KEY" > "$SMINOS_HOME/daemon/hub.json"
+chmod 600 "$SMINOS_HOME/daemon/hub.json"
+"$SMINOS" daemon uplink > "$T/uplink-stray.out" 2>&1 & LONE=$!
+until_true 100 dead "$LONE" || true
+if dead "$LONE"; then pass "with a stray hub.json and no identity.json, the uplink still exits at once"; else
+  fail "with a stray hub.json and no identity.json, the uplink still exits at once"; kill "$LONE"; fi
+set +e; wait "$LONE"; RC=$?; set -e
+assert_rc 0 "$RC" "with 0"
+assert_equals "$(grep -c "uplink: this machine is not cut over to an endpoint" "$DLOG")" 2 "saying again that there is nothing to connect"
+MARK=$(( $(wc -l < "$DLOG") + 1 ))
 start_run
-rm "$SMINOS_HOME/daemon/hub.json"
-until_true 100 dead "$UP" || true
-if [[ -n "$UP" ]] && dead "$UP"; then pass "with hub.json gone, the supervisor stops the uplink"; else
-  fail "with hub.json gone, the supervisor stops the uplink"; echo "    uplink pid '$UP'"; fi
-assert_contains "$(cat "$DLOG")" "uplink (pid $UP): $LEFT" "daemon.log says the machine left the hub and the uplink stays stopped"
-assert_not_contains "$(grep -F "(pid $UP)" "$DLOG")" "restarting" "not that it restarts the uplink"
-GEN="$(ctl generation)"
+TICKED="$(ticked)"
+until_true 200 ticked_since "$TICKED" || true
 sleep 2
 run "$SMINOS" daemon status
-assert_contains "$OUT" "daemon: running" "two seconds on, daemon run goes on"
-assert_not_contains "$OUT" "uplink: running" "with no uplink"
-assert_equals "$(ctl generation)" "$GEN" "and no stream was opened"
-write_cred "$HUB"
-until_true 200 gen_is $((GEN + 1)) || true
-OLD_UP="$UP"
-UP="$(uplink_pid)"
-if [[ -n "$UP" && "$UP" != "$OLD_UP" ]] && alive "$UP"; then pass "enrolled again, the uplink is back on a new stream"; else
-  fail "enrolled again, the uplink is back on a new stream"; echo "    uplink pid '$UP', was $OLD_UP"; fi
-# Gone while the uplink ends on its own: whichever the supervisor sees first,
-# it says the machine left, and restarts nothing.
-rm "$SMINOS_HOME/daemon/hub.json"
-kill -9 "$UP"
-said_left() { grep -F "(pid $UP)" "$DLOG" | grep -Fq "$LEFT"; }
-until_true 100 said_left || true
-if said_left; then pass "hub.json gone as the uplink is killed: daemon.log says the machine left"; else
-  fail "hub.json gone as the uplink is killed: daemon.log says the machine left"; grep -F "(pid $UP)" "$DLOG" || true; fi
-GEN="$(ctl generation)"
-sleep 2
-assert_not_contains "$(grep -F "(pid $UP)" "$DLOG")" "restarting" "and no restart"
-assert_equals "$(ctl generation)" "$GEN" "no stream opened"
-kill "$RUN"
-set +e; wait "$RUN"; set -e
-write_cred "$HUB"
-
-# ---- a burst from the hub while every POST is slow
-# A loaded machine's tick is slow (its POSTs, a ps for each live session),
-# and an import was a tick of its own, so a burst of one-event frames queued
-# for minutes: what is queued is now one batch, delivered once, then a tick.
-echo "a burst from the hub while every POST is slow:"
-cat > "$T/burst.py" <<'PY'
-import http.client, json, os, re, sys, time
-sys.path.insert(0, os.environ["SCRIPTS"])
-import sminos_codes as codes
-port, first, n, log_path, inbox, bound = (int(open(sys.argv[1]).read()), int(sys.argv[2]), int(sys.argv[3]),
-                                          sys.argv[4], sys.argv[5], float(sys.argv[6]))
-project, member, session = os.environ["HP"], os.environ["MEMBER"], os.environ["M"]
-frames = []
-for seq in range(first, first + n):  # one event a frame, as the hub fans a live sender's events out
-    ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
-    draft = {"ts": ts, "writer": "hub/" + member, "seq": seq, "kind": "human", "from": "human", "member": member,
-             "to": [{"session": session, "alias": "m"}], "text": "burst <%d>" % seq, "created": ts}
-    frames.append({"t": "events", "project": project,
-                   "events": [codes.seal(bytes(range(32)), "log", project, draft, codes.b64url(os.urandom(16)))]})
-last = ("burst <%d>" % (first + n - 1)).encode()
-t0 = time.time()
-c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-c.request("POST", "/control/send", json.dumps({"frames": frames}), {"Content-Type": "application/json"})
-took = "never"
-if c.getresponse().status == 200:
-    while time.time() - t0 < bound:
-        if last in open(log_path, "rb").read() and last in open(inbox, "rb").read():
-            took = "%.2f" % (time.time() - t0)
-            break
-        time.sleep(0.05)
-got = [int(x) for x in re.findall(rb"burst <(\d+)>", open(inbox, "rb").read())]
-print(took, len(got), len(set(got)), "ordered" if got == sorted(got) else "unordered")
-PY
-start_run
-opened() { [ "$(ctl opened "$HP")" = yes ]; }
-until_true 200 opened || true
-ctl post-delay 0.5
-# Seqs 7 on (hub/$MEMBER's 1-6 are taken above); one tick a frame would take
-# 300 × 0.5 s at least.
-read -r TOOK GOT DISTINCT ORDER <<<"$(python3 "$T/burst.py" "$T/hub.port" 7 300 "$HPLOG/hub.$MEMBER.jsonl" "$INBOX" 30)"
-ctl post-delay 0
-assert_within "$TOOK" 30 "300 one-event frames with every POST taking 0.5 s are all imported and delivered in a few ticks, not 150 s"
-assert_equals "$(grep -c '"text": "burst <' "$HPLOG/hub.$MEMBER.jsonl")" 300 "each imported once"
-assert_equals "$GOT $DISTINCT $ORDER" "300 300 ordered" "and each pushed to m once, in seq order"
-kill "$RUN"
-set +e; wait "$RUN"; set -e
-
-# ---- ending while the hub holds a POST's answer, a backlog still to go
-echo "ending during a held POST:"
-backlog() { # label — three events of 300 KB under testhost/human, each its own upload
-  python3 - "$SCRIPTS/sminos.py" "$HP" "$1" <<'PY'
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
-p = mod.find_project(sys.argv[2])
-for i in range(3):
-    mod.log_append(p, mod.writer_id(), "human", **{"from": "human", "to": "*", "text": "%s %d " % (sys.argv[3], i) + "x" * 300000})
-PY
-}
-held_count() { local h; h="$(ctl held)"; [ "$(wc -w <<<"$h" | tr -d ' ')" -ge "$1" ]; }
-HELD=0
-# The hub holds the answer: sending no byte of it (hold), half its status head
-# (stall-headers), or its head and one byte of a ten-byte body (stall-body).
-for fault in hold stall-headers stall-body; do
-  for ending in SIGTERM "a killed daemon run"; do
-    start_run
-    ctl fault events "$fault"
-    backlog "backlog under $fault"
-    HELD=$((HELD + 1))
-    until_true 200 held_count "$HELD" || true
-    if held_count "$HELD"; then pass "$fault: the hub stalls the answer to the first upload of a backlog of three"; else
-      fail "$fault: the hub stalls an upload's answer"; fi
-    UP="$(uplink_pid)"
-    if [[ "$ending" == SIGTERM ]]; then
-      kill "$UP"
-      until_true 20 dead "$UP" || true
-      if dead "$UP"; then pass "$fault, $ending: the uplink ends within a second"; else
-        fail "$fault, $ending: the uplink ends within a second"; fi
-      until_true 60 restarted_after "$UP" || true
-      if restarted_after "$UP"; then pass "$fault, $ending: its lock is free at once (the supervisor's next uplink holds it)"; else
-        fail "$fault, $ending: its lock is free at once"; fi
-      kill "$RUN"
-      set +e; wait "$RUN"; set -e
-    else
-      kill -9 "$RUN"
-      set +e; wait "$RUN" 2>/dev/null; set -e
-      until_true 40 dead "$UP" || true
-      if [[ -n "$UP" ]] && dead "$UP"; then pass "$fault, $ending: the orphan ends within 2 s"; else
-        fail "$fault, $ending: the orphan ends within 2 s"; echo "    uplink pid '$UP'"; fi
-      until_true 40 uplink_free || true
-      if uplink_free; then pass "$fault, $ending: uplink.lock is released"; else fail "$fault, $ending: uplink.lock is released"; fi
-    fi
-    assert_equals "$(ctl after-held)" 0 "$fault, $ending: no later batch of the backlog is posted on that stream"
-    ctl release
-  done
-done
-if [ "$(grep -c "the uplink is ending during a POST" "$DLOG")" -ge 6 ]; then pass "each of the six says it ended during a POST"; else
-  fail "each of the six says it ended during a POST"; grep "ending" "$DLOG" | tail -8; fi
-
-# ---- the lease while the main thread is held
-# The hub renews the machine's lease only with an hb-ack of the stream's
-# generation, and lapses it three heartbeats (here 6 s) after the last. A
-# lane can be held far longer than that in a POST the hub holds, and the main
-# thread in a delivery to a session slow to take its frames, or a slow tick.
-# The stream is answered meanwhile; a stream that is really dead still goes
-# offline.
-echo "the lease while the main thread is held:"
-lease_is() { [ "$(ctl lease)" = "$1" ]; }
-acks_since() { echo $(( $(ctl acks "$1") - $2 )); }
-start_run
-until_true 200 opened || true
-GEN="$(ctl generation)"
-until_true 200 lease_is "$GEN online" || true
-assert_equals "$(ctl lease)" "$GEN online" "the stream's hello starts its lease"
-ACKS="$(ctl acks "$GEN")"
-ctl fault events hold
-backlog "held while the heartbeats go on"
-HELD=$((HELD + 1))
-until_true 200 held_count "$HELD" || true
-if held_count "$HELD"; then pass "the hub holds the answer to an upload: the log lane waits in that POST"; else
-  fail "the hub holds the answer to an upload"; fi
-sleep 10
-assert_equals "$(ctl lapses "$GEN") $(ctl lease)" "0 $GEN online" "10 s into the held POST, the stream's lease never lapsed"
-if [ "$(acks_since "$GEN" "$ACKS")" -ge 3 ]; then pass "its heartbeats were answered meanwhile"; else
-  fail "its heartbeats were answered meanwhile"; echo "    $(acks_since "$GEN" "$ACKS") hb-acks"; fi
-ctl release
-GEN=$((GEN + 1))
-until_true 200 lease_is "$GEN online" || true
-assert_equals "$(ctl lease)" "$GEN online" "released and refused, the POST ends the stream, and the next one's lease starts"
-ACKS="$(ctl acks "$GEN")"
-rm -f "$INBOX.held"
-touch "$INBOX.hold"
-# Seqs 307 on: hub/$MEMBER's 1-306 are taken above. m's inbox holds each
-# frame's close, which a push waits 5 s for: three take the main thread 15 s.
-for seq in 307 308 309; do ctl send "$(seal ok "$seq" "said while m holds its frames, $seq")" >/dev/null; done
-until_true 200 test -f "$INBOX.held" || true
-assert_equals "$(test -f "$INBOX.held" && echo held)" held "a delivery to m waits on m's inbox"
-sleep 10
-assert_equals "$(ctl lapses "$GEN") $(ctl lease)" "0 $GEN online" "10 s into that delivery, the stream's lease never lapsed"
-if [ "$(acks_since "$GEN" "$ACKS")" -ge 3 ]; then pass "its heartbeats were answered meanwhile"; else
-  fail "its heartbeats were answered meanwhile"; echo "    $(acks_since "$GEN" "$ACKS") hb-acks"; fi
-rm -f "$INBOX.hold"
-until_true 200 grep -q "said while m holds its frames, 309" "$INBOX" || true
-assert_contains "$(cat "$INBOX")" "said while m holds its frames, 309" "and the delivery goes through"
-ctl mute
-has_lapsed() { [ "$(ctl lapses "$1")" -ge 1 ]; }
-until_true 200 has_lapsed "$GEN" || true
-assert_equals "$(ctl lapses "$GEN")" 1 "a half-open stream (no heartbeat, nothing closed): its lease lapses"
-until_true 200 gen_is $((GEN + 1)) || true
-assert_equals "$(ctl generation)" $((GEN + 1)) "the uplink gives the silent stream up and opens another"
+assert_contains "$OUT" "daemon: running (pid $RUN " "daemon run runs on a machine with a stray hub.json and no identity.json"
+assert_not_contains "$OUT" "uplink" "its supervisor waits: daemon status names no uplink"
+assert_equals "$(uplink_child)" "" "and no uplink child runs"
+assert_not_contains "$(tail -n +"$MARK" "$DLOG")" "uplink" "daemon.log says nothing of one: none started, none exited"
+assert_equals "$(test -f "$SMINOS_HOME/daemon/identity.json" && echo there || echo none)" none "nothing cut the machine over"
 kill "$RUN"
 set +e; wait "$RUN"; set -e
 
 # ---- a position of this machine's own writer, refused, and what it writes next
-# A lying hub holds a forgery at testhost/<session>:1, which this machine
-# refuses, spending the position. Its own next event there takes 2, which it
-# uploads past the hub's 1, and whose echo it imports as present.
+# In-process, on the log plane as the endpoint feeds it (each event wrapped
+# `{event, signer}`, #153 M6). A lying upstream sends a malformed event at
+# testhost/<session>:1, which this machine refuses, spending the position. Its
+# own next event there takes 2, which it uploads past the upstream's 1, and
+# whose echo it imports as present.
 echo "a refused position of this machine's own writer:"
 OWN="$(python3 - "$SCRIPTS" "$HP" <<'PY'
-import json, os, sys, time
+import json, sys, time
 sys.path.insert(0, sys.argv[1])
-import sminos, sminos_codes as codes, sminos_hublog as hublog
+import sminos, sminos_hublog as hublog
 p = sminos.find_project(sys.argv[2])
-key = bytes(range(32))
-hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+hl = hublog.HubLog(p, {"machine": "testhost"})
+signer = {"kind": "machine", "name": "testhost"}
 w = "testhost/5a000002-0000-4000-8000-0000000000b2"
 ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
-forged = codes.seal(bytes(32), "log", p.id, {"ts": ts, "writer": w, "seq": 1, "kind": "say", "from": "x", "to": "*",
-                                             "text": "forged"}, codes.b64url(os.urandom(16)))
+forged = {"event": {"ts": ts, "writer": w, "seq": 1, "from": "x", "to": "*", "text": "forged"}, "signer": signer}
 _, refused = hl.take([forged])
 mine = sminos.log_append(p, w, "say", **{"from": "k", "to": "*", "text": "this machine's own"})
 hl.have, hl.sent = {w: 1}, {w: 1}
 uploaded = [e["seq"] for frame, _ in hl.uploads() for e in frame["events"] if e["writer"] == w]
-appended, echoed = hl.take([hublog.seal(key, p.id, mine)])
+appended, echoed = hl.take([{"event": mine, "signer": signer}])
 print(json.dumps([[f["reason"] for f in refused], mine["seq"], uploaded, appended, [f["reason"] for f in echoed]]))
 PY
 )"
-assert_equals "$OWN" '[["bad-code"], 2, [2], 0, []]' \
-  "the forgery is refused, the machine's next event takes the position after it, uploads past the hub's 1, and its echo imports as present"
+assert_equals "$OWN" '[["bad-shape"], 2, [2], 0, []]' \
+  "the malformed event is refused, the machine's next event takes the position after it, uploads past the upstream's 1, and its echo imports as present"
 
 # A writer under this machine's prefix that it never allocates is no file the
 # allocator can open: the frame still yields its rejection and the valid event.
 echo "a refused position under this machine's prefix that it does not allocate:"
 LONG="$(python3 - "$SCRIPTS" "$HP" <<'PY'
-import json, os, sys, time
+import json, sys, time
 sys.path.insert(0, sys.argv[1])
-import sminos, sminos_codes as codes, sminos_hublog as hublog
+import sminos, sminos_hublog as hublog
 p = sminos.find_project(sys.argv[2])
-key = bytes(range(32))
-hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+hl = hublog.HubLog(p, {"machine": "testhost"})
+signer = {"kind": "machine", "name": "other"}
 ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
-junk = codes.seal(bytes(32), "log", p.id, {"ts": ts, "writer": "testhost/" + "x" * 300, "seq": 1, "kind": "say",
-                                           "from": "x", "to": "*", "text": "junk"}, codes.b64url(os.urandom(16)))
-good = hublog.seal(key, p.id, {"ts": ts, "writer": "other/5a000003-0000-4000-8000-0000000000c3", "seq": 1,
-                               "kind": "say", "from": "o", "to": "*", "text": "valid"})
+junk = {"event": {"ts": ts, "writer": "testhost/" + "x" * 300, "seq": 1, "from": "x", "to": "*", "text": "junk"},
+        "signer": signer}
+good = {"event": {"ts": ts, "writer": "other/5a000003-0000-4000-8000-0000000000c3", "seq": 1, "kind": "say",
+                  "from": "o", "to": "*", "text": "valid"}, "signer": signer}
 appended, refused = hl.take([junk, good])
 print(json.dumps([[f["reason"] for f in refused], appended]))
 PY
 )"
-assert_equals "$LONG" '[["bad-code"], 1]' \
-  "an unusable writer under the machine's prefix is refused as bad-code and the valid event after it in the frame is appended"
+assert_equals "$LONG" '[["bad-shape"], 1]' \
+  "an unusable writer under the machine's prefix is refused and the valid event after it in the frame is appended"
 
 # A malformed event at a position this machine's own event holds is refused
 # bad-shape, but its position is coordinated like any own-writer refusal: it is
@@ -824,50 +322,51 @@ import json, sys
 sys.path.insert(0, sys.argv[1])
 import sminos, sminos_hublog as hublog
 p = sminos.find_project(sys.argv[2])
-key = bytes(range(32))
-hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+hl = hublog.HubLog(p, {"machine": "testhost"})
+signer = {"kind": "machine", "name": "testhost"}
 w = "testhost/5a000004-0000-4000-8000-0000000000d4"
 mine = sminos.log_append(p, w, "say", **{"from": "k", "to": "*", "text": "this machine's own"})
-_, refused = hl.take([{"writer": w, "seq": mine["seq"], "ts": None, "kind": "say"}])
-appended, echoed = hl.take([hublog.seal(key, p.id, mine)])
+_, refused = hl.take([{"event": {"writer": w, "seq": mine["seq"], "ts": None, "kind": "say"}, "signer": signer}])
+appended, echoed = hl.take([{"event": mine, "signer": signer}])
 print(json.dumps([mine["seq"], [f["reason"] for f in refused], appended, [f["reason"] for f in echoed]]))
 PY
 )"
 assert_equals "$HELD" '[1, ["bad-shape"], 0, []]' \
   "the malformed event is refused bad-shape, and the genuine event's echo imports as present, not refused as spent"
 
-# An event whose code verifies, at a position another event holds here, is
-# refused `conflict` (DX2): its code is good, its position taken. The position
-# stays the held event's, whose echo still imports as present.
-echo "an event that verifies, at a position another event holds:"
+# An event at a position another event holds here is refused `conflict`: its
+# shape is good, its position taken. The position stays the held event's,
+# whose echo still imports as present.
+echo "an event at a position another event holds:"
 CONFLICT="$(python3 - "$SCRIPTS" "$HP" <<'PY'
 import json, sys
 sys.path.insert(0, sys.argv[1])
 import sminos, sminos_hublog as hublog
 p = sminos.find_project(sys.argv[2])
-key = bytes(range(32))
-hl = hublog.HubLog(p, {"key": key, "machine": "testhost"})
+hl = hublog.HubLog(p, {"machine": "testhost"})
+signer = {"kind": "machine", "name": "testhost"}
 w = "testhost/5a000005-0000-4000-8000-0000000000e5"
 mine = sminos.log_append(p, w, "say", **{"from": "k", "to": "*", "text": "this machine's own"})
-other = hublog.seal(key, p.id, {**mine, "text": "another event at the same position"})
+other = {"event": {**mine, "text": "another event at the same position"}, "signer": signer}
 appended, refused = hl.take([other])
-echo_appended, echoed = hl.take([hublog.seal(key, p.id, mine)])
+echo_appended, echoed = hl.take([{"event": mine, "signer": signer}])
 print(json.dumps([mine["seq"], appended, [[f["reason"], f["event"]] for f in refused], echo_appended,
                   [f["reason"] for f in echoed]]))
 PY
 )"
 assert_equals "$CONFLICT" '[1, 0, [["conflict", {"writer": "testhost/5a000005-0000-4000-8000-0000000000e5", "seq": 1}]], 0, []]' \
-  "a different event that verifies at a held position is refused conflict, not bad-code, and the held event's echo imports as present"
+  "a different event at a held position is refused conflict, and the held event's echo imports as present"
 
 # ---- RL10: the machine cuts over to its endpoint (O12 M5)
 # The endpoint stand-in (endpoint_standin.py) writes rl10.json where
 # MAWS_USER_DATA puts it. One that names no endpoint (mode 644) is said once.
-# One that does is probed beside the hub's stream, never in its place: a
-# welcome without the whole identity (an endpoint not enrolled yet), a wrong
-# token and a refusal each leave the hub's uplink as it was. Only a whole
-# welcome cuts the machine over, for good: no connection to the hub stand-in
-# after it, with hub.json replaced or the endpoint gone. The endpoint's
-# policy is the machine's, which delivery reads.
+# One that does is probed while no uplink runs: a welcome without the whole
+# identity (an endpoint not enrolled yet), a wrong token and a refusal each
+# leave the machine as it was, not cut over and with no uplink. Only a whole
+# welcome cuts the machine over, for good: a hub.json written after it, or the
+# endpoint gone, starts nothing else. The endpoint's policy is the machine's,
+# which delivery reads. The stray hub.json above stays: the endpoint's
+# legacy-key? reads its DX1 key, and nothing else reads it.
 echo "RL10, the endpoint (local-only):"
 export MAWS_USER_DATA="$T/maws"
 EPDIR="$MAWS_USER_DATA/mawsd/endpoint"
@@ -877,56 +376,42 @@ PIDS+=("$!")
 until_true 100 test -S "$EPDIR/ctl.sock"
 ep() { python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPDIR" "$@"; }
 epq() { ep state | python3 -c 'import json, sys; d = json.load(sys.stdin); print(json.dumps(eval(sys.argv[1], {"d": d})))' "$1"; }
-hubq() { python3 - "$T/hub.port" "$1" <<'PY'
-import http.client, json, sys
-c = http.client.HTTPConnection("127.0.0.1", int(open(sys.argv[1]).read()), timeout=30)
-c.request("GET", "/control/state")
-print(json.dumps(eval(sys.argv[2], {"d": json.loads(c.getresponse().read())})))
-PY
-}
-hub_seen() { hubq '[d["generation"], len(d["posted"]), len(d["requests"])]'; }
-next_seq() { python3 -c 'import json, sys; print(max(json.loads(l)["seq"] for l in open(sys.argv[1]) if l.strip()) + 1)' "$HPLOG/hub.$MEMBER.jsonl"; }
 cut_over() { test -f "$SMINOS_HOME/daemon/identity.json"; }
 probed() { grep -Fq "uplink: the endpoint, probed: $1" "$DLOG"; }
-dx2_holds() { # label — the hub's uplink is the one start_run began, its stream open, and a web event reaches m
-  local took
-  if [[ "$(uplink_pid)" == "$UP" ]] && alive "$UP" && [ "$(ctl opened "$HP")" = yes ]; then
-    pass "$1: the hub's uplink runs on, its stream open"; else fail "$1: the hub's uplink runs on, its stream open"; fi
-  took="$(deliver_time "$(next_seq)" "said from the web: $1")"
-  assert_within "$took" 5.0 "$1: an event from the hub still reaches m"
+no_uplink() { # label — the machine is not cut over, and no uplink runs
   assert_equals "$(cut_over && echo there || echo none)" none "$1: no identity.json"
+  assert_equals "$(uplink_child)" "" "$1: no uplink runs"
 }
 ep rl10 '{"mode": "644"}' >/dev/null
 NOEP="is mode 644, not 600"
 start_run
-assert_equals "$(test -n "$UP" && alive "$UP" && echo up)" up "with an rl10.json of mode 644, the uplink holds the hub's stream as before"
 sleep 2
-assert_equals "$(grep -c "rl10: no endpoint: .*$NOEP" "$DLOG")" 1 "that rl10.json is no endpoint, said once in daemon.log"
+assert_equals "$(grep -c "rl10: no endpoint: .*$NOEP" "$DLOG")" 1 "an rl10.json of mode 644 is no endpoint, said once in daemon.log"
 assert_equals "$(epq 'd["conns"]')" 0 "and nothing dials its socket"
-run "$SMINOS" daemon status
-assert_contains "$OUT" "uplink: running (pid $UP" "daemon status shows the hub's uplink"
+no_uplink "with an rl10.json of mode 644"
 
 echo "  an endpoint not enrolled, a wrong token, a refusal:"
 ep rl10 '{}' >/dev/null
 until_true 200 probed "present but not enrolled" || true
 assert_equals "$(probed "present but not enrolled" && echo said)" said \
   "a welcome without the identity's org and ref is an endpoint not enrolled (daemon.log)"
-dx2_holds "an endpoint not enrolled"
+no_uplink "an endpoint not enrolled"
 run "$SMINOS" daemon status
-assert_contains "$OUT" "uplink: running (pid $UP" "daemon status shows the hub's uplink"
-assert_contains "$OUT" "endpoint: present at $EPDIR/rl10.json but not enrolled" "and the endpoint present but not enrolled"
+assert_contains "$OUT" "endpoint: present at $EPDIR/rl10.json but not enrolled: no complete welcome yet, so this machine is not cut over" \
+  "daemon status shows the endpoint present but not enrolled"
+assert_not_contains "$OUT" "uplink" "and no uplink"
 ep set "{\"identity\": $IDENTITY}" >/dev/null
 ep rl10 '{"token": "0000000000000000000000000000000000000000000000000000000000000000"}' >/dev/null
 until_true 200 probed "it did not welcome this machine (the endpoint closed the socket" || true
 assert_equals "$(probed "it did not welcome this machine (the endpoint closed the socket" && echo said)" said \
   "a wrong token: the endpoint closes the socket (daemon.log)"
-dx2_holds "a wrong token"
+no_uplink "a wrong token"
 ep set '{"refuse_reason": "not-listed"}' >/dev/null
 ep rl10 '{"token": "1111111111111111111111111111111111111111111111111111111111111111"}' >/dev/null
 until_true 200 probed "it did not welcome this machine (the endpoint refused the hello: not-listed)" || true
 assert_equals "$(probed "it did not welcome this machine (the endpoint refused the hello: not-listed)" && echo said)" said \
   "a refusal (daemon.log)"
-dx2_holds "a refusal"
+no_uplink "a refusal"
 assert_equals "$(epq '[f["frame"]["t"] for f in d["received"]]')" "$(epq '["hello"] * len(d["hellos"])')" \
   "the probes sent the endpoint nothing but their hellos"
 ep set '{"refuse_reason": null}' >/dev/null
@@ -936,22 +421,16 @@ HELLOS="$(epq 'len(d["hellos"])')"
 ep rl10 '{}' >/dev/null
 until_true 200 cut_over || true
 assert_equals "$(cut_over && echo there)" there "a whole welcome to the probe writes identity.json"
-moved() { grep -Fq "uplink (pid $UP): the endpoint welcomed this machine, which is cut over: restarting it on RL10 (local-only)" "$DLOG"; }
-until_true 200 moved || true
-assert_equals "$(moved && echo said)" said "and only then is the hub's uplink stopped, the uplink restarted on RL10 (daemon.log)"
-until_true 100 dead "$UP" || true
-assert_equals "$(dead "$UP" && echo gone)" gone "the hub's uplink is gone"
+rl10_up() { local p; p="$(uplink_child)"; [[ -n "$p" ]] && grep -Fq "uplink: started (pid $p) for the endpoint (RL10, local-only)" "$DLOG"; }
+until_true 200 rl10_up || true
+assert_equals "$(rl10_up && echo up)" up "and only then does an uplink start, on RL10 (daemon.log)"
+UP="$(uplink_child)"
 assert_equals "$(python3 -c 'import os, stat, sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$SMINOS_HOME/daemon/identity.json")" \
   0o600 "identity.json is mode 600"
 on_rl10() { [ "$(epq 'len(d["hellos"])')" -ge $((HELLOS + 2)) ]; }
 until_true 200 on_rl10 || true
 assert_equals "$(epq "[len(d['hellos']) - $HELLOS, all(h['hello']['token'] == d['token'] for h in d['hellos'][$HELLOS:])]")" "[2, true]" \
   "the probe's hello and then the RL10 uplink's, each with rl10.json's token"
-NEWUP() { p="$(uplink_pid)"; [[ -n "$p" && "$p" != "$UP" ]] && alive "$p"; }
-until_true 100 NEWUP || true
-UP="$(uplink_pid)"
-sleep 1
-SEEN="$(hub_seen)"
 run "$SMINOS" daemon status
 assert_contains "$OUT" "uplink: RL10 (local-only), running (pid $UP" "daemon status prints uplink: RL10 (local-only)"
 rl10_hello() { [ "$(epq "any(f['frame'].get('t') == 'hello' and f['frame'].get('project') == '$HP' for f in d['received'])")" = true ]; }
@@ -975,7 +454,11 @@ import sminos, sminos_hublog as hublog
 p = sminos.find_project(os.environ["HP"])
 w = "hub/" + os.environ["MEMBER"]
 path = os.path.join(p.home, "log", w.replace("/", ".") + ".jsonl")
-last = max(json.loads(l)["seq"] for l in open(path) if l.strip())
+try:
+    held = [json.loads(l)["seq"] for l in open(path) if l.strip()]
+except FileNotFoundError:
+    held = []
+last = max(held, default=0)
 ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
 e = {"ts": ts, "writer": w, "seq": last + 1, "kind": "human", "from": "human", "member": os.environ["MEMBER"],
      "to": [{"session": os.environ["M"], "alias": "m"}], "text": sys.argv[1], "created": ts}
@@ -1008,12 +491,12 @@ assert_contains "$(cat "$INBOX")" "said from outside after read-only" "an event 
 assert_equals "$(epq "any(f['frame'].get('t') == 'words?' and f['frame']['event'].get('text') == 'said from outside after read-only' for f in d['received'])")" true \
   "on the endpoint's verdict, asked with words?"
 
+
 echo "  for good:"
 printf '{"hub": "%s", "org": "org-1", "machine": "testhost", "client_id": "cid-1", "client_secret": "secret-1", "key": "%s", "enrolled": "%s"}\n' \
   "$HUB" "$KEY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$SMINOS_HOME/daemon/hub.json"
 sleep 2
-assert_equals "$(uplink_pid)" "$UP" "a fresh DX7 credential in hub.json after the cutover restarts nothing"
-assert_equals "$(hub_seen)" "$SEEN" "and since the cutover nothing has reached the hub stand-in: no stream, no POST, no request"
+assert_equals "$(uplink_child)" "$UP" "a fresh DX7 credential in hub.json after the cutover restarts nothing"
 ep unlink-rl10 >/dev/null
 until_true 100 dead "$UP" || true
 if dead "$UP"; then pass "with rl10.json removed, the uplink child exits"; else fail "with rl10.json removed, the uplink child exits"; fi
@@ -1021,10 +504,9 @@ assert_contains "$(cat "$DLOG")" "uplink (pid $UP): rl10.json is gone, and this 
   "daemon.log says why"
 assert_contains "$(cat "$DLOG")" "uplink: this machine is cut over to its endpoint, which is not running" "and that it waits for the endpoint"
 sleep 2
+assert_equals "$(uplink_child)" "" "no other uplink starts in its place"
 run "$SMINOS" daemon status
-assert_not_contains "$OUT" "uplink: running" "no DX2 uplink starts in its place"
 assert_contains "$OUT" "uplink: cut over; the endpoint is not running" "daemon status says cut over; the endpoint is not running"
-assert_equals "$(hub_seen)" "$SEEN" "the hub stand-in still saw nothing"
 CUTOVER="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["cutover"])' "$SMINOS_HOME/daemon/identity.json")"
 HELLOS="$(epq 'len(d["hellos"])')"
 ep rl10 '{}' >/dev/null
@@ -1040,30 +522,24 @@ assert_equals "$(epq 'd["legacy"]["key"]')" "\"$KEY\"" "the endpoint holds the D
 # steps take decides where the machine ends. identity.json removed while the
 # endpoint still serves RL10 cuts it over again at once, through the probe;
 # the endpoint taken out first (rl10.json and its socket gone, as `mawsd
-# endpoint unenroll` leaves it), then identity.json, leaves RL10 for good:
-# DX2 from hub.json when one is there, no uplink when none is.
+# endpoint unenroll` leaves it), then identity.json, leaves RL10 for good: no
+# uplink runs, a stray hub.json there or not, as on a machine never enrolled.
 echo "  the cutover undone:"
 cutover_at() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["cutover"])' "$SMINOS_HOME/daemon/identity.json"; }
-status_has() { "$SMINOS" daemon status | grep -Fq "$1"; }
 until_true 200 status_has "uplink: RL10 (local-only), running" || true
-UP="$(uplink_pid)"
+UP="$(uplink_child)"
 CUTOVER="$(cutover_at)"
-RECUT="uplink (pid [0-9]*): the endpoint welcomed this machine, which is cut over: restarting it on RL10"
-RECUTS="$(grep -c "$RECUT" "$DLOG" || true)"
 rm "$SMINOS_HOME/daemon/identity.json"
 until_true 200 cut_over || true
 assert_equals "$(cut_over && echo there || echo none)" there \
   "identity.json removed while the endpoint serves RL10: the probe cuts the machine over again"
-assert_contains "$(cat "$DLOG")" "uplink (pid $UP): identity.json is gone, which undoes the cutover: restarting it on the hub (DX2)" \
-  "the supervisor left RL10 for the hub first (daemon.log)"
+assert_contains "$(cat "$DLOG")" \
+  "uplink (pid $UP): identity.json is gone, which undoes the cutover: no uplink runs until a probe's welcome cuts this machine over again" \
+  "the supervisor stopped the RL10 uplink first (daemon.log)"
 if [ "$(cutover_at)" != "$CUTOVER" ]; then pass "at a new cutover time"; else fail "at a new cutover time"; fi
-# The hub's uplink the supervisor started meanwhile holds uplink.lock until the RL10 one replaces it.
-recut() { [ "$(grep -c "$RECUT" "$DLOG" || true)" -gt "$RECUTS" ]; }
-until_true 200 recut || true
-DX2_UP="$(grep "$RECUT" "$DLOG" | tail -1 | sed 's/.*uplink (pid \([0-9]*\)).*/\1/')"
-back_on_rl10() { local p; p="$(uplink_pid)"; [[ -n "$p" && "$p" != "$DX2_UP" ]] && alive "$p" && status_has "uplink: RL10 (local-only), running (pid $p"; }
+back_on_rl10() { local p; p="$(uplink_child)"; [[ -n "$p" && "$p" != "$UP" ]] && status_has "uplink: RL10 (local-only), running (pid $p"; }
 until_true 200 back_on_rl10 || true
-UP="$(uplink_pid)"
+UP="$(uplink_child)"
 run "$SMINOS" daemon status
 assert_contains "$OUT" "uplink: RL10 (local-only), running (pid $UP" "and the uplink is back on RL10"
 cp "$SMINOS_HOME/daemon/identity.json" "$T/identity.kept"
@@ -1075,20 +551,18 @@ if dead "$UP"; then pass "the endpoint taken out (rl10.json and its socket gone)
 until_true 200 status_has "uplink: cut over; the endpoint is not running" || true
 assert_equals "$(status_has "uplink: cut over; the endpoint is not running" && echo yes)" yes \
   "daemon status: cut over; the endpoint is not running"
+MARK=$(( $(wc -l < "$DLOG") + 1 ))
 rm "$SMINOS_HOME/daemon/identity.json"
-on_dx2() { local p; p="$(uplink_pid)"; [[ -n "$p" && "$p" != "$UP" ]] && alive "$p" && [ "$(ctl opened "$HP")" = yes ]; }
-until_true 200 on_dx2 || true
-UP="$(uplink_pid)"
-dx2_holds "then identity.json removed"
-run "$SMINOS" daemon status
-assert_contains "$OUT" "uplink: running (pid $UP" "daemon status shows the hub's uplink"
-assert_not_contains "$OUT" "RL10" "and nothing of RL10"
 sleep 2
+# Acceptance 4 of #153, the supervisor's clause: hub.json is there, identity.json is not.
+assert_equals "$(test -f "$SMINOS_HOME/daemon/hub.json" && echo there)" there "then identity.json removed, a stray hub.json left in place"
+assert_equals "$(uplink_child)" "" "the supervisor waits: no uplink runs"
+run "$SMINOS" daemon status
+assert_not_contains "$OUT" "uplink" "daemon status names none, as on a machine never enrolled"
+assert_not_contains "$(tail -n +"$MARK" "$DLOG")" "uplink: started" "and none started since the cutover was undone"
 assert_equals "$(cut_over && echo there || echo none)" none "nothing cuts it over again: no endpoint is there to probe"
-assert_equals "$(uplink_pid)" "$UP" "and the hub's uplink runs on"
 
 mv "$SMINOS_HOME/daemon/hub.json" "$T/hub.kept"
-until_true 100 dead "$UP" || true
 cp "$T/identity.kept" "$SMINOS_HOME/daemon/identity.json"
 until_true 200 status_has "uplink: cut over; the endpoint is not running" || true
 assert_equals "$(status_has "uplink: cut over; the endpoint is not running" && echo yes)" yes \
@@ -1101,6 +575,379 @@ assert_equals "$(cut_over && echo there || echo none)" none "and nothing cuts it
 kill "$RUN"
 set +e; wait "$RUN"; set -e
 assert_not_contains "$(cat "$DLOG")" "$KEY" "the DX1 key handed to the endpoint is in no log line"
+
+# ---- RL10: the uplink child's supervision (board #153 M3c)
+# The uplink child as daemon run keeps it, on a machine cut over to its
+# endpoint: the child speaks RL10 to endpoint_standin.py, and nothing of the
+# hub is in reach (no hub.json). The machine cuts over as a new
+# one does, through `daemon probe` and the endpoint's whole welcome. A web
+# human for m comes down the socket as the endpoint relays one, wrapped and
+# verified ({event, signer}), and reaches m on the endpoint's `words` verdict,
+# which the uplink asks for (O12 M6): the import, the ask and the push are all
+# the uplink's, the tick loop's nowhere in them.
+echo "RL10, the uplink child's supervision:"
+DLOG_AT=$(( $(wc -l < "$DLOG") + 1 ))   # daemon.log from here on is this block's
+python3 "$SCRIPT_DIR/endpoint_standin.py" serve "$EPDIR" \
+  "{\"identity\": $IDENTITY, \"verdict\": \"words\", \"ask_legacy\": false}" &
+PIDS+=("$!")
+until_true 100 test -S "$EPDIR/ctl.sock"
+run "$SMINOS" daemon probe
+assert_contains "$OUT" "welcomed as testhost of org org-1: this machine is cut over" \
+  "with no hub.json, daemon probe's whole welcome cuts the machine over"
+assert_equals "$(test -e "$SMINOS_HOME/daemon/hub.json" && echo there || echo none) $(cut_over && echo cut || echo not)" "none cut" \
+  "identity.json is written, and no hub.json is there"
+# The test's hands on the endpoint stand-in's ctl socket: a web human for m
+# down the socket (a send, or one timed until its text reaches the inbox),
+# a burst of frames, and a frame every 50 ms while a file exists.
+cat > "$T/epctl.py" <<'PY'
+import json, os, socket, sys, time
+directory, cmd, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+
+def ctl(op, arg=None):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(os.path.join(directory, "ctl.sock"))
+    s.sendall((json.dumps({"op": op, "arg": arg or {}}) + "\n").encode())
+    data = b""
+    while True:
+        chunk = s.recv(1 << 16)
+        if not chunk:
+            break
+        data += chunk
+    s.close()
+    return json.loads(data or b"{}")
+
+def human(seq, text, signer=True, **changes):
+    member = os.environ["MEMBER"]
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    e = {"ts": ts, "writer": "hub/" + member, "seq": seq, "kind": "human", "from": "human", "member": member,
+         "to": [{"session": os.environ["M"], "alias": "m"}], "text": text, "created": ts, **changes}
+    wrapped = {"event": e}
+    if signer:
+        wrapped["signer"] = {"kind": "device", "member": member, "device": "dev-1", "keyId": "k-dev-1"}
+    return wrapped
+
+def events(project, *wrapped):
+    return {"t": "events", "project": project, "events": list(wrapped)}
+
+hp = os.environ["HP"]
+if cmd == "send":  # seq text — a web human for m
+    print(json.dumps(ctl("send", {"frames": [events(hp, human(int(args[0]), args[1]))]})))
+elif cmd == "deliver":  # seq text inbox — seconds until the text is in the inbox, or never
+    inbox, text = args[2], args[1].encode()
+    t0 = time.time()
+    answer = ctl("send", {"frames": [events(hp, human(int(args[0]), args[1]))]})
+    while answer.get("ok") and time.time() - t0 < 5:
+        if text in open(inbox, "rb").read():
+            print("%.2f" % (time.time() - t0))
+            sys.exit(0)
+        time.sleep(0.02)
+    print("never")
+elif cmd == "forged":  # seq — what no log takes, each at that position of hub/<member> or of no hub project here
+    seq = int(args[0])
+    print(json.dumps(ctl("send", {"frames": [
+        events(hp, human(seq, "forged: no signer", signer=False)),
+        events(hp, human(seq, "forged: a verified key of its own", verified={"signer": {"kind": "device"}})),
+        events(hp, human(seq, "forged: a writer no log holds", writer="hub")),
+        events(os.environ["OTHER_PROJECT"], human(seq, "forged: another project's")),
+    ]})))
+elif cmd == "burst":  # frames bytes — that many frames the uplink passes by, in sends under the ctl line's bound
+    n, size = int(args[0]), int(args[1])
+    frame = {"t": "noise", "pad": "x" * size}
+    per = max(1, (1 << 19) // (size + 32))
+    t0, status = time.time(), "ok"
+    for i in range(0, n, per):
+        if not ctl("send", {"frames": [frame] * min(per, n - i)}).get("ok"):
+            status = "failed"
+    print("%s %.2f" % (status, time.time() - t0))
+elif cmd == "flow":  # path — a frame every 50 ms until the file goes away, to whichever connection is up
+    while os.path.exists(args[0]):
+        try:
+            ctl("send", {"frames": [{"t": "noise"}]})
+        except OSError:
+            pass
+        time.sleep(0.05)
+PY
+epctl() { python3 "$T/epctl.py" "$EPDIR" "$@"; }
+# The positions of hub/$MEMBER from here on: one past every one held or spent here.
+RSEQ="$(python3 - "$HPLOG/hub.$MEMBER.jsonl" "$SMINOS_HOME/projects/$HP/uplink.json" "hub/$MEMBER" <<'PY'
+import json, sys
+held = [json.loads(l)["seq"] for l in open(sys.argv[1]) if l.strip()]
+try:
+    spent = json.load(open(sys.argv[2])).get("spent", {}).get(sys.argv[3], [])
+except (OSError, ValueError):
+    spent = []
+print(max(held + spent) + 1)
+PY
+)"
+rl10_deliver() { # text → TOOK: the next position's web human, timed to m's inbox
+  TOOK="$(epctl deliver "$RSEQ" "$1" "$INBOX")"
+  RSEQ=$((RSEQ + 1))
+}
+ep_hellos() { epq 'len(d["hellos"])'; }
+hp_open_now() { # the connection up now has said hello for the hub project
+  [ "$(epq "any(f['conn'] == d['current'] and f['frame'].get('t') == 'hello' and f['frame'].get('project') == '$HP' for f in d['received'])")" = true ]; }
+hellos_above() { [ "$(ep_hellos)" -gt "$1" ]; }
+rl10_running() { status_has "uplink: RL10 (local-only), running (pid $(uplink_pid)"; }
+rl10_free() { status_has "uplink: RL10 (local-only), not running"; }
+start_run_rl10() { # [env...] → RUN, UP: a daemon run whose RL10 uplink holds a new connection
+  local before; before="$(ep_hellos)"
+  env "$@" "$SMINOS" daemon run --interval 1 >> "$T/run-rl10.out" 2>&1 & RUN=$!
+  PIDS+=("$RUN")
+  until_true 200 hellos_above "$before" || true
+  until_true 200 rl10_running || true
+  UP="$(uplink_pid)"
+}
+
+echo "  daemon run and its uplink:"
+# m2: a second member of hubproj, its model's ten tool calls enough for a derivation to fork.
+M2=5a000002-0000-4000-8000-0000000000a2
+sleep 600 & M2_PID=$!
+PIDS+=("$M2_PID")
+printf '{"pid":%s,"sessionId":"%s","name":"m2","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$M2_PID" "$M2" "$HPR" > "$HOME/.claude/sessions/m2.json"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  printf '{"type":"assistant","uuid":"m2%06d","isSidechain":false,"message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_m2%06d","name":"Bash","input":{}}]}}\n' "$i" "$i"
+done > "$HOME/.claude/projects/hp/$M2.jsonl"
+rm -f "$STUB_STATE/fork-started" "$STUB_STATE/fork-ended"
+HELLOS="$(ep_hellos)"
+start_run_rl10 SMINOS_DERIVE_EVERY=1 STUB_FORK_SLEEP=8
+assert_equals "$(epq "[len(d['hellos']) - $HELLOS, d['hellos'][-1]['hello']['token'] == d['token']]")" "[1, true]" \
+  "RL10: daemon run starts the uplink, which says hello on the endpoint's socket with rl10.json's token"
+if [[ -n "$UP" && "$UP" != "$RUN" ]] && alive "$UP"; then pass "RL10: the uplink is a process of its own ($UP)"; else
+  fail "RL10: the uplink is a process of its own"; echo "    uplink pid '$UP', run $RUN"; fi
+run "$SMINOS" daemon status
+assert_contains "$OUT" "uplink: RL10 (local-only), running (pid $UP" "RL10: daemon status shows it"
+run "$SMINOS" daemon run --interval 1
+assert_rc 1 "$RC" "RL10: a second daemon run is refused"
+assert_contains "$OUT" "a daemon already runs" "RL10: by the run lock"
+run "$SMINOS" daemon uplink
+assert_rc 1 "$RC" "RL10: a second uplink is refused"
+assert_contains "$OUT" "an uplink already runs" "RL10: by the uplink lock"
+until_true 200 hp_open_now || true
+
+echo "  while a derivation runs:"
+until_true 200 test -f "$STUB_STATE/fork-started" || true
+assert_contains "$(tail -n +"$DLOG_AT" "$DLOG")" "derive --all started" "RL10: the tick loop starts a derivation"
+assert_equals "$(test -f "$STUB_STATE/fork-started" && echo started)" started "RL10: whose fork (m2's) sleeps"
+rl10_deliver "RL10: said from the web during the derivation"
+assert_within "$TOOK" 1.0 "RL10: a web human the endpoint sends reaches m within a second while the derivation runs"
+if [ ! -f "$STUB_STATE/fork-ended" ]; then pass "RL10: the derivation still runs"; else fail "RL10: the derivation still runs"; fi
+
+echo "  while a fetch hangs:"
+rm -f "$T/ssh-entered"
+touch "$T/ssh-gate" "$SMINOS_HOME/daemon/nudge"
+until_true 200 test -f "$T/ssh-entered" || true
+assert_equals "$(test -f "$T/ssh-entered" && echo in)" in "RL10: the tick loop is inside a fetch of the hub-less project that hangs"
+TICKED="$(ticked)"
+read -r STATUS BURST_TOOK <<<"$(epctl burst 4000 1000)"
+assert_equals "$STATUS" ok "RL10: 4 MB of frames from the endpoint are drained while the fetch hangs"
+assert_within "$BURST_TOOK" 5.0 "RL10: promptly"
+WORDS_BEFORE="$(epq "len([f for f in d['received'] if f['frame'].get('t') == 'words?'])")"
+rl10_deliver "RL10: said from the web during the hung fetch"
+assert_within "$TOOK" 1.0 "RL10: a web human reaches m within a second while the fetch hangs"
+assert_equals "$(epq "[f['frame']['event']['text'] for f in d['received'] if f['frame'].get('t') == 'words?'][$WORDS_BEFORE:]")" \
+  '["RL10: said from the web during the hung fetch"]' "RL10: delivered by the uplink itself, on the verdict it asked for (words?)"
+assert_contains "$(grep -F "RL10: said from the web during the hung fetch" "$HPLOG/hub.$MEMBER.jsonl")" \
+  '"verified": {"signer": {"kind": "device"' "RL10: stored with the endpoint's verification, as it arrived"
+FSEQ=$RSEQ
+RSEQ=$((RSEQ + 1))
+epctl forged "$FSEQ" >/dev/null
+until_true 100 grep -q "events for project '$OTHER_PROJECT'" "$DLOG" || true
+until_true 100 grep -q "its writer is not one a log holds" "$DLOG" || true
+assert_not_contains "$(cat "$HPLOG"/*.jsonl)" "forged:" "RL10: nothing refused enters the log"
+assert_not_contains "$(cat "$INBOX")" "forged:" "RL10: or reaches m"
+assert_contains "$(cat "$DLOG")" "in hubproj: it carries no signer" "RL10: an event the endpoint did not wrap with its signer is refused, and logged"
+assert_contains "$(cat "$DLOG")" "in hubproj: its event carries a verified key of its own" "RL10: so is one claiming a verification of its own"
+assert_contains "$(cat "$DLOG")" "in hubproj: its writer is not one a log holds" "RL10: and one whose writer fails its shape"
+assert_contains "$(cat "$DLOG")" "events for project '$OTHER_PROJECT', which is no hub project of org org-1 known here: ignored" \
+  "RL10: a frame for a project not known here is ignored"
+reported_up() { [ "$(epq "len([f for f in d['received'] if f['frame'].get('t') == 'rejected' and f['frame'].get('event') == {'writer': 'hub/$MEMBER', 'seq': $FSEQ}])")" -ge 2 ]; }
+until_true 100 reported_up || true
+assert_equals "$(reported_up && echo up)" up "RL10: each refusal at a position is reported up to the endpoint (rejected)"
+assert_equals "$(ticked)" "$TICKED" "RL10: the tick loop is still in the fetch all along"
+if alive "$RUN"; then pass "RL10: and daemon run is alive"; else fail "RL10: and daemon run is alive"; fi
+rm -f "$T/ssh-gate"
+until_true 200 ticked_since "$TICKED" || true
+if ticked_since "$TICKED"; then pass "RL10: released, the tick loop goes on"; else fail "RL10: released, the tick loop goes on"; fi
+
+echo "  an import during a tick's delivery:"
+SAYER=testhost/0f000000-0000-4000-8000-0000000000f1
+python3 - "$SCRIPTS/sminos.py" "$HP" "$M" "$SAYER" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+mod.log_append(p, sys.argv[4], "say", **{"from": "k", "to": [{"session": sys.argv[3], "alias": "m"}], "text": "RL10: a say the tick delivers"})
+PY
+rm -f "$INBOX.held"
+touch "$INBOX.hold" "$SMINOS_HOME/daemon/nudge"
+until_true 200 test -f "$INBOX.held" || true
+assert_contains "$(cat "$INBOX")" "RL10: a say the tick delivers" "RL10: a tick is pushing an owed say to m, its close held"
+MSEQ=$RSEQ
+epctl send "$RSEQ" "RL10: said from the web mid-delivery" >/dev/null
+RSEQ=$((RSEQ + 1))
+until_true 100 grep -q "RL10: said from the web mid-delivery" "$HPLOG/hub.$MEMBER.jsonl" || true
+assert_contains "$(cat "$HPLOG/hub.$MEMBER.jsonl")" "RL10: said from the web mid-delivery" "RL10: the uplink imports a human for m meanwhile"
+sleep 0.5
+assert_not_contains "$(cat "$INBOX")" "RL10: said from the web mid-delivery" "RL10: and waits on m's delivery lock"
+rm -f "$INBOX.hold"
+until_true 100 grep -q "RL10: said from the web mid-delivery" "$INBOX" || true
+TICKED="$(ticked)"
+touch "$SMINOS_HOME/daemon/nudge"
+until_true 200 ticked_since "$TICKED" || true
+touch "$SMINOS_HOME/daemon/nudge"
+TICKED="$(ticked)"
+until_true 200 ticked_since "$TICKED" || true
+assert_equals "$(grep -o "RL10: said from the web mid-delivery" "$INBOX" | wc -l | tr -d ' ')" 1 "RL10: the human reaches m once, two ticks later"
+assert_equals "$(grep -o "RL10: a say the tick delivers" "$INBOX" | wc -l | tr -d ' ')" 1 "RL10: and the say once"
+assert_equals "$(python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(d[sys.argv[2]], d[sys.argv[3]]["settled"])' \
+  "$SMINOS_HOME/projects/$HP/delivered/$M.json" "hub/$MEMBER" "$SAYER")" \
+  "{'settled': $MSEQ, 'pending': None, 'attempts': 0} 1" "RL10: each writer's delivery settled at its event, nothing pending"
+assert_not_contains "$(cat "$DLOG")" "out of order" "RL10: no deliverer settled out of order"
+
+echo "  the two fail apart:"
+until_true 200 derive_lock_is_a_dir || true
+FAILS="$(grep -c "tick failed: IsADirectoryError" "$DLOG" || true)"
+failed_again() { [ "$(grep -c "tick failed: IsADirectoryError" "$DLOG" || true)" -gt "$FAILS" ]; }
+until_true 200 failed_again || true
+assert_equals "$(failed_again && echo failed)" failed "RL10: a tick fails (its derivation lock is a directory)"
+rl10_deliver "RL10: said from the web while ticks fail"
+assert_within "$TOOK" 1.0 "RL10: the uplink still delivers within a second"
+assert_equals "$(uplink_pid)" "$UP" "RL10: the same uplink"
+rmdir "$SMINOS_HOME/daemon/derive.lock"
+HELLOS="$(ep_hellos)"
+kill -9 "$UP"
+until_true 200 hellos_above "$HELLOS" || true
+assert_equals "$(epq "len(d['hellos']) - $HELLOS")" 1 "RL10: a killed uplink is restarted, and says hello on a new connection"
+NEW_UP="$(uplink_pid)"
+if [[ -n "$NEW_UP" && "$NEW_UP" != "$UP" ]] && alive "$NEW_UP"; then pass "RL10: a new uplink process ($NEW_UP)"; else
+  fail "RL10: a new uplink process"; echo "    uplink pid '$NEW_UP', was $UP"; fi
+assert_contains "$(cat "$DLOG")" "uplink (pid $UP) exited on signal 9; restarting in 1s" "RL10: daemon.log says so"
+TICKED="$(ticked)"
+until_true 200 ticked_since "$TICKED" || true
+if ticked_since "$TICKED" && alive "$RUN"; then pass "RL10: the tick loop goes on"; else fail "RL10: the tick loop goes on"; fi
+until_true 200 hp_open_now || true
+rl10_deliver "RL10: said from the web to the new uplink"
+assert_within "$TOOK" 1.0 "RL10: the new uplink delivers"
+
+echo "  stopping:"
+kill "$RUN"
+set +e; wait "$RUN"; set -e
+until_true 100 dead "$NEW_UP" || true
+if dead "$NEW_UP"; then pass "RL10: SIGTERM to daemon run stops its uplink"; else fail "RL10: SIGTERM to daemon run stops its uplink"; fi
+assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $NEW_UP)" "RL10: which says so"
+start_run_rl10
+kill -9 "$RUN"
+set +e; wait "$RUN" 2>/dev/null; set -e
+until_true 100 dead "$UP" || true
+if [[ -n "$UP" ]] && dead "$UP"; then pass "RL10: an uplink whose daemon run was killed ends on its own"; else
+  fail "RL10: an uplink whose daemon run was killed ends on its own"; echo "    uplink pid '$UP'"; fi
+assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP): its daemon is gone" "RL10: saying its daemon is gone"
+
+echo "  a change of code:"
+# change, imported, restarts, gap and started_in (above), on a fresh copy of the code.
+CACHE="$T/cache-rl10"
+mkdir -p "$CACHE"
+cp -R "$PLUGIN_ROOT/skills/sminos" "$CACHE/"
+CODE="$CACHE/sminos/scripts"
+before_run="$(ep_hellos)"
+"$CODE/sminos" daemon run --interval 1 > "$T/run-code-rl10.out" 2>&1 & RUNC=$!
+PIDS+=("$RUNC")
+until_true 200 hellos_above "$before_run" || true
+until_true 200 rl10_running || true
+UP="$(uplink_pid)"
+HELLOS="$(ep_hellos)"
+for f in "$CODE"/*.py; do cp "$f" "$f.new" && mv "$f.new" "$f"; done
+sleep 4  # a tick (1 s) and the settle (1 s) would have restarted it by now
+if alive "$RUNC" && [ "$(started_in "$RUNC")" = 1 ] && [ "$(uplink_pid)" = "$UP" ] && [ "$(ep_hellos)" = "$HELLOS" ]; then
+  pass "RL10: scripts re-made with the same bytes restart nothing: the uplink ($UP) keeps its connection"; else
+  fail "RL10: scripts re-made with the same bytes restart nothing"
+  echo "    starts: $(started_in "$RUNC"), uplink $UP -> '$(uplink_pid)', hellos $HELLOS -> $(ep_hellos)"; fi
+change sminos_jobs.py
+until_true 200 hellos_above "$HELLOS" || true
+up_moved() { local p; p="$(uplink_pid)"; [[ -n "$p" && "$p" != "$1" ]] && alive "$p"; }
+until_true 200 up_moved "$UP" || true
+NEW_UP="$(uplink_pid)"
+if alive "$RUNC" && [ "$(started_in "$RUNC")" = 2 ]; then pass "RL10: run restarts in place once sminos_jobs.py changes (pid $RUNC)"; else
+  fail "RL10: run restarts in place once sminos_jobs.py changes"; echo "    alive: $(alive "$RUNC" && echo yes || echo no), starts: $(started_in "$RUNC")"; fi
+assert_contains "$(cat "$T/run-code-rl10.out")" "its code changed: restarting in place" "RL10: saying why"
+if [[ "$NEW_UP" != "$UP" ]] && dead "$UP" && grep -Fq "uplink: stopped (pid $UP)" "$DLOG" && imported sminos_jobs "$NEW_UP"; then
+  pass "RL10: its uplink ($UP) ended on its SIGTERM, and a new one ($NEW_UP) runs the new code"; else
+  fail "RL10: its uplink ended on its SIGTERM, and a new one runs the new code"; echo "    uplink $UP -> '$NEW_UP'"; fi
+assert_within "$(gap "$RUNC")" 5 "RL10: the uplink is back on a new connection within seconds of the restart"
+UP="$NEW_UP"
+HELLOS="$(ep_hellos)"
+change sminos_daemon.py
+for f in sminos_rl10.py sminos_hublog.py sminos_plane.py sminos_rpc.py sminos_bridge.py sminos_policy.py; do
+  sleep 0.25; printf '\n' >> "$CODE/$f"
+done
+sleep 0.25; change sminos_uplink.py
+PULLED="$(python3 -c 'import time; print("%.3f" % time.time())')"
+until_true 200 hellos_above "$HELLOS" || true
+until_true 200 up_moved "$UP" || true
+NEW_UP="$(uplink_pid)"
+AT="$(restarts "$RUNC" | sed -n 2p)"
+if alive "$RUNC" && imported sminos_daemon "$RUNC" && [ "$(started_in "$RUNC")" = 3 ]; then
+  pass "RL10: a pull restarts it in place again, the same pid on the new code"; else
+  fail "RL10: a pull restarts it in place again, the same pid on the new code"
+  echo "    alive: $(alive "$RUNC" && echo yes || echo no), starts: $(started_in "$RUNC")"; fi
+if [[ -n "$AT" ]] && python3 -c 'import sys; sys.exit(float(sys.argv[1]) < float(sys.argv[2]))' "$AT" "$PULLED"; then
+  pass "RL10: once, after the pull's last script"; else fail "RL10: once, after the pull's last script"; echo "    at '$AT', pulled $PULLED"; fi
+if [[ "$NEW_UP" != "$UP" ]] && dead "$UP" && imported sminos_uplink "$NEW_UP"; then
+  pass "RL10: a new uplink ($NEW_UP) on the pull's code"; else fail "RL10: a new uplink on the pull's code"; echo "    uplink $UP -> '$NEW_UP'"; fi
+assert_within "$(gap "$RUNC")" 5 "RL10: back on a new connection within seconds"
+run "$SMINOS" daemon status
+assert_contains "$OUT" "daemon: running (pid $RUNC " "RL10: the restarted loop holds the run lock again"
+kill "$RUNC"
+set +e; wait "$RUNC"; RUNC_RC=$?; set -e
+assert_rc 0 "$RUNC_RC" "RL10: and SIGTERM ends it as before"
+until_true 100 dead "$NEW_UP" || true
+if dead "$NEW_UP"; then pass "RL10: its uplink with it"; else fail "RL10: its uplink with it"; fi
+assert_equals "$(restarts "$RUNC" | wc -l | tr -d ' ')" 2 "RL10: two restarts in place in all: the pull cost one"
+
+echo "  orphaned while it starts:"
+HELLOS="$(ep_hellos)"
+ORPHAN="$(python3 "$T/launch.py" "$SMINOS" "$T/orphan-rl10.out")"
+until_true 100 dead "$ORPHAN" || true
+if [[ -n "$ORPHAN" ]] && dead "$ORPHAN"; then pass "RL10: an uplink whose supervisor is gone before it looked ends at once"; else
+  fail "RL10: an uplink whose supervisor is gone before it looked ends at once"; echo "    uplink pid '$ORPHAN'"
+  kill "$ORPHAN" 2>/dev/null || true; fi
+assert_equals "$(ep_hellos)" "$HELLOS" "RL10: without saying hello to the endpoint"
+assert_contains "$(cat "$DLOG")" "uplink: not started (pid $ORPHAN): its daemon (pid" "RL10: saying its daemon is gone"
+run "$SMINOS" daemon status
+assert_contains "$OUT" "uplink: RL10 (local-only), not running" "RL10: and uplink.lock is free"
+
+echo "  ending under steady traffic:"
+start_run_rl10
+touch "$T/flowing"
+epctl flow "$T/flowing" & FLOW=$!
+PIDS+=("$FLOW")
+sleep 0.5
+kill -9 "$RUN"
+set +e; wait "$RUN" 2>/dev/null; set -e
+until_true 40 dead "$UP" || true
+if [[ -n "$UP" ]] && dead "$UP"; then pass "RL10: with a frame every 50 ms, the orphan of a killed daemon run ends within 2 s"; else
+  fail "RL10: with a frame every 50 ms, the orphan of a killed daemon run ends within 2 s"; echo "    uplink pid '$UP'"; fi
+until_true 40 rl10_free || true
+if rl10_free; then pass "RL10: and releases uplink.lock"; else fail "RL10: and releases uplink.lock"; fi
+OLD_UP="$UP"
+start_run_rl10
+if [[ -n "$UP" && "$UP" != "$OLD_UP" ]] && alive "$UP"; then pass "RL10: a new daemon run's uplink takes the connection ($UP)"; else
+  fail "RL10: a new daemon run's uplink takes the connection"; echo "    uplink pid '$UP', was $OLD_UP"; fi
+kill "$UP"
+until_true 20 dead "$UP" || true
+if dead "$UP"; then pass "RL10: SIGTERM ends the uplink within a second under the same flow"; else
+  fail "RL10: SIGTERM ends the uplink within a second under the same flow"; fi
+assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP)" "RL10: on its own, not by the supervisor's kill"
+assert_contains "$(cat "$DLOG")" "uplink (pid $UP) exited with 0" "RL10: the supervisor saw it exit cleanly"
+until_true 100 restarted_after "$UP" || true
+UP="$(uplink_pid)"
+kill "$RUN"
+set +e; wait "$RUN"; set -e
+if dead "$UP"; then pass "RL10: SIGTERM to daemon run under the flow ends its uplink"; else fail "RL10: SIGTERM to daemon run under the flow ends its uplink"; fi
+assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP)" "RL10: which stopped on the supervisor's SIGTERM, before any kill"
+rm -f "$T/flowing"
+set +e; wait "$FLOW"; set -e
+assert_not_contains "$(tail -n +"$DLOG_AT" "$DLOG")" "Traceback" "RL10: nothing daemon.log says of this block is a traceback"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

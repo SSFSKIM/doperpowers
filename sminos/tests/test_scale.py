@@ -4,21 +4,18 @@ project of its org (F1 of the org directory's acceptance run, 2026-10-19):
 a member on another machine costs no look for a transcript here; a session
 with none here (an old seat's) costs no walk of ~/.claude/projects per ask;
 a reconciliation deciding on a resolution older than a move does not undo
-the move (F3); and the uplink takes the org's directory ahead of the frames
-queued before it. Hermetic: HOME and SMINOS_HOME are temporary.
+the move (F3). Hermetic: HOME and SMINOS_HOME are temporary.
 """
 
 import errno
 import glob
 import json
 import os
-import queue
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import types
 import unittest
@@ -42,11 +39,13 @@ with open(os.path.join(T, "bin", "claude"), "w") as f:
 os.chmod(os.path.join(T, "bin", "claude"), 0o755)
 os.environ["PATH"] = os.path.join(T, "bin") + os.pathsep + os.environ["PATH"]
 ORG, MACHINE, OTHER = "org-1", "testhost", "mini"
-with open(os.path.join(SH, "daemon", "hub.json"), "w") as f:
-    json.dump({"hub": "http://127.0.0.1:9", "org": ORG, "machine": MACHINE}, f)
 sys.path.insert(0, SCRIPTS)
+sys.path.insert(0, HERE)
 
 import sminos  # noqa: E402
+from rl10_identity import write_identity  # noqa: E402
+
+write_identity(SH, MACHINE, org=ORG)   # cut over: enrolled in ORG, its own project MACHINE's
 
 daemon = sminos.daemon_module()
 uplink = sminos.sibling_module("sminos_uplink")
@@ -297,7 +296,7 @@ class SharedRefresh(unittest.TestCase):
             sminos.transcripts_now()
 
 
-class HotLooks(unittest.TestCase):
+class HotLooksOnRl10(unittest.TestCase):
     """The upload pass between scans (HubLog.writers with `live`): a machine's
     history is hundreds of own writers of sessions long ended, and the pass
     runs every UPLOAD_EVERY. It looks again only at the hot ones — a running
@@ -322,7 +321,7 @@ class HotLooks(unittest.TestCase):
         for name in os.listdir(self.log_dir):
             os.utime(os.path.join(self.log_dir, name), (self.HOUR_AGO, self.HOUR_AGO))
         self.still()
-        self.hl = hublog.HubLog(self.project, {"key": b"k" * 32, "machine": MACHINE})
+        self.hl = hublog.HubLog(self.project, {"machine": MACHINE})
         self.hl.writers(own=True)   # the whole look: every own writer read
 
     def write(self, writer, sid, seq):
@@ -466,7 +465,7 @@ class HotLooks(unittest.TestCase):
                          "." + prefix + "a.jsonl", "x" + prefix + "a.jsonl", "legacy.a.jsonl", ".legacy.a.jsonl",
                          prefix.upper() + "a.jsonl", prefix + "a\nb.jsonl"):
                 open(os.path.join(d, name), "w").close()
-            hl = hublog.HubLog(types.SimpleNamespace(home=home), {"key": b"k" * 32, "machine": machine})
+            hl = hublog.HubLog(types.SimpleNamespace(home=home), {"machine": machine})
             for archive in (False, True):
                 hl.archive, hl.listing = archive, None
                 want = [p for prefix_ in [prefix] + (["legacy."] if archive else [])
@@ -884,7 +883,7 @@ class QuietMirror(unittest.TestCase):
         self.assertEqual(self.gits(), ["fetch", "for-each-ref"])
 
 
-class CheckoutsFromTheRead(unittest.TestCase):
+class CheckoutsFromTheReadOnRl10(unittest.TestCase):
     """Machine presence takes a project's checkouts from the plane's last
     read of who joined it from here (Plane.here). The scan that draws them
     comes before the plane's tick, so a draw at CHECKOUTS_EVERY can precede
@@ -910,8 +909,8 @@ class CheckoutsFromTheRead(unittest.TestCase):
             pass
 
     def setUp(self):
-        self.cred = {"key": b"k" * 32, "machine": MACHINE, "org": ORG, "hub": "http://127.0.0.1:9"}
-        self.link = uplink.Link(self.cred, {})
+        self.cred = {"machine": MACHINE, "org": ORG, "hub": "http://127.0.0.1:9"}
+        self.link = uplink.Link(self.cred, {}, transport=mock.Mock(number=1))
         self.addCleanup(self.link.close)
         self.link.log_lane = self.Lane()
         self.sid = str(uuid.uuid4())
@@ -1001,45 +1000,22 @@ class WholeReads(unittest.TestCase):
         self.assertEqual(sminos.log_read(self.project)[-1]["session"], after.events[-1]["session"])
 
 
-class OrgAhead(unittest.TestCase):
-    """The org's directory is handled before the frames queued ahead of it."""
-
-    def test_org_frame_is_taken_before_the_queue(self):
-        stream = uplink.Stream({"hub": "http://127.0.0.1:9"})
-        seen = []
-
-        class Link:
-            def dispatch(self, frame, _stream):
-                seen.append(frame["t"])
-
-            def deliver_imports(self):
-                pass
-
-            def tick(self):
-                seen.append("tick")
-
-        for _ in range(5):
-            stream.items.put(("frame", "events", json.dumps({"t": "events", "project": "p", "events": []})))
-        stream.org = json.dumps({"t": "org", "projects": [], "machines": []})
-        stream.items.put(("org",))
-        stream.items.put(("closed", "done"))
-        uplink.serve_link(Link(), stream, lambda: False, threading.Event())
-        self.assertEqual(seen[0], "org")
-        self.assertEqual(seen.count("org"), 1)
-        self.assertEqual(seen[1:], ["events"] * 5)
-
-
-class BenchOpens(unittest.TestCase):
-    """bench_scale.py opens on a small synthetic machine: an open of a
-    large and of a small live session at +0.5 s, every live session in
-    sequence after the warm-up, then the pair again after a restart; each
-    line with its moment, size and E."""
+class BenchOpensOnRl10(unittest.TestCase):
+    """bench_scale.py opens on a small synthetic machine cut over to its
+    endpoint (#153 M3e): the real uplink child on RL10's session lane
+    against endpoint_standin, its subscribes sent down the connection and E
+    read off the `session` frames the stand-in received. An open of a large
+    and of a small live session at +0.5 s, every live session in sequence
+    after the warm-up, then the pair again after a restart; each line with
+    its moment, size and E, and the build each must show: cold at +0.5 s,
+    warm at +1 s, and after the restart the build the first uplink saved,
+    loaded."""
 
     def test_the_opens_at_their_moments(self):
         r = subprocess.run([sys.executable, os.path.join(HERE, "bench_scale.py"), "opens", SCRIPTS, "--dirs", "3",
                             "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "1", "--mini", "1",
                             "--says", "2", "--own", "2", "--live", "5", "--large", "1", "--large-rows", "600",
-                            "--warm-after", "1"],
+                            "--warm-after", "1", "--rl10"],
                            capture_output=True, text=True, timeout=300,
                            env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")})
         lines = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
@@ -1072,24 +1048,29 @@ class BenchOpens(unittest.TestCase):
             self.assertEqual(o["build"], "loaded", "after the restart, the build the first uplink saved")
 
     def test_a_stand_in_that_fails_to_start_is_ended(self):
-        """bench_scale's stand-in is ended when its setup fails after it
-        started (here: the machine has no credential to point at it)."""
+        """The endpoint stand-in is stopped when the machine's cut-over
+        fails after it started listening (here: the probe wrote no
+        identity.json)."""
         sys.path.insert(0, HERE)
+        import bench_rig
         import bench_scale
-        started = []
-        real = subprocess.Popen
+        root = tempfile.mkdtemp(prefix="smo.", dir="/tmp")   # short: a Unix socket's path is bounded
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        env = types.SimpleNamespace(root=root, sh=os.path.join(root, "s"), env={})
+        made = []
+        real = bench_rig.EndpointHub.__init__
 
-        def popen(*args, **kwargs):
-            p = real(*args, **kwargs)
-            started.append(p)
-            return p
-        root = tempfile.mkdtemp(dir=T)
-        env = types.SimpleNamespace(root=root, sh=os.path.join(root, "s"))
-        with mock.patch.object(bench_scale.subprocess, "Popen", popen):
-            with self.assertRaises(OSError):
-                bench_scale.standin(env)
-        self.assertEqual(len(started), 1)
-        self.assertIsNotNone(started[0].poll(), "the stand-in did not outlive its failed setup")
+        def init(host, *args, **kwargs):
+            real(host, *args, **kwargs)
+            made.append(host)
+        with mock.patch.object(bench_rig.EndpointHub, "__init__", init), \
+                mock.patch.object(bench_scale, "run_child", lambda *a, **k: subprocess.CompletedProcess(a, 1)):
+            with self.assertRaisesRegex(RuntimeError, "did not cut the machine over"):
+                bench_scale.endpoint_host(env, SCRIPTS)
+        host, = made
+        self.assertTrue(host.ep.stopping, "the stand-in did not outlive its failed setup")
+        self.assertFalse(os.path.exists(host.ep.socket_path))
+        self.assertEqual(env.env["SMINOS_RL10"], host.ep.rl10_path(), "the machine was pointed at it")
 
 
 def processes():
@@ -1174,13 +1155,9 @@ class BenchStops(unittest.TestCase):
                     shutil.rmtree(line.split()[1], ignore_errors=True)
 
     def mid_warmup(self, sig, *mode):
-        standin = "endpoint_standin.py" if mode else "hub_standin.py"
         self.stopped(sig, ["run", SCRIPTS, *mode, "--warmup", "120", "--seconds", "60"], lambda commands, _: (
-            any("daemon uplink" in c for c in commands) and any(standin in c for c in commands)
+            any("daemon uplink" in c for c in commands) and any("endpoint_standin.py" in c for c in commands)
             and sum(c.startswith("sleep 86399") for c in commands) == 3))
-
-    def test_sigterm_on_dx2(self):
-        self.mid_warmup(signal.SIGTERM)
 
     def test_sigterm_on_rl10(self):
         self.mid_warmup(signal.SIGTERM, "--rl10")

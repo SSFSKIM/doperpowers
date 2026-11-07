@@ -9,15 +9,18 @@ up — and its sending session, while live, is shown
 whichever way the hub's word arrives: its refusal, its tombstone on resync
 (DX2's tombstone, RL10's `spent withheld`) or a `have`'s withheld list.
 
-- Dx2: HubLog against hub_standin.py over DX2, which withholds a message
-  naming a session nobody exposed.
-- Restate: over DX2 too, a session's own `joined` or `state` the hub
+- Rl10: the uplink in this process against endpoint_standin.py, whose ctl
+  `refuse` sends `not-reachable`.
+- Dx2OnRl10: an uncoded HubLog against endpoint_standin's own admission,
+  whose `withhold` plays the hub's reach judgement (Reach), which withholds
+  a message naming a session nobody exposed.
+- RestateOnRl10: the same rig, a session's own `joined` or `state` the hub
   withheld restated once by the daemon's next tick (MAWS #492): admitted,
   never restated again once withheld again, owed nothing after a newer one;
   the debt and the restatement's identity outliving an interrupted write,
   and a restated marker kept until its verdict.
-- Rl10: the uplink in this process against endpoint_standin.py, whose ctl
-  `refuse` sends `not-reachable`.
+- RestateThroughTheUplink: one restatement end to end through the uplink;
+  StandinWithholds: the stand-in's `withhold` itself.
 
 Sessions are live `sleep` processes whose inboxes inbox_standin.py serves
 (test_words.Machine). Hermetic: HOME, SMINOS_HOME and MAWS_USER_DATA are
@@ -37,9 +40,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-import test_reach as tr  # noqa: E402  (its stand-in hub, as two machines meet it)
 import test_words as tw  # noqa: E402  (its machine, sessions and inboxes, the endpoint stand-in)
 
+import endpoint_standin  # noqa: E402
 import sminos  # noqa: E402
 import sminos_archive as archive  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
@@ -79,52 +82,121 @@ class Sender(tw.Machine):
         return json.loads(Path(self.p.home, hublog.STATE_FILE).read_text())
 
 
-class OverDx2(Sender):
-    """HubLog against a hub stand-in of the class's own, over DX2."""
+class Rl10(Sender):
+    """The uplink itself, which may join the live session on its own: positions are the ones the appends took."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.hub = tr.Hub()
+    def project(self, name, hub=False):
+        self.cut_over()
+        return super().project(name, hub)
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.hub.stop()
+    def start(self):
+        ep = self.endpoint()
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.p.id)
+        return ep
+
+    def uploaded(self, ep, e):
+        sminos.nudge_daemon()
+        return ep.wait_until(lambda: e["seq"] in ep.logs.get(self.p.id, {}).get(W, {}))
+
+    def held(self, e):
+        return next((x["kind"], x.get("text")) for x in tw.read_lines(sminos.writer_path(self.p, W))
+                    if x["seq"] == e["seq"])
+
+    def test_a_refusal_settles_the_event_withheld_and_the_session_is_told(self):
+        ep = self.start()
+        self.joined()
+        e = self.say("the secret words")
+        self.uploaded(ep, e)
+        ep.refuse_upload(self.p.id, W, e["seq"])
+        self.assertEqual(tw.wait_for(lambda: notices(self.inbox(S1)), timeout=20), [NOTICE])
+        self.assertEqual(self.uplink_state()["withheld"], {W: [e["seq"]]})
+        self.assertEqual(self.held(e), ("say", "the secret words"), "the writer file keeps it")
+        self.uploaded(ep, self.say("after it", to="*"))
+        ep.refuse_upload(self.p.id, W, e["seq"])   # said again: settled already
+        time.sleep(1.5)
+        self.assertEqual(notices(self.inbox(S1)), [NOTICE], "one notice")
+        self.assertNotIn("secret", json.dumps(self.inbox(S1)))
+
+    def test_spent_withheld_with_no_refusal_settles_it_the_same(self):
+        ep = self.start()
+        self.joined()
+        e = self.say("the secret words")
+        self.uploaded(ep, e)
+        for _ in range(2):
+            ep.send({"t": "spent", "project": self.p.id, "writer": W, "seq": e["seq"], "reason": "withheld"})
+        self.assertEqual(tw.wait_for(lambda: notices(self.inbox(S1)), timeout=20), [NOTICE])
+        self.assertEqual(self.uplink_state()["withheld"], {W: [e["seq"]]})
+        self.assertNotIn(W, self.uplink_state().get("spent") or {}, "not spent: its event holds the position")
+        self.assertEqual(self.held(e), ("say", "the secret words"))
+        self.uploaded(ep, self.say("after it", to="*"))
+        time.sleep(1.0)
+        self.assertEqual(notices(self.inbox(S1)), [NOTICE], "one notice")
+
+
+class Reach:
+    """The hub's reach judgement for these cases, for endpoint_standin's
+    `withhold`: an event naming GHOST (a session
+    nobody exposed), and a `joined` or `state` of S1 while its registry row
+    binds it to another machine (`bound`)."""
+
+    def __init__(self):
+        self.bound = None
+
+    def __call__(self, _project, e):
+        if any(isinstance(t, dict) and t.get("session") == GHOST for t in e.get("to") or ()):
+            return True
+        return e.get("kind") in ("joined", "state") and e.get("session") == S1 and self.bound not in (None, "testhost")
+
+
+class OverRl10(Sender):
+    """An uncoded HubLog (a machine cut over to its endpoint) against
+    endpoint_standin's admission: what the plane owes taken by the stand-in's
+    own `take` and its `refused` frames handed back, a `have` as the
+    stand-in builds it, the frames passed by hand. The hub's withholding is
+    the stand-in's `withhold` (Reach)."""
 
     def setUp(self):
         super().setUp()
-        self.m = tr.Machine(self.hub, "testhost")
-        self.hl = hublog.HubLog(self.p, {"key": tr.RAW_KEY, "machine": "testhost"})
+        self.reach = Reach()
+        self.ep = endpoint_standin.Endpoint(self.epdir, withhold=self.reach)
+        self.hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"})
+
+    def project(self, name, hub=False):
+        self.cut_over()
+        return super().project(name, hub)
 
     def hello(self, have=None, withheld=True):
-        """A hello and the hub's answer taken in: its `have` (without its
-        withheld list, `withheld` off), then its backlog."""
-        frames = self.m.hello(self.p.id, have)
-        got = next(f for f in frames if f["t"] == "have")
+        """The endpoint's `have` taken in (without its withheld list,
+        `withheld` off). `have` is DX2's hello vector, which picks a backlog:
+        on RL10 another's events come down on their own (`spent`, `events`)."""
+        got = self.ep.have(self.p.id)
         self.hl.on_have(got if withheld else {k: v for k, v in got.items() if k != "withheld"})
-        for f in frames:
-            if f["t"] == "events":
-                self.hl.take(f["events"])
         return got
 
     def upload(self, refusals=True):
-        """What the plane owes the hub posted; the refusals the hub sends back taken in (`refusals`)."""
-        mark = self.m.mark()
+        got = []
         for frame, reach in self.hl.uploads():
-            self.m.post(frame)
+            self.assertEqual(frame["t"], "events")
+            got += self.ep.take(frame["project"], frame["events"])
             self.hl.took(reach)
-        time.sleep(0.2)
-        got = self.m.since(mark, "refused")
         if refusals:
             for f in got:
                 self.hl.on_refused(f)
         return [f["refusal"] for f in got]
 
     def stored(self):
-        return [(e["seq"], e.get("text"), e.get("withheld"))
-                for e in self.hub.state()["projects"][self.p.id]["writers"].get(W, [])]
+        held = self.ep.logs.get(self.p.id, {}).get(W, {})
+        withheld = set((self.ep.withheld.get(self.p.id) or {}).get(W, ()))
+        return [(seq, None, True) if seq in withheld else (seq, held[seq].get("text"), None)
+                for seq in sorted(set(held) | withheld)]
 
 
-class Dx2(OverDx2):
+class Dx2OnRl10(OverRl10):
+    """An own event the endpoint withheld, settled withheld here whichever
+    way its word arrives: its refusal, a `have`'s withheld list, or `spent
+    withheld` (#153 M3b; the cases were Dx2's, over DX2)."""
+
     def test_a_refusal_settles_the_event_withheld_and_the_session_is_told_once(self):
         self.hello()
         self.joined()
@@ -152,13 +224,17 @@ class Dx2(OverDx2):
         self.assertNotIn("notices", {k: v for k, v in self.uplink_state().items() if v})
 
     def test_its_tombstone_on_resync_with_no_refusal_settles_it_the_same(self):
+        """RL10 says the position withheld on resync as `spent withheld`
+        (Link.on_spent hands it to HubLog.spend), where DX2's backlog
+        brought the tombstone."""
         self.hello()
         self.joined()
         self.say("the secret words")
         self.upload(refusals=False)   # the refusal lost to a dropped connection
         self.assertEqual(self.hl.withheld(), {})
         self.hl.reset()
-        self.hello({}, withheld=False)   # a hello naming less than the log holds: the backlog brings the tombstone
+        self.hello(withheld=False)   # a have that predates the withholding's
+        self.hl.spend(W, 2, "withheld")
         self.assertEqual(self.hl.withheld(), {W: {2}})
         self.assertEqual(self.file()[1], (2, "say", "the secret words"))
         self.assertEqual(self.hl.spent(), {}, "not spent: this machine's event holds the position")
@@ -238,22 +314,23 @@ class Dx2(OverDx2):
         self.assertNotIn("secret", json.dumps(held))
 
 
-class Restate(OverDx2):
+class RestateOnRl10(OverRl10):
     """A withheld own snapshot restated (D5; MAWS #492): withhold_own owes a
     restatement of the session's `joined` or `state`, the daemon's next tick
     writes it from the record as it is now, and a restatement the hub
     withholds again owes nothing more. The daemon writes the snapshots
     itself (its reconciliation joins the live session, publish_state its
-    first word); the stand-in's registry row binding S1 to another machine
-    is what withholds them, and moving it back by hand plays a cause that
-    clears (the provenance race), which the stand-in cannot race."""
+    first word); the stand-in's `withhold` binding S1 to another machine
+    (Reach.bound) is what withholds them, and binding it back by hand plays
+    a cause that clears (the provenance race), which the stand-in cannot
+    race (#153 M3b; the cases were Restate's, over DX2)."""
 
     def setUp(self):
         super().setUp()
         self.bind("other")
 
     def bind(self, machine):
-        self.hub.call("POST", "/control/policies", {"rows": {S1: {"machine": machine}}})
+        self.reach.bound = machine
 
     def tick(self):
         sminos.forget_caches()
@@ -263,8 +340,9 @@ class Restate(OverDx2):
         return [e for e in tw.read_lines(sminos.writer_path(self.p, W)) if kind is None or e["kind"] == kind]
 
     def hub_has(self, e):
-        held = self.hub.state()["projects"][self.p.id]["writers"].get(W, [])
-        return next((x for x in held if x["seq"] == e["seq"]), None)
+        if e["seq"] in set((self.ep.withheld.get(self.p.id) or {}).get(W, ())):
+            return {"writer": W, "seq": e["seq"], "withheld": True}
+        return self.ep.logs.get(self.p.id, {}).get(W, {}).get(e["seq"])
 
     def withhold_the_first_snapshots(self):
         """The daemon's first tick joins S1 and publishes its word; both go
@@ -290,7 +368,6 @@ class Restate(OverDx2):
                          "from the session's last joined")
         self.assertEqual(self.upload(), [], "admitted")
         self.assertEqual(self.hub_has(again)["kind"], "joined")
-        self.assertEqual(self.hub.state()["policies"][S1]["machine"], "testhost")
         self.tick()
         self.assertEqual(len(self.own("joined")), 2, "restated once")
         self.assertIn("restated", tw.daemon_log())
@@ -423,61 +500,105 @@ class Restate(OverDx2):
         self.assertEqual(self.restate(), {})
 
 
-class Rl10(Sender):
-    """The uplink itself, which may join the live session on its own: positions are the ones the appends took."""
+class RestateThroughTheUplink(Sender):
+    """A withheld `joined` restated end to end on RL10: the uplink in this
+    process against endpoint_standin.py, whose `withhold` withholds S1's
+    snapshots while it is bound elsewhere; the daemon's tick restates it,
+    the uplink takes it up, and a later `have` that admits it drops the
+    marker."""
 
     def project(self, name, hub=False):
         self.cut_over()
         return super().project(name, hub)
 
-    def start(self):
-        ep = self.endpoint()
+    def own(self, kind):
+        return [e for e in tw.read_lines(sminos.writer_path(self.p, W)) if e["kind"] == kind]
+
+    def restate(self):
+        return daemon._restate_held(sminos.project_path(self.p, daemon.RESTATE_FILE))
+
+    def tick(self):
+        sminos.forget_caches()
+        daemon.tick(self.p)
+        sminos.nudge_daemon()
+
+    def test_a_withheld_joined_is_restated_taken_up_and_its_marker_dropped_at_a_have(self):
+        reach = Reach()
+        reach.bound = "other"
+        ep = self.endpoint(withhold=reach)
         self.uplink()
         ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.p.id)
-        return ep
+        self.tick()
+        first = tw.wait_for(lambda: self.own("joined"), timeout=10)[0]
+        withheld = lambda: set((ep.withheld.get(self.p.id) or {}).get(W, ()))  # noqa: E731
+        ep.wait_until(lambda: first["seq"] in withheld())
+        self.assertTrue(tw.wait_for(lambda: first["seq"] in self.uplink_state().get("withheld", {}).get(W, ()),
+                                    timeout=20), "settled withheld from the endpoint's refusal")
+        self.assertEqual(self.restate()[S1]["joined"]["seq"], first["seq"], "a restatement owed")
+        reach.bound = "testhost"
+        self.tick()
+        joined = self.own("joined")
+        self.assertEqual(len(joined), 2, "the next tick writes the joined again")
+        ep.wait_until(lambda: joined[1]["seq"] in ep.logs.get(self.p.id, {}).get(W, {}))
+        self.assertEqual(ep.logs[self.p.id][W][joined[1]["seq"]]["kind"], "joined", "admitted")
+        self.assertTrue(self.restate()[S1]["joined"].get("restated"), "kept until a have says so")
+        conns = ep.conns
+        ep.drop()   # the next connection's hello is answered by a have that admits it
+        ep.wait_until(lambda: any(n > conns and f["t"] == "hello" and f.get("project") == self.p.id
+                                  for n, f in ep.received))
+        self.assertTrue(tw.wait_for(lambda: (self.tick(), "joined" not in self.restate().get(S1, {}))[1],
+                                    timeout=20), self.restate())
+        self.tick()
+        self.assertEqual(len(self.own("joined")), 2, "restated once")
 
-    def uploaded(self, ep, e):
-        sminos.nudge_daemon()
-        return ep.wait_until(lambda: e["seq"] in ep.logs.get(self.p.id, {}).get(W, {}))
 
-    def held(self, e):
-        return next((x["kind"], x.get("text")) for x in tw.read_lines(sminos.writer_path(self.p, W))
-                    if x["seq"] == e["seq"])
+class StandinWithholds(unittest.TestCase):
+    """endpoint_standin's `withhold` (#153 M3b), which the cases above
+    stand on, against the stand-in alone."""
 
-    def test_a_refusal_settles_the_event_withheld_and_the_session_is_told(self):
-        ep = self.start()
-        self.joined()
-        e = self.say("the secret words")
-        self.uploaded(ep, e)
-        ep.refuse_upload(self.p.id, W, e["seq"])
-        self.assertEqual(tw.wait_for(lambda: notices(self.inbox(S1)), timeout=20), [NOTICE])
-        self.assertEqual(self.uplink_state()["withheld"], {W: [e["seq"]]})
-        self.assertEqual(self.held(e), ("say", "the secret words"), "the writer file keeps it")
-        self.uploaded(ep, self.say("after it", to="*"))
-        ep.refuse_upload(self.p.id, W, e["seq"])   # said again: settled already
-        time.sleep(1.5)
-        self.assertEqual(notices(self.inbox(S1)), [NOTICE], "one notice")
-        self.assertNotIn("secret", json.dumps(self.inbox(S1)))
+    P, WR = "proj-1", "testhost/s1"
 
-    def test_spent_withheld_with_no_refusal_settles_it_the_same(self):
-        ep = self.start()
-        self.joined()
-        e = self.say("the secret words")
-        self.uploaded(ep, e)
-        for _ in range(2):
-            ep.send({"t": "spent", "project": self.p.id, "writer": W, "seq": e["seq"], "reason": "withheld"})
-        self.assertEqual(tw.wait_for(lambda: notices(self.inbox(S1)), timeout=20), [NOTICE])
-        self.assertEqual(self.uplink_state()["withheld"], {W: [e["seq"]]})
-        self.assertNotIn(W, self.uplink_state().get("spent") or {}, "not spent: its event holds the position")
-        self.assertEqual(self.held(e), ("say", "the secret words"))
-        self.uploaded(ep, self.say("after it", to="*"))
-        time.sleep(1.0)
-        self.assertEqual(notices(self.inbox(S1)), [NOTICE], "one notice")
+    def setUp(self):
+        self.dir = os.path.join(tw.BASE, "ep-%s" % self._testMethodName[-24:])
+        self.out = set()
+        self.ep = endpoint_standin.Endpoint(self.dir, withhold=lambda _p, e: e["seq"] in self.out)
+
+    def ev(self, seq, text="t"):
+        return {"ts": "2026-11-07T00:00:%02d.000Z" % seq, "writer": self.WR, "seq": seq, "kind": "say", "text": text}
+
+    def refusals(self, *events):
+        return [f["refusal"] for f in self.ep.take(self.P, list(events))]
+
+    def test_a_withheld_upload_is_refused_not_reachable_listed_and_counted_and_its_writer_goes_on(self):
+        self.out.add(2)
+        self.assertEqual(self.refusals(self.ev(1), self.ev(2), self.ev(3)),
+                         [{"reason": "not-reachable", "writer": self.WR, "seq": 2}], "no message")
+        self.assertEqual(sorted(self.ep.logs[self.P][self.WR]), [1, 3], "the writer goes on")
+        have = self.ep.have(self.P)
+        self.assertEqual((have["have"], have["withheld"]), ({self.WR: 3}, {self.WR: [2]}))
+        self.ep.set(admit=False)
+        self.assertEqual(self.ep.have(self.P)["have"], {self.WR: 3}, "a withheld position counts, admitted or not")
+
+    def test_a_withheld_position_sent_again_is_withheld_again_or_a_conflict(self):
+        self.out.add(1)
+        self.refusals(self.ev(1))
+        self.out.clear()   # the judgement changed: the position stays withheld
+        self.assertEqual(self.refusals(self.ev(1)), [{"reason": "not-reachable", "writer": self.WR, "seq": 1}])
+        self.assertEqual(self.refusals(self.ev(1, "another")), [{"reason": "conflict", "writer": self.WR, "seq": 1}])
+        self.assertNotIn(self.P, {p for p, ws in self.ep.logs.items() if ws.get(self.WR)})
+
+    def test_a_position_held_is_never_withheld_and_none_withholds_nothing(self):
+        self.refusals(self.ev(1))
+        self.out.add(1)
+        self.assertEqual(self.refusals(self.ev(1)), [], "an admitted position sent again stays admitted")
+        self.assertNotIn("withheld", self.ep.have(self.P))
+        plain = endpoint_standin.Endpoint(self.dir + "-plain")
+        self.assertEqual(plain.take(self.P, [self.ev(1)]), [])
+        self.assertIsNone(plain.withhold)
 
 
 def tearDownModule():
-    for base in (tr.BASE, tw.BASE):
-        shutil.rmtree(base, ignore_errors=True)
+    shutil.rmtree(tw.BASE, ignore_errors=True)
 
 
 if __name__ == "__main__":

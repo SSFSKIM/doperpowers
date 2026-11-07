@@ -697,7 +697,9 @@ def _systemd_diagnostics():
 def under_systemd():
     docker("build", "-t", SYSTEMD_IMAGE, "-", input=SYSTEMD_DOCKERFILE, timeout=900)
     desc = TMP / "boot-vm.env"
-    desc.write_text(descriptor("sbx-vm", projects="example/app").read_text().replace("KIND=container", "KIND=vm")
+    # As a live VM an older driver made: its boot.env still names the retired v1 desk key, which every run ignores.
+    desc.write_text(descriptor("sbx-vm", projects="example/app", extra="DEVCLOUD_SMINOS_SECRET=desk-provisioning-key\n")
+                    .read_text().replace("KIND=container", "KIND=vm")
                     .replace("ROLE=sandbox", "ROLE=persistent").replace("TAILSCALE=host", "TAILSCALE=none"))
     docker("run", "-d", "--name", VM, "--hostname", "sbx-vm", "--network", NET, "--privileged",
            "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw", "--tmpfs", "/run", "--tmpfs", "/run/lock",
@@ -737,7 +739,7 @@ def under_systemd():
     check(sh(VM, f"test -e {SMINOS_UNIT}", check_rc=False).returncode != 0, "a sminos unit on an unenrolled host")
 
 
-@case("once enrolled, a reconcile installs the sminos daemon as a lingering user unit (acceptance 7)", "systemd")
+@case("once cut over, a reconcile installs the sminos daemon as a lingering user unit (acceptance 7)", "systemd")
 def enrolled_daemon():
     # The clone's sminos CLI where the sminos plugin keeps it (its sminos/ folder).
     scripts = f"{MARKETPLACE}/sminos/skills/sminos/scripts"
@@ -748,13 +750,20 @@ def enrolled_daemon():
     known = json.dumps({"doperpowers": {"source": {"source": "github", "repo": "example/doperpowers"},
                                         "installLocation": MARKETPLACE}})
     sh(VM, f"echo '{known}' > {HOME}/.claude/plugins/known_marketplaces.json && "
-           f"echo '{{\"machine\": \"sbx-vm\"}}' > {HOME}/.claude/sminos/daemon/hub.json && "
+           f"echo '{{\"name\": \"sbx-vm\"}}' > {HOME}/.claude/sminos/daemon/identity.json && "
            f"chown {USER}:{USER} {scripts}/sminos.py {HOME}/.claude/plugins/known_marketplaces.json "
-           f"{HOME}/.claude/sminos/daemon/hub.json")
+           f"{HOME}/.claude/sminos/daemon/identity.json")
     # As the units run it: a docker exec gets none of their drop-ins' stand-in environment.
     reconciled = sh(VM, RECONCILE_WITH_STAND_INS, check_rc=False, timeout=600)
     check(reconciled.returncode == 0, f"reconcile exited {reconciled.returncode}: {reconciled.stdout[-800:]}\n"
           + _systemd_diagnostics())
+    # Its boot.env names the retired v1 desk key: ignored, said once, no step failed over it.
+    check((reconciled.stdout + reconciled.stderr).count("boot descriptor: ignoring DEVCLOUD_SMINOS_SECRET") == 1,
+          f"the reconcile did not say once that it ignored the v1 key: {reconciled.stdout[-800:]}")
+    ran = ("identity", "configuration", "tailnet-check", "secrets", "home", "apply", "settings-and-env", "services",
+           "maws")     # the boot's descriptor step and the reconcile's
+    check(not [s for s in steps(VM).values() if s["name"] in ran and s["state"] == "failed"],
+          f"a failed step: {steps(VM)}")
     detail = steps(VM)["services"]["detail"]
     check("sminos daemon: sminos-daemon.service enabled" in detail, detail)
     check(out(VM, f"loginctl show-user {USER} --property=Linger").strip() == "Linger=yes", "lingering is off")
@@ -919,7 +928,7 @@ def boot_run_by_hand():
 
 @case("a held departure closes admission, and a reboot during it reopens none (the driver's §4.2)", "systemd")
 def held_departure_and_reboot():
-    # The enrolled VM above: its daemon runs. The ship fails, so the departure holds.
+    # The cut-over VM above: its daemon runs. The ship fails, so the departure holds.
     sh(VM, f"touch {STATE}/ship-fail && chown {USER}:{USER} {STATE}/ship-fail")
     held = sh(VM, f"{STAND_INS} devcloud depart --force --no-poweroff", check_rc=False, timeout=600)
     check(held.returncode == 4, f"depart exited {held.returncode}, not 4 (held): {held.stdout[-1500:]}")
@@ -955,10 +964,13 @@ def held_departure_and_reboot():
     check(done.returncode == 0 and "devcloud-depart: ready-to-logout" in done.stdout,
           f"the retried departure exited {done.returncode}: {done.stdout[-1500:]}")
     check(json.loads(out(VM, "cat /var/lib/devcloud/status.json"))["lifecycle"]["state"] == "departed", "not departed")
-    check(sh(VM, f"test -e {HOME}/.claude/sminos/daemon/hub.json", check_rc=False).returncode != 0,
-          "the departure did not leave the desk")
-    leave = [json.loads(line)["argv"] for line in out(VM, f"cat {STATE}/calls.jsonl").splitlines()]
-    check(["hub", "leave"] in leave, f"no hub leave: {leave}")
+    # Its word to the desk is its endpoint's, which no mawsd here can give: the step names the admin's drop.
+    leave = next(s for s in json.loads(out(VM, "cat /var/lib/devcloud/status.json"))["lifecycle"]["steps"]
+                 if s["name"] == "leave")
+    check(leave["state"] == "failed" and "machine drop" in leave["detail"], str(leave))
+    # The stand-in sminos records every verb it is handed, one it does not play included.
+    calls = [json.loads(line)["argv"] for line in out(VM, f"cat {STATE}/calls.jsonl || true").splitlines()]
+    check(not [argv for argv in calls if argv[:1] == ["hub"]], f"a boot or the departure ran sminos hub: {calls}")
 
 
 @case("a sandbox carrying a sminos machine identity fails services (acceptance 7)", "one-shot")

@@ -48,9 +48,8 @@ later, which its child keeps (`refused` in its kept file). The daemon's
 delivery pass reports each once as `failed` with the bridge's reason
 (report_refused), after the first outcome for the same key and session.
 
-The uplink drains the file: it seals each record with the org key (DX1,
-`smns-hub-delivery-v1`) as it posts it, and drops what a POST answered 200
-carried. Nothing leaves this machine without its code.
+The uplink drains the file: it sends each record as DX4 `delivery`
+(`message`) and drops what was written to the endpoint.
 """
 
 import json
@@ -59,7 +58,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
-import sminos_codes as codes  # noqa: E402
 
 OUTBOX = "outcomes.jsonl"
 READ_ONLY = "refused-read-only"
@@ -414,19 +412,10 @@ def report_refusals(project, box, sid, refused, events):
     return n
 
 
-def message(key, machine, project_id, r):
-    """A record as DX4's `delivery` message, sealed under a fresh nonce; None
-    when it has no canonical form (said in daemon.log). With no key (RL10,
-    where nothing carries a code) the body is the draft as it is."""
-    draft = {"event": r.get("event"), "session": r.get("session"), "outcome": r.get("outcome"),
-             "reason": r.get("reason")}
-    if key is None:
-        body = draft
-    else:
-        try:
-            body = codes.seal(key, "delivery", project_id, draft, codes.b64url(os.urandom(codes.NONCE_BYTES)))
-        except codes.NotCanonical as err:
-            sminos.daemon_log("delivery: an outcome in %s has no canonical form (%s): not sent" % (project_id, err))
-            return None
+def message(machine, project_id, r):
+    """A record as DX4's `delivery` message, its body the record's draft
+    (RL10 carries no code)."""
+    body = {"event": r.get("event"), "session": r.get("session"), "outcome": r.get("outcome"),
+            "reason": r.get("reason")}
     return {"t": "session", "message": {"project": project_id, "machine": machine, "session": r.get("session"),
                                         "kind": "delivery", "sub": None, "n": None, "body": body}}

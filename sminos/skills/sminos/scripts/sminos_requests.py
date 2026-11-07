@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """sminos_requests — the requests this machine's sessions raise, relayed to
-the hub (DC7 of the desk: DX4's `raised` and `settled`, DX2's `pending`,
-DX1's codes; DX5's requests as the consumer).
+the hub through the machine's endpoint (DC7 of the desk: DX4's `raised` and
+`settled`, the `pending` set; DX5's requests as the consumer).
 
 A bridge (DC2) raises each permission prompt or question the engine puts to
 its dialog as `raised`, and settles it once as `settled`; its snapshot holds
@@ -12,9 +12,8 @@ stream (`GET /events`) and takes from it only those: the snapshot's
 mod's whole state again, which replaces the bridge's pending set). Chunks
 and everything else are passed over unparsed.
 
-What goes up, each sealed with the org key under a fresh nonce (DX1), and
-nothing without one — the daemon signs only what its bridges reported, as
-they reported it:
+What goes up, each as its draft (the endpoint signs what it relays), the
+daemon saying only what its bridges reported, as they reported it:
 
 - DX4 `raised` `{request, session, tool, input, agentId?, truncated?,
   deadline?, async?, toolUseId?}` (composite 6fa2252d, 43a27604): the
@@ -38,7 +37,7 @@ they reported it:
   older entries, bare request ids, are not read: the first start on a file
   of that form sends again what live bridges still list, which the hub
   takes as resends of requests no longer pending;
-- DX2 `pending` `{project, raised}`: the machine's complete set for the
+- `pending` `{project, raised}`: the machine's complete set for the
   project, after every connect, and whenever a request left the set with no
   settlement the bridge reported (its bridge gone, a snapshot without it):
   the hub drops what the set no longer holds; nothing is settled in a
@@ -47,20 +46,18 @@ they reported it:
   none), so it waits for that, at most HOLD_MAX: an uplink that starts with
   requests already pending does not empty the hub's set first.
 
-The state outlives the stream (the uplink keeps one Requests): a settlement
-made while the hub is out of reach goes up after the next connect, ahead of
-the complete set, and is never dropped; a raise made then is in that set. A
-message queued on a lane (`sending`) is in flight, neither due nor opened
-again, until the POST carrying it is answered 200 (`delivered`): it leaves
-the outbox unless the answer names it refused `not-open`, and stays owed
-then, to go with or after the hello that opens its project again
-(sminos_owed). A settlement leaves for `daemon/requests.json` (relayed); a
-POST lost or a stream cut leaves it owed (`reset`). The settlements owed are
-kept in `daemon/requests-owed.json` as they change, so a restarted uplink
-sends them again even when their bridge is gone; the bridge's snapshot
-brings back, while the bridge runs, what was not yet read. A reader whose
-stream ends while the bridge still answers subscribes again, and its
-snapshot is reconciled against what was held.
+The state outlives the connection (the uplink keeps one Requests): a
+settlement made while the endpoint is out of reach goes up after the next
+connect, ahead of the complete set, and is never dropped; a raise made then is
+in that set. A message queued on the lane (`sending`) is in flight, neither
+due nor opened again, until its frame is written (`delivered`): it leaves the
+outbox then. A settlement leaves for `daemon/requests.json` (relayed); a
+connection cut first leaves it owed (`reset`). The settlements owed are kept
+in `daemon/requests-owed.json` as they change, so a restarted uplink sends
+them again even when their bridge is gone; the bridge's snapshot brings back,
+while the bridge runs, what was not yet read. A reader whose stream ends while
+the bridge still answers subscribes again, and its snapshot is reconciled
+against what was held.
 
 Readers only read the bridge's socket and queue what they read; everything
 else runs on the uplink's main thread.
@@ -96,8 +93,9 @@ SUGGESTION_BYTES_MAX = 2048  # each at most this many bytes of canonical UTF-8 J
 # A permission's input, as UTF-8 JSON, a raise carries whole: past it, each string is held to INPUT_CAP and the
 # request marked `truncated`, as the mod's resync shortens one (bridge-stream.tsx's RESYNC_INPUT_CAP), and if
 # that is still past it the input goes as {}. Under it a string the mod capped at its TEXT_CAP (65,536 UTF-16
-# units, at most 192 KiB of UTF-8) goes whole. One raise is then far from a lane's 16 MiB; a project's complete
-# set carries every request pending in it, so it passes that bound only with some sixty at the bound at once.
+# units, at most 192 KiB of UTF-8) goes whole. One raise is then far from the RL10 lane's 16 MiB (SEND_QUEUE_MAX);
+# a project's complete set carries every request pending in it, so it passes that bound only with some sixty at
+# the bound at once (TECH-DEBT, board #149).
 RAISED_INPUT_MAX = 256 * 1024
 INPUT_CAP = 1024           # UTF-16 code units a cut input keeps of each string: the mod's RESYNC_INPUT_CAP
 WANTED = (b'"raised"', b'"settled"', b'"resync"', b'"compact"', b'"run"', b'"btw"', b'"media"')   # a line carrying none of these is no line of ours
@@ -273,8 +271,7 @@ class Requests:
     messages owed to the hub about them. Kept across streams by the uplink;
     `wake` is the current stream's."""
 
-    def __init__(self, key, machine, wake=lambda: None, clock=time.monotonic):
-        self.key = key
+    def __init__(self, machine, wake=lambda: None, clock=time.monotonic):
         self.machine = machine
         self.wake = wake
         self.clock = clock
@@ -285,13 +282,13 @@ class Requests:
         self.fails = {}       # session → readers in a row that ended without a snapshot
         self.followed = {}    # session → project id: the open projects' sessions with an endpoint
         self.project_of = {}  # session → project id, kept while it holds requests
-        self.pending = {}     # session → {request: sealed DX4 raised}, in the order raised
+        self.pending = {}     # session → {request: its DX4 raised body}, in the order raised
         self.synced = set()   # sessions whose bridge's state is known: a snapshot read, or none to be had
         self.outbox = []      # [(project id, frame)]: raised and settled messages not yet sent, in order
         self.stale = set()    # project ids whose complete pending set is owed
         self.holding = {}     # project id → since when its owed set waits for its sessions' snapshots
         self.queued = {}      # (session, request, t) → the outbox's frame carrying that settlement
-        self.flying = {}      # id(frame) → frame: outbox messages on a lane, their POST not yet answered
+        self.flying = {}      # id(frame) → frame: outbox messages on the lane, not yet written
         self.relayed = load_relayed()  # session → [(request, t)]: the settlements done with (sent or superseded)
         self.compacts = []    # [(session, project id, event)]: the bridges' `compact` events, for the RPCs
         self.ops = []         # [(session, project id, event)]: the bridges' `run` and `btw` events, for the RPCs
@@ -301,9 +298,9 @@ class Requests:
 
     def restore(self):
         """The settlements a stopped uplink still owed, back in the outbox
-        in their order, but those done with since. With no key (RL10) each
-        goes as this machine's draft, whatever the hub's uplink sealed and
-        kept before the cutover."""
+        in their order, but those done with since. Each goes as this
+        machine's draft (`uncoded`), whatever an uplink before the cutover
+        sealed and kept."""
         for item in self.kept.load():
             try:
                 key, pid, frame = (item["session"], item["request"], item["t"]), item["project"], item["frame"]
@@ -317,14 +314,14 @@ class Requests:
             if not ok:
                 log("an owed settlement in %s that is none: passed by" % self.kept.path)
             elif not self.seen(key):
-                if self.key is None:
-                    frame = self.uncoded(frame)
+                frame = self.uncoded(frame)
                 self.queued[key] = frame
                 self.outbox.append((pid, frame))
 
     def uncoded(self, frame):
-        """A kept message as RL10 sends it: its body with no DX1 code, under
-        this machine's name now."""
+        """A kept message as RL10 sends it: its body with no `mac` (the old
+        desk code a message kept before the cutover carries), under this
+        machine's name now."""
         m = frame["message"]
         body = m.get("body")
         if isinstance(body, dict) and "mac" in body:
@@ -449,15 +446,8 @@ class Requests:
         return out
 
     def seal(self, kind, pid, draft):
-        """A body as it goes up: sealed under the org key (DX1), or, with no
-        key (RL10, where nothing carries a code), its draft as it is."""
-        if self.key is None:
-            return draft
-        try:
-            return codes.seal(self.key, kind, pid, draft, codes.b64url(os.urandom(codes.NONCE_BYTES)))
-        except codes.NotCanonical as e:
-            log("a %s of %s has no canonical form (%s): not sent" % (kind, draft.get("session") or "", e))
-            return None
+        """A body as it goes up: its draft as it is (RL10 carries no code)."""
+        return draft
 
     def queue(self, pid, sid, kind, body):
         frame = {"t": "session", "message": {
@@ -488,9 +478,8 @@ class Requests:
         if old is not None and {k: v for k, v in old.items() if k != "mac"} == draft:
             return
         body = self.seal("raised", pid, draft)
-        if body is not None:
-            held[draft["request"]] = body
-            self.queue(pid, sid, "raised", body)
+        held[draft["request"]] = body
+        self.queue(pid, sid, "raised", body)
 
     def seen(self, key):
         return key in self.queued or key[1:] in self.relayed.get(key[0], ())
@@ -527,10 +516,8 @@ class Requests:
             # It went before, or waits to: any raise held here came after it, and stays.
             return
         self.pending.get(sid, {}).pop(draft["request"], None)
-        body = self.seal("settled", pid, draft)
-        if body is not None:
-            self.queued[key] = self.queue(pid, sid, "settled", body)
-            self.keep()
+        self.queued[key] = self.queue(pid, sid, "settled", self.seal("settled", pid, draft))
+        self.keep()
 
     def reconcile(self, sid, pid, pending, settled):
         """A snapshot or a resync: the session's pending set as the bridge
@@ -604,8 +591,9 @@ class Requests:
                 self.flying[id(f)] = f
 
     def delivered(self, frames, refused):
-        """The POST carrying `frames` was answered 200, `refused` naming
-        ({id(frame): reason}) those the hub refused whole. A message it took
+        """The frame carrying `frames` was written, `refused` naming
+        ({id(frame): reason}) those refused whole (none: the lane refuses
+        nothing). A message it took
         leaves the outbox, a settlement kept as relayed; one refused
         `not-open` stays owed (its project is opened again, and it goes with
         or after that hello), and a complete set so refused is owed again;
@@ -627,7 +615,7 @@ class Requests:
         self.relay(took)
 
     def unsent(self, frames):
-        """Frames dropped from a lane before any POST carried them (a
+        """Frames dropped from a lane before they were written (a
         re-open's `hold`): no longer in flight, owed as they stand."""
         for f in frames:
             self.flying.pop(id(f), None)

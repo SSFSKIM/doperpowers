@@ -84,7 +84,6 @@ class Profile:
     caps: Caps
     default_account: str
     host: Host
-    desk_secret: str | None          # [desk] provisioning_secret: the v1 code, sminos on DX2 (step 11)
     accounts: dict
     build: dict
     maws_secret: str | None = None   # [desk] provisioning_secret_v2: MAWS's code, provisioned at step 13
@@ -216,21 +215,20 @@ def load(directory):
 
 
 def _desk(table):
-    """[desk]: the v1 code that enrolls sminos on DX2, or MAWS's v2 code with
-    its delegation's id (public: the boot needs it before it has the code),
-    never both — a DX2 row under a VM's name refuses its certificate; and the
-    prefix VM names are drawn under, which the delegation's must be."""
-    _only(table, ("provisioning_secret", "provisioning_secret_v2", "delegation_id", "name_prefix"), "[desk]")
-    v1 = _string(table, "provisioning_secret", "[desk]", _SECRET_ID, required=False)
+    """[desk]: MAWS's v2 code with its delegation's id (public: the boot needs
+    it before it has the code), and the prefix VM names are drawn under,
+    which the delegation's must be. The v1 code, which enrolled sminos on
+    DX2, is refused by name: the desk refuses DX2."""
+    if isinstance(table, dict) and "provisioning_secret" in table:
+        raise _bad("[desk].provisioning_secret is gone: the v1 code enrolled sminos on DX2, which the desk refuses; "
+                   "a VM's enrollment is its MAWS endpoint's (provisioning_secret_v2 with delegation_id): remove it")
+    _only(table, ("provisioning_secret_v2", "delegation_id", "name_prefix"), "[desk]")
     v2 = _string(table, "provisioning_secret_v2", "[desk]", _SECRET_ID, required=False)
     delegation = _string(table, "delegation_id", "[desk]", _DELEGATION_ID, required=False)
     if (v2 is None) != (delegation is None):
         raise _bad("[desk].provisioning_secret_v2 and [desk].delegation_id go together")
-    if v1 is not None and v2 is not None:
-        raise _bad("[desk].provisioning_secret (sminos on DX2) and provisioning_secret_v2 (MAWS's endpoint) are "
-                   "exclusive: a DX2 row under a VM's name refuses its certificate; remove the v1 one")
     prefix = _string(table, "name_prefix", "[desk]", _NAME_PREFIX, required=False) or DEFAULT_NAME_PREFIX
-    return dict(desk_secret=v1, maws_secret=v2, delegation_id=delegation, name_prefix=prefix)
+    return dict(maws_secret=v2, delegation_id=delegation, name_prefix=prefix)
 
 
 def _build(directory):

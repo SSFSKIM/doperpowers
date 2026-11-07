@@ -122,9 +122,9 @@ class Containment(unittest.TestCase):
 
 
 class TaskIndex(unittest.TestCase):
-    """The `stop` RPC's check (DX6, DC10.G3): `running_task` reads only the
-    rows that name a task and the calls they name, never the engine's request
-    records, and comes to the status the whole loop gives it; a subagent's
+    """A task's rows (`task_rows`, what the subagents' outcomes read): only
+    the rows that name a task and the calls they name, never the engine's
+    request records, and the status the whole loop gives it; a subagent's
     task stopped through the bridge is recorded in the main loop's rows."""
 
     def write(self, path, rows, requests=True):
@@ -150,8 +150,6 @@ class TaskIndex(unittest.TestCase):
                 ledger = fed(jobs.task_rows(main, job["taskId"]))
                 got = [j for j in ledger.jobs_body(True) if j["taskId"] == job["taskId"]]
                 self.assertEqual(got, [job], "%s: %s" % (case["name"], job["taskId"]))
-                self.assertEqual(jobs.running_task(main, job["taskId"]), job["status"] == "running",
-                                 "%s: %s" % (case["name"], job["taskId"]))
         self.assertGreater(n, 10)
 
     def test_a_subagents_task_stopped_through_the_bridge_is_recorded_in_the_main_loop(self):
@@ -168,11 +166,11 @@ class TaskIndex(unittest.TestCase):
         self.write(agent, [call, started])
         self.write(main, [{"type": "user", "uuid": "u0", "timestamp": "2026-10-18T00:00:00Z",
                            "message": {"content": "go"}}])
-        self.assertTrue(jobs.running_task(main, "mon01"), "a subagent's running monitor")
-        self.assertFalse(jobs.running_task(main, "mon02"), "a task nobody started")
-        self.assertFalse(jobs.running_task(main, "a1"), "an agent is no job")
+        self.assertEqual(jobs.task_rows(main, "mon01"), [], "the main loop names no task yet")
+        self.assertEqual(jobs.task_rows(agent, "mon02"), [], "a task nobody started")
+        self.assertEqual(fed(jobs.task_rows(agent, "a1")).jobs_body(True), [], "an agent is no job")
         self.write(main, [note])
-        self.assertFalse(jobs.running_task(main, "mon01"), "stopped: the main loop's record")
+        self.assertEqual([r["uuid"] for r in jobs.task_rows(main, "mon01")], ["u3"], "stopped: the main loop's record")
         own = fed(jobs.task_rows(agent, "mon01"))
         self.assertEqual(own.jobs_body(True)[0]["status"], "running", "the subagent's own rows alone")
         stopped = own.jobs_body(True, fed([note]))[0]
@@ -197,15 +195,11 @@ class TaskIndex(unittest.TestCase):
         main = self.write(os.path.join(HOME, "idx", "short.jsonl"), rows)
         for short in ("a", "b", "0", "toolu"):
             self.assertEqual(jobs.task_rows(main, short), [], short)
-            self.assertFalse(jobs.running_task(main, short), short)
         self.assertEqual([r["uuid"] for r in jobs.task_rows(main, "ba00003")], ["c3", "r3"])
-        self.assertTrue(jobs.running_task(main, "ba00003"))
         self.assertEqual([r["uuid"] for r in jobs.task_rows(main, "ba00007")], ["c7", "r7", "n7"])
-        self.assertFalse(jobs.running_task(main, "ba00007"))
 
     def test_a_missing_or_empty_transcript_holds_no_task(self):
-        self.assertFalse(jobs.running_task("", "b1"))
-        self.assertFalse(jobs.running_task(os.path.join(HOME, "nowhere.jsonl"), "b1"))
+        self.assertEqual(jobs.task_rows(os.path.join(HOME, "nowhere.jsonl"), "b1"), [])
         empty = self.write(os.path.join(HOME, "idx", "empty.jsonl"), [])
         self.assertEqual(jobs.task_rows(empty, "b1"), [])
 

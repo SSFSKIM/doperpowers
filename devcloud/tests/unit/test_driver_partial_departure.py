@@ -27,7 +27,8 @@ class PartialDepartureTest(DriverBase):
         # supplied the shipper, which still has to ship any transcripts.
         shutil.rmtree(self.partial.units)
         self.partial.units.mkdir()
-        (self.partial.home / ".claude/sminos/daemon/hub.json").unlink()
+        (self.partial.home / ".claude/sminos/daemon/identity.json").unlink()
+        self.partial.mawsd.unlink()
         (self.partial.home / ".config/systemd/user/sminos-daemon.service").unlink()
         status.record("apply", "failed", "deliberate failure", path=self.partial.tmp / "status.json")
         self.remote.on("devcloud depart", fn=self.depart_and_lose_confirmation)

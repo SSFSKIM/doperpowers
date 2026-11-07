@@ -1,6 +1,6 @@
 ---
 name: sminos
-description: Use when working alongside other Claude sessions, in this project or anywhere in the org (other repositories, other machines) — finding who works on what, messaging a session, reading the project chat or what sessions sent their human, watching, steering, interrupting or answering another session, declaring which project you work in, spawning, sending to, or retiring a background session (a seat) — or when setting up a project's .smns, enrolling a machine at the desk hub, installing the sminos daemon, or reading a machine's policy.
+description: Use when working alongside other Claude sessions, in this project or anywhere in the org (other repositories, other machines) — finding who works on what, messaging a session, reading the project chat or what sessions sent their human, watching, steering, interrupting or answering another session, declaring which project you work in, spawning, sending to, or retiring a background session (a seat) — or when setting up a project's .smns, installing the sminos daemon, or reading a machine's policy.
 ---
 
 # Sminos — the project family
@@ -209,7 +209,7 @@ branch.
 
 ## Setup
 
-A project's `.smns` and its mirror, enrolling a machine at the desk hub
-(by hand, or unattended through a provisioning key), checking and ending
-its enrollment, putting a project on the hub, installing the daemon, and
-the machine's policy: `references/setup.md`.
+A project's `.smns` and its mirror, a machine's place at the desk hub
+(its enrollment is its MAWS endpoint's, which sminos follows), putting a
+project on the hub, installing the daemon, and the machine's policy:
+`references/setup.md`.

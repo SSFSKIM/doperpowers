@@ -1,9 +1,11 @@
 """The driver's descriptor keys (Interfaces I12): the lease, its creator, the
-inbound policy, adoption, the desk's provisioning key and a spot VM. Unknown
-keys stay refused; a lease end in the past is accepted (a host rebooted after
-its lease must still boot, then depart); a sandbox carries none of the keys
-that would make it depart or enroll."""
+inbound policy, adoption, a spot VM and MAWS's provisioning code. Unknown
+keys stay refused, but the retired DX2 provisioning key is ignored; a lease
+end in the past is accepted (a host rebooted after its lease must still
+boot, then depart); a sandbox carries none of the keys that would make it
+depart or enroll."""
 
+import dataclasses
 import unittest
 
 import _path  # noqa: F401
@@ -32,15 +34,14 @@ def text(base=VM, **overrides):
 class LeaseKeysTest(unittest.TestCase):
     def test_absent_keys_mean_no_lease_open_inbound_and_nothing_else(self):
         d = descriptor.parse(text())
-        self.assertEqual((d.expires, d.leased, d.creator, d.inbound, d.adopted, d.sminos_secret, d.spot),
-                         (None, False, None, "open", False, None, False))
+        self.assertEqual((d.expires, d.leased, d.creator, d.inbound, d.adopted, d.spot),
+                         (None, False, None, "open", False, False))
 
     def test_reads_every_key(self):
         d = descriptor.parse(text(DEVCLOUD_EXPIRES="1792000000", DEVCLOUD_CREATOR="@build#4f2a",
-                                  DEVCLOUD_INBOUND="tailnet", DEVCLOUD_ADOPTED="1",
-                                  DEVCLOUD_SMINOS_SECRET="desk-provisioning-key", DEVCLOUD_SPOT="1"))
-        self.assertEqual((d.expires, d.leased, d.creator, d.inbound, d.adopted, d.sminos_secret, d.spot),
-                         (1792000000, True, "@build#4f2a", "tailnet", True, "desk-provisioning-key", True))
+                                  DEVCLOUD_INBOUND="tailnet", DEVCLOUD_ADOPTED="1", DEVCLOUD_SPOT="1"))
+        self.assertEqual((d.expires, d.leased, d.creator, d.inbound, d.adopted, d.spot),
+                         (1792000000, True, "@build#4f2a", "tailnet", True, True))
 
     def test_a_lease_end_in_the_past_is_accepted(self):
         self.assertEqual(descriptor.parse(text(DEVCLOUD_EXPIRES="1")).expires, 1)
@@ -52,7 +53,6 @@ class LeaseKeysTest(unittest.TestCase):
             "DEVCLOUD_INBOUND": ["closed", "TAILNET"],
             "DEVCLOUD_ADOPTED": ["yes", "0", "true"],
             "DEVCLOUD_SPOT": ["yes", "2"],
-            "DEVCLOUD_SMINOS_SECRET": ["projects/x/secrets/y"],
         }
         for key, values in cases.items():
             for value in values:
@@ -66,7 +66,7 @@ class LeaseKeysTest(unittest.TestCase):
     def test_a_sandbox_never_carries_a_lease_adoption_enrollment_or_spot(self):
         self.assertEqual(descriptor.parse(text(SANDBOX, DEVCLOUD_INBOUND="open")).inbound, "open")
         for key, value in (("DEVCLOUD_EXPIRES", "1792000000"), ("DEVCLOUD_ADOPTED", "1"),
-                           ("DEVCLOUD_SMINOS_SECRET", "desk-provisioning-key"), ("DEVCLOUD_SPOT", "1")):
+                           ("DEVCLOUD_SPOT", "1")):
             with self.subTest(key=key), self.assertRaisesRegex(descriptor.DescriptorError, f"{key}.*sandbox"):
                 descriptor.parse(text(SANDBOX, **{key: value}))
         with self.assertRaisesRegex(descriptor.DescriptorError, "DEVCLOUD_MAWS_SECRET.*sandbox"):
@@ -88,12 +88,14 @@ class LeaseKeysTest(unittest.TestCase):
             with self.subTest(key=key, value=value), self.assertRaisesRegex(descriptor.DescriptorError, key):
                 descriptor.parse(text(**dict(maws, **{key: value})))
 
-    def test_a_host_provisions_its_endpoint_or_enrolls_sminos_on_dx2_not_both(self):
-        # A DX2 row under the name refuses the certificate (409 name-taken) at every boot.
-        with self.assertRaisesRegex(descriptor.DescriptorError, "DEVCLOUD_SMINOS_SECRET"):
-            descriptor.parse(text(DEVCLOUD_SMINOS_SECRET="desk-provisioning-key",
-                                  DEVCLOUD_MAWS_SECRET="desk-provisioning-v2",
-                                  DEVCLOUD_MAWS_DELEGATION_ID="0123456789abcdef" * 2))
+    def test_the_retired_dx2_provisioning_key_is_ignored_not_refused(self):
+        # A live VM an older driver made still names the v1 key: it boots as before, the key ignored.
+        for base in (VM, SANDBOX):
+            with self.subTest(role=base["DEVCLOUD_ROLE"]):
+                d = descriptor.parse(text(base, DEVCLOUD_SMINOS_SECRET="desk-key"))
+                self.assertEqual(d.ignored, ("DEVCLOUD_SMINOS_SECRET",))
+                self.assertEqual(dataclasses.replace(d, ignored=()), descriptor.parse(text(base)))
+        self.assertEqual(descriptor.parse(text()).ignored, ())
 
     def test_unknown_keys_stay_refused(self):
         with self.assertRaisesRegex(descriptor.DescriptorError, "DEVCLOUD_LEASE"):

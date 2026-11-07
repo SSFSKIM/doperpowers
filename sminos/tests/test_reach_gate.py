@@ -502,7 +502,7 @@ class SameOwner(Rig):
             self.owned(sid)
         sminos.reconcile(gm)
         e = self.imported_say(gm, "imported before the hub")
-        enrolled = Path(os.environ["SMINOS_HOME"], "daemon", "hub.json")
+        enrolled = Path(os.environ["SMINOS_HOME"], "daemon", "identity.json")
         hub = {"hub": "http://127.0.0.1:9", "org": "org-1"}
         self.assertEqual({k: json.loads(enrolled.read_text())[k] for k in hub}, hub)
         r = tw.sminos_cli("project", "init", "--hub", cwd=gm.root, session=None)

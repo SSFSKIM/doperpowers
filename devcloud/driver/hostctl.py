@@ -19,7 +19,6 @@ from .errors import FAILED, DriverError
 
 READY = "devcloud-depart: ready-to-logout"
 BOOT_ENV = "/etc/devcloud/boot.env"
-CODE_PATH = "/etc/devcloud/enroll-code"
 STATUS = "/var/lib/devcloud/status.json"
 SETUP_LOG = "/var/log/devcloud-setup.log"
 DEPARTURE_STARTED = ("departing", "held", "departed")
@@ -140,17 +139,6 @@ def progress(ctx, target, key_alias):
     except ValueError:
         data = {}
     return data, unit.strip()
-
-
-def deliver_code(ctx, target, key_alias, code):
-    """The one-time enrollment code (`--enroll-code -`, §10) into a root-only
-    file, ledgered first, then a reconcile whose step 11 enrolls with it."""
-    ledger(ctx, target, key_alias, CODE_PATH, f"{CODE_PATH}.tmp")
-    result = ctx.remote.run(target, key_alias, f"umask 077 && cat > {CODE_PATH}.tmp && mv {CODE_PATH}.tmp {CODE_PATH}",
-                            input=code, timeout=60)
-    if result.code != 0:
-        raise DriverError(FAILED, f"delivering the enrollment code failed (exit {result.code})")
-    return ctx.remote.run(target, key_alias, "devcloud reconcile", timeout=900)
 
 
 # --- over the tailnet -----------------------------------------------------------

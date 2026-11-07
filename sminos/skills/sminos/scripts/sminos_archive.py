@@ -139,7 +139,7 @@ def admitted(project):
     written as tombstones, {writer: seq} below which nothing is copied for a
     conflict). daemon.SyncFailed when the last `have` confirmed nothing
     usable (none saved yet, or one sminos_hublog.admitted_have refused)."""
-    hl = hublog.HubLog(project, {"key": None, "machine": sminos.host_name()}, coded=False)
+    hl = hublog.HubLog(project, {"machine": sminos.host_name()})
     d = hl.state()
     ah = d.get("archive_have")
     if not (isinstance(ah, dict) and isinstance(ah.get("have"), dict) and isinstance(ah.get("withheld"), dict)):

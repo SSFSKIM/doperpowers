@@ -2,7 +2,8 @@
 #
 # A repository is a project by its remote (docs/doperpowers/specs/
 # 2026-10-19-smns-remote-identity-design.md §1–§4, §9): on an enrolled
-# machine a repository no .smns claims resolves to the hub project its
+# machine (one cut over to its endpoint, daemon/identity.json) a repository
+# no .smns claims resolves to the hub project its
 # remote derives — the same id from the MacBook's scp-like spelling and the
 # mini's https one, in a linked worktree and a second clone too — while a
 # .smns still wins, and no remote, a local path, or several remotes none named
@@ -11,11 +12,14 @@
 # registered root and are both offered as checkouts; a `set-url` under a live
 # session moves it within a tick and is said once; `init --hub` pins the id
 # the repository has, moving nothing; a stray in such a repository moves once
-# when the repository gains its remote, and once when its machine enrolls; the
-# record hook exports to the derived project, the hub registers it under the
-# remote's basename, the other machine follows it, and `@<repo>/<alias>`
-# arrives. Two machines simulated on one Mac — two SMINOS_HOMEs enrolled as
-# alpha and beta against hub_standin.py — and two not enrolled.
+# when the repository gains its remote, and once when its machine cuts over;
+# the record hook keeps a <message> for the derived project, alpha's hello
+# names it by the remote's basename, the other machine follows it, and
+# `@<repo>/<alias>` arrives. Machines simulated on one Mac, each its own
+# SMINOS_HOME: alpha cut over, gamma not enrolled; then the cases that span
+# machines, on RL10: delta cutting over with a session in such a repository,
+# and alpha and beta each cut over to its own endpoint_standin.py, what one
+# endpoint took reaching the other as arrivals (rl10-machines.sh's hand-off).
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub; nothing reaches a network beyond 127.0.0.1 (no remote is ever
 # fetched: ssh is a stand-in that records being called).
@@ -83,6 +87,8 @@ as() { # a|b|c|d host — one machine: its HOME, its SMINOS_HOME, its host name
   export HOME="$T/$1/home" SMINOS_HOME="$T/$1/s" STUB_STATE="$T/$1/stub" DAEMON_HOST="$2"
   mkdir -p "$HOME/.claude/sessions" "$STUB_STATE"
 }
+# shellcheck source=rl10-machines.sh
+. "$SCRIPT_DIR/rl10-machines.sh"
 
 cat > "$T/bin/claude" <<'STUB'
 #!/usr/bin/env bash
@@ -101,33 +107,6 @@ SSH
 chmod +x "$T/bin/fake-ssh"
 export PATH="$T/bin:$PATH" GIT_SSH_COMMAND="$T/bin/fake-ssh" GIT_SSH_VARIANT=simple
 
-python3 "$SCRIPT_DIR/hub_standin.py" "$T/hub.port" cid-0 secret-0 1000 & PIDS+=("$!")
-until_true test -s "$T/hub.port"
-HUB="http://127.0.0.1:$(cat "$T/hub.port")"
-KEY="$(python3 -c 'import base64; print(base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode())')"
-
-cat > "$T/ctl.py" <<'PY'
-import base64, http.client, json, sys
-port = int(open(sys.argv[1]).read())
-
-def call(method, path, body=None):
-    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    c.request(method, path, body=None if body is None else json.dumps(body), headers={"Content-Type": "application/json"})
-    r = c.getresponse()
-    return r.status, json.loads(r.read() or b"{}")
-
-cmd, args = sys.argv[2], sys.argv[3:]
-if cmd == "token":
-    print(call("POST", "/control/enrollment", {})[1]["token"])
-elif cmd == "code":  # hub token machine key
-    body = json.dumps(dict(zip(("hub", "org", "token", "machine", "key"), [args[0], "org-1", *args[1:4]])),
-                      separators=(",", ":")).encode()
-    print("smns-enroll-v1." + base64.urlsafe_b64encode(body).rstrip(b"=").decode())
-elif cmd == "state":  # a python expression over the state, d
-    print(json.dumps(eval(args[0], {"d": call("GET", "/control/state")[1], "json": json})))
-PY
-ctl() { python3 "$T/ctl.py" "$T/hub.port" "$@"; }
-enroll() { "$SMINOS" hub enroll <<<"$(ctl code "$HUB" "$(ctl token)" "$1" "$KEY")" >/dev/null; }
 mp_of() { python3 -c 'import sys, uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "smns-machine:org-1:" + sys.argv[1].lower()))' "$1"; }
 rp_of() { python3 -c 'import sys, uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "smns-repo:org-1:" + sys.argv[1]))' "$1"; }
 smns_field() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1/.smns" "$2"; }
@@ -178,10 +157,9 @@ PY
 }
 tick() { "$SMINOS" daemon tick >/dev/null 2>&1 || true; }
 start_daemon() { "$SMINOS" daemon run --interval 1 >> "$SMINOS_HOME/run.out" 2>&1 & PIDS+=("$!"); }
-hub_follow() { # project machine → true | false | none: the follow of the machine's last hello of it
-  ctl state "d['projects'].get('$1', {}).get('follow', {}).get('$2', 'none')"
+hook_payload() { # event session cwd transcript
+  printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"%s","source":"startup"}' "$2" "$4" "$3" "$1"
 }
-follows() { [ "$(hub_follow "$1" "$2")" = "$3" ]; }
 
 WKEY=github.com/acme/widget
 WPID="$(rp_of "$WKEY")"
@@ -189,7 +167,7 @@ WPID="$(rp_of "$WKEY")"
 # ---- alpha: a repository by its remote
 echo "alpha: a repository by its remote:"
 as a alpha
-enroll alpha
+rl10_cut_over
 AMP="$(mp_of alpha)"
 W="$T/a/widget"
 repo "$W" origin git@github.com:Acme/Widget.git
@@ -198,7 +176,7 @@ assert_equals "$(show_field id)" "$WPID" "a clone with no .smns is the project i
 assert_equals "$(show_field project)" "Widget" "named by the remote's last path segment, as written"
 assert_equals "$(show_field kind)" "hub" "a hub project"
 assert_equals "$(show_field source)" "remote origin → $WKEY" "project show names its source: the remote and its key"
-assert_equals "$(show_field hub)" "$HUB (org org-1)" "synced through the enrollment's hub"
+assert_equals "$(show_field hub)" "http://127.0.0.1:9 (org org-1)" "synced through the enrollment's hub"
 assert_equals "$(show_field root)" "$W" "rooted at the clone"
 mkdir -p "$W/src/deep"
 run_in "$W/src/deep" "$SMINOS" project show
@@ -347,62 +325,122 @@ repo "$WC" origin git@github.com:acme/widget.git
 run_in "$WC" "$SMINOS" project show
 assert_equals "$(show_field id)" "local-widget" "a machine not enrolled still reads local-<repo>"
 assert_equals "$(show_field source)" "the repository at $WC, a local project: this machine is not enrolled" "and says so"
-echo "a machine that enrolls with a session in such a repository:"
-as d delta
-WD="$T/d/widget"
-repo "$WD" origin https://github.com/acme/widget.git
-DA=5d000001-0000-4000-8000-0000000000d1
-live_session da "$DA" "$WD"
-run_in "$WD" "$SMINOS" list
-assert_equals "$(events_of local-widget "$DA")" "joined - - - $WD" "before it enrolls, the session is in local-widget"
-enroll delta
-tick
-assert_equals "$(events_of local-widget "$DA")" "joined - - - $WD
-retired moved $WPID - -" "the first tick after enrolling writes exactly one moved"
-assert_equals "$(events_of "$WPID" "$DA")" "joined - - move $WD" "into the repository's derived project"
 
-# ---- the hub and the other machine
-echo "alpha's record hook, the hub, and beta:"
-as a alpha
-hook_payload() { # event session cwd transcript
-  printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"%s","source":"startup"}' "$2" "$4" "$3" "$1"
+# ---- RL10: the repository's project across machines cut over to their endpoints (#153 M3d)
+# The cases that span machines: a machine that cuts over (its endpoint's
+# welcome, `daemon probe`) with a session in such a repository, and alpha's
+# record hook, its endpoint and beta, each a real sminos home with its daemon
+# and its endpoint_standin.py, never enrolled at a hub. What one endpoint accepted reaches the other's connection as
+# arrivals through the stand-in's own echo (rl10_relay). The org's directory
+# names the project as alpha's hello named it, the registration the hub
+# makes of a hello.
+echo "RL10: a machine that cuts over with a session in such a repository:"
+rl10_as rd delta
+WRD="$T/rd/widget"
+repo "$WRD" origin https://github.com/acme/widget.git
+RDA=6d000001-0000-4000-8000-0000000000d1
+live_session rda "$RDA" "$WRD"
+run_in "$WRD" "$SMINOS" list
+assert_equals "$(events_of local-widget "$RDA")" "joined - - - $WRD" "RL10: before it cuts over, the session is in local-widget"
+rl10_serve
+run_in "$WRD" "$SMINOS" daemon probe
+assert_contains "$OUT" "welcomed as delta of org org-1: this machine is cut over" "RL10: the endpoint's welcome cuts delta over"
+tick
+assert_equals "$(events_of local-widget "$RDA")" "joined - - - $WRD
+retired moved $WPID - -" "RL10: the first tick after the cutover writes exactly one moved"
+assert_equals "$(events_of "$WPID" "$RDA")" "joined - - move $WRD" "RL10: into the repository's derived project"
+tick
+assert_equals "$(events_of local-widget "$RDA" | grep -c moved)" 1 "RL10: and only once"
+
+echo "RL10: alpha's record hook, its endpoint, and beta:"
+rl10_as ra alpha
+rl10_cut_over
+EPA=$EP
+WRA="$T/ra/widget"
+repo "$WRA" origin git@github.com:Acme/Widget.git
+run_in "$WRA" "$SMINOS" project show
+assert_equals "$(show_field id) $(show_field kind)" "$WPID hub" "RL10: on a machine cut over, the clone is the hub project its remote derives"
+RWA=6a000001-0000-4000-8000-0000000000a1
+live_session rwa "$RWA" "$WRA" inbox
+RWA_TX=$TX
+hook_payload SessionStart "$RWA" "$WRA" "$RWA_TX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
+printf '%s\n' '{"type":"assistant","uuid":"ra000002","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"<message>widget is built on RL10</message>"}]}}' >> "$RWA_TX"
+hook_payload Stop "$RWA" "$WRA" "$RWA_TX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
+assert_contains "$(cat "$SMINOS_HOME/projects/$WPID/host/"*.jsonl 2>/dev/null)" "widget is built on RL10" \
+  "RL10: the record hook keeps a <message> from the clone in the derived project's host store"
+assert_not_contains "$(cat "$SMINOS_HOME/projects/$WPID/log/"*.jsonl 2>/dev/null)" "widget is built on RL10" \
+  "RL10: not in its log"
+rl10_serve
+start_daemon
+r_hello_of() { # ep-dir pid → the name and follow of the live connection's last hello of the project, or none
+  python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$1" opened \
+    | python3 -c 'import json, sys; o = json.load(sys.stdin)["projects"].get(sys.argv[1]); print("%s %s" % (o["name"], o["follow"]) if o else "none")' "$2"
 }
-hook_payload SessionStart "$WA" "$W" "$WA_TX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
-printf '%s\n' '{"type":"assistant","uuid":"wa000002","isSidechain":false,"message":{"role":"assistant","content":[{"type":"text","text":"<message>widget is built</message>"}]}}' >> "$WA_TX"
-hook_payload Stop "$WA" "$W" "$WA_TX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
-assert_contains "$(cat "$SMINOS_HOME/projects/$WPID/log/"*.jsonl 2>/dev/null)" "widget is built" \
-  "the record hook exports a <message> from the clone to the derived project's log"
+r_hello_is() { [ "$(r_hello_of "$1" "$2")" = "$3" ]; }
+until_true r_hello_is "$EPA" "$WPID" "Widget False" || true
+assert_equals "$(r_hello_of "$EPA" "$WPID")" "Widget False" \
+  "RL10: alpha's uplink opens the project at its endpoint under the remote's basename, holding it"
+r_host_up() {
+  [ "$(rl10_q "$EPA" "any('widget is built on RL10' in repr(f['message'].get('body')) for c, f in F if f.get('t') == 'session'
+                      and f['message'].get('kind') == 'host' and f['message'].get('project') == '$WPID')")" = true ]
+}
+until_true r_host_up || true
+r_host_up && pass "RL10: and the <message> goes up as a host message of the project" \
+  || fail "RL10: and the <message> goes up as a host message of the project"
+r_wa_up() { [ "$(rl10_q "$EPA" "any(e['kind'] == 'joined' and e.get('session') == '$RWA' for c, e in up('$WPID'))")" = true ]; }
+until_true r_wa_up || true
+r_wa_up && pass "RL10: alpha's endpoint takes rwa's joined in it" || fail "RL10: alpha's endpoint takes rwa's joined in it"
+# The org's directory, as the hub registers what alpha's hello named.
+RDIR="$(python3 - "$WPID" "$(r_hello_of "$EPA" "$WPID" | cut -d' ' -f1)" <<'PY'
+import json, sys
+print(json.dumps({"projects": [{"id": sys.argv[1], "name": sys.argv[2], "kind": "hub", "retired": False}],
+                  "machines": [{"name": "alpha", "online": True}, {"name": "beta", "online": True}]}))
+PY
+)"
+rl10_directory "$RDIR" "$EPA"
+rl10_as rb beta
+rl10_cut_over
+EPB=$EP
+WRB="$T/rb/widget"
+repo "$WRB" origin https://github.com/ACME/widget/
+run_in "$WRB" "$SMINOS" project show
+assert_equals "$(show_field id)" "$WPID" "RL10: beta's clone, spelled another way, is the same project"
+mkdir -p "$T/rb/bare"
+rl10_serve "\"org\": $RDIR"
 start_daemon
-registered() { [ "$(ctl state "d['registry'].get('$WPID', {}).get('name')")" = '"Widget"' ]; }
-until_true registered || true
-assert_equals "$(ctl state "d['registry'].get('$WPID', {}).get('name')")" '"Widget"' "the hub registers the project under the remote's basename"
-as b beta
-enroll beta
-WB="$T/b/widget"
-repo "$WB" origin https://github.com/ACME/widget/
-run_in "$WB" "$SMINOS" project show
-assert_equals "$(show_field id)" "$WPID" "beta's clone, spelled another way, is the same project"
-mkdir -p "$T/b/bare"
-start_daemon
-until_true follows "$WPID" beta true || true
-assert_equals "$(hub_follow "$WPID" beta)" true "beta follows it, holding no session there"
-wa_known() { (cd "$T/b/bare" && "$SMINOS" list Widget --json 2>/dev/null) | grep -q "\"session\": \"$WA\""; }
-until_true wa_known || true
-run_in "$T/b/bare" "$SMINOS" say "@Widget/wa hello from beta"
-assert_equals "$RC" 0 "@Widget/wa from beta is accepted"
-arrived() { grep -Fq "hello from beta" "$T/wa.received" 2>/dev/null; }
-until_true arrived || true
-arrived && pass "and arrives in alpha's session" || fail "and arrives in alpha's session"
-run_in "$WB" "$SMINOS" project show
-assert_equals "$(show_field project)" "Widget" "beta's clone goes by the name the hub keeps, not its own spelling's"
-[ ! -e "$T/ssh-entered" ] && pass "no remote was ever reached" || fail "no remote was ever reached"
+until_true r_hello_is "$EPB" "$WPID" "Widget True" || true
+assert_equals "$(r_hello_of "$EPB" "$WPID")" "Widget True" "RL10: beta opens it at its endpoint to follow, holding no session there"
+relayed() { rl10_relay "$EPA" "$EPB"; "$@"; }
+r_wa_known() { (cd "$T/rb/bare" && "$SMINOS" list Widget --json 2>/dev/null) | grep -q "\"session\": \"$RWA\""; }
+until_true relayed r_wa_known || true
+r_wa_known && pass "RL10: beta reads rwa there, from alpha's endpoint" || fail "RL10: beta reads rwa there, from alpha's endpoint"
+run_in "$T/rb/bare" "$SMINOS" say "@Widget/rwa hello from beta on RL10"
+assert_equals "$RC" 0 "RL10: @Widget/rwa from beta is accepted"
+r_say_up() { [ -n "$(rl10_up "$EPB" "$WPID" "hello from beta on RL10")" ]; }
+until_true r_say_up || true
+assert_equals "$(rl10_up "$EPB" "$WPID" "hello from beta on RL10" | python3 -c 'import json, sys; e = json.load(sys.stdin); print(e["writer"], e["to"][0]["session"])' 2>&1)" \
+  "beta/human $RWA" "RL10: beta's endpoint takes it in the project, from beta's operator to rwa"
+rl10_as ra alpha
+r_arrived() { grep -Fq "hello from beta on RL10" "$T/rwa.received" 2>/dev/null; }
+until_true relayed r_arrived || true
+r_arrived && pass "RL10: and it arrives in alpha's session" || fail "RL10: and it arrives in alpha's session"
+assert_equals "$(rl10_q "$EPA" "[f['event']['writer'] for c, f in F if f.get('t') == 'words?' and f.get('event', {}).get('text') == '@Widget/rwa hello from beta on RL10']")" \
+  '["beta/human"]' "RL10: on alpha's endpoint's words verdict, a person's words being the endpoint's to admit"
+rl10_as rb beta
+run_in "$WRB" "$SMINOS" project show
+assert_equals "$(show_field project)" "Widget" "RL10: beta's clone goes by the name the directory keeps, not its own spelling's"
+[ ! -e "$T/ssh-entered" ] && pass "RL10: no remote was ever reached" || fail "RL10: no remote was ever reached"
+for m in ra rb; do
+  assert_not_contains "$(cat "$T/$m/s/daemon.log" 2>/dev/null)" "Traceback" "RL10: nothing in $m's daemon.log is a traceback"
+done
+unset MAWS_USER_DATA
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test-remote: all $PASSES assertions passed"
 else
   echo "test-remote: $FAILURES of $((PASSES + FAILURES)) assertions FAILED"
-  for f in "$T"/a/s/daemon.log "$T"/b/s/daemon.log "$T"/a/s/run.out "$T"/b/s/run.out; do
+  for f in "$T"/a/s/daemon.log "$T"/ra/s/daemon.log "$T"/rb/s/daemon.log "$T"/ra/s/run.out "$T"/rb/s/run.out; do
     [ -f "$f" ] && { echo "--- $f"; tail -30 "$f"; }
   done
   exit 1

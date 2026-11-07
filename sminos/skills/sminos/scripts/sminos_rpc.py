@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""sminos_rpc — the RPCs a browser sends this machine through the hub (DC7 M3
-of the desk: DX6's shapes and the machine's policy, DX1's code, §5's paths,
-§6's boundary).
+"""sminos_rpc — the RPCs a member's device sends this machine through its
+endpoint (DC7 M3 of the desk: DX6's shapes and the machine's policy, §5's
+paths, §6's boundary; RL10, O12 M5).
 
-An RPC arrives as DX2's `rpc` frame and leaves as `rpc-result`, republished
-after every connect until the hub's `rpc-ack`. The daemon is the execution
-boundary: an RPC runs only once every check below holds, in this order, and
-the first that fails is its answer, as DX6's error code:
+An RPC arrives as RL10's `rpc` frame and leaves as `rpc-result`, republished
+after every connect until the endpoint's `rpc-ack`. The daemon is the
+execution boundary: an RPC runs only once every check below holds, in this
+order, and the first that fails is its answer, as DX6's error code:
 
-1. its code (DX1, `smns-hub-rpc-v1`, under the project it names): `bad-code`;
-   then its operation id (RL4, the remote layer's Decision Log 18): an
+1. the project it names (`bad-shape` when it names none); then its
+   operation id (RL4, the remote layer's Decision Log 18): an
    `opId` is 16-128 characters of base64url's alphabet (`bad-op-id`), and
    carries `opCreated`, the app's time when it chose the id, kept across
    reseals, no later than `created` by more than FRESH_S (`bad-op-created`);
-2. where it runs, since every enrolled machine holds the org key: `machine`
-   is this machine's enrolled name (`wrong-machine`), `project` a hub project
-   of this machine in its org (`unknown-project`), the session one that
-   joined that project from this machine, ended or not (`no-session`);
+2. where it runs: `machine` is this machine's enrolled name
+   (`wrong-machine`), `project` a hub project of this machine in its org
+   (`unknown-project`), the session one that joined that project from this
+   machine, ended or not (`no-session`);
 3. the ledger, keyed by the op: the `opId`, else the nonce (an RPC without
-   one, as DX6 sends it). An op it knows is answered from it and never run
+   one, as DX6 defined it). An op it knows is answered from it and never run
    again; one it holds a tombstone for is refused `tombstoned`; one whose
    `opCreated` (a nonce-keyed RPC's `created`) is older than OP_HORIZON is
    refused `expired`, since the ledger's day may have dropped it;
@@ -38,15 +38,8 @@ the first that fails is its answer, as DX6's error code:
    rule resolved from that request's own suggestions (`not-pending` when they
    changed, `bad-shape` for one it may not take), and the decision fitting
    that request by the bridge's own rule (`bad-shape`);
-8. the session's kind against §5's table (`unsupported`); a Resume, against
-   the transcript this machine holds of the session (`unsupported` when it
-   holds none: `claude --resume` would start an empty session under its id),
-   and against its record's controller (`lane-b` when its last launch was
-   MAWS's lane B: reopening it is MAWS's, O12 M3);
-9. for a stop, the task: a background shell or monitor the session's jobs
-   index holds as running, the main loop's or a subagent's, read from the
-   rows as the plane reads them (sminos_jobs.running_task; `unknown-task`);
-   for a stop-agent or a tell, the agent: one the session's subagent tree
+8. the session's kind against §5's table (`unsupported`);
+9. for a stop-agent or a tell, the agent: one the session's subagent tree
    holds as running, by its id, else by the name of exactly one running
    agent (`unknown-agent`; `ambiguous-agent` for a shared name), as the
    bridge's child keeps the tree from the engine's list (GET /agents) and
@@ -69,7 +62,7 @@ any effect and records the outcome before the result goes up; entries are
 kept a day (KEPT_S), and an op's id expires an hour before that
 (OP_HORIZON), so a resealed copy of an op the ledger dropped is refused, never
 run again. Each keeps the RPC's `created` and the time its outcome was kept
-(`done_at`) beside its claim's `at` (and a Resume's `launched_at`), so one
+(`done_at`) beside its claim's `at`, so one
 RPC's click, claim, launch and end read off its entry. An outcome whose write fails is held here, never sent, and
 written again until it is kept. An op left claimed (the uplink stopped
 between the two writes) is reconciled from the action's own trace — a
@@ -81,7 +74,7 @@ does live — for as long as that trace may still appear, then answered
 `failed` `interrupted`.
 
 What became of an op is asked of the ledger (RL4's `query`, carried over
-RL10 in a later phase): `done` or `refused` with its outcome, `in-progress`
+RL10): `done` or `refused` with its outcome, `in-progress`
 (claimed, or held by a worker), `expired`, `not-received`, or `unavailable`
 while the ledger cannot be read. An app told `not-received` tombstones the
 op (`tombstone`), so a late copy is refused; claiming and tombstoning are one
@@ -90,38 +83,28 @@ claimed is never tombstoned and a tombstoned one never runs. `sminos
 rpc-query` prints the ledger file's view of an op, without `flight`.
 
 Execution (§5) goes through the session's bridge (DC2's DX5): steer,
-interrupt, stop, model, compact, and a slash command (`command`, the desk
+interrupt, model, compact, and a slash command (`command`, the desk
 control surface's DX6) as commands; an answer or a decision as the
-request's decision, by the member. A steer to a live session without a
-bridge takes `sminos steer`'s own fallbacks (the supervisor's `reply`, the
-inbox frame), so its result names no row. Spawn and retire run `sminos spawn`
-and `sminos retire`, which record `joined` and `retired` as they always do.
+request's decision, by the member. Spawn runs `sminos spawn`, which records
+`joined` as it always does.
 
-Resume runs `claude --bg --resume <session>` in the session's working
-directory with nothing else on the line (any flag makes the engine start a
-copy), one per session at a time, once no process of this machine holds the
-session (`session-live`: its transcript is here, so here is everywhere it
-can run; checked before the claim, and again under the lock). The launch
-is kept in the claim before it runs, and its job once known: a claim left
-by a stop is `done` only when a --bg process of that job holds the session;
-one whose job was never kept (`claude --bg` outlives the daemon that ran
-it) is `done` when a --bg process started since its launch holds it and no
-other Resume of the session, still running then, could have started it,
-and `interrupted` once its window passes without one; a kept job the
-harness reports under another session is a copy, stopped, the RPC failed
-`copy-started`. The engine continues it
-under its own id unless it finds the session open meanwhile, when it starts
-a copy and says so: the copy is stopped and the RPC fails `copy-started`. The session rejoins as any session
-that runs again does (sminos's reconciliation, at the daemon's next tick,
-which the Resume asks for at once), and what was recorded for it while it
-was closed is delivered then.
+Resume, Retire and Stop run outside the bridge's launch fence, so they are
+refused `unsupported` (below). A Resume claim kept before the cutover is
+still reconciled from its launch: `done` only when a --bg process of its
+job holds the session; one whose job was never kept (`claude --bg`
+outlives the daemon that ran it) `done` when a --bg process started since
+its launch holds it and no other Resume of the session, still running
+then, could have started it, and `interrupted` once its window passes
+without one; a kept job the harness reports under another session is a
+copy, stopped, the RPC failed `copy-started` (trace, check_copy). A Retire
+or Stop claim so kept is `interrupted`.
 
 A compaction's outcome reaches browsers as DX4 `compact`, carrying the RPC's
 nonce, from the bridge's `compact` events for the command this daemon issued
 (read by the requests' readers, sminos_requests). The command's id is kept on
 the RPC's ledger entry until its compaction ends, so one held for its turn's
 end that runs after a restart still carries the nonce. The messages are owed
-as a settlement is (sminos_owed): until a POST's answer takes them, kept in
+as a settlement is (sminos_owed): until their frame is written, kept in
 `daemon/rpcs-owed.json` across restarts.
 
 A desk command's outcome reaches browsers the same way, as DX4 `op` (the desk
@@ -139,7 +122,6 @@ answer. A `/reload-plugins` ends by returned text if its module survives,
 otherwise when another child answers (`effect`); neither within
 RELOAD_WAIT_S is a timeout. The first end wins, including for `sminos
 command`, which carries no nonce and is tracked by its start.
-A hub whose welcome does not list `op` is sent none.
 
 One subagent stopped or told (`stop-agent`, `tell`; the desk control
 surface's MW4) answers when the bridge has: TaskStop and the engine's send
@@ -156,10 +138,8 @@ once the bridge holds it, and its attachments' states follow as `op`, the
 upload being the op. Its root and files are kept on the claim before
 anything is written, so a restart answers it from the child's kept answer.
 
-On a machine cut over to its endpoint (RL10, O12 M5) the same frames come
-over the endpoint's socket with no code (`Rpcs(..., coded=False)`): check 1's
-code is skipped, and nothing else; the endpoint authorized the action. Its
-RPC carries who sent it — `member`, `device`, the operation's
+The frames come over the endpoint's socket with no code: the endpoint
+authorized the action. Its RPC carries who sent it — `member`, `device`, the operation's
 `fingerprint`, its `context` and, for a spawn, its `proof` — which the
 ledger entry keeps beside a `target` derived here from the checked RPC,
 never read from the frame (`{kind: machine}` for a spawn, else the
@@ -167,7 +147,7 @@ session). `rpc-result` carries the `opId` beside the nonce, a loose
 refusal's too; `rpc-ack {opId, nonce}` settles by the nonce, and by the
 `opId` when the ledger holds no op under that nonce.
 
-There a remote action is bound to its sender and fenced to its launch (O12
+A remote action is bound to its sender and fenced to its launch (O12
 M7). Its binding (`member`, `device`, `fingerprint`, `target`) and latest
 nonce are its in-flight record from dispatch on, under the op lock, and the
 claim or the refusal its worker keeps is built from that record; a copy of
@@ -182,7 +162,7 @@ bridge (`context`), and `resume`, `retire` and `stop`, outside the bridge's
 fence, are `unsupported`. A spawn's `proof` reaches the new session's
 record as its `ownersProof` (SMINOS_DESK_PROOF).
 
-The record RPCs (MAWS O8 M6b, M5b) are offered there alone too, behind the
+The record RPCs (MAWS O8 M6b, M5b) are offered behind the
 hello's `record` capability: `record.access {session, access}`,
 `record.shares {session, member, grade | null}` and `record.owners
 {session, add: true, member}`, the signed act as `proof`, which the ledger
@@ -203,8 +183,7 @@ add_owner), since the endpoint verified the act's step-up by an owner.
 `unsupported` for a change an endpoint without `access` cannot carry. One
 the daemon stopped mid-run is `interrupted`.
 
-`send` (MAWS O9 §E) is offered there alone (DX2 refuses it `unsupported`):
-a person's message into the session, as the bridge's `deliver` in either
+`send` (MAWS O9 §E) is a person's message into the session, as the bridge's `deliver` in either
 turn state, keyed `{writer: SEND_WRITER, seq}` — a writer no log has, so
 the delivery's mark and the log's never meet. Its text is non-blank, at
 most SEND_TEXT_MAX characters, and no slash command (its first
@@ -248,7 +227,6 @@ import sminos_audience as audience  # noqa: E402
 import sminos_bridge as bridge  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_control as control  # noqa: E402
-import sminos_jobs as jobs  # noqa: E402
 import sminos_media as media  # noqa: E402
 import sminos_owed as owed  # noqa: E402
 import sminos_policy as policy  # noqa: E402
@@ -268,8 +246,6 @@ PROOF_ENV = sminos.DESK_PROOF_ENV   # a desk spawn's proof, handed to its verb (
 STEER_TRACE_S = 30        # a claimed steer's answer is looked for this long after its claim
 SPAWN_TRACE_S = 420       # a claimed spawn's seat: `claude --bg` may take 300 s, its uuid poll more
 RESUME_TRACE_S = 420      # a claimed Resume's job: the same launch and poll
-RESUME_HELD_S = 30        # how long a Resume waits for its job's process to hold the session
-LAUNCH_TIMEOUT = 300      # `claude --bg` hands the launch to the harness's supervisor
 COMPACT_HELD_S = 60       # a `compact` event waits at most this long for its command's result to name it
 RELOAD_WAIT_S = 60        # a `/reload-plugins` is done once its bridge answers from another child within this
 OPS_ENDED_KEPT = 1000     # nonces of ops whose end went up, kept so another copy of that end is passed by
@@ -293,11 +269,9 @@ VERB_TIMEOUT = 120
 SNAPSHOT_TIMEOUT = 8      # the bridge holds its stream up to 5 s until the mod's first resync
 DECISION_TIMEOUT = 15     # an async question's answer is relayed to the mod, which waits 5 s
 SPAWN_TASK = "Begin with your brief."
-RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume", "stop",
-             "command", "btw", "stop-agent", "tell", "media")
 RECORD = ("record.access", "record.shares", "record.owners")   # a session's reach and owners (MAWS O8 M6b, M5b)
-RL10_ONLY = ("send",) + RECORD   # offered by the endpoint alone (MAWS O9 §E, O8 M6b): DX2 does not carry them
-RL10_RPC_NAMES = RPC_NAMES + RL10_ONLY
+RL10_RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume", "stop",
+                  "command", "btw", "stop-agent", "tell", "media", "send") + RECORD
 SEND_TEXT_MAX = 65536     # O9 §E `send`: a person's message, in characters (MAWS bounds a typed prompt at 65,536)
 SEND_WAIT_S = 10          # how long a send waits for its key's `delivered` outcome before it answers `submitted`
 SEND_WRITER = "rl10-send"  # a send's delivery key: no log writer (each is `<machine>/…`, `hub/…` or `legacy/…`)
@@ -312,9 +286,6 @@ MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}")
 WORKTREE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 CREATED_RE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]{1,9})?Z")
 SEAT_RE = re.compile(r"\[[0-9a-f]+ / ([0-9a-f-]{36})\]")
-STEER_ROW_RE = re.compile(r"\(row ([0-9a-f-]{36})\)")
-BG_SHORT_RE = re.compile(r"backgrounded · ([0-9a-f]+)")
-COPY_RE = re.compile(r"started a copy as ([0-9a-f]+)")
 IDLE = "no turn is running"   # the mod's steer refusal (DX5): "no turn is running to steer: send it instead"
 # A verb runs on the daemon's own Python, as its derivation and its uplink do:
 # the launcher would take the first python3 on the service's PATH, which the
@@ -431,25 +402,24 @@ def target_of(rpc):
     return {"kind": "machine"} if rpc["rpc"] == "spawn" else {"kind": "session", "session": rpc["args"].get("session")}
 
 
-def entry_of(rpc, at, remote=False):
+def entry_of(rpc, at):
     """A new ledger entry's own fields: the RPC's project, name and session,
     its `created`, its claim's or refusal's `at`; for an op keyed by its
-    `opId`, the nonce the hub knows it by and `op_created`; for one the
-    endpoint sent (`remote`, RL10), who sent it and what it acts on
-    (REMOTE_KEPT, `target`)."""
+    `opId`, the nonce the endpoint knows it by and `op_created`; and who
+    sent it and what it acts on (REMOTE_KEPT, `target`)."""
     e = {"project": rpc["project"], "rpc": rpc["rpc"], "session": rpc["args"].get("session"), **created_of(rpc),
          "at": at}
     if rpc.get("opId") is not None:
         e.update(nonce=rpc["nonce"], op_created=op_created_of(rpc))
-    if remote:
-        e.update({k: rpc[k] for k in REMOTE_KEPT if k in rpc}, target=rpc["target"])
+    e.update({k: rpc[k] for k in REMOTE_KEPT if k in rpc}, target=rpc["target"])
     return e
 
 
 def binding_of(record):
     """The binding an op's ledger entry or in-flight record holds (BINDING:
-    who sent it and what it acts on, an RL10 op's), or {}: a DX2 op's, a
-    tombstone's, and an entry an older daemon wrote hold none."""
+    who sent it and what it acts on, an RL10 op's), or {}: an op kept
+    before the cutover, a tombstone's, and an entry an older daemon wrote
+    hold none."""
     return {k: record[k] for k in BINDING if k in record} if record else {}
 
 
@@ -752,9 +722,7 @@ class Rpcs:
     """The RPCs this machine was sent, and their results owed to the hub.
     Kept across streams by the uplink; `wake` is the current stream's."""
 
-    def __init__(self, key, machine, wake=lambda: None, clock=time.time, coded=True):
-        self.key = key
-        self.coded = coded        # DX2: RPCs under the org key's code; RL10: the endpoint's, with none
+    def __init__(self, machine, wake=lambda: None, clock=time.time):
         self.machine = machine
         self.wake = wake
         self.clock = clock
@@ -770,13 +738,11 @@ class Rpcs:
         self.compact_held = []    # [(project id, session, event, at)]: events whose command is not named yet
         self.compact_flight = {}  # op → session: compact RPCs whose command's id is not known yet
         self.model_locks = {}     # session → the lock its model and effort are read and changed under
-        self.resume_locks = {}    # session → the lock a Resume of it runs under
         self.locks_lock = threading.Lock()
         self.op_ids = {}          # a bridge's command id → the op this daemon issued ({project, session, nonce, at,
         #                           name, args, child}), until its end
         self.ops_ended = collections.OrderedDict()   # (session, id) → None: ended ops, including CLI runs without a nonce
-        self.kinds = frozenset()  # the session kinds the stream's welcome listed (DX2): `op` goes only where listed
-        self.flying = {}          # id(frame) → frame: compact and op messages on a lane, their POST not yet answered
+        self.flying = {}          # id(frame) → frame: compact and op messages on the lane, not yet written
         self.kept = owed.Kept(OWED_FILE, log)
         self.messages = [f for f in self.kept.load() if is_owed(f)]   # DX4 compact and op messages owed, as frames
         self.unwritten = {}       # op → its outcome, whose ledger write failed: never sent until it is kept
@@ -808,23 +774,18 @@ class Rpcs:
         if not isinstance(rpc, dict):
             log("an rpc frame without an RPC: passed by")
             return
-        nonce, pid, name = rpc.get("nonce"), rpc.get("project"), rpc.get("rpc")
-        if not self.coded:
-            if not isinstance(pid, str):
-                return self.refuse_loose(rpc, "bad-shape", "the RPC names no project")
-        elif not isinstance(pid, str) or codes.failure(self.key, "rpc", pid, rpc) is not None:
-            return self.refuse_loose(rpc, "bad-code", "the RPC's code does not verify under the org key")
+        pid, name = rpc.get("project"), rpc.get("rpc")
+        if not isinstance(pid, str):
+            return self.refuse_loose(rpc, "bad-shape", "the RPC names no project")
         why = op_refusal(rpc)
         if why is not None:
             return self.refuse_loose(rpc, *why)
         op = op_of(rpc)
-        # A copy from here on: what the checks normalize is not the RPC the
-        # code covered.
+        # A copy from here on: what the checks normalize is not the RPC as it came.
         args = dict(rpc["args"]) if isinstance(rpc.get("args"), dict) else {}
         rpc = {**rpc, "args": args}
-        if name not in (RPC_NAMES if self.coded else RL10_RPC_NAMES):
-            return self.refuse_loose(rpc, "unsupported", "no RPC %r on this machine%s" % (
-                name, " from the hub: it is offered through the endpoint alone" if name in RL10_ONLY else ""))
+        if name not in RL10_RPC_NAMES:
+            return self.refuse_loose(rpc, "unsupported", "no RPC %r on this machine" % (name,))
         if rpc.get("machine") != self.machine:
             return self.refuse_loose(rpc, "wrong-machine", "this is %s, not %s" % (self.machine, rpc.get("machine")))
         project = here.project(pid)
@@ -835,8 +796,7 @@ class Rpcs:
         if name != "spawn" and not (isinstance(sid, str) and sminos.UUID_RE.match(sid)
                                     and here.has_session(project, sid)):
             return self.refuse_loose(rpc, "no-session", "no session %s of %s on this machine" % (sid, project.name))
-        if not self.coded:
-            rpc["target"] = target_of(rpc)   # derived from the RPC as checked, whatever the frame said
+        rpc["target"] = target_of(rpc)   # derived from the RPC as checked, whatever the frame said
         with self.op_lock:   # nothing tombstones the op between the ledger's look and `flight`
             self.dispatch(rpc, op, project, args, here, received)
 
@@ -853,15 +813,14 @@ class Rpcs:
             # Forwarded again (the hub lost it) or resealed: it never runs
             # again, and its one result goes up under this copy's nonce, the
             # one the hub waits for — at once when the ledger holds it, else
-            # once it exists (in flight, or a claim being reconciled). On
-            # RL10 a copy is the op's only when it binds as the op does: one
-            # from another member, or of another operation, is refused
+            # once it exists (in flight, or a claim being reconciled). A
+            # copy is the op's only when it binds as the op does: one from
+            # another member, or of another operation, is refused
             # `op-conflict`, under its own nonce, and changes nothing.
-            if not self.coded:
-                stored = self.flight.get(op) or known
-                if any(k in stored and rpc.get(k) != stored[k] for k in CONFLICTING):
-                    return self.refuse_loose(rpc, "op-conflict", "%s is another operation's id: this copy is not "
-                                             "that operation, or not its sender's" % op)
+            stored = self.flight.get(op) or known
+            if any(k in stored and rpc.get(k) != stored[k] for k in CONFLICTING):
+                return self.refuse_loose(rpc, "op-conflict", "%s is another operation's id: this copy is not "
+                                         "that operation, or not its sender's" % op)
             if op in self.flight:
                 self.flight[op]["nonce"] = nonce   # what the worker's claim, or its refusal, is kept under
             if known is not None:
@@ -879,18 +838,11 @@ class Rpcs:
             self.keep(rpc, r.outcome)
             return
         record = here.record(sid) if sid else None
-        facts = {"running": record is not None, "bg": control.bg_job(record or {}), "root": project.root,
-                 "checkout": args.get("checkout"), "status": (record or {}).get("status")}
-        if name in ("stop", "resume"):
-            facts["transcript"] = sminos.transcript_now(sid)
-        if name == "resume":
-            seat = next((s for s in sminos.seats() if s["current"] == sid), None)
-            facts.update(cwd=here.cwd(project, sid),
-                         retired_seat=seat["alias"] if seat and seat["status"] == "retired" else None)
-        # The in-flight record (O12 M7): the latest nonce, and on RL10 the
-        # binding, held from here on, so a copy arriving while the worker is
-        # still inside `plan` is checked against it, and the claim or the
-        # refusal the worker keeps is built from it.
+        facts = {"running": record is not None, "checkout": args.get("checkout")}
+        # The in-flight record (O12 M7): the latest nonce and the binding,
+        # held from here on, so a copy arriving while the worker is still
+        # inside `plan` is checked against it, and the claim or the refusal
+        # the worker keeps is built from it.
         if name == "send":
             # Its place among the session's sends, in the order the frames
             # arrived, kept on disk before any worker runs (O9 §E).
@@ -901,7 +853,7 @@ class Rpcs:
                                                 "they can, so no delivery key is used twice"
                                       % (self.sends.path, str(e) or type(e).__name__)))
                 return
-        self.flight[op] = {"nonce": nonce, **({} if self.coded else binding_of(rpc))}
+        self.flight[op] = {"nonce": nonce, **binding_of(rpc)}
         if name == "compact":
             self.compact_flight[op] = sid
         try:
@@ -932,7 +884,7 @@ class Rpcs:
         shape(name, args, rpc.get("member"))
         if name in RECORD:
             record_proof(rpc)
-        why = None if self.coded else context_refusal(rpc)
+        why = context_refusal(rpc)
         if why is not None:
             raise Refused("bad-shape", "%s: %s" % (name, why))
         if name == "command" and args["name"] == "cd":
@@ -967,7 +919,7 @@ class Rpcs:
         copy of it came with. The caller holds the op lock."""
         rpc = self.latest(rpc)
         now = self.clock()
-        e = {**entry_of(rpc, now, not self.coded), "outcome": outcome, "refused": True, "done_at": now, "acked": False}
+        e = {**entry_of(rpc, now), "outcome": outcome, "refused": True, "done_at": now, "acked": False}
         try:
             self.ledger.put(op_of(rpc), e)
         except OSError as err:
@@ -979,19 +931,19 @@ class Rpcs:
 
     def latest(self, rpc):
         """The RPC as its in-flight record holds it while a worker does: the
-        latest nonce a copy of its op came with (ticket 11a), and on RL10
-        its binding (O12 M7). The caller holds the op lock."""
+        latest nonce a copy of its op came with (ticket 11a), and its binding
+        (O12 M7). The caller holds the op lock."""
         held = self.flight.get(op_of(rpc))
         return {**rpc, **held} if held is not None else rpc
 
     def ack(self, frame):
-        """`rpc-ack`: the result taken, by the nonce it went up under; on
-        RL10, by its `opId` when the ledger holds no op under that nonce (a
-        copy since resealed, or one it no longer knows)."""
+        """`rpc-ack`: the result taken, by the nonce it went up under, or by
+        its `opId` when the ledger holds no op under that nonce (a copy since
+        resealed, or one it no longer knows)."""
         nonce = frame.get("nonce")
         if self.loose.pop(nonce, None) is None:
             op = self.ledger.op_of_nonce(nonce)
-            if op is None and not self.coded and isinstance(frame.get("opId"), str):
+            if op is None and isinstance(frame.get("opId"), str):
                 op = frame["opId"] if self.ledger.get(frame["opId"]) is not None else None
             if op is not None:
                 self.ledger.acked(op)
@@ -1064,7 +1016,7 @@ class Rpcs:
             try:
                 with self.op_lock:   # under the nonce a reseal left in flight; a later one finds the claim
                     current = self.latest(rpc)
-                    entry = entry_of(current, self.clock(), not self.coded)
+                    entry = entry_of(current, self.clock())
                     if "seq" in facts:
                         entry["send_seq"] = facts["seq"]   # its delivery key, chosen before the claim
                     claimed = self.ledger.claim(op, entry)
@@ -1110,47 +1062,20 @@ class Rpcs:
         asks runs on a path around the bridge (`context`), and what runs
         outside the bridge's fence (UNFENCED) is not offered (`unsupported`)."""
         name, args, op = rpc["rpc"], rpc["args"], op_of(rpc)
-        remote = not self.coded
         if name == "spawn":
-            if remote and "proof" not in rpc:
+            if "proof" not in rpc:
                 log("spawn %s carries no proof: the session's ownersProof is []" % op)
-            return lambda: spawn(args, op, facts["checkout"], rpc["member"], rpc.get("proof") if remote else None)
+            return lambda: spawn(args, op, facts["checkout"], rpc["member"], rpc.get("proof"))
         sid = args["session"]
         if name in RECORD:
             return lambda: record_change(name, sid, args, rpc.get("proof"))
-        launch = rpc["context"]["launch"] if remote else None
-        if remote and name in UNFENCED:
+        launch = rpc["context"]["launch"]
+        if name in UNFENCED:
             raise Refused("unsupported", "%s is not offered to a remote caller: it runs outside the bridge's launch "
                                          "fence" % name)
-        if name == "resume":
-            if facts["retired_seat"]:
-                # A retired seat's session would run outside the family:
-                # sminos re-joins a retired seat only through its own verbs.
-                raise Refused("unsupported", "the seat %s holding it was retired: `sminos fill` or `sminos send` "
-                                             "brings it back" % facts["retired_seat"])
-            controller = (sminos.session_record(sid) or {}).get("controller") or {}
-            if controller.get("lane") == "B":
-                raise Refused(LANE_B, "MAWS controls this session (its last launch was MAWS's lane B): "
-                                      "reopening it is MAWS's")
-            live = holders(sid)
-            if live:
-                raise Refused("session-live", "the session is running here (%s): only an ended session is resumed"
-                              % held_by(live))
-            foreign = sminos.foreign_config(sid)
-            if foreign:
-                raise Refused("unsupported", "the session runs under %s, not this daemon's config dir (%s), where "
-                                             "a resume from here would look for it, on that dir's credentials"
-                              % (foreign, sminos.config_dir()))
-            if not facts["transcript"]:
-                # A --bg copy that ended before it wrote a row leaves none;
-                # `claude --resume` would start an empty session under its id.
-                raise Refused("unsupported", "this machine holds no transcript of it, so there is nothing to resume")
-            return lambda: resume(sid, facts["cwd"], self.lock_of(self.resume_locks, sid),
-                                  lambda **fields: self.note(op, fields))
         path = bridge.endpoint(sid)
         status = bridge.probe(path)
-        bridged = status is not None and status.get("session") == sid
-        if remote and not bridged:
+        if not (status is not None and status.get("session") == sid):
             # Its supervisor's reply or the inbox would run it unfenced.
             raise Refused("context", "the session has no bridge to fence it: nothing here can hold it to the launch "
                                      "it was sealed for")
@@ -1160,54 +1085,40 @@ class Rpcs:
             decision = {"behavior": args["decision"], "by": rpc["member"]}
             if "message" in args:
                 decision["message"] = args["message"]
-        if name in ("answer", "decide") and bridged:
+        if name in ("answer", "decide"):
             check_digest(path, sid, args["digest"], decision, args.get("scope") if name == "decide" else None)
-        if name == "retire":
-            return lambda: retire(sid, facts["root"], rpc["member"])
         if not facts["running"]:
             raise Refused("unsupported", "the session is not running: only Resume brings it back")
-        if bridged:
-            if name == "send":
-                return lambda: send(path, sid, args["text"], op, facts["seq"], launch,
-                                    self.sends.turn(sid, facts["seq"]))
-            if name == "steer":
-                return lambda: steer(path, args["text"], op, launch)
-            if name == "interrupt":
-                return lambda: interrupt(path, launch)
-            if name == "model":
-                return lambda: model(path, sid, args, self.lock_of(self.model_locks, sid), launch)
-            if name == "compact":
-                return lambda: self.compact(path, rpc, sid, launch)
-            if name == "command":
-                return lambda: self.desk_command(path, rpc, sid, status, launch)
-            if name == "btw":
-                return lambda: self.side_question(path, rpc, sid, launch)
-            if name == "media":
-                return lambda: self.media(path, rpc, sid, launch)
-            if name in ("answer", "decide"):
-                return lambda: decide(path, args["digest"]["request"], {**decision, **fence(launch)})
-            if name in ("stop-agent", "tell"):
-                agent = resolve_agent(path, args["agentId"])
-                if name == "stop-agent":
-                    return lambda: stop_agent(path, args["agentId"], agent, op, launch)
-                return lambda: tell(path, args["agentId"], agent, args["text"], op, launch)
-            if name == "stop":
-                if not jobs.running_task(facts["transcript"], args["taskId"]):
-                    raise Refused("unknown-task", "the session's jobs hold no background shell or monitor %s running"
-                                  % args["taskId"])
-                return lambda: stop(path, args["taskId"])
+        if name == "send":
+            return lambda: send(path, sid, args["text"], op, facts["seq"], launch,
+                                self.sends.turn(sid, facts["seq"]))
         if name == "steer":
-            if facts["status"] == "idle":
-                # The engine's own record says no turn runs (composite 21c32db7).
-                raise Refused("idle", "no turn is running to steer: send it instead")
-            return lambda: steer_without_bridge(sid, args["text"], facts["root"])
-        raise Refused("unsupported", "%s needs the session's bridge; %s has none (§5)" % (
-            name, "this --bg job" if facts["bg"] else "this terminal session"))
+            return lambda: steer(path, args["text"], op, launch)
+        if name == "interrupt":
+            return lambda: interrupt(path, launch)
+        if name == "model":
+            return lambda: model(path, sid, args, self.lock_of(self.model_locks, sid), launch)
+        if name == "compact":
+            return lambda: self.compact(path, rpc, sid, launch)
+        if name == "command":
+            return lambda: self.desk_command(path, rpc, sid, status, launch)
+        if name == "btw":
+            return lambda: self.side_question(path, rpc, sid, launch)
+        if name == "media":
+            return lambda: self.media(path, rpc, sid, launch)
+        if name in ("answer", "decide"):
+            return lambda: decide(path, args["digest"]["request"], {**decision, **fence(launch)})
+        if name in ("stop-agent", "tell"):
+            agent = resolve_agent(path, args["agentId"])
+            if name == "stop-agent":
+                return lambda: stop_agent(path, args["agentId"], agent, op, launch)
+            return lambda: tell(path, args["agentId"], agent, args["text"], op, launch)
+        raise Refused("unsupported", "%s is not run on this machine" % name)
 
     def note(self, op, fields):
         """The action's own evidence added to its claim before the effect it
-        names (a Resume's launch, then its job), so a restart can tell that
-        launch's trace from anything else. Raises OSError when it could not
+        names (a command's id, a compaction's), so a restart can tell its
+        trace from anything else. Raises OSError when it could not
         be kept."""
         with self.ledger.lock:
             e = self.ledger.entries.get(op)
@@ -1664,31 +1575,22 @@ class Rpcs:
         return out
 
     def result_frame(self, pid, op, nonce, outcome):
-        """DX2's `rpc-result`; RL10's carries the `opId` too."""
-        if self.coded:
-            return {"t": "rpc-result", "project": pid, "nonce": nonce, "outcome": outcome}
+        """RL10's `rpc-result`, carrying the `opId` beside the nonce."""
         return {"t": "rpc-result", "project": pid, "opId": op, "nonce": nonce, "outcome": outcome}
 
     def due(self, opened):
         """What goes up now for the projects open on the stream: new
         results, then DX4 compact and op messages. Not taken until
-        `sending`. An op message a hub that does not list `op` would refuse
-        is dropped here, said."""
+        `sending`."""
         self.take()
         if self.clock() >= self.next_reconcile:
             self.reconcile()
-        if "op" not in self.kinds:
-            unlisted = [f for f in self.messages if f["message"]["kind"] == "op"]
-            if unlisted:
-                log("the hub lists no `op` messages: %d of them dropped" % len(unlisted))
-                self.messages = [f for f in self.messages if f["message"]["kind"] != "op"]
-                self.kept.save(self.messages)
         owed_now = [f for f in self.messages if f["message"]["project"] in opened and id(f) not in self.flying]
         return self.results(set(opened), False) + owed_now
 
     def opening(self, pid):
         """What follows a project's `hello` on a new stream: every result of
-        it the hub has not acknowledged (DX2)."""
+        it the endpoint has not acknowledged."""
         self.take()
         return self.results({pid}, True)
 
@@ -1704,8 +1606,9 @@ class Rpcs:
                 self.flying[id(f)] = f
 
     def delivered(self, frames, refused):
-        """The POST carrying `frames` was answered 200, `refused` naming
-        ({id(frame): reason}) those the hub refused whole: a compact or op
+        """The frame carrying `frames` was written, `refused` naming
+        ({id(frame): reason}) those refused whole (none: the lane refuses
+        nothing): a compact or op
         message it took leaves `messages`; one refused `not-open` stays owed (its
         project is opened again), and a result so refused goes again; one
         refused otherwise would be refused again, and leaves, said."""
@@ -1725,7 +1628,7 @@ class Rpcs:
             self.kept.save(self.messages)
 
     def unsent(self, frames):
-        """Frames dropped from a lane before any POST carried them (a
+        """Frames dropped from a lane before they were written (a
         re-open's `hold`): no longer in flight, owed as they stand."""
         for f in frames:
             if f.get("t") == "rpc-result":
@@ -2301,17 +2204,6 @@ def interrupt(path, launch=None):
                  "running": list(r.get("running") or [])})
 
 
-def stop(path, task):
-    """A background shell or monitor stopped through the session's bridge,
-    which runs TaskStop for it (DX5 `stop`). The engine's refusal is the
-    RPC's failure, in the engine's words; the job's `stopped` reaches
-    browsers on the session's DX4 body, not here."""
-    out, _ = command(path, {"op": "stop", "taskId": task, "from": "desk"})
-    if not out.get("ok"):
-        raise Refused("failed", refusal(out))
-    return done({"taskId": task})
-
-
 def resolve_agent(path, ref):
     """The id of the running agent `ref` names in the session's subagent tree,
     as its bridge's child keeps it (GET /agents): an id the tree holds first,
@@ -2495,21 +2387,6 @@ def last_line(text):
     return lines[-1] if lines else ""
 
 
-def steer_without_bridge(sid, text, root):
-    """§5's steer for a live session with no bridge: `sminos steer`'s own
-    paths (the supervisor's `reply` for a --bg job, else the inbox frame).
-    No row is named (the session appends none of its own)."""
-    rc, out, err = run_verb(["steer", "--", sid, text], root, VERB_TIMEOUT)
-    if rc == 0:
-        m = STEER_ROW_RE.search(out)
-        return done({"row": m.group(1) if m else None})
-    if rc == sminos.EXIT_UNKNOWN:
-        raise Refused("unsupported", last_line(err) or "the session is not live")
-    if IDLE in err:
-        raise Refused("idle", "no turn is running to steer: send it instead")
-    raise Refused("failed", last_line(err) or "sminos steer exited %d" % rc)
-
-
 def spawn(args, op, checkout, member, proof=None):
     """`sminos spawn` into the checkout, the RPC's op stamped on the seat's
     record from its first write (`rpc_nonce`), the brief as its in-charge
@@ -2567,26 +2444,6 @@ def holders(sid):
     return out
 
 
-def held_by(recs):
-    return ", ".join("%s, pid %s" % ("a --bg job" if r.get("kind") == "bg" else "a terminal session", r.get("pid"))
-                     for r in recs)
-
-
-def launch_resume(sid, cwd):
-    """`claude --bg --resume <session>` in `cwd`, nothing else on the line:
-    (the job's short id, or "" when none started; the banner)."""
-    env = verb_env()
-    env.pop("RUNNER_TRACKING_ID", None)
-    try:
-        p = subprocess.run(["claude", "--bg", "--resume", sid], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=LAUNCH_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return "", str(e)
-    banner = sminos.ANSI_RE.sub("", p.stdout or "")
-    m = BG_SHORT_RE.search(banner)
-    return (m.group(1) if m and p.returncode == 0 else ""), banner
-
-
 def job_session(short):
     """The session id the harness reports for a job it just started (its
     `claude agents` row can lag the banner), or None."""
@@ -2635,50 +2492,6 @@ def launched_by(rec, launched, job, rivals=()):
     return not any(int(r) <= started for r in rivals)
 
 
-def resume(sid, cwd, lock, note):
-    """§5's Resume of a session no process of this machine holds. One per
-    session at a time: the second of two finds the first's job holding it.
-    The engine's own check is the last word on a reopen racing the launch:
-    it starts a copy, which is stopped, and the RPC fails `copy-started`.
-    The launch is kept in the claim before it runs (`note`), and its job
-    once known, so a restart reconciles from this launch (trace); done only
-    once that job's process holds the session."""
-    with lock:
-        live = holders(sid)
-        if live:
-            raise Refused("session-live", "the session is running here (%s): only an ended session is resumed"
-                          % held_by(live))
-        # A directory this process may not look at is launched in unlooked-at.
-        if not (cwd and (sminos.read_refused(cwd) or os.path.isdir(cwd))):
-            raise Refused("failed", "the session's working directory %r is gone: nothing was launched" % (cwd,))
-        launched = time.time()
-        try:
-            note(launched_at=launched)
-        except OSError as e:
-            raise Refused("failed", "the launch could not be kept in the ledger (%s): nothing was launched" % e)
-        short, banner = launch_resume(sid, cwd)
-        if not short:
-            raise Refused("failed", "claude --bg --resume started no job: %s" % (last_line(banner) or "no output"))
-        try:
-            note(job=short)
-        except OSError as e:
-            log("resume of %s: its job %s could not be kept in the ledger: %s" % (sid, short, e))
-        copy = COPY_RE.search(banner)
-        reported = None if copy else job_session(short)
-        if copy or (reported is not None and reported != sid):
-            return copy_started(short, sminos.claude_stop(short))
-        if reported is None:
-            raise Refused("failed", "the harness named no session for job %s: it may be running" % short)
-        deadline = time.time() + RESUME_HELD_S
-        while not any(launched_by(r, launched, short) for r in holders(sid)):
-            if time.time() >= deadline:
-                raise Refused("failed", "job %s took the session, but no process of it holds the session after "
-                                        "%g s: it did not start, or has not yet" % (short, RESUME_HELD_S))
-            time.sleep(0.1)
-        sminos.nudge_daemon()   # its tick re-joins the session and delivers what was kept for it
-        return done({"session": sid})
-
-
 def copy_started(short, stopped):
     """A Resume whose job continued a copy of the session, not the session:
     the RPC's failure, saying whether the copy was stopped."""
@@ -2686,13 +2499,6 @@ def copy_started(short, stopped):
                                   "instead of continuing it; the copy %s" % (
                                       short, "was stopped" if stopped else
                                       "could not be stopped: `claude stop %s` failed" % short))
-
-
-def retire(sid, root, member):
-    rc, _, err = run_verb(["retire", "--", sid], root, VERB_TIMEOUT, member)
-    if rc != 0:
-        raise Refused("failed", last_line(err) or "sminos retire exited %d" % rc)
-    return done({})
 
 
 # ------------------------------------------------------------- traces

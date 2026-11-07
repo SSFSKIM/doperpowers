@@ -1,73 +1,59 @@
 #!/usr/bin/env python3
 """sminos_hublog — one hub project's log plane on this machine (DC4 of the
-desk: DX2's log handshake, DX1's codes).
+desk: the log handshake, carried over RL10 to the machine's endpoint).
 
-The uplink (sminos_uplink.py) holds the stream and posts frames; what it says
-about one project is drawn up here, and what the hub sends about one project
-is taken in here. Everything runs on the uplink's main thread.
+The uplink (sminos_uplink.py) holds the endpoint's connection; what it says
+about one project is drawn up here, and what the endpoint sends about one
+project is taken in here. Everything runs on the uplink's main thread.
 
 Up. `hello` carries this machine's vector — `{writer: max seq}` for every
-writer its log of the project holds — and the hub answers `have` with its
-own. The machine then uploads the suffix of its own writers (`<machine>/…`;
-`legacy/…` too when the hub names it the project's archive machine) beyond
-the hub's vector, and from then on whatever its writers append. An event is
-stored here without a code; the uploader seals it as it goes, under a nonce
-derived from the event itself with the org key (`nonce_for`), so the same
-event always uploads byte for byte the same: inserts are idempotent on
-(writer, seq) only when a second upload is the same payload, and a random
-nonce would make every re-upload after a lost answer a conflict.
+writer its log of the project holds — and the upstream answers `have` with
+its own. The machine then uploads the suffix of its own writers
+(`<machine>/…`; `legacy/…` too when the hub names it the project's archive
+machine) beyond that vector, and from then on whatever its writers append,
+each event as stored (`ts`, no `mac`, no `created`: the endpoint derives the
+`created` it signs from `ts`), so a re-upload is byte for byte the same.
 
-Down. An `events` frame is imported event by event, all or nothing each: an
-event that is no log event sminos can read is refused `bad-shape`; one whose
-code fails — a hub/ event whose position fails its shape and an event moved
-from another project's feed included — `bad-code`; one carrying a nonce this
-project's log already holds at another position `seen-nonce`. A refused event
-never enters the log; it is reported up as DX2's `rejected`, named only by
-what it carried, and its position is spent — a tombstone: nothing is ever
-appended there, the writer's later events are not held back behind it (every
-reader of a writer's file takes seqs by order, not by count, so the hole is
-read past), and the vector no longer asks the hub for it, so it is reported
-once. A position of this machine's own writers is spent under the writer
-file's lock, only while no event of this machine's holds it, and its
-appenders allocate past it (sminos._append): what this machine writes next
-never lands where nothing can upload or import it. What passes is appended
-verbatim, with its code, through the log's own locks: present already (the
-same content at its (writer, seq)) it is skipped; a different content there,
-or a position spent before, is refused `conflict`; past a gap it waits for
-the hub to send what is missing. Then whatever was appended is delivered —
-by the uplink, once per batch of the frames already queued with it
-(`deliver`) — and the tick loop nudged.
+Down. An `events` frame is imported event by event, all or nothing each.
+Each comes wrapped `{event, signer, owners?}`, the endpoint having signed
+and verified what passes it (O10 M6): a wrapper or an event that is no log
+event sminos can read is refused `bad-shape`, and so is an `event` carrying
+a `verified` key of its own (the verdict is the endpoint's to say). A
+refused event never enters the log; it is reported up as `rejected`,
+named only by what it carried, and its position is spent — a tombstone:
+nothing is ever appended there, the writer's later events are not held back
+behind it (every reader of a writer's file takes seqs by order, not by
+count, so the hole is read past), and the vector no longer asks for it, so
+it is reported once. A position of this machine's own writers is spent
+under the writer file's lock, only while no event of this machine's holds
+it, and its appenders allocate past it (sminos._append): what this machine
+writes next never lands where nothing can upload or import it. What passes
+is appended through the log's own locks with one key added, `verified:
+{signer, owners}`, `owners` only when the endpoint sent them: present
+already (the same content at its (writer, seq), `same_uncoded`) it is
+skipped; a different content there, or a position spent before, is refused
+`conflict`; past a gap it waits for the upstream to send what is missing.
+The endpoint returns an own event only as the echo of what it signed at
+that position, `created`, `sig` and `attest` added, which reads `present`.
+An event the endpoint refused for good never comes down: its position
+does, as `spent {project, writer, seq, reason}`, recorded as a position
+refused here (`spend`), each said once in daemon.log. Then whatever was
+appended is delivered — by the uplink, once per batch of the frames already
+queued with it (`deliver`) — and the tick loop nudged.
 
-On a machine cut over to its endpoint (RL10, sminos_rl10) the plane runs
-uncoded (`HubLog(..., coded=False)`): nothing is sealed, verified or indexed
-by nonce, the endpoint having signed and verified what passes it (O10 M6).
-Up, this machine's events go as stored (`ts`, no `mac`, no `created`: the
-endpoint derives the `created` it signs from `ts`). Down, each event comes
-wrapped `{event, signer, owners?}`; the shape checks run as on DX2, an
-`event` carrying a `verified` key of its own is refused `bad-shape` (the
-verdict is the endpoint's to say), and what passes is stored with one key
-added, `verified: {signer, owners}`, `owners` only when the endpoint sent
-them. The endpoint returns an own event only as the echo of what it signed
-at that position, `created`, `sig` and `attest` added: `same_uncoded`
-reads it `present`, and another body there `conflict`, as on DX2. An event
-the endpoint refused for good never comes down: its position does, as
-`spent {project, writer, seq, reason}`, recorded as a position refused here
-(`spend`), each said once in daemon.log.
-
-Message reach (P5 O18 D5, D6). The hub only refuses: a `not-reachable`
+Message reach (P5 O18 D5, D6). The endpoint only refuses: a `not-reachable`
 refusal leaves a tombstone `{writer, seq, withheld: true}` at the position
-and the writer goes on (an arriving tombstone is a spent position here,
-never reported). An own position it withheld while this machine's event
-holds it — the refusal, or its tombstone seen again on resync (DX2's
-tombstone, RL10's `spent withheld`, a `have`'s withheld list) — is recorded
+and the writer goes on (it comes down as `spent withheld`, a spent position
+here, never reported). An own position it withheld while this machine's
+event holds it — the refusal, or its tombstone seen again on resync (`spent
+withheld`, a `have`'s withheld list) — is recorded
 withheld (`withheld`, for good; withhold_own): the event stays in its
 writer file as what its session tried to send, the position counts as
 uploaded, and the sending session is shown that the message was not
 delivered (`notices`, until it is live, for NOTICE_KEPT); a session's own
 `joined` or `state` is owed a restatement the daemon's next tick writes
 (sminos_daemon.owe_restatement), once. A
-`state-unavailable` refusal on a direct stream pauses the writer and sends
-the position again after ASK_MS (on RL10 the endpoint rewinds); an
+`state-unavailable` refusal stops nothing (the endpoint rewinds); an
 `audience` one — the stream the event went under is not its
 session's now — stops the writer past the stream (`dead`), until an event
 appended to it says the CLI chose it again: then each refused position goes
@@ -75,10 +61,10 @@ up as a content-free `void {ts, writer, seq, kind: void, of, audience?}`
 (`voided`, for good; the local file keeps the body) and the rest as stored.
 
 Its state between streams lives in the project's home, `uplink.json`: the
-spent positions, the rejections not yet reported (a report whose POST
+spent positions, the rejections not yet reported (a report whose write
 failed is sent again after the next `hello`), the dead writers, the
 voided and the withheld positions, the notices not yet shown, whether the
-hub's latest `have` named this machine the
+endpoint's latest `have` named this machine the
 project's archive machine, with when it said so, and what that same `have`
 admitted of this machine's own writers — its vector and its withheld
 positions (`archive`, `archive_at`, `archive_have`: what sminos_archive
@@ -86,8 +72,8 @@ runs on, admitted_have). Beside it,
 `uplink-taken.json` (TAKEN_FILE) holds what `sminos daemon owed` reads:
 how far each of this machine's writers no longer has to be sent (`taken`),
 never more than the uplink's own resume state — each opening `have` sets it
-to what the upstream holds, down as well as up; each upload answered and not
-refused whole (on RL10, once written) and each later `have` raises it;
+to what the upstream holds, down as well as up; each upload once written
+and each later `have` raises it;
 a writer the upstream refuses or asks again for (`resend`) is lowered and
 bounded on the stream against answers and vectors that predate it (`bound`)
 — and the positions where the upstream holds another event (`conflicts`,
@@ -99,8 +85,6 @@ have lowered it removes the file instead (`keep`).
 
 import fnmatch
 import glob
-import hashlib
-import hmac
 import json
 import os
 import sys
@@ -114,7 +98,6 @@ import sminos_daemon as daemon  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 import sminos_rpc as rpc  # noqa: E402
 
-NONCE_DOMAIN = "smns-hub-nonce-v1"
 STATE_FILE = sminos.UPLINK_STATE
 # What the uplink no longer has to send of this machine's writers, beside the
 # state file: {"taken": {writer: seq}, "conflicts": {writer: seq}} (`taken`,
@@ -132,20 +115,14 @@ HOT_FOR = 600.0
 RACY_NS = 1_000_000_000
 RAN_KEEP = 256   # sessions past HOT_FOR the hot look's memory may hold before it is pruned
 # The reason an event that verifies is refused for its position (another event
-# holds it here, or it is spent): DX2's `conflict`, which the hub admits since
-# DC3 M3.
+# holds it here, or it is spent).
 CONFLICT_REASON = "conflict"
 # What the endpoint adds to an event this machine wrote when it returns it
 # (RL10): the `created` it derived from `ts` and signed, its signature, the
 # owner attestation, the audience and policyRev it signs into every event
-# (P5 O18; sminos never stores either itself); and DX1's code while it
-# dual-codes.
+# (P5 O18; sminos never stores either itself); and `mac`, the old desk code
+# an endpoint that still dual-codes adds.
 ENDPOINT_ADDS = ("created", "mac", "sig", "attest", "audience", "policyRev")
-# A position the hub's policy registry could not check (`state-unavailable`,
-# P5 O18 D5) is sent again after this wait, the endpoint's ASK_MS (30 s):
-# one retry per writer per wait, for as long as the stream is open.
-# SMINOS_ASK_MS overrides it, in milliseconds.
-ASK_MS = 30_000
 # How long a notice of a message the hub withheld waits for its sending
 # session to be live, from the message's own ts; past it the notice is
 # dropped, said in daemon.log (show_notices).
@@ -166,28 +143,8 @@ def glob_names(names, prefix):
     return fnmatch.filter(names, pattern)
 
 
-def nonce_for(key, project, event):
-    """The nonce an event of this machine is sealed under (DX1's derived
-    form): the first 16 bytes of HMAC-SHA256 with the org key over
-    `smns-hub-nonce-v1` LF <project id> LF <JCS of the event without mac>.
-    Unique to the event — its writer and seq are in it — unpredictable
-    without the key, and the same at every upload."""
-    draft = {k: v for k, v in event.items() if k != "mac"}
-    data = (NONCE_DOMAIN + "\n" + project + "\n" + codes.canonical(draft)).encode("utf-8")
-    return codes.b64url(hmac.new(key, data, hashlib.sha256).digest()[:codes.NONCE_BYTES])
-
-
-def seal(key, project, event):
-    """An event of this machine as it uploads: its code added (DX1); one that
-    arrived with a code keeps it."""
-    if isinstance(event.get("mac"), dict):
-        return event
-    draft = {k: v for k, v in event.items() if k != "mac"}
-    return codes.seal(key, "log", project, draft, nonce_for(key, project, draft))
-
-
 def rejected(project, e, reason, message):
-    """DX2's `rejected` for an event refused on import, naming it only by what
+    """`rejected` for an event refused on import, naming it only by what
     it carried: `event` its writer and seq as they came when the writer was a
     string and the seq a number (else null), `nonce` its mac.nonce when that
     was a string."""
@@ -209,10 +166,9 @@ def position(e):
     return "%r:%r%s" % (e.get("writer"), e.get("seq"), " (nonce %r)" % nonce if nonce is not None else "")
 
 
-def refusal(key, project, e, coded=True):
-    """(DX2's reason, what was wrong) for an event from the hub that may not
-    enter this project's log; (None, "") when its shape and code pass.
-    Uncoded (RL10), the shape alone."""
+def refusal(project, e):
+    """(the refusal's reason, what was wrong) for an arriving event that may not
+    enter this project's log by its shape; (None, "") when it passes."""
     if not isinstance(e, dict):
         return "bad-shape", "not a log event"
     writer = e.get("writer")
@@ -220,19 +176,12 @@ def refusal(key, project, e, coded=True):
         return "bad-shape", "its writer is not one a log holds"
     if not (codes.is_log_seq(e.get("seq")) and isinstance(e.get("ts"), str) and isinstance(e.get("kind"), str)):
         return "bad-shape", "it is not a log event (seq, ts, kind)"
-    if not coded:
-        return None, ""
-    why = {
-        "encoding": "its code or nonce is not the canonical base64url of 32 and 16 bytes",
-        "position": "a hub/ event whose writer, seq, or ts fails its shape",
-        "code": "its code does not verify for project %s" % project.id,
-    }.get(codes.failure(key, "log", project.id, e))
-    return ("bad-code", why) if why else (None, "")
+    return None, ""
 
 
 def unwrapped(raw):
     """An arriving event on RL10, `{event, signer, owners?}`: (the event, or
-    what stands for it in a rejection; its `verified` key; DX2's reason and
+    what stands for it in a rejection; its `verified` key; the refusal's reason and
     what was wrong, or None and "")."""
     if not isinstance(raw, dict) or not isinstance(raw.get("event"), dict):
         return raw.get("event") if isinstance(raw, dict) else None, None, "bad-shape", \
@@ -249,21 +198,9 @@ def unwrapped(raw):
     return e, {"signer": signer, **({"owners": owners} if "owners" in raw else {})}, None, ""
 
 
-def same_event(held, e):
-    """Whether the event at a (writer, seq) is the one arriving: their
-    canonical forms agree on everything both carry — the code too when the
-    copy here has one; an event this machine wrote is stored without one, and
-    the code it uploaded under is derived from the rest."""
-    try:
-        if isinstance(held.get("mac"), dict):
-            return codes.canonical(held) == codes.canonical(e)
-        return codes.canonical(held) == codes.canonical({k: v for k, v in e.items() if k != "mac"})
-    except codes.NotCanonical:
-        return False
-
-
-def same_uncoded(held, e, own):
-    """RL10's `same_event`: the canonical forms with the endpoint's verdict
+def same_uncoded(held, e, own=False):
+    """Whether the event at a (writer, seq) is the one arriving (RL10): the
+    canonical forms with the endpoint's verdict
     (`verified`) left out of both; for an event this machine wrote (`own`),
     what the endpoint adds when it returns it (ENDPOINT_ADDS) left out too,
     of both copies, so an echo of the stored event is the stored event."""
@@ -280,22 +217,6 @@ def frontier(last, spent):
     while last + 1 in spent:
         last += 1
     return last
-
-
-def ask_wait():
-    """The wait before a `state-unavailable` position goes up again, in
-    seconds (ASK_MS; SMINOS_ASK_MS)."""
-    try:
-        return max(0.0, float(os.environ.get("SMINOS_ASK_MS") or ASK_MS) / 1000)
-    except ValueError:
-        return ASK_MS / 1000
-
-
-def is_tombstone(e):
-    """The hub's tombstone of a position it withheld (P5 O18 D5), exactly:
-    `{writer, seq, withheld: true}` (isWithheldTombstone)."""
-    return isinstance(e, dict) and set(e) == {"writer", "seq", "withheld"} and isinstance(e["writer"], str) \
-        and codes.is_log_seq(e["seq"]) and e["withheld"] is True
 
 
 def tombstone(writer, seq):
@@ -358,7 +279,7 @@ def admitted_have(have, raw, own):
     (D6): (`archive_have` — {have: {writer: seq}, withheld: {writer: [seq |
     [from, to], ...]}}, the own writers alone, `own` telling — or None, why
     not). The hub lists the positions it withheld whole, in the one frame
-    (withheldOf), and a frame arrives whole or not at all: DX2's parts are
+    (withheldOf), and a frame arrives whole or not at all: its parts are
     joined into the frame they carry, the endpoint passes the hub's `have`
     down unchanged, and an assembler that cannot hold a frame (the endpoint's
     and the hub's, 16 MiB) drops it whole. So a list that does arrive is the
@@ -389,7 +310,7 @@ def admitted_have(have, raw, own):
     return {"have": {w: s for w, s in have.items() if own(w)}, "withheld": withheld}, ""
 
 
-def append_verbatim(project, e, spent=(), same=same_event):
+def append_verbatim(project, e, spent=(), same=same_uncoded):
     """Append an imported event to its writer's file as it came, under the
     locks every appender takes (`.sync.lock` shared, the file's own lock):
     "appended"; "present" when that (writer, seq) holds the same content
@@ -453,39 +374,29 @@ PLUGIN_MANIFEST = os.path.join(os.path.dirname(os.path.realpath(__file__)), ".."
                                "plugin.json")
 
 
-def desk(rl10=False):
+def desk():
     """What this machine's daemon can do itself for the desk (DX4
     `machine.desk`, the desk control surface's M0): the sminos version it
-    runs from, the RPCs it executes on this path (`rl10`: the endpoint's,
-    which offers some the hub does not), and the reads it answers without a
-    bridge (none yet)."""
+    runs from, the RPCs it executes (the endpoint's, RL10_RPC_NAMES), and
+    the reads it answers without a bridge (none yet)."""
     try:
         with open(PLUGIN_MANIFEST) as f:
             version = json.load(f).get("version")
     except (OSError, ValueError, AttributeError):
         version = None
-    return {"sminos": version if isinstance(version, str) else "unknown", "rpcs": list(rpc.RL10_RPC_NAMES if rl10 else rpc.RPC_NAMES), "reads": []}
-
-
-def machine_policy():
-    """The machine's policy as DX4's `machine` presence carries it (DX6's,
-    which DC7 owns: sminos_policy, read at every use)."""
-    return policy.machine_policy()
+    return {"sminos": version if isinstance(version, str) else "unknown", "rpcs": list(rpc.RL10_RPC_NAMES), "reads": []}
 
 
 class HubLog:
     """One hub project's log plane: what this machine says of it up the
     stream, and how it takes what the hub sends of it."""
 
-    def __init__(self, project, cred, coded=True):
+    def __init__(self, project, cred):
         self.project = project
-        self.coded = coded   # DX2's codes; off on RL10, where the key is None
-        self.key = cred["key"]
         self.machine = cred["machine"]
         self.files = {}      # path → (size, mtime_ns, writer, last, first kind): the vector's reads, kept while a file holds
         self.listing = None  # (log dir mtime_ns, prefixes, paths): the own writers' files as last listed (own_paths)
         self.ran = {}        # session → when (monotonic) a hot look last found it running here
-        self.nonces = None   # nonce → (writer, seq) of every coded event the log holds, read on first import
         self.epochs = {}     # own writer → how many bounds were set on it (bound), across streams: an upload's mark
         self.taken_failing = None   # TAKEN_FILE's write failure as last said (keep)
         self.notices_owed = None    # whether uplink.json holds notices to show (show_notices); None: not yet read
@@ -502,8 +413,6 @@ class HubLog:
         self.bounds = {}     # own writer → the seq `taken` may not pass on this stream (bound), until an upload sent
         #                      after it is answered
         self.head_waits = True   # an operator writer may wait for its head (release_heads): False once none does
-        self.paused = {}     # own writer → (when it goes up again, monotonic; the lowest seq the hub could not check):
-        #                      a `state-unavailable` refusal on a direct stream (on_refused)
 
     # ---------------------------------------------------- what is held here
 
@@ -678,7 +587,7 @@ class HubLog:
     # ---------------------------------------------------- up
 
     def hello(self, follow=False):
-        """DX2's `hello`; `follow` when this machine holds no checkout and no
+        """The project's `hello`; `follow` when this machine holds no checkout and no
         session of the project and opens it only to read and deliver (the
         org's directory): its lease then counts toward none of the project's
         machines. Without it the machine holds the project."""
@@ -703,8 +612,7 @@ class HubLog:
         return {"t": "session", "message": {
             "project": self.project.id, "machine": self.machine, "session": None, "kind": "machine",
             "sub": None, "n": None,
-            "body": {"online": True, "policy": machine_policy() if self.coded else policy.wire_policy(),
-                     "checkouts": checkouts, "desk": desk(not self.coded)}}}
+            "body": {"online": True, "policy": policy.wire_policy(), "checkouts": checkouts, "desk": desk()}}}
 
     def host_sent(self):
         """RL10: {writer: seq}, how far each writer of the project's host
@@ -873,7 +781,7 @@ class HubLog:
         return [f for f in raw if isinstance(f, dict)] if isinstance(raw, list) else []
 
     def reported(self, frames):
-        """The rejections in `frames` reached the hub (a POST answered 200)."""
+        """The rejections in `frames` reached the endpoint (their frame written)."""
         if not frames:
             return
         d = self.state()
@@ -968,8 +876,8 @@ class HubLog:
         audience stream of it, `<machine>/human~<digest>` (P5 O18 D6) — each
         waiting for the upstream's head (sminos.waits_for_head, #147), are
         released one by one once this stream's `have` said that writer's
-        head and the log reached it — the hub's backlog imported (DX2), or
-        the positions the endpoint refused spent (RL10): what waited is
+        head and the log reached it — the upstream's events imported, or
+        the positions the endpoint refused spent: what waited is
         appended above the head, and the next upload carries it. Looked at
         are the operator writers the `have` names, those the log holds and
         those queued, a former name's queue into its namesake under the name
@@ -1026,24 +934,14 @@ class HubLog:
                 log("the hub asks %s of %s again from %d" % (writer, self.project.name, start))
             self.bound(writer, start - 1)   # the hub lacks it from `start`, whatever an answer said before
 
-    def closed(self):
-        """The hub no longer holds the project open on this stream (it
-        refused a frame of it `not-open`): nothing is uploaded until the
-        `have` of the hello that opens it again, which the upload goes on
-        from."""
-        self.have = None
-        self.drawing = None
-
     def on_refused(self, frame):
         """The hub refused what this machine sent; said in daemon.log. A
         writer refused stops uploading on this stream (sending it again would
         be refused again). An `audience` refusal (P5 O18: the stream the
         event went under is not its session's now) stops the writer past the
-        stream (stop_dead). A `state-unavailable` one on a direct stream (the
-        policy registry could not check the event; on RL10 the endpoint
-        rewinds) pauses the writer: its position goes up again after
-        ask_wait, with no reconnect and no further write, once per wait for
-        as long as the stream is open, never given up. A `not-reachable` one
+        stream (stop_dead). A `state-unavailable` one (the policy registry
+        could not check the event) stops nothing: the endpoint rewinds. A
+        `not-reachable` one
         (the hub withheld the event, a tombstone in its place) stops
         nothing: the writer goes on at the next seq, and the position is
         settled withheld here (withhold_own)."""
@@ -1053,8 +951,7 @@ class HubLog:
         log("the hub refused in %s: %s%s%s" % (
             self.project.name, reason, " %s:%s" % (writer, r.get("seq")) if writer else "",
             " — %s" % " ".join(str(r.get("message") or "").split())[:300] if r.get("message") else ""))
-        stops = ("conflict", "writer-not-yours", "bad-shape", "too-large", "audience") + \
-            (() if self.coded else ("malformed",))
+        stops = ("conflict", "writer-not-yours", "bad-shape", "too-large", "audience", "malformed")
         seq = r.get("seq")
         at = seq if type(seq) is int and seq >= 1 else 0
         if isinstance(writer, str) and self.own(writer) and reason in stops:
@@ -1068,11 +965,6 @@ class HubLog:
                 # The endpoint signed another body at a position the hub then refused `audience`: its ledger
                 # refuses the void there for good (MAWS O18 M2), so the writer can never go on past it.
                 self.stop_dead(writer, at, final=True)
-        elif isinstance(writer, str) and self.own(writer) and reason == "state-unavailable" and self.coded and at:
-            held = self.paused.get(writer)
-            due = held[0] if held else time.monotonic() + ask_wait()
-            self.paused[writer] = (due, min(at, held[1]) if held else at)
-            self.bound(writer, at - 1)
         elif isinstance(writer, str) and self.own(writer) and reason == "not-reachable" and at:
             self.withhold_own(writer, at)
 
@@ -1254,13 +1146,6 @@ class HubLog:
         for writer, (last, path) in sorted(own.items(), key=lambda kv: (kv[0] not in notices, kv[0])):
             if not self.own(writer):
                 continue
-            if writer in self.paused:
-                due, seq = self.paused[writer]
-                if time.monotonic() < due:
-                    continue
-                del self.paused[writer]
-                self.sent[writer] = min(self.sent.get(writer, 0), seq - 1)
-                log("%s of %s goes up again from %d, which the hub could not check" % (writer, self.project.name, seq))
             if writer in dead:
                 if dead[writer].get("final") or last <= dead[writer]["last"]:
                     continue
@@ -1278,7 +1163,7 @@ class HubLog:
                         self.stuck.add(writer)
                         break
                 try:
-                    sealed = seal(self.key, self.project.id, e) if self.coded else self.as_uploaded(e)
+                    sealed = self.as_uploaded(e)
                     n = len(codes.canonical(sealed).encode("utf-8"))
                 except codes.NotCanonical as err:
                     log("%s:%d in %s has no canonical form (%s): it and the rest of its writer stay here"
@@ -1326,22 +1211,12 @@ class HubLog:
         return got
 
     def took(self, reach):
-        """An upload was queued: the hub's next `have` puts `sent` right
-        should its POST be lost."""
+        """An upload was queued: the next `have` puts `sent` right should
+        its frame be lost."""
         for writer, seq in reach.items():
             self.sent[writer] = max(self.sent.get(writer, 0), seq)
 
     # ---------------------------------------------------- down
-
-    def nonce_index(self):
-        if self.nonces is None:
-            self.nonces = {}
-            for path in glob.glob(os.path.join(glob.escape(self.log_dir), "*.jsonl")):
-                for e in read_events(path):
-                    mac = e.get("mac")
-                    if isinstance(mac, dict) and isinstance(mac.get("nonce"), str):
-                        self.nonces.setdefault(mac["nonce"], (e["writer"], e["seq"]))
-        return self.nonces
 
     def is_own(self, writer):
         """Whether a writer is one of this machine's, under its name or a
@@ -1355,53 +1230,32 @@ class HubLog:
         if e.get("kind") == "void" and e.get("of") == e["seq"] and self.is_own(e["writer"]) \
                 and e["seq"] in self.voided().get(e["writer"], ()):
             return True
-        if self.coded:
-            return same_event(held, e)
         return same_uncoded(held, e, self.is_own(e["writer"]))
 
     def take(self, events):
-        """An `events` frame from the hub: each event verified and appended,
-        or refused. Returns (how many were appended, the `rejected` frames).
-        Uncoded (RL10), each arrives wrapped and verified by the endpoint
-        (`unwrapped`), and is appended with its `verified` key."""
+        """An `events` frame from the endpoint: each event, wrapped and
+        verified by the endpoint (`unwrapped`), checked by its shape and
+        appended with its `verified` key, or refused. Returns (how many were
+        appended, the `rejected` frames)."""
         if not isinstance(events, list):
             log("an events frame for %s without a list of events: ignored" % self.project.name)
             return 0, []
         appended, out, spent = 0, [], self.spent()
         newly, conflicts = {}, self.conflicts()
         for raw in events:
-            if self.coded and is_tombstone(raw):
-                # A position the hub withheld (P5 O18 D5): content-free, carrying no code, and spent here as a
-                # position refused is, never reported; an own one an event of this machine holds is settled
-                # withheld (spend).
-                if self.spend(raw["writer"], raw["seq"], "withheld", by="the hub"):
-                    newly.setdefault(raw["writer"], set()).add(int(raw["seq"]))
-                continue
-            if self.coded:
-                named, verified, (reason, why) = raw, None, refusal(self.key, self.project, raw)
-            else:
-                # What a rejection names is the event, not its wrapper.
-                named, verified, reason, why = unwrapped(raw)
-                if reason is None:
-                    reason, why = refusal(None, self.project, named, coded=False)
+            # What a rejection names is the event, not its wrapper.
+            named, verified, reason, why = unwrapped(raw)
+            if reason is None:
+                reason, why = refusal(self.project, named)
             e = named
             if reason is None:
                 # JSON's 3.0 is the number 3; the log's readers take an int.
-                # The code's canonical form is the same for both.
-                e = {**e, "seq": int(e["seq"])}
-                if self.coded:
-                    at = self.nonce_index().get(e["mac"]["nonce"])
-                    if at is not None and at != (e["writer"], e["seq"]):
-                        reason, why = "seen-nonce", "its nonce is held here by %s:%d" % at
-                else:
-                    e["verified"] = verified
+                e = {**e, "seq": int(e["seq"]), "verified": verified}
             if reason is None:
                 outcome = append_verbatim(self.project, e, spent.get(e["writer"], set()) | newly.get(e["writer"], set()),
                                           self.same)
                 if outcome == "appended":
                     appended += 1
-                    if self.coded:
-                        self.nonces.setdefault(e["mac"]["nonce"], (e["writer"], e["seq"]))
                 elif outcome == "gap":
                     log("held back %s in %s: its seq is not one past the writer's last (the hub sends what is "
                         "missing at the next hello)" % (position(e), self.project.name))

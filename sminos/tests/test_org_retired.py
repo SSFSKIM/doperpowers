@@ -150,32 +150,11 @@ class Rows:
         self.assertNotIn("hidden", text)
 
 
-class Hub(Rows, unittest.TestCase):
-    """Enrolled at the hub (DX2): hub.json."""
-
-    def enroll(self):
-        write(os.path.join(self.sh, "daemon", "hub.json"),
-              {"hub": "http://127.0.0.1:9", "org": ORG, "machine": "testhost", "client_id": "c", "client_secret": "s",
-               "former": {}, "enrolled": "2026-10-01T00:00:00Z"})
-
-    def test_machines(self):
-        self.directory([{"name": "testhost", "online": True, "seen": None},
-                        {"name": "delta", "online": False, "seen": ago(7200)},
-                        {"name": "echo", "online": False, "seen": None},
-                        {"name": "dc-gone", "online": False, "seen": ago(86400), "retired": True}],
-                       at=ago(3 * 3600))
-        text = self.cli("machines")
-        self.assertEqual(self.machine_row(text, "dc-gone"), "dc-gone retired 0 -")
-        self.assertEqual(self.machine_row(text, "testhost"), "testhost online 0 -")
-        self.assertEqual(self.machine_row(text, "delta"), "delta last seen 2h ago 1 pg")
-        self.assertEqual(self.machine_row(text, "echo"), "echo never seen 0 -")
-        self.assertIn("(the org's directory is 3h old: the daemon's stream has said nothing newer)", text)
-
-
 class CutOver(Rows, unittest.TestCase):
-    """Cut over to its endpoint (RL10): identity.json in place of hub.json,
-    and a directory as RL10's endpoint builds it, every machine `online:
-    false` and `seen` only as of its last restatement."""
+    """Cut over to its endpoint (RL10): identity.json, and a directory as
+    RL10's endpoint builds it, every machine `online: false` and `seen` only
+    as of its last restatement. (Its DX2 twin, a hub.json enrolment with the
+    hub's presence, went in #153 M4.)"""
 
     def enroll(self):
         write(os.path.join(self.sh, "daemon", "identity.json"),
@@ -202,6 +181,17 @@ class CutOver(Rows, unittest.TestCase):
         self.assertIn(line, text)
         self.assertNotIn("said nothing newer", text)
         self.assertIn(line, self.cli("projects"))
+
+    def test_an_old_directory_left_by_an_undone_cutover_reads_as_the_endpoints(self):
+        """`projects` says the directory's age without an enrollment check:
+        with identity.json gone (the cutover undone), an old org.json still
+        gets the endpoint's line, never one of a stream."""
+        self.directory([{"name": "testhost", "online": False, "seen": None}], at=ago(3 * 3600))
+        os.unlink(os.path.join(self.sh, "daemon", "identity.json"))
+        text = self.cli("projects")
+        self.assertIn("(the org's directory is 3h old: the endpoint restates it only when the org changes or the "
+                      "daemon reconnects)", text)
+        self.assertNotIn("stream", text)
 
     def test_no_directory_yet(self):
         text = self.cli("machines")

@@ -85,9 +85,17 @@ echo "a machine not enrolled at a desk hub gets nothing:"
 guide "$(payload "$S1" "$STRAY" "$TX")"
 assert_equals "$OUT|$RC" "|0" "no enrollment: nothing printed, exit 0"
 
-# The enrollment, as `hub enroll` writes it (the fields resolution reads).
+# A stray hub.json enrolls nothing.
 mkdir -p "$SMINOS_HOME/daemon"
 printf '{"hub":"http://127.0.0.1:9","org":"org-1","machine":"alpha"}\n' > "$SMINOS_HOME/daemon/hub.json"
+guide "$(payload "$S1" "$STRAY" "$TX")"
+assert_equals "$OUT|$RC" "|0" "a stray hub.json is no enrollment: nothing printed, exit 0"
+rm "$SMINOS_HOME/daemon/hub.json"
+
+# The enrollment, as the endpoint's first welcome leaves it (identity.json).
+# shellcheck source=rl10-machines.sh
+source "$SCRIPT_DIR/rl10-machines.sh"
+rl10_cut_over
 
 echo "a stray: the machine's own project, said as such:"
 guide "$(payload "$S1" "$STRAY" "$TX")"

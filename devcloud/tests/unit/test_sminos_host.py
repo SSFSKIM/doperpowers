@@ -1,7 +1,8 @@
-"""sminos on a host (Design §8, boot step 11): an enrolled persistent host
-installs the sminos daemon as a systemd user unit, lingers, reloads the
-user manager and enables and starts the unit; an unenrolled one stays
-local-only; a sandbox is never a sminos machine. Commands go to a recording
+"""sminos on a host (Design §8, boot step 11): a persistent host cut over to
+its MAWS endpoint (or provisioning it) installs the sminos daemon as a
+systemd user unit, lingers, reloads the user manager and enables and starts
+the unit; any other stays local-only, a stray phase-1 `hub.json` making
+nothing enrolled; a sandbox is never a sminos machine. Commands go to a recording
 stand-in for proc.run; `sminos daemon install` is played by writing a unit."""
 
 import json
@@ -55,10 +56,11 @@ class SminosHostTest(unittest.TestCase):
         self.env = {"SESSION_MIRROR_HOST": "devbox-a", "PATH": f"{self.home}/bin:/usr/bin:/bin"}
         self.pending = self.home / "state/sminos-restart-pending"
 
-    def enroll(self, home=None):
+    def cut_over(self, home=None):
+        """O12's switch: the first complete RL10 welcome writes identity.json."""
         daemon = (home or self.home / ".claude/sminos") / "daemon"
         daemon.mkdir(parents=True, exist_ok=True)
-        (daemon / "hub.json").write_text('{"machine": "devbox-a"}\n')
+        (daemon / "identity.json").write_text('{"name": "devbox-a"}\n')
 
     def marketplace(self, layout="sminos/skills/sminos/scripts/sminos.py"):
         """The doperpowers marketplace clone with the sminos CLI where `layout`
@@ -78,12 +80,6 @@ class SminosHostTest(unittest.TestCase):
         detail = sminos_host.converge(self.user, role, self.env, env_changed, run=recorder, pending=self.pending,
                                       provisions=provisions)
         return detail, recorder
-
-    def cut_over(self):
-        """O12's switch: the first complete RL10 welcome writes identity.json."""
-        daemon = self.home / ".claude/sminos/daemon"
-        daemon.mkdir(parents=True, exist_ok=True)
-        (daemon / "identity.json").write_text('{"name": "devbox-a"}\n')
 
     # --- a sandbox -----------------------------------------------------------------
 
@@ -113,14 +109,14 @@ class SminosHostTest(unittest.TestCase):
     def test_the_identity_is_looked_for_under_the_hosts_sminos_home(self):
         custom = self.home / "elsewhere/sminos"
         self.env["SMINOS_HOME"] = str(custom)
-        self.enroll(home=self.home / ".claude/sminos")      # the default home, not the one in use
+        self.cut_over(home=self.home / ".claude/sminos")      # the default home, not the one in use
         sminos_host.check_role(self.user, "sandbox", self.env)
-        self.enroll(home=custom)
+        self.cut_over(home=custom)
         with self.assertRaisesRegex(StepError, "sandbox"):
             sminos_host.check_role(self.user, "sandbox", self.env)
 
     def test_a_persistent_host_may_carry_its_identity(self):
-        self.enroll()
+        self.cut_over()
         sminos_host.check_role(self.user, "persistent", self.env)
 
     # --- a persistent host -----------------------------------------------------------
@@ -139,19 +135,30 @@ class SminosHostTest(unittest.TestCase):
         self.assertIn("sminos daemon: sminos-daemon.service enabled", detail)
         self.assertIn(["systemctl", "--user", "enable", "sminos-daemon.service"], [c["argv"] for c in recorder.calls])
 
+    def test_a_stray_hub_json_enrolls_nothing(self):
+        # The desk refuses DX2 enrollment: a phase-1 hub.json left on a host names no upstream.
+        daemon = self.home / ".claude/sminos/daemon"
+        daemon.mkdir(parents=True)
+        (daemon / "hub.json").write_text('{"machine": "devbox-a"}\n')
+        self.marketplace()
+        detail, recorder = self.converge()
+        self.assertEqual(recorder.calls, [])
+        self.assertIn("not enrolled", detail)
+        self.assertFalse(sminos_host.cut_over(self.user, self.env))
+
     def test_a_host_that_provisions_its_endpoint_runs_the_daemon_before_it_is_cut_over(self):
         # Step 11 comes before step 13: the daemon is up for the endpoint's first welcome.
         self.marketplace()
         detail, _ = self.converge(provisions=True)
         self.assertIn("sminos daemon: sminos-daemon.service enabled", detail)
 
-    def test_enrolled_without_the_sminos_cli_fails(self):
-        self.enroll()
-        with self.assertRaisesRegex(StepError, "enrolled.*sminos"):
+    def test_cut_over_without_the_sminos_cli_fails(self):
+        self.cut_over()
+        with self.assertRaisesRegex(StepError, "sminos machine.*marketplace clone"):
             self.converge()
 
-    def test_enrolled_it_installs_lingers_reloads_enables_and_starts_the_daemon(self):
-        self.enroll()
+    def test_cut_over_it_installs_lingers_reloads_enables_and_starts_the_daemon(self):
+        self.cut_over()
         cli = self.marketplace()
         detail, recorder = self.converge()
         uid = str(self.user.uid)
@@ -174,7 +181,7 @@ class SminosHostTest(unittest.TestCase):
     def test_installed_command_is_wrapped_without_replacing_the_sminos_unit(self):
         # The drop-in is a systemd API boundary: reset ExecStart, but preserve
         # sminos's own output destinations and lifecycle directives.
-        self.enroll()
+        self.cut_over()
         self.marketplace()
         command = '"/opt/python$test/bin/python3" "/opt/clone with spaces/sminos.py" daemon run'
         text = ('[Service]\nExecStart=' + command + '\nKillMode=process\n'
@@ -190,7 +197,7 @@ class SminosHostTest(unittest.TestCase):
         self.assertNotIn('KillMode=', dropin)
 
     def test_missing_or_multiple_installed_commands_never_start_unscrubbed(self):
-        self.enroll()
+        self.cut_over()
         self.marketplace()
         for text in ('[Service]\n', UNIT_TEXT + 'ExecStart=/bin/echo extra\n'):
             with self.subTest(text=text):
@@ -210,7 +217,7 @@ class SminosHostTest(unittest.TestCase):
         self.assertEqual(sminos_host.cli(self.user), new)
 
     def test_an_unchanged_unit_is_started_and_a_changed_one_or_environment_restarted(self):
-        self.enroll()
+        self.cut_over()
         self.marketplace()
         self.converge()
         _, recorder = self.converge()
@@ -224,7 +231,7 @@ class SminosHostTest(unittest.TestCase):
     def test_a_restart_owed_by_a_failed_attempt_is_made_by_the_next(self):
         # The first attempt rewrites the unit, then lingering fails; the retry
         # finds the unit unchanged, and still owes the running daemon a restart.
-        self.enroll()
+        self.cut_over()
         self.marketplace()
         with self.assertRaises(StepError):
             self.converge(recorder=Recorder(self.unit, fail="loginctl"))
@@ -234,7 +241,7 @@ class SminosHostTest(unittest.TestCase):
         self.assertEqual(recorder.calls[-1]["argv"], ["systemctl", "--user", "start", "sminos-daemon.service"])
 
     def test_an_environment_change_survives_a_failed_attempt(self):
-        self.enroll()
+        self.cut_over()
         self.marketplace()
         self.converge()
         with self.assertRaises(StepError):
@@ -245,7 +252,7 @@ class SminosHostTest(unittest.TestCase):
     def test_the_unit_goes_where_a_cold_started_user_manager_looks(self):
         # The user manager does not read /etc/devcloud/env, so a profile's
         # XDG_CONFIG_HOME would hide the unit from it on a cold boot.
-        self.enroll()
+        self.cut_over()
         self.marketplace()
         self.env["XDG_CONFIG_HOME"] = str(self.home / "elsewhere")
         _, recorder = self.converge()

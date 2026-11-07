@@ -112,7 +112,7 @@ class BakeCheckTest(unittest.TestCase):
         self.assertEqual(bake_check.findings(self.root), [])
 
     def test_each_forbidden_file_is_found(self):
-        forbidden = ["etc/devcloud/boot.env", "etc/devcloud/seed/seed.json", "etc/devcloud/enroll-code",
+        forbidden = ["etc/devcloud/boot.env", "etc/devcloud/seed/seed.json",
                      "var/lib/devcloud/status.json", "var/lib/devcloud-stage/boot.env",
                      "Users/dev/.claude/sminos/daemon/hub.json", "root/.claude/sminos/daemon/machine.json",
                      "Users/dev/.config/claude-secrets/GITHUB_TOKEN", "Users/dev/.config/gcloud/legacy/adc.json",

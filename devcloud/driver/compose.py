@@ -69,8 +69,6 @@ def descriptor(name, profile, projects, expires, creator, spot, seed, adopted=Fa
         pairs.append(("DEVCLOUD_SPOT", "1"))
     if adopted:
         pairs.append(("DEVCLOUD_ADOPTED", "1"))
-    if profile.desk_secret:
-        pairs.append(("DEVCLOUD_SMINOS_SECRET", profile.desk_secret))
     if provisions(profile, projects):
         pairs += [("DEVCLOUD_MAWS_SECRET", profile.maws_secret),
                   ("DEVCLOUD_MAWS_DELEGATION_ID", profile.delegation_id)]

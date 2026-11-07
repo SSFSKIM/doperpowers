@@ -12,8 +12,11 @@
 # declares a project (an override file), refuses a seat and a target the
 # session cannot sync in, and `join --cwd` takes it back; hand-off carries an
 # override; the daemon sweeps an override whose transcript is gone, a month
-# quiet, or whose target turned ineligible. Two machines simulated on one Mac
-# (two enrolled SMINOS_HOMEs against hub_standin.py) for what crosses them.
+# quiet, or whose target turned ineligible. One machine cut over to its
+# endpoint (daemon/identity.json) for the cases on one machine; two machines
+# simulated on one Mac for what crosses them, two homes each cut over to its
+# own endpoint_standin.py, what one endpoint took reaching the other as
+# arrivals (rl10-machines.sh's hand-off).
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub; nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
@@ -74,6 +77,8 @@ as() { # a|b|c host — one machine: its HOME, its SMINOS_HOME, its host name
   export HOME="$T/$1/home" SMINOS_HOME="$T/$1/s" STUB_STATE="$T/$1/stub" DAEMON_HOST="$2"
   mkdir -p "$HOME/.claude/sessions" "$STUB_STATE"
 }
+# shellcheck source=rl10-machines.sh
+. "$SCRIPT_DIR/rl10-machines.sh"
 
 cat > "$T/bin/claude" <<'STUB'
 #!/usr/bin/env bash
@@ -86,36 +91,6 @@ STUB
 chmod +x "$T/bin/claude"
 export PATH="$T/bin:$PATH"
 
-python3 "$SCRIPT_DIR/hub_standin.py" "$T/hub.port" cid-0 secret-0 1000 & PIDS+=("$!")
-until_true test -s "$T/hub.port"
-HUB="http://127.0.0.1:$(cat "$T/hub.port")"
-KEY="$(python3 -c 'import base64; print(base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode())')"
-
-cat > "$T/ctl.py" <<'PY'
-import base64, http.client, json, sys
-port = int(open(sys.argv[1]).read())
-
-def call(method, path, body=None):
-    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    c.request(method, path, body=None if body is None else json.dumps(body), headers={"Content-Type": "application/json"})
-    r = c.getresponse()
-    return r.status, json.loads(r.read() or b"{}")
-
-cmd, args = sys.argv[2], sys.argv[3:]
-if cmd == "token":
-    print(call("POST", "/control/enrollment", {})[1]["token"])
-elif cmd == "code":  # hub token machine key
-    body = json.dumps(dict(zip(("hub", "org", "token", "machine", "key"), [args[0], "org-1", *args[1:4]])),
-                      separators=(",", ":")).encode()
-    print("smns-enroll-v1." + base64.urlsafe_b64encode(body).rstrip(b"=").decode())
-elif cmd == "state":  # a python expression over the state, d
-    print(json.dumps(eval(args[0], {"d": call("GET", "/control/state")[1], "json": json})))
-elif cmd == "register":  # project name [kind]
-    call("POST", "/control/register", {"project": args[0], "name": args[1], "kind": (args[2:] or ["hub"])[0]})
-elif cmd == "retire":  # project true|false
-    call("POST", "/control/retire", {"project": args[0], "retired": args[1] == "true"})
-PY
-ctl() { python3 "$T/ctl.py" "$T/hub.port" "$@"; }
 mp_of() { python3 -c 'import sys, uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "smns-machine:org-1:" + sys.argv[1].lower()))' "$1"; }
 smns_id() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$1/.smns"; }
 write_smns() { # dir name — a .smns naming only the org
@@ -175,14 +150,18 @@ in_session() { # session command... — the command as that session runs it
   local sid=$1; shift
   env CLAUDE_CODE_SESSION_ID="$sid" "$@"
 }
+# What a project holds of its sessions' exports (<message> marks, the bridge's
+# rows): its log and its host store, where a machine cut over keeps a hub
+# project's.
+exported() { cat "$SMINOS_HOME/projects/$1/log/"*.jsonl "$SMINOS_HOME/projects/$1/host/"*.jsonl 2>/dev/null || true; }
 
-# ---- alpha: a local project before it enrolls, then enrolled
+# ---- alpha: a local project before it enrolls, then cut over to its endpoint
 as a alpha
 mkdir -p "$T/x"
 LR="$T/a/legacy"
 gitq init -q "$LR"
 run_in "$LR" "$SMINOS" say "a local project"
-"$SMINOS" hub enroll <<<"$(ctl code "$HUB" "$(ctl token)" alpha "$KEY")" >/dev/null
+rl10_cut_over
 AMP="$(mp_of alpha)"
 
 echo "a .smns appearing under a live session moves it:"
@@ -228,9 +207,9 @@ hook_payload() { # event session cwd transcript
 hook_payload SessionStart "$S2" "$OR" "$TX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
 printf '{"type":"assistant","uuid":"s2-a1","isSidechain":false,"cwd":"%s","message":{"role":"assistant","content":[{"type":"text","text":"<message>said while in other</message>"}]}}\n' "$OR" >> "$TX"
 hook_payload Stop "$S2" "$OR" "$TX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
-assert_contains "$(cat "$SMINOS_HOME/projects/$AMP/log/"*.jsonl)" "said while in other" \
+assert_contains "$(exported "$AMP")" "said while in other" \
   "the record hook exports to the launch directory's project, though the payload's cwd is another project's"
-assert_not_contains "$(cat "$SMINOS_HOME/projects/$OPID/log/"*.jsonl 2>/dev/null)" "said while in other" "and not to the other"
+assert_not_contains "$(exported "$OPID")" "said while in other" "and not to the other"
 python3 - "$OR" "$S2" <<'PY'
 import os, sys
 sys.path.insert(0, os.environ["SCRIPTS"])
@@ -239,7 +218,7 @@ rec = {"type": "assistant", "uuid": "s2-a2", "isSidechain": False, "cwd": sys.ar
        "message": {"role": "assistant", "content": [{"type": "text", "text": "<message>live from other</message>"}]}}
 sminos.export_live(sys.argv[1], sys.argv[2], [rec])
 PY
-assert_contains "$(cat "$SMINOS_HOME/projects/$AMP/log/"*.jsonl)" "live from other" \
+assert_contains "$(exported "$AMP")" "live from other" \
   "the bridge's export too, though the bridge names the other directory"
 "$SMINOS" daemon tick >/dev/null 2>&1 || true
 assert_equals "$(members_of other)" "" "the other project's reconciliation does not join it"
@@ -379,7 +358,7 @@ mark16() { # n text — an assistant row carrying a <message> mark
     "$1" "$B16" "$2" >> "$S16_TX"
 }
 stop16() { hook_payload Stop "$S16" "$B16" "$S16_TX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"; }
-count_in() { cat "$SMINOS_HOME/projects/$1/log/"*.jsonl 2>/dev/null | grep -c -- "$2" || true; }
+count_in() { exported "$1" | grep -c -- "$2" || true; }
 hook_payload SessionStart "$S16" "$B16" "$S16_TX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
 mark16 1 "sixteen in alpha"
 stop16
@@ -598,83 +577,118 @@ hook_payload Stop "$S1" "$T/c/bare" /nowhere | CLAUDE_PLUGIN_ROOT="$FAKE" "$HOOK
 [ -e "$T/python-started" ] && pass "or the session holds a join override: one that joined a project from no repository still exports" \
   || fail "or the session holds a join override: one that joined a project from no repository still exports"
 
-# ---- two machines: a move reaches the other; an override whose target retires
-echo "two machines:"
-as a alpha
+# ---- RL10: a move reaching the other machine, and an override whose target retires (#153 M3d)
+# alpha and beta are real sminos homes, each with its daemon and its
+# endpoint_standin.py, never enrolled at a hub. What alpha's endpoint accepted reaches beta's
+# connection as arrivals through the stand-in's own echo (rl10_relay). The
+# org's directory is the stand-ins', sent down as `org` frames when it
+# changes: what registers followed-y and the ghost machine's project, then
+# retires them.
+echo "RL10: two machines through their endpoints:"
+rl10_as ra alpha
+rl10_cut_over
+EPA=$EP
+RAMP="$(rl10_mp alpha)"
+RMR="$T/ra/moving"
+gitq init -q "$RMR"
+write_smns "$RMR" moving
+RMPID="$(smns_id "$RMR")"
+r_dir() { # [retired(true|false)] → the org's directory; with an argument, followed-y and ghost's project in it
+  python3 - "$RMPID" "$RAMP" "$(rl10_mp beta)" "${1:-}" "$RFY" "$RGHP" <<'PY'
+import json, sys
+moving, amp, bmp, retired, fy, ghost = sys.argv[1:7]
+projects = [{"id": moving, "name": "moving", "kind": "hub", "retired": False},
+            {"id": amp, "name": "alpha", "kind": "machine", "machine": "alpha", "retired": False},
+            {"id": bmp, "name": "beta", "kind": "machine", "machine": "beta", "retired": False}]
+if retired:
+    projects += [{"id": fy, "name": "followed-y", "kind": "hub", "retired": retired == "true"},
+                 {"id": ghost, "name": "ghost", "kind": "machine", "machine": "ghost", "retired": retired == "true"}]
+print(json.dumps({"projects": projects, "machines": [{"name": "alpha", "online": True}, {"name": "beta", "online": True}]}))
+PY
+}
+RFY=0f0f0f0f-3333-4222-8333-444455556666
+RGHP="$(rl10_mp ghost)"
+rl10_serve "\"org\": $(r_dir)"
 "$SMINOS" daemon run --interval 1 >> "$SMINOS_HOME/run.out" 2>&1 & PIDS+=("$!")
-as b beta
-"$SMINOS" hub enroll <<<"$(ctl code "$HUB" "$(ctl token)" beta "$KEY")" >/dev/null
+rl10_as rb beta
+rl10_cut_over
+EPB=$EP
+mkdir -p "$T/rb/bare"
+rl10_serve "\"org\": $(r_dir)"
 "$SMINOS" daemon run --interval 1 >> "$SMINOS_HOME/run.out" 2>&1 & PIDS+=("$!")
-as a alpha
-MR="$T/a/moving"
-gitq init -q "$MR"
-write_smns "$MR" moving
-MPID="$(smns_id "$MR")"
-S11=1a000011-0000-4000-8000-000000000011
+relayed() { rl10_relay "$EPA" "$EPB"; "$@"; }
+r_up_kind() { # kind [reason] — alpha's endpoint took s11's event of that kind in moving
+  [ "$(rl10_q "$EPA" "any(e['kind'] == '$1' and (e.get('reason') or '') == '${2:-}' and e.get('session') == '$RS11' for c, e in up('$RMPID'))")" = true ]; }
+rl10_as ra alpha
+RS11=1b000011-0000-4000-8000-000000000011
 live_pid
-session_record s11 "$S11" "$LIVE_PID" "$MR"
-transcript "$S11" "$MR"
-run_in "$MR" "$SMINOS" list
-beta_has() { grep -qs "$2" "$T/b/s/projects/$MPID/log/alpha.$S11.jsonl"; }
-until_true beta_has "$MPID" '"joined"' || true
-beta_has "$MPID" '"joined"' && pass "beta reads s11's joined in moving" || fail "beta reads s11's joined in moving"
-rm "$MR/.smns"
-until_true beta_has "$MPID" '"moved"' || true
-beta_has "$MPID" '"moved"' && pass "removing the .smns moves it back, and the old project's moved retirement reaches beta" \
-  || fail "removing the .smns moves it back, and the old project's moved retirement reaches beta"
-assert_equals "$(events_of "$AMP" "$S11")" "joined - - move $MR" "into the machine project, by move"
-alpha_follows() { [ "$(ctl state "d['projects'].get('$MPID', {}).get('follow', {}).get('alpha', 'none')")" = true ]; }
-until_true alpha_follows || true
-alpha_follows && pass "while alpha keeps following the old project" || fail "while alpha keeps following the old project"
+session_record s11 "$RS11" "$LIVE_PID" "$RMR"
+transcript "$RS11" "$RMR"
+run_in "$RMR" "$SMINOS" list
+until_true r_up_kind joined || true
+r_up_kind joined && pass "RL10: alpha's endpoint takes s11's joined in moving" || fail "RL10: alpha's endpoint takes s11's joined in moving"
+r_beta_has() { grep -qs "$1" "$T/rb/s/projects/$RMPID/log/alpha.$RS11.jsonl"; }
+until_true relayed r_beta_has '"joined"' || true
+r_beta_has '"joined"' && pass "RL10: beta reads s11's joined in moving" || fail "RL10: beta reads s11's joined in moving"
+rm "$RMR/.smns"
+until_true r_up_kind retired moved || true
+r_up_kind retired moved && pass "RL10: removing the .smns moves it back: alpha's endpoint takes the moved retirement in moving" \
+  || fail "RL10: removing the .smns moves it back: alpha's endpoint takes the moved retirement in moving"
+until_true relayed r_beta_has '"moved"' || true
+r_beta_has '"moved"' && pass "RL10: and it reaches beta" || fail "RL10: and it reaches beta"
+assert_equals "$(events_of "$RAMP" "$RS11")" "joined - - move $RMR" "RL10: into the machine project, by move"
+r_follows_old() { [ "$(python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPA" opened | python3 -c 'import json, sys
+print(json.load(sys.stdin)["projects"].get(sys.argv[1], {}).get("follow"))' "$RMPID")" = True ]; }
+until_true r_follows_old || true
+r_follows_old && pass "RL10: while alpha keeps following the old project at its endpoint" \
+  || fail "RL10: while alpha keeps following the old project at its endpoint"
+assert_equals "$(rl10_as rb beta; members_of moving)" "" "RL10: and beta lists no member of it"
 
-FY=0f0f0f0f-2222-4222-8333-444455556666
-ctl register "$FY" followed-y
-# A machine project whose machine is not enrolled (a revoked one's): the
-# stand-in reactivates a retired machine project while its machine is active.
-GHP="$(mp_of ghost)"
-ctl register "$GHP" ghost machine
+rl10_as ra alpha
+rl10_directory "$(r_dir false)" "$EPA" "$EPB"
 known_here() { [ -s "$SMINOS_HOME/projects/$1/project.json" ]; }
-until_true known_here "$FY" || true
-until_true known_here "$GHP" || true
-S12=1a000012-0000-4000-8000-000000000012
-B12="$T/a/bare12"
-mkdir -p "$B12"
+until_true known_here "$RFY" || true
+until_true known_here "$RGHP" || true
+RS12=1b000012-0000-4000-8000-000000000012
+RB12="$T/ra/bare12"
+mkdir -p "$RB12"
 live_pid
-session_record s12 "$S12" "$LIVE_PID" "$B12"
-transcript "$S12" "$B12"
-run_in "$T/x" in_session "$S12" "$SMINOS" join followed-y
-assert_rc 0 "$RC" "join a project alpha only follows"
-assert_equals "$(events_of "$FY" "$S12")" "joined - - join $B12" "joined there"
-# Both retired at once: each retirement ends alpha's stream and reopens it
-# without the project, so one reconnect, not two, stands between them and org.json.
-ctl retire "$FY" true
-ctl retire "$GHP" true
+session_record s12 "$RS12" "$LIVE_PID" "$RB12"
+transcript "$RS12" "$RB12"
+run_in "$T/x" in_session "$RS12" "$SMINOS" join followed-y
+assert_rc 0 "$RC" "RL10: join a project alpha only follows, from its endpoint's directory"
+assert_equals "$(events_of "$RFY" "$RS12")" "joined - - join $RB12" "RL10: joined there"
+rl10_directory "$(r_dir true)" "$EPA" "$EPB"
 retired_here() { python3 -c 'import json, sys
 d = json.load(open(sys.argv[1]))
 sys.exit(0 if all(any(p["id"] == i and p.get("retired") for p in d["projects"]) for i in sys.argv[2:]) else 1)' \
   "$SMINOS_HOME/daemon/org.json" "$@" 2>/dev/null; }
-until_true retired_here "$FY" "$GHP" || true
-retired_here "$FY" "$GHP" && pass "the org frame marking both retired reaches alpha's org.json" \
-  || fail "the org frame marking both retired reaches alpha's org.json"
+until_true retired_here "$RFY" "$RGHP" || true
+retired_here "$RFY" "$RGHP" && pass "RL10: the org frame marking both retired reaches alpha's org.json" \
+  || fail "RL10: the org frame marking both retired reaches alpha's org.json"
 "$SMINOS" daemon tick >/dev/null 2>&1 || true
-assert_equals "$(events_of "$FY" "$S12" | tail -1)" "retired moved $AMP - -" \
-  "once the org frame retires its target, the next tick moves the session back to its directory's project"
-assert_contains "$(events_of "$AMP" "$S12")" "joined - - move $B12" "joined there by move"
-assert_equals "$(override_of "$S12")" "none" "and the override is swept"
-assert_contains "$(cat "$SMINOS_HOME/daemon.log")" "${S12:0:8}" "with a daemon.log line naming the session"
-run_in "$T/x" in_session "$S12" "$SMINOS" join followed-y
-assert_rc 1 "$RC" "join of a retired project is refused"
-assert_contains "$OUT" "retired" "saying it is retired"
-run_in "$T/x" in_session "$S12" "$SMINOS" join ghost
-assert_rc 1 "$RC" "join of a retired machine project is refused"
-assert_contains "$OUT" "retired" "saying why"
+assert_equals "$(events_of "$RFY" "$RS12" | tail -1)" "retired moved $RAMP - -" \
+  "RL10: once the org frame retires its target, the next tick moves the session back to its directory's project"
+assert_contains "$(events_of "$RAMP" "$RS12")" "joined - - move $RB12" "RL10: joined there by move"
+assert_equals "$(override_of "$RS12")" "none" "RL10: and the override is swept"
+assert_contains "$(cat "$SMINOS_HOME/daemon.log")" "${RS12:0:8}" "RL10: with a daemon.log line naming the session"
+run_in "$T/x" in_session "$RS12" "$SMINOS" join followed-y
+assert_rc 1 "$RC" "RL10: join of a retired project is refused"
+assert_contains "$OUT" "retired" "RL10: saying it is retired"
+run_in "$T/x" in_session "$RS12" "$SMINOS" join ghost
+assert_rc 1 "$RC" "RL10: join of a retired machine project is refused"
+assert_contains "$OUT" "retired" "RL10: saying why"
+for m in ra rb; do
+  assert_not_contains "$(cat "$T/$m/s/daemon.log" 2>/dev/null)" "Traceback" "RL10: nothing in $m's daemon.log is a traceback"
+done
+unset MAWS_USER_DATA
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test-join: all $PASSES assertions passed"
 else
   echo "test-join: $FAILURES of $((PASSES + FAILURES)) assertions FAILED"
-  for f in "$T"/a/s/daemon.log "$T"/b/s/daemon.log "$T"/a/s/run.out "$T"/b/s/run.out; do
+  for f in "$T"/a/s/daemon.log "$T"/ra/s/daemon.log "$T"/rb/s/daemon.log "$T"/ra/s/run.out "$T"/rb/s/run.out; do
     [ -f "$f" ] && { echo "--- $f"; tail -30 "$f"; }
   done
   exit 1

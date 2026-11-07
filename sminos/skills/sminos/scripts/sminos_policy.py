@@ -99,7 +99,8 @@ def load():
 
 
 def machine_policy():
-    """The policy as DX4's `machine` presence carries it."""
+    """The policy in force with its ceiling resolved to a mode: {read_only,
+    ceiling}. What goes up is `wire_policy`'s."""
     p = load()
     return {"read_only": p["read_only"], "ceiling": p["ceiling"]}
 
@@ -108,7 +109,7 @@ def wire_policy():
     """The policy as RL10 says it (O10's): the ceiling a permission mode, or
     `settings` while the file names none — the user's settings' defaultMode,
     which the endpoint reads as `settings` too, so a later change to them
-    still holds; DX2's hub takes the mode it resolves to (machine_policy)."""
+    still holds."""
     p = load()
     return {"read_only": p["read_only"], "ceiling": p["ceiling"] if p["ceiling_from"] == "policy" else FROM_SETTINGS}
 

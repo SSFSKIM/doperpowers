@@ -54,7 +54,6 @@ S3 = "4b000003-0000-4000-8000-0000000000b3"
 OTHER = "othermachine/4b0000ff-0000-4000-8000-0000000000ff"
 OTHER2 = "othermachine/4b0000fe-0000-4000-8000-0000000000fe"
 DEV_A = {"kind": "device", "member": "mem-1", "device": "dev-a", "keyId": "k-dev-a"}
-KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 
 
 def wait_for(pred, timeout=20, step=0.05):
@@ -74,20 +73,19 @@ def member(sid):
 
 
 class Rig(unittest.TestCase):
-    """A fresh installation per test: `testhost` of org-1, a hub project
-    `hp` and a local project `lp`."""
+    """A fresh installation per test: `testhost` (DAEMON_HOST), not
+    enrolled until `cut_over`, so a delivery is ungated; a hub project of
+    org-1 `hp` and a local project `lp`."""
 
     def setUp(self):
         home = tempfile.mkdtemp(dir=BASE)
-        os.environ.update(HOME=os.path.join(home, "h"), SMINOS_HOME=os.path.join(home, "s"))
+        os.environ.update(HOME=os.path.join(home, "h"), SMINOS_HOME=os.path.join(home, "s"), DAEMON_HOST="testhost")
+        self.addCleanup(os.environ.pop, "DAEMON_HOST", None)
         self.home = home
         self.inboxes = {}
         self.procs = {}
         for d in (os.environ["HOME"] + "/.claude/sessions", os.environ["SMINOS_HOME"] + "/daemon"):
             os.makedirs(d, mode=0o700)
-        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json"),
-                          {"hub": "http://127.0.0.1:9", "org": "org-1", "machine": "testhost", "client_id": "c",
-                           "client_secret": "s", "key": KEY, "former": {}, "enrolled": "2026-10-01T00:00:00Z"})
         sminos.forget_caches()
         rl10._SAID.update(find=None, revoked=None)
         self.hp = self.project("hp", hub=True)

@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
 """bench_open — how long a session view takes to open, end to end through the
-real uplink and the real hub code, and phase by phase in-process (the desk
-open-fast spec, docs/doperpowers/specs/2026-10-20-desk-open-fast-design.md,
-M2). An open runs from a browser client's `subscribe` to its receipt of the
-`snapshot`: E. The machine's share, N, from the subscribe frame's arrival at
-the uplink's reader to the snapshot's emission, is the plane's open line in
-daemon.log, reported beside E as a diagnostic.
+real uplink on RL10, and phase by phase in-process (the desk open-fast spec,
+docs/doperpowers/specs/2026-10-20-desk-open-fast-design.md, M2). An open runs
+from a browser client's `subscribe` to its receipt of the `snapshot`: E. The
+machine's share, N, from the subscribe frame's arrival at the uplink's
+reader to the snapshot's emission, is the plane's open line in daemon.log,
+reported beside E as a diagnostic.
 
-    bench_open.py --uplink --hub local --maws <MAWS worktree> [--live [--thinking] [--model M] | --synthetic-rows N]
-                  --scenario S --opens N [--pause-stream 4 --backlog 16m] [--keep]
-    bench_open.py --uplink --hub standin [...]
+    bench_open.py --rl10 [--live [--thinking] [--model M] | --synthetic-rows N]
+                  --scenario S --opens N [--keep]
     bench_open.py --micro --session <id> --sminos-home <dir> [--home <dir>] [--opens N]
 
-The full path (`--uplink`): this checkout's `sminos daemon uplink` under a
-temporary HOME and SMINOS_HOME, enrolled at a hub this instrument starts —
-`--hub local`, the hub's own Worker on a local runtime (`pnpm --filter
-desk-hub local --state <tmp> --port <free>` in the `--maws` worktree), a
-browser client on the project's socket (ws_client); or `--hub standin`,
-hub_standin.py, its `/control/send` the client's subscribe and its stamped
-`sessions` what the client receives. The session is fake_session.py's
-scripted one by default; `--live` an isolated headless session as
-mods/live-bridge-check.py isolates one (it spends haiku calls: run by hand,
+The full path (`--rl10`, #153 M3e): this checkout's `sminos daemon uplink`
+under a temporary HOME and SMINOS_HOME, on a machine cut over to its
+endpoint — the uplink child on RL10, against endpoint_standin.py in this
+process, the machine cut over by its welcome to `daemon probe`; a subscribe
+is a frame the stand-in writes down the connection, and what the client
+receives is the `session` frames the stand-in received, stamped as each
+arrived. The session is fake_session.py's scripted one by default;
+`--live` an isolated headless session as mods/live-bridge-check.py isolates
+one (it spends haiku calls: run by hand,
 with the gateway's keys in the environment; `--thinking` turns extended
 thinking on); `--synthetic-rows N` a transcript of N rows shaped like a real
 one, with no bridge. Every DX4 message the client received for an open goes
@@ -30,8 +29,8 @@ session emitted (the fake session's posts, or a live session's probe
 subscription), with the bridge's snapshot line placed among them for each
 subscription the plane served (the uplink here runs under a bootstrap that
 tees each subscription's first bridge lines, its sub beside them: nothing of
-the uplink's behavior changes). What a run stands on — the hubs and their
-browser clients, the sessions, the machine and its uplink — is bench_rig.py.
+the uplink's behavior changes). What a run stands on — the endpoint
+stand-in and its browser client, the sessions, the machine and its uplink — is bench_rig.py.
 
 Scenarios: `idle` (opens between turns, after one uncounted open that builds
 the index), `after-prompt` (each open made on the prompt row's notice),
@@ -49,26 +48,15 @@ mod's STABLE_MS (a younger child's successor waits RESPAWN_STEP_MS by
 design, so back-to-back kills would measure the backoff), the client
 subscribing again on each `end`, measured from the kill to the successor's
 bridged snapshot), `restart` (the same open on a fresh uplink, then after each
-restart), `held` (local hub: A4's pair, in its order, each step observed
-before the next — a subscription's snapshot and first chunk; the pause
-proxy, between the uplink and the hub, armed; a second machine's upload of
-`--backlog` bytes answered 200, every POST; the proxy seen `paused` on its
-first `events` frame; a `hello` on the uplink's own stream generation sent
-straight to the hub 0.5 s into the pause (or once the upload is answered, if
-later), which shows a hub write blocked behind the paused socket only when it
-was sent and seen still pending while the pause stood and was answered after
-the resume; the resume — then the chunks' lag in the window, the uplink's
-every POST that started in it from
-the proxy's census, each to its outcome, and an open 1 s after the resume).
+restart).
 
 Each open prints one JSON line — {"mode", "scenario", "load1", "E", "N",
 "arrived", "taken", "build", "cpu_ms", "rows", "cut", "waits", "holes",
 "dups", "gaps", "vanished", "source", ...} — and each scenario a summary line:
 min / p50 / max of E and N over the opens that count, and the load's range
 (`load1` is the 1-minute load average, uptime's first figure). A run never
-reports what it did not observe: a step of `held` not seen, no blocked hub
-write, fewer counted window trials than asked, a kill with no successor, or
-a counted open whose inventory stands on a probe gap the next snapshot cannot
+reports what it did not observe: fewer counted window trials than asked, a
+kill with no successor, or a counted open whose inventory stands on a probe gap the next snapshot cannot
 fill (`source: incomplete`) makes the summary `"complete": false` with each
 reason, and the exit status 3.
 
@@ -82,10 +70,6 @@ under the directories it reads (the plane's log lines are kept here).
 """
 
 import argparse
-import base64
-import collections
-import glob
-import http.client
 import json
 import os
 import re
@@ -95,16 +79,15 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.parse
 import uuid as uuidlib
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
 import dx4_consumer  # noqa: E402
-from bench_rig import SCRIPTS, FakeKind, LiveKind, Rig, _read, call, line_key, read_tees, wait_for  # noqa: E402
+from bench_rig import SCRIPTS, FakeKind, LiveKind, Rig, line_key, read_tees, wait_for  # noqa: E402
 
-SCENARIOS = ("idle", "after-prompt", "mid-message", "long-answer", "kill", "restart", "held")
+SCENARIOS = ("idle", "after-prompt", "mid-message", "long-answer", "kill", "restart")
 # The mod's STABLE_MS (bridge.tsx), with a margin: a child this old is followed at once when it ends.
 CHILD_STABLE = 30.5
 LEAVES_OUT = "the reader queue, the record scan, the ticks, the refreshes, the warmer and the uplink's thread"
@@ -171,14 +154,6 @@ def stats(xs):
     if not xs:
         return {"n": 0, "min": None, "p50": None, "max": None}
     return {"n": len(xs), "min": round(xs[0], 3), "p50": round(statistics.median(xs), 3), "max": round(xs[-1], 3)}
-
-
-def size_arg(text):
-    """`4m`, `512k`, `1000000`: bytes."""
-    m = re.fullmatch(r"(\d+(?:\.\d+)?)([kKmM]?)", text.strip())
-    if not m:
-        raise argparse.ArgumentTypeError("a size is a number with an optional k or m: %r" % text)
-    return int(float(m[1]) * {"": 1, "k": 1 << 10, "m": 1 << 20}[m[2].lower()])
 
 
 def load1():
@@ -323,12 +298,13 @@ class Bench:
         self.rig, self.kind, self.a = rig, kind, a
         self.records = []
         self.incomplete = []  # why the run's figures are not the whole proof they would be
-        self.mode = "uplink"
+        self.mode = "rl10"
 
     # ---- the uplink, connected
 
     def connected(self, since):
-        """Once the hub relayed a presence of the session said after `since`."""
+        """Once the hub relayed (on RL10: the endpoint received) a presence of
+        the session said after `since`."""
         b = self.rig.browser
 
         def said():
@@ -397,7 +373,7 @@ class Bench:
         """The instrument's own unsubscribe before a re-subscribe, as the web
         makes it: every message the client holds for it taken first, then the
         unsubscribe; whatever comes for it after that is the successor's to
-        cover (the local hub drops it, its route gone), so its consumer is
+        cover (the hub drops it, its route gone), so its consumer is
         whole and in order when its drawing is handed on."""
         if o.end_at is None and o.released is None:
             o.released = time.time()
@@ -742,351 +718,6 @@ def sc_restart(bench, a):
         bench.close(o)
 
 
-class Uploader:
-    """A second machine of the org at the local hub: its own stream (read
-    and dropped), a hello for the project, then `events` uploads of its own
-    writer, sealed with the org key, which the hub fans out down every other
-    machine's stream that opened the project."""
-
-    def __init__(self, hub, project):
-        sys.path.insert(0, SCRIPTS)
-        import sminos_codes
-        self.codes = sminos_codes
-        self.hub, self.project = hub, project
-        self.machine = "bench-up-" + uuidlib.uuid4().hex[:6]
-        self.cred = hub.mint(self.machine)
-        self.headers = {"CF-Access-Client-Id": self.cred["client_id"],
-                        "CF-Access-Client-Secret": self.cred["client_secret"]}
-        u = urllib.parse.urlsplit(hub.url)
-        self.stream = http.client.HTTPConnection(u.hostname, u.port, timeout=30)
-        self.stream.request("GET", "/machine/stream", headers={**self.headers, "Accept": "text/event-stream"})
-        r = self.stream.getresponse()
-        if r.status != 200:
-            raise RuntimeError("the uploader's stream was refused: %s" % r.status)
-        self.generation = None
-        while self.generation is None:
-            line = r.fp.readline()
-            if line.startswith(b"data: "):
-                f = json.loads(line[6:])
-                if f.get("t") == "welcome":
-                    self.generation = f["generation"]
-        self.r = r
-        threading.Thread(target=self.drain, daemon=True).start()
-
-    def drain(self):
-        try:
-            while self.r.fp.readline():
-                pass
-        except (OSError, ValueError, AttributeError):   # AttributeError: closed under it (fp gone)
-            pass
-
-    def post(self, frames):
-        body = "".join(json.dumps(f) + "\n" for f in frames).encode()
-        return call(self.hub.url, "POST", "/machine/frames", body,
-                    {**self.headers, "X-Desk-Generation": str(self.generation), "Content-Type": "application/x-ndjson"},
-                    timeout=60)
-
-    def upload(self, size, per_event=64 << 10, per_post=8):
-        """`size` bytes of events in POSTs of `per_post` events: (each POST's (status, answer), the
-        writer, its last seq)."""
-        status, body = self.post([{"t": "hello", "project": self.project, "name": "benchproj", "have": {}}])
-        if status != 200:
-            raise RuntimeError("the uploader's hello: %s %s" % (status, body))
-        key = base64.urlsafe_b64decode(self.hub.key + "=" * (-len(self.hub.key) % 4))
-        sid = str(uuidlib.uuid4())
-        writer = "%s/%s" % (self.machine, sid)
-        n = max(1, size // per_event)
-        answers, seq = [], 0
-        while seq < n:
-            batch = []
-            for _ in range(min(per_post, n - seq)):
-                seq += 1
-                draft = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()), "writer": writer, "seq": seq,
-                         "kind": "say", "session": sid, "to": [], "text": ("backlog %d " % seq).ljust(per_event, "x")}
-                batch.append(self.codes.seal(key, "log", self.project, draft, self.codes.b64url(os.urandom(16))))
-            answers.append(self.post([{"t": "events", "project": self.project, "events": batch}]))
-        return answers, writer, seq
-
-    def close(self):
-        try:
-            self.stream.close()
-        except OSError:
-            pass
-
-
-HUB_WRITE_BOUND = 10.0   # the hub's WRITE_TIMEOUT_MS: a head write the stream does not take in this long ends it
-PROBE_AFTER = 0.5        # the probe's hello goes this long into the pause (the hub's writes had time to back up)
-CONNECTED = re.compile(r"connected to \S+ as \S+ \(stream (\d+)\)")
-
-
-class Incomplete(Exception):
-    """A step of an ordered scenario that was not observed: the run says so
-    and measures nothing that stood on it."""
-
-
-class Watch(threading.Thread):
-    """The proxy's state read every 20 ms from the arming on, the first
-    reading of each state kept: `paused` is seen as itself, not inferred from
-    a `resumed` that followed it."""
-
-    def __init__(self, control):
-        super().__init__(daemon=True)
-        self.control, self.first, self.stop = control, {}, threading.Event()
-        self.probe = {}       # write_probe's record: stamped `pending_seen` here when a reading proves it
-
-    def run(self):
-        while not self.stop.is_set():
-            pending = self.pending()
-            try:
-                st = call(self.control, "GET", "/control/state", timeout=5)[1]
-            except OSError:
-                st = {}
-            state = st.get("state")
-            if state and state not in self.first:
-                self.first[state] = {**st, "seen": time.time()}
-            if state == "paused" and pending and self.pending() and "pending_seen" not in self.probe:
-                # Unanswered before and after a reading that found the proxy paused: pending while it stood.
-                self.probe["pending_seen"] = time.time()
-            time.sleep(0.02)
-
-    def pending(self):
-        return "sent" in self.probe and "answered" not in self.probe
-
-    def seen(self, state, seconds):
-        try:
-            return wait_for("the proxy %s" % state, seconds, lambda: self.first.get(state), 0.02)
-        except TimeoutError:
-            return None
-
-
-def stream_generation(rig):
-    """The generation of the uplink's stream now: the last its daemon.log says it connected to."""
-    generation = None
-    try:
-        with open(rig.daemon_log()) as f:
-            for line in f:
-                m = CONNECTED.search(line)
-                if m:
-                    generation = int(m[1])
-    except FileNotFoundError:
-        pass
-    return generation
-
-
-def machine_vector(rig, extra):
-    """The `have` the uplink's machine would send for the project now: each
-    writer file of its project log at its last whole line's seq (read from
-    the file's tail), with `extra`'s writers advanced to theirs."""
-    out = {}
-    for path in glob.glob(os.path.join(glob.escape(os.path.join(rig.smh, "projects", rig.project, "log")),
-                                       "*.jsonl")):
-        with open(path, "rb") as f:
-            f.seek(max(0, os.path.getsize(path) - (512 << 10)))
-            lines = f.read().split(b"\n")[:-1]   # the last piece is a line still being written, or nothing
-        for line in reversed(lines):
-            try:
-                e = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(e, dict) and isinstance(e.get("writer"), str) and type(e.get("seq")) is int:
-                out[e["writer"]] = max(out.get(e["writer"], 0), e["seq"])
-                break
-    for w, s in extra.items():
-        out[w] = max(out.get(w, 0), s)
-    return out
-
-
-def write_probe(rig, generation, have, probe):
-    """A `hello` for the project on the uplink's own credential and stream
-    generation, sent straight to the hub, not through the proxy, its course
-    kept in `probe` as it goes (`sent`, then `answered`, `status`). The hub
-    answers it once its `have` is written down that stream, behind every
-    write queued there before it: an answer only after the proxy resumed, to
-    a hello sent and seen pending while the pause stood (probe_blocked), is a
-    hub write that blocked behind the paused socket. `have` is the machine's
-    whole vector with the upload counted in (machine_vector), so the hub
-    streams back neither the backlog nor the machine's own events, and the
-    uplink takes the `have` as the reply to a repeated hello (its periodic
-    one). The credential is the run's own, under its temporary SMINOS_HOME;
-    nothing of it is printed."""
-    with open(os.path.join(rig.smh, "daemon", "hub.json")) as f:
-        cred = json.load(f)
-    body = json.dumps({"t": "hello", "project": rig.project, "name": "benchproj", "have": have}).encode() + b"\n"
-    probe["sent"] = time.time()
-    try:
-        status, answer = call(rig.hub.url, "POST", "/machine/frames", body, {
-            "CF-Access-Client-Id": cred["client_id"], "CF-Access-Client-Secret": cred["client_secret"],
-            "X-Desk-Generation": str(generation), "Content-Type": "application/x-ndjson"}, timeout=HUB_WRITE_BOUND + 20)
-    except OSError as e:
-        status, answer = None, {"error": repr(e)}
-    probe.update(status=status, answer=None if status == 200 else answer)
-    probe["answered"] = time.time()
-
-
-def probe_blocked(probe, paused_at, resumed_at):
-    """(whether the probe shows a hub write blocked behind the pause, why
-    not): sent while the pause stood, seen still unanswered while it stood
-    (`pending_seen`, Watch), and answered 200 only after the resume."""
-    sent, answered, seen = probe.get("sent"), probe.get("answered"), probe.get("pending_seen")
-    if sent is None:
-        return False, "the probe was never sent"
-    if sent >= resumed_at:
-        return False, "the probe was sent %.3f s after the resume: the upload was answered too late to probe the " \
-                      "pause" % (sent - resumed_at)
-    if sent < paused_at:
-        return False, "the probe was sent before the pause"
-    if probe.get("status") != 200:
-        return False, "the probe was answered %s" % probe.get("status")
-    if answered is not None and answered < resumed_at:
-        return False, "the probe was answered %.3f s into the pause, before the resume: the buffers between the " \
-                      "hub and the proxy took the backlog whole" % (answered - paused_at)
-    if seen is None or seen >= resumed_at:
-        return False, "the probe was never seen still pending while the pause stood"
-    return True, None
-
-
-def uplink_posts(control, since, until, generation, bound):
-    """The uplink's POSTs that started in [since, until], from the proxy's
-    census (only the uplink reaches the hub through the proxy), each waited
-    on to its outcome — its answer, its connection closed unanswered, or
-    `bound` seconds after it started — and graded by start: every one, those
-    still outstanding when the window ended, those answered late or never,
-    and any under another generation apart."""
-    def window():
-        got = call(control, "GET", "/control/requests")[1]["requests"]
-        return [r for r in got if r["method"] == "POST" and since <= r["start"] <= until]
-
-    while any(r["answered"] is None and r["closed"] is None and time.time() < r["start"] + bound for r in window()):
-        time.sleep(0.1)
-    rs = window()
-    mine = [r for r in rs if r["generation"] == str(generation)]
-
-    def brief(r):
-        return {"start": round(r["start"] - since, 3), "frames": r["frames"], "status": r["status"],
-                "ms": None if r["answered"] is None else round((r["answered"] - r["start"]) * 1000),
-                **({"closed": True} if r["answered"] is None and r["closed"] is not None else {})}
-    return {"posts": len(mine), "not_200": [brief(r) for r in mine if r["status"] != 200],
-            "outstanding_at_end": [brief(r) for r in mine if r["answered"] is None or r["answered"] > until],
-            "unanswered": [brief(r) for r in mine if r["answered"] is None],
-            "ms_max": max((round((r["answered"] - r["start"]) * 1000) for r in mine if r["answered"] is not None),
-                          default=None),
-            "kinds": dict(collections.Counter(f for r in mine for f in r["frames"][:1])),
-            "other_generation": len(rs) - len(mine)}
-
-
-def sc_held(bench, a):
-    """A4's pair, in its order, each step observed before the next (the
-    module doc): a step not observed makes the run incomplete, and so does a
-    pause behind which no hub write was seen to block (write_probe)."""
-    rig, k = bench.rig, bench.kind
-    if rig.hub.name != "local" or k.name != "fake":
-        sys.exit("bench_open: --scenario held runs on --hub local with the fake session")
-    control = rig.proxy["control"]
-    steps = []
-
-    def observed(name, ok, why, **facts):
-        steps.append({"step": name, "ok": bool(ok), **facts, **({} if ok else {"why": why})})
-        if not ok:
-            raise Incomplete("%s: %s" % (name, why))
-
-    stop = threading.Event()
-    watch, up, streaming = Watch(control), None, None
-    m = k.fake.message()
-
-    def stream():
-        i = 0
-        while not stop.is_set():
-            m.post([{"type": "chunk", **m.ids(), "chunkIndex": i,
-                     "chunk": {"kind": "text", "index": 0, "text": "c%d " % i}, "t": int(time.time() * 1000)}])
-            m.texts[0] = m.texts.get(0, "") + "c%d " % i
-            m.up_to[0] = i
-            i += 1
-            m.next_chunk = i
-            time.sleep(0.1)
-
-    try:
-        # (1) The chain live on this generation: the subscription's snapshot and a first chunk at the client.
-        o = bench.opened(bench.open())
-        observed("snapshot", o.snap_at is not None, "the subscription ended (%s) before its snapshot"
-                 % (o.consumer.end or {}).get("reason"))
-        streaming = threading.Thread(target=stream, daemon=True)
-        streaming.start()
-        bench.until(o, lambda: bool(o.chunks), 10)
-        observed("first chunk", o.chunks, "no chunk of the scripted stream reached the client within 10 s")
-        generation = stream_generation(rig)
-        observed("generation", generation is not None, "daemon.log names no stream the uplink connected",
-                 generation=generation)
-        before = call(control, "GET", "/control/state")[1]
-        # (2) Armed and acknowledged; the second machine's upload answered 200, every POST of it.
-        status, armed = call(control, "POST", "/control/arm", {"on": "next-events", "seconds": a.pause_stream})
-        observed("armed", status == 200 and armed.get("state") == "armed", "the proxy answered %s %s"
-                 % (status, armed))
-        watch.start()
-        up = Uploader(rig.hub, rig.project)
-        t_up = time.time()
-        answers, writer, last = up.upload(a.backlog)
-        observed("upload answered 200", answers and all(s == 200 for s, _ in answers), "its answers: %s"
-                 % [(s, str(b)[:120]) for s, b in answers if s != 200], posts=len(answers),
-                 seconds=round(time.time() - t_up, 3))
-        # (3) The pause on the first of those frames, seen as itself; the probe of a hub write behind it.
-        paused = watch.seen("paused", 30)
-        observed("paused", paused is not None, "the proxy was never seen paused (states seen: %s)"
-                 % sorted(watch.first), held=None if paused is None else paused["held"])
-        paused_at = paused["paused_at"]
-        probe = watch.probe
-
-        def send_probe():
-            time.sleep(max(0.0, paused_at + PROBE_AFTER - time.time()))
-            write_probe(rig, generation, machine_vector(rig, {writer: last}), probe)
-        prober = threading.Thread(target=send_probe, daemon=True)
-        prober.start()
-        # (4) The window, to the resume (5), and the open 1 s after it.
-        resumed = watch.seen("resumed", a.pause_stream + 30)
-        observed("resumed", resumed is not None, "the proxy never resumed")
-        resumed_at = resumed["resumed_at"]
-        bench.until(o, lambda: False, max(0.0, resumed_at + 1.0 - time.time()))
-        o2 = bench.opened(bench.open())
-        bench.until(o2, lambda: False, 1.0)
-        stop.set()
-        streaming.join(5)
-        u = m.row(0)
-        m.end()
-        bench.until(o, lambda: u in o.consumer.held, 10)
-        bench.feed(o2)
-        prober.join(HUB_WRITE_BOUND + 25)
-        blocked, why_not = probe_blocked(probe, paused_at, resumed_at)
-        posts = uplink_posts(control, paused_at, resumed_at, generation, HUB_WRITE_BOUND + 5)
-        final = call(control, "GET", "/control/state")[1]
-        lags = [round(at - t / 1000.0, 3) for at, t in o.chunks if isinstance(t, (int, float))
-                and paused_at <= t / 1000.0 <= resumed_at]
-        into = lambda key: None if probe.get(key) is None else round(probe[key] - paused_at, 3)  # noqa: E731
-        probe_said = {"sent": into("sent"), "pending_seen": into("pending_seen"), "answered": into("answered"),
-                      "resumed": round(resumed_at - paused_at, 3), "status": probe.get("status"),
-                      "answer": probe.get("answer")}
-        if not blocked:
-            bench.incomplete.append("held: no hub write to the stalled stream was seen to block — %s (the probe, in "
-                                    "seconds from the pause: %s; the backlog %d bytes)" % (why_not, probe_said,
-                                                                                         a.backlog))
-        bench.record("held", o, counted=False, role="the subscription streaming through the pause",
-                     window=round(resumed_at - paused_at, 3), held_bytes=final.get("held"), backlog=a.backlog,
-                     steps=steps, hub_write_blocked=blocked, probe=probe_said,
-                     chunk_lag_max=max(lags, default=None), chunks_in_window=len(lags), uplink_posts=posts,
-                     stream_survived=final.get("streams") == before.get("streams") and o.end_at is None
-                     and stream_generation(rig) == generation)
-        bench.record("held", o2, counted=blocked, role="the open 1 s after the resume",
-                     at=round(o2.sent - resumed_at, 3))
-        bench.close(o)
-        bench.close(o2)
-    except Incomplete as e:
-        print(json.dumps({"held": "incomplete", "steps": steps}), flush=True)
-        bench.incomplete.append("held: %s" % e)
-    finally:
-        stop.set()
-        watch.stop.set()
-        if up is not None:
-            up.close()
-
-
 # ------------------------------------------------------------- the micro-benchmark
 
 
@@ -1177,23 +808,16 @@ def micro(a):
 
 
 def run(a):
-    print(json.dumps({"start": a.scenario, "hub": a.hub, "session": "live" if a.live else
-                      ("synthetic" if a.synthetic_rows else "fake"), "uptime": uptime()}), flush=True)
+    print(json.dumps({"start": a.scenario, "hub": "endpoint",
+                      "session": "live" if a.live else ("synthetic" if a.synthetic_rows else "fake"),
+                      "uptime": uptime()}), flush=True)
     rig = Rig(a)
     kind = None
     try:
         kind = LiveKind(rig, a) if a.live else FakeKind(rig, a.synthetic_rows)
-        if a.scenario == "held":
-            ports_file = os.path.join(rig.root, "proxy.json")
-            rig.spawn([sys.executable, os.path.join(HERE, "pause_proxy.py"), rig.hub.url, ports_file],
-                      log="proxy.out")
-            ports = json.loads(wait_for("the pause proxy", 10, lambda: _read(ports_file)))
-            rig.proxy = {"proxy": "http://127.0.0.1:%d" % ports["proxy"],
-                         "control": "http://127.0.0.1:%d" % ports["control"]}
-            rig.point_uplink_at(rig.proxy["proxy"])
         bench = Bench(rig, kind, a)
         bench.start()
-        {"idle": sc_idle, "after-prompt": sc_after_prompt, "kill": sc_kill, "restart": sc_restart, "held": sc_held,
+        {"idle": sc_idle, "after-prompt": sc_after_prompt, "kill": sc_kill, "restart": sc_restart,
          "mid-message": lambda b, x: sc_window(b, x, "mid-message"),
          "long-answer": lambda b, x: sc_window(b, x, "long-answer")}[a.scenario](bench, a)
         bench.summary(a.scenario)
@@ -1207,10 +831,10 @@ def run(a):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     mode = p.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--uplink", action="store_true", help="the full path: the real uplink and a hub")
+    mode.add_argument("--rl10", action="store_true",
+                      help="the full path on RL10: the real uplink child, the machine cut over to the endpoint "
+                           "stand-in")
     mode.add_argument("--micro", action="store_true", help="one Subscription in-process: N_micro")
-    p.add_argument("--hub", choices=("local", "standin"), default="standin")
-    p.add_argument("--maws", help="the MAWS worktree whose apps/desk-hub runs as the local hub")
     p.add_argument("--live", action="store_true", help="an isolated headless session (spends haiku calls)")
     p.add_argument("--thinking", action="store_true", help="with --live: extended thinking on")
     p.add_argument("--model", default="haiku", help="with --live: the session's model")
@@ -1220,10 +844,6 @@ def main():
     p.add_argument("--synthetic-rows", type=int, metavar="N", help="a synthetic transcript of N rows, no bridge")
     p.add_argument("--scenario", choices=SCENARIOS, default="idle")
     p.add_argument("--opens", type=int, default=5)
-    p.add_argument("--pause-stream", type=float, default=4.0, metavar="S")
-    p.add_argument("--backlog", type=size_arg, default=16 << 20, metavar="B",
-                   help="held: the upload fanned out down the stream (on the local hub 4m fits the buffers between "
-                        "the hub and the proxy, and no hub write blocks; 16m blocks)")
     p.add_argument("--keep", action="store_true", help="leave the run's temporary directory")
     p.add_argument("--session", help="--micro: the session id")
     p.add_argument("--sminos-home", help="--micro: the SMINOS_HOME its bridge and the plane read")

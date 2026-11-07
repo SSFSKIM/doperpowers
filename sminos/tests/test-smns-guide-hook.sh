@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # smns-guide.sh (SessionStart) hands its payload to `sminos guide` and prints
 # what that prints, which the engine adds to the session's context: on a
-# machine enrolled at a desk hub (hub.json, or identity.json once cut over
-# to its endpoint), who the session is in the org and how it
+# machine enrolled in its org (identity.json, the identity its endpoint gave;
+# a stray hub.json is no enrollment), who the session is in the org and how it
 # reaches the others (docs/doperpowers/specs/2026-10-18-smns-org-directory-design.md
 # §9). The gate is the verb's (tests/test-guide.sh pins its text); the
 # hook only passes the payload on, never prints an error, never blocks a start,
@@ -19,6 +19,8 @@ trap 'rm -rf "$T"' EXIT
 unset SMNS_INTERNAL CLAUDE_CODE_SESSION_ID DAEMON_HOME CLAUDE_PLUGIN_ROOT
 export HOME="$T/home" SMINOS_HOME="$T/s" DAEMON_HOST=alpha
 mkdir -p "$HOME/.claude/sessions" "$SMINOS_HOME/daemon" "$T/dir"
+# shellcheck source=rl10-machines.sh
+source "$SCRIPT_DIR/rl10-machines.sh"   # rl10_cut_over: identity.json, as a welcome leaves it
 
 fail() { echo "  [FAIL] $1"; FAILURES=$((FAILURES + 1)); }
 pass() { echo "  [PASS] $1"; }
@@ -32,7 +34,7 @@ echo "a machine not enrolled:"
 run
 if [ -z "$OUT" ] && [ "$RC" = 0 ]; then pass "prints nothing, exits 0"; else fail "rc=$RC printed: $OUT"; fi
 
-printf '{"hub":"http://127.0.0.1:9","org":"org-1","machine":"alpha"}\n' > "$SMINOS_HOME/daemon/hub.json"
+rl10_cut_over
 # The engine's record of the session: guidance goes only to a member on sight.
 printf '{"pid":%s,"sessionId":"%s","name":"s1","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","entrypoint":"cli"}\n' \
   "$$" "$SID" "$T/dir" > "$HOME/.claude/sessions/s1.json"
@@ -46,21 +48,24 @@ if [ -z "$OUT" ] && [ "$RC" = 0 ]; then pass "an internal fork gets nothing"; el
 OUT="$("$HOOK" </dev/null 2>&1)"; RC=$?
 if [ -z "$OUT" ] && [ "$RC" = 0 ]; then pass "no payload: nothing, exit 0"; else fail "no payload: rc=$RC printed: $OUT"; fi
 
-echo "the enrollment's file (hub.json, or identity.json on a machine cut over to its endpoint):"
+echo "the enrollment's file (identity.json; a stray hub.json enrolls nothing):"
 GATE="$T/gate-plugin"
 mkdir -p "$GATE/skills/sminos/scripts"
 printf '#!/bin/sh\necho guided\n' > "$GATE/skills/sminos/scripts/sminos"
 chmod +x "$GATE/skills/sminos/scripts/sminos"
-for f in hub.json identity.json none; do
+for f in identity.json hub.json none; do
   rm -rf "$SMINOS_HOME/daemon"; mkdir -p "$SMINOS_HOME/daemon"
   [ "$f" = none ] || printf '{}' > "$SMINOS_HOME/daemon/$f"
   run CLAUDE_PLUGIN_ROOT="$GATE"
-  if [ "$f" = none ]; then
-    if [ -z "$OUT" ] && [ "$RC" = 0 ]; then pass "with neither file, the hook exits before the verb"; else fail "neither file: rc=$RC printed: $OUT"; fi
-  elif [ "$OUT" = guided ] && [ "$RC" = 0 ]; then pass "with $f alone, the hook reaches sminos guide"
-  else fail "$f alone: rc=$RC printed: $OUT"; fi
+  if [ "$f" = identity.json ]; then
+    if [ "$OUT" = guided ] && [ "$RC" = 0 ]; then pass "with identity.json alone, the hook reaches sminos guide"
+    else fail "identity.json alone: rc=$RC printed: $OUT"; fi
+  elif [ -z "$OUT" ] && [ "$RC" = 0 ]; then
+    pass "$([ "$f" = none ] && echo "with neither file" || echo "with a stray hub.json alone"), the hook exits before the verb"
+  else fail "$f: rc=$RC printed: $OUT"; fi
 done
-printf '{}' > "$SMINOS_HOME/daemon/hub.json"
+rm -f "$SMINOS_HOME/daemon/hub.json"
+printf '{}' > "$SMINOS_HOME/daemon/identity.json"
 
 echo "a CLI that fails:"
 FAKE="$T/plugin"

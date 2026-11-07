@@ -9,7 +9,6 @@ provider's Ubuntu by the slow path."""
 
 import dataclasses
 import datetime
-import json
 
 from devcloudlib import status
 
@@ -124,11 +123,7 @@ def describe(r):
 def run(ctx, opts):
     begun = ctx.clock()
     label = names.check_label(opts.label or "vm")
-    code = opts.enroll_code
     provisions = compose.provisions(ctx.profile, list(opts.project or []))
-    if code and provisions:
-        raise DriverError(USAGE, "--enroll-code enrolls sminos on DX2, whose row under the VM's name would refuse the "
-                                 "certificate it provisions with the MAWS project at boot: leave the code out")
     # A project's file is checked before anything runs: a bad one is exit 2 with nothing done.
     wanted = hostfile.governing(ctx, list(opts.project or []))
     if wanted is not None:
@@ -162,7 +157,7 @@ def run(ctx, opts):
                               creator=tag, spot=r.spot, seed="gce-metadata" if metadata_seed else "file",
                               created=int(started), hourly_price=r.type.get("hourly_price"),
                               currency=r.type.get("currency"), creator_project=ctx.creator_project())
-    enroll = "code" if code else ("key" if ctx.profile.desk_secret or provisions else None)
+    enroll = "key" if provisions else None
     recipe = compose.recipe_hash(ctx.plugin)
     labels = compose.labels(kind="vm", lifetime=r.lifetime, expires=expires, by=ctx.machine, creator=short,
                             recipe=recipe, confirmed=r.confirmed, enroll=enroll,
@@ -200,8 +195,6 @@ def run(ctx, opts):
     else:
         address = None
     booted = wait_boot(ctx, host, address, started + BOOT_WAIT)
-    if code:
-        enroll_with_code(ctx, host, code)
     maws = next((s for s in booted.get("steps", []) if s["name"] == "maws"), None)
     if maws is not None and maws["state"] == "deferred":
         ctx.say(f"maws      deferred: {maws['detail']}")
@@ -273,30 +266,3 @@ def wait_boot(ctx, host, address, deadline):
             raise DriverError(FAILED, f"the boot of {host.name} did not finish within 15 minutes{where}; the VM is "
                                       "kept for inspection, its lease bounds it")
         ctx.sleep(POLL)
-
-
-def enroll_with_code(ctx, host, code):
-    """§10's stand-in for the desk's key: the code delivered after the boot,
-    then a reconcile whose step 11 enrolls with it. Enrolled only when that
-    reconcile exited 0 and wrote a services entry of its own: the boot's
-    entry from before it proves nothing about the code."""
-    before = _services(hostctl.progress(ctx, host.name, host.alias))
-    result = hostctl.deliver_code(ctx, host.name, host.alias, code)
-    if result.code != 0:
-        why = ("the connection dropped" if result.code is None or result.code < 0 or result.code == 255
-               else f"devcloud reconcile exited {result.code}")
-        raise DriverError(FAILED, f"the enrollment with the code failed on {host.name} ({why})")
-    answer = hostctl.progress(ctx, host.name, host.alias)
-    services = _services(answer)
-    if services is None or (before is not None and services.get("at", "") <= before.get("at", "")):
-        raise DriverError(FAILED, f"the enrollment with the code is unconfirmed on {host.name}: the reconcile wrote "
-                                  "no services entry of its own")
-    if services["state"] == "failed":
-        raise DriverError(FAILED, f"the enrollment with the code failed on {host.name} ({services['detail']})")
-    if answer[0].get("enroll"):
-        ctx.say("enroll    deferred: the desk was undecided; devcloud-enroll finishes it")
-    ctx.say(f"enroll    {host.name}: {services['detail'] or services['state']}")
-
-
-def _services(answer):
-    return next((s for s in (answer[0] if answer else {}).get("steps", []) if s["name"] == "services"), None)

@@ -10,20 +10,21 @@ from driver_fixtures import DriverBase, NOW, vm_labels
 
 MIN, HOUR = 60, 3600
 
-UNENROLLED = ("this machine is not enrolled at a desk hub (sminos hub enroll): it knows only itself\n"
+UNENROLLED = ("this machine is not enrolled at a desk hub (mawsd endpoint enroll): it knows only itself\n"
               "MACHINE  STATE         LIVE  PROJECTS\n"
               "sk       this machine  3     doperpowers\n")
-NO_ORG = ("no org directory yet: the daemon has not connected to the hub (sminos daemon run)\n"
+NO_ORG = ("no org directory yet: the endpoint has not sent one (sminos daemon status)\n"
           "MACHINE  STATE         LIVE  PROJECTS\n"
           "macbook  this machine  2     -\n")
-CURRENT = ("MACHINE      STATE           LIVE  PROJECTS\n"
-           "devcloud-m5  never seen      0     -\n"
-           "macbook      online          20    doperpowers, macbook\n"
-           "mini         last seen 3m ago  2     mini\n")
+CURRENT = ("MACHINE      STATE              LIVE  PROJECTS\n"
+           "devcloud-m5  no event yet       0     -\n"
+           "macbook      this machine       20    doperpowers, macbook\n"
+           "mini         last event 3m ago  2     mini\n")
 
 
 def aged(listing, age):
-    return listing + f"(the org's directory is {age} old: the daemon's stream has said nothing newer)\n"
+    return listing + (f"(the org's directory is {age} old: the endpoint restates it only when the org changes or "
+                      "the daemon reconnects)\n")
 
 
 class ParseTest(unittest.TestCase):

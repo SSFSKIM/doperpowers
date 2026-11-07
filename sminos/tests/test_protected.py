@@ -44,8 +44,10 @@ with open(os.path.join(T, "bin", "claude"), "w") as f:
 os.chmod(os.path.join(T, "bin", "claude"), 0o755)
 os.environ["PATH"] = os.path.join(T, "bin") + os.pathsep + os.environ["PATH"]
 ORG, MACHINE = "org-1", "testhost"
-with open(os.path.join(SH, "daemon", "hub.json"), "w") as f:
-    json.dump({"hub": "http://127.0.0.1:9", "org": ORG, "machine": MACHINE}, f)
+sys.path.insert(0, HERE)
+from rl10_identity import write_identity  # noqa: E402
+
+write_identity(SH, MACHINE, org=ORG)   # enrolled in ORG as MACHINE: its endpoint's identity
 sys.path.insert(0, SCRIPTS)
 
 import sminos  # noqa: E402

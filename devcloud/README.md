@@ -501,38 +501,26 @@ reads the host's idle clock over the tailnet; an unavailable clock shows `-`.
 **sminos.** Step 11 first links `/usr/local/bin/sminos` to the launcher in
 the doperpowers marketplace clone, at every boot and reconcile, so any shell
 on the host finds it (the profile's `sminos` is an interactive zsh alias,
-which a command over SSH never loads). A persistent host is a sminos machine once the person enrolls it
-(`sminos hub enroll`, a human step: its code carries the organization's key),
-which leaves `$SMINOS_HOME/daemon/hub.json`. On the host, as the image's user
-in that user's own login shell:
-
-    su - <user>
-    sminos hub enroll        # paste the code at the hidden prompt
-    sminos hub show          # the machine's enrolled identity
-
-A login shell, because the command's paths must expand in the user's
-environment: typed from root as `runuser -u <user> -- ~/.claude/...`, root's
-shell expands `~` to `/root` before the switch, and the enroll fails with
-permission denied. From then on step 11 — at the
-next boot, or at once with `devcloud reconcile` — runs `sminos daemon
-install` as the user (the doperpowers marketplace clone's `sminos.py`, which
-`sync/apply.py` installs), adds a drop-in naming `/etc/devcloud/env` as the
-unit's environment file, turns lingering on, reloads the user manager, and
-enables and starts `sminos-daemon.service`, restarting it when its unit or
-the environment changed (an owed restart is kept in
+which a command over SSH never loads). A persistent host is a sminos machine
+once it is cut over to its MAWS endpoint (`daemon/identity.json`, which the
+endpoint's first complete welcome writes; its sminos then speaks only to the
+endpoint), and before that, from its first boot, when its descriptor names
+MAWS's code: step 11 starts the daemon so that step 13's listing cuts it
+over within seconds. Its enrollment is its endpoint's: devcloud enrolls
+nothing at the desk hub, and a phase-1 `hub.json` left on a host makes
+nothing enrolled, since the desk refuses DX2. On a sminos machine step 11 —
+at every boot and reconcile — runs `sminos daemon install` as the user (the
+doperpowers marketplace clone's `sminos.py`, which `sync/apply.py`
+installs), adds a drop-in naming `/etc/devcloud/env` as the unit's
+environment file, turns lingering on, reloads the user manager, and enables
+and starts `sminos-daemon.service`, restarting it when its unit or the
+environment changed (an owed restart is kept in
 `/var/lib/devcloud/sminos-restart-pending` until one succeeds, so a failed
 attempt's retry still makes it); lingering starts it again after a reboot.
-A host is a sminos machine as well once it is cut over to its MAWS endpoint
-(`daemon/identity.json`, which the endpoint's first complete welcome writes;
-its sminos then speaks only to the endpoint and holds no `hub.json` at all
-when the host was born under the v2 code), and before that, from its first
-boot, when its descriptor names MAWS's code: step 11 starts the daemon so
-that step 13's listing cuts it over within seconds. A cut-over host enrolls
-nothing at step 11 (its enrollment is its endpoint's). Otherwise nothing is
-installed and the host's projects run local-only.
+Otherwise nothing is installed and the host's projects run local-only.
 A sandbox is never a sminos machine: one whose `$SMINOS_HOME/daemon/` holds
-`hub.json`, `machine.json` or `identity.json` (an enrollment, the instance
-claim a daemon writes, a cutover) fails step 11 — it shares the identity of the machine it was copied
+`hub.json`, `machine.json` or `identity.json` (a phase-1 enrollment, the
+instance claim a daemon writes, a cutover) fails step 11 — it shares the identity of the machine it was copied
 from — and is left as it is, since the directory may be that machine's own,
 mounted. A container's `DAEMON_BOOT_ID` is its own (step 1), never its host's.
 
@@ -596,7 +584,7 @@ refuses with exit 6: hosts never drive. A session learns it from
 `skills/vm/SKILL.md` (`devcloud:vm`).
 
     devcloud vm up [--label L] [--project owner/repo[@ref]]... [--account A] [--type T] [--location L]
-                   [--disk GB] [--ttl D | --keep] [--spot] [--enroll-code -] [--confirmed] [--dry-run]
+                   [--disk GB] [--ttl D | --keep] [--spot] [--confirmed] [--dry-run]
     devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
     devcloud vm ls [--json]
     devcloud vm ssh <name> [--root] [-- command...]
@@ -613,10 +601,10 @@ guard (unpushed work), 6 not a driver here (no seed key, or a devcloud host),
 **What it needs.** The profile's `driver.toml` (beside the host profile in
 `~/.claude/devcloud/`, or `$DEVCLOUD_PROFILE`): the caps, the default
 account, the descriptor fields every host gets (`[host]`), the desk
-(`[desk]`: the v1 `provisioning_secret` that enrolls sminos on DX2, or MAWS's
-`provisioning_secret_v2` with its `delegation_id`, never both, and the
+(`[desk]`: MAWS's `provisioning_secret_v2` with its `delegation_id`, and the
 `name_prefix` VM names are drawn under, `dc-` by default, the delegation's
-own), and the accounts, each a provider with the
+own; the v1 `provisioning_secret`, which enrolled sminos on DX2, is refused
+by name), and the accounts, each a provider with the
 Secret Manager ids of its credentials (`env`) and its settings (`vars`);
 never a value, and unknown keys are refused. The seed key file,
 `$DEVCLOUD_SEED_FILE` or `~/.config/devcloud/seed.json`: the driver signs
@@ -655,10 +643,7 @@ the recipe as a gzipped tarball and a first-boot script that runs
 `setup.sh`, then ledgers and installs the descriptor and starts the boot
 (`/var/log/devcloud-first-boot.log` on the VM). A failed step
 prints `devcloud status` and exits 1, keeping the VM for inspection.
-`--enroll-code -` reads a one-time desk code from stdin and, after the boot,
-writes it to the host and reconciles, for when the profile has no
-provisioning key; it is refused for a VM that provisions MAWS's endpoint,
-whose name a DX2 row would hold. With `--project`, the first project's `devenv/host.toml`
+With `--project`, the first project's `devenv/host.toml`
 (`account`, `type`, `location`, `disk_gb`, `spot`; read from the session's
 checkout when it is that repository, else from GitHub with `gh api`) sits
 between the flags and the profile's defaults; an unknown key or an account

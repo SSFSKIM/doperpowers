@@ -1,7 +1,7 @@
 """The boot steps (Design §4) and the runs made of them: a boot (1-13), a
 reconcile (5-11, then 13), the config pull job (5, then 6-11 when the commit
 moved), the secrets refresh (7, 10, 11), the mirror refresh (no step of its
-own) and the enroll job (what 11 or 13 deferred).
+own) and the enroll job (what 13 deferred).
 Each step is recorded in the status file; a failed step stops the run, and the
 next run retries from its top. Runs hold one lock, so a job never interleaves
 with a boot. Every job also takes the lifecycle lock shared and does nothing
@@ -71,6 +71,8 @@ class Run:
     def load(self):
         if self.desc is None:
             self.desc = descriptor.load(allow_http=os.environ.get("DEVCLOUD_ALLOW_HTTP") == "1")
+            for key in self.desc.ignored:
+                _say(f"boot descriptor: ignoring {key}, {descriptor.RETIRED[key]}")
             self.user = User.from_image()
             self.tokens = Tokens(self.desc)
             proc.know_host(self.user, self.desc.seed_path if self.desc.seed_kind == "file" else None,
@@ -725,17 +727,15 @@ def _marketplace(r):
 
 def services_step(r):
     """`sminos` linked onto every shell's PATH, the devcloud services, then
-    sminos's part — the desk's enrollment
-    (§10), then the daemon — each tried even when another failed, so a
-    failure in one never costs another a restart it owes (each records its
-    own, to be made by a later run). Under the lifecycle lock, shared: once a
-    departure has started, the services that could reopen admission stay
-    stopped (§4.2's second guard), and a departure never starts between the
-    read of its state and a start here. An enrollment the desk left
-    undecided makes the step `deferred`, which counts as done."""
+    sminos's daemon — each tried even when another failed, so a failure in
+    one never costs another a restart it owes (each records its own, to be
+    made by a later run). Under the lifecycle lock, shared: once a departure
+    has started, the services that could reopen admission stay stopped
+    (§4.2's second guard), and a departure never starts between the read of
+    its state and a start here."""
     env = _read_env(ENV_PATH)
     sminos_host.check_role(r.user, r.desc.role, env)
-    parts, failures, state = [], [], "ok"
+    parts, failures = [], []
     try:
         sminos_host.link_cli(r.user)
     except OSError as error:
@@ -750,36 +750,13 @@ def services_step(r):
             parts.append("sminos: the departure has started; the daemon stays stopped")
         else:
             try:
-                enrolled = _enroll(r, env)
-                if enrolled.detail:
-                    parts.append(f"sminos: {enrolled.detail}")
-                if enrolled.state == "deferred":
-                    state = "deferred"
-            except StepError as error:
-                failures.append(str(error))
-            try:
                 parts.append(sminos_host.converge(r.user, r.desc.role, env, r.env_changed,
                                                   provisions=bool(r.desc.maws_secret)))
             except StepError as error:
                 failures.append(str(error))
     if failures:
         raise StepError("; ".join(failures))
-    return (state, "; ".join(parts))
-
-
-def _enroll(r, env):
-    """Step 11's enrollment at the desk, its deferral kept in the status."""
-    if sminos_host.CODE_FILE.exists():
-        ledger.add(sminos_host.CODE_FILE)
-    result = sminos_host.enroll(r.user, r.desc, env, fetch_key=lambda name: _fetch_text(r, name),
-                                ledger_add=ledger.add)
-    if result.state == "deferred":
-        status.set_enroll_deferred(True)
-    elif result.state in ("accepted", "enrolled", "cutover"):
-        status.set_enroll_deferred(False)
-    if result.state == "enrolled":
-        sminos_host.owe_restart()
-    return result
+    return ("ok", "; ".join(parts))
 
 
 def _devcloud_services(r, lifecycle=None):
@@ -806,8 +783,8 @@ def maws(r):
     """Step 13 (maws_host): the endpoint provisioned under the descriptor's
     code, after the projects (which install `mawsd`) and the sminos daemon
     (step 11), so the first welcome cuts sminos over within seconds of the
-    listing. Under the lifecycle lock, shared, as step 11's enrollment is:
-    once a departure has started nothing is provisioned. A deferral is kept
+    listing. Under the lifecycle lock, shared, as step 11's daemon is: once
+    a departure has started nothing is provisioned. A deferral is kept
     in the status for the devcloud-enroll service; a refusal ends it, a
     failed fetch of the code does not."""
     r.load()
@@ -1004,31 +981,15 @@ def refresh_secrets():
 
 
 def enroll():
-    """The `devcloud-enroll` service's run (§10): nothing unless step 11's
-    enrollment or step 13's provisioning was deferred. A deferred enrollment:
-    the desk asked again, and on its 0, 1 or 3 the step finished as step 11
-    would, the daemon (re)started. A deferred provisioning: step 13 run
-    again, the same command, which resumes without redeeming. Each is tried
-    whatever the other did."""
+    """The `devcloud-enroll` service's run: nothing unless step 13's
+    provisioning was deferred, and then step 13 run again, the same command,
+    which resumes without redeeming."""
     with _job("enroll") as admitted:
         if not admitted:
             return 0
-        owed = [name for name, deferred in (("services", status.enroll_deferred()),
-                                            ("maws", status.maws_deferred())) if deferred]
-        if not owed:
+        if not status.maws_deferred():
             return 0
-        r = Run("enroll")
-
-        def finish(r):
-            r.load()
-            env = _read_env(ENV_PATH)
-            result = _enroll(r, env)
-            if result.state == "deferred":
-                return ("deferred", f"sminos: {result.detail}")
-            converged = sminos_host.converge(r.user, r.desc.role, env, False, provisions=bool(r.desc.maws_secret))
-            return f"sminos: {result.detail}; {converged}"
-        runs = {"services": finish, "maws": maws}
-        return max(_run(((name, runs[name]),), r) for name in owed)
+        return _run((("maws", maws),), Run("enroll"))
 
 
 REJOIN_TRIES, REJOIN_PAUSE = 3, 20

@@ -398,12 +398,12 @@ class WarningTest(LeaseBase):
         self.calls.append((list(argv), kwargs.get("user")))
         return 0, "", ""
 
-    def warn(self, creator="@build#4f2a", enrolled=True, cut_over=False):
-        hub = self.user.home / ".claude/sminos/daemon/hub.json"
-        hub.parent.mkdir(parents=True, exist_ok=True)
-        hub.write_text("{}\n") if enrolled else hub.unlink(missing_ok=True)
-        identity = hub.with_name("identity.json")
+    def warn(self, creator="@build#4f2a", cut_over=True, stray_hub=False):
+        identity = self.user.home / ".claude/sminos/daemon/identity.json"
+        identity.parent.mkdir(parents=True, exist_ok=True)
         identity.write_text("{}\n") if cut_over else identity.unlink(missing_ok=True)
+        hub = identity.with_name("hub.json")
+        hub.write_text("{}\n") if stray_hub else hub.unlink(missing_ok=True)
         d = descriptor.parse(BASE + f"DEVCLOUD_EXPIRES={NOW}\n" + (f"DEVCLOUD_CREATOR={creator}\n" if creator else ""))
         said = []
         with mock.patch.object(notices, "ENV_PATH", str(self.tmp / "env")):
@@ -422,14 +422,9 @@ class WarningTest(LeaseBase):
         self.assertEqual(argv, ["/usr/bin/python3", str(self.cli), "say", f"@build#4f2a {text}"])
         self.assertEqual(user, self.user)
 
-    def test_a_vm_cut_over_to_its_endpoint_says_it_too(self):
-        # A VM born under the v2 code holds identity.json and no hub.json; its `say` goes through RL10.
-        self.warn(enrolled=False, cut_over=True)
-        (argv, _), = self.calls
-        self.assertEqual(argv[2], "say")
-
     def test_without_a_creator_or_unenrolled_the_journal_and_wall(self):
-        for kwargs in ({"creator": None}, {"enrolled": False}):
+        # A stray phase-1 hub.json is no enrollment: the desk refuses DX2, so `say` would reach no one.
+        for kwargs in ({"creator": None}, {"cut_over": False}, {"cut_over": False, "stray_hub": True}):
             with self.subTest(**kwargs):
                 self.calls.clear()
                 said = self.warn(**kwargs)

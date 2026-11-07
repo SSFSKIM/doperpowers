@@ -1,7 +1,7 @@
 # Setting up sminos on a machine and in a repository
 
 The one-time work: a project's `.smns` and its mirror, a machine's
-enrollment at the desk hub, the daemon, and the machine's policy. The CLI
+place at the desk hub, the daemon, and the machine's policy. The CLI
 is the sminos plugin's `skills/sminos/scripts/sminos`
 (`sminos/skills/sminos/scripts/sminos` in the doperpowers repository; not
 on PATH); `sminos help` describes
@@ -66,59 +66,21 @@ temporary directories when testing.
 
 ## The desk hub
 
-    sminos hub enroll [--name N] [--replace]   # this machine at the desk hub
-    sminos hub show                            # its enrolled name, hub, org, and the names it wrote under before (local; exit 1 when none)
-    sminos hub check                           # does the hub still accept this machine's credential? (changes nothing)
-    sminos hub leave                           # end this machine's enrollment, at the hub and here
+    sminos hub show                            # this machine's name, hub and org, and the names it wrote under before (local; exit 1 when none)
     sminos project init --hub                  # this repository syncs through the hub, never git
 
-The desk's **Machines → Enroll a machine** gives a one-time code.
-`hub enroll` reads it at a hidden prompt, or from stdin when piped
-(`sminos hub enroll <<<"$CODE"`, or from a file), and refuses it as an
-argument: the code carries the org key, which argv and the shell's
-history would expose. The enrolled name is this machine's name from
-then on, in every project — what it writes is `<name>/…`, because the
-hub takes from a machine only its own writers. Without `--name` it keeps
-the name it writes under now (its host name, or `DAEMON_HOST`) when the
-hub admits it. What it wrote under an earlier name stays on this machine
-and never reaches the hub. `--replace` enrolls again with a new code.
-The credential is `$SMINOS_HOME/daemon/hub.json` (mode 0600; never print
-it).
-
-**At provisioning time** (a VM's boot, no human), an admin's
-**Machines → Provisioning keys** gives a reusable, revocable code,
-`smns-provision-v1.…`, that enrolls any name starting with its prefix
-(`dc-`) until it expires, is revoked, or is used up. It carries the org
-key too: keep it in a secret store and pipe it, never write it to the
-host — `printf %s "$CODE" | sminos hub enroll --name dc-build-7f3a`. The
-name is `--name`, else the host's, and one not under the prefix is
-refused before anything is sent (exit 2). A name another machine holds
-exits 3 (pick another suffix, same code); every other refusal — the key
-revoked, expired or used up, which need an admin, or a hub that did not
-answer, which a rerun of the same line covers — exits 1.
-
-**`hub check`** asks the hub whether it still accepts the stored
-credential, and writes nothing: exit 0 accepted, 1 not enrolled here, 3
-rejected (revoked by an admin, by the key's offline auto-revoke, or by a
-`leave` whose answer was lost), 4 undecided — the hub unreachable, an
-answer that is neither, or Access refusing a credential enrolled less
-than ten minutes ago, which may not have reached its edge (Access's 401 is
-read as a revocation only past that grace and when it holds on a recheck
-90 s later, `SMINOS_ACCESS_RECHECK_S`). A boot's rule, before it starts
-the daemon: 0 skip enrolling; 1 enroll; 3 enroll again with `--replace`,
-the same code and name; 4 keep the credential and run `check` again later,
-with backoff, until it answers 0, 1 or 3 — never re-enroll or remove
-anything on 4.
-
-**`hub leave`** revokes this machine's enrollment at the hub (a VM's
-teardown runs it) and removes `hub.json`, after which the daemon stops its
-uplink within a second: exit 0 when it left, when the hub had already
-revoked the credential (the same reading as `check`'s), or when nothing
-was enrolled here; exit 1, the credential kept, when the hub could not be
-told — run it again, or let the key's offline auto-revoke finish it. An operator
-event still queued for the hub's head (a new enrollment's, before its
-first `have`) stays queued, never in the log: leave names it per project,
-`daemon owed` counts it, and enrolling under this name again releases it.
+A machine joins its org's desk hub through its MAWS endpoint, not
+through sminos: enroll it with `mawsd endpoint enroll` (`mawsd endpoint
+status` says where it stands). sminos's daemon follows at the endpoint's
+first welcome: it keeps the machine's name, hub and org at
+`$SMINOS_HOME/daemon/identity.json` and from then on runs its uplink to
+the endpoint (`sminos hub show`, `sminos daemon status`). The name the
+endpoint gives is this machine's name from then on, in every project —
+what it writes is `<name>/…`, because the hub takes from a machine only
+its own writers. Until that welcome the machine is in no hub and writes
+under its host name, or `DAEMON_HOST`. `sminos hub enroll`, `check` and
+`leave` only say this and exit 1, and a `hub.json` an older sminos wrote
+enrolls nothing.
 
 `project init --hub` writes the enrolled org into `.smns` —
 `"hub": {"org": "<org>"}`, no URL: each machine reaches the hub its own
@@ -145,16 +107,16 @@ with a remote), join sessions seen on this machine and move those whose
 project changed, publish state changes and renames, retry owed
 deliveries (a failed push is retried each tick and given up after 60
 with a line in `$SMINOS_HOME/daemon.log`); every five minutes, `derive --all`. On an
-enrolled machine the loop also keeps its `uplink` child, the one stream
-to the hub that carries every hub project both ways.
+enrolled machine the loop also keeps its `uplink` child, the one RL10
+connection to the endpoint that carries every hub project both ways.
 
 `daemon owed` prints a line for each project that still owes something —
 the count of each kind and the oldest item's age, and at most three
 references a kind (`writer:seq → recipient`), never a message body: `deliveries` owed
 to a session of this machine not yet made; `words`, those a cut-over
-machine's endpoint has yet to decide; and what has not reached the hub or
-the endpoint yet — `upload` (this machine's own events), `refused`
-(positions of them where the hub or the endpoint holds another event:
+machine's endpoint has yet to decide; and what has not reached the
+endpoint yet — `upload` (this machine's own events), `refused`
+(positions of them where the endpoint holds another event:
 nothing resolves one unattended, so look before a cutover), `kept` (the
 settlements and RPC messages kept under `daemon/`), `host` (a cut-over
 machine's unsent host events) and `outcomes` (delivery outcomes). It
