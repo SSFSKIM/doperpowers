@@ -1870,6 +1870,168 @@ class RelayedOnLanes(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.drain(link, items) or rp.messages == []), "and is owed no more")
 
 
+class RelayedOnRl10(RelayedOnLanes):
+    """RelayedOnLanes on a machine cut over (#153 M3b): the Link uncoded on
+    RL10's own SocketLane, writing to a socket whose far end the test reads.
+    A frame written is the endpoint's (a write is the whole answer), so one
+    is lost when the socket refuses its write: the lane ends as a lost POST
+    ends a stream, and nothing it carried counts as relayed. DX2's `not-open`
+    and the per-POST refusals have no RL10 counterpart and are not run
+    (set to None below)."""
+
+    @classmethod
+    def setUpClass(cls):
+        root, cls.pid = make_project("relayed-on-rl10", org="org-relayed")
+        cls.project = project_of(root)
+
+    def setUp(self):
+        import sminos_hublog as hublog
+        import sminos_rl10 as rl10
+        import sminos_uplink as uplink
+        self.uplink, self.hublog, self.rl10 = uplink, hublog, rl10
+        forget_owed()
+        self.addCleanup(forget_owed)
+        self.cred = {"machine": "testhost", "org": "org-relayed", "key": None, "hub": "http://127.0.0.1:9"}
+        self.sid = str(uuidlib.uuid4())
+        self.bridge = Bridge(self.sid)
+        self.addCleanup(self.bridge.stop)
+
+    def requests(self):
+        r = requests.Requests(None, "testhost")
+        self.addCleanup(r.close)
+        return r
+
+    def frames_of(self, data):
+        """The frames bytes written to the socket carry, parts joined."""
+        conn, out = endpoint_standin.Conn(0, None), []
+        for line in data.decode("utf-8").splitlines():
+            f = conn.joined(json.loads(line))
+            if f is not None:
+                out.append(f)
+        return out
+
+    def stream(self, generation, reqs, rpcs=None):
+        """A stream's Link on its socket, the session's bridge followed and
+        the project opened: (link, items, every frame the endpoint read
+        once what the open queued was written and its continuations ran)."""
+        near, far = (self.rl10.Connection(sock) for sock in socket.socketpair())
+        self.addCleanup(far.sock.close)
+        self.addCleanup(near.sock.close)
+        wire = types.SimpleNamespace(fail=False, lost=bytearray())
+
+        def write(data):
+            if wire.fail:
+                wire.lost += data
+                raise BrokenPipeError("the endpoint's socket is gone")
+            near.write(data)
+        link = self.uplink.Link(self.cred, {self.pid: self.hublog.HubLog(self.project, self.cred, coded=False)},
+                                reqs=reqs, rpcs=rpcs, transport=mock.Mock(number=generation), coded=False)
+        link.bridged = lambda pids: {self.sid: self.pid} if self.pid in pids else {}
+        items = queue.Queue()
+        link.generation = generation
+        link.log_lane = link.session_lane = self.uplink.SocketLane(types.SimpleNamespace(write=write), items.put,
+                                                                   lambda: False)
+        link.log_lane.start()
+        link.wire, link.far = wire, far
+        self.addCleanup(link.close)
+        # What Link.on_welcome does for these at every stream, whatever `coded` is: what the last stream's lane
+        # held in flight is owed as it stands. (The rest of an RL10 welcome, welcomed_rl10, writes this
+        # machine's identity, which this module's shared SMINOS_HOME must not take.)
+        link.requests.reset()
+        link.rpcs.reset()
+        link.open(link.logs[self.pid])
+        self.settled_down(link, items)
+        return link, items, self.read(far)
+
+    def settled_down(self, link, items):
+        """The lane's continuations run until it holds nothing unwritten."""
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            self.drain(link, items)
+            if link.log_lane.queued() == 0 and not link.log_lane.posting() and items.empty():
+                time.sleep(0.1)
+                if items.empty():
+                    return
+        self.fail("the lane never emptied")
+
+    def read(self, far):
+        """The frames the far end holds unread."""
+        data = bytearray()
+        far.sock.settimeout(0.2)
+        while True:
+            try:
+                chunk = far.sock.recv(1 << 20)
+            except (TimeoutError, socket.timeout):
+                break
+            if not chunk:
+                break
+            data += chunk
+        return self.frames_of(bytes(data))
+
+    def lose(self, link, items, relay, how):
+        """The next write, the relay's, refused by the socket (`how`, DX2's
+        503 or cut, is one loss on RL10): the lane ends, the Link closes."""
+        link.wire.fail = True
+        relay()
+        kind, err = items.get(timeout=10)
+        self.assertEqual(kind, "closed")
+        self.assertIsInstance(err, self.uplink.NotDelivered)
+        link.close()
+        return self.frames_of(bytes(link.wire.lost))
+
+    def test_an_rpc_result_and_a_compaction_message_lost_go_again_on_the_next_stream(self):
+        """Both are lost with a write; the uplink restarts: the result
+        follows the next hello, under its opId and nonce, until `rpc-ack`,
+        and the compaction's message, read back from daemon/rpcs-owed.json,
+        goes again; written, it is owed no more."""
+        rp = rpc.Rpcs(None, "testhost", coded=False)
+        r = self.requests()
+        link, items, _ = self.stream(1, r, rp)
+        nonce, op = (codes.b64url(os.urandom(n)) for n in (codes.NONCE_BYTES, 18))
+        now = time.time()
+        rp.ledger.put(op, {"project": self.pid, "rpc": "interrupt", "session": self.sid, "at": now, "nonce": nonce,
+                           "outcome": rpc.done({}), "done_at": now, "acked": False})
+        rp.compact_ids["c1"] = (self.pid, self.sid, op, now)
+        rp.compacted([(self.sid, self.pid, {"id": "c1", "phase": "end"})])
+
+        def result_in(body):
+            return [f for f in body if f.get("t") == "rpc-result" and f["nonce"] == nonce]
+
+        def compact_in(body):
+            return [m for m in messages(body, "compact") if m["body"]["rpc"] == op]
+
+        lost = self.lose(link, items, link.relay_rpcs, "cut")
+        self.assertTrue(result_in(lost) and compact_in(lost), "both were in the write lost: %s" % lost)
+        self.assertEqual(result_in(lost)[0]["opId"], op)
+        rp = rpc.Rpcs(None, "testhost", coded=False)   # the uplink restarts
+        self.assertEqual([m["message"]["body"]["rpc"] for m in rp.messages], [op], "owed, from disk")
+        link, items, hello = self.stream(2, r, rp)
+        self.assertTrue(result_in(hello), "the result follows the next hello (until rpc-ack)")
+        link.relay_rpcs()
+        self.settled_down(link, items)
+        self.assertTrue(compact_in(hello + self.read(link.far)), "the compaction's message goes again")
+        self.assertEqual(rp.messages, [], "written: owed no more")
+        self.assertEqual(rp.due({self.pid}), [], "neither is due again on this stream")
+        self.assertEqual(rpc.Rpcs(None, "testhost", coded=False).messages, [], "nor owed on disk")
+        link.close()
+        link, items, hello = self.stream(3, r, rp)
+        self.assertTrue(result_in(hello), "not acknowledged: the next stream's hello carries it again")
+        rp.ack({"t": "rpc-ack", "opId": op, "nonce": nonce})
+        link.close()
+        link, items, hello = self.stream(4, r, rp)
+        self.assertEqual(result_in(hello), [], "acknowledged: not again")
+        self.assertFalse(compact_in(hello), "the message the endpoint took: not again")
+
+
+for _name in ("test_a_settlement_refused_not_open_goes_again_after_the_hello_that_opens_its_project",
+              "test_a_mixed_answer_leaves_owed_only_the_frames_it_names",
+              "test_a_relay_cut_short_by_the_reopen_its_refusal_brings_owes_all_of_it_again",
+              "test_the_streams_own_refusal_after_an_answer_that_took_the_settlement_changes_nothing",
+              "test_a_reopen_sends_no_pending_set_older_than_its_hellos",
+              "test_a_set_in_flight_at_a_reopen_applied_after_its_hello_is_healed_by_a_fresh_one"):
+    setattr(RelayedOnRl10, _name, None)   # DX2's `not-open` re-open and its per-POST answers
+
+
 class Uplink(unittest.TestCase):
     """Against the hub stand-in."""
 
