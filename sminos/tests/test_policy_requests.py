@@ -2305,6 +2305,12 @@ class EndpointHome:
         """The session-plane messages the endpoint received after `since`."""
         return messages(self.ep.frames()[since:], kind)
 
+    def restated(self, since):
+        """Waited for: a connection after `since` finished its restatement
+        (its `restated`, which the uplink sends once that tick's hellos,
+        results and pending sets are queued ahead of it)."""
+        return wait_for(lambda: [f for f in self.ep.frames()[since:] if f["t"] == "restated"], timeout=30)
+
     def opened(self, project, since):
         """Whether a connection after `since` opened the project (its
         `hello`), waited for: the stream it was dropped on is over and the
@@ -2447,7 +2453,7 @@ class UplinkOnRl10(unittest.TestCase):
                                  timeout=20), "the new uplink is connected")
         got = wait_for(lambda: self.pending_sets()[sets:], timeout=15)
         self.assertTrue(got, "a set was published")
-        time.sleep(1.0)
+        self.assertTrue(self.rig.restated(mark), "the new uplink's restatement finished")
         after = self.pending_sets()[sets:]
         self.assertTrue(all("toolu_kept" in s for s in after), "no set after the restart lacks it: %s" % after)
         self.bridge.settle("toolu_kept")

@@ -4545,10 +4545,18 @@ class UplinkOnRl10(unittest.TestCase):
         self.ep.send({"t": "rpc-ack", "opId": rpc["opId"], "nonce": rpc["nonce"]})
 
     def drop(self):
-        """The connection dropped, and the next one open on the project."""
+        """The connection dropped, and the next one open on the project;
+        where the frames stood before the drop."""
         mark = self.rig.mark()
         self.ep.drop()
         self.assertIsNotNone(self.rig.opened(self.pid, mark), "the uplink connected again")
+        return mark
+
+    def acked(self, rpc):
+        """Waited for: the uplink kept the RPC's `rpc-ack` in its ledger."""
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE)
+        self.assertTrue(wait_for(lambda: (rpcs.read_ledger(path).get(rpc["opId"]) or {}).get("acked"), 15),
+                        "the ack is kept")
 
     def test_a_steer_and_its_refusals_reach_the_endpoint(self):
         self.mod.turn = "turn-a"
@@ -4572,10 +4580,10 @@ class UplinkOnRl10(unittest.TestCase):
         self.assertIsNotNone(wait_for(lambda: len({n for n, _ in self.results(steer)}) >= 2, 15),
                              "sent again, on the next connection")
         self.ack(steer)
-        time.sleep(0.5)
+        self.acked(steer)
         sent = len(self.results(steer))
-        self.drop()
-        time.sleep(1.0)
+        mark = self.drop()
+        self.assertTrue(self.rig.restated(mark), "the next connection's restatement finished")
         self.assertEqual(len(self.results(steer)), sent, "acknowledged: not sent again")
 
     def test_b_a_cut_after_execution_shows_uncertain_then_resolves_executed_once(self):
