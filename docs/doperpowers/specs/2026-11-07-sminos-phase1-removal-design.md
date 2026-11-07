@@ -22,8 +22,8 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) M5: the DX2 transport and the supervisor's DX2 arm out (`34538211`; review clean, sminos gates GREEN, run 42365283498; replay 107 ok, 0 FAIL).
 - [x] (2026-11-07) M6: `coded` collapsed (`e9afa4e8`, fix `f9bd7b49`; review clean, sminos gates GREEN on `f9bd7b49`, run 42377347462; replay 107 ok, 0 FAIL; sminos-suites 18m54s).
 - [x] (2026-11-07) M7: docs and labels (`b6df7a2e..1c2adcae`, the deferred minors `6b20b662`, `ca0039f3`; review clean; gates on `ca0039f3` GREEN, sminos run 42380437461 (sminos-suites 16m12s), devcloud run 42380463408).
-- [ ] The branch review and the merge.
-- [ ] M8: the release verified (both Macs' daemons, the gate's runtime).
+- [x] (2026-11-07) The branch review and the merge. The xhigh panel over `fcf0b6a5..16ab8bd3` (a sweep, five lenses and the verifier) returned correct, with no findings. PR #470 merged as `3d708ebe`, with all 21 checks green. The residue is board tickets 176–179.
+- [x] (2026-11-07) M8: the release verified. Both Macs' daemons run 1.40.0 on RL10 (MacBook 15:03:53Z, mini 15:06:38Z). The gate's runtime is on board #170 (Outcomes).
 
 ## What changes and what doesn't (acceptance)
 
@@ -394,7 +394,22 @@ This is after the branch review and the merge, and it is not part of the branch'
 - Acceptance 7: devcloud calls no `hub` verb. A host that still carries the v1 key boots as before.
 - sminos-suites fell from ~20–22 min to 16m12s on `ca0039f3`, after reaching 27.5 min while both arms ran in M3.
 
-Acceptance 8 and 9 are M8's, after the merge.
+**M8 (2026-11-07, the coordinating session).** The branch review was the xhigh panel over `fcf0b6a5..16ab8bd3`, run when the gateway answered for both sol and astra. Its sweep and five lenses covered:
+- uplink recovery;
+- the RPC execution boundary;
+- hublog admission and positions;
+- devcloud boot and departure;
+- coverage lost with the DX2 suites.
+
+Each lens ran its focused suites, and the verifier returned correct with no findings. PR #470 merged as `3d708ebe`.
+- **Acceptance 8:** each Mac's daemon restarted in place on the new code, about a second from the restart line to the endpoint connection.
+  - **The MacBook**, read from files. After its marketplace clone moved to `3d708eb` (sminos 1.40.0), `daemon.log` says 15:03:53.248Z "its code changed; restarting in place on the new code". At 15:03:54.673Z it says "uplink: connected to the endpoint (RL10, local-only) as macbook (connection 1)". The launchd agent is running at the same pid, and no orphaned marketplace clone was left.
+  - **The mini**, through mini-ops. The clone is at `3d708eb` (sminos 1.40.0, devcloud 0.16.0). The restart came at 15:06:38.684Z and the RL10 connection "as mini" at 15:06:39.729Z, with no orphaned clone and no TCC prompt.
+  - **A devcloud host**, on its own marketplace, stays on 1.39.0 until that marketplace refreshes. RL10 is unchanged, so nothing depends on it.
+- **Acceptance 9:**
+  - **Before:** sminos-suites took 22m25s (run 42329775929) and 22m35s (run 42329436955).
+  - **After:** 16m12s (ci-gate on `ca0039f3`, run 42380437461) and 18m49s (PR #470's run 42382887977, whose tree is the merged head's). main's push run for `3d708ebe` (42384466325) ran only the plan for that tree.
+  - **On board #170:** the figures, against its job limit of 30 min.
 
 What the retrospective should keep:
 - M3's batch lists were written from the map's per-file view, and some behaviours fell between batches: test-hub's rename half, item 7's two-machine half, and item 2's view from the other machine. Others fell under no batch: M4's five twins and M5's two. Executors found every one at deletion time, because the rule "a DX2 behaviour with no replacement is a stop" made them look. A checklist written per behaviour, not per file, would have caught them before M4.
