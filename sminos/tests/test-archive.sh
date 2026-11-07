@@ -573,6 +573,284 @@ kill "$C_DAEMON"
 set +e; wait "$C_DAEMON"; set -e
 assert_not_contains "$(cat "$T/c/s/daemon.log")" "Traceback" "nothing in gamma's daemon.log is a traceback"
 
+# ---- RL10: the archive's designation, git never feeding the log, steering
+# Re-proves on RL10 the DX2 cases above, from "no machine designated" to "the
+# designation cleared", with the push raced and the repeated hello's
+# in-process twins (uncoded) after them. One machine, delta, cut over to its
+# endpoint stand-in by its identity.json alone: no hub enrollment, no
+# hub.json, nothing of hub_standin. Its designation is the stand-in's
+# `archive`, sent in each `have`; another machine's events (beta's says, the
+# web humans, the hole of a position the endpoint spent) come down as RL10
+# arrivals. Unported, being DX2's alone: the imported events' codes, one
+# hello per POST, the direct stream's `state-unavailable` retry; and, on one
+# machine, the other machine's half of each case (beta's clone, beta's push).
+echo "RL10, the designation from the endpoint's have:"
+as d delta
+export MAWS_USER_DATA="$T/d/maws"
+EPD="$MAWS_USER_DATA/mawsd/endpoint"
+DID='{"org": "org-1", "hub": "http://127.0.0.1:9", "name": "delta", "former": [], "ref": "ref-delta", "enrolled": "2026-11-05T00:00:00.000Z"}'
+# Cut over as a welcome leaves a machine: daemon/identity.json, the stand-in's
+# identity (the same enrolment, so nothing waits for a head, #147).
+mkdir -p "$SMINOS_HOME/daemon"
+chmod 700 "$SMINOS_HOME" "$SMINOS_HOME/daemon"
+python3 - "$SMINOS_HOME/daemon/identity.json" "$DID" <<'PY'
+import json, os, sys
+with open(sys.argv[1], "w") as f:
+    json.dump({**json.loads(sys.argv[2]), "former": {}, "cutover": "2026-11-05T00:00:01.000Z", "build": "b"}, f)
+os.chmod(sys.argv[1], 0o600)
+PY
+RD="$T/d/repo"
+BARE3="$T/rl10-designated.git"
+gitq init -q --bare "$BARE3"
+mkdir -p "$RD"
+gitq init -q "$RD"
+cd "$RD"
+"$SMINOS" project init --name rldesig --hub --remote "$BARE3" >/dev/null
+PID3="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$RD/.smns")"
+DLOG="$T/d/s/projects/$PID3/log"
+python3 "$SCRIPT_DIR/endpoint_standin.py" serve "$EPD" "{\"identity\": $DID, \"archive\": false, \"ask_legacy\": false}" &
+PIDS+=("$!")
+until_true 100 test -S "$EPD/ctl.sock"
+ep_d() { python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPD" "$@" >/dev/null; }
+epq_d() { python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPD" state \
+  | python3 -c 'import json, sys; d = json.load(sys.stdin); print(json.dumps(eval(sys.argv[1], {"d": d})))' "$1"; }
+# The frames the endpoint sends down for another machine's events: beta's
+# says, and the web humans of $MEMBER at 1 and 3 with 2 spent between (the
+# endpoint refused it for good: RL10's `spent`, where DX2 stored a forgery
+# each machine refused). Each event wrapped {event, signer}, as it arrives.
+cat > "$T/arrivals.py" <<'PY'
+import json, sys, time
+project, member = sys.argv[1], sys.argv[2]
+ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+beta = {"kind": "machine", "ref": "ref-beta", "name": "beta", "keyId": "k-beta"}
+device = {"kind": "device", "member": member, "device": "dev-1", "keyId": "k-dev-1"}
+def human(seq, text):
+    return {"event": {"ts": ts, "writer": "hub/" + member, "seq": seq, "kind": "human", "from": "human",
+                      "member": member, "to": "*", "text": text}, "signer": device}
+says = [{"event": {"ts": ts, "writer": "beta/human", "seq": i, "kind": "say", "from": "human", "to": "*",
+                   "text": "beta %d" % i}, "signer": beta} for i in (1, 2, 3)]
+print(json.dumps({"frames": [
+    {"t": "events", "project": project, "events": says},
+    {"t": "events", "project": project, "events": [human(1, "from the web 1")]},
+    {"t": "spent", "project": project, "writer": "hub/" + member, "seq": 2, "reason": "bad-signature"},
+    {"t": "events", "project": project, "events": [human(3, "from the web 3")]}]}))
+PY
+start_daemon
+D_DAEMON=$DAEMON_PID
+opened_d() { [ "$(epq_d "any(f['frame'].get('t') == 'hello' and f['frame'].get('project') == '$PID3' for f in d['received'])")" = true ]; }
+until_true 300 opened_d || true
+assert_equals "$(opened_d && echo yes)" yes "delta, cut over by its identity.json alone, opens the project on the endpoint's socket"
+for i in 1 2 3; do "$SMINOS" say "delta $i" >/dev/null; done
+ep_d send "$(python3 "$T/arrivals.py" "$PID3" "$MEMBER")"
+d_seqs() { python3 -c 'import json, sys; print(",".join(str(json.loads(l)["seq"]) for l in open(sys.argv[1]) if l.strip()))' "$1" 2>/dev/null; }
+d_holds() { [ "$(d_seqs "$DLOG/hub.$MEMBER.jsonl")" = "1,3" ] && grep -q '"beta 3"' "$DLOG/beta.human.jsonl" 2>/dev/null \
+  && grep -q '"delta 3"' "$DLOG/delta.human.jsonl" 2>/dev/null; }
+until_true 300 d_holds || true
+if d_holds; then pass "delta holds its says, beta's and the web humans the endpoint brought, hub/<member> at 1 and 3 (2 spent)"; else
+  fail "delta holds its says, beta's and the web humans the endpoint brought"; fi
+d_remote() { git -C "$BARE3" rev-parse --verify -q main >/dev/null 2>&1; }
+d_archive_is() { # every writer file of delta's log as the remote's main holds it, byte for byte
+  local f
+  d_remote || return 1
+  for f in "$DLOG"/*.jsonl; do
+    cmp -s "$f" <(git -C "$BARE3" show "main:$(basename "$f")" 2>/dev/null) || return 1
+  done
+}
+d_commits() { git -C "$BARE3" log --format=%ce main 2>/dev/null | grep -c "^sminos@delta\$" || true; }
+d_committers() { git -C "$BARE3" log --format=%ce main 2>/dev/null | sort -u | tr '\n' ' '; }
+d_designation() { # → "true <archive_at>" | "false …" | "none", as delta's uplink recorded the endpoint's have
+  python3 - "$T/d/s/projects/$PID3/uplink.json" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    d = {}
+print("%s %s" % (str(d["archive"]).lower(), d.get("archive_at")) if "archive" in d else "none")
+PY
+}
+d_designated_as() { [ "$(d_designation | cut -d' ' -f1)" = "$1" ]; }
+d_confirmed_after() { python3 -c 'import sys; v = sys.argv[1].split(); sys.exit(0 if len(v) == 2 and v[1] != "None" and float(v[1]) > float(sys.argv[2]) else 1)' \
+  "$(d_designation)" "$1"; }
+d_confirmations() { # n — wait until the endpoint has answered n more of delta's hellos for the project
+  local i at
+  for i in $(seq 1 "$1"); do
+    at="$(python3 -c 'import time; print(time.time())')"
+    until_true 200 d_confirmed_after "$at" || return 1
+  done
+}
+
+echo "  no designation:"
+# Two confirmations, about two archive periods: a push would have landed by
+# then, and waiting longer proves no more.
+d_confirmations 2 || true
+assert_equals "$(d_designation | cut -d' ' -f1)" false "delta's uplink records the endpoint's answer: not this machine's archive"
+assert_equals "$(d_remote && echo pushed || echo empty)" empty "with no machine designated, two confirmations later nothing is pushed"
+assert_equals "$(test -e "$T/d/s/projects/$PID3/archive" && echo clone || echo none)" none "and no archive clone is made"
+
+echo "  delta designated:"
+CONNS_D="$(epq_d 'd["conns"]')"
+ep_d set "{\"archive\": {\"$PID3\": true}}"
+until_true 200 d_designated_as true || true
+assert_equals "$(d_designation | cut -d' ' -f1)" true "delta's uplink learns it is the archive machine at its next hello"
+assert_equals "$(epq_d 'd["conns"]')" "$CONNS_D" "without a reconnect"
+until_true 300 d_archive_is || true
+if d_archive_is; then pass "delta writes its log to the remote, every writer file byte for byte"; else
+  fail "delta writes its log to the remote"; git -C "$BARE3" ls-tree --name-only main 2>&1 | head || true; fi
+assert_equals "$(git -C "$BARE3" show "main:hub.$MEMBER.jsonl" | python3 -c 'import json, sys
+print([(e["seq"], "verified" in e) for e in map(json.loads, sys.stdin)])')" "[(1, True), (3, True)]" \
+  "the archive keeps the hole of the spent position, each imported event as the log holds it (its verified)"
+assert_equals "$(git -C "$BARE3" show main:beta.human.jsonl | python3 -c 'import json, sys
+print(sorted({e["verified"]["signer"]["name"] for e in map(json.loads, sys.stdin)}))')" "['beta']" \
+  "beta's events, as delta imported them, keep the endpoint's verified"
+assert_equals "$(test -d "$T/d/s/projects/$PID3/archive/.git" && echo clone)" clone "from a clone at the project's home, archive/"
+assert_equals "$(test -e "$DLOG/.git" && echo git || echo none)" none "outside log/, which is no git working tree"
+assert_equals "$(d_committers)" "sminos@delta " "every commit on the remote is delta's"
+"$SMINOS" say "delta later" >/dev/null
+until_true 300 d_archive_is || true
+if d_archive_is && git -C "$BARE3" show main:delta.human.jsonl | grep -q "delta later"; then
+  pass "a later say reaches the remote at a later run"; else fail "a later say reaches the remote at a later run"; fi
+N=$(d_commits)
+d_confirmations 2 || true
+assert_equals "$(d_commits)" "$N" "a run with nothing new to archive commits nothing"
+
+echo "  git never feeds the live log:"
+DSTRANGER="$T/d/stranger"
+gitq clone -q "$BARE3" "$DSTRANGER"
+printf '%s\n' '{"ts":"2026-10-15T00:00:00.000Z","writer":"stranger/x","seq":1,"kind":"say","from":"x","to":"*","text":"from git"}' \
+  > "$DSTRANGER/stranger.x.jsonl"
+printf '%s\n' '{"ts":"2026-10-15T00:00:00.000Z","writer":"delta/human","seq":99,"kind":"say","from":"x","to":"*","text":"edited in git"}' \
+  >> "$DSTRANGER/delta.human.jsonl"
+gitq -C "$DSTRANGER" add -A
+gitq -C "$DSTRANGER" commit -q -m "a stranger's commit"
+gitq -C "$DSTRANGER" push -q origin HEAD:main
+DSTRANGER_AT="$(git -C "$DSTRANGER" rev-parse HEAD)"
+"$SMINOS" say "delta after the stranger" >/dev/null
+d_after_stranger() { git -C "$BARE3" show main:delta.human.jsonl 2>/dev/null | grep -q "delta after the stranger"; }
+until_true 300 d_after_stranger || true
+until_true 100 d_archive_is || true
+if d_archive_is; then pass "delta's next run copies its log over the remote's, its writer file as the log holds it"; else
+  fail "delta's next run copies its log over the remote's"; fi
+assert_not_contains "$(git -C "$BARE3" show main:delta.human.jsonl)" "edited in git" "the line edited in git is gone from the archive"
+assert_equals "$(git -C "$BARE3" show main:stranger.x.jsonl)" \
+  '{"ts":"2026-10-15T00:00:00.000Z","writer":"stranger/x","seq":1,"kind":"say","from":"x","to":"*","text":"from git"}' \
+  "a file the log lacks stays as the remote has it"
+assert_equals "$(git -C "$BARE3" merge-base --is-ancestor "$DSTRANGER_AT" main && echo kept)" kept \
+  "built on the remote's main: the stranger's commit stays in the history (no force)"
+assert_equals "$(ls "$DLOG"/stranger* 2>/dev/null | wc -l | tr -d ' ')" 0 "delta's log holds no stranger's file"
+assert_not_contains "$(cat "$DLOG"/*.jsonl)" "edited in git" "nor the line edited in git"
+
+echo "  a remote that would steer the copy:"
+gitq -C "$DSTRANGER" fetch -q origin
+gitq -C "$DSTRANGER" reset -q --hard origin/main
+rm "$DSTRANGER/delta.human.jsonl"
+ln -s ../log/beta.human.jsonl "$DSTRANGER/delta.human.jsonl"   # from the archive clone: delta's live beta writer
+printf '*.jsonl\n' > "$DSTRANGER/.gitignore"
+printf '*.jsonl ident text eol=crlf\n' > "$DSTRANGER/.gitattributes"
+gitq -C "$DSTRANGER" add -A
+gitq -C "$DSTRANGER" commit -q -m "a remote that would steer the copy"
+gitq -C "$DSTRANGER" push -q origin HEAD:main
+cp "$DLOG/beta.human.jsonl" "$T/d/beta-before"
+# shellcheck disable=SC2016 # the dollar signs are the ident attribute's keyword, written as they are
+"$SMINOS" say 'ident probe $Id: kept as written $' >/dev/null
+python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+sminos.log_append(sminos.resolve_project(os.getcwd()), "delta/late-feed", "say", **{"from": "human", "to": "*", "text": "a writer file new after the ignore rule"})
+PY
+d_steered() { git -C "$BARE3" cat-file -e main:delta.late-feed.jsonl 2>/dev/null \
+  && git -C "$BARE3" show main:delta.human.jsonl 2>/dev/null | grep -q "ident probe"; }
+until_true 300 d_steered || true
+assert_equals "$(cmp -s "$T/d/beta-before" "$DLOG/beta.human.jsonl" && echo unchanged)" unchanged \
+  "the live log is unchanged: nothing was written through the remote's symlink"
+assert_equals "$(git -C "$BARE3" ls-tree main delta.human.jsonl | cut -c1-6)" 100644 "the writer file is a regular file in the archive again"
+until_true 100 d_archive_is || true
+if d_archive_is; then pass "every writer file byte for byte, the remote's .gitattributes (ident, text, eol) notwithstanding"; else
+  fail "every writer file byte for byte, the remote's .gitattributes notwithstanding"; fi
+# shellcheck disable=SC2016
+assert_contains "$(git -C "$BARE3" show main:delta.human.jsonl)" 'ident probe $Id: kept as written $' "the ident keyword kept as the log holds it"
+assert_contains "$(git -C "$BARE3" show main:delta.late-feed.jsonl 2>&1)" "a writer file new after the ignore rule" \
+  "a writer file the remote's .gitignore covers is archived all the same"
+assert_equals "$(git -C "$BARE3" show main:.gitignore) | $(git -C "$BARE3" show main:.gitattributes)" \
+  "*.jsonl | *.jsonl ident text eol=crlf" "the remote's own files stay as the remote has them"
+
+echo "  the designation moved away, or cleared:"
+# From this machine, a designation moved to another machine and one cleared
+# are the same answer, the have's `archive` false: DX2's two cases are one here.
+ep_d set '{"archive": false}'
+until_true 200 d_designated_as false || true
+assert_equals "$(d_designation | cut -d' ' -f1)" false "delta learns it no longer is, at its next hello"
+# A run delta began before it learned may still land: counted from one
+# confirmation on, nothing more.
+d_confirmations 1 || true
+N=$(d_commits)
+HEAD_BEFORE_D="$(git -C "$BARE3" rev-parse main)"
+"$SMINOS" say "delta after the move" >/dev/null
+d_confirmations 2 || true
+assert_equals "$(d_commits)" "$N" "delta, no longer designated, pushes nothing at its next schedules"
+assert_equals "$(git -C "$BARE3" rev-parse main)" "$HEAD_BEFORE_D" "with the designation moved or cleared, nobody pushes"
+kill "$D_DAEMON"
+set +e; wait "$D_DAEMON"; set -e
+assert_not_contains "$(cat "$T/d/s/daemon.log")" "Traceback" "nothing in delta's daemon.log is a traceback"
+
+# The two in-process cases on an uncoded HubLog, delta's daemon stopped so no
+# run of its own races them.
+echo "  a push rejected because the remote moved (uncoded):"
+OUT="$(python3 - "$DSTRANGER" <<'PY'
+import os, subprocess, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos, sminos_archive as archive, sminos_hublog as hublog
+stranger = sys.argv[1]
+project = sminos.resolve_project(os.getcwd())
+e = sminos.log_append(project, "delta/human", "say", **{"from": "human", "to": "*", "text": "delta, raced"})
+# The endpoint's have that confirms the run admits it (the archive copies an own writer up to that vector alone).
+hublog.HubLog(project, {"key": None, "machine": "delta"}, coded=False).on_have(
+    {"have": {"delta/human": e["seq"]}, "archive": True})
+real, raced, answers = archive.push_once, [], []
+
+def push_once(clone):
+    # Between the fetch of this run and its push, another writer moves the remote.
+    if not raced:
+        raced.append(1)
+        for args in (["fetch", "-q", "origin"], ["reset", "-q", "--hard", "origin/main"]):
+            subprocess.run(["git", "-C", stranger, *args], check=True)
+        with open(os.path.join(stranger, "stranger.x.jsonl"), "a") as f:
+            f.write('{"ts":"2026-10-15T00:00:01.000Z","writer":"stranger/x","seq":2,"kind":"say","from":"x","to":"*","text":"raced"}\n')
+        for args in (["add", "-A"], ["commit", "-q", "-m", "a race"], ["push", "-q", "origin", "HEAD:main"]):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", stranger, *args], check=True)
+    p = real(clone)
+    answers.append("rejected" if p.returncode else "pushed")
+    return p
+
+archive.push_once = push_once
+print("%s: %s" % ("pushed" if archive.run(project) else "nothing", " then ".join(answers)))
+PY
+)" || true
+assert_equals "$OUT" "pushed: rejected then pushed" "the push the remote rejected is retried from a fresh fetch, and lands"
+assert_contains "$(git -C "$BARE3" show main:stranger.x.jsonl)" '"text":"raced"' "keeping the commit that raced it"
+assert_contains "$(git -C "$BARE3" show main:delta.human.jsonl)" "delta, raced" "with delta's log on top"
+
+echo "  a repeated hello (uncoded):"
+assert_equals "$(python3 - <<'PY'
+import json, os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos, sminos_hublog as hublog
+hl = hublog.HubLog(sminos.resolve_project(os.getcwd()), {"key": None, "machine": "delta"}, coded=False)
+hl.on_have({"have": {"delta/human": 5, "beta/human": 9}, "archive": False})
+opened = [dict(hl.sent), sorted(hl.stuck)]
+hl.stuck.add("delta/human")  # the endpoint refused it on this connection
+hl.on_have({"have": {"delta/human": 3}, "archive": True})  # an older vector, answering a repeated hello
+refreshed = [dict(hl.sent), sorted(hl.stuck), hl.archive]
+hl.on_have({"have": {"delta/human": 7}, "archive": True})
+ahead = dict(hl.sent)
+hl.reset()  # a new connection
+hl.on_have({"have": {"delta/human": 3}, "archive": False})
+print(json.dumps([opened, refreshed, ahead, [dict(hl.sent), sorted(hl.stuck)]]))
+PY
+)" '[[{"delta/human": 5}, []], [{"delta/human": 5}, ["delta/human"], true], {"delta/human": 7}, [{"delta/human": 3}, []]]' \
+  "its have moves what the hub holds only forward and keeps a refused writer stopped; a new stream starts both over"
+unset MAWS_USER_DATA
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all $PASSES archive assertions passed"
