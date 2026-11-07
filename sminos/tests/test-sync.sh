@@ -17,8 +17,12 @@
 # after every connect, a live member that joined under a former name joined
 # again under the enrolled one — also when it joins so on a stream already
 # open, with the daemon saying once that its session still writes under the
-# former name — and the uplink restarted when hub.json changes.
-# Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
+# former name — and the uplink restarted when hub.json changes. At the end,
+# one more machine, cut over to endpoint_standin.py by its welcome and never
+# enrolled at the hub, proves the one-machine cases again on RL10: the former
+# name, projects leaving the hub, hello and presence on every connection,
+# delivery past spent positions, and a refusal the resend after it does not
+# undo. Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub; nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
 set -euo pipefail
@@ -946,6 +950,367 @@ assert_contains "$OUT" "human → @mc  @mc said here" "and the say said here as 
 kill "$G_DAEMON"
 set +e; wait "$G_DAEMON"; set -e
 assert_not_contains "$(cat "$SMINOS_HOME/daemon.log")" "Traceback" "nothing in gamma's daemon.log is a traceback"
+unset MAWS_USER_DATA
+
+# ---- RL10: one machine cut over to its endpoint (#153 M3c)
+# test-sync's one-machine cases on RL10, which is all a machine runs now
+# (each block names the DX2 case it re-proves): a machine whose sessions
+# joined under a former name, projects that
+# leave the hub, hello and presence before uploads, delivery past spent
+# positions, and a refusal the resend after it does not undo. One machine,
+# cut over by its endpoint's welcome to `daemon probe` (the production path:
+# a rename is a welcome naming the new name with the old one in `former`),
+# never enrolled at a hub and holding no hub.json; endpoint_standin.py
+# serves its endpoint, and stands in for every other machine: their events
+# arrive through it as RL10 arrivals, and the endpoint's own verdicts come
+# down as its frames. A person's words are delivered on the endpoint's
+# `words` verdict. What another machine sees of all this is the two-machine
+# compositions'.
+
+# ---- RL10 twin of "beta: a machine that held its sessions under another
+# name, then enrolls as beta"
+echo "RL10: a machine renamed by its endpoint's welcome:"
+as r betaold
+export MAWS_USER_DATA="$T/r/maws"
+REP="$MAWS_USER_DATA/mawsd/endpoint"
+rctl() { python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$REP" "$@"; }
+# What the stand-in received, as a Python expression over its state (d) and
+# these: F, every frame [(connection, frame)]; up(pid), every event uploaded
+# in pid [(connection, event)]; rejected(pid), the rejected frames up; conns,
+# the uplink's connections, in order (a probe's sends its hello alone).
+cat > "$T/rl10q.py" <<'PY'
+import json, sys
+d = json.load(sys.stdin)
+F = [(r["conn"], r["frame"]) for r in d["received"]]
+conns = sorted({c for c, f in F if not (f.get("t") == "hello" and "token" in f)})
+def up(pid):
+    return [(c, e) for c, f in F if f.get("t") == "events" and f.get("project") == pid for e in f.get("events", [])]
+def rejected(pid):
+    return [f for c, f in F if f.get("t") == "rejected" and f.get("project") == pid]
+print(json.dumps(eval(sys.argv[1])))
+PY
+rq() { rctl state | python3 "$T/rl10q.py" "$1"; }
+# Another machine's event, or a person's from the web, as the endpoint sends
+# it down: {event, signer}, or shapes it never sends (no signer, a `verified`
+# of the event's own, a seq no log holds, an event not wrapped at all).
+cat > "$T/arrival.py" <<'PY'
+import json, sys, time
+variant, writer, seq, text = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+to = [{"session": s, "alias": a} for s, a in zip(sys.argv[5::2], sys.argv[6::2])]
+ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+member = writer.partition("/")[2]
+signer = {"kind": "device", "member": member, "device": "dev-1", "keyId": "k-dev-1"}
+e = {"ts": ts, "writer": writer, "seq": seq, "kind": "human", "from": "human", "member": member, "to": to,
+     "text": text, "created": ts, "sig": {"kid": "k-dev-1", "sig": "AA"}}
+if variant == "shapeless":
+    e["seq"] = "the %dth" % seq
+if variant == "verified":
+    e["verified"] = {"signer": signer}
+raw = {"event": e, "signer": signer}
+if variant == "nosigner":
+    del raw["signer"]
+print(json.dumps(e if variant == "unwrapped" else raw))
+PY
+arrival() { python3 "$T/arrival.py" "$@"; }
+RR="$T/r/repo"
+RPID=7d000001-0000-4000-8000-0000000000d1
+RLOG="$T/r/s/projects/$RPID/log"
+mkdir -p "$RR"
+gitq init -q "$RR"
+# The checkout's .smns, as a hub project's is committed (`project init --hub`
+# on a machine enrolled in its org): this one was not enrolled yet.
+printf '{"project": "%s", "name": "rlproj", "remote": "ssh://archive%s/rl-archive.git", "hub": {"org": "org-1"}}\n' \
+  "$RPID" "$T" > "$RR/.smns"
+cd "$RR"
+RMB=5d000001-0000-4000-8000-0000000000d1
+RNB=5d000002-0000-4000-8000-0000000000d2
+inbox rmb
+sleep 600 & RNB_PID=$!
+PIDS+=("$RNB_PID")
+printf '{"pid":%s,"sessionId":"%s","name":"mb","nameSource":"derived","kind":"bg","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$INBOX_PID" "$RMB" "$RR" "$T/rmb.sock" > "$HOME/.claude/sessions/mb.json"
+printf '{"pid":%s,"sessionId":"%s","name":"nb","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$RNB_PID" "$RNB" "$RR" > "$HOME/.claude/sessions/nb.json"
+printf '[{"id": "mbshort", "sessionId": "%s", "state": "idle"}]\n' "$RMB" > "$STUB_STATE/agents.json"
+"$SMINOS" seat add rlproj mb --session "$RMB" >/dev/null 2>&1
+run "$SMINOS" list --json
+assert_contains "$OUT" '"machine": "betaold"' "RL10: the seat mb and the session nb join as betaold"
+assert_equals "$(find "$RLOG" -name 'betaold.*.jsonl' | wc -l | tr -d ' ')" 2 "RL10: beta's log holds its own two writers"
+printf '{"pid":%s,"sessionId":"%s","name":"nb-renamed","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$RNB_PID" "$RNB" "$RR" > "$HOME/.claude/sessions/nb.json"
+run "$SMINOS" daemon tick
+assert_equals "$(python3 -c 'import json, sys
+print([(e["kind"], e.get("alias") or e.get("state")) for e in map(json.loads, open(sys.argv[1])) if e["kind"] != "joined"])' \
+  "$RLOG/betaold.$RNB.jsonl")" "[('state', 'idle'), ('renamed', 'nb-renamed')]" \
+  "RL10: nb's state and its rename to nb-renamed are published under betaold"
+# ob: a session this machine holds as betaold in another checkout, a plain git one.
+RRO="$T/r/other"
+gitq init -q "$RRO"
+ROB=5d000003-0000-4000-8000-0000000000d3
+sleep 600 & ROB_PID=$!
+PIDS+=("$ROB_PID")
+printf '{"pid":%s,"sessionId":"%s","name":"ob","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$ROB_PID" "$ROB" "$RRO" > "$HOME/.claude/sessions/ob.json"
+(cd "$RRO" && "$SMINOS" list >/dev/null 2>&1)
+# The endpoint enrolled the machine as beta just now, beta formerly betaold.
+RL_ENROLLED="$(python3 -c 'import time; t = time.time(); print(time.strftime("%Y-%m-%dT%H:%M:%S.", time.gmtime(t)) + "%03dZ" % int(t % 1 * 1000))')"
+python3 "$SCRIPT_DIR/endpoint_standin.py" serve "$REP" "{\"identity\": {\"org\": \"org-1\", \"hub\": \"http://127.0.0.1:9\", \"name\": \"beta\", \"former\": [\"betaold\"], \"ref\": \"ref-beta\", \"enrolled\": \"$RL_ENROLLED\"}, \"verdict\": \"words\", \"ask_legacy\": false}" &
+PIDS+=("$!")
+until_true 100 test -S "$REP/ctl.sock"
+run "$SMINOS" daemon probe
+assert_contains "$OUT" "welcomed as beta of org org-1: this machine is cut over" \
+  "RL10: beta is cut over under a new name by its endpoint's welcome"
+assert_equals "$(test -e "$T/r/s/daemon/hub.json" && echo held || echo none)" none "RL10: and holds no hub.json"
+as r beta
+start_daemon
+R_DAEMON=$DAEMON_PID
+rl_writers() { rq "sorted({e['writer'] for c, e in up('$RPID') if e['writer'].startswith('beta')})"; }
+rl_rejoined() { [ "$(rl_writers)" = "[\"beta/$RMB\", \"beta/$RNB\"]" ]; }
+until_true 400 rl_rejoined || true
+assert_equals "$(rl_writers)" "[\"beta/$RMB\", \"beta/$RNB\"]" \
+  "RL10: the seat and the session that joined as betaold join again as beta, and only as beta"
+assert_contains "$(cat "$T/r/s/daemon.log")" "mb in rlproj joined again as beta (it had joined as betaold)" "RL10: saying so"
+assert_equals "$(rq "[(e['kind'], e.get('alias'), e.get('name_source'), e.get('state')) for c, e in up('$RPID') if e['writer'] == 'beta/$RNB'][:2]")" \
+  '[["joined", "nb-renamed", "user", null], ["state", null, null, "idle"]]' \
+  "RL10: nb joins again under its name now, nb-renamed, and with its state: what betaold published stays local"
+run "$SMINOS" list --json
+assert_equals "$(printf '%s\n' "$OUT" | python3 -c 'import json, sys
+print(sorted((r["alias"], r["machine"], r["local"]) for r in json.load(sys.stdin)))')" \
+  "[('mb', 'beta', True), ('nb-renamed', 'beta', True)]" "RL10: beta keeps mb and nb-renamed its own"
+
+# ---- RL10 twin of "ob joins syncproj while beta's stream is open, written as betaold"
+echo "RL10: a member joined as betaold on an open connection:"
+R_CONN="$(rq "d['current']")"
+python3 - "$ROB" "$ROB_PID" "$RR" "$HOME/.claude/sessions/ob.json" <<'PY'
+import json, os, sys
+tmp = sys.argv[4] + ".tmp"
+with open(tmp, "w") as f:   # replaced whole: a record read mid-write would be no record, and ob ended
+    json.dump({"pid": int(sys.argv[2]), "sessionId": sys.argv[1], "name": "ob", "nameSource": "derived",
+               "kind": "interactive", "entrypoint": "sdk-cli", "status": "idle", "cwd": sys.argv[3]}, f)
+os.replace(tmp, sys.argv[4])
+PY
+# Two ticks read ob's record before its former-named joined lands (see the
+# hub case above for why).
+tick_r() { python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$T/r/s/daemon/ticked" 2>/dev/null || true; }
+tick_r_moved() { [ "$(tick_r)" != "$1" ]; }
+r_ticks() { local i t; for i in $(seq 1 "$1"); do t="$(tick_r)"; until_true 200 tick_r_moved "$t" || true; done; }
+r_ticks 2
+python3 - "$RR" "$ROB" <<'PY'
+import os, sys, time
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+project, ob = sminos.resolve_project(sys.argv[1]), sys.argv[2]
+# The daemon names a former name's writer only for an event a second past
+# the enrollment's stamp (identity.json's `enrolled`, whole seconds).
+since = sminos.daemon_module().enrolled_at()
+if since is not None:
+    time.sleep(max(0.0, since + 1.05 - time.time()))
+sminos._append(project, "betaold/" + ob, [{"kind": "joined", "session": ob, "alias": "ob", "name_source": "derived",
+                                            "machine": "betaold", "cwd": sys.argv[1], "worktree": "", "role": "",
+                                            "seat": "", "by": ""}])
+PY
+until_true 200 grep -Fq "ob in rlproj still writes as betaold" "$T/r/s/daemon.log" || true
+rl_ob_up() { [ "$(rq "len([1 for c, e in up('$RPID') if e['writer'] == 'beta/$ROB'])")" -ge 1 ]; }
+until_true 200 rl_ob_up || true
+assert_contains "$(cat "$T/r/s/daemon.log")" "ob in rlproj joined again as beta (it had joined as betaold)" \
+  "RL10: the daemon's rejoin of the former name is what joins ob as beta"
+assert_equals "$(rq "[(c, e['kind'], e.get('alias')) for c, e in up('$RPID') if e['writer'] == 'beta/$ROB'][:1]")" \
+  "[[$R_CONN, \"joined\", \"ob\"]]" "RL10: ob joins again as beta, on the connection already open"
+assert_equals "$(rq "d['current']")" "$R_CONN" "RL10: which stays open"
+assert_contains "$(cat "$T/r/s/daemon.log")" "ob in rlproj still writes as betaold" \
+  "RL10: the daemon says ob still writes under the former name"
+assert_not_contains "$(cat "$T/r/s/daemon.log")" "nb-renamed in rlproj still writes" \
+  "RL10: and says nothing of nb, which wrote as betaold only before the enrollment"
+r_ticks 3
+assert_equals "$(grep -c "ob in rlproj still writes" "$T/r/s/daemon.log")" 1 "RL10: said once, however many ticks see the writer"
+assert_equals "$(rq "sorted({e['writer'] for c, e in up('$RPID') if e['writer'].startswith('betaold/')})")" "[]" \
+  "RL10: no writer of the former name reaches the endpoint"
+
+# ---- RL10 twin of "projects that leave the hub"
+echo "RL10: projects that leave the hub:"
+for q in q1 q2 q3; do
+  mkdir -p "$T/r/$q"
+  gitq init -q "$T/r/$q"
+  (cd "$T/r/$q" && "$SMINOS" project init --name "$q" --hub >/dev/null && "$SMINOS" say "first in $q" >/dev/null)
+done
+rqid() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$T/r/$1/.smns"; }
+RQ1="$(rqid q1)" RQ2="$(rqid q2)" RQ3="$(rqid q3)"
+rq_up() { [ "$(rq "all(any(e['writer'] == 'beta/human' for c, e in up(p)) for p in ['$RQ1', '$RQ2', '$RQ3'])")" = true ]; }
+until_true 200 rq_up || true
+if rq_up; then pass "RL10: three more hub projects open and upload"; else fail "RL10: three more hub projects open and upload"; fi
+R_CONN="$(rq "d['current']")"
+python3 - "$T/r" <<'PY'
+import json, sys
+for q, change in (("q1", lambda d: d.update(hub={"url": "https://elsewhere.example"})), ("q2", lambda d: d["hub"].update(org="org-2")),
+                  ("q3", lambda d: d.pop("hub"))):
+    path = "%s/%s/.smns" % (sys.argv[1], q)
+    d = json.load(open(path)); change(d); json.dump(d, open(path, "w"))
+PY
+rl_reconnected() { local c; c="$(rq "d['current']")"; [[ "$c" != null && "$c" -gt "$1" ]]; }
+until_true 200 rl_reconnected "$R_CONN" || true
+for q in q1 q2 q3; do
+  (cd "$T/r/$q" && "$SMINOS" say "after $q left the hub" >/dev/null 2>&1)
+done
+# What beta appends from here is uploaded; a say in rlproj after them marks the time.
+"$SMINOS" say "beta after the projects left" >/dev/null
+rl_text_up() { [ "$(rq "any(e.get('text') == '$1' for c, e in up('$RPID'))")" = true ]; }
+until_true 200 rl_text_up "beta after the projects left" || true
+assert_equals "$(rl_text_up "beta after the projects left" && echo up)" up "RL10: the say after them is uploaded"
+for q in q1 q2 q3; do
+  assert_equals "$(rq "[e.get('text') for c, e in up('$(rqid "$q")')]")" "[\"first in $q\"]" "RL10: $q's later say never reaches the endpoint"
+done
+assert_contains "$(grep "no longer a hub project of org org-1" "$T/r/s/daemon.log")" "q1" "RL10: a malformed hub ends the project's sync, saying so"
+assert_contains "$(grep "no longer a hub project of org org-1" "$T/r/s/daemon.log")" "q2" "RL10: so does a hub of another org"
+assert_contains "$(grep "no longer a hub project of org org-1" "$T/r/s/daemon.log")" "q3" "RL10: and a .smns that names no hub"
+assert_equals "$(rq "sorted({f['project'] for c, f in F if c > $R_CONN and f.get('t') == 'hello' and f.get('project') in ('$RQ1', '$RQ2', '$RQ3')})")" "[]" \
+  "RL10: beta's new connection opens none of them at the endpoint"
+
+# ---- RL10 twin of "refused before the log" (the DX2 forgeries are DX1
+# code checks; on RL10 the endpoint verifies, and what sminos still refuses
+# is an arrival's shape — reported up as `rejected` — beside the positions
+# the endpoint itself spends)
+echo "RL10: refused before the log, and spent positions:"
+RW="hub/$MEMBER"
+rl_send() { rctl send "{\"frames\": $1}" >/dev/null; }
+rl_events() { printf '{"t": "events", "project": "%s", "events": [%s]}' "$RPID" "$1"; }
+rl_spent() { printf '{"t": "spent", "project": "%s", "writer": "%s", "seq": %s, "reason": "%s"}' "$RPID" "$RW" "$1" "$2"; }
+rl_send "[$(rl_events "$(arrival ok "$RW" 1 "from the web, first" "$RMB" mb), $(arrival nosigner "$RW" 2 "forged: no signer" "$RMB" mb), $(arrival verified "$RW" 3 "forged: a verified of its own" "$RMB" mb)"),
+  $(rl_spent 4 bad-signature), $(rl_spent 5 replayed),
+  $(rl_events "$(arrival shapeless "$RW" 6 "forged: no seq a log holds" "$RMB" mb), $(arrival unwrapped "$RW" 6 "forged: not wrapped" "$RMB" mb)"),
+  $(rl_events "$(arrival ok "$RW" 6 "from the web, after the forgeries" "$RMB" mb)")]"
+rl_rejections() { rq "len(rejected('$RPID'))"; }
+rl_rejected_at_least() { [ "$(rl_rejections)" -ge "$1" ]; }
+until_true 200 rl_rejected_at_least 4 || true
+until_true 200 grep -q "after the forgeries" "$T/rmb.received" || true
+assert_not_contains "$(cat "$RLOG/"*.jsonl)" "forged:" "RL10: no forged event enters beta's log"
+assert_not_contains "$(cat "$T/rmb.received")" "forged:" "RL10: or reaches mb"
+assert_contains "$(cat "$T/rmb.received")" "from the web, first" "RL10: the authentic web human before them reaches mb"
+assert_contains "$(cat "$T/rmb.received")" "from the web, after the forgeries" \
+  "RL10: and so does the one after them: a refused position holds back no later event"
+rl_reported() { # writer seq reason — how many rejected reports name it so (writer "": the event null)
+  rq "len([f for f in rejected('$RPID') if f['reason'] == '$3' and (f['event'] == {'writer': '$1', 'seq': $2} if '$1' else f['event'] is None)])"; }
+assert_equals "$(rl_reported "$RW" 2 bad-shape)" 1 "RL10: beta reports the arrival with no signer: bad-shape, with its position"
+assert_equals "$(rl_reported "$RW" 3 bad-shape)" 1 "RL10: beta reports the event carrying a verified of its own: bad-shape"
+assert_equals "$(rl_reported "" 0 bad-shape)" 2 "RL10: beta reports what is no log event, and an event not wrapped: bad-shape, its event null"
+assert_equals "$(rq "[f['event']['seq'] for f in rejected('$RPID') if f['event'] and f['event']['seq'] in (4, 5)]")" "[]" \
+  "RL10: and nothing of the positions the endpoint spent, which it rejected up itself"
+assert_contains "$(cat "$T/r/s/daemon.log")" "the endpoint spent $RW:4 in rlproj ($RPID): bad-signature" \
+  "RL10: beta's daemon.log says each position the endpoint spent, with its reason"
+rl_send "[$(rl_events "$(arrival ok "$RW" 7 "from the web, later still" "$RMB" mb)")]"
+until_true 200 grep -q "later still" "$T/rmb.received" || true
+assert_contains "$(cat "$T/rmb.received")" "from the web, later still" "RL10: a later web human is delivered past the spent positions"
+run "$SMINOS" chat rlproj -n 400
+assert_contains "$OUT" "from the web, after the forgeries" "RL10: beta's chat shows the human after the hole"
+assert_contains "$OUT" "from the web, later still" "RL10: and the one after it"
+assert_not_contains "$OUT" "forged:" "RL10: and nothing forged"
+assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$RLOG/../delivered/$RMB.json" "$RW")" \
+  "{'settled': 7, 'pending': None, 'attempts': 0}" "RL10: mb's delivery record settles hub/$MEMBER at 7, past the hole, nothing pending"
+assert_not_contains "$(cat "$T/r/s/daemon.log")" "out of order" "RL10: no deliverer finds the hole out of order"
+# A spent position is a tombstone: an event that is whole, arriving there later, is refused too —
+# at a position sminos refused, and at one the endpoint spent.
+rl_send "[$(rl_events "$(arrival nosigner "$RW" 8 "forged: at 8" "$RMB" mb)"), $(rl_events "$(arrival ok "$RW" 8 "valid, at a spent position" "$RMB" mb), $(arrival ok "$RW" 4 "valid, at a position the endpoint spent" "$RMB" mb)")]"
+until_true 200 rl_rejected_at_least 7 || true
+assert_equals "$(rl_reported "$RW" 8 bad-shape) $(rl_reported "$RW" 8 conflict) $(rl_reported "$RW" 4 conflict)" "1 1 1" \
+  "RL10: beta refuses the events at 8: the shapeless one as bad-shape, then the whole one at its tombstone as conflict, and one at a position the endpoint spent"
+assert_not_contains "$(cat "$RLOG/hub.$MEMBER.jsonl")" "valid, at" "RL10: nothing is appended at a spent position"
+assert_equals "$(rq "sorted({f['event']['seq'] for f in rejected('$RPID') if f['reason'] == 'conflict' and 'was refused here before' in f['message']})")" "[4, 8]" \
+  "RL10: saying it was refused there before"
+assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["spent"][sys.argv[2]])' "$RLOG/../uplink.json" "$RW")" \
+  "[2, 3, 4, 5, 8]" "RL10: and the positions spent, kept in beta's uplink.json"
+assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("unreported"))' "$RLOG/../uplink.json")" "[]" "RL10: every report delivered"
+# The positions refused are spent: a new connection does not ask for them
+# again (its hello's have carries the writer past them), nor report them twice.
+R_CONN="$(rq "d['current']")"
+rctl drop >/dev/null
+rl_hello_since() { [ "$(rq "any(c > $1 and f.get('t') == 'hello' and f.get('project') == '$RPID' for c, f in F)")" = true ]; }
+until_true 200 rl_hello_since "$R_CONN" || true
+"$SMINOS" say "beta after the forgeries" >/dev/null
+until_true 200 rl_text_up "beta after the forgeries" || true
+assert_equals "$(rl_text_up "beta after the forgeries" && echo up)" up "RL10: reconnected, beta uploads again"
+assert_equals "$(rl_rejections)" 7 "RL10: reconnected, beta reports no refused event again"
+assert_equals "$(rq "[f['have'].get('$RW') for c, f in F if c > $R_CONN and f.get('t') == 'hello' and f.get('project') == '$RPID']")" "[8]" \
+  "RL10: its hello holds hub/$MEMBER at 8, past the spent positions: the hole is not asked for again"
+last_seq_r() { python3 -c 'import json, sys; print(json.loads(open(sys.argv[1]).read().splitlines()[-1])["seq"])' "$1"; }
+assert_equals "$(last_seq_r "$RLOG/hub.$MEMBER.jsonl") $(wc -l < "$RLOG/hub.$MEMBER.jsonl" | tr -d ' ')" "7 3" \
+  "RL10: hub/$MEMBER's last seq is 7, holding the three authentic events of its eight positions"
+
+# ---- RL10 twin of "what each stream carried": a daemon restart, one more connection
+echo "RL10: what each connection carried:"
+kill "$R_DAEMON"
+set +e; wait "$R_DAEMON"; set -e
+R_CONN="$(rq "d['conns']")"
+start_daemon
+R_DAEMON=$DAEMON_PID
+until_true 200 rl_hello_since "$R_CONN" || true
+"$SMINOS" say "beta after its daemon restarts" >/dev/null
+until_true 200 rl_text_up "beta after its daemon restarts" || true
+rctl state > "$T/r/state.json"
+assert_equals "$(python3 - "$T/r/state.json" "$RPID" <<'PY'
+import json, sys
+d, pid = json.load(open(sys.argv[1])), sys.argv[2]
+F = [(r["conn"], r["frame"]) for r in d["received"]]
+conns = sorted({c for c, f in F if not (f.get("t") == "hello" and "token" in f)})   # a probe's sends its hello alone
+bad = []
+for c in conns:
+    hellos, machine = set(), None
+    for n, f in F:
+        if n != c:
+            continue
+        t = f.get("t")
+        if t == "hello" and isinstance(f.get("project"), str):
+            hellos.add(f["project"])
+        elif t == "session" and machine is None and f.get("message", {}).get("kind") == "machine" \
+                and f["message"].get("project") == pid:
+            machine = f["message"]["body"]
+            if not any(x["path"].endswith("/repo") and x["branch"] == "main" for x in machine["checkouts"]):
+                bad.append("connection %d: a machine presence without the checkout: %r" % (c, machine))
+        elif t == "events":
+            if f["project"] not in hellos:
+                bad.append("connection %d uploaded in %s before its hello" % (c, f["project"]))
+            if f["project"] == pid and machine is None:
+                bad.append("connection %d uploaded in rlproj before the machine's presence" % c)
+    if pid not in hellos or machine is None:
+        bad.append("connection %d: hello of rlproj %s, the machine's presence %s" % (c, pid in hellos, machine is not None))
+print(bad or ("ok" if len(conns) >= 4 else "only %d connections" % len(conns)))
+PY
+)" ok "RL10: on each of beta's four connections: hello and the machine's presence (its checkout and branch) before any upload"
+assert_equals "$(test -e "$T/ssh-entered" && echo fetched || echo never)" never "RL10: beta never ran git against the project's remote"
+assert_equals "$(test -e "$RLOG/.git" && echo git || echo none)" none "RL10: nor made its log a git working tree"
+
+# ---- RL10 twin of "an event the hub refuses for good, and one after it":
+# the endpoint refuses an own event too-large, and a resend from the refused
+# position comes right behind the refusal; the refusal wins on that connection.
+echo "RL10: an own event refused too-large, and the resend after it:"
+RBIG=5d0000bb-0000-4000-8000-0000000000bb
+python3 - "$RLOG" "$RBIG" <<'PY'
+import json, os, sys, time
+log, s = sys.argv[1], sys.argv[2]
+ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+nobody = [{"session": "5d0000bc-0000-4000-8000-0000000000bc", "alias": "nobody"}]
+evs = [{"ts": ts, "writer": "beta/" + s, "seq": 1, "kind": "say", "from": "big", "to": nobody, "text": "the large one"},
+       {"ts": ts, "writer": "beta/" + s, "seq": 2, "kind": "say", "from": "big", "to": nobody, "text": "after the large one"}]
+tmp = os.path.join(log, ".big.tmp")
+with open(tmp, "w") as f:
+    f.write("".join(json.dumps(e) + "\n" for e in evs))
+os.replace(tmp, os.path.join(log, "beta.%s.jsonl" % s))
+PY
+rl_big_ups() { rq "len([1 for c, e in up('$RPID') if e['writer'] == 'beta/$RBIG' and e['seq'] == 1])"; }
+rl_big_up() { [ "$(rl_big_ups)" -ge 1 ]; }
+until_true 200 rl_big_up || true
+rl_send "[{\"t\": \"refused\", \"project\": \"$RPID\", \"refusal\": {\"reason\": \"too-large\", \"writer\": \"beta/$RBIG\", \"seq\": 1, \"message\": \"the event is past 1 MiB\"}},
+  {\"t\": \"resend\", \"project\": \"$RPID\", \"writer\": \"beta/$RBIG\", \"from\": 1}]"
+until_true 200 grep -Fq "the hub asks beta/$RBIG of rlproj again from 1" "$T/r/s/daemon.log" || true
+# A writer followed again goes up within the upload pass the resend starts:
+# 2 s is many of those, and nothing else would send it.
+sleep 2
+assert_equals "$(rl_big_ups)" 1 "RL10: beta does not upload it again on this connection: the resend after its refusal does not reopen the writer"
+assert_contains "$(cat "$T/r/s/daemon.log")" "the hub refused in rlproj: too-large beta/$RBIG:1" "RL10: daemon.log says the endpoint refused it"
+assert_contains "$(cat "$T/r/s/daemon.log")" "the hub asks beta/$RBIG of rlproj again from 1, where it refused it" \
+  "RL10: and that the resend after it is not followed"
+
+kill "$R_DAEMON"
+set +e; wait "$R_DAEMON"; set -e
+assert_not_contains "$(cat "$T/r/s/daemon.log")" "Traceback" "RL10: nothing in beta's daemon.log is a traceback"
 unset MAWS_USER_DATA
 
 echo
