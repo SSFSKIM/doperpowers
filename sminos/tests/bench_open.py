@@ -7,14 +7,19 @@ M2). An open runs from a browser client's `subscribe` to its receipt of the
 the uplink's reader to the snapshot's emission, is the plane's open line in
 daemon.log, reported beside E as a diagnostic.
 
-    bench_open.py --uplink [--live [--thinking] [--model M] | --synthetic-rows N]
+    bench_open.py --uplink | --rl10 [--live [--thinking] [--model M] | --synthetic-rows N]
                   --scenario S --opens N [--keep]
     bench_open.py --micro --session <id> --sminos-home <dir> [--home <dir>] [--opens N]
 
 The full path (`--uplink`): this checkout's `sminos daemon uplink` under a
 temporary HOME and SMINOS_HOME, enrolled at the hub stand-in this instrument
 starts (hub_standin.py), its `/control/send` the client's subscribe and its
-stamped `sessions` what the client receives. The session is fake_session.py's
+stamped `sessions` what the client receives. `--rl10` is the same path on a
+machine cut over to its endpoint (#153 M3e): the uplink child on RL10,
+against endpoint_standin.py in this process, the machine cut over by its
+welcome to `daemon probe`; a subscribe is a frame the stand-in writes down
+the connection, and what the client receives is the `session` frames the
+stand-in received, stamped as each arrived. The session is fake_session.py's
 scripted one by default; `--live` an isolated headless session as
 mods/live-bridge-check.py isolates one (it spends haiku calls: run by hand,
 with the gateway's keys in the environment; `--thinking` turns extended
@@ -320,12 +325,13 @@ class Bench:
         self.rig, self.kind, self.a = rig, kind, a
         self.records = []
         self.incomplete = []  # why the run's figures are not the whole proof they would be
-        self.mode = "uplink"
+        self.mode = "rl10" if getattr(a, "rl10", False) else "uplink"
 
     # ---- the uplink, connected
 
     def connected(self, since):
-        """Once the hub relayed a presence of the session said after `since`."""
+        """Once the hub relayed (on RL10: the endpoint received) a presence of
+        the session said after `since`."""
         b = self.rig.browser
 
         def said():
@@ -1174,8 +1180,9 @@ def micro(a):
 
 
 def run(a):
-    print(json.dumps({"start": a.scenario, "hub": "standin", "session": "live" if a.live else
-                      ("synthetic" if a.synthetic_rows else "fake"), "uptime": uptime()}), flush=True)
+    print(json.dumps({"start": a.scenario, "hub": "endpoint" if a.rl10 else "standin",
+                      "session": "live" if a.live else ("synthetic" if a.synthetic_rows else "fake"),
+                      "uptime": uptime()}), flush=True)
     rig = Rig(a)
     kind = None
     try:
@@ -1205,6 +1212,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--uplink", action="store_true", help="the full path: the real uplink and a hub")
+    mode.add_argument("--rl10", action="store_true",
+                      help="the full path on RL10: the real uplink child, the machine cut over to the endpoint "
+                           "stand-in")
     mode.add_argument("--micro", action="store_true", help="one Subscription in-process: N_micro")
     p.add_argument("--live", action="store_true", help="an isolated headless session (spends haiku calls)")
     p.add_argument("--thinking", action="store_true", help="with --live: extended thinking on")

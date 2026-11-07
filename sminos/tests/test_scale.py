@@ -1054,11 +1054,13 @@ class BenchOpens(unittest.TestCase):
     sequence after the warm-up, then the pair again after a restart; each
     line with its moment, size and E."""
 
+    MODE = ()   # DX2: the hub stand-in; BenchOpensOnRl10's, RL10
+
     def test_the_opens_at_their_moments(self):
         r = subprocess.run([sys.executable, os.path.join(HERE, "bench_scale.py"), "opens", SCRIPTS, "--dirs", "3",
                             "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "1", "--mini", "1",
                             "--says", "2", "--own", "2", "--live", "5", "--large", "1", "--large-rows", "600",
-                            "--warm-after", "1"],
+                            "--warm-after", "1", *self.MODE],
                            capture_output=True, text=True, timeout=300,
                            env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")})
         lines = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
@@ -1109,6 +1111,42 @@ class BenchOpens(unittest.TestCase):
                 bench_scale.standin(env)
         self.assertEqual(len(started), 1)
         self.assertIsNotNone(started[0].poll(), "the stand-in did not outlive its failed setup")
+
+
+class BenchOpensOnRl10(BenchOpens):
+    """BenchOpens on a machine cut over to its endpoint (#153 M3e):
+    `bench_scale.py opens --rl10`, the real uplink child on RL10's session
+    lane against endpoint_standin, its subscribes sent down the connection
+    and E read off the `session` frames the stand-in received. The same
+    moments and the same build each must show: cold at +0.5 s, warm at +1 s,
+    and after the restart the build the first uplink saved, loaded."""
+
+    MODE = ("--rl10",)
+
+    def test_a_stand_in_that_fails_to_start_is_ended(self):
+        """The endpoint stand-in is stopped when the machine's cut-over
+        fails after it started listening (here: the probe wrote no
+        identity.json)."""
+        sys.path.insert(0, HERE)
+        import bench_rig
+        import bench_scale
+        root = tempfile.mkdtemp(prefix="smo.", dir="/tmp")   # short: a Unix socket's path is bounded
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        env = types.SimpleNamespace(root=root, sh=os.path.join(root, "s"), env={})
+        made = []
+        real = bench_rig.EndpointHub.__init__
+
+        def init(host, *args, **kwargs):
+            real(host, *args, **kwargs)
+            made.append(host)
+        with mock.patch.object(bench_rig.EndpointHub, "__init__", init), \
+                mock.patch.object(bench_scale, "run_child", lambda *a, **k: subprocess.CompletedProcess(a, 1)):
+            with self.assertRaisesRegex(RuntimeError, "did not cut the machine over"):
+                bench_scale.endpoint_host(env, SCRIPTS)
+        host, = made
+        self.assertTrue(host.ep.stopping, "the stand-in did not outlive its failed setup")
+        self.assertFalse(os.path.exists(host.ep.socket_path))
+        self.assertEqual(env.env["SMINOS_RL10"], host.ep.rl10_path(), "the machine was pointed at it")
 
 
 def processes():

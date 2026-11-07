@@ -9,7 +9,7 @@ with `git archive`), so a change is measured before and after.
     python3 bench_scale.py run     <scripts-dir> [--rl10 [--words W]] [--seconds S] [--warmup W]
                                                  [--import-events N] [--profile-uplink OUT]
     python3 bench_scale.py verbs   <scripts-dir>
-    python3 bench_scale.py opens   <scripts-dir> [--large G] [--large-rows N] [--warm-after S]
+    python3 bench_scale.py opens   <scripts-dir> [--rl10] [--large G] [--large-rows N] [--warm-after S]
 
 Every mode takes the scale's flags (--dirs, --seats, ...; --help lists them)
 and --joined-by <scripts-dir>, which makes the first tick, the one that joins
@@ -76,6 +76,12 @@ kept as history.
   if the uplink's stream has opened the sessions' projects by then: else the
   moment is said missing, with when the stream was ready, never sampled
   late under its name, and the run ends with status 3.
+  With --rl10 (#153 M3e), against the endpoint stand-in (bench_rig's
+  EndpointHub, in this process) in place of the hub's, the machine cut over
+  by its welcome to `daemon probe` before the tick: each subscribe a frame
+  it writes down the uplink's connection, E the snapshot's `session` frame's
+  arrival at it less that write, and a stream ready once a connection newer
+  than the last has sent the projects' hellos.
 """
 
 import argparse
@@ -265,7 +271,7 @@ class Env:
         # RL10 (run --rl10): a person's words owed to each live session in a hub checkout, one event from each
         # of WORDS members' devices, stored as an arrival over RL10 is (its signer under `verified`).
         self.words_owed = 0
-        if getattr(a, "rl10", False):
+        if getattr(a, "rl10", False) and a.mode == "run":
             for i, s in enumerate(x for x in self.live_sessions if x["project"] in project_of.values()):
                 self.words_owed += a.words
                 for k in range(a.words):
@@ -729,10 +735,78 @@ def standin(env):
     return hub, url
 
 
+def endpoint_host(env, scripts):
+    """bench_rig's EndpointHub for the machine (in this process, its
+    `session` frames stamped on arrival), the machine cut over by its
+    welcome to `daemon probe`, as `run --rl10`'s is. The stand-in is stopped
+    if the cut-over fails, so a setup that raises leaves it listening
+    nowhere."""
+    import bench_rig
+    host = bench_rig.EndpointHub(env.root, env.env)
+    try:
+        r = run_child([sys.executable, os.path.join(scripts, "sminos.py"), "daemon", "probe"], env=env.env,
+                      capture_output=True, text=True)
+        host.check_cut_over(env.sh, (r.stdout or "") + (r.stderr or ""))
+    except BaseException:
+        host.close()
+        raise
+    return host
+
+
+class HubOpens:
+    """Where `opens` sends its subscribes on DX2: the hub stand-in, its
+    stream's generation the mark a restart's stream is newer than."""
+
+    def __init__(self, env, _scripts):
+        import bench_rig
+        self.hub, self.url = standin(env)
+        self.browser = bench_rig.StandinBrowser(self.url, None, MACHINE)
+
+    def state(self):
+        import bench_rig
+        return bench_rig.call(self.url, "GET", "/control/state")[1]
+
+    def mark(self):
+        return self.state()["generation"]
+
+    def ready(self, after, pids):
+        """A stream newer than generation `after`, once it opened every project named."""
+        st = self.state()
+        gen = st["generation"]
+        return gen > after and st["connected"] and all(
+            st["projects"].get(pid, {}).get("open", {}).get(MACHINE) == gen for pid in pids)
+
+    def close(self):
+        self.hub.kill()
+        self.hub.wait()
+
+
+class EndpointOpens:
+    """Where `opens --rl10` sends its subscribes: the endpoint stand-in
+    (endpoint_host), its live connection's number the mark a restart's
+    connection is newer than."""
+
+    def __init__(self, env, scripts):
+        import bench_rig
+        self.host = endpoint_host(env, scripts)
+        self.browser = bench_rig.EndpointBrowser(self.host, None, MACHINE)
+
+    def mark(self):
+        return self.host.ep.opened()["conn"] or 0
+
+    def ready(self, after, pids):
+        """A connection newer than number `after`, once its hellos opened every project named."""
+        o = self.host.ep.opened()
+        return o["conn"] is not None and o["conn"] > after and all(pid in o["projects"] for pid in pids)
+
+    def close(self):
+        self.host.close()
+
+
 def cmd_opens(a, env):
     import bench_open as bo
     import bench_rig as rig
-    hub, url = standin(env)
+    where = (EndpointOpens if a.rl10 else HubOpens)(env, a.scripts)
     up = [None]
     try:
         run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
@@ -743,16 +817,10 @@ def cmd_opens(a, env):
         large = next((s for s in lives if s["size"] == "large"), None)
         if large is None:
             sys.exit("bench_scale opens: no live session in a hub checkout took a large transcript (--large)")
-        browser = rig.StandinBrowser(url, None, MACHINE)
+        browser = where.browser
         log_path = os.path.join(env.sh, "daemon.log")
         pair = [large, small]   # the large one's subscribe first: the small one opens while its build runs
-
-        def ready(after, pids):
-            """A stream newer than generation `after`, once it opened every project named."""
-            st = rig.call(url, "GET", "/control/state")[1]
-            gen = st["generation"]
-            return gen > after and st["connected"] and all(
-                st["projects"].get(pid, {}).get("open", {}).get(MACHINE) == gen for pid in pids)
+        ready = where.ready
 
         def finish(s, sub, at, moment, started):
             snap = None
@@ -793,7 +861,7 @@ def cmd_opens(a, env):
         records, generation, missed = [], 0, []
         for phase in ("start", "restart"):
             if up[0] is not None:
-                generation = rig.call(url, "GET", "/control/state")[1]["generation"]
+                generation = where.mark()
                 stop(up[0])
             up[0] = spawn([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "uplink"],
                           env=env.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -833,8 +901,7 @@ def cmd_opens(a, env):
     finally:
         if up[0] is not None:
             stop(up[0])
-        hub.kill()
-        hub.wait()
+        where.close()
 
 
 def stop(p):
@@ -969,6 +1036,8 @@ def main():
     sub.choices["opens"].add_argument("--large-rows", type=int, default=15000, metavar="N")
     sub.choices["opens"].add_argument("--warm-after", type=float, default=30.0, metavar="S",
                                       help="when, after the uplink's start, every live session is opened in sequence")
+    sub.choices["opens"].add_argument("--rl10", action="store_true",
+                                      help="against the RL10 endpoint stand-in, the machine cut over")
     a = p.parse_args()
     stop_on_signals()
     root = env = None

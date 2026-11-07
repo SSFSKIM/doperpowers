@@ -4,18 +4,23 @@ spec, docs/doperpowers/specs/2026-10-20-desk-open-fast-design.md, M2):
 bench_open.py's runs and bench_scale.py's opens.
 
 - The hub: hub_standin.py (`Standin`), with its browser client: the
-  stand-in's `/control/send` and stamped `sessions` (`StandinBrowser`).
+  stand-in's `/control/send` and stamped `sessions` (`StandinBrowser`). Or,
+  for a machine cut over (`--rl10`, #153 M3e), endpoint_standin.py in this
+  process (`EndpointHub`), the machine cut over by its welcome to `daemon
+  probe`, with its browser client: frames written down the uplink's
+  connection, and the `session` frames received, stamped on arrival
+  (`EndpointBrowser`).
 - The sessions: fake_session.py's scripted one or a synthetic transcript
   (`FakeKind`, `synthetic_transcript`), or an isolated headless live one
   (`LiveKind`, mods/live-bridge-check.py's Live) with a probe subscription
   on its bridge from the start, each of its reconnects a gap in the DX5
   source said whole or lost (`probe_gaps`).
 - The machine (`Rig`): a temporary HOME and SMINOS_HOME (a live session's
-  own), the enrollment, the project, and this checkout's uplink, run under
-  a bootstrap (`python3 bench_rig.py _uplink <scripts> <tee>`) that tees
-  each subscription's first bridge lines' keys, its sub beside them, from
-  the plane's reader thread after the plane's own put, written by a thread
-  of its own (`install_tee`, read back by `read_tees`): the plane's code
+  own), the enrollment (or the cut-over), the project, and this checkout's
+  uplink, run under a bootstrap (`python3 bench_rig.py _uplink <scripts>
+  <tee>`) that tees each subscription's first bridge lines' keys, its sub
+  beside them, from the plane's reader thread after the plane's own put,
+  written by a thread of its own (`install_tee`, read back by `read_tees`): the plane's code
   wrapped, not changed. Everything the rig starts is its own from the
   moment it exists, so a construction that fails part way leaves nothing.
 """
@@ -244,6 +249,77 @@ class Standin:
 
     def close(self):
         pass
+
+
+class EndpointBrowser(StandinBrowser):
+    """A browser of the project on RL10 (#153 M3e): a subscribe is a frame
+    written down the uplink's connection by the endpoint stand-in (its `at`,
+    once written, the open's start), and what the uplink sent up is the
+    `session` frames the stand-in received, each stamped as it arrived."""
+
+    def __init__(self, hub, project, machine):
+        super().__init__(None, project, machine)
+        self.hub = hub
+
+    def send(self, frame_):
+        self.hub.ep.send(frame_)
+        return time.time()
+
+    def poll(self):
+        got = self.hub.arrived(self.seen)
+        self.seen += len(got)
+        self.msgs += got
+
+
+class EndpointHub:
+    """endpoint_standin.py in this process, listening in `root`/ep, and
+    `env` (a machine's) pointed at it: SMINOS_RL10 its rl10.json, DAEMON_HOST
+    its identity's name (`testhost` of `org-1`; the hub the .smns names is its
+    identity's). Each `session` frame's message is stamped on arrival
+    (`arrived`) through the stand-in's own handler hook, so what the
+    stand-in keeps is unchanged. bench_scale.py's opens use it too."""
+
+    name, org, machine = "endpoint", "org-1", "testhost"
+    url = "http://127.0.0.1:9"   # the stand-in identity's hub
+
+    def __init__(self, root, env):
+        import endpoint_standin
+        self.ep = endpoint_standin.Endpoint(os.path.join(root, "ep"))
+        self.lock = threading.Lock()
+        self.stamped = []    # [(arrival, the `session` frame's message)]
+        self.ep.handler = self.stamp
+        self.ep.start()
+        env.update(SMINOS_RL10=self.ep.rl10_path(), DAEMON_HOST=self.machine)
+
+    def stamp(self, frame):
+        if frame.get("t") == "session" and isinstance(frame.get("message"), dict):
+            at = time.time()
+            with self.lock:
+                self.stamped.append((at, frame["message"]))
+        return None
+
+    def arrived(self, since):
+        with self.lock:
+            return self.stamped[since:]
+
+    @staticmethod
+    def check_cut_over(smh, said):
+        """Raises unless the probe's welcome wrote smh's identity.json."""
+        if not os.path.exists(os.path.join(smh, "daemon", "identity.json")):
+            raise RuntimeError("the endpoint stand-in's welcome did not cut the machine over: %s"
+                               % (said or "").strip())
+
+    def enroll(self, rig):
+        """Cut over as a machine is: `daemon probe` (the supervisor's) dials
+        the endpoint, and its whole welcome writes identity.json."""
+        r = subprocess.run([SMINOS, "daemon", "probe"], env=rig.env, capture_output=True, text=True)
+        self.check_cut_over(rig.smh, r.stdout + r.stderr)
+
+    def browser(self, rig):
+        return EndpointBrowser(self, rig.project, self.machine)
+
+    def close(self):
+        self.ep.stop()
 
 
 def _read(path):
@@ -542,7 +618,10 @@ class Rig:
                         PATH=stub + os.pathsep + os.environ.get("PATH", ""), SMINOS_DERIVE_EVERY="0",
                         PYTHONDONTWRITEBYTECODE="1")
         self.tee = os.path.join(self.root, "tee.jsonl")
-        Standin(self)     # the hub is the rig's (`rig.hub`) once its process exists
+        if getattr(a, "rl10", False):
+            self.hub = EndpointHub(self.root, self.env)   # the rig's once its socket listens
+        else:
+            Standin(self)     # the hub is the rig's (`rig.hub`) once its process exists
         self.hub.enroll(self)
         if not a.live:
             git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]

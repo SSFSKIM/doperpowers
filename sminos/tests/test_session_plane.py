@@ -3372,6 +3372,103 @@ class BenchOpen(unittest.TestCase):
         self.assertTrue(out[-1]["complete"])
 
 
+def run_bench_open(test, home, *args):
+    """bench_open.py with `args`, under HOME `home` (its rig makes the run's
+    own HOME and SMINOS_HOME): its JSON lines, once it exited 0."""
+    r = subprocess.run([sys.executable, os.path.join(HERE, "bench_open.py"), *args], capture_output=True, text=True,
+                       timeout=120, env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")}
+                       | {"HOME": os.path.join(T, home)})
+    test.assertEqual(r.returncode, 0, r.stdout[-2000:] + r.stderr[-2000:])
+    return [json.loads(line) for line in r.stdout.splitlines()]
+
+
+class BenchOpenOnRl10(unittest.TestCase):
+    """bench_open.py --rl10 (#153 M3e): the opens BenchOpen's runs make on
+    DX2, made on a machine cut over to its endpoint — the real uplink child
+    on RL10's session lane against endpoint_standin, its subscribes sent
+    down the connection and its snapshots read off the `session` frames the
+    stand-in received."""
+
+    def opens(self, out):
+        return [o for o in out if o.get("mode") == "rl10" and "summary" not in o]
+
+    def assertWhole(self, o):
+        """A bridged snapshot, every row of the transcript once and in order, no gap or error."""
+        self.assertEqual((o["hub"], o["outcome"], o["holes"], o["dups"], o["gaps"], o["vanished"], o["errors"]),
+                         ("endpoint", "bridge snapshot", 0, 0, 0, 0, []), o)
+        self.assertGreater(o["E"], 0)
+        self.assertIsNotNone(o["N"])
+
+    def test_a_run_against_the_endpoint(self):
+        """The cold warm-up open and two warm opens after it, each whole."""
+        out = run_bench_open(self, "rl10-home", "--rl10", "--scenario", "idle", "--opens", "2")
+        opens = self.opens(out)
+        self.assertEqual([o["counted"] for o in opens], [False, True, True])
+        for o in opens:
+            self.assertWhole(o)
+        self.assertEqual([o["build"] for o in opens[1:]], ["warm", "warm"])
+        summary = out[-1]
+        self.assertEqual((summary["summary"], summary["mode"], summary["opens"], summary["E"]["n"],
+                          summary["complete"]), ("idle", "rl10", 2, 2, True))
+
+    def test_a_mid_message_open_is_placed_among_the_events(self):
+        """The scripted message's mid-message open on RL10: inside its
+        window, and its snapshot placed by the event the uplink's tee saw
+        follow it, the drawing whole."""
+        out = run_bench_open(self, "rl10-home-mid", "--rl10", "--scenario", "mid-message", "--opens", "1")
+        opens = self.opens(out)
+        self.assertEqual([(o["counted"], o["placed"], o["source"]) for o in opens], [(True, "event", "complete")])
+        self.assertEqual((opens[0]["holes"], opens[0]["dups"], opens[0]["undrawn"], opens[0]["vanished"]),
+                         (0, 0, 0, 0))
+        self.assertTrue(out[-1]["complete"])
+
+    def test_opens_after_the_uplinks_restart(self):
+        """The open on a fresh uplink, then after each restart: every
+        restarted uplink reconnects to the endpoint and serves the open whole."""
+        out = run_bench_open(self, "rl10-home-restart", "--rl10", "--scenario", "restart", "--opens", "2")
+        opens = self.opens(out)
+        self.assertEqual([o["moment"] for o in opens], ["first start", "after restart 1"])
+        for o in opens:
+            self.assertWhole(o)
+        self.assertTrue(out[-1]["complete"])
+
+    def test_a_rig_that_fails_to_cut_over_leaves_nothing_behind(self):
+        """The endpoint stand-in is the rig's from the moment it listens: a
+        cut-over that fails stops it and takes the run's directory with it."""
+        made = []
+
+        def failing(hub, rig):
+            made.append((hub.ep, rig.root))
+            raise RuntimeError("injected")
+        a = types.SimpleNamespace(live=False, keep=False, rl10=True)
+        with mock.patch.object(bench_rig.EndpointHub, "enroll", failing), mock.patch.dict(os.environ, {
+                "HOME": os.path.join(T, "rig-home-rl10")}):
+            with self.assertRaisesRegex(RuntimeError, "injected"):
+                bench_rig.Rig(a)
+        (ep, root), = made
+        self.assertTrue(ep.stopping, "the stand-in stopped")
+        self.assertFalse(os.path.exists(ep.socket_path), "its socket gone")
+        self.assertFalse(os.path.exists(root), "the run's directory removed")
+
+    def test_the_rig_cuts_the_machine_over_by_the_endpoints_welcome(self):
+        """The rig's machine is cut over as a machine is: `daemon probe`'s
+        hello welcomed by the stand-in, identity.json written from it, no
+        hub.json beside it."""
+        a = types.SimpleNamespace(live=False, keep=False, rl10=True)
+        with mock.patch.dict(os.environ, {"HOME": os.path.join(T, "rig-home-rl10-ok")}):
+            rig = bench_rig.Rig(a)
+        try:
+            with open(os.path.join(rig.smh, "daemon", "identity.json")) as f:
+                ident = json.load(f)
+            self.assertEqual((ident["name"], ident["org"]), ("testhost", "org-1"))
+            self.assertFalse(os.path.exists(os.path.join(rig.smh, "daemon", "hub.json")))
+            self.assertEqual(len(rig.hub.ep.hellos), 1, "the probe's one connection, welcomed")
+            self.assertEqual(rig.env["SMINOS_RL10"], rig.hub.ep.rl10_path())
+        finally:
+            rig.close()
+        self.assertFalse(os.path.exists(rig.root))
+
+
 class BenchOpenMicro(Session):
     """bench_open.py --micro against a scripted session's bridge and
     transcript: one line per open with N_micro and its phases, labelled."""
