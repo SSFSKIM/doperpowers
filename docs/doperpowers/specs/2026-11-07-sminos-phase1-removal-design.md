@@ -15,9 +15,9 @@ The detailed map this spec was written from, every module, function and test by 
 - [x] (2026-11-07) M2: the opt-in local-hub modes out (tests only; `0e2a69d6`; review clean, sminos gates GREEN, run 42339386393).
 - [x] (2026-11-07) M3a: the unit flips (tests only; `c9b0240d`, `673a7851`; review clean, sminos gates GREEN, run 42343036908).
 - [x] (2026-11-07) M3b: the endpoint stand-in ports, the session plane and the RPCs (tests only; `1ee32911..84417b8e`, fix `71ac14b0`; review clean, sminos gates GREEN on `84417b8e`, run 42344457872).
-- [ ] M3c: the shell suites' one-machine cases (tests only).
+- [x] (2026-11-07) M3c: the shell suites' one-machine cases (tests only; `a192e1dc..6d4817ef`, fixes `f4112d95`, `43a448db`, `e433dec0`; review clean, sminos gates GREEN on `e433dec0`, run 42354783123).
 - [x] (2026-11-07) M3d: the two-machine compositions (tests only; `65e8870c..95c94a7f`, fixes `289ca204`, `6e4397ff`, `e7121bd0`; review clean, sminos gates GREEN on `e7121bd0`, run 42354037484).
-- [ ] M3e: open latency on RL10 (tests only).
+- [x] (2026-11-07) M3e: open latency on RL10 (tests only; `a021ef36`, fix `9b402981`; review clean, sminos gates GREEN on `e433dec0`, run 42354783123). Every map §2.4 item has its RL10 test; the checklist is in the PR body.
 - [ ] M4: the `hub` verbs and `hub.json` reduced (the sminos 1.40.0 bump).
 - [ ] M5: the DX2 transport and the supervisor's DX2 arm out.
 - [ ] M6: `coded` collapsed.
