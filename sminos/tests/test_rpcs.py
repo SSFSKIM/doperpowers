@@ -79,20 +79,6 @@ def install_claude(name):
     return state
 
 
-def stop_holders(state):
-    """Every session process the stand-in started, ended."""
-    try:
-        with open(os.path.join(state, "holders")) as f:
-            pids = [int(line.split()[0]) for line in f if line.strip()]
-    except OSError:
-        return
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
-
-
 def launches(state):
     """The `--bg` launches the stand-in saw, each its argv."""
     try:
@@ -457,7 +443,6 @@ class ChecksOnRl10(unittest.TestCase):
         cls.mod.stop()
         cls.bridged.end()
         cls.plain.end()
-        stop_holders(cls.claude)
 
     def setUp(self):
         tpr.clear_policy()
@@ -530,7 +515,8 @@ class ChecksOnRl10(unittest.TestCase):
 
     def collect(self):
         frames = self.r.due({self.pid, self.other_pid})
-        self.r.sent(frames)
+        self.r.sending(frames)   # queued on a lane and written at once
+        self.r.delivered(frames)
         self.frames += frames
         return self.frames
 
@@ -3405,7 +3391,6 @@ class UplinkOnRl10(unittest.TestCase):
         cls.addClassCleanup(cls.rig.close)
         cls.ep = cls.rig.ep
         cls.claude = install_claude("uplink-rl10")
-        cls.addClassCleanup(stop_holders, cls.claude)
         cls.root, cls.pid = tpr.make_project("rpcup-rl10")
         subprocess.run(GIT + ["-C", cls.root, "commit", "-q", "--allow-empty", "-m", "base"], check=True)
         cls.session = tpr.Session(cls.root)

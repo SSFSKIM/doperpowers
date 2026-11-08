@@ -1,22 +1,13 @@
 #!/usr/bin/env python3
 """A stand-in for `claude` (tests only; test_rpcs.py puts it first on PATH):
-`agents`, `stop <short>`, and a `--bg` launch, each call logged, every launch
-a row of `agents`.
-
-`--bg --resume <id>` does what the engine does with a session's full id
-(2.1.300's resume planner): it continues the session under its own id,
-unless a process of this machine holds it, or a flag rides along, when it
-starts a copy under a new id and says so in the engine's words. A session it
-runs is a process of its own (fake_holder.py) that the engine's record
-names, kind `bg`, carrying `startedAt` (ms) as the engine's does, with an
-inbox socket whose frames it keeps; `stop` ends it. Every `--bg` job is
-named by its session id's first 8 characters, a fresh launch's as a resumed
-one's (2.1.304: one job per session, its every resume under the same id).
-`bg-sleep` in the state directory holds every launch that many seconds."""
+`agents`, `stop <short>`, and a fresh `--bg` launch, each call logged, every
+launch a row of `agents`. A `--bg` job is named by its session id's first 8
+characters (2.1.304: one job per session). `bg-sleep` in the state directory
+holds every launch that many seconds. Nothing the tests drive resumes a
+session (`--bg --resume`), so the stand-in has no resume."""
 import glob
 import json
 import os
-import subprocess
 import sys
 import time
 import uuid
@@ -26,50 +17,6 @@ os.makedirs(os.path.join(state, "agents"), exist_ok=True)
 args = sys.argv[1:]
 with open(os.path.join(state, "calls.log"), "a") as f:
     f.write(json.dumps(args) + "\n")
-sessions = os.path.join(os.environ["HOME"], ".claude", "sessions")
-HOLDER = os.path.join(os.path.dirname(os.path.realpath(__file__)), "fake_holder.py")
-
-
-def alive(pid):
-    try:
-        os.kill(int(pid), 0)
-        return True
-    except (OSError, ValueError, TypeError):
-        return False
-
-
-def hold(sid, kind, short=""):
-    """A process holding the session, as the engine records it."""
-    # Its own socket: a process the session held before, killed, leaves its socket file behind.
-    inbox = os.path.join(state, "in-%s-%s-%s.sock" % (kind[:2], sid[:8], os.urandom(3).hex()))
-    p = subprocess.Popen([sys.executable, HOLDER, inbox, os.path.join(state, "inbox-%s.log" % sid)],
-                         start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
-    started = int(time.time() * 1000)
-    for _ in range(500):
-        if os.path.exists(inbox):
-            break
-        time.sleep(0.02)
-    rec = {"pid": p.pid, "sessionId": sid, "cwd": os.getcwd(), "kind": kind, "status": "idle",
-           "name": "held-" + sid[:4], "messagingSocketPath": inbox, "startedAt": started}
-    if short:
-        rec["jobId"] = short
-    with open(os.path.join(sessions, "%d.json" % p.pid), "w") as f:
-        json.dump(rec, f)
-    with open(os.path.join(state, "holders"), "a") as f:
-        f.write("%d %s %s\n" % (p.pid, sid, short or "-"))
-
-
-def held(sid):
-    for path in glob.glob(os.path.join(sessions, "*.json")):
-        try:
-            with open(path) as f:
-                rec = json.load(f)
-        except (OSError, ValueError):
-            continue
-        if rec.get("sessionId") == sid and alive(rec.get("pid")):
-            return True
-    return False
 
 
 def row(short, sid, name):
@@ -93,21 +40,6 @@ if args[:1] == ["stop"]:
         r["state"] = "stopped"
         with open(p, "w") as f:
             json.dump(r, f)
-    try:
-        with open(os.path.join(state, "holders")) as f:
-            holders = [line.split() for line in f if line.strip()]
-    except OSError:
-        holders = []
-    for pid, _sid, short in holders:
-        if short == args[1]:
-            try:
-                os.kill(int(pid), 15)
-            except OSError:
-                pass
-            try:
-                os.unlink(os.path.join(sessions, "%s.json" % pid))
-            except OSError:
-                pass
     print("stopped " + args[1])
     sys.exit(0)
 if "--bg" in args:
@@ -116,23 +48,6 @@ if "--bg" in args:
             time.sleep(float(f.read()))
     except (OSError, ValueError):
         pass
-    if "--resume" in args:
-        sid = args[args.index("--resume") + 1]
-        note = ""
-        if held(sid):
-            note = "note: session %s is open in another Claude Code process, so this started a copy as %s. " \
-                   "The original conversation is unchanged."
-        elif args != ["--bg", "--resume", sid]:
-            note = "note: background session %s keeps its own saved options, so the flags you passed started a " \
-                   "copy as %s. Without flags, the same command continues it itself."
-        new = str(uuid.uuid4()) if note else sid
-        short = new[:8]
-        hold(new, "bg", short)
-        row(short, new, "resumed")
-        print("backgrounded · %s · resumed" % short)
-        if note:
-            print(note % (sid[:8], short))
-        sys.exit(0)
     new = str(uuid.uuid4())
     short = new[:8]
     name = args[args.index("-n") + 1]

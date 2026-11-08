@@ -623,6 +623,13 @@ class Bridge:
         self.proc.wait(10)
 
 
+def sent(r, frames):
+    """`frames` queued on a lane and written at once: the relay's two
+    steps, as the uplink runs them for a frame the endpoint takes."""
+    r.sending(frames)
+    r.delivered(frames)
+
+
 def messages(frames, kind=None):
     return [f["message"] for f in frames if f.get("t") == "session" and kind in (None, f["message"]["kind"])]
 
@@ -878,7 +885,7 @@ class RequestsOnRl10(unittest.TestCase):
                          {"request": "toolu_01", "session": self.sid, "tool": "Bash",
                           "input": {"command": "pnpm e2e", "timeout": 0.5}})
         self.assert_code("raised", body, "DX1's code, smns-hub-raised-v1")
-        self.r.sent(frames)
+        sent(self.r, frames)
         self.assertEqual(self.r.due({self.PID}), [], "sent once")
         self.assertEqual([x["request"] for x in self.r.pending_frame(self.PID)["raised"]], ["toolu_01"])
         self.bridge.settle("toolu_01", outcome="deny", winner="web", by=MEMBER)
@@ -888,7 +895,7 @@ class RequestsOnRl10(unittest.TestCase):
                          {"request": "toolu_01", "winner": "web", "outcome": "deny", "by": MEMBER},
                          "as the bridge reported it")
         self.assert_code("settled", s)
-        self.r.sent(frames)
+        sent(self.r, frames)
         self.assertEqual(self.r.pending_frame(self.PID), {"t": "pending", "project": self.PID, "raised": []})
 
     def test_a_background_deadline_and_an_async_question(self):
@@ -972,7 +979,7 @@ class RequestsOnRl10(unittest.TestCase):
         the new child's snapshot is reconciled with what was held."""
         self.bridge.raise_("toolu_a")
         self.bridge.raise_("toolu_b")
-        self.r.sent(self.due(lambda fs: len(messages(fs, "raised")) == 2))
+        sent(self.r, self.due(lambda fs: len(messages(fs, "raised")) == 2))
         old, self.bridge = self.bridge, Bridge(self.sid, ready=False)
         self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
                           "delivered": {},
@@ -988,13 +995,13 @@ class RequestsOnRl10(unittest.TestCase):
                          "a settlement the snapshot lists, for a request held pending")
         self.assertEqual([m["body"]["request"] for m in messages(frames, "raised")], ["toolu_c"],
                          "a request raised meanwhile")
-        self.r.sent(frames)
+        sent(self.r, frames)
         self.assertEqual(sorted(x["request"] for x in self.r.pending_frame(self.PID)["raised"]),
                          ["toolu_b", "toolu_c"])
 
     def test_a_bridge_gone_drops_its_requests_from_the_set(self):
         self.bridge.raise_("toolu_x")
-        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        sent(self.r, self.due(lambda fs: messages(fs, "raised")))
         self.bridge.stop()
         self.r.follow({})  # its bridge answers no more
         frames = self.due(lambda fs: [f for f in fs if f.get("t") == "pending"])
@@ -1015,7 +1022,7 @@ class RequestsOnRl10(unittest.TestCase):
         frames = self.due(lambda fs: messages(fs, "settled"))
         self.assertEqual([m["body"]["request"] for m in messages(frames, "settled")], ["toolu_quick"])
         self.assertEqual(messages(frames, "raised"), [])
-        self.r.sent(frames)
+        sent(self.r, frames)
         again = requests.Requests("testhost")
         try:
             again.follow({self.sid: self.PID})
@@ -1038,7 +1045,7 @@ class RequestsOnRl10(unittest.TestCase):
         def send(test):
             frames = self.due(test)
             relayed.extend((m["body"]["request"], m["body"]["outcome"]) for m in messages(frames, "settled"))
-            self.r.sent(frames)
+            sent(self.r, frames)
 
         self.bridge.raise_("toolu_ask", **self.ASK)
         send(lambda fs: messages(fs, "raised"))
@@ -1066,11 +1073,11 @@ class RequestsOnRl10(unittest.TestCase):
         mod's resync put it back) lists both: the settlement came before the
         raise, and the request stays pending at the hub."""
         self.bridge.raise_("toolu_ask", **self.ASK)
-        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        sent(self.r, self.due(lambda fs: messages(fs, "raised")))
         self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
-        self.r.sent(self.due(lambda fs: messages(fs, "settled")))
+        sent(self.r, self.due(lambda fs: messages(fs, "settled")))
         self.bridge.raise_("toolu_ask", **self.ASK)
-        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        sent(self.r, self.due(lambda fs: messages(fs, "raised")))
         first = self.r.readers[self.sid]
         ask = {"request": "toolu_ask", "tool": self.ASK["tool"], "input": self.ASK["input_"], "agentId": None,
                "async": True, "t": 1}
@@ -1104,9 +1111,9 @@ class RequestsOnRl10(unittest.TestCase):
         withdrawal went before, and the answer is another settlement of that
         id, relayed once."""
         self.bridge.raise_("toolu_ask", **self.ASK)
-        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        sent(self.r, self.due(lambda fs: messages(fs, "raised")))
         self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
-        self.r.sent(self.due(lambda fs: messages(fs, "settled")))
+        sent(self.r, self.due(lambda fs: messages(fs, "settled")))
         self.r.close()
         old, self.bridge = self.bridge, Bridge(self.sid)
         self.assertIsNotNone(wait_for(lambda: old.proc.poll() is not None), "the old child leaves")
@@ -1116,7 +1123,7 @@ class RequestsOnRl10(unittest.TestCase):
         self.r.follow({self.sid: self.PID})
         frames = self.due(lambda fs: messages(fs, "settled"))
         self.assertEqual(self.settled_by(frames), [("toolu_ask", "answered")])
-        self.r.sent(frames)
+        sent(self.r, frames)
         again = requests.Requests("testhost")
         try:
             again.follow({self.sid: self.PID})
@@ -1133,11 +1140,11 @@ class RequestsOnRl10(unittest.TestCase):
         with no resync between sends that withdrawal no second time, and the
         answer still goes."""
         self.bridge.raise_("toolu_ask", **self.ASK)
-        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        sent(self.r, self.due(lambda fs: messages(fs, "raised")))
         self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
-        self.r.sent(self.due(lambda fs: messages(fs, "settled")))
+        sent(self.r, self.due(lambda fs: messages(fs, "settled")))
         self.bridge.raise_("toolu_ask", **self.ASK)
-        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        sent(self.r, self.due(lambda fs: messages(fs, "raised")))
         self.resubscribe()
         self.assertEqual(self.settled_by(self.r.due({self.PID})), [], "the withdrawal went before")
         self.bridge.settle("toolu_ask", outcome="answered", winner="web", by=MEMBER)
@@ -1150,19 +1157,19 @@ class RequestsOnRl10(unittest.TestCase):
         brings it back. The hub holds the request pending under the same id.
         A POST that carried it before the raise again is answered after."""
         self.bridge.raise_("toolu_ask", **self.ASK)
-        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        sent(self.r, self.due(lambda fs: messages(fs, "raised")))
         self.bridge.settle("toolu_ask", outcome="withdrawn", winner="other", by="bridge")
         posted = self.due(lambda fs: messages(fs, "settled"))
         self.bridge.raise_("toolu_ask", **self.ASK)
         frames = self.due(lambda fs: messages(fs, "raised"))
         self.assertEqual(self.settled_by(frames), [], "the raise again supersedes it")
-        self.r.sent(posted)
+        sent(self.r, posted)
         self.assertEqual([m["kind"] for m in messages(self.r.due({self.PID}))], ["raised"],
                          "the POST answered late takes nothing else")
         frames = self.r.opening(self.PID)
         self.assertEqual([f.get("t") for f in frames], ["pending"], "the next connect: the set alone")
         self.assertEqual([x["request"] for x in frames[0]["raised"]], ["toolu_ask"])
-        self.r.sent(frames)
+        sent(self.r, frames)
         self.resubscribe()
         self.assertEqual(self.settled_by(self.r.due({self.PID})), [], "the snapshot lists it: not sent")
         again = requests.Requests("testhost")
@@ -1189,7 +1196,7 @@ class RequestsOnRl10(unittest.TestCase):
         self.r.follow({self.sid: self.PID})
         frames = self.due(lambda fs: messages(fs, "raised"))
         self.assertEqual(self.settled_by(frames), [])
-        self.r.sent(frames)
+        sent(self.r, frames)
         first = self.r.readers[self.sid]
         self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "override": None,
                           "delivered": {}, "pending": [], "settled": []})
@@ -1249,7 +1256,7 @@ class RequestsOnRl10(unittest.TestCase):
         self.assertEqual(len(sets), 1, "and the complete set follows, with no reconnect")
         self.assertEqual(sorted(x["request"] for x in sets[0]["raised"]), ["toolu_o%d" % i for i in range(5)])
         self.assertIs(frames[-1], sets[0], "after the raises")
-        self.r.sent(frames)
+        sent(self.r, frames)
         self.assertEqual(self.r.due({self.PID}), [])
 
     def test_the_set_waits_for_the_bridges_snapshots(self):
@@ -1265,7 +1272,7 @@ class RequestsOnRl10(unittest.TestCase):
         frames = self.due(lambda fs: [f for f in fs if f.get("t") == "pending"])
         self.assertEqual([x["request"] for f in frames if f.get("t") == "pending" for x in f["raised"]],
                          ["toolu_before"], "the set, once read, holds it")
-        self.r.sent(frames)
+        sent(self.r, frames)
         # A bridge that never gives a snapshot holds the set at most HOLD_MAX.
         stalled_sid = str(uuidlib.uuid4())
         stalled = tsp.fake_session.stalled_socket(os.path.join(os.environ["SMINOS_HOME"], "bridge",
@@ -1291,7 +1298,7 @@ class RequestsOnRl10(unittest.TestCase):
                          ["settled", "pending"],
                          "settlements not yet sent, then the complete set (raised ones it covers are not sent)")
         self.assertEqual([x["request"] for x in frames[-1]["raised"]], ["toolu_q"])
-        self.r.sent(frames)
+        sent(self.r, frames)
         self.assertEqual(self.r.due({self.PID}), [])
 
     def test_a_shortened_resync_leaves_a_request_the_child_holds_as_its_raise_carried_it(self):
@@ -1305,7 +1312,7 @@ class RequestsOnRl10(unittest.TestCase):
         whole = {"file_path": "/w/f", "content": "x" + "\U0001F600" * 32767}
         short = {"file_path": "/w/f", "content": "x" + "\U0001F600" * 511}
         self.bridge.raise_("toolu_held", tool="Write", input_=whole)
-        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        sent(self.r, self.due(lambda fs: messages(fs, "raised")))
         entry = {"tool": "Write", "input": short, "agentId": None, "truncated": True}
         self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "cut": {}, "truncated": True,
                           "pending": [{"request": "toolu_held", **entry, "t": 1},
@@ -1343,7 +1350,7 @@ class RequestsOnRl10(unittest.TestCase):
         self.assertIs(body["truncated"], True, "resync's marker")
         self.assert_code("raised", body, "a draft, its input as shown")
         self.assertLess(len(json.dumps(body).encode()), requests.RAISED_INPUT_MAX)
-        self.r.sent(frames)
+        sent(self.r, frames)
         self.assertEqual(self.r.pending_frame(self.PID)["raised"], [body], "the complete set carries it so")
         drafts = requests.Requests("testhost")
         self.addCleanup(drafts.close)
