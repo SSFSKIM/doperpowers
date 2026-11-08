@@ -82,6 +82,10 @@ OUTPUT_PATH = re.compile(r"Output is being written to: (\S+)")
 REQUEST_RECORD = b'{"type":"api-request'
 ELEMENT = {name: re.compile(r"<%s>([\s\S]*?)</%s>" % (name, name))
            for name in ("task-id", "tool-use-id", "output-file", "status", "summary", "event")}
+# A block ends at the first closing tag after its opening: a value holding a literal `</task-notification>` (an
+# output path under a CLAUDE_CODE_TMPDIR named so) would end it early. The engine's joinedNoticeLengths (UTF-16 code
+# units, from 2.1.302) could close that gap; nothing seen has needed it.
+NOTIFICATION = re.compile(r"<task-notification>[\s\S]*?</task-notification>")
 
 
 def normalize(raw):
@@ -122,12 +126,20 @@ def _element(prompt, name):
     return m.group(1).strip() if m else None
 
 
+def _notifications(text):
+    """Each notification a notification's text carries, in order: every whole `<task-notification>` block, its
+    elements read within it. The engine joins the notifications it delivers at once into one plain row, each block
+    after a blank line (2.1.257 on, read from this machine's transcripts); from 2.1.302 the row also lists each
+    block's length (`joinedNoticeLengths`), which the blocks' own tags make needless to read."""
+    return NOTIFICATION.findall(text)
+
+
 def _plain_notification(row, content):
-    """The notification text of a plain user row the engine wrote for one, or None. The engine marks the row
-    `origin.kind: "task-notification"` (no prompt a person types carries it) and writes one notification as the
-    row's whole text: bare in the main loop's transcript, after its fixed `[SYSTEM NOTIFICATION - NOT USER INPUT]`
+    """The notification text of a plain user row the engine wrote for its notifications, or None. The engine marks
+    the row `origin.kind: "task-notification"` (no prompt a person types carries it) and writes them as the row's
+    whole text: bare in the main loop's transcript, after its fixed `[SYSTEM NOTIFICATION - NOT USER INPUT]`
     preamble (ending in a blank line) in a subagent's. The text must then start with `<task-notification>`, as
-    MAWS's parseTaskNotification requires."""
+    MAWS's parseTaskNotification requires; it holds one notification or several (_notifications)."""
     origin = row.get("origin")
     if row.get("type") != "user" or not isinstance(origin, dict) or origin.get("kind") != "task-notification":
         return None
@@ -230,8 +242,8 @@ class Ledger:
         msg = row.get("message")
         content = msg.get("content") if isinstance(msg, dict) else None
         plain = _plain_notification(row, content)
-        if plain is not None:
-            self._notification(plain, at)
+        for text in _notifications(plain) if plain is not None else ():
+            self._notification(text, at)
         for task, line in _stop_records(row, content):
             self._said({"raw": "stopped", "at": at, "summary": line}, task=task)
         if isinstance(content, list):
@@ -311,7 +323,8 @@ class Ledger:
                 self._said(ev, task=task)
         elif kind == "queued_command" and att.get("commandMode") == "task-notification":
             if isinstance(att.get("prompt"), str):
-                self._notification(att["prompt"], at)
+                for text in _notifications(att["prompt"]):
+                    self._notification(text, at)
         elif kind == "mcp_instructions_delta":
             removed, added = att.get("removedNames"), att.get("addedNames")
             for name in removed if isinstance(removed, list) else ():
@@ -322,7 +335,7 @@ class Ledger:
                     self.mcp.append(name)
 
     def _notification(self, prompt, at):
-        """One task-notification's text, from either form the engine writes it in."""
+        """One task-notification's block, from either form the engine writes it in."""
         task, tool = _element(prompt, "task-id") or None, _element(prompt, "tool-use-id") or None
         path, raw = _element(prompt, "output-file") or None, _element(prompt, "status")
         if task:

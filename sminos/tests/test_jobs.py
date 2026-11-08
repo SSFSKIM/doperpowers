@@ -198,6 +198,36 @@ class TaskIndex(unittest.TestCase):
         self.assertEqual([r["uuid"] for r in jobs.task_rows(main, "ba00003")], ["c3", "r3"])
         self.assertEqual([r["uuid"] for r in jobs.task_rows(main, "ba00007")], ["c7", "r7", "n7"])
 
+    def test_a_row_of_several_notifications_ends_each_task(self):
+        # A 2.1.318 subagent's row, cut down: the engine joined two notifications it delivered at once into one row
+        # (its preamble, then each block after a blank line; joinedNoticeLengths the blocks' lengths). Only the
+        # first task used to end, so the agent read as waiting on background for good.
+        rows, tasks = [], {"budz9680h": "toolu_01J1", "b7nq313fl": "toolu_01J2"}
+        for n, (task, tid) in enumerate(tasks.items()):
+            rows.append({"type": "assistant", "uuid": "c%d" % n, "timestamp": "2026-11-07T06:1%d:00.000Z" % n,
+                         "message": {"content": [{"type": "tool_use", "id": tid, "name": "Bash", "input": {
+                             "command": "sleep 900", "description": "Wait for run %d" % n}}]}})
+            rows.append({"type": "user", "uuid": "r%d" % n, "timestamp": "2026-11-07T06:2%d:00.000Z" % n,
+                         "toolUseResult": {"stdout": "", "backgroundTaskId": task, "timedOutAfterMs": 600000},
+                         "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "is_error": False,
+                                                  "content": "Command did not complete within its 600s timeout and "
+                                                             "was moved to the background (ID: %s)." % task}]}})
+        blocks = ["<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>%s</tool-use-id>\n<status>failed</status>"
+                  "\n<summary>Background command \"%s\" failed with exit code 144</summary>\n</task-notification>"
+                  % (task, tid, task) for task, tid in reversed(tasks.items())]
+        rows.append({"type": "user", "uuid": "j1", "timestamp": "2026-11-08T01:45:43.491Z", "isMeta": True,
+                     "origin": {"kind": "task-notification", "producer": "session-task"},
+                     "message": {"role": "user", "content": "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an "
+                                 "automated background-task event.\n\n" + "\n\n".join(blocks)},
+                     "joinedNoticeLengths": [len(b) for b in blocks], "joinedNoticeOwn": [True, True],
+                     "joinedNoticeRunIds": ["0mw60n8tf-ed6c2aa4", "0mw60a9vs-28a81efc"]})
+        path = self.write(os.path.join(HOME, "idx", "joined", "subagents", "agent-a5661.jsonl"), rows)
+        for task in tasks:
+            [job] = fed(jobs.task_rows(path, task)).jobs_body(True)
+            self.assertEqual((job["taskId"], job["status"], job.get("endedAt"), job.get("summary")),
+                             (task, "failed", "2026-11-08T01:45:43.491Z",
+                              'Background command "%s" failed with exit code 144' % task))
+
     def test_a_missing_or_empty_transcript_holds_no_task(self):
         self.assertEqual(jobs.task_rows(os.path.join(HOME, "nowhere.jsonl"), "b1"), [])
         empty = self.write(os.path.join(HOME, "idx", "empty.jsonl"), [])

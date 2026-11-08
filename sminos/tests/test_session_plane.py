@@ -3703,6 +3703,40 @@ class TranscriptIndex(unittest.TestCase):
                 self.assertEqual(t.index.end, whole.rfind(b"\n") + 1)
                 self.assertEqual(self.state(t), self.state(self.cold()))
 
+    def test_a_build_whose_ledger_read_one_notification_per_row_is_derived_again(self):
+        """A build saved by 1.40.4 (format 2) holds a ledger that read a row of several task-notifications as its
+        first alone. Resumed, the row's other tasks would read as running for good: the format moved on with the
+        rule (sminos_jobs._notifications), so the build starts cold and every task the row names ends."""
+        r, rows, tasks = Thread(), [], ("bjoin0001", "bjoin0002")
+        for task in tasks:
+            call = r.tool_call("toolu_" + task, "msg_" + task)
+            call["message"]["content"][0]["input"] = {"command": "make", "run_in_background": True}
+            result = r.tool_result("toolu_" + task, call)
+            result["toolUseResult"] = {"backgroundTaskId": task}
+            rows += [call, result]
+        blocks = "\n\n".join("<task-notification>\n<task-id>%s</task-id>\n<status>completed</status>\n"
+                             "</task-notification>" % task for task in tasks)
+        joined = r.chained(r.row(type="user", isMeta=True, origin={"kind": "task-notification"}, message={
+            "role": "user", "content": "[SYSTEM NOTIFICATION - NOT USER INPUT]\nAn automated event.\n\n" + blocks}))
+        self.append("".join(json.dumps(row) + "\n" for row in rows + [joined]))
+        old = plane.Transcript(self.path)
+        old.extended()
+        old.ledger = plane.jobs.Ledger()   # 1.40.4's: the row's text from its first block read as one notification
+        old.ledger.feed(rows)
+        old.ledger._notification(blocks, joined["timestamp"])
+        statuses = lambda t: {j["taskId"]: j["status"] for j in t.ledger.jobs_body(True)}  # noqa: E731
+        with mock.patch.object(plane, "BUILD_FORMAT", 2):
+            self.assertTrue(old.save())
+            resumed = plane.Transcript(self.path)
+            resumed.extended()
+        self.assertEqual((resumed.how, statuses(resumed)),
+                         ("loaded", {"bjoin0001": "completed", "bjoin0002": "running"}),
+                         "under its own format the old build is resumed, its second task running")
+        t = plane.Transcript(self.path)
+        t.extended()
+        self.assertEqual((t.how, statuses(t)), ("cold", {"bjoin0001": "completed", "bjoin0002": "completed"}))
+        self.assertEqual(self.state(t), self.state(self.cold()))
+
     def test_eviction_saves_first_and_a_later_open_loads(self):
         rows, r = self.thread_rows(10)
         transcripts = plane.Transcripts(keep=1)
