@@ -145,6 +145,19 @@ class Rows:
                          origin={"kind": "task-notification", "producer": "session-task"}, promptSource="system",
                          **extra)
 
+    def joined_notification(self, notes, run_ids=None):
+        """Several notifications the engine delivered at once, joined into one plain row of a subagent's transcript
+        (2.1.257 on): its preamble, then each notification after the last and a blank line. From 2.1.302 the row
+        also lists each block's length, whether it is the loop's own, and its run (`run_ids`); before, it has no such
+        fields and its origin no producer."""
+        blocks = [prompt(**n) for n in notes]
+        extra = {"isMeta": True, "origin": {"kind": "task-notification"}}
+        if run_ids is not None:
+            extra = {"isMeta": True, "origin": {"kind": "task-notification", "producer": "session-task"},
+                     "joinedNoticeLengths": [len(b) for b in blocks], "joinedNoticeOwn": [True] * len(blocks),
+                     "joinedNoticeRunIds": run_ids}
+        return self._row("user", message={"role": "user", "content": PREAMBLE + "\n\n".join(blocks)}, **extra)
+
     def typed(self, text, origin=None):
         """A prompt the person typed (no origin), or a message another agent sent (an origin of its own kind)."""
         extra = {"origin": origin, "isMeta": True} if origin else {"promptSource": "user"}
@@ -934,6 +947,66 @@ case("tasks the bridge stopped, recorded in its notes",
           "description": "Wait longest", "command": "sleep 902", "outputFile": out("btyped005"), "status": "running"},
      ])
 
+# ---- 17: several notifications in one row --------------------------------------------------------------------
+# The engine joins the notifications it delivers at once into one plain row of a subagent's transcript: 74 such rows
+# on this machine (2.1.257-2.1.318), 2 to 15 notifications each, each block after the preamble or the last block and
+# a blank line, nothing else in the text; from 2.1.302 joinedNoticeLengths lists each block's length. The loop here
+# is a subagent's (a17p), so its rows are the ones an agent subscription to it reads its jobs from, and its nested
+# agent's outcome is read from the same rows, its parent's file.
+A17 = "a17p0000000000001"
+r = Rows(17, 0)
+r.prompt("Run the mutation suites, then review the mutants.")
+c1 = r.bash("toolu_17J1", "npm run mutate", "Run the mutation suite", background=False)
+r.bash_background("toolu_17J1", "bjoin0001", moved=True)
+c2 = r.bash("toolu_17J2", "sleep 600; git status --short", "Wait for the mutation run, then check git state",
+            background=False)
+r.bash_background("toolu_17J2", "bjoin0002", moved=True)
+c3 = r.monitor("toolu_17M1", "tail -F /tmp/mutate.log | grep --line-buffered SURVIVED", "surviving mutants")
+r.monitor_started("toolu_17M1", "bmon00017")
+r.agent("toolu_17A", "Review the mutants")
+r.launched("toolu_17A", "a17n0000000000002", "Review the mutants")
+c4 = r.monitor("toolu_17M2", "tail -F /tmp/hub.log", "the hub's log")
+r.monitor_started("toolu_17M2", "bmon00018")
+FAILED_2 = 'Background command "Wait for the mutation run, then check git state" failed with exit code 144'
+FAILED_1 = 'Background command "Run the mutation suite" failed with exit code 144'
+j1 = r.joined_notification([
+    dict(task="bjoin0002", status="failed", summary=FAILED_2, tool_use_id="toolu_17J2", output_file=out("bjoin0002")),
+    dict(task="bjoin0001", status="failed", summary=FAILED_1, tool_use_id="toolu_17J1", output_file=out("bjoin0001")),
+], run_ids=["0mw17j001-0000a001", "0mw17j002-0000a002"])
+j2 = r.joined_notification([
+    dict(task="bmon00017", summary='Monitor event: "surviving mutants"', event="SURVIVED mutant 12"),
+    dict(task="a17n0000000000002", status="completed", summary='Agent "Review the mutants" finished',
+         tool_use_id="toolu_17A", output_file=out("a17n0000000000002")),
+    dict(task="bmon00018", summary='Monitor event: "the hub\'s log"', event=TIMED_OUT_LINE),
+])
+mn = meta("Review the mutants", "toolu_17A", parent=A17)
+case("several notifications in one row",
+     "The engine joins the notifications it delivers at once into one plain row (in a subagent's transcript: its "
+     "preamble, then each `<task-notification>` block after a blank line). Each block is one notification, read in "
+     "order with the rules above, its elements its own: j1 (2.1.302 on, with joinedNoticeLengths) ends both shells "
+     "failed, each with its own summary; j2 (the older form, no such fields) leaves the monitor bmon00017 running on "
+     "its event, though a later block in the row has a <status>, ends the nested agent n completed (read from its "
+     "parent a17p's file, the same rows), and expires the monitor bmon00018.",
+     True, r, [("a17n0000000000002", mn)],
+     [entry("a17n0000000000002", mn, "completed", "rows",
+            outcome=outcome("completed", "completed", j2, 'Agent "Review the mutants" finished',
+                            out("a17n0000000000002")))],
+     {A17: agent_file(r, 6000)},
+     expect_jobs=[
+         {"taskId": "bjoin0001", "kind": "shell", "toolUseId": "toolu_17J1", "startedAt": c1["timestamp"],
+          "description": "Run the mutation suite", "command": "npm run mutate", "outputFile": out("bjoin0001"),
+          "status": "failed", "endedAt": j1["timestamp"], "summary": FAILED_1},
+         {"taskId": "bjoin0002", "kind": "shell", "toolUseId": "toolu_17J2", "startedAt": c2["timestamp"],
+          "description": "Wait for the mutation run, then check git state", "command": "sleep 600; git status --short",
+          "outputFile": out("bjoin0002"), "status": "failed", "endedAt": j1["timestamp"], "summary": FAILED_2},
+         {"taskId": "bmon00017", "kind": "monitor", "toolUseId": "toolu_17M1", "startedAt": c3["timestamp"],
+          "description": "surviving mutants", "command": "tail -F /tmp/mutate.log | grep --line-buffered SURVIVED",
+          "outputFile": None, "status": "running"},
+         {"taskId": "bmon00018", "kind": "monitor", "toolUseId": "toolu_17M2", "startedAt": c4["timestamp"],
+          "description": "the hub's log", "command": "tail -F /tmp/hub.log", "outputFile": None,
+          "status": "completed", "endedAt": j2["timestamp"], "summary": TIMED_OUT_LINE},
+     ])
+
 # ---- output -----------------------------------------------------------------------------------------------------
 OUTPUT = []
 OSLUG, LAUNCH = "-Users-me-work-proj--claude-worktrees-dc8", "-Users-me-work-proj"
@@ -1105,7 +1178,7 @@ ABOUT = {
         "Everything else in `expect` follows from the rules.",
     ],
     "rules": [
-        "Rows read: an assistant row's tool_use blocks named Agent or Task, Bash, Monitor, TaskStop (by id; input.description, input.command, input.task_id, and an Agent or Task call's input.run_in_background); the user row's tool_result for those ids (is_error) with its toolUseResult; a task-notification, in either of the two forms the engine writes (both read alike, elements <task-id>, <tool-use-id>, <output-file>, <status>, <summary>, <event>, each trimmed): an attachment `queued_command` with commandMode `task-notification` (its `prompt`), or a plain row of type `user` whose `origin.kind` is `task-notification` and whose message content (a string, or its text blocks joined) starts with `<task-notification>`, or with the engine's preamble `[SYSTEM NOTIFICATION - NOT USER INPUT]\\n` (written before it in a subagent's transcript) then, from the first blank line followed by `<task-notification>`, that notification; one notification per row. A row without that origin is no notification whatever its text (a person can type it); an attachment `task_status` {taskId, taskType, description, status, deltaSummary, outputFilePath}; an attachment `mcp_instructions_delta` {addedNames, removedNames}; the bridge's note of tasks it stopped (a plugin's TaskStop writes no row, and the engine queues no notification for a main-loop task it stops): a user row with isMeta true and `origin.kind` `plugin` whose message content (a string, or its text blocks joined), matched whole, is either a stop's note, exactly `Task <id>, a background task, was stopped from the desk: it is not running.` or `Task <id>, a background task, was stopped from outside the terminal: it is not running.`, or an interrupt's note: a first line exactly `The interrupt came from the desk.` or `The interrupt came from outside the terminal.`, every further line exactly `Task <id>, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.` (a stopped line) or `Task <id>, the Bash command the interrupt moved to the background, could not be stopped: it may still be running.`; a text with any other line is no note (a steer's row is kept isMeta from the plugin too). <id> is 1-64 of `A-Za-z0-9_-`. Each row's `timestamp` is its `at`.",
+        "Rows read: an assistant row's tool_use blocks named Agent or Task, Bash, Monitor, TaskStop (by id; input.description, input.command, input.task_id, and an Agent or Task call's input.run_in_background); the user row's tool_result for those ids (is_error) with its toolUseResult; a task-notification, in either of the two forms the engine writes (both read alike): an attachment `queued_command` with commandMode `task-notification` (its `prompt`), or a plain row of type `user` whose `origin.kind` is `task-notification` and whose message content (a string, or its text blocks joined) starts with `<task-notification>`, or with the engine's preamble `[SYSTEM NOTIFICATION - NOT USER INPUT]\\n` (written before it in a subagent's transcript) then, from the first blank line followed by `<task-notification>`, its notifications. Either text carries one notification or several: each whole block from a `<task-notification>` to the next `</task-notification>` is one, in order, every rule below applied to each as to a row of its own, its elements <task-id>, <tool-use-id>, <output-file>, <status>, <summary>, <event> read within it, each trimmed (the engine joins the notifications it delivers at once into one plain row, each block after a blank line, 2.1.257 on; from 2.1.302 the row also lists each block's length in `joinedNoticeLengths`, which the blocks' own tags make needless to read). A row without that origin is no notification whatever its text (a person can type it); an attachment `task_status` {taskId, taskType, description, status, deltaSummary, outputFilePath}; an attachment `mcp_instructions_delta` {addedNames, removedNames}; the bridge's note of tasks it stopped (a plugin's TaskStop writes no row, and the engine queues no notification for a main-loop task it stops): a user row with isMeta true and `origin.kind` `plugin` whose message content (a string, or its text blocks joined), matched whole, is either a stop's note, exactly `Task <id>, a background task, was stopped from the desk: it is not running.` or `Task <id>, a background task, was stopped from outside the terminal: it is not running.`, or an interrupt's note: a first line exactly `The interrupt came from the desk.` or `The interrupt came from outside the terminal.`, every further line exactly `Task <id>, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.` (a stopped line) or `Task <id>, the Bash command the interrupt moved to the background, could not be stopped: it may still be running.`; a text with any other line is no note (a steer's row is kept isMeta from the plugin too). <id> is 1-64 of `A-Za-z0-9_-`. Each row's `timestamp` is its `at`.",
         "Evidence words (`raw`): a notification's <status> (one with no <status> is no evidence, but for the expiry rule below); a task_status's `status`; an Agent result row: `async_launched` when it is a launch (the launch rule below), else `error` when is_error, else toolUseResult.status when a string, else `completed`; a TaskStop call naming the task whose result is not is_error: `stopped`; a bridge's note: for each task its stop's note or a stopped line of its interrupt's note names, `stopped`, its summary that whole line. The table maps a word to {status, terminal}; the launch rule and the expiry rule below map their own; any other word is unrecognized.",
         "The launch rule, beside the table (not a row of it): an Agent result row that is a launch is a background agent's start, non-terminal running evidence from the rows: {status `running`, raw `async_launched`}, at precedence (3), below every terminal word and below known process death. A result row is a launch when its toolUseResult.status is `async_launched`, or, when the row has no toolUseResult and is not is_error, when its text (a string, or its text blocks joined) is one of the engine's launch texts, matched exactly: it starts with `Async agent launched successfully.`, then optionally a space and a parenthesis closed on that line, then a line break and `agentId: ` (2.1.2xx-2.1.300, toolUseResult or not: some are written without one); or it is exactly `Fork started — processing in background` (a fork's launch, written without a toolUseResult). Any other text, the launch line quoted after other text, or the first line alone without the `agentId: ` line that follows it, is no launch. A row with a toolUseResult is decided by it, whatever its text: an agent's own answer may begin as a launch does.",
         "The expiry rule, beside the table (not a row of it): a task-notification with no <status> for a task the loop holds as a monitor (a Monitor result started it), whose <event> begins `[Monitor expired after ` or `[Monitor timed out` (the engine's expiry lines, 2.1.300), is terminal: {status `completed`, raw `expired`, summary the <event> text}. Any other notification with no <status> (a monitor's event, an agent resumed by the user) stays no evidence, and so does an expiry line for a task that is not a monitor.",
