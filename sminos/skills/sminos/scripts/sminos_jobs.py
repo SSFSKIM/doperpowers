@@ -82,6 +82,9 @@ OUTPUT_PATH = re.compile(r"Output is being written to: (\S+)")
 REQUEST_RECORD = b'{"type":"api-request'
 ELEMENT = {name: re.compile(r"<%s>([\s\S]*?)</%s>" % (name, name))
            for name in ("task-id", "tool-use-id", "output-file", "status", "summary", "event")}
+# A block ends at the first closing tag after its opening: a value holding a literal `</task-notification>` (an
+# output path under a CLAUDE_CODE_TMPDIR named so) would end it early. The engine's joinedNoticeLengths (UTF-16 code
+# units, from 2.1.302) could close that gap; nothing seen has needed it.
 NOTIFICATION = re.compile(r"<task-notification>[\s\S]*?</task-notification>")
 
 
