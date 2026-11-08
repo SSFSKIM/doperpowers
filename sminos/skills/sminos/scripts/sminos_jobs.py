@@ -412,16 +412,19 @@ class Ledger:
         return fold([self.evidence[i] for i in self.by_task.get(task, ())], monitor=monitor)
 
     def jobs_body(self, session_running, also=None):
-        """The loop's jobs. `also`, a ledger of the main loop's rows for a subagent's loop: its words on these
-        tasks count after the loop's own, since the bridge's record of a subagent's task it stopped is in the
-        main loop's transcript, and so is the engine's notice queued for an agent that handed back before it
-        came (the engine's notice reaches a live subagent only at its next tool batch)."""
+        """The loop's jobs. `also`, a ledger of the main loop's rows for a subagent's loop: its words on a task
+        count while the loop's own leave it running, since the bridge's record of a subagent's task it stopped is
+        in the main loop's transcript, and so is the engine's notice queued for an agent that handed back before
+        it came (the engine's notice reaches a live subagent only at its next tool batch). Never after the loop's
+        own end: a notice is enqueued there before the loop is handed its copy, so read after that copy it would
+        put the task's end back to the enqueue."""
         out = []
         for task, job in self.jobs.items():
-            said = [self.evidence[i] for i in self.by_task.get(task, ())]
-            if also is not None:
-                said += [also.evidence[i] for i in also.by_task.get(task, ())]
-            o = fold(said, {"status": "running", "raw": "running", "at": job["startedAt"]}, job["kind"] == "monitor")
+            monitor = job["kind"] == "monitor"
+            o = fold([self.evidence[i] for i in self.by_task.get(task, ())],
+                     {"status": "running", "raw": "running", "at": job["startedAt"]}, monitor)
+            if also is not None and o["status"] == "running":
+                o = fold([also.evidence[i] for i in also.by_task.get(task, ())], o, monitor)
             entry = {"taskId": task, "kind": job["kind"], "toolUseId": job["toolUseId"], "startedAt": job["startedAt"],
                      "description": job["description"], "outputFile": self.outputs.get(task)}
             if "command" in job:

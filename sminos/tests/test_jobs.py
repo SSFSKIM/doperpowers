@@ -261,6 +261,15 @@ class TaskIndex(unittest.TestCase):
             statuses[task] = own.jobs_body(True, also)[0]["status"]
         self.assertEqual(statuses, {"bmon1": "completed", "bmon2": "completed", "bsh3": "running"},
                          "the queued end counts, an expiry for the subagent's monitor, not for its shell")
+        # The agent was handed its copy after all: the notice was enqueued first, so the main loop's word is older than
+        # the loop's own end, which stands (its time, and its word where the two differ).
+        delivered = {"type": "attachment", "uuid": "d1", "timestamp": "2026-11-08T01:44:40.000Z", "attachment": {
+            "type": "queued_command", "commandMode": "task-notification",
+            "prompt": notice % ("bmon1", "<status>failed</status>\n<summary>its source exited 1</summary>\n")}}
+        self.write(agent, rows + [delivered])
+        [job] = fed(jobs.task_rows(agent, "bmon1")).jobs_body(True, fed(jobs.task_rows(main, "bmon1")))
+        self.assertEqual((job["status"], job["endedAt"], job["summary"]), ("failed", "2026-11-08T01:44:40.000Z",
+                                                                           "its source exited 1"))
 
     def test_a_missing_or_empty_transcript_holds_no_task(self):
         self.assertEqual(jobs.task_rows(os.path.join(HOME, "nowhere.jsonl"), "b1"), [])
