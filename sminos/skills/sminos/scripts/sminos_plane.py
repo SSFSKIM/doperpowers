@@ -1545,7 +1545,7 @@ class Subscription:
 
     def __init__(self, project, machine, session, agent, sub, locate, reader, presence, alive,
                  clock=time.monotonic, transcripts=None, wake=lambda: None, disk=None, received=None, wall=time.time,
-                 catalog_allowed=lambda: False, host=None):
+                 host=None):
         self.project, self.machine, self.session, self.agent, self.sub = project, machine, session, agent, sub
         self.locate = locate          # () → the session's main transcript path, "" while there is none
         # () → the session's host events, in order (sminos.host_events_of),
@@ -1555,7 +1555,6 @@ class Subscription:
         self.host = host
         self.host_at = {}             # writer → the last seq of its host events this subscription carried
         self.reader = reader
-        self.catalog_allowed = catalog_allowed  # () → whether DX4 catalog goes (the plane's subscriptions: always)
         self.presence = presence      # () → DX4 presence body
         self.alive = alive            # () → whether the session's process runs
         self.clock = clock
@@ -1977,7 +1976,7 @@ class Subscription:
                 out.append(self.step_end(key, e, self.steps.pop(key)))
             self.falls_due(now, lambda k: k[0] == e.get("turnId"))
         elif kind == "catalog":
-            if self.agent is None and self.catalog_allowed():
+            if self.agent is None:
                 out.append(self.message("catalog", {k: e[k] for k in ("fingerprint", "commands", "skills", "models", "measured") if k in e}))
         elif kind == "usage":
             if self.agent is None:
@@ -2898,7 +2897,6 @@ class Plane:
             locate=lambda: sminos.transcript_now(sid),   # asked until found, every LOCATE_EVERY
             presence=lambda: self.presence_of(sid, time.monotonic()), alive=lambda: self.running(sid),
             transcripts=self.transcripts, wake=self.wake, disk=self.disk, received=received,
-            catalog_allowed=lambda: True,
             host=(lambda: sminos.host_events_of(project, sid)) if agent is None else None)
         return out + self.pump_one(sub)
 

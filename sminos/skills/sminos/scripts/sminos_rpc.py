@@ -1579,11 +1579,6 @@ class Rpcs:
             self.messages = [f for f in self.messages if id(f) not in took]
             self.kept.save(self.messages)
 
-    def sent(self, frames):
-        """`frames` reached the hub (queued and answered at once)."""
-        self.sending(frames)
-        self.delivered(frames)
-
     def reset(self):
         """A new stream: nothing is taken as sent on it yet, and what was in
         flight on the last one is owed as it stands."""

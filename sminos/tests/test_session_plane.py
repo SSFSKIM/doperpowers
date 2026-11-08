@@ -2743,7 +2743,7 @@ class McpDisabled(unittest.TestCase):
 
 
 class Catalog(Session):
-    """The child's catalog is pushed once at open, then on negotiated main subscriptions only."""
+    """The child's catalog is pushed once at open, then on main subscriptions only."""
 
     def test_m1_real_child_keeps_catalog_on_resync_and_clears_an_older_mod(self):
         import sminos_bridge
@@ -2760,14 +2760,13 @@ class Catalog(Session):
         child.ingest([{"type": "resync"}])
         self.assertIsNone(child.snapshot().get("catalog"))
 
-    def test_m1_catalog_is_in_main_snapshot_and_changes_only_on_negotiated_main_sub(self):
+    def test_m1_catalog_is_in_main_snapshot_and_changes_only_on_the_main_sub(self):
         cat = {"fingerprint": "one", "commands": [], "skills": ["playwright-cli", "doperpowers:progress-report"], "models": {"options": [], "aliases": {}}, "measured": "2.1.307"}
         main, _ = self.subscribe(bridge=True)
         main.snap = {"catalog": cat}
         out = []
         main.snapshot(self.clock(), [], False, out)
         self.assertEqual(out[0]["body"].get("catalog"), cat)
-        main.catalog_allowed = lambda: True
         out = []
         main.event({"type": "catalog", **cat, "n": 100, "t": 123}, self.clock(), out)
         self.assertEqual([(m["kind"], m["body"]) for m in out], [("catalog", cat)])
@@ -2779,15 +2778,8 @@ class Catalog(Session):
         out = []
         main.event({"type": "catalog", **legacy}, self.clock(), out)
         self.assertEqual(out[0]["body"], legacy)
-        n = main.n
-        main.catalog_allowed = lambda: False
-        out = []
-        main.event({"type": "catalog", **cat}, self.clock(), out)
-        self.assertEqual(out, [])
-        self.assertEqual(main.n, n, "unnegotiated kinds consume no sequence number")
         agent, _ = self.subscribe(agent="agent1", bridge=True)
         agent.snap = {"catalog": cat}
-        agent.catalog_allowed = lambda: True
         out = []
         agent.snapshot(self.clock(), [], False, out)
         self.assertNotIn("catalog", out[0]["body"])

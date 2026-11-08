@@ -300,9 +300,6 @@ class SocketLane(threading.Thread):
             raise NotDelivered("the RL10 lane holds more than %d MiB unsent: the endpoint is not taking frames"
                                % (SEND_QUEUE_MAX >> 20))
 
-    def warm(self):
-        """Nothing to dial: the socket is open."""
-
     def posting(self):
         return self.state == "writing"
 
@@ -1090,8 +1087,6 @@ class Link:
     def on_subscribe(self, frame, _stream):
         project = self.opened_project(frame)
         if project is not None:
-            # A connection ready by the time the snapshot is: the dial overlaps the build.
-            self.session_lane.warm()
             self.post_session(self.plane.subscribe(project, frame, self.received))
 
     def on_unsubscribe(self, frame, _stream):

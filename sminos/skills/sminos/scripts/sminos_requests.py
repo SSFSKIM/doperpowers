@@ -610,11 +610,6 @@ class Requests:
             save_relayed(self.relayed)
             self.keep()
 
-    def sent(self, frames):
-        """`frames` reached the hub (queued and answered at once)."""
-        self.sending(frames)
-        self.delivered(frames)
-
     def reset(self):
         """A new stream: the lanes that held what was in flight are gone,
         and it is owed as it stands."""
