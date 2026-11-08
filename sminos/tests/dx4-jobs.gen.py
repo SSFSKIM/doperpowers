@@ -158,6 +158,18 @@ class Rows:
                      "joinedNoticeRunIds": run_ids}
         return self._row("user", message={"role": "user", "content": PREAMBLE + "\n\n".join(blocks)}, **extra)
 
+    def queue(self, operation, content=None):
+        """The engine's queue record (2.1.319), in the main loop's transcript: no uuid, outside the rows' chain, its
+        keys in the engine's order."""
+        self.n += 1
+        m, s = divmod(self.minute * 60 + self.n, 60)
+        rec = {"type": "queue-operation", "operation": operation, "timestamp": "2026-10-17T09:%02d:%02d.000Z" % (m, s),
+               "sessionId": SESSION}
+        if content is not None:
+            rec["content"] = content
+        self.rows.append(rec)
+        return rec
+
     def typed(self, text, origin=None):
         """A prompt the person typed (no origin), or a message another agent sent (an origin of its own kind)."""
         extra = {"origin": origin, "isMeta": True} if origin else {"promptSource": "user"}
@@ -1007,6 +1019,55 @@ case("several notifications in one row",
           "status": "completed", "endedAt": j2["timestamp"], "summary": TIMED_OUT_LINE},
      ])
 
+# ---- 18: notices the engine queued ----------------------------------------------------------------------------
+# The engine enqueues each notification it queues in the main loop's transcript, whichever loop it is for, as a
+# `queue-operation` record with no uuid, before it hands it over as a row or an attachment of that loop's. One it never
+# hands over has no other record: for an agent that handed back first (2026-11-08, 2.1.319: a monitor's completion
+# enqueued 31 s before its agent's handback, and never handed to it), or when the session's process ended first, as
+# here.
+BUILT, TESTS_FAILED = 'Background command "Build the app" completed (exit code 0)', \
+    'Background command "Run the tests" failed with exit code 1'
+r = Rows(18, 0)
+r.prompt("Build, test, lint, and watch the CI log.")
+c1 = r.bash("toolu_18J1", "make build", "Build the app")
+r.bash_background("toolu_18J1", "bqueue001")
+c2 = r.bash("toolu_18J2", "make test", "Run the tests")
+r.bash_background("toolu_18J2", "bqueue002")
+c3 = r.bash("toolu_18J3", "make lint", "Lint")
+r.bash_background("toolu_18J3", "bqueue003")
+c4 = r.monitor("toolu_18M", "tail -F /tmp/ci.log", "the CI log")
+r.monitor_started("toolu_18M", "bqueue004")
+q1 = r.queue("enqueue", prompt("bqueue001", "completed", BUILT, "toolu_18J1", out("bqueue001")))
+r.queue("enqueue", prompt("bqueue002", "failed", TESTS_FAILED, "toolu_18J2", out("bqueue002")))
+r.queue("remove")
+d2 = r.plain_notification("bqueue002", "failed", TESTS_FAILED, "toolu_18J2", out("bqueue002"))
+r.queue("remove", prompt("bqueue003", "completed", 'Background command "Lint" completed', "toolu_18J3"))
+r.queue("enqueue", "[a peer's message] " + prompt("bqueue003", "killed", "quoted", "toolu_18J3"))
+r.queue("enqueue", "Run the suites again once the build is in.")
+r.queue("dequeue")
+q4 = r.queue("enqueue", prompt("bqueue004", None, 'Monitor "the CI log"', "toolu_18M", event=EXPIRED_LINE))
+case("notices the engine queued",
+     "A queue record enqueuing notifications is their third form, read as the other two: bqueue001's notice was "
+     "queued and the session's process ended before it was handed over, so it ends completed at the enqueue, not "
+     "exited; bqueue002's was queued and then delivered as a plain row, which, folded later, ends it at its own "
+     "time; the monitor bqueue004 expires on its queued expiry notice. A `remove` (with the text of the enqueue it "
+     "removes, or none) and a `dequeue` are not read, nor is an enqueue whose content does not start with "
+     "`<task-notification>` (a peer's message quoting one, a person's next prompt): bqueue003 is exited.",
+     False, r, [], [],
+     expect_jobs=[
+         {"taskId": "bqueue001", "kind": "shell", "toolUseId": "toolu_18J1", "startedAt": c1["timestamp"],
+          "description": "Build the app", "command": "make build", "outputFile": out("bqueue001"),
+          "status": "completed", "endedAt": q1["timestamp"], "summary": BUILT},
+         {"taskId": "bqueue002", "kind": "shell", "toolUseId": "toolu_18J2", "startedAt": c2["timestamp"],
+          "description": "Run the tests", "command": "make test", "outputFile": out("bqueue002"),
+          "status": "failed", "endedAt": d2["timestamp"], "summary": TESTS_FAILED},
+         {"taskId": "bqueue003", "kind": "shell", "toolUseId": "toolu_18J3", "startedAt": c3["timestamp"],
+          "description": "Lint", "command": "make lint", "outputFile": out("bqueue003"), "status": "exited"},
+         {"taskId": "bqueue004", "kind": "monitor", "toolUseId": "toolu_18M", "startedAt": c4["timestamp"],
+          "description": "the CI log", "command": "tail -F /tmp/ci.log", "outputFile": None,
+          "status": "completed", "endedAt": q4["timestamp"], "summary": EXPIRED_LINE},
+     ])
+
 # ---- output -----------------------------------------------------------------------------------------------------
 OUTPUT = []
 OSLUG, LAUNCH = "-Users-me-work-proj--claude-worktrees-dc8", "-Users-me-work-proj"
@@ -1178,10 +1239,10 @@ ABOUT = {
         "Everything else in `expect` follows from the rules.",
     ],
     "rules": [
-        "Rows read: an assistant row's tool_use blocks named Agent or Task, Bash, Monitor, TaskStop (by id; input.description, input.command, input.task_id, and an Agent or Task call's input.run_in_background); the user row's tool_result for those ids (is_error) with its toolUseResult; a task-notification, in either of the two forms the engine writes (both read alike): an attachment `queued_command` with commandMode `task-notification` (its `prompt`), or a plain row of type `user` whose `origin.kind` is `task-notification` and whose message content (a string, or its text blocks joined) starts with `<task-notification>`, or with the engine's preamble `[SYSTEM NOTIFICATION - NOT USER INPUT]\\n` (written before it in a subagent's transcript) then, from the first blank line followed by `<task-notification>`, its notifications. Either text carries one notification or several: each whole block from a `<task-notification>` to the next `</task-notification>` is one, in order, every rule below applied to each as to a row of its own, its elements <task-id>, <tool-use-id>, <output-file>, <status>, <summary>, <event> read within it, each trimmed (the engine joins the notifications it delivers at once into one plain row, each block after a blank line, 2.1.257 on; from 2.1.302 the row also lists each block's length in `joinedNoticeLengths`, which the blocks' own tags make needless to read). A row without that origin is no notification whatever its text (a person can type it); an attachment `task_status` {taskId, taskType, description, status, deltaSummary, outputFilePath}; an attachment `mcp_instructions_delta` {addedNames, removedNames}; the bridge's note of tasks it stopped (a plugin's TaskStop writes no row, and the engine queues no notification for a main-loop task it stops): a user row with isMeta true and `origin.kind` `plugin` whose message content (a string, or its text blocks joined), matched whole, is either a stop's note, exactly `Task <id>, a background task, was stopped from the desk: it is not running.` or `Task <id>, a background task, was stopped from outside the terminal: it is not running.`, or an interrupt's note: a first line exactly `The interrupt came from the desk.` or `The interrupt came from outside the terminal.`, every further line exactly `Task <id>, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.` (a stopped line) or `Task <id>, the Bash command the interrupt moved to the background, could not be stopped: it may still be running.`; a text with any other line is no note (a steer's row is kept isMeta from the plugin too). <id> is 1-64 of `A-Za-z0-9_-`. Each row's `timestamp` is its `at`.",
+        "Rows read: an assistant row's tool_use blocks named Agent or Task, Bash, Monitor, TaskStop (by id; input.description, input.command, input.task_id, and an Agent or Task call's input.run_in_background); the user row's tool_result for those ids (is_error) with its toolUseResult; a task-notification, in any of the three forms the engine writes (all read alike): an attachment `queued_command` with commandMode `task-notification` (its `prompt`), or a plain row of type `user` whose `origin.kind` is `task-notification` and whose message content (a string, or its text blocks joined) starts with `<task-notification>`, or with the engine's preamble `[SYSTEM NOTIFICATION - NOT USER INPUT]\\n` (written before it in a subagent's transcript) then, from the first blank line followed by `<task-notification>`, its notifications, or the engine's queue record enqueuing it: `{type: queue-operation, operation: enqueue, timestamp, sessionId, content}`, with no uuid, whose `content` starts with `<task-notification>` (2.1.319: the engine enqueues each notification it queues in the main loop's transcript, whichever loop it is for, before it hands it over in one of the other forms; one it never hands over, its agent having handed back or the session's process having ended first, has no other record). A queue record of any other operation (`remove` repeats the text of the enqueue it removes; `dequeue` has none) or with other content (a person's prompt, a peer's message) is no notification. Each text carries one notification or several: each whole block from a `<task-notification>` to the next `</task-notification>` is one, in order, every rule below applied to each as to a row of its own, its elements <task-id>, <tool-use-id>, <output-file>, <status>, <summary>, <event> read within it, each trimmed (the engine joins the notifications it delivers at once into one plain row, each block after a blank line, 2.1.257 on; from 2.1.302 the row also lists each block's length in `joinedNoticeLengths`, which the blocks' own tags make needless to read). A row without that origin is no notification whatever its text (a person can type it); an attachment `task_status` {taskId, taskType, description, status, deltaSummary, outputFilePath}; an attachment `mcp_instructions_delta` {addedNames, removedNames}; the bridge's note of tasks it stopped (a plugin's TaskStop writes no row, and the engine queues no notification for a main-loop task it stops): a user row with isMeta true and `origin.kind` `plugin` whose message content (a string, or its text blocks joined), matched whole, is either a stop's note, exactly `Task <id>, a background task, was stopped from the desk: it is not running.` or `Task <id>, a background task, was stopped from outside the terminal: it is not running.`, or an interrupt's note: a first line exactly `The interrupt came from the desk.` or `The interrupt came from outside the terminal.`, every further line exactly `Task <id>, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.` (a stopped line) or `Task <id>, the Bash command the interrupt moved to the background, could not be stopped: it may still be running.`; a text with any other line is no note (a steer's row is kept isMeta from the plugin too). <id> is 1-64 of `A-Za-z0-9_-`. Each row's `timestamp` is its `at`.",
         "Evidence words (`raw`): a notification's <status> (one with no <status> is no evidence, but for the expiry rule below); a task_status's `status`; an Agent result row: `async_launched` when it is a launch (the launch rule below), else `error` when is_error, else toolUseResult.status when a string, else `completed`; a TaskStop call naming the task whose result is not is_error: `stopped`; a bridge's note: for each task its stop's note or a stopped line of its interrupt's note names, `stopped`, its summary that whole line. The table maps a word to {status, terminal}; the launch rule and the expiry rule below map their own; any other word is unrecognized.",
         "The launch rule, beside the table (not a row of it): an Agent result row that is a launch is a background agent's start, non-terminal running evidence from the rows: {status `running`, raw `async_launched`}, at precedence (3), below every terminal word and below known process death. A result row is a launch when its toolUseResult.status is `async_launched`, or, when the row has no toolUseResult and is not is_error, when its text (a string, or its text blocks joined) is one of the engine's launch texts, matched exactly: it starts with `Async agent launched successfully.`, then optionally a space and a parenthesis closed on that line, then a line break and `agentId: ` (2.1.2xx-2.1.300, toolUseResult or not: some are written without one); or it is exactly `Fork started — processing in background` (a fork's launch, written without a toolUseResult). Any other text, the launch line quoted after other text, or the first line alone without the `agentId: ` line that follows it, is no launch. A row with a toolUseResult is decided by it, whatever its text: an agent's own answer may begin as a launch does.",
-        "The expiry rule, beside the table (not a row of it): a task-notification with no <status> for a task the loop holds as a monitor (a Monitor result started it), whose <event> begins `[Monitor expired after ` or `[Monitor timed out` (the engine's expiry lines, 2.1.300), is terminal: {status `completed`, raw `expired`, summary the <event> text}. Any other notification with no <status> (a monitor's event, an agent resumed by the user) stays no evidence, and so does an expiry line for a task that is not a monitor.",
+        "The expiry rule, beside the table (not a row of it): a task-notification with no <status> for a task the loop holds as a monitor (a Monitor result started it), whose <event> begins `[Monitor expired after ` or `[Monitor timed out` (the engine's expiry lines, 2.1.300), is terminal: {status `completed`, raw `expired`, summary the <event> text}. Any other notification with no <status> (a monitor's event, an agent resumed by the user) stays no evidence, and so does an expiry line for a task that is not a monitor. It is judged where the task's words are folded, by the folding loop's monitors: a subagent loop's jobs also fold the main loop's words on its tasks (outside these cases), and a queued expiry there ends the subagent's monitor.",
         "An agent's evidence: the rows of its loop (the main loop's for an agent without parentAgentId; its parent's file for a nested one) that name it: the result row for its toolUseId (meta.toolUseId, else spawn.toolUseId), a notification whose <task-id> is the agentId or whose <tool-use-id> is that toolUseId, a task_status whose taskId is the agentId, a non-error TaskStop whose task_id is the agentId. For a background agent (meta.requestShape `background`, spawn.background true, or its call's input.run_in_background true or the string \"true\", as the engine writes either) a result row whose word is not async_launched does not count. None of these is needed to know a launch: many metas have no requestShape, a bridge seeded from $.agent.list() has no background, and many calls of agents that run in the background carry no run_in_background.",
         "`outcome` folds the agent's evidence in row order: a recognized word replaces the outcome ({status, raw, at, summary?, outputFile?} from that row) unless the outcome is terminal and the word is not; an unrecognized word replaces only `raw` of an existing outcome (and is dropped when there is none). `summary`: a notification's <summary> (an expiry notice's <event>), a task_status's deltaSummary, a TaskStop result's toolUseResult.message; `outputFile`: a notification's <output-file>, a task_status's outputFilePath, a launch's toolUseResult.outputFile; each present only when the deciding row carries it.",
         "`status` and `evidence`, the first that holds: (1) the outcome is terminal: its status, `rows`; (2) the session's process is gone: `exited`, `session`; the parent (meta.parentAgentId, else spawn.parentAgentId) has a status completed, failed, stopped or exited: `exited`, `parent`; the bridge holds the agent with running false: `exited`, `bridge`; (3) the bridge holds it with running true: `running`, `bridge`; the outcome's status is running: `running`, `rows`; (4) `unknown`, `none`. The bridge counts only while the session's process runs.",

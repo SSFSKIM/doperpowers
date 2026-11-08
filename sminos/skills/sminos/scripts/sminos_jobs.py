@@ -6,7 +6,8 @@ DC8 M1).
 Pure: rows in, facts and bodies out. A `Ledger` takes one loop's rows in file
 order and keeps only what the body needs: the calls of Agent/Task, Bash,
 Monitor and TaskStop until their results, each status word a row says about a
-task (a result, a task-notification, a `task_status`, a TaskStop), the
+task (a result, a task-notification, a `task_status`, a TaskStop; the
+engine's queue records that enqueue notifications are read with the rows), the
 background shells and monitors, the latest output path the rows named for each
 task, and the MCP names. Fed a parent agent's transcript, the same ledger
 yields its nested agents' outcomes. `derive` joins a ledger with the metas,
@@ -57,6 +58,12 @@ FORK_STARTED = "Fork started — processing in background"
 EXPIRED = "expired"
 EXPIRY_EVENTS = ("[Monitor expired after ", "[Monitor timed out")
 NOTIFICATION_PREAMBLE = "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
+# The engine's queue records (2.1.319): {"type": "queue-operation", "operation", "timestamp", "sessionId", "content"?},
+# no uuid, in the main loop's transcript. Every notification the engine queues is enqueued there, whichever loop it is
+# for, before that loop is handed it (as a row or an attachment of its own); one for an agent that has handed back is
+# never handed over, so its enqueue is the only word in any transcript that the task ended. Only an enqueue is read:
+# a `remove` repeats its text.
+QUEUE_RECORD = "queue-operation"
 # The bridge's notes of tasks it stopped with TaskStop (hooks/mods/bridge.tsx): a plugin's TaskStop writes no row
 # of its own, and for a task of the main loop's the engine queues no notification, so the note the bridge appends
 # for the model is the rows' only word that the task stopped. The engine keeps the note's user row isMeta with
@@ -134,6 +141,16 @@ def _notifications(text):
     return NOTIFICATION.findall(text)
 
 
+def queued_notice(row):
+    """The notifications' text of an engine queue record that enqueues them, or None: its `content`, which must start
+    with `<task-notification>` as a plain row's text must (the queue holds a person's prompts and peers' messages
+    too)."""
+    if row.get("type") != QUEUE_RECORD or row.get("operation") != "enqueue":
+        return None
+    text = row.get("content")
+    return text if isinstance(text, str) and text.startswith("<task-notification>") else None
+
+
 def _plain_notification(row, content):
     """The notification text of a plain user row the engine wrote for its notifications, or None. The engine marks
     the row `origin.kind: "task-notification"` (no prompt a person types carries it) and writes them as the row's
@@ -177,10 +194,15 @@ def _str(value):
     return value if isinstance(value, str) and value else None
 
 
-def fold(evidence, outcome=None):
+def fold(evidence, outcome=None, monitor=False):
     """The outcome a run of evidence comes to, in row order: a recognized word replaces the outcome unless the
-    outcome is terminal and the word is not; an unrecognized word replaces only `raw` of an outcome there is."""
+    outcome is terminal and the word is not; an unrecognized word replaces only `raw` of an outcome there is. An
+    expiry notice is a word only for a task `monitor` says the folding loop holds as a monitor (the expiry rule): it
+    is judged here, not where it was said, since the main loop's words on a subagent's tasks (`also`) name monitors
+    that loop never started."""
     for ev in evidence:
+        if ev.get("expiry") and not monitor:
+            continue
         word = ("completed", True) if ev.get("expiry") else _word(ev["raw"])
         if word is None:
             if outcome is not None:
@@ -239,6 +261,9 @@ class Ledger:
         att = row.get("attachment")
         if isinstance(att, dict):
             self._attachment(att, at)
+        queued = queued_notice(row)
+        for text in _notifications(queued) if queued is not None else ():
+            self._notification(text, at)
         msg = row.get("message")
         content = msg.get("content") if isinstance(msg, dict) else None
         plain = _plain_notification(row, content)
@@ -335,7 +360,7 @@ class Ledger:
                     self.mcp.append(name)
 
     def _notification(self, prompt, at):
-        """One task-notification's block, from either form the engine writes it in."""
+        """One task-notification's block, from any form the engine writes it in."""
         task, tool = _element(prompt, "task-id") or None, _element(prompt, "tool-use-id") or None
         path, raw = _element(prompt, "output-file") or None, _element(prompt, "status")
         if task:
@@ -350,7 +375,7 @@ class Ledger:
             if path:
                 ev["outputFile"] = path
             self._said(ev, task=task, tool=tool)
-        elif raw is None and task and self.jobs.get(task, {}).get("kind") == "monitor":
+        elif raw is None and task:
             event = _element(prompt, "event")
             if event and event.startswith(EXPIRY_EVENTS):
                 self._said({"raw": EXPIRED, "at": at, "expiry": True, "summary": event}, task=task)
@@ -381,16 +406,22 @@ class Ledger:
                     if not (ev.get("result") and ev["raw"] != LAUNCHED and (background or ev.get("background")))]
         return fold(evidence)
 
+    def outcome(self, task, monitor=False):
+        """What this loop's words on a task come to (fold), None when it said none: a monitor's expiry counts as
+        `monitor` says."""
+        return fold([self.evidence[i] for i in self.by_task.get(task, ())], monitor=monitor)
+
     def jobs_body(self, session_running, also=None):
         """The loop's jobs. `also`, a ledger of the main loop's rows for a subagent's loop: its words on these
         tasks count after the loop's own, since the bridge's record of a subagent's task it stopped is in the
-        main loop's transcript (the engine's own notice reaches the subagent only at its next tool batch)."""
+        main loop's transcript, and so is the engine's notice queued for an agent that handed back before it
+        came (the engine's notice reaches a live subagent only at its next tool batch)."""
         out = []
         for task, job in self.jobs.items():
             said = [self.evidence[i] for i in self.by_task.get(task, ())]
             if also is not None:
                 said += [also.evidence[i] for i in also.by_task.get(task, ())]
-            o = fold(said, {"status": "running", "raw": "running", "at": job["startedAt"]})
+            o = fold(said, {"status": "running", "raw": "running", "at": job["startedAt"]}, job["kind"] == "monitor")
             entry = {"taskId": task, "kind": job["kind"], "toolUseId": job["toolUseId"], "startedAt": job["startedAt"],
                      "description": job["description"], "outputFile": self.outputs.get(task)}
             if "command" in job:
@@ -503,7 +534,8 @@ def _task_calls(row, task):
 
 def task_rows(path, task):
     """The rows of one loop's transcript that can say what task `task` is and how it stands, in file order: each
-    row naming it exactly (its start's result, a notification, a `task_status`, a TaskStop call, a bridge's note),
+    row naming it exactly (its start's result, a notification, a `task_status`, a TaskStop call, a bridge's note,
+    the engine's queue record enqueuing a notice of it),
     then each row naming a call those rows tie to the task (the start's own call, the TaskStop's result). Fed to a
     Ledger, they give the task the status the whole file would; a short id
     reads no more rows than it names. The file is searched, not parsed: only those rows are, and never the engine's
@@ -528,7 +560,8 @@ def task_rows(path, task):
                         row = json.loads(line)
                     except ValueError:
                         pass
-                rows[span] = row if isinstance(row, dict) and _str(row.get("uuid")) else None
+                rows[span] = row if isinstance(row, dict) and (_str(row.get("uuid"))
+                                                               or queued_notice(row) is not None) else None
 
         # The task's exact references, never its bare id, which a short one shares with most rows: a whole JSON
         # string (backgroundTaskId, taskId, task_id), a notification's element, a bridge's note (STOP_NOTE).

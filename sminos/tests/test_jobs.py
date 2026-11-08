@@ -228,6 +228,40 @@ class TaskIndex(unittest.TestCase):
                              (task, "failed", "2026-11-08T01:45:43.491Z",
                               'Background command "%s" failed with exit code 144' % task))
 
+    def test_a_subagents_tasks_end_on_the_notices_queued_in_the_main_loop(self):
+        # 2.1.319: a monitor's stream ended as its agent handed back; the engine enqueued the notice for the agent in
+        # the main loop's transcript and never handed it over. The agent's own rows leave its tasks running.
+        agent = os.path.join(HOME, "idx", "queued", "subagents", "agent-a1cff.jsonl")
+        main = os.path.join(HOME, "idx", "queued.jsonl")
+        rows, kinds = [], {"bmon1": "Monitor", "bmon2": "Monitor", "bsh3": "Bash"}
+        for n, (task, name) in enumerate(kinds.items()):
+            tid = "toolu_q%d" % n
+            rows.append({"type": "assistant", "uuid": "c%d" % n, "timestamp": "2026-11-08T01:29:4%d.000Z" % n,
+                         "message": {"content": [{"type": "tool_use", "id": tid, "name": name,
+                                                  "input": {"command": "watch %d" % n, "description": "w%d" % n}}]}})
+            tur = {"taskId": task, "timeoutMs": 1800000} if name == "Monitor" else {"backgroundTaskId": task}
+            rows.append({"type": "user", "uuid": "r%d" % n, "timestamp": "2026-11-08T01:29:5%d.000Z" % n,
+                         "toolUseResult": tur,
+                         "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": "started"}]}})
+        self.write(agent, rows)
+        notice = "<task-notification>\n<task-id>%s</task-id>\n%s</task-notification>"
+        queued = [{"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-08T01:44:06.648Z",
+                   "sessionId": "s", "content": notice % ("bmon1", "<status>completed</status>\n")},
+                  {"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-08T02:00:00.000Z",
+                   "sessionId": "s", "content": notice % ("bmon2", "<event>[Monitor expired after 30m]</event>\n")},
+                  {"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-08T02:00:01.000Z",
+                   "sessionId": "s", "content": notice % ("bsh3", "<event>[Monitor expired after 30m]</event>\n")}]
+        self.write(main, [{"type": "user", "uuid": "u0", "timestamp": "2026-11-08T01:00:00Z",
+                           "message": {"content": "go"}}] + queued)
+        statuses = {}
+        for task in kinds:
+            own = fed(jobs.task_rows(agent, task))
+            also = fed(jobs.task_rows(main, task))
+            self.assertEqual(own.jobs_body(True)[0]["status"], "running", "%s: the agent's own rows alone" % task)
+            statuses[task] = own.jobs_body(True, also)[0]["status"]
+        self.assertEqual(statuses, {"bmon1": "completed", "bmon2": "completed", "bsh3": "running"},
+                         "the queued end counts, an expiry for the subagent's monitor, not for its shell")
+
     def test_a_missing_or_empty_transcript_holds_no_task(self):
         self.assertEqual(jobs.task_rows(os.path.join(HOME, "nowhere.jsonl"), "b1"), [])
         empty = self.write(os.path.join(HOME, "idx", "empty.jsonl"), [])

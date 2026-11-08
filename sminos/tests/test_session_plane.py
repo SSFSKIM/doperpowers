@@ -3582,6 +3582,29 @@ class TranscriptIndex(unittest.TestCase):
         index.extend()
         self.assertEqual((index.uuids, index.end), ([], 0), "a file not written yet is no reset")
 
+    def test_a_queued_notice_is_read_by_the_build_a_tail_and_a_parent_loop_and_indexes_no_row(self):
+        """The engine's queue record enqueuing a notice (2.1.319: no uuid) is the only word that a task ended when
+        the agent it is for handed back before it came. Each ledger feed reads it, in file order with the rows; a
+        `remove` repeating its text, and an enqueue of anything but notifications, are not read."""
+        rows, _r = self.thread_rows(1)
+        task = rows[2]["toolUseResult"]["backgroundTaskId"]
+        notice = "<task-notification>\n<task-id>%s</task-id>\n<status>%s</status>\n</task-notification>"
+        queue = [{"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-08T01:44:06.648Z",
+                  "sessionId": "s", "content": notice % (task, "completed")},
+                 {"type": "queue-operation", "operation": "remove", "timestamp": "2026-11-08T01:44:07.000Z",
+                  "sessionId": "s", "content": notice % (task, "failed")},
+                 {"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-08T01:44:08.000Z",
+                  "sessionId": "s", "content": "a person's next prompt"}]
+        self.append("".join(json.dumps(q, separators=(",", ":")) + "\n" for q in queue))
+        t = self.cold()
+        self.assertEqual(t.index.uuids, [row["uuid"] for row in rows], "a queue record is no row")
+        [job] = t.ledger.jobs_body(True)
+        self.assertEqual((job["status"], job["endedAt"]), ("completed", "2026-11-08T01:44:06.648Z"))
+        self.assertEqual([u for u, rec in plane.Tail().read(self.path) if u is None], [None])
+        self.assertEqual([rec for u, rec in plane.Tail().read(self.path) if u is None], queue[:1])
+        view = plane.Disk().view(self.path, [task], [])
+        self.assertEqual(view.outcome(task)["status"], "completed", "a parent loop's view reads it too")
+
     def test_kept_a_while_after_the_last_subscription(self):
         transcripts = plane.Transcripts(keep=2)
         held = [transcripts.acquire("/t/%d" % i) for i in range(4)]

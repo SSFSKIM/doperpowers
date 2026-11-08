@@ -24,6 +24,9 @@ agents still run is waiting on them; whether a task still runs is what the
 desk's ledger says from every row of the loop's own naming it (sminos_jobs:
 its start, a notification, a `task_status`, a TaskStop), and then the main
 loop's TaskStops and the bridge's stop notes (which leave no notification),
+and the notices the engine queued in the main loop's transcript that a task
+ended (a task that ends as its agent hands back has its notice queued for
+the agent and never delivered, so no row of the agent's says it ended),
 never the absence of a notification alone. An open turn whose agent was
 stopped by its parent (TaskStop) leaves no word in its own rows: the parent
 loop's TaskStops on it, made since that turn began, say so. A revival
@@ -39,8 +42,8 @@ orphaned if it was cut off. Each agent reads its transcript's tail backwards
 conversation row, an open turn back to where it began. The main loop's
 transcript, often hundreds of megabytes, is read only from where its rows
 reach the time asked (found by bisection on the rows' timestamps): its
-TaskStops back to the earliest open turn asking, its stop notes back to
-the running process's start; each byte at most once a view.
+TaskStops back to the earliest open turn asking, its stop notes and queued
+notices back to the running process's start; each byte at most once a view.
 
 Lifecycle: running, waiting (on background), stalled (disk only: open,
 nothing in flight, no write for `stall` seconds), orphaned, and the ended
@@ -89,6 +92,10 @@ QUIET_SECONDS = 60   # an agent with nothing in flight and no write for this lon
 EVIDENCE_MARGIN = 120.0
 # The bridge's notes that it stopped a task (sminos_jobs.STOP_NOTE, INTERRUPT_ORIGINS), found by these phrases.
 STOP_NOTE_PHRASES = (b"a background task, was stopped from", b"The interrupt came from")
+# The engine's queue records enqueuing notices (sminos_jobs.queued_notice), found by these bytes: the engine writes
+# keys unescaped, so a row's text, or a request record repeating it, never holds the first.
+QUEUE_RECORD = b'"queue-operation"'
+NOTICE_OPEN = b"<task-notification>"
 TASKSTOP_CALL = b'"name":"TaskStop"'
 ACTIVE = ("running", "waiting", "stalled")   # what the default view lists as live
 ENDED = ("completed", "failed", "stopped")
@@ -251,12 +258,12 @@ def offset_since(mm, t):
 
 class LoopStops:
     """What a loop's transcript says it stopped: its TaskStop calls that succeeded ({task id: [the call's time]}),
-    and the bridge's stop notes ({task id: time}), read back from the end only as far as asked (`reach`), each
-    stretch once."""
+    the bridge's stop notes ({task id: time}), and the engine's queue records enqueuing notices (`queued`, a jobs
+    ledger of them alone), read back from the end only as far as asked (`reach`), each stretch once."""
 
     def __init__(self, path):
         self.path, self.reached, self.offset = path, None, None
-        self.stops, self.notes, self.unreadable = {}, {}, False
+        self.stops, self.notes, self.queued, self.unreadable = {}, {}, jobs.Ledger(), False
 
     def reach(self, t):
         """Read back to rows written at `t` (less EVIDENCE_MARGIN), from where an earlier reach stopped."""
@@ -295,6 +302,18 @@ class LoopStops:
                 msg = row.get("message")
                 for task, _line in jobs._stop_records(row, msg.get("content") if isinstance(msg, dict) else None):
                     self.notes[task] = _epoch(row.get("timestamp"))
+        for span in _lines_holding(mm, QUEUE_RECORD, start, end):
+            line = mm[span[0]:span[1]]
+            if NOTICE_OPEN not in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and jobs.queued_notice(rec) is not None:
+                # Stretches are read newest first, so not in file order: only whether a task ended is asked of
+                # them, which no order changes (a terminal word is replaced only by another).
+                self.queued.add(rec)
 
     @staticmethod
     def _succeeded(mm, call, after):
@@ -317,9 +336,13 @@ class LoopStops:
                     return b.get("is_error") is not True
             at = e + 1
 
-    def ended(self, task):
-        """Whether this loop's rows (as far as read) stop the task."""
-        return task in self.notes or task in self.stops
+    def ended(self, task, monitor=False):
+        """Whether this loop's rows (as far as read) stop the task, or hold the engine's queued notice that it ended
+        (a monitor's expiry counting for a task the asking loop holds as a monitor)."""
+        if task in self.notes or task in self.stops:
+            return True
+        o = self.queued.outcome(task, monitor)
+        return o is not None and o["status"] != "running"
 
 
 def read_tail(path, opener=False):
@@ -375,7 +398,8 @@ def live_background(path, main=None):
     """The background shells and monitors this loop started that the rows do not end, [{taskId, kind,
     description, command, startedAt}]: each start found by its id, then every row of the loop's naming that task
     read through the desk's ledger (sminos_jobs.task_rows); a task they leave running is then asked of `main` (a
-    LoopStops of the main loop), whose TaskStops and bridge stop notes end it with no notification."""
+    LoopStops of the main loop), whose TaskStops, bridge stop notes and queued notices end it with no
+    notification in this loop's rows."""
     mm = _open_map(path)
     if mm is None:
         return []
@@ -387,14 +411,13 @@ def live_background(path, main=None):
     for task in tasks:
         ledger = jobs.Ledger()
         ledger.feed(jobs.task_rows(path, task))
-        if not any(j["taskId"] == task and j["status"] == "running" for j in ledger.jobs_body(True)):
-            continue
-        if main is not None and main.ended(task):
-            continue
         for j in ledger.jobs_body(True):
-            if j["taskId"] == task and j["status"] == "running":
-                out.append({"taskId": task, "kind": j["kind"], "description": j["description"],
-                            "command": j.get("command"), "startedAt": j["startedAt"]})
+            if j["taskId"] != task or j["status"] != "running":
+                continue
+            if main is not None and main.ended(task, j["kind"] == "monitor"):
+                continue
+            out.append({"taskId": task, "kind": j["kind"], "description": j["description"],
+                        "command": j.get("command"), "startedAt": j["startedAt"]})
     return out
 
 
