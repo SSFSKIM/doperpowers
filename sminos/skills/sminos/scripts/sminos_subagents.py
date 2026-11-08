@@ -45,6 +45,31 @@ the running process's start; each byte at most once a view.
 Lifecycle: running, waiting (on background), stalled (disk only: open,
 nothing in flight, no write for `stall` seconds), orphaned, and the ended
 ones: completed, failed, stopped (by the user, by TaskStop, or killed).
+
+A past agent — no word of the engine's on it, and none of its files written
+by the running process, or no process runs — is therefore ended or
+orphaned, never running or waiting, nor can it hold a parent waiting. The
+default view lists the agents running, waiting or stalled, and those that
+ended in the last ten minutes, and counts every other one: a past agent is
+counted from its directory's listing and stats alone, its meta and
+transcript unread. --all, --done and --json derive each agent they carry.
+
+An ended state the disk gives is final until the agent's own files change
+(a revival by SendMessage writes its meta's `revivedAt` and its transcript),
+so it is kept, per session (`cache`), and read back while the files'
+identities hold (inode, size, the times of the last write and status
+change). The key holds what else the state was read from: the parent whose
+loop's TaskStops can end it (a loop's transcript only grows: a stop once
+found stays found), and whether the running process wrote it, with that
+process's start — a closed turn of the running process is completed only
+while no background task it started runs (its own rows, then the main
+loop's stops since that start, which only add ends) and no child of it is
+live; a child runs again with no write to its parent's files, so that is
+asked again on every use. Only completed, failed and stopped are kept, and
+only where the disk decides: where the engine holds the agent its word is
+asked first, every time, and never kept. A file missing, unreadable or of
+another version, or an entry that is not well formed, is ignored, and the
+file written again.
 """
 
 import datetime
@@ -52,6 +77,7 @@ import json
 import mmap
 import os
 import re
+import tempfile
 import time
 
 import sminos_jobs as jobs
@@ -64,8 +90,11 @@ EVIDENCE_MARGIN = 120.0
 # The bridge's notes that it stopped a task (sminos_jobs.STOP_NOTE, INTERRUPT_ORIGINS), found by these phrases.
 STOP_NOTE_PHRASES = (b"a background task, was stopped from", b"The interrupt came from")
 TASKSTOP_CALL = b'"name":"TaskStop"'
-LIVE = ("running", "waiting", "stalled", "orphaned")
+ACTIVE = ("running", "waiting", "stalled")   # what the default view lists as live
 ENDED = ("completed", "failed", "stopped")
+# The default view's recently ended: those that ended this long ago at most, this many of them.
+RECENT_SECONDS = 600
+RECENT_CAP = 5
 WORDS = {"running": "running", "waiting": "waiting on background", "stalled": "stalled", "orphaned": "orphaned",
          "completed": "completed", "failed": "failed", "stopped": "stopped"}
 # The engine list's words (AgentStatus): a loop alive, or how it ended.
@@ -77,6 +106,7 @@ TASK_START = re.compile(rb'"(?:backgroundTaskId|taskId)"\s*:\s*"([A-Za-z0-9_-]{1
 # How far back an open turn is walked to find where it began; past it, the transcript's first row stands in.
 OPENER_BYTES = 8 << 20
 DESCRIPTION_WIDTH = 56
+MEMO_VERSION = 1
 
 
 def _epoch(stamp):
@@ -125,19 +155,15 @@ def _rows_back(mm):
         end = start - 1
 
 
-def _first_stamp(mm):
-    """The time of the transcript's first row that carries one."""
-    start = 0
-    while start < len(mm):
-        end = mm.find(b"\n", start)
-        end = len(mm) if end < 0 else end
+def _first_stamp(lines):
+    """The time of the transcript's first row that carries one, from its `lines` in order."""
+    for line in lines:
         try:
-            row = json.loads(mm[start:end])
+            row = json.loads(line)
         except ValueError:
             row = None
         if isinstance(row, dict) and _epoch(row.get("timestamp")) is not None:
             return _epoch(row["timestamp"])
-        start = end + 1
     return None
 
 
@@ -336,7 +362,8 @@ def read_tail(path, opener=False):
             walked += size
             if walked > OPENER_BYTES:
                 if opener:
-                    out["openedAt"] = _first_stamp(mm)
+                    mm.seek(0)
+                    out["openedAt"] = _first_stamp(iter(mm.readline, b""))
                 return out
         out["openedAt"] = earliest
         return out
@@ -383,87 +410,201 @@ def _born(st):
     return getattr(st, "st_birthtime", None) or st.st_mtime
 
 
+def _ident(st):
+    """A file's identity as the kept states key it, or None for no file."""
+    return None if st is None else [st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns]
+
+
+class Memo:
+    """The ended states of one session's agents, kept at `path` ({version, agents: {id: {key, state, kids?}}}):
+    loaded when first asked, written whole (temp file and rename, 0600) by `save` when an entry changed."""
+
+    def __init__(self, path):
+        self.path, self.entries, self.loaded, self.changed = path, {}, False, False
+
+    def _load(self):
+        if self.loaded:
+            return
+        self.loaded = True
+        try:
+            with open(self.path, "rb") as f:
+                d = json.loads(f.read())
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            d = None
+        if isinstance(d, dict) and d.get("version") == MEMO_VERSION and isinstance(d.get("agents"), dict):
+            self.entries = d["agents"]
+        else:
+            self.changed = True   # rewritten at the save, whatever it held
+
+    def get(self, agent_id, key):
+        """(state, kids) kept under this key — `kids` that it holds only while no child is live — or None."""
+        self._load()
+        e = self.entries.get(agent_id)
+        s = e.get("state") if isinstance(e, dict) and e.get("key") == key else None
+        if not (isinstance(s, dict) and s.get("state") in ENDED and s.get("source") == "disk" and "since" in s
+                and set(s) <= {"state", "source", "since", "stoppedBy"}):
+            return None
+        since, by = s["since"], s.get("stoppedBy", "")
+        if since is not None and (isinstance(since, bool) or not isinstance(since, (int, float))) \
+                or not isinstance(by, str):
+            return None
+        return dict(s), e.get("kids") is True
+
+    def put(self, agent_id, key, state, kids):
+        self._load()
+        entry = {"key": key, "state": dict(state), **({"kids": True} if kids else {})}
+        if self.entries.get(agent_id) != entry:
+            self.entries[agent_id], self.changed = entry, True
+
+    def drop(self, agent_id):
+        self._load()
+        if self.entries.pop(agent_id, None) is not None:
+            self.changed = True
+
+    def save(self, agents):
+        """Write the entries of `agents` (the agents the view holds) when any changed; a write that fails leaves the
+        file to the next view."""
+        if not self.loaded or not (self.changed or set(self.entries) - set(agents)):
+            return
+        entries = {i: e for i, e in self.entries.items() if i in agents}
+        d, tmp = os.path.dirname(self.path), None
+        try:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")
+            with os.fdopen(fd, "w") as f:
+                json.dump({"version": MEMO_VERSION, "agents": entries}, f, separators=(",", ":"))
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self.path)
+            tmp = None
+        except OSError:
+            return
+        finally:
+            if tmp is not None and os.path.exists(tmp):
+                os.unlink(tmp)
+        self.entries, self.changed = entries, False
+
+
+def read_meta(path):
+    """An agent's meta, or None when it cannot be read or is no object."""
+    try:
+        with open(path) as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
 class Subagents:
     """One session's subagents. `main` the session's transcript; `live` whether its process runs, `started` (epoch
     seconds) when that process started; `bridge` the bridge's agents (GET /agents), or None when no bridge
-    answered; `stall` seconds. States are derived on demand and kept: `tree` reads every agent, `done` only the
-    newest. `notes` says what could not be read, and so what may be missing or inferred."""
+    answered; `stall` seconds; `notes` what the caller already has to say. States are derived on demand and kept:
+    `counts` and `tree(every=True)` read every agent, `done` only the newest, and the default view (`active_counts`,
+    `tree`, `recent`, `done_count`) only those that are not past (`past`), whose metas alone are read at the start.
+    `notes` says what could not be read, and so what may be missing or inferred. `cache` the file the session's
+    ended states are kept in (Memo), None to keep none; `keep` writes it."""
 
-    def __init__(self, main, *, live, started=None, bridge=None, stall=STALL_SECONDS, now=None):
+    def __init__(self, main, *, live, started=None, bridge=None, stall=STALL_SECONDS, now=None, notes=(),
+                 cache=None):
         self.main, self.live, self.started, self.stall = main, live, started, stall
+        self.memo = Memo(cache) if cache else None
         self.engine_answered = bridge is not None
         self.now = time.time() if now is None else now
         self.held = {str(b["agentId"]): b for b in bridge or () if isinstance(b, dict) and b.get("agentId")}
         self.dir = main[:-len(".jsonl")] + "/subagents" if main.endswith(".jsonl") else None
-        self.agents, self.states, self.notes, self.loops, self.tails = {}, {}, [], {}, {}
+        self.agents, self.states, self.loops, self.tails = {}, {}, {}, {}
+        self._given, self._dir_notes, self._later = list(notes), [], []
         self._read_dir()
         for agent_id, b in self.held.items():
             # An agent the bridge knows only by a SubagentStop, never spawned and with no file, is the engine's own
             # (a hook's or a classifier's agent, its type empty): no subagent of the session's.
             if agent_id not in self.agents and (_str(b.get("subagentType")) or _str(b.get("description"))):
                 self.agents[agent_id] = {"agentId": agent_id, "meta": {}, "born": None, "metaAt": None,
-                                         "path": None, "at": None}
+                                         "path": None, "at": None, "past": self._past(agent_id, ())}
+        # Who may hold a parent waiting: a past child is never live, so only the others are its children here.
         self.children = {}
         for a in self.agents.values():
-            self.children.setdefault(self.parent(a), []).append(a["agentId"])
+            if not a["past"]:
+                self.children.setdefault(self.parent(a), []).append(a["agentId"])
 
     def _read_dir(self):
         """The agents the session's directory holds: its own subagents', and each workflow's
         (`workflows/<run>/`)."""
         if self.dir is None:
             return
-        unreadable = []
-        self._read_agents(self.dir, None, unreadable)
+        self._read_agents(self.dir, None)
         try:
             runs = sorted(n for n in os.listdir(os.path.join(self.dir, "workflows")) if not n.startswith("."))
         except OSError:
             runs = []
         for run in runs:
-            self._read_agents(os.path.join(self.dir, "workflows", run), run, unreadable)
-        if unreadable:
-            one = len(unreadable) == 1
-            self.notes.append("%d agent meta file%s could not be read (%s): %s listed from %s transcript alone, "
-                              "with no type, description, parent or worktree" % (
-                                  len(unreadable), "" if one else "s",
-                                  ", ".join(unreadable[:5]) + (", …" if len(unreadable) > 5 else ""),
-                                  "it is" if one else "they are", "its" if one else "each one's"))
+            self._read_agents(os.path.join(self.dir, "workflows", run), run)
 
-    def _read_agents(self, d, workflow, unreadable):
+    def _read_agents(self, d, workflow):
+        """The agents a directory holds, from its listing and each file's stats; the meta read now unless the agent
+        is past (read when first asked: `meta`)."""
         try:
             names = os.listdir(d)
         except FileNotFoundError:
             return   # no subagent ever wrote here
         except OSError as e:
-            self.notes.append("%s could not be read (%s): none of its agents are listed" % (d, e.strerror or e))
+            self._dir_notes.append("%s could not be read (%s): none of its agents are listed" % (d, e.strerror or e))
             return
         metas = {n[len("agent-"):-len(".meta.json")] for n in names
                  if n.startswith("agent-") and n.endswith(".meta.json")}
         transcripts = {n[len("agent-"):-len(".jsonl")] for n in names if n.startswith("agent-") and n.endswith(".jsonl")}
         for agent_id in sorted(metas | transcripts):
             meta_path = os.path.join(d, "agent-%s.meta.json" % agent_id)
-            st, meta = _stat(meta_path), None
-            if agent_id in metas:
-                try:
-                    with open(meta_path) as f:
-                        meta = json.load(f)
-                except (OSError, ValueError):
-                    meta = None
-                if not isinstance(meta, dict):
-                    unreadable.append(agent_id)
-                    meta = None
+            st = _stat(meta_path)
             transcript = os.path.join(d, "agent-%s.jsonl" % agent_id)
             tst = _stat(transcript) if agent_id in transcripts else None
             first = st if st is not None else tst
             if first is None:
                 continue
-            self.agents[agent_id] = {"agentId": agent_id, "meta": meta or {}, "born": _born(first),
-                                     "metaAt": st.st_mtime if st is not None else None,
-                                     "path": transcript if tst else None, "at": tst.st_mtime if tst else None,
-                                     "metaUnread": agent_id in metas and meta is None, "workflow": workflow}
+            a = {"agentId": agent_id, "meta": None if agent_id in metas else {}, "metaPath": meta_path,
+                 "born": _born(first), "metaAt": st.st_mtime if st is not None else None,
+                 "path": transcript if tst else None, "at": tst.st_mtime if tst else None,
+                 "metaUnread": False, "workflow": workflow, "ids": [_ident(tst), _ident(st)]}
+            a["past"] = self._past(agent_id, (a["at"], a["metaAt"], a["born"]))
+            self.agents[agent_id] = a
+            if not a["past"]:
+                self.meta(a)
+
+    def meta(self, a):
+        """The agent's meta ({} when it has none or it cannot be read, `metaUnread` then saying so), read once."""
+        if a["meta"] is None:
+            meta = read_meta(a["metaPath"])
+            a["meta"], a["metaUnread"] = meta or {}, meta is None
+        return a["meta"]
+
+    @property
+    def notes(self):
+        """What could not be read: the caller's notes, the directories', the metas read so far, the loops'."""
+        unreadable = [i for i, a in self.agents.items() if a.get("metaUnread")]
+        out = self._given + self._dir_notes
+        if unreadable:
+            one = len(unreadable) == 1
+            out.append("%d agent meta file%s could not be read (%s): %s listed from %s transcript alone, "
+                       "with no type, description, parent or worktree" % (
+                           len(unreadable), "" if one else "s",
+                           ", ".join(unreadable[:5]) + (", …" if len(unreadable) > 5 else ""),
+                           "it is" if one else "they are", "its" if one else "each one's"))
+        return out + self._later
+
+    def _past(self, agent_id, writes):
+        """Whether the agent is past: the engine holds no word on it (or no bridge answered) and the running process
+        wrote none of its files (`writes`, their times), or the session runs no process. By the doctrine such an
+        agent is ended or orphaned, never running or waiting, so the default view counts it unread."""
+        if not self.live:
+            return True
+        if agent_id in self.held or self.started is None:
+            return False
+        return all(t is None or t < self.started for t in writes)
 
     # -- facts
     def parent(self, a):
-        p = _str(a["meta"].get("parentAgentId")) or _str((self.held.get(a["agentId"]) or {}).get("parentAgentId"))
+        p = _str(self.meta(a).get("parentAgentId")) or _str((self.held.get(a["agentId"]) or {}).get("parentAgentId"))
         return p if p in self.agents and p != a["agentId"] else None
 
     def _current(self, at):
@@ -485,7 +626,7 @@ class Subagents:
             self.loops[parent] = LoopStops(self._loop_path(parent))
         stops = self.loops[parent].reach(since)
         if stops.unreadable:
-            self.notes.append("the transcript of %s could not be read: an agent or task it stopped may read as "
+            self._later.append("the transcript of %s could not be read: an agent or task it stopped may read as "
                               "orphaned, running or waiting" % ("the main loop" if parent is None else parent))
             stops.unreadable = None   # said once
         return stops
@@ -496,7 +637,7 @@ class Subagents:
             return None
         # The open turn began at its first row after the last that closed one; a TaskStop closes nothing, so after a
         # stop and a revival that row may be an earlier revival's, and only the latest revival bounds the turn.
-        revived = a["meta"].get("revivedAt")
+        revived = self.meta(a).get("revivedAt")
         since = max(tail.get("openedAt") or a["born"] or 0,
                     revived / 1000.0 if isinstance(revived, (int, float)) and not isinstance(revived, bool) else 0)
         stops = self.loop_stops(self.parent(a), since)
@@ -510,19 +651,42 @@ class Subagents:
             self.states[agent_id] = self._derive(self.agents[agent_id])
         return self.states[agent_id] or {"state": "completed", "source": "disk", "since": None}
 
+    def _live_kids(self, a):
+        return [k for k in self.children.get(a["agentId"], ()) if self.state(k)["state"] in ACTIVE]
+
     def _waiting(self, a, since, source):
         """Waiting on background when a task this loop started, or a background child agent, still runs."""
         main = self.loop_stops(None, self.started or 0) if self.main else None
         tasks = live_background(a["path"], main) if a["path"] else []
-        kids = [k for k in self.children.get(a["agentId"], ()) if self.state(k)["state"] in ("running", "waiting", "stalled")]
+        kids = self._live_kids(a)
         if tasks or kids:
             return {"state": "waiting", "source": source, "since": since, "background": tasks, "waitingOn": kids}
         return None
 
     def _derive(self, a):
-        meta, held = a["meta"], self.held.get(a["agentId"])
+        held = self.held.get(a["agentId"])
         if held is not None and self.live and not self._revived(a, held):
             return self._engine(a, held)
+        if self.memo is None:
+            return self._disk(a)
+        # The kept state where the disk decides (the module's doctrine says what the key holds, and why).
+        current = self._current(a["at"])
+        key = [a["path"], a.get("metaPath"), *(a.get("ids") or (None, None)), self.parent(a), current,
+               self.started if current else None]
+        kept = self.memo.get(a["agentId"], key)
+        if kept is not None and not (kept[1] and self._live_kids(a)):
+            return kept[0]
+        out = self._disk(a)
+        if out["state"] in ENDED:
+            # A completed closed turn of the running process was asked whether its children run.
+            self.memo.put(a["agentId"], key, out, kids=out["state"] == "completed" and current)
+        else:
+            self.memo.drop(a["agentId"])
+        return out
+
+    def _disk(self, a):
+        """The agent's state as its files, and its loops', say it."""
+        meta = self.meta(a)
         if a["path"] is None:
             if meta.get("finished") is True:
                 return {"state": "completed", "source": "disk", "since": a["metaAt"]}
@@ -578,7 +742,7 @@ class Subagents:
         """Whether the engine's word that an agent ended is older than the turn its rows hold open: a SendMessage
         revived it (`revivedAt`) and wrote since, and the bridge, which learns an agent's end but no revival (nor
         keeps when it learned the end, past a resync), still holds the end. The rows decide then."""
-        revived = a["meta"].get("revivedAt")
+        revived = self.meta(a).get("revivedAt")
         if held.get("running") is not False or not isinstance(revived, (int, float)) or a["at"] is None \
                 or a["at"] * 1000 < revived:
             return False
@@ -605,7 +769,7 @@ class Subagents:
                     return waiting
             out = {"state": state, "source": "engine", "since": since}
             if state == "stopped":
-                out["stoppedBy"] = "user" if a["meta"].get("stoppedByUser") is True else "killed"
+                out["stoppedBy"] = "user" if self.meta(a).get("stoppedByUser") is True else "killed"
             return out
         # Ended with no word (SubagentStop, or it left the list): its rows say how.
         if tail and tail["failed"]:
@@ -614,16 +778,17 @@ class Subagents:
             waiting = self._waiting(a, tail["at"], "engine")
             return waiting or {"state": "completed", "source": "engine", "since": since}
         if tail is None or not tail["last"]:
-            return {"state": "completed" if a["meta"].get("finished") else "stopped", "source": "engine",
-                    "since": since, **({} if a["meta"].get("finished") else {"stoppedBy": "killed"})}
+            finished = self.meta(a).get("finished")
+            return {"state": "completed" if finished else "stopped", "source": "engine",
+                    "since": since, **({} if finished else {"stoppedBy": "killed"})}
         return {"state": "stopped", "source": "engine", "since": since,
-                "stoppedBy": "user" if a["meta"].get("stoppedByUser") is True else "killed"}
+                "stoppedBy": "user" if self.meta(a).get("stoppedByUser") is True else "killed"}
 
     # -- views
     def entry(self, agent_id, depth=0):
         """An agent as the view carries it (list --subagents --json)."""
         a = self.agents[agent_id]
-        meta, held = a["meta"], self.held.get(agent_id) or {}
+        meta, held = self.meta(a), self.held.get(agent_id) or {}
         s = self.state(agent_id)
 
         def age(t):
@@ -654,22 +819,24 @@ class Subagents:
         """When the agent was spawned: its transcript's first row's time (the prompt it was given), the same on
         every filesystem; else when its meta file was made (macOS) or last written."""
         if "spawned" not in a:
-            mm = _open_map(a["path"]) if a["path"] else None
-            try:
-                a["spawned"] = (_first_stamp(mm) if mm is not None else None) or a["born"] or 0
-            finally:
-                if mm is not None:
-                    mm.close()
+            stamp = None
+            if a["path"]:
+                try:
+                    with open(a["path"], "rb") as f:   # its head alone: a read, cheaper than a map
+                        stamp = _first_stamp(f)
+                except OSError:
+                    pass
+            a["spawned"] = stamp or a["born"] or 0
         return a["spawned"]
 
     def _spawn_order(self, ids):
         return sorted(ids, key=lambda i: (self.spawned(self.agents[i]), i))
 
     def tree(self, every=False, depth=None):
-        """The agents in spawn order nested under their parents, [entry]; without `every` only the live ones (each
-        under its nearest live ancestor). With `depth`, only that many levels: a row whose shown descendants are
-        cut off carries them as `folded` {count, states}."""
-        shown = {i for i in self.agents if every or self.state(i)["state"] in LIVE}
+        """The agents in spawn order nested under their parents, [entry]; without `every` only the live ones —
+        running, waiting, stalled — each under its nearest live ancestor, a past agent never derived. With `depth`,
+        only that many levels: a row whose shown descendants are cut off carries them as `folded` {count, states}."""
+        shown = {i for i, a in self.agents.items() if every or not a["past"] and self.state(i)["state"] in ACTIVE}
 
         def anchor(i):
             p, seen = self.parent(self.agents[i]), set()
@@ -715,7 +882,7 @@ class Subagents:
                                                        if b.get("running") is True and i in self.agents)}
         n = 0
         for a in self.agents.values():
-            if a["path"] and self._current(a["at"]) and a["meta"].get("stoppedByUser") is not True:
+            if a["path"] and self._current(a["at"]) and self.meta(a).get("stoppedByUser") is not True:
                 t = self.tail(a)
                 n += bool(t and t["last"] and not t["closed"] and not t["failed"])
         return {"source": "disk", "open": n}
@@ -726,6 +893,34 @@ class Subagents:
         for i in self.agents:
             c[self.state(i)["state"]] += 1
         return c
+
+    # -- the default view: the live ones and those ended in the last minutes, every other one counted unread
+    def active_counts(self):
+        """{running, waiting, stalled}: how many agents are live, every depth counted, a past agent never derived."""
+        c = dict.fromkeys(ACTIVE, 0)
+        for i, a in self.agents.items():
+            if not a["past"] and self.state(i)["state"] in ACTIVE:
+                c[self.state(i)["state"]] += 1
+        return c
+
+    def recent(self, seconds=RECENT_SECONDS, cap=RECENT_CAP):
+        """The agents that ended in the last `seconds`, newest first, at most `cap`, [entry]: of those that are not
+        past (a past agent ended before the running process started)."""
+        ended = [(self.state(i)["since"], i) for i, a in self.agents.items()
+                 if not a["past"] and self.state(i)["state"] in ENDED and self.state(i)["since"] is not None
+                 and self.now - self.state(i)["since"] <= seconds]
+        return [self.entry(i) for _since, i in sorted(ended, key=lambda x: (-x[0], x[1]))[:cap]]
+
+    def keep(self):
+        """Write the session's kept ended states (`cache`) when they changed."""
+        if self.memo is not None:
+            self.memo.save(self.agents)
+
+    def done_count(self, recent=None):
+        """How many agents the default view does not list (neither live nor among `recent`, the `recent()` it
+        shows): ended or orphaned, now or in an earlier process."""
+        shown = self.recent() if recent is None else recent
+        return len(self.agents) - sum(self.active_counts().values()) - len(shown)
 
     def done(self, n):
         """The `n` agents ended last, newest first, [entry]: read newest written first, stopping at `n`."""
@@ -761,12 +956,21 @@ def counts_line(c):
         c["running"], c["waiting"], c["stalled"], c["orphaned"])
 
 
-def ended_line(c):
-    """`+492 ended (480 completed · 2 failed · 10 stopped)`, or "" when none has."""
-    n = sum(c[s] for s in ENDED)
-    if not n:
-        return ""
-    return "+%d ended (%s)" % (n, " · ".join("%d %s" % (c[s], s) for s in ENDED if c[s]))
+def active_line(c):
+    """The default view's header: `[2 running · 1 waiting on background]`, `· 1 stalled` added when one is."""
+    return "[%d running · %d waiting on background%s]" % (
+        c["running"], c["waiting"], " · %d stalled" % c["stalled"] if c["stalled"] else "")
+
+
+def done_line(n):
+    """`+1118 done (on disk)`: every agent the default view does not list."""
+    return "+%d done (on disk)" % n
+
+
+def ended_text(e):
+    """A recently ended agent's outcome and how long ago: `completed 3m ago`, `stopped 30s ago · by TaskStop`."""
+    return WORDS[e["state"]] + " " + short_age(e["seconds"]) + " ago" + (" · by " + e["stoppedBy"]
+                                                                          if e["stoppedBy"] else "")
 
 
 def state_text(e):
@@ -793,13 +997,18 @@ def _type_text(e):
     return e["type"] + (" (%s)" % extra if extra else "")
 
 
-def tree_lines(entries):
+def tree_lines(entries, ended=()):
     """The tree's rows, columns aligned: the id (indented by depth; the engine's name for it beside it), type and
-    model, description, lifecycle and activity, its own worktree."""
+    model, description, lifecycle and activity, its own worktree; then the `ended` (recent), each with how long ago
+    it ended, in the same columns."""
     rows = []
     for e in entries:
         label = "  " * e["depth"] + e["agentId"] + (" (%s)" % e["name"] if e["name"] else "")
         rows.append([label, _type_text(e), _cut(e["description"], DESCRIPTION_WIDTH), state_text(e),
+                     "wt " + _home(e["worktree"]) if e["worktree"] else ""])
+    for e in ended:
+        rows.append([e["agentId"] + (" (%s)" % e["name"] if e["name"] else ""), _type_text(e),
+                     _cut(e["description"], DESCRIPTION_WIDTH), ended_text(e),
                      "wt " + _home(e["worktree"]) if e["worktree"] else ""])
     return _aligned(rows)
 

@@ -122,13 +122,17 @@ member too, seat-less, from the first call that reads its project.
                    for them); --here ends with the live sessions that are no member
     sminos list     --subagents [member] [--done N] [--depth N] [--stall MIN] [--all] [--json]
                    # your session's subagents (a member's on this machine: inspection only), in place of
-                   ListAgents: counts at every depth, the live ones as a tree, each with its lifecycle
-                   (running, waiting on background, stalled, orphaned; completed, failed, stopped), its
-                   source (the engine through the bridge, else the disk) and what it does (in Bash 12m,
-                   no write 14m); --done N the N ended last, newest first, with their outcome (SendMessage
-                   to an agentId resumes it); --depth N the top N levels, a row saying what it folds;
-                   --stall MIN (10) the quiet that makes an open turn stalled when only the disk speaks;
-                   --json {self, scope, counts, agents, notes}
+                   ListAgents: how many run, wait on background or stall, at every depth, those as a
+                   tree, each with its lifecycle, its source (the engine through the bridge, else the
+                   disk) and what it does (in Bash 12m, no write 14m); then the ones ended in the last
+                   10 minutes (5 at most, newest first: completed 3m ago), and "+N done (on disk)" for
+                   every other one, ended or orphaned, an earlier process's counted without being read;
+                   --all every agent with its lifecycle (running, waiting on background, stalled,
+                   orphaned; completed, failed, stopped) and the counts of each; --done N the N ended
+                   last, newest first, with their outcome (SendMessage to an agentId resumes it);
+                   --depth N the top N levels, a row saying what it folds; --stall MIN (10) the quiet
+                   that makes an open turn stalled when only the disk speaks;
+                   --json {self, scope, counts, agents, notes}, every agent whatever its state
     sminos find     <words..>                             # list --org <words>: every session they match
     sminos who      [<commit|PR>] [--session S]           # the session a commit (its Sminos-Session trailer)
                    or a PR (its body's last line, else its commits' trailers; a number or URL, through gh)
@@ -5765,9 +5769,12 @@ def caller_seat():
     for s in all_seats:
         if s["current"] == sid:
             return s
+    provisional = [s for s in all_seats if not s["current"] and s["short"]]
+    if not provisional:
+        return None   # no seat the harness's rows could name: `claude agents` is not asked
     row = agent_row(session_id=sid)
     if row:
-        return next((s for s in all_seats if not s["current"] and s["short"] and s["short"] == row.get("id")), None)
+        return next((s for s in provisional if s["short"] == row.get("id")), None)
     return None
 
 
@@ -11721,12 +11728,16 @@ def subagents_module():
     return sibling_module("sminos_subagents")
 
 
+SUBAGENT_STATES = "subagents"   # under $SMINOS_HOME: <session>.json, a session's ended subagents' states (sminos_subagents.Memo)
+
+
 def subagents_view(session, stall_minutes=None):
     """(view, scope): a session's subagents (sminos_subagents.Subagents) with
     the engine's word from its bridge when one answers, and the scope the
     view read — its transcript, whether its process runs, where the
     lifecycle came from (`engine` with a bridge, else `disk`). The view's
-    notes say what could not be read."""
+    notes say what could not be read; its ended states are kept under
+    $SMINOS_HOME/subagents/<session>.json (`view.keep()` writes them)."""
     V = subagents_module()
     rec = session_running(session)
     tpath = transcript_path(session)
@@ -11756,8 +11767,9 @@ def subagents_view(session, stall_minutes=None):
             "only the agents its bridge holds are listed" if bridge is not None else "no subagent can be read"))
     notes += peer_notes()
     stall = V.STALL_SECONDS if stall_minutes is None else stall_minutes * 60
-    view = V.Subagents(tpath or "", live=rec is not None, started=started, bridge=bridge, stall=stall)
-    view.notes[:0] = notes
+    cache = os.path.join(root(), SUBAGENT_STATES, session + ".json") if UUID_RE.fullmatch(session) else None
+    view = V.Subagents(tpath or "", live=rec is not None, started=started, bridge=bridge, stall=stall, notes=notes,
+                       cache=cache)
     scope = {"session": session, "short": session[:8], "transcript": tpath or None,
              "subagentsDir": view.dir, "live": rec is not None, "bridge": said}
     return view, scope
@@ -11826,12 +11838,15 @@ def subagent_summary_line(session):
 def cmd_subagents(a):
     """`list --subagents [member] [--done N] [--depth N] [--all] [--stall MIN]
     [--json]`: the caller's own session's subagents, or (inspection only)
-    another session's on this machine. Text: who you are, the counts at every
-    depth, then the live agents as a tree (--all: the ended too; --depth:
-    the top levels, a row saying what it folds), and the count of those
-    ended; --done N: the N ended last, newest first, each with its outcome.
-    --json: {self, scope, counts, agents, notes}, every agent of the tree
-    (or the --done list), whatever its state."""
+    another session's on this machine. Text: who you are, how many run, wait
+    on background or stall, at every depth, those as a tree (--depth: the
+    top levels, a row saying what it folds), then those ended in the last
+    ten minutes (five at most, newest first), and how many else are done —
+    each past agent (sminos_subagents.Subagents.past) counted, never read;
+    --all: the counts of every state and every agent in the tree; --done N:
+    the N ended last, newest first, each with its outcome. --json: {self,
+    scope, counts, agents, notes}, every agent of the tree (or the --done
+    list), whatever its state."""
     V = subagents_module()
     me = self_identity()
     member = a.subagents or ""
@@ -11849,17 +11864,22 @@ def cmd_subagents(a):
     view, scope = subagents_view(session, a.stall)
     scope.update(member=member or None, inspectionOnly=inspection, depth=a.depth, all=a.all, done=a.done,
                  machine=host_name())
-    counts = view.counts()
+    # Every agent's state only where the output carries it: the default view derives the live ones alone.
+    counts = view.counts() if a.json or (a.all and a.done is None) else None
+    ended = []
     if a.done is not None:
         agents = view.done(a.done)
     else:
         agents = view.tree(every=a.all or a.json, depth=a.depth)
+        if counts is None:
+            ended = view.recent()
     if inspection:
         for e in agents:
             e["inspectionOnly"] = True
     if a.json:
         print(json.dumps({"self": me, "scope": scope, "counts": counts, "agents": agents, "notes": view.notes},
                          indent=2))
+        view.keep()
         return
     if me:
         print(self_line(me))
@@ -11876,20 +11896,22 @@ def cmd_subagents(a):
         if lines and not inspection:
             print("SendMessage to an agentId resumes that agent, when its work should go on")
     else:
-        print((whose + " " if not inspection else "  ") + V.counts_line(counts)
+        header = V.counts_line(counts) if a.all else V.active_line(view.active_counts())
+        print((whose + " " if not inspection else "  ") + header
               + ("" if scope["live"] else " — the session runs no process"))
-        lines = V.tree_lines(agents)
+        lines = V.tree_lines(agents, ended)
         if lines:
             print("\n".join(lines))
         elif not view.agents:
             print("  (no subagents in session %s: %s)" % (session[:8], view.dir or "no transcript"))
         else:
             print("  (none is live)")
-        ended = V.ended_line(counts)
-        if ended and not a.all:
-            print("  %s — sminos list --subagents%s --done 10" % (ended, " " + member if member else ""))
+        done = 0 if a.all else view.done_count(ended)
+        if done:
+            print("  %s — sminos list --subagents%s --done 10" % (V.done_line(done), " " + member if member else ""))
     for n in view.notes:
         print("note: " + n)
+    view.keep()
 
 
 def cmd_list(a):
