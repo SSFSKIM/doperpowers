@@ -1494,7 +1494,7 @@ class Engine(Session):
         later = self.fake.user_row("later", post=False)
         tailed = []
         real = plane.parse_rows
-        with mock.patch.object(plane, "parse_rows", lambda lines: tailed.extend(lines) or real(lines)):
+        with mock.patch.object(plane, "parse_rows", lambda lines, **kw: tailed.extend(lines) or real(lines, **kw)):
             self.assertTrue(self.pump(first, b1, lambda: len(b1.rows) == 10))
         self.assertEqual(len(tailed), 5, "the uplink's thread parsed only what flushed after its build's offset")
         self.assertEqual([r["uuid"] for r in reversed(b1.snapshot["rows"])], first_rows, "its own build's history")
@@ -1957,7 +1957,8 @@ class Jobs(Session):
     def write(self, *rows, agent=None, fake=None):
         for row in rows:
             (fake or self.fake).write_row(agent, row)
-        return rows[-1]["uuid"]
+        # The last row's uuid; an engine queue record, which has none, is passed over.
+        return next((row["uuid"] for row in reversed(rows) if "uuid" in row), None)
 
     def meta_path(self, agent, fake=None):
         fake = fake or self.fake
