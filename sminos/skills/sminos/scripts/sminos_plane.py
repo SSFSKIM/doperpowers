@@ -199,13 +199,16 @@ OPEN_WAIT = 20.0          # s: a bridge that sends no snapshot by then ends the 
 END_GRACE = 1.0           # s: once the session is not running, what it still flushes is drawn this long
 ROWS_BUDGET = 512 * 1024  # bytes of row JSON in a snapshot or a page: "as many as fit"
 ROW_KEY = b'"uuid"'       # a line without these bytes holds no row: it is not parsed
+# The one uuid-less record a ledger reads: the engine's queue record enqueuing notifications (sminos_jobs.queued_notice),
+# known by these bytes before it is parsed. The engine writes keys unescaped, so a row's text never holds the first.
+QUEUE_KEY, NOTICE_KEY = b'"queue-operation"', b"<task-notification>"
 READ_BLOCK = 8 << 20      # bytes an index reads at a time
 INDEX_KEEP = 32           # transcripts whose index is kept after their last subscription went (or the warmer let go)
 WARM_EVERY = 2.0          # s: how often the live members are looked over and a round of warm jobs begins
 WARM_PARALLEL = 2         # warm jobs queued or running at once, in the process
 SAVE_GROWTH = 16 << 20    # bytes of transcript an index grows by before its build is saved again
 STOP_SAVE_SECONDS = 5.0   # s: the uplink's stop waits this long for the held builds to be saved
-BUILD_FORMAT = 3          # what a saved build holds: bumped whenever Index, jobs.Ledger, Chain or their rules change
+BUILD_FORMAT = 4          # what a saved build holds: bumped whenever Index, jobs.Ledger, Chain or their rules change
 BUILD_KEEP_DAYS = 14      # a saved build not written or loaded this long is swept at the uplink's start
 BUILD_DIR = "plane"       # under daemon/: the saved builds
 PRESENCE_EVERY = 0.2      # s: how often the engine's records are looked at
@@ -294,13 +297,29 @@ def parse_row(line):
     return row if isinstance(row, dict) and isinstance(row.get("uuid"), str) and row["uuid"] else None
 
 
-def parse_rows(lines):
-    """(uuid, row) for each line that is a row."""
+def parse_queued(line):
+    """The engine's queue record on a line when it enqueues notifications (sminos_jobs.queued_notice), else None."""
+    if QUEUE_KEY not in line or NOTICE_KEY not in line:
+        return None
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return None
+    return rec if isinstance(rec, dict) and jobs.queued_notice(rec) is not None else None
+
+
+def parse_rows(lines, queued=False):
+    """(uuid, row) for each line that is a row; with `queued`, (None, record) too for each queue record enqueuing
+    notifications, in file order with the rows."""
     out = []
     for line in lines:
         row = parse_row(line)
         if row is not None:
             out.append((row["uuid"], row))
+        elif queued:
+            rec = parse_queued(line)
+            if rec is not None:
+                out.append((None, rec))
     return out
 
 
@@ -310,7 +329,8 @@ class Reset(Exception):
 
 class Tail:
     """One transcript file read forward in whole lines: `read` returns the
-    rows flushed since the last read; a line not yet ended waits."""
+    rows flushed since the last read, and the queue records enqueuing
+    notifications among them as (None, record); a line not yet ended waits."""
 
     def __init__(self):
         self.path = ""
@@ -339,7 +359,7 @@ class Tail:
         if end < 0:
             return []
         self.offset += end + 1
-        return parse_rows(data[:end].split(b"\n"))
+        return parse_rows(data[:end].split(b"\n"), queued=True)
 
 
 class Index:
@@ -365,7 +385,7 @@ class Index:
             raise Reset("the transcript was replaced or shrank")
         self.ino = st.st_ino
 
-    def extend(self, on_row=None):
+    def extend(self, on_row=None, on_queued=None):
         """Reads what was flushed past `end`, in blocks; a line not yet ended
         waits. `on_row`, if given, sees each new row as it is parsed."""
         try:
@@ -397,6 +417,11 @@ class Index:
                             self.lengths.append(len(line))
                             if on_row is not None:
                                 on_row(row)
+                    elif on_queued is not None and QUEUE_KEY in line:
+                        rec = parse_queued(line)
+                        if rec is not None:
+                            self.parsed += len(line)
+                            on_queued(rec)
                     at += len(line) + 1
             self.end = at
 
@@ -755,7 +780,7 @@ class Transcript:
             chain.add(row)
 
         try:
-            self.index.extend(on_row)
+            self.index.extend(on_row, ledger.add)
         except Reset:
             self.index, self.ledger, self.chain = Index(self.path), jobs.Ledger(), Chain(self.chain.main)
             self.indexed, self.saved, self.tried_end = False, None, None
@@ -1167,6 +1192,9 @@ class Loop:
 
     def add(self, line):
         if ROW_KEY not in line:
+            rec = parse_queued(line)
+            if rec is not None:
+                self.ledger.add(rec)
             return
         if not (AGENT_CALL.search(line) or any(k in line for k in OUTCOME_KEYS)
                 or (b'"tool_result"' in line
@@ -2013,7 +2041,7 @@ class Subscription:
         for u, row in self.tail.read(self.path(now)):
             self.ledger.add(row)
             self.dirty = True
-            if u not in self.emitted and u not in self.pool:
+            if u is not None and u not in self.emitted and u not in self.pool:
                 self.pool[u] = [row, now]
 
     def release(self, now, out):

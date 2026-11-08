@@ -216,6 +216,35 @@ class Derivation(unittest.TestCase):
                                                                      "the desk: it is not running."}}])
         self.assertEqual(self.state("a1")["state"], "completed")
 
+    def test_a_task_whose_end_the_engine_queued_after_the_handback_does_not_keep_it_waiting(self):
+        """A monitor's stream ends as its agent hands back: the engine enqueues the notice for the agent in the main
+        loop's transcript and never hands it over (2.1.319), so no row of the agent's says the monitor ended."""
+        def notice(t, task, status=None, event="GREEN\nexit=0", operation="enqueue"):
+            body = "<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>tu-%s</tool-use-id>\n" % (task, task)
+            body += "<status>%s</status>\n" % status if status else ""
+            body += "<summary>Monitor \"ci\" stream ended</summary>\n<event>%s</event>\n</task-notification>" % event
+            return {"type": "queue-operation", "operation": operation, "timestamp": ts(t), "sessionId": SID,
+                    "content": body}
+
+        for agent, task in (("m1", "bm1"), ("m2", "bm2"), ("m3", "bm3"), ("m4", "bm4")):
+            rows = [Rows.prompt(NOW - 600), Rows.call(NOW - 590, "tu-" + task, "Monitor", {"command": "watch"}),
+                    Rows.result(NOW - 589, "tu-" + task, "Monitor started (task %s)." % task,
+                                tur={"taskId": task, "timeoutMs": 1800000, "persistent": False}),
+                    *Rows.handback(NOW - 400)]
+            self.s.agent(agent, rows, NOW - 399, meta={"finished": True})
+        self.s.agent("s5", [Rows.prompt(NOW - 600), *Rows.bg_bash(NOW - 590, "t5", "bs5"), *Rows.handback(NOW - 400)],
+                     NOW - 399, meta={"finished": True})
+        self.assertEqual(self.state("m1")["state"], "waiting", "its own rows leave the monitor running")
+        expired = "[Monitor expired after 30m]"
+        self.s.append_main([notice(NOW - 401, "bm1", "completed"), notice(NOW - 401, "bm2", "running", "PASS one"),
+                            notice(NOW - 300, "bm3", event=expired), notice(NOW - 299, "bm4", "completed", operation="remove"),
+                            notice(NOW - 298, "bs5", event=expired)])
+        v = self.s.view()
+        self.assertEqual({a: v.state(a)["state"] for a in ("m1", "m2", "m3", "m4", "s5")},
+                         {"m1": "completed", "m2": "waiting", "m3": "completed", "m4": "waiting", "s5": "waiting"},
+                         "a queued terminal notice ends the task, and an expiry a monitor; a running word, a queue "
+                         "record that is no enqueue, and an expiry line for a shell do not")
+
     def test_a_closed_turn_waits_on_a_running_background_child_agent(self):
         self.s.agent("p1", [Rows.prompt(NOW - 600), Rows.reply(NOW - 500)], NOW - 500, meta={"finished": True})
         self.s.agent("c1", [Rows.prompt(NOW - 550), Rows.call(NOW - 540, "t1", "Bash")], NOW - 540, parent="p1")
