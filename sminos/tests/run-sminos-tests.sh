@@ -4574,9 +4574,10 @@ assert_contains "$OUT" "home-session" "wherever it runs"
 
 # Inside a session, the list says which session the caller is, then ends with
 # one cheap line on its subagents; list --subagents is the whole view: the
-# counts, live ones nested under their parents, ended ones folded into a
-# count; --all shows them with their ids. With no bridge for the session, the
-# transcript tells, and a note says so.
+# counts, live ones nested under their parents, then those ended in the last
+# minutes, every other one folded into a count; --all shows them with their
+# ids. With no bridge for the session, the transcript tells, and a note says
+# so.
 OD_AG="$ODTX/$OD_S1/subagents"
 mkdir -p "$OD_AG"
 python3 - "$ODTX/$OD_S1.jsonl" "$OD_AG" <<'PY'
@@ -4623,13 +4624,16 @@ assert_equals "$(tail -1 <<<"$OUT")" "subagents: 2 with a turn open (read from t
 assert_not_contains "$OUT" "a2222222222222222" "with no tree"
 run_in "$ODA" env CLAUDE_CODE_SESSION_ID="$OD_S1" "$SMINOS" list --subagents
 TREE="$(sed -n '/^subagents /,$p' <<<"$OUT")"
-assert_equals "$(head -1 <<<"$TREE")" "subagents [2 running · 0 waiting on background · 0 stalled · 0 orphaned]" \
+assert_equals "$(head -1 <<<"$TREE")" "subagents [2 running · 0 waiting on background]" \
   "list --subagents shows its subagents' counts"
 assert_contains "$(sed -n 2p <<<"$TREE" | tr -s ' ')" " a2222222222222222 general-purpose watch the build running " "then its live subagents"
 assert_contains "$(sed -n 2p <<<"$TREE")" "(disk) · in Agent " "each with its lifecycle, its source and what it does"
 assert_contains "$(sed -n 3p <<<"$TREE")" "    a3333333333333333  " "nested under their parents"
 assert_contains "$(sed -n 3p <<<"$TREE" | tr -s ' ')" " a3333333333333333 doperpowers:reviewer-low review the diff running " "with its type and description"
-assert_equals "$(sed -n 4p <<<"$TREE")" "  +1 ended (1 completed) — sminos list --subagents --done 10" "the ended folded behind a count"
+assert_contains "$(sed -n 4p <<<"$TREE" | tr -s ' ')" " a1111111111111111 Explore scan the repo completed " \
+  "then the one that ended just now, its outcome"
+assert_contains "$(sed -n 4p <<<"$TREE")" "s ago" "and how long ago"
+assert_not_contains "$TREE" "done (on disk)" "with nothing else to fold behind a count"
 assert_contains "$TREE" "note: no bridge runs in this session" "and a note says the lifecycle is the disk's"
 run_in "$ODA" env CLAUDE_CODE_SESSION_ID="$OD_S1" "$SMINOS" list --subagents --all
 assert_contains "$(sed -n '/^subagents /,$p' <<<"$OUT" | tr -s ' ')" " a1111111111111111 Explore scan the repo completed " \

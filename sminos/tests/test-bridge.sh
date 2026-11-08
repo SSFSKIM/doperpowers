@@ -545,13 +545,13 @@ run env CLAUDE_CODE_SESSION_ID="$SID" "$SMINOS" list
 assert_equals "$(grep '^subagents' <<<"$OUT")" "subagents: 2 running — sminos list --subagents" \
   "inside the session, list ends with one line: how many the bridge's agents run"
 run env CLAUDE_CODE_SESSION_ID="$SID" "$SMINOS" list --subagents
-assert_equals "$(tree_of "$OUT")" "$(printf 'subagents [2 running · 0 waiting on background · 0 stalled · 0 orphaned]\n  a9     Explore          look  running (engine)\n    a10  general-purpose  dig   running (engine)\nnote: no transcript of session 5b000001 on this machine (%s/.claude/projects): only the agents its bridge holds are listed' "$HOME")" \
+assert_equals "$(tree_of "$OUT")" "$(printf 'subagents [2 running · 0 waiting on background]\n  a9     Explore          look  running (engine)\n    a10  general-purpose  dig   running (engine)\nnote: no transcript of session 5b000001 on this machine (%s/.claude/projects): only the agents its bridge holds are listed' "$HOME")" \
   "list --subagents shows the bridge's agents, nested, the engine's word their source"
 ctl post "$SOCK" '[{"type":"agent","phase":"stop","agentId":"a9","agentType":"Explore","status":"killed"}]' >/dev/null
 run env CLAUDE_CODE_SESSION_ID="$SID" "$SMINOS" list
 assert_equals "$(grep '^subagents' <<<"$OUT")" "subagents: 1 running — sminos list --subagents" "one fewer once one stops"
 run env CLAUDE_CODE_SESSION_ID="$SID" "$SMINOS" list --subagents
-assert_equals "$(tree_of "$OUT")" "$(printf 'subagents [1 running · 0 waiting on background · 0 stalled · 0 orphaned]\n  a10  general-purpose  dig  running (engine)\n  +1 ended (1 stopped) — sminos list --subagents --done 10\nnote: no transcript of session 5b000001 on this machine (%s/.claude/projects): only the agents its bridge holds are listed' "$HOME")" \
+assert_equals "$(tree_of "$OUT")" "$(printf 'subagents [1 running · 0 waiting on background]\n  a10  general-purpose  dig  running (engine)\n  +1 done (on disk) — sminos list --subagents --done 10\nnote: no transcript of session 5b000001 on this machine (%s/.claude/projects): only the agents its bridge holds are listed' "$HOME")" \
   "a stopped agent folds, and its live child stands in its place"
 run env CLAUDE_CODE_SESSION_ID="$SID" "$SMINOS" list --subagents --all
 assert_equals "$(tree_of "$OUT")" "$(printf 'subagents [1 running · 0 waiting on background · 0 stalled · 0 orphaned]\n  a9     Explore          look  stopped (engine) · by killed\n    a10  general-purpose  dig   running (engine)\nnote: no transcript of session 5b000001 on this machine (%s/.claude/projects): only the agents its bridge holds are listed' "$HOME")" \

@@ -22,6 +22,7 @@ NOW = 1_800_000_000.0
 STARTED = NOW - 3600   # the session's running process started an hour ago
 SID = "5a000001-0000-4000-8000-0000000000a1"
 OTHER = "5a000002-0000-4000-8000-0000000000a2"
+FRESH = "5a000007-0000-4000-8000-0000000000a7"
 
 
 def ts(t):
@@ -137,8 +138,9 @@ class Session:
                 f.write(json.dumps(r, separators=(",", ":")) + "\n")
         os.utime(self.main, (NOW, NOW))
 
-    def view(self, live=True, bridge=None, started=STARTED, stall=V.STALL_SECONDS):
-        return V.Subagents(str(self.main), live=live, started=started, bridge=bridge, stall=stall, now=NOW)
+    def view(self, live=True, bridge=None, started=STARTED, stall=V.STALL_SECONDS, cache=None, now=NOW):
+        return V.Subagents(str(self.main), live=live, started=started, bridge=bridge, stall=stall, now=now,
+                           cache=cache)
 
 
 class Derivation(unittest.TestCase):
@@ -488,6 +490,280 @@ class Derivation(unittest.TestCase):
         self.assertTrue(lines[0].endswith("stopped by user") and lines[1].endswith("completed"), lines)
 
 
+class DefaultView(unittest.TestCase):
+    """The default view lists the agents running now, those waiting on background and those ended in the last ten
+    minutes; a past agent (no engine word, its files last written before the running process started) is counted
+    from the directory's listing and stats alone."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="sminos-subagents-")
+        self.addCleanup(self.tmp.cleanup)
+        self.s = Session(self.tmp.name)
+
+    def spy(self):
+        """The files the view reads past their stats: transcripts mapped, task rows scanned, metas loaded."""
+        read = []
+        for mod, name in ((V, "_open_map"), (V.jobs, "task_rows"), (V, "read_meta")):
+            real = getattr(mod, name)
+
+            def spied(path, *rest, _real=real):
+                read.append(os.path.basename(path).split(".")[0].replace("agent-", ""))
+                return _real(path, *rest)
+
+            setattr(mod, name, spied)
+            self.addCleanup(setattr, mod, name, real)
+        return read
+
+    def test_a_past_agent_is_counted_without_its_tail_being_read(self):
+        old = STARTED - 900
+        self.s.agent("p1", [Rows.prompt(old), Rows.reply(old + 10)], old + 10, meta={"finished": True})
+        self.s.agent("p2", [Rows.prompt(old), Rows.call(old + 20, "t1", "Bash")], old + 20, parent="c1")
+        self.s.agent("p3", [Rows.prompt(old), Rows.api_error(old + 30)], old + 30, meta={"finished": True})
+        self.s.agent("p4", [Rows.prompt(old), Rows.call(old + 40, "t1", "Bash")], old + 40,
+                     meta={"finished": True, "stoppedByUser": True})
+        self.s.agent("r1", [Rows.prompt(NOW - 300), Rows.call(NOW - 200, "t1", "Bash")], NOW - 200)
+        self.s.agent("w1", [Rows.prompt(NOW - 600), *Rows.bg_bash(NOW - 590, "t1", "bs1"), Rows.reply(NOW - 580)],
+                     NOW - 580, meta={"finished": True})
+        self.s.agent("c1", [Rows.prompt(NOW - 400), Rows.reply(NOW - 120)], NOW - 120, meta={"finished": True})
+        read = self.spy()
+        v = self.s.view()
+        self.assertEqual(v.active_counts(), {"running": 1, "waiting": 1, "stalled": 0})
+        self.assertEqual([e["agentId"] for e in v.tree()], ["w1", "r1"])
+        self.assertEqual([(e["agentId"], e["state"]) for e in v.recent()], [("c1", "completed")],
+                         "its past child (p2, orphaned) holds no parent waiting")
+        self.assertEqual(v.done_count(), 4)
+        self.assertFalse({"p1", "p2", "p3", "p4"} & set(read), read)
+        self.assertEqual(v.notes, [])
+        c = v.counts()
+        self.assertEqual({s: n for s, n in c.items() if n},
+                         {"running": 1, "waiting": 1, "orphaned": 1, "completed": 2, "failed": 1, "stopped": 1},
+                         "the full counts (--json, --all) still derive every agent")
+        self.assertTrue({"p1", "p2", "p3", "p4"} <= set(read))
+
+    def test_an_agent_the_engine_holds_or_the_running_process_wrote_is_derived(self):
+        old = STARTED - 900
+        self.s.agent("e1", [Rows.prompt(old), Rows.call(old + 10, "t1", "Bash")], old + 10)
+        self.s.agent("m1", [Rows.prompt(old), Rows.call(old + 10, "t1", "Bash")], old + 10)
+        os.utime(self.s.sub / "agent-m1.meta.json", (NOW - 30, NOW - 30))   # its meta written since
+        v = self.s.view(bridge=[{"agentId": "e1", "running": True, "status": "running", "subagentType": "x"}])
+        self.assertEqual(v.active_counts(), {"running": 1, "waiting": 0, "stalled": 0})
+        self.assertEqual([e["agentId"] for e in v.tree()], ["e1"])
+        self.assertEqual(v.done_count(), 1, "m1, orphaned, is counted, derived since its meta was written now")
+        self.assertEqual(self.s.view(live=False).active_counts(), {"running": 0, "waiting": 0, "stalled": 0},
+                         "a session that runs no process has only past agents")
+
+    def test_the_recently_ended_window_and_its_cap(self):
+        for k in range(1, 8):   # ended 1 to 7 minutes ago
+            self.s.agent("e%d" % k, [Rows.prompt(NOW - 1800), Rows.reply(NOW - 60 * k)], NOW - 60 * k,
+                         meta={"finished": True})
+        self.s.agent("u1", [Rows.prompt(NOW - 1800), Rows.call(NOW - 200, "t1", "Bash")], NOW - 30,
+                     meta={"finished": True, "stoppedByUser": True})
+        self.s.agent("e9", [Rows.prompt(NOW - 1800), Rows.reply(NOW - 660)], NOW - 660, meta={"finished": True})
+        v = self.s.view()
+        recent = v.recent()
+        self.assertEqual([e["agentId"] for e in recent], ["u1", "e1", "e2", "e3", "e4"], "at most 5, newest first")
+        self.assertEqual(v.done_count(), 4, "e5, e6 and e7 past the cap, and e9 past the window, are counted")
+        self.assertEqual([V.ended_text(e) for e in recent[:2]], ["stopped 30s ago · by user", "completed 1m ago"])
+        self.assertEqual([e["agentId"] for e in v.recent(seconds=90, cap=9)], ["u1", "e1"])
+
+    def test_the_header_says_stalled_only_when_one_is(self):
+        self.assertEqual(V.active_line({"running": 2, "waiting": 1, "stalled": 0}),
+                         "[2 running · 1 waiting on background]")
+        self.assertEqual(V.active_line({"running": 0, "waiting": 0, "stalled": 3}),
+                         "[0 running · 0 waiting on background · 3 stalled]")
+
+    def test_the_rows_align_the_live_and_the_recently_ended(self):
+        self.s.agent("r1", [Rows.prompt(NOW - 300), Rows.call(NOW - 200, "t1", "Bash")], NOW - 200,
+                     meta={"agentType": "doperpowers:task-executor", "model": "opus"})
+        self.s.agent("c1", [Rows.prompt(NOW - 400), Rows.reply(NOW - 180)], NOW - 180, meta={"finished": True})
+        v = self.s.view()
+        lines = V.tree_lines(v.tree(), v.recent())
+        self.assertEqual(lines, ["  r1  doperpowers:task-executor (opus)  task r1  running 5m (disk) · in Bash 3m",
+                                 "  c1  general-purpose                   task c1  completed 3m ago"])
+
+
+class Memo(unittest.TestCase):
+    """The ended states kept on disk (`cache`): an ended agent's state is final until its own files change, so it
+    is read back while their identities hold, the engine's word still first; nothing else is kept."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="sminos-subagents-")
+        self.addCleanup(self.tmp.cleanup)
+        self.s = Session(self.tmp.name)
+        self.cache = os.path.join(self.tmp.name, "registry", "subagents", SID + ".json")
+        old = STARTED - 900
+        self.s.agent("c1", [Rows.prompt(old), *Rows.handback(old + 10)], old + 11, meta={"finished": True})
+        self.s.agent("f1", [Rows.prompt(old), Rows.api_error(old + 20)], old + 20, meta={"finished": True})
+        self.s.agent("s1", [Rows.prompt(old), Rows.call(old + 30, "t1", "Bash")], old + 30)
+        self.s.append_main([Rows.call(old + 40, "ts1", "TaskStop", {"task_id": "s1"}, msg="m-ts"),
+                            Rows.result(old + 41, "ts1", "stopped", tur={"task_id": "s1"})])
+        self.s.agent("c2", [Rows.prompt(NOW - 900), Rows.reply(NOW - 800)], NOW - 800, meta={"finished": True})
+        self.s.agent("r1", [Rows.prompt(NOW - 300), Rows.call(NOW - 200, "t1", "Bash")], NOW - 200)
+        self.s.agent("o1", [Rows.prompt(old), Rows.call(old + 50, "t1", "Bash")], old + 50)
+        self.ended = {"c1": "completed", "f1": "failed", "s1": "stopped", "c2": "completed"}
+
+    def view(self, **kw):
+        return self.s.view(cache=self.cache, **kw)
+
+    def states(self, v):
+        return {i: v.state(i) for i in sorted(v.agents)}
+
+    def tails_read(self):
+        read = []
+        for mod, name in ((V, "read_tail"), (V.jobs, "task_rows")):
+            real = getattr(mod, name)
+
+            def spied(path, *rest, _real=real, **kw):
+                read.append(os.path.basename(path)[len("agent-"):].split(".")[0])
+                return _real(path, *rest, **kw)
+
+            setattr(mod, name, spied)
+            self.addCleanup(setattr, mod, name, real)
+        return read
+
+    def kept(self):
+        with open(self.cache) as f:
+            return json.load(f)["agents"]
+
+    def warm(self):
+        """A view that derived every agent, its ended states kept."""
+        v = self.view()
+        v.counts()
+        v.keep()
+        self.assertEqual(sorted(self.kept()), sorted(self.ended))
+        return v
+
+    def test_a_cached_ended_state_is_reused_with_the_transcript_tail_not_read_again(self):
+        v = self.view()
+        first = self.states(v)
+        self.assertEqual({i: first[i]["state"] for i in self.ended}, self.ended)
+        v.keep()
+        self.assertEqual(os.stat(self.cache).st_mode & 0o777, 0o600)
+        self.assertEqual(sorted(self.kept()), sorted(self.ended))
+        read = self.tails_read()
+        v2 = self.view()
+        self.assertEqual(self.states(v2), first, "the same states, every field")
+        self.assertEqual(sorted(set(read)), ["o1", "r1"], "only the agents not ended are read")
+        self.assertEqual(self.states(self.s.view()), first, "and the same as with no cache at all")
+
+    def test_a_changed_transcript_or_meta_rederives_a_revival_included(self):
+        self.warm()
+        with open(self.s.sub / "agent-c1.jsonl", "a") as f:   # revived by SendMessage: its meta and rows written
+            for r in (Rows.prompt(NOW - 100, "go on", isMeta=True, origin={"kind": "human"}),
+                      Rows.call(NOW - 90, "t9", "Grep", msg="m-r")):
+                f.write(json.dumps(r, separators=(",", ":")) + "\n")
+        os.utime(self.s.sub / "agent-c1.jsonl", (NOW - 90, NOW - 90))
+        meta = json.loads((self.s.sub / "agent-c1.meta.json").read_text())
+        meta["revivedAt"] = int((NOW - 100) * 1000)
+        (self.s.sub / "agent-c1.meta.json").write_text(json.dumps(meta))
+        meta = json.loads((self.s.sub / "agent-c2.meta.json").read_text())
+        meta["stoppedByUser"] = True   # the meta alone changed
+        (self.s.sub / "agent-c2.meta.json").write_text(json.dumps(meta))
+        os.utime(self.s.sub / "agent-c2.meta.json", (NOW - 800, NOW - 800))   # even with its old mtime back
+        read = self.tails_read()
+        v = self.view()
+        self.assertEqual((v.state("c1")["state"], v.state("c1")["tool"]["name"]), ("running", "Grep"))
+        self.assertEqual((v.state("c2")["state"], v.state("c2")["stoppedBy"]), ("stopped", "user"))
+        v.counts()
+        self.assertEqual(sorted(set(read)), ["c1", "c2", "o1", "r1"], "f1 and s1 read back")
+        v.keep()
+        self.assertNotIn("c1", self.kept(), "a running agent's entry goes")
+        self.assertEqual(self.kept()["c2"]["state"]["state"], "stopped")
+
+    def test_a_new_process_rederives_what_the_old_one_wrote(self):
+        self.warm()
+        read = self.tails_read()
+        later = NOW - 700   # a process started after c2 last wrote: c2 is past now
+        self.assertEqual(self.view(started=later).state("c2")["state"], "completed")
+        self.assertIn("c2", read)
+
+    def test_a_state_that_is_not_ended_is_never_cached(self):
+        self.s.agent("w1", [Rows.prompt(NOW - 600), *Rows.bg_bash(NOW - 590, "t1", "bs1"), Rows.reply(NOW - 580)],
+                     NOW - 580, meta={"finished": True})
+        self.s.agent("st", [Rows.prompt(NOW - 2000), Rows.call(NOW - 1990, "t1", "Read"),
+                            Rows.result(NOW - 1980, "t1")], NOW - 1980)
+        v = self.view()
+        self.assertEqual([v.state(i)["state"] for i in ("r1", "w1", "st", "o1")],
+                         ["running", "waiting", "stalled", "orphaned"])
+        v.counts()
+        v.keep()
+        self.assertFalse({"r1", "w1", "st", "o1"} & set(self.kept()))
+        read = self.tails_read()
+        self.view().counts()
+        self.assertTrue({"r1", "w1", "st", "o1"} <= set(read), read)
+
+    def test_a_corrupt_or_older_cache_is_ignored_and_rewritten(self):
+        expected = self.states(self.s.view())
+        os.makedirs(os.path.dirname(self.cache))
+        for text in ("{not json", json.dumps([1, 2]), json.dumps({"version": 0, "agents": {}}), "\0\xff"):
+            with open(self.cache, "w") as f:
+                f.write(text)
+            v = self.view()
+            self.assertEqual(self.states(v), expected, text)
+            v.keep()
+            self.assertEqual(sorted(self.kept()), sorted(self.ended), "rewritten whole")
+        # An entry whose key holds but whose state is no ended one, or is malformed, is never trusted.
+        with open(self.cache) as f:
+            kept = json.load(f)
+        kept["agents"]["c1"]["state"] = {"state": "running", "source": "disk", "since": None}
+        kept["agents"]["f1"]["state"] = {"state": "failed", "source": "disk", "since": "yesterday"}
+        kept["agents"]["s1"] = "stopped"
+        with open(self.cache, "w") as f:
+            json.dump(kept, f)
+        self.assertEqual(self.states(self.view()), expected)
+
+    def test_the_engines_word_wins_over_a_cached_state(self):
+        self.warm()
+        for said, state in (({"running": True, "status": "running"}, ("running", "engine")),
+                            ({"running": False, "status": "killed"}, ("stopped", "engine"))):
+            v = self.view(bridge=[dict(said, agentId="c2", subagentType="x")])
+            self.assertEqual((v.state("c2")["state"], v.state("c2")["source"]), state, said)
+
+    def test_a_cached_completed_parent_waits_again_once_its_child_runs(self):
+        self.s.agent("k1", [Rows.prompt(NOW - 850), Rows.reply(NOW - 820)], NOW - 820, parent="c2",
+                     meta={"finished": True})
+        v = self.view()
+        self.assertEqual((v.state("c2")["state"], v.state("k1")["state"]), ("completed", "completed"))
+        v.keep()
+        with open(self.s.sub / "agent-k1.jsonl", "a") as f:   # the child revived, its parent's files unchanged
+            for r in (Rows.prompt(NOW - 60, "go on", isMeta=True), Rows.call(NOW - 50, "t9", "Bash", msg="m-k")):
+                f.write(json.dumps(r, separators=(",", ":")) + "\n")
+        os.utime(self.s.sub / "agent-k1.jsonl", (NOW - 50, NOW - 50))
+        st = self.view().state("c2")
+        self.assertEqual((st["state"], st["waitingOn"]), ("waiting", ["k1"]))
+
+    def test_many_agents_print_the_same_with_the_cache_cold_or_warm(self):
+        old = STARTED - 5000
+        for i in range(120):
+            kind, t = i % 6, (old if i % 2 else NOW - 3000) + i * 7
+            rows = [Rows.prompt(t)]
+            meta = {"finished": True} if kind in (0, 1, 2) else {}
+            if kind == 0:
+                rows += Rows.handback(t + 5)
+            elif kind == 1:
+                rows.append(Rows.api_error(t + 5))
+            elif kind == 2:
+                rows += [*Rows.bg_bash(t + 2, "t1", "bs%d" % i), Rows.reply(t + 5)]
+            elif kind == 3:
+                rows.append(Rows.call(t + 5, "t1", "Bash"))
+                meta = {"stoppedByUser": True} if i % 4 == 3 else {}
+            else:
+                rows.append(Rows.reply(t + 5))
+            self.s.agent("m%03d" % i, rows, t + 6, meta=meta, parent="m%03d" % (i - 6) if i % 5 == 4 else None)
+
+        def render(v):
+            out = V.tree_lines(v.tree(), v.recent()) + [V.active_line(v.active_counts()), str(v.done_count())]
+            out += V.done_lines(v.done(10)) + [json.dumps(v.counts()), json.dumps(v.tree(every=True))]
+            return "\n".join(out + v.notes)
+
+        plain = render(self.s.view())
+        cold = self.view()
+        self.assertEqual(render(cold), plain)
+        cold.keep()
+        self.assertGreater(len(self.kept()), 60)
+        self.assertEqual(render(self.view()), plain, "warm, the same bytes")
+
+
 class Cli(unittest.TestCase):
     """Through the real CLI, in a temp home: the session's record names this test's own process as its own."""
 
@@ -507,7 +783,7 @@ class Cli(unittest.TestCase):
         cls.addClassCleanup(os.unlink, sock_path)
         now = time.time()
         for name, sid, extra in (
-                ("lead", SID, {}), ("peer", OTHER, {}),
+                ("lead", SID, {}), ("peer", OTHER, {}), ("nova", FRESH, {}),
                 # No member: another tool's SDK run, its inbox listening; a spare parked until a host claims it;
                 # one whose inbox does not listen.
                 ("sdkrun", "5a000003-0000-4000-8000-0000000000a3", {"entrypoint": "sdk-ts", "status": "shell"}),
@@ -532,6 +808,15 @@ class Cli(unittest.TestCase):
                 meta={"finished": True, "description": "Old review"})
         s.agent("aa00000000000004", [Rows.prompt(now - 5000), Rows.call(now - 4800, "t1", "Bash")], now - 4700,
                 meta={"finished": True, "stoppedByUser": True, "description": "Stopped scan"})
+        # A session whose running process wrote a stalled agent and two that ended, one in the last ten minutes.
+        f = Session(home, session=FRESH)
+        f.agent("ab00000000000001", [Rows.prompt(now - 1500), Rows.call(now - 1490, "t1", "Read"),
+                                     Rows.result(now - 1480, "t1")], now - 1480)
+        f.agent("ab00000000000002", [Rows.prompt(now - 900), Rows.reply(now - 120)], now - 120,
+                meta={"finished": True, "description": "Just done"})
+        f.agent("ab00000000000003", [Rows.prompt(now - 2400), Rows.reply(now - 1800)], now - 1800,
+                meta={"finished": True})
+        f.agent("ab00000000000004", [Rows.prompt(now - 9000), Rows.call(now - 8000, "t1", "Bash")], now - 8000)
 
     def cli(self, *args, session=SID, rc=0):
         env = dict(self.env, **({"CLAUDE_CODE_SESSION_ID": session} if session else {}))
@@ -543,12 +828,25 @@ class Cli(unittest.TestCase):
     def test_text_says_who_you_are_the_counts_the_tree_and_what_ended(self):
         out = self.cli("list", "--subagents").splitlines()
         self.assertEqual(out[0], "you: lead [5a000001]")
-        self.assertEqual(out[1], "subagents [2 running · 0 waiting on background · 0 stalled · 0 orphaned]")
+        self.assertEqual(out[1], "subagents [2 running · 0 waiting on background]")
         self.assertRegex(out[2], r"^  aa00000000000001  +doperpowers:task-executor \(opus\)  +Build the thing  +"
                                  r"running 15m \(disk\) · in Bash 10m  +wt ~/wt/agent-1$")
         self.assertRegex(out[3], r"^    aa00000000000002  +Explore  +Look around  +running 8m \(disk\) · in Read 6m$")
-        self.assertEqual(out[4], "  +2 ended (1 completed · 1 stopped) — sminos list --subagents --done 10")
+        self.assertEqual(out[4], "  +2 done (on disk) — sminos list --subagents --done 10")
         self.assertEqual(out[5], "note: no bridge runs in this session: lifecycle is inferred from its transcripts")
+
+    def test_text_lists_the_stalled_and_the_recently_ended_and_counts_the_rest(self):
+        out = self.cli("list", "--subagents", session=FRESH).splitlines()
+        self.assertEqual(out[1], "subagents [0 running · 0 waiting on background · 1 stalled]")
+        self.assertRegex(out[2], r"^  ab00000000000001  +general-purpose  +task ab00000000000001  +stalled 24m \(disk\)$")
+        self.assertRegex(out[3], r"^  ab00000000000002  +general-purpose  +Just done  +completed 2m ago$")
+        self.assertEqual(out[4], "  +2 done (on disk) — sminos list --subagents --done 10",
+                         "one ended past the window, one orphaned in an earlier process")
+        d = json.loads(self.cli("list", "--subagents", "--json", session=FRESH).split("\nnote:")[0])
+        self.assertEqual({e["agentId"]: e["state"] for e in d["agents"]},
+                         {"ab00000000000001": "stalled", "ab00000000000002": "completed",
+                          "ab00000000000003": "completed", "ab00000000000004": "orphaned"},
+                         "--json still carries every agent's state")
 
     def test_depth_folds_the_levels_below(self):
         out = self.cli("list", "--subagents", "--depth", "1")
@@ -602,6 +900,21 @@ class Cli(unittest.TestCase):
         self.assertEqual((desk["engine"]["desktop"], desk["engine"]["formerName"], desk["engine"]["status"]),
                          (True, "old-name", "busy"))
         self.assertAlmostEqual(desk["engine"]["startedAge"], 3600, delta=120)
+
+    def test_the_ended_states_are_kept_in_the_registry_and_swept_with_their_transcript(self):
+        kept = Path(self.env["SMINOS_HOME"]) / "subagents"
+        first = self.cli("list", "--subagents", "--all")
+        self.assertEqual(os.stat(kept / (SID + ".json")).st_mode & 0o777, 0o600)
+        self.assertEqual(sorted(json.loads((kept / (SID + ".json")).read_text())["agents"]),
+                         ["aa00000000000003", "aa00000000000004"], "the ended alone")
+        self.assertEqual(self.cli("list", "--subagents", "--all"), first, "read back, the same")
+        gone = kept / "5a0000ff-0000-4000-8000-0000000000ff.json"
+        gone.write_text("{}")
+        sweep = "import sys; sys.path.insert(0, sys.argv[1]); import sminos_daemon; sminos_daemon.sweep_overrides()"
+        r = subprocess.run([sys.executable, "-c", sweep, str(SCRIPTS)], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(gone.exists(), "a session whose transcript is gone keeps nothing")
+        self.assertTrue((kept / (SID + ".json")).exists())
 
     def test_a_session_with_no_subagents_says_where_it_looked(self):
         out = self.cli("list", "--subagents", OTHER, session=None)

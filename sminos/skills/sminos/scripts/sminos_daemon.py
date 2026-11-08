@@ -1437,13 +1437,14 @@ def sweep_overrides():
     sminos.join_refusal — a retired project), is removed, a daemon.log line
     naming the session and the target; the session itself already resolves
     as though it were absent (session_project). A cached launch directory
-    (`launch/<id>.json`) goes by the transcript's rule alone, and a recorded
+    (`launch/<id>.json`) and the kept states of a session's subagents
+    (`subagents/<id>.json`) go by the transcript's rule alone, and a recorded
     config dir (`config-dirs/<id>.json`, last: what is judged before it looks
     for the transcript there) once its session runs no more and its
     transcript is gone."""
     sminos.transcripts_now()
     now = time.time()
-    for sub in ("sessions", "launch", sminos.CONFIG_DIRS):
+    for sub in ("sessions", "launch", sminos.SUBAGENT_STATES, sminos.CONFIG_DIRS):
         d = os.path.join(sminos.root(), sub)
         try:
             names = os.listdir(d)
