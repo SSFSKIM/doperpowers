@@ -5762,11 +5762,15 @@ hd_forks() { grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log
 HD_FORKS="$(hd_forks)"
 HOOK_START=$SECONDS
 HOOK_OUT="$(printf '{"session_id":"%s","hook_event_name":"SessionStart","source":"compact","cwd":"%s"}' "$HD" "$R3" \
-  | STUB_FORK_RESULT="Owns the stub after its compaction." CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$DERIVE_HOOK")"
+  | STUB_FORK_SLEEP=4 STUB_FORK_RESULT="Owns the stub after its compaction." CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$DERIVE_HOOK")"
 assert_rc 0 "$?" "the compaction hook exits 0"
 assert_equals "$HOOK_OUT" "" "and prints nothing (its stdout would reach the model)"
+# The fork takes four seconds: a hook that waited on it could not be back in two,
+# nor find the line still unwritten.
 if [ $((SECONDS - HOOK_START)) -le 2 ]; then pass "and returns without waiting on the derive"; else
   fail "and returns without waiting on the derive"; fi
+assert_not_contains "$(tail -1 "$HPLOG/testhost.$HD.jsonl")" "Owns the stub after its compaction." \
+  "(the derive still runs when the hook is back)"
 hd_derived_after_compaction() { grep -q '"text": "Owns the stub after its compaction."' "$HPLOG/testhost.$HD.jsonl"; }
 wait_until hd_derived_after_compaction || true
 assert_contains "$(tail -1 "$HPLOG/testhost.$HD.jsonl")" '"text": "Owns the stub after its compaction.", "source": "derived"' \
