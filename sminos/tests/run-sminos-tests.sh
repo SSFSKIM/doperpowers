@@ -5736,6 +5736,57 @@ assert_equals "$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls
 tx "$TD" asst f3000001 "one more turn"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: owns the stub tool" "once one more record is written, it is derived again"
+# A compaction derives again at once (smns-derive.sh runs derive --compacted):
+# the pacing rules are waived, nothing else is
+# (docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md §2).
+run "$SMINOS" derive hd
+assert_contains "$OUT" "hd: not derived — derived" "a plain derive right after its line refuses"
+STUB_FORK_RESULT="Owns the compacted stub." run "$SMINOS" derive hd --compacted
+assert_contains "$OUT" "hd: Owns the compacted stub." "derive --compacted derives a member whose line is minutes old"
+assert_contains "$(tail -1 "$HPLOG/testhost.$HD.jsonl")" '"text": "Owns the compacted stub.", "source": "derived"' "and records the new line"
+run "$SMINOS" derive hd
+assert_contains "$OUT" "hd: not derived — derived" "the compaction's line restarts the six-hour spacing"
+run "$SMINOS" derive ha --compacted
+assert_contains "$OUT" "ha: not derived — its line is set" "--compacted leaves a set line alone"
+HF=6f00000a-0000-4000-8000-00000000006f
+hp_peer hf "$HF" derived interactive
+tx "$TXD/$HF.jsonl" tool h9000001 9
+run "$SMINOS" derive hf --compacted
+assert_contains "$OUT" "hf: not derived — 9 tool calls, needs 10" "and still asks for ten tool calls by the session's model"
+run "$SMINOS" derive --all --compacted
+assert_rc 2 "$RC" "--compacted speaks for one session: with --all it is a usage error"
+# The hook: the compaction's SessionStart payload starts the derive detached
+# and returns at once, printing nothing into the session's context.
+DERIVE_HOOK="$PLUGIN_ROOT/hooks/smns-derive.sh"
+hd_forks() { grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true; }
+HD_FORKS="$(hd_forks)"
+HOOK_START=$SECONDS
+HOOK_OUT="$(printf '{"session_id":"%s","hook_event_name":"SessionStart","source":"compact","cwd":"%s"}' "$HD" "$R3" \
+  | STUB_FORK_RESULT="Owns the stub after its compaction." CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$DERIVE_HOOK")"
+assert_rc 0 "$?" "the compaction hook exits 0"
+assert_equals "$HOOK_OUT" "" "and prints nothing (its stdout would reach the model)"
+if [ $((SECONDS - HOOK_START)) -le 2 ]; then pass "and returns without waiting on the derive"; else
+  fail "and returns without waiting on the derive"; fi
+hd_derived_after_compaction() { grep -q '"text": "Owns the stub after its compaction."' "$HPLOG/testhost.$HD.jsonl"; }
+wait_until hd_derived_after_compaction || true
+assert_contains "$(tail -1 "$HPLOG/testhost.$HD.jsonl")" '"text": "Owns the stub after its compaction.", "source": "derived"' \
+  "the derive it started records the session's line, minutes after the last"
+assert_equals "$(hd_forks)" "$((HD_FORKS + 1))" "through one fork"
+# A failed fork's reason is said only on stderr: the hook keeps it in daemon.log,
+# where the daemon's derive --all keeps its own, and still prints nothing.
+HOOK_OUT="$(printf '{"session_id":"%s","source":"compact"}' "$HD" \
+  | STUB_FORK_FAIL=1 STUB_FORK_RESULT="API Error: 401 compaction-hook-probe" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$DERIVE_HOOK")"
+assert_equals "$HOOK_OUT" "" "a failing derive prints nothing into the session either"
+hd_failure_logged() { grep -q "compaction-hook-probe" "$SMINOS_HOME/daemon.log" 2>/dev/null; }
+wait_until hd_failure_logged || true
+assert_contains "$(grep "compaction-hook-probe" "$SMINOS_HOME/daemon.log" 2>/dev/null)" "derive hd failed" \
+  "and its reason survives in daemon.log"
+rm -f "$SMINOS_HOME/derive-failed/$HD"
+HD_FORKS="$(hd_forks)"
+printf '{"session_id":"%s","source":"compact"}' "$HD" | SMNS_INTERNAL=1 CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$DERIVE_HOOK"
+printf '{"session_id":"not-a-session","source":"compact"}' | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$DERIVE_HOOK"
+sleep 1
+assert_equals "$(hd_forks)" "$HD_FORKS" "in an internal fork, or with no session id, the hook starts nothing"
 # A user-named session with tool calls enough and no line set: its name is its
 # line until it is derived, as it is; its name is left alone.
 HU=6e000009-0000-4000-8000-00000000006e

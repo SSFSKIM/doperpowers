@@ -7534,13 +7534,16 @@ def model_tool_calls(path, enough):
     return len(seen)
 
 
-def derive_refusal(project, m):
+def derive_refusal(project, m, compacted=False):
     """Why a member is not derived, or "": only a local member with no set
     line, at least ten tool calls by its model, and no derived line in the
     last six hours (§5; whatever its name, which only decides whether derive
     may also name it: charge_naming); and one with a derived line only once
     its transcript was written since that line — the same conversation gives
-    the same answer, and forking an idle session rebuilds its prompt cache."""
+    the same answer, and forking an idle session rebuilds its prompt cache.
+    `compacted` (the compaction hook's derive) waives those two pacing rules
+    alone: a compaction is the evidence that much has happened
+    (docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md §2)."""
     if not m.session:
         return "it holds no session"
     if not m.local:
@@ -7554,8 +7557,8 @@ def derive_refusal(project, m):
     path = transcript_path(m.session)
     if not path:
         return "no transcript of it on this machine"
-    derived = latest_across_writers([e for e in log_read(project, kinds=("in-charge",))
-                                     if e.get("session") == m.session and e.get("source") == "derived"])
+    derived = None if compacted else latest_across_writers(
+        [e for e in log_read(project, kinds=("in-charge",)) if e.get("session") == m.session and e.get("source") == "derived"])
     age = ts_age(derived["ts"]) if derived else None
     if age is not None and age < DERIVE_EVERY:
         return "derived %s ago" % short_age(age)
@@ -7791,16 +7794,18 @@ def _derive_said(m, got):
 
 
 def cmd_derive(a):
-    """`derive <member> | --all`: ask a local member what it is in charge of,
-    by a headless internal fork, and record the answer as a derived line —
-    only where §5 allows (derive_refusal). --all: every local member of every
+    """`derive <member> [--compacted] | --all`: ask a local member what it is
+    in charge of, by a headless internal fork, and record the answer as a
+    derived line — only where §5 allows (derive_refusal). --compacted (the
+    compaction hook's, smns-derive.sh): the member just compacted, so the
+    pacing rules are waived. --all: every local member of every
     project known here, as the daemon runs it every five minutes, but a
     member whose fork failed within the hour (DERIVE_RETRY); first lines
     before refreshes (derive_order). --refreshes N (the daemon's): at most N
     members that already have a derived line are forked, so a run, whose
     forks go one after another, never holds a first line back for long."""
-    if bool(a.member) == bool(a.all):
-        die("usage: sminos derive <member> | --all")
+    if bool(a.member) == bool(a.all) or (a.compacted and a.all):
+        die("usage: sminos derive <member> [--compacted] | --all")
     if a.refreshes is not None and (not a.all or a.refreshes < 0):
         die("usage: sminos derive --all [--refreshes N] — N, at least 0, with --all only")
     sweep_internal()
@@ -7828,7 +7833,8 @@ def cmd_derive(a):
     forked_refreshes = failed = 0
     for project, m, refresh in targets:
         spent = refresh and a.refreshes is not None and forked_refreshes >= a.refreshes
-        outcome = derive_member(project, m, held_off=a.all, refreshes_spent=a.refreshes if spent else None)
+        outcome = derive_member(project, m, held_off=a.all, refreshes_spent=a.refreshes if spent else None,
+                                compacted=a.compacted)
         failed += outcome == "failed"
         forked_refreshes += refresh and outcome in ("derived", "failed")
     if failed:
@@ -7850,7 +7856,7 @@ def derive_order(targets):
     return [(p, m, bool(ts)) for p, m, ts in ordered]
 
 
-def derive_member(project, m, held_off=False, refreshes_spent=None):
+def derive_member(project, m, held_off=False, refreshes_spent=None, compacted=False):
     """Derive one member's line where §5 allows (derive_refusal), and, where
     it may be named (charge_naming), its charge name with it: kept only when
     the answer gives one in the charge-name form and free, and when the
@@ -7862,9 +7868,9 @@ def derive_member(project, m, held_off=False, refreshes_spent=None):
     the stamp. One whose fork may not start where it works (DeriveSkipped) is
     refused, said once in daemon.log. `refreshes_spent`, the run's cap on
     refreshes once it is reached: a member that would be forked is left to
-    the next run. Returns
+    the next run. `compacted`: derive_refusal's. Returns
     "refused", "deferred", "derived", or "failed" (nothing recorded)."""
-    why = derive_refusal(project, m)
+    why = derive_refusal(project, m, compacted=compacted)
     if not why and held_off:
         age = derive_failed_age(m.session)
         if age is not None and age < DERIVE_RETRY:
@@ -12992,6 +12998,7 @@ def build_parser():
     dv.add_argument("member", nargs="?", default="")
     dv.add_argument("--all", action="store_true")
     dv.add_argument("--refreshes", type=int, default=None)
+    dv.add_argument("--compacted", action="store_true")
     dv.set_defaults(fn=cmd_derive)
 
     nd = sub.add_parser("name-due", add_help=False)

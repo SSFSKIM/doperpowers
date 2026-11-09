@@ -8,7 +8,8 @@ The human chose this on 2026-11-08: first the compaction trigger with the six-ho
 
 ## Progress
 
-- [ ] M1 — a compaction derives the session's line
+- [x] (2026-11-08) M1 built: `derive --compacted`, `hooks/smns-derive.sh`, docs, sminos 1.41.0; the sminos core suite passes (2241 assertions).
+- [ ] Whole-branch review (medium rung), `ci-gate`, merge.
 
 ## Design
 
@@ -60,7 +61,7 @@ The daemon's `derive --all` keeps its five-minute run, its first-line rule, its 
 
 **Touches:** `sminos/hooks/smns-derive.sh` (new), `sminos/hooks/hooks.json` (the `SessionStart` entry with matcher `compact`, and its description), `sminos/skills/sminos/scripts/sminos.py` (`derive_refusal` takes the waiver; `cmd_derive` and the `derive` parser take `--compacted`), `sminos/tests/run-sminos-tests.sh`, `sminos/hooks/CLAUDE.md` (the shell hooks' list), `sminos/skills/sminos/scripts/CLAUDE.md` only if it states derive's cadence, `docs/doperpowers/specs/2026-10-13-smns-project-log-design.md` §5 (one sentence: a compaction also starts a derive, pointing here), `docs/whats-inside.md` if its sminos row names the hooks, and the version through `scripts/bump-version.sh --plugin sminos` (minor), in the same commit as the change.
 
-**Decisions:** the hook reads the session id the way `smns-record.sh` does and starts the CLI only for a value that `fullmatch`es a UUID. The child is started with stdin from `/dev/null` and stdout and stderr to `/dev/null`, under `nohup`, so neither the hook runner's pipes nor its exit hold or end it. derive's failures already leave their own trace (`derive-failed`, daemon.log's once-said lines). The hook does no project pre-check of its own: `derive` with a session id no member holds exits 4, which costs one Python start per compaction.
+**Decisions:** the hook reads the session id the way `smns-record.sh` does and starts the CLI only for a value that `fullmatch`es a UUID. The child is started with stdin from `/dev/null` and stdout and stderr appended to `$SMINOS_HOME/daemon.log` (`/dev/null` when the sminos home does not exist), under `nohup`, so neither the hook runner's pipes nor its exit hold or end it. That is where the daemon's own `derive --all` writes, and it matters: a failed fork's reason is said only on stderr, while the `derive-failed` stamp is an empty file. The hook does no project pre-check of its own: `derive` with a session id no member holds exits 4, which costs one Python start per compaction.
 
 **Does not touch:** the daemon, `derive --all`'s order, cap and hold, `name.tsx`, `sminos_fork.py`.
 
@@ -93,6 +94,10 @@ By hand, against a session `S` (a full session id) in a sminos project with a re
 - Decision: the trigger moved from before the compaction (an in-process fork from a `session.compact` mod) to after it (a `SessionStart` `compact` hook running `derive --compacted`).
   Rationale: the human asked whether after the compaction would do; it does (§1), at a fraction of the parts. The before-compaction design is the first alternative in §1.
   Date/Author: 2026-11-08, derive-refresh-cadence session, at the human's prompt.
+
+- Decision: the hook appends the derive's output to daemon.log instead of discarding it.
+  Rationale: the spec review found that a failed fork's reason exists only on derive's stderr (`derive_member`), the `derive-failed` stamp being an empty file; the daemon keeps it only because `derive_duty` sends its child's output to daemon.log. Rejected: a new failure record of derive's own, which would duplicate what the daemon's log already holds for `--all`.
+  Date/Author: 2026-11-08, derive-refresh-cadence session.
 
 ## Outcomes & Retrospective
 

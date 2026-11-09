@@ -84,7 +84,7 @@ The project family, standalone: nothing of doperpowers' is needed for it to run.
 | bridge | Makes a session watchable and steerable from outside it: its live stream for a reader, its control for a client |
 | ask tool | `mcp__sminos__AskUserQuestion`: the built-in question tool plus `async`, so a session asks and keeps working |
 | address | Ends every commit and PR a session writes with its `Sminos-Session:` line, which `sminos who` reads back |
-| names | Renames a session with a generated name after what it is in charge of |
+| names | Renames a session with a generated name after what it is in charge of, its line derived again after each compaction |
 | daemon | Syncs a project's log across machines, through a git mirror or the desk hub (over RL10, through the machine's MAWS endpoint) |
 
 ## to-human

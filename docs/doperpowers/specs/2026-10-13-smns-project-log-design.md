@@ -530,7 +530,11 @@ every five minutes (§8): its forks run one after another, each up to two
 minutes, so it forks at most two members that already have a line and
 leaves the rest to the next run, and a member's first line comes within
 minutes of its tenth tool call; a run that refuses everyone costs about a
-second. The cost is one model
+second. Each compaction of a session also starts `derive <session>
+--compacted` from the plugin's `SessionStart` hook, which waives the
+six-hour and no-activity rules alone, so a long session's line follows its
+work (`docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md`).
+The cost is one model
 call that reads the parent's prompt cache when the session was active
 within the cache's hour, and rebuilds it otherwise.
 
