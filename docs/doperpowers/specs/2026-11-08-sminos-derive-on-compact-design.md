@@ -9,7 +9,8 @@ The human chose this on 2026-11-08: first the compaction trigger with the six-ho
 ## Progress
 
 - [x] (2026-11-08) M1 built: `derive --compacted`, `hooks/smns-derive.sh`, docs, sminos 1.41.0; the sminos core suite passes (2241 assertions).
-- [ ] Whole-branch review (medium rung), `ci-gate`, merge.
+- [x] (2026-11-08) Whole-branch review (medium rung): one finding (the detachment test passed a waiting hook), fixed in 970ded41; `ci-gate` green.
+- [ ] Merge.
 
 ## Design
 
@@ -101,4 +102,8 @@ By hand, against a session `S` (a full session id) in a sminos project with a re
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Achieved: a compaction now starts a derive of the session at once (`sminos/hooks/smns-derive.sh`, `derive --compacted`), so a long session's line and charge name follow its work instead of waiting up to six hours; the six-hour path is untouched as the fallback. Shipped as sminos 1.41.0; `ci-gate` green on 017d1252 (run 42552696842), the core suite at 2242 assertions.
+
+Not verified: no live engine session was compacted with the plugin loaded. The suite drives the hook with a `SessionStart` payload of the documented shape; that the engine fires `SessionStart` with `source: compact` for the session is an existing fact the plugin already relies on (`smns-guide.sh`'s matcher), not one this change measured.
+
+Lessons: the design shrank twice by asking what the purpose needed. An in-process fork before compaction became a hook after it once the question ("what is this session responsible for") was seen to survive the summary. Both reviews caught observability and test strength, not logic: a detached child's stderr is the only place a reason lives unless it is sent somewhere, and a timing test needs a slow stub to tell waiting from not waiting.
