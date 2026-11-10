@@ -199,6 +199,16 @@ run_in "$T/a/inner-feat" "$SMINOS" project show
 assert_equals "$(show_field id)" "$(smns_field "$TOP" project)" \
   "a worktree outside its repository takes the .smns above its main checkout"
 assert_equals "$(show_field source)" ".smns at $TOP" "and project show names that file's folder"
+# A .smns on a folder the worktree shares with its main checkout is found
+# either way: the main checkout's own walk reaches it.
+SHARED="$T/a/shared"
+mkdir -p "$SHARED"
+write_smns "$SHARED" shared
+repo "$SHARED/repo" origin https://github.com/acme/shared.git
+gitq -C "$SHARED/repo" worktree add -q -b feat "$SHARED/repo-feat"
+run_in "$SHARED/repo-feat" "$SMINOS" project show
+assert_equals "$(show_field id)" "$(smns_field "$SHARED" project)" \
+  "a worktree outside its repository takes the .smns on a folder it shares with its main checkout"
 # A bare repository has no main checkout: its worktree is the project of the
 # bare repository's own remote, as before the rule.
 BARE="$T/a/bare/alpha.git"

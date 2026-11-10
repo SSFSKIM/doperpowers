@@ -1273,6 +1273,28 @@ def worktree_main(d):
     return main_checkout(os.path.abspath(os.path.join(gitdir, common))) if common else ""
 
 
+def worktree_stop(d):
+    """For a directory in a linked worktree, the first folder above it that
+    holds the worktree's gitdir, read off the `.git` file's text alone (git
+    keeps it at <common dir>/worktrees/<id>: for a main checkout's worktree,
+    the checkout itself, or the first folder the worktree shares with it);
+    "" for any other directory. A .smns on the worktree's own path is one
+    below it."""
+    top = _checkout_root(d)
+    dot = os.path.join(top, ".git") if top else ""
+    if not dot or not os.path.isfile(dot):
+        return ""
+    try:
+        with open(dot) as f:
+            line = f.readline().strip()
+    except OSError:
+        return ""
+    if not line.startswith("gitdir:"):
+        return ""
+    gitdir = os.path.abspath(os.path.join(top, line[len("gitdir:"):].strip()))
+    return next((x for x in _ancestors(d) if _within(gitdir, x)), "")
+
+
 def decision(cwd, fresh=False):
     """How design §8's rule decides a directory's project (Decision). On a
     machine not enrolled no statement is kept and the last rung is the
@@ -1284,24 +1306,38 @@ def decision(cwd, fresh=False):
     return _decide_stated(cwd, stated, fresh) if stated else _decide_files(cwd, fresh)
 
 
-def _decide_files(cwd, fresh):
-    """The rule with no stored statement: the reads, in their order, that
-    resolution made before the registry, but for the one corner design §8
-    names — a linked worktree outside its main checkout looks above that
-    checkout for a .smns too, where it read the checkout's own file only."""
-    for d in _ancestors(cwd):
+def _first_smns(folders):
+    for d in folders:
         smns = _smns_in(d)
         if smns:
             return _smns_decision(d, smns)
+    return None
+
+
+def _decide_files(cwd, fresh):
+    """The rule with no stored statement, on the reads resolution made
+    before the registry: a .smns walking up, then the remote, the machine,
+    the local repository. A linked worktree's walk stops below the first
+    folder it shares with its main checkout, and goes on from the checkout,
+    so a .smns above the checkout is the worktree's too (the one corner
+    design §8 names); a .smns on a shared folder is found either way."""
+    stop = worktree_stop(cwd)
+    found = _first_smns(_ancestors(cwd, stop))
+    if found:
+        return found
+    before = refusals()
     common = common_git_dir(cwd)
     repo = os.path.dirname(common) if common else ""
-    if repo and not read_refused(repo):
-        # Outside its main checkout, a linked worktree; a bare repository's has none.
-        outside = not _within(cwd, repo) and main_checkout(common)
-        for d in _ancestors(repo) if outside else [repo]:
-            smns = _smns_in(d)
-            if smns:
-                return _smns_decision(d, smns)
+    readable = bool(repo) and not read_refused(repo)
+    main = main_checkout(common) if stop and readable else ""
+    found = _first_smns(_ancestors(main or stop)) if main or stop else None
+    if found:
+        _GUARD.refused = before   # a main checkout not read leaves the walk above the worktree as it was
+        return found
+    if readable and not main:
+        found = _first_smns([repo])
+        if found:
+            return found
     return _last_rungs(cwd, fresh)
 
 
@@ -1321,30 +1357,35 @@ def _last_rungs(d, fresh):
 
 def _decide_stated(cwd, stated, fresh):
     """The rule with stored statements kept, over the canonical path. A
-    worktree's main checkout this process may not read leaves a .smns on
-    the worktree's own path to decide, as it would with none kept."""
+    linked worktree: its main checkout's own statement; else a .smns on its
+    own path (below worktree_stop); else the rule at the main checkout. A
+    main checkout this process may not read leaves the worktree's own .smns
+    to decide, and a .smns above it no statement is nearer than."""
     walk = os.path.realpath(cwd)
+    stop = worktree_stop(walk)
     before = refusals()
-    main = worktree_main(walk)
+    main = worktree_main(walk) if stop else ""
     main = os.path.realpath(main) if main and not read_refused(main) else ""
     refused = refusals() != before
     if main:
         s = statement_at(stated, main)
         if s:
             return _stated_decision(s, main)
-    # A worktree inside its main checkout looks no further up than the
-    # checkout: from there the checkout's own rule decides.
-    inside = bool(main) and _within(walk, main)
-    if main or refused:
-        for d in _ancestors(walk, main if inside else ""):
-            smns = _smns_in(d)
-            if smns:
-                _GUARD.refused = before   # read, not told: the refusal took nothing it needed
-                return _smns_decision(d, smns)
+    if stop:
+        found = _first_smns(_ancestors(walk, stop))
+        if not found and refused:
+            for d in _ancestors(stop):
+                if statement_at(stated, d):
+                    break   # its weight is the main checkout's rule, not read
+                found = _first_smns([d])
+                if found:
+                    break
+        if found:
+            _GUARD.refused = before   # read, not told: the refusal took nothing it needed
+            return found
         if refused:
             return Decision("", "", None)
-        walk = main
-    return _decide_at(walk, stated, fresh)
+    return _decide_at(main or walk, stated, fresh)
 
 
 def _decide_at(walk, stated, fresh):
