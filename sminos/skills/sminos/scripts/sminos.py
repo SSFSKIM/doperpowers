@@ -1191,6 +1191,24 @@ def stated_here():
     return d["locations"] if d else None
 
 
+_UNKNOWN = []   # locations_unknown's answer, per cache generation
+
+
+def locations_unknown():
+    """Whether this machine's stored statements are not known yet (the
+    registry's constraint 4, §E.3): it is enrolled, the last welcome its
+    endpoint gave listed `locations` (kept in daemon/audiences.json at every
+    welcome), and the kept org file holds no `locations` — no frame since
+    the upgrade, or the file gone. Files alone would then decide what the
+    statements may contradict a moment later, so a session keeps the
+    project it is recorded in (_session_project). Beside an endpoint that
+    lists no such capability, or none known, this is never so."""
+    if not _UNKNOWN:
+        _UNKNOWN.append(enrollment() is not None and stated_here() is None
+                        and sibling_module("sminos_audience").advertised("locations"))
+    return _UNKNOWN[0]
+
+
 class Declared(NamedTuple):
     path: str       # canonical, as MAWS writes it
     project: str    # the rule's answer as MAWS holds it
@@ -1970,18 +1988,32 @@ def seat_cwd(seat, fresh=False):
     return launch_cwd(sid, fallback=cwd, fresh=fresh) if sid and cwd else cwd
 
 
-def write_json(path, data, mode=0o600):
-    """Atomic replace: a reader sees the old file or the new one, never half."""
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
+def write_json(path, data, mode=0o600, durable=False):
+    """Atomic replace: a reader sees the old file or the new one, never half.
+    `durable`: the file's bytes synced before the rename and its directory
+    after it, so a write that returns survives a crash or a power loss (for
+    a write something outside the machine is told of); any step's failure
+    raises."""
+    parent = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".tmp-")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, ensure_ascii=False)
             f.write("\n")
+            if durable:
+                f.flush()
+                os.fsync(f.fileno())
         os.chmod(tmp, mode)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+    if durable:
+        dfd = os.open(parent or ".", os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
 
 
 def kept_root(project, held):
@@ -2422,8 +2454,11 @@ def session_project(session, launch_cwd, fresh=False):
     (resolve_project; `fresh`: as it is now). A launch directory this
     process may not read (read_refused) tells nothing: the session is in the
     project its membership is recorded in (recorded_project), else the one
-    the registrations tell for the directory, each a Guessed. None for a
-    session in no project, or in one nothing tells."""
+    the registrations tell for the directory, each a Guessed. While the
+    machine's stored statements are not known yet (locations_unknown) a
+    session last a member of a project other than the one its directory's
+    files give is in that one (last_project). None for a session in no
+    project, or in one nothing tells."""
     project = _session_project(session, launch_cwd, fresh)
     return None if project is UNREAD else project
 
@@ -2439,7 +2474,43 @@ def _session_project(session, launch_cwd, fresh=False):
     project = _resolve(launch_cwd, fresh)
     if session and (project is UNREAD or guessed(project)):
         project = recorded_project(session) or project
+    elif session and locations_unknown():
+        # Files alone answered while the statements are not known yet: a
+        # session recorded elsewhere stays there, a resumed one rejoining it,
+        # until a frame's `locations` decide; one recorded nowhere joins here.
+        held = last_project(session)
+        if held is not None and (project is None or held.id != project.id):
+            project = held
     return project
+
+
+_LAST = {}   # session → last_project's answer, per cache generation
+
+
+def last_project(session):
+    """The project known here that `session`'s latest own membership event,
+    of this machine, puts it in, read rather than told: the project of a
+    `joined`, or of a retirement other than by a move (a session that ended
+    there and is resumed rejoins it); for a `moved` retirement, the project
+    it names, every move recording its destination (retire_moved, `join`'s
+    move to none: "", so None), since a move whose destination's `joined`
+    was never written (an interrupted daemon, a failed join) is still that
+    move. None for none. Where a session is in while the machine's stored
+    statements are not known yet (_session_project)."""
+    if session not in _LAST:
+        best, at = None, ""
+        for path in glob.glob(os.path.join(projects_root(), "*", "project.json")):
+            p = known_project(os.path.basename(os.path.dirname(path)))
+            last = next((e for e in reversed(_own_events(p, session)) if e["kind"] in MEMBERSHIP), None) \
+                if p is not None else None
+            if last is not None and str(last.get("ts") or "") >= at:
+                best, at = (p, last), str(last.get("ts") or "")
+        if best is not None and best[1]["kind"] == "retired" and best[1].get("reason") == "moved":
+            dest = str(best[1].get("project") or "")
+            _LAST[session] = known_project(dest) if dest and valid_name(dest) else None
+        else:
+            _LAST[session] = best[0] if best is not None else None
+    return _LAST[session]
 
 
 def record_project(rec, fresh=False):
@@ -8731,9 +8802,11 @@ def forget_caches():
     _VIEWS.clear()
     _ENROLLED.clear()
     _ORG_DIR.clear()
+    _UNKNOWN.clear()
     _SEAT_PIDS.clear()
     _ROOTS.clear()
     _RECORDED.clear()
+    _LAST.clear()
     _BOOT.clear()
     _GENERATION[0] += 1
 
@@ -12571,6 +12644,10 @@ def cmd_join(a):
             why = join_refusal(target) if target else "not known here"
             print("%s is in %s; its override names %s, which it cannot be in (%s)" % (
                 me, home_line, target.name if target else held, why))
+        elif now_in is not None and (home is None or now_in.id != home.id) and locations_unknown():
+            print("%s is in %s, where it was last a member: this machine's endpoint has not sent its stored folder "
+                  "statements yet, so its launch directory (%s) is not resolved again until it does; no override"
+                  % (me, now_in.name, launch))
         else:
             print("%s is in %s; no override" % (me, home_line))
         return
@@ -12662,7 +12739,10 @@ def guide_text(session, launch, source="", title=""):
     # The CLI is off PATH: its installed path is given once, and the verb lines
     # name it `sminos` (an eval round showed no session typed the bare name).
     path, cli = os.path.join(SCRIPT_DIR, "sminos"), "sminos"
-    if home is not None and home.id != project.id:
+    if home is not None and home.id != project.id and not override_of(session) and locations_unknown():
+        where = ("where you were last a member: this machine's endpoint has not sent its stored folder statements "
+                 "yet, so your launch directory, %s, is not resolved again until it does" % launch)
+    elif home is not None and home.id != project.id:
         where = ("by your own `sminos join` (your launch directory, %s, is in %s; `%s join --cwd` returns you there)"
                  % (launch, home.name, cli))
     elif project_kind(project) == "machine":

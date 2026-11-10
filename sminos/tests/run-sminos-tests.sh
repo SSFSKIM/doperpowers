@@ -4794,6 +4794,15 @@ else
   fail "declared locations: known checkouts, registered and held, hub: false and the machine project as today (test_declared.py)"
   sed 's/^/    /' "$TEST_ROOT/declared.out"
 fi
+# The org frame's `locations` (§D, §E.3): kept with the directory in one write, a frame without them keeping the
+# held ones, each kept gen acknowledged, the hello listing them; while a welcome promises them and none is kept, a
+# session keeps its recorded project, so none moves twice.
+if python3 -B "$SCRIPT_DIR/test_locations_kept.py" > "$TEST_ROOT/locations-kept.out" 2>&1; then
+  pass "locations kept and acknowledged; the unknown state holds each session where it is recorded (test_locations_kept.py)"
+else
+  fail "locations kept and acknowledged; the unknown state holds each session where it is recorded (test_locations_kept.py)"
+  sed 's/^/    /' "$TEST_ROOT/locations-kept.out"
+fi
 # A copy that is not the pinned one fails, naming both hashes.
 mkdir -p "$TEST_ROOT/rule-pin"
 cp "$SCRIPT_DIR/vectors/maws/PIN.json" "$TEST_ROOT/rule-pin/"

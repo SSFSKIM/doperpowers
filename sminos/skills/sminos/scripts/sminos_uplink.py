@@ -32,7 +32,10 @@ per-frame answer, so a frame written is a frame taken.
 The endpoint sends the org's directory (`org`: every project of the org,
 with its kind and whether it is retired, and every enrolled machine); the
 uplink keeps it at daemon/org.json and registers every project of it it
-does not know (root ""), so the machine follows every project of its org.
+does not know (root ""), so the machine follows every project of its org;
+the frame's `locations` (this machine's declared folders and their stored
+statements) and `complete` are kept in the same write, and each kept
+`locations` is acknowledged `locations-kept {gen}` (keep_org, on_org).
 On every connection, for every hub project of this machine's org known
 here (hub_projects), the uplink sends `hello` with its vector — `follow`
 when the machine has no checkout of it and no session in it, and again
@@ -412,12 +415,37 @@ def register_own(cred):
     sminos.project_path(sminos.machine_project(cred["org"], cred["machine"]), "log")
 
 
+def frame_locations(frame):
+    """An org frame's `locations` (the registry's §D: {gen, at}) when it
+    carries one sminos can keep, else None: a frame without one, or with
+    one of another shape, keeps the locations held."""
+    locs = frame.get("locations")
+    if isinstance(locs, dict) and type(locs.get("gen")) is int and locs["gen"] >= 0 \
+            and isinstance(locs.get("at"), list):
+        return locs
+    return None
+
+
+def held_locations(path):
+    """The `locations` the org file at `path` holds, as kept; None for none
+    (no file, one that cannot be read, or one with none)."""
+    try:
+        d = sminos.json_at(path)
+    except (OSError, ValueError):
+        return None
+    return d.get("locations") if isinstance(d, dict) and isinstance(d.get("locations"), dict) else None
+
+
 def keep_org(frame, cred):
     """The hub's `org` frame kept at daemon/org.json (its projects and
     machines, and when it came), and every project it names that is not
     retired and not known here registered as a followed one: the five fields
-    project_path writes, root "", the hub the enrollment's. Whether the frame
-    was one to keep."""
+    project_path writes, root "", the hub the enrollment's. The registry's
+    `locations` and `complete` (§D, §E.3) are kept in the same atomic write,
+    under those keys as the frame carries them: a frame with `locations`
+    replaces the held ones whole, one without keeps them, and `complete` is
+    the frame's alone (absent where it says none). Whether the frame was one
+    to keep."""
     projects, machines = frame.get("projects"), frame.get("machines")
     if not (isinstance(projects, list) and isinstance(machines, list)):
         return False
@@ -428,7 +456,17 @@ def keep_org(frame, cred):
                 and isinstance(m.get("online"), bool) and (m.get("seen") is None or isinstance(m.get("seen"), str))]
     path = sminos.org_path()
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    sminos.write_json(path, {"projects": projects, "machines": machines, "at": sminos.now(ms=True)})
+    org = {"projects": projects, "machines": machines, "at": sminos.now(ms=True)}
+    if isinstance(frame.get("complete"), bool):
+        org["complete"] = frame["complete"]
+    locations = frame_locations(frame)
+    if locations is None:
+        locations = held_locations(path)
+    if locations is not None:
+        org["locations"] = locations
+    # Durable before on_org acknowledges it: the endpoint releases a person's
+    # act on the ack, so a crash must not take back what it was told is kept.
+    sminos.write_json(path, org, durable=True)
     hub = {"url": cred["hub"], "org": cred["org"]}
     for p in projects:
         if not p["retired"]:
@@ -1129,10 +1167,18 @@ class Link:
     def on_org(self, frame, _stream):
         """The org's directory: kept, every project of it registered, and
         the projects looked over at once — a new one is followed, a retired
-        one leaves (tick)."""
+        one leaves (tick). A frame carrying `locations` is acknowledged once
+        the file holding them is written durably (synced, renamed, its
+        directory synced; any failure sends none), `locations-kept` naming
+        its `gen`,
+        on this connection's lane, in order with the frames before it (§D):
+        the endpoint releases what waits on that gen."""
         if not keep_org(frame, self.cred):
             log("an org frame without its projects and machines: passed by")
             return
+        locations = frame_locations(frame)
+        if locations is not None:
+            self.log_lane.send([{"t": "locations-kept", "gen": locations["gen"]}])
         self.next_scan = 0.0
 
     def deliver_imports(self):
@@ -2145,6 +2191,12 @@ def cmd_probe(_a):
         sys.exit(1)
     finally:
         conn.close()
+    try:
+        # What it can do, kept as the uplink keeps it at every welcome: a CLI
+        # reads `locations` from it before any uplink runs (locations_unknown).
+        audience.keep_capabilities(welcome.get("capabilities"))
+    except OSError as e:
+        log("the endpoint's capabilities could not be kept (%s): the next welcome keeps them" % e)
     print("welcomed as %s of org %s: this machine is cut over" % (identity["name"], identity["org"]))
 
 
