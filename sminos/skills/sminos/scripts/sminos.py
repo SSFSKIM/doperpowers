@@ -1005,8 +1005,9 @@ def org_path():
 def org_directory():
     """daemon/org.json — {projects, machines, at} as the uplink kept the hub's
     latest `org` frame, with `retired` the names (lower-cased) of the machines
-    it retires (machine_retired) and `locations` the stored statements its
-    `locations` carries (_stated) — or None before the first (or when it is
+    it retires (machine_retired), `locations` the stored statements its
+    `locations` carries (_stated) and `declared` every declared location
+    that counts (_declared) — or None before the first (or when it is
     unreadable)."""
     if not _ORG_DIR:
         try:
@@ -1021,7 +1022,8 @@ def org_directory():
             retired |= {str(p.get("machine") or p.get("name") or "") for p in projects
                         if p.get("kind") == "machine" and p.get("retired") is True}
             d = {"projects": projects, "machines": machines, "at": str(d.get("at") or ""),
-                 "retired": frozenset(n.lower() for n in retired if n), "locations": _stated(d.get("locations"))}
+                 "retired": frozenset(n.lower() for n in retired if n), "locations": _stated(d.get("locations")),
+                 "declared": _declared(d.get("locations"))}
         _ORG_DIR.append(d if ok else None)
     return _ORG_DIR[0]
 
@@ -1187,6 +1189,58 @@ def stated_here():
     the file holds no `locations`."""
     d = org_directory() if enrollment() is not None else None
     return d["locations"] if d else None
+
+
+class Declared(NamedTuple):
+    path: str       # canonical, as MAWS writes it
+    project: str    # the rule's answer as MAWS holds it
+    hub: bool       # False where the entry says `hub: false` (its .smns names no hub of this org)
+
+
+def _declared(raw):
+    """[Declared] of an org file's `locations`: every entry that is neither
+    `missing` nor `replaced` (§E.2), whatever decided its project; None when
+    the file holds no `locations`."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("at"), list):
+        return None
+    out = []
+    for e in raw["at"]:
+        if not isinstance(e, dict) or e.get("state") in ("missing", "replaced"):
+            continue
+        path, pid = e.get("path"), e.get("project")
+        if isinstance(path, str) and path.startswith("/") and isinstance(pid, str) and valid_name(pid):
+            out.append(Declared(unicodedata.normalize("NFC", path), pid, e.get("hub") is not False))
+    return out
+
+
+def declared_here(pid=None):
+    """This machine's declared locations (_declared) from the kept org file,
+    on an enrolled machine — of project `pid` alone when given — [] where
+    the file holds none."""
+    d = org_directory() if enrollment() is not None else None
+    return [x for x in (d["declared"] or ()) if pid is None or x.project == pid] if d else []
+
+
+def register_declared():
+    """Register each declared location's project rooted there with this
+    org's hub (§E.2), so the uplink holds it rather than follows it: an
+    entry that says `hub: false` keeps the registration and transport its
+    .smns gives (registering it with the hub would rewrite its transport),
+    and one in this machine's own project registers nothing. Only where the
+    folder resolves here to the entry's project as a hub project of this
+    org; of several locations of one project the registered root stands
+    while it is still the project's (kept_root)."""
+    e = enrollment()
+    if e is None:
+        return
+    own = machine_project_id(e["org"], e["machine"])
+    for loc in declared_here():
+        if not loc.hub or loc.project == own or read_refused(loc.path) or not os.path.isdir(loc.path):
+            continue
+        p = resolve_project(loc.path)
+        if p is None or p.id != loc.project or not (isinstance(p.hub, dict) and p.hub.get("org") == e["org"]):
+            continue
+        project_path(p._replace(root=loc.path), "log")
 
 
 def statement_at(stated, d):
