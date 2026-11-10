@@ -5264,7 +5264,7 @@ def holder_wake(project, e):
     its bridge found retained): a pointer to it, the same receipt's marker
     put before it by push_live."""
     return "[sminos chat %s %s from %s → @you, again]\nIt is above in this conversation, delivered before: read it " \
-           "there." % (project.name, event_ref(e), str(e.get("via") or e.get("from") or ""))
+           "there." % (project.name, event_ref(e), frame_alias(str(e.get("via") or e.get("from") or "")))
 
 
 # A person's words on a machine cut over to its endpoint (O12 M6). The
@@ -5797,9 +5797,28 @@ def push_event(project, member, session, e, events, cursor, words=None):
 
 def compose_chat_frame(project_name, ref, sender, target, unread, text, label=""):
     """A chat event's frame; `label` is what follows the sender's alias
-    (sender_labels)."""
+    (sender_labels, frame_alias)."""
     return "[sminos chat %s %s from %s%s → %s%s]\n%s" % (
-        project_name, ref, sender, label, target, (" | unread %d" % unread) if unread else "", text)
+        project_name, ref, frame_alias(sender), label, target, (" | unread %d" % unread) if unread else "", text)
+
+
+# What would let an alias pass for a frame's own syntax: the label's `,` and
+# ` (`, a quote, the arrow and brackets, and any line break (str.splitlines').
+ALIAS_QUOTED = frozenset(',()"→[]\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029')
+
+
+def frame_alias(alias):
+    """A sender's alias as a frame or a `sminos chat` line writes it. The
+    alias is the writer's own claim and the label after it sminos's
+    (sender_labels), so an alias that could read as a label or as the frame's
+    syntax is a JSON string literal, never one line break raw (JSON leaves
+    U+0085, U+2028 and U+2029 as they are; JavaScript's `.` stops at the last
+    two); any other is written bare, as always. A reader decodes an alias
+    that opens with `"` and reads a bare one to its first `,` or ` (`."""
+    if not ALIAS_QUOTED.intersection(alias):
+        return alias
+    return json.dumps(alias, ensure_ascii=False).replace("\x85", "\\u0085").replace(
+        "\u2028", "\\u2028").replace("\u2029", "\\u2029")
 
 
 def sender_labels(project):
@@ -6550,14 +6569,15 @@ def is_moved(e):
 def chat_line(e, label=""):
     """`<ts> <ref> <from>[<label>] → <target>  <text>`; a copy (record_copy)
     marked `→ <project>, …` after its target, the projects whose logs
-    delivered it. `label` follows the sender (sender_labels)."""
+    delivered it. `label` follows the sender (sender_labels, frame_alias)."""
     lines = str(e.get("text") or "").split("\n")
     target = target_label(e)
     copy = e.get("copy")
     refs = [copy] if isinstance(copy, str) else [r for r in copy if isinstance(r, str)] if isinstance(copy, list) else []
     if refs:
         target += " → %s" % ", ".join(project_label(r.partition(":")[0]) for r in refs)
-    out = ["%s %s %s%s → %s  %s" % (e["ts"][11:19], event_ref(e), e.get("from", ""), label, target, lines[0])]
+    out = ["%s %s %s%s → %s  %s" % (e["ts"][11:19], event_ref(e), frame_alias(str(e.get("from", ""))), label, target,
+                                    lines[0])]
     out += ["    " + line for line in lines[1:]]
     return "\n".join(out)
 
@@ -11130,8 +11150,8 @@ def cmd_wake(_a):
 def compose_frame(sender, msg_id, msg, label=""):
     """Every delivery — socket, resume, codex queue — opens with this line; the
     id is what `--wait` looks for in the target's transcript. `label` is what
-    follows the sender (sender_labels)."""
-    return "[sminos message from %s%s id=%s]\n%s" % (sender, label, msg_id, msg)
+    follows the sender (sender_labels, frame_alias)."""
+    return "[sminos message from %s%s id=%s]\n%s" % (frame_alias(sender), label, msg_id, msg)
 
 
 def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):

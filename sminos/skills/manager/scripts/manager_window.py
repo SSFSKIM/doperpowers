@@ -59,9 +59,11 @@ PEER_OPEN = "Another Claude session sent a message:\n"
 ENVELOPE_RE = re.compile(r"<cross-session-message\b([^>]*)>\n?(.*)\n?</cross-session-message>", re.S)
 FROM_NAME_RE = re.compile(r'\bfrom-name="([^"]*)"')
 REPLY_LINE_RE = re.compile(r"\n\[To reply, run in Bash: [^\n]*\]\s*\Z")
-# The frames sminos delivers (sminos.compose_chat_frame, compose_frame), at a line's start.
-CHAT_FRAME_RE = re.compile(r"^\[sminos chat (\S+) (\S+) from (.+?) → ([^\]\n]*?)(?: \| unread \d+)?\]\n", re.M)
-MESSAGE_FRAME_RE = re.compile(r"^\[sminos message from (.+?) id=(\S+)\]\n", re.M)
+# The frames sminos delivers (sminos.compose_chat_frame, compose_frame), at a line's start. A sender is its alias
+# then the label; an alias sminos.frame_alias quoted is a JSON string literal, read whole before the label.
+SENDER = r'((?:"(?:[^"\\\n]|\\.)*")?.*?)'
+CHAT_FRAME_RE = re.compile(r"^\[sminos chat (\S+) (\S+) from %s → ([^\]\n]*?)(?: \| unread \d+)?\]\n" % SENDER, re.M)
+MESSAGE_FRAME_RE = re.compile(r"^\[sminos message from %s id=(\S+)\]\n" % SENDER, re.M)
 # The clause sminos.sender_labels puts after a sender's alias.
 SENDER_LABEL_RE = re.compile(r"(?:, owned by .*| \((?:owners unverified|unverified(?:, legacy)?|signed by a revoked key)\))\Z")
 
@@ -95,7 +97,14 @@ def _outside_marks(text):
 
 
 def _sender(raw):
-    return SENDER_LABEL_RE.sub("", raw.strip())
+    """A frame's sender less its label: a quoted alias decoded, a bare one less the clause after it."""
+    raw = raw.strip()
+    if raw.startswith('"'):
+        try:
+            return json.JSONDecoder().raw_decode(raw)[0]
+        except ValueError:
+            pass
+    return SENDER_LABEL_RE.sub("", raw)
 
 
 def frames(text):

@@ -404,6 +404,8 @@ run_suites() {
     fail "the endpoint's policy-cache rebuild: snapshots? answered in bounded pages, remote writers only, the last done (test_snapshots.py)"; fi
   if python3 "$SCRIPT_DIR/test_words.py"; then pass "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; else
     fail "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_frame_alias.py"; then pass "a sender's alias in the frames: quoted where it could read as the label or the syntax, bare otherwise, read back whole (test_frame_alias.py)"; else
+    fail "a sender's alias in the frames: quoted where it could read as the label or the syntax, bare otherwise, read back whole (test_frame_alias.py)"; fi
   if python3 "$SCRIPT_DIR/test_owed.py"; then pass "what a machine still owes: daemon owed's kinds, its bound and exit, the uplink's taken (test_owed.py)"; else
     fail "what a machine still owes: daemon owed's kinds, its bound and exit, the uplink's taken (test_owed.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_reach.py"; then
