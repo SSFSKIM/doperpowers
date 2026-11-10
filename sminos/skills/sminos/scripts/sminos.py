@@ -1210,32 +1210,67 @@ def _ancestors(d, stop=""):
         d = parent
 
 
+def _checkout_root(d):
+    """The folder holding the nearest `.git` (a directory, or a linked
+    worktree's file) at or above `d`, or "" outside git."""
+    return next((x for x in _ancestors(d) if os.path.lexists(os.path.join(x, ".git"))), "")
+
+
+def _git_bare(common):
+    """Whether a common git dir's config says `core.bare` is true."""
+    try:
+        text = file_bytes(os.path.join(common, "config")).decode("utf-8-sig", "replace")
+    except OSError:
+        return False
+    section = ""
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].split(";", 1)[0].strip()
+        if line.startswith("["):
+            section = line.strip("[]").strip().lower()
+        elif section == "core" and "=" in line:
+            k, v = (x.strip().lower() for x in line.split("=", 1))
+            if k == "bare":
+                return v in ("true", "yes", "on", "1")
+    return False
+
+
+def main_checkout(common):
+    """The main checkout whose common git dir is `common`, or "": a bare
+    repository has none (its common dir no `<main>/.git`, or `core.bare`)."""
+    if not common or os.path.basename(common) != ".git" or _git_bare(common):
+        return ""
+    return os.path.dirname(common)
+
+
+def _within(d, folder):
+    return d == folder or d.startswith(folder.rstrip("/") + "/")
+
+
 def worktree_main(d):
     """The main checkout of the linked worktree `d` is in — its nearest
-    `.git` a file naming a gitdir that has a `commondir` — or ""; "" too
-    where that gitdir is one this process may not read (read_refused)."""
-    for x in _ancestors(d):
-        dot = os.path.join(x, ".git")
-        if os.path.isdir(dot):
-            return ""
-        if os.path.isfile(dot):
-            try:
-                with open(dot) as f:
-                    line = f.readline().strip()
-            except OSError:
-                return ""
-            if not line.startswith("gitdir:"):
-                return ""
-            gitdir = os.path.join(x, line[len("gitdir:"):].strip())
-            if read_refused(gitdir):
-                return ""
-            try:
-                with open(os.path.join(gitdir, "commondir")) as f:
-                    common = f.read().strip()
-            except OSError:
-                return ""
-            return os.path.dirname(os.path.abspath(os.path.join(gitdir, common))) if common else ""
-    return ""
+    `.git` a file naming a gitdir that has a `commondir`, which is a main
+    checkout's (main_checkout) — or ""; "" too where that gitdir is one
+    this process may not read (read_refused)."""
+    top = _checkout_root(d)
+    dot = os.path.join(top, ".git") if top else ""
+    if not dot or not os.path.isfile(dot):
+        return ""
+    try:
+        with open(dot) as f:
+            line = f.readline().strip()
+    except OSError:
+        return ""
+    if not line.startswith("gitdir:"):
+        return ""
+    gitdir = os.path.join(top, line[len("gitdir:"):].strip())
+    if read_refused(gitdir):
+        return ""
+    try:
+        with open(os.path.join(gitdir, "commondir")) as f:
+            common = f.read().strip()
+    except OSError:
+        return ""
+    return main_checkout(os.path.abspath(os.path.join(gitdir, common))) if common else ""
 
 
 def decision(cwd, fresh=False):
@@ -1246,50 +1281,87 @@ def decision(cwd, fresh=False):
     if read_refused(cwd):
         return Decision("", "", None)
     stated = stated_here()
-    walk = os.path.realpath(cwd) if stated is not None else cwd
-    main = worktree_main(walk)
-    if main and read_refused(main):
-        main = ""
-    elif main and stated is not None:
-        main = os.path.realpath(main)
-    if main:
-        s = statement_at(stated, main) if stated else None
-        if s:
-            return _stated_decision(s, main)
-        # A worktree inside its main checkout looks no further up than the
-        # checkout: from there the checkout's own rule decides.
-        inside = walk.startswith(main.rstrip("/") + "/")
-        for d in _ancestors(walk, main if inside else ""):
-            smns = _smns_in(d)
-            if smns:
-                return _smns_decision(d, smns)
-        walk = main
-    return _decide_at(walk, stated, fresh)
+    return _decide_stated(cwd, stated, fresh) if stated else _decide_files(cwd, fresh)
 
 
-def _decide_at(walk, stated, fresh):
-    repo = owning_repo(walk)
-    key = derivation(walk, fresh).key if stated and repo else ""
-    repo = os.path.realpath(repo) if key else repo
-    for d in _ancestors(walk):
-        # A folder above a repository that derives a remote does not take
-        # the clone beneath it; a .smns still does.
-        s = statement_at(stated, d) if stated and not (key and repo.startswith(d.rstrip("/") + "/")) else None
-        if s:
-            return _stated_decision(s, d)
+def _decide_files(cwd, fresh):
+    """The rule with no stored statement: the reads, in their order, that
+    resolution made before the registry, but for the one corner design §8
+    names — a linked worktree outside its main checkout looks above that
+    checkout for a .smns too, where it read the checkout's own file only."""
+    for d in _ancestors(cwd):
         smns = _smns_in(d)
         if smns:
             return _smns_decision(d, smns)
-    project = repo_project(walk, fresh)
+    common = common_git_dir(cwd)
+    repo = os.path.dirname(common) if common else ""
+    if repo and not read_refused(repo):
+        # Outside its main checkout, a linked worktree; a bare repository's has none.
+        outside = not _within(cwd, repo) and main_checkout(common)
+        for d in _ancestors(repo) if outside else [repo]:
+            smns = _smns_in(d)
+            if smns:
+                return _smns_decision(d, smns)
+    return _last_rungs(cwd, fresh)
+
+
+def _last_rungs(d, fresh):
+    project = repo_project(d, fresh)
     if project is not None:
         return Decision("remote", project.root, project)
     project = own_machine_project()
     if project is not None:
         return Decision("machine", "", project)
+    repo = owning_repo(d)
     if repo:
         name = safe_name(os.path.basename(repo)) or "repo"
         return Decision("local", repo, make_project("local-" + name, name, "", repo))
     return Decision("", "", None)
+
+
+def _decide_stated(cwd, stated, fresh):
+    """The rule with stored statements kept, over the canonical path. A
+    worktree's main checkout this process may not read leaves a .smns on
+    the worktree's own path to decide, as it would with none kept."""
+    walk = os.path.realpath(cwd)
+    before = refusals()
+    main = worktree_main(walk)
+    main = os.path.realpath(main) if main and not read_refused(main) else ""
+    refused = refusals() != before
+    if main:
+        s = statement_at(stated, main)
+        if s:
+            return _stated_decision(s, main)
+    # A worktree inside its main checkout looks no further up than the
+    # checkout: from there the checkout's own rule decides.
+    inside = bool(main) and _within(walk, main)
+    if main or refused:
+        for d in _ancestors(walk, main if inside else ""):
+            smns = _smns_in(d)
+            if smns:
+                _GUARD.refused = before   # read, not told: the refusal took nothing it needed
+                return _smns_decision(d, smns)
+        if refused:
+            return Decision("", "", None)
+        walk = main
+    return _decide_at(walk, stated, fresh)
+
+
+def _decide_at(walk, stated, fresh):
+    above = None   # (the checkout root, whether it derives a remote), read at the first statement met
+    for d in _ancestors(walk):
+        s = statement_at(stated, d)
+        if s and above is None:
+            root = _checkout_root(walk)
+            above = (os.path.realpath(root) if root else "", bool(root) and bool(derivation(walk, fresh).key))
+        # A folder above a repository that derives a remote does not take
+        # the clone beneath it; a .smns still does.
+        if s and not (above[1] and above[0].startswith(d.rstrip("/") + "/")):
+            return _stated_decision(s, d)
+        smns = _smns_in(d)
+        if smns:
+            return _smns_decision(d, smns)
+    return _last_rungs(walk, fresh)
 
 
 def _smns_decision(d, smns):
@@ -1675,7 +1747,7 @@ def project_source(cwd):
         return {"link": "a link at %s", "minted": "a stored id at %s", "smns": ".smns at %s"}[found.by] % found.at
     if found.by == "local":
         return "the repository at %s, a local project: this machine is not enrolled" % found.at
-    d = derivation(found.at or cwd)
+    d = derivation(cwd)
     return "remote %s → %s" % (d.remote, d.key) if found.by == "remote" else \
         "machine project: %s" % d.why if found.by == "machine" else "-"
 

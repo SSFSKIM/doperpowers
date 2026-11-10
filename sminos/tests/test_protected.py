@@ -331,6 +331,31 @@ class GitThroughAWorktree(unittest.TestCase):
         self.assertEqual([a for a in t.children if a and a[0] == "git"], [], "no git ran through the worktree")
         self.assertEqual((key, diff, excluded, branch), (wt, {"base": "", "text": ""}, False, ""))
 
+    def test_a_worktrees_own_smns_decides_though_its_repository_is_not_read(self):
+        wt = worktree_into(os.path.join(DOWNLOADS, "main-smns"), "wt-%s" % uuid.uuid4().hex[:6])
+        pid = str(uuid.uuid4())
+        write(os.path.join(wt, ".smns"), {"project": pid, "name": "own", "hub": {"org": ORG}})
+        org = os.path.join(SH, "daemon", "org.json")
+        elsewhere = os.path.join(T, "r")
+        st = os.stat(elsewhere)
+        stated = {"projects": [], "machines": [], "locations": {"gen": 1, "at": [{
+            "path": sminos.canonical(elsewhere), "project": str(uuid.uuid4()), "stated": "minted",
+            "anchor": {"dev": str(st.st_dev), "ino": str(st.st_ino), "birth": "0"}}]}}
+        try:
+            for kept, label in ((None, "no stored statement kept"), (stated, "a stored statement kept elsewhere")):
+                if kept is not None:
+                    write(org, kept)
+                with tcc(), in_dir(T), Touches(DOWNLOADS) as t:
+                    sminos.forget_caches()
+                    p = sminos.resolve_project(wt)
+                self.assertIsNotNone(p, "told, not unknown: " + label)
+                self.assertEqual((p.id, sminos.guessed(p)), (pid, False), "read off its own .smns: " + label)
+                self.assertEqual(t.seen, [], "nothing under ~/Downloads was looked at: " + label)
+        finally:
+            if os.path.exists(org):
+                os.unlink(org)
+            sminos.forget_caches()
+
     def test_linux_follows_it_as_before(self):
         main = os.path.join(DOWNLOADS, "main-linux")
         wt = worktree_into(main, "wt-%s" % uuid.uuid4().hex[:6])

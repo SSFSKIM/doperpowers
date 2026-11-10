@@ -199,6 +199,16 @@ run_in "$T/a/inner-feat" "$SMINOS" project show
 assert_equals "$(show_field id)" "$(smns_field "$TOP" project)" \
   "a worktree outside its repository takes the .smns above its main checkout"
 assert_equals "$(show_field source)" ".smns at $TOP" "and project show names that file's folder"
+# A bare repository has no main checkout: its worktree is the project of the
+# bare repository's own remote, as before the rule.
+BARE="$T/a/bare/alpha.git"
+gitq clone -q --bare "$W" "$BARE"
+gitq -C "$BARE" remote set-url origin https://github.com/example/alpha.git
+gitq -C "$BARE" worktree add -q -b bare-feat "$T/a/alpha-wt"
+run_in "$T/a/alpha-wt" "$SMINOS" project show
+assert_equals "$(show_field id)" "$(rp_of github.com/example/alpha)" \
+  "a worktree of a bare repository is the project of the repository's remote"
+assert_equals "$(show_field source)" "remote origin → github.com/example/alpha" "and project show says so"
 U="$T/a/solo"
 repo "$U" upstream https://github.com/acme/solo.git
 run_in "$U" "$SMINOS" project show
