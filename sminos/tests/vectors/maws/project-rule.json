@@ -1,0 +1,413 @@
+{
+ "about": "Design §8's rule for a directory's project (docs/doperpowers/specs/2026-11-10-project-registry-design.md), and §D's anchor comparison, hand-written from the design's text: the contract between sminos and MAWS (Interfaces §B of docs/doperpowers/plans/2026-11-10-project-registry.md, whose sync rule alone changes it). A harness makes each case's tree in a fresh directory, in `under` spelled as written when the case names one, every P relative to it; it hands its implementation each statement at the canonical form of its path (the real path, NFC), anchored to the folder there, but for `replaced`, whose anchor is another folder's, and `removed`, a removed row's; it asks each `dir` spelled as written, and expects `project`, `by` and `at`, the deciding folder's canonical path relative to the case's directory.",
+ "version": 1,
+ "org": "org-rule",
+ "machine": "rule-mac",
+ "cases": [
+  {
+   "name": "a plain folder with no statement",
+   "tree": [{ "dir": "plain/sub" }],
+   "statements": [],
+   "ask": [
+    { "dir": "plain", "project": "machine", "by": "machine" },
+    { "dir": "plain/sub", "project": "machine", "by": "machine" }
+   ]
+  },
+  {
+   "name": "a minted folder and its subfolder",
+   "tree": [{ "dir": "f/sub/deep" }],
+   "statements": [{ "path": "f", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "f", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" },
+    { "dir": "f/sub", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" },
+    { "dir": "f/sub/deep", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" }
+   ]
+  },
+  {
+   "name": "two nested minted folders: the nearer decides",
+   "tree": [{ "dir": "outer/inner/x" }],
+   "statements": [
+    { "path": "outer", "minted": "11111111-1111-4111-8111-111111111111" },
+    { "path": "outer/inner", "minted": "22222222-2222-4222-8222-222222222222" }
+   ],
+   "ask": [
+    { "dir": "outer", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "outer" },
+    { "dir": "outer/inner", "project": "22222222-2222-4222-8222-222222222222", "by": "minted", "at": "outer/inner" },
+    { "dir": "outer/inner/x", "project": "22222222-2222-4222-8222-222222222222", "by": "minted", "at": "outer/inner" }
+   ]
+  },
+  {
+   "name": "a .smns above a statement: the statement, nearer",
+   "tree": [{ "dir": "a/b/c" }, { "smns": "a", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" }],
+   "statements": [{ "path": "a/b", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "a", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "a" },
+    { "dir": "a/b", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "a/b" },
+    { "dir": "a/b/c", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "a/b" }
+   ]
+  },
+  {
+   "name": "a .smns below a statement: the file, nearer",
+   "tree": [{ "dir": "a/b/c" }, { "smns": "a/b", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" }],
+   "statements": [{ "path": "a", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "a", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "a" },
+    { "dir": "a/b", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "a/b" },
+    { "dir": "a/b/c", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "a/b" }
+   ]
+  },
+  {
+   "name": "at one folder, a link and a .smns: the link",
+   "tree": [{ "dir": "f/sub" }, { "smns": "f", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" }],
+   "statements": [{ "path": "f", "linked": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+   "ask": [
+    { "dir": "f", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "f" },
+    { "dir": "f/sub", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "f" }
+   ]
+  },
+  {
+   "name": "at one folder, a minted id and a .smns: the minted id",
+   "tree": [{ "dir": "f/sub" }, { "smns": "f", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" }],
+   "statements": [{ "path": "f", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "f", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" },
+    { "dir": "f/sub", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" }
+   ]
+  },
+  {
+   "name": "at one folder, a link and a minted id: the link",
+   "tree": [{ "dir": "f/sub" }],
+   "statements": [{ "path": "f", "minted": "11111111-1111-4111-8111-111111111111", "linked": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+   "ask": [
+    { "dir": "f", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "f" },
+    { "dir": "f/sub", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "f" }
+   ]
+  },
+  {
+   "name": "a clone with a remote under a minted folder: its remote",
+   "tree": [{ "dir": "f" }, { "repo": "f/clone", "remote": "https://github.com/example/alpha.git" }, { "dir": "f/clone/src" }],
+   "statements": [{ "path": "f", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "f", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" },
+    { "dir": "f/clone", "project": { "remote": "github.com/example/alpha" }, "by": "remote", "at": "f/clone" },
+    { "dir": "f/clone/src", "project": { "remote": "github.com/example/alpha" }, "by": "remote", "at": "f/clone" }
+   ]
+  },
+  {
+   "name": "a repository with no remote under a minted folder: the minted id",
+   "tree": [{ "dir": "f" }, { "repo": "f/repo" }, { "dir": "f/repo/src" }],
+   "statements": [{ "path": "f", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "f/repo", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" },
+    { "dir": "f/repo/src", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" }
+   ]
+  },
+  {
+   "name": "a repository with several remotes, none named origin, under a minted folder: the minted id",
+   "tree": [
+    { "dir": "f" },
+    { "repo": "f/repo", "remotes": { "upstream": "https://github.com/example/alpha.git", "fork": "https://github.com/example/beta.git" } },
+    { "dir": "f/repo/src" }
+   ],
+   "statements": [{ "path": "f", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "f/repo", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" },
+    { "dir": "f/repo/src", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" }
+   ]
+  },
+  {
+   "name": "a statement on a repository's own root: the statement",
+   "tree": [{ "repo": "r", "remote": "https://github.com/example/alpha.git" }, { "dir": "r/src" }],
+   "statements": [{ "path": "r", "linked": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+   "ask": [
+    { "dir": "r", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "r" },
+    { "dir": "r/src", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "r" }
+   ]
+  },
+  {
+   "name": "a linked subfolder of a clone: the link beneath, the remote above",
+   "tree": [{ "repo": "r", "remote": "https://github.com/example/alpha.git" }, { "dir": "r/sub/x" }],
+   "statements": [{ "path": "r/sub", "linked": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+   "ask": [
+    { "dir": "r", "project": { "remote": "github.com/example/alpha" }, "by": "remote", "at": "r" },
+    { "dir": "r/sub", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "r/sub" },
+    { "dir": "r/sub/x", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "r/sub" }
+   ]
+  },
+  {
+   "name": "a subfolder with a .smns inside a linked checkout: the file",
+   "tree": [
+    { "repo": "r", "remote": "https://github.com/example/alpha.git" },
+    { "dir": "r/sub/x" },
+    { "smns": "r/sub", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" }
+   ],
+   "statements": [{ "path": "r", "linked": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+   "ask": [
+    { "dir": "r", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "r" },
+    { "dir": "r/sub", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "r/sub" },
+    { "dir": "r/sub/x", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "r/sub" }
+   ]
+  },
+  {
+   "name": "a .smns above a clone with a remote: the file, as today",
+   "tree": [
+    { "dir": "top" },
+    { "smns": "top", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" },
+    { "repo": "top/r", "remote": "https://github.com/example/alpha.git" }
+   ],
+   "statements": [],
+   "ask": [{ "dir": "top/r", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "top" }]
+  },
+  {
+   "name": "a linked worktree inside its repository, without a .smns: its repository's remote",
+   "tree": [
+    { "repo": "r", "remote": "https://github.com/example/alpha.git" },
+    { "worktree": "r/.claude/worktrees/wt", "of": "r" },
+    { "dir": "r/.claude/worktrees/wt/src" }
+   ],
+   "statements": [],
+   "ask": [
+    { "dir": "r", "project": { "remote": "github.com/example/alpha" }, "by": "remote", "at": "r" },
+    { "dir": "r/.claude/worktrees/wt", "project": { "remote": "github.com/example/alpha" }, "by": "remote", "at": "r" },
+    { "dir": "r/.claude/worktrees/wt/src", "project": { "remote": "github.com/example/alpha" }, "by": "remote", "at": "r" }
+   ]
+  },
+  {
+   "name": "a linked worktree inside its repository, carrying the committed .smns: the file",
+   "tree": [
+    { "repo": "r", "remote": "https://github.com/example/alpha.git" },
+    { "smns": "r", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" },
+    { "worktree": "r/.claude/worktrees/wt", "of": "r" },
+    { "smns": "r/.claude/worktrees/wt", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" },
+    { "dir": "r/.claude/worktrees/wt/src" }
+   ],
+   "statements": [],
+   "ask": [
+    { "dir": "r", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "r" },
+    { "dir": "r/.claude/worktrees/wt", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "r/.claude/worktrees/wt" },
+    { "dir": "r/.claude/worktrees/wt/src", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "r/.claude/worktrees/wt" }
+   ]
+  },
+  {
+   "name": "a linked worktree inside its minted repository, carrying the committed .smns: the minted id",
+   "tree": [
+    { "repo": "r" },
+    { "smns": "r", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" },
+    { "worktree": "r/.claude/worktrees/wt", "of": "r" },
+    { "smns": "r/.claude/worktrees/wt", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" },
+    { "dir": "r/.claude/worktrees/wt/src" }
+   ],
+   "statements": [{ "path": "r", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "r", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "r" },
+    { "dir": "r/.claude/worktrees/wt", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "r" },
+    { "dir": "r/.claude/worktrees/wt/src", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "r" }
+   ]
+  },
+  {
+   "name": "a linked worktree outside its repository under another project's folder: its repository's project",
+   "tree": [
+    { "repo": "repos/r", "remote": "https://github.com/example/alpha.git" },
+    { "dir": "proj" },
+    { "worktree": "proj/wt", "of": "repos/r" },
+    { "dir": "proj/wt/src" }
+   ],
+   "statements": [{ "path": "proj", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "proj", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "proj" },
+    { "dir": "proj/wt", "project": { "remote": "github.com/example/alpha" }, "by": "remote", "at": "repos/r" },
+    { "dir": "proj/wt/src", "project": { "remote": "github.com/example/alpha" }, "by": "remote", "at": "repos/r" }
+   ]
+  },
+  {
+   "name": "a linked main checkout with a worktree carrying the committed .smns: both the link's project",
+   "tree": [
+    { "repo": "r", "remote": "https://github.com/example/alpha.git" },
+    { "smns": "r", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" },
+    { "worktree": "worktrees/r-wt", "of": "r" },
+    { "smns": "worktrees/r-wt", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" },
+    { "dir": "worktrees/r-wt/src" }
+   ],
+   "statements": [{ "path": "r", "linked": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+   "ask": [
+    { "dir": "r", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "r" },
+    { "dir": "worktrees/r-wt", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "r" },
+    { "dir": "worktrees/r-wt/src", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "r" }
+   ]
+  },
+  {
+   "name": "a worktree outside its repository whose main checkout has a .smns above it: that file's project",
+   "tree": [
+    { "dir": "top" },
+    { "smns": "top", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" },
+    { "repo": "top/r", "remote": "https://github.com/example/alpha.git" },
+    { "worktree": "elsewhere/wt", "of": "top/r" },
+    { "dir": "elsewhere/wt/src" }
+   ],
+   "statements": [],
+   "ask": [
+    { "dir": "top/r", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "top" },
+    { "dir": "elsewhere/wt", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "top" },
+    { "dir": "elsewhere/wt/src", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "top" }
+   ]
+  },
+  {
+   "name": "a removed folder with a declared subfolder: the machine's project",
+   "tree": [{ "dir": "f/sub" }],
+   "statements": [{ "path": "f", "minted": "11111111-1111-4111-8111-111111111111", "removed": true }],
+   "ask": [
+    { "dir": "f", "project": "machine", "by": "machine" },
+    { "dir": "f/sub", "project": "machine", "by": "machine" }
+   ]
+  },
+  {
+   "name": "a removed and a replaced statement nearer than a counting one: the walk goes on to it",
+   "tree": [{ "dir": "outer/gone/x" }, { "dir": "outer/swapped/y" }],
+   "statements": [
+    { "path": "outer", "minted": "11111111-1111-4111-8111-111111111111" },
+    { "path": "outer/gone", "minted": "22222222-2222-4222-8222-222222222222", "removed": true },
+    { "path": "outer/swapped", "linked": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "replaced": true }
+   ],
+   "ask": [
+    { "dir": "outer/gone", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "outer" },
+    { "dir": "outer/gone/x", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "outer" },
+    { "dir": "outer/swapped", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "outer" },
+    { "dir": "outer/swapped/y", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "outer" }
+   ]
+  },
+  {
+   "name": "a folder linked and then unlinked: its minted project",
+   "tree": [{ "dir": "f/sub" }],
+   "statements": [{ "path": "f", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "f", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" },
+    { "dir": "f/sub", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" }
+   ]
+  },
+  {
+   "name": "a replaced folder: its statement does not count",
+   "tree": [{ "dir": "f/sub" }],
+   "statements": [{ "path": "f", "minted": "11111111-1111-4111-8111-111111111111", "replaced": true }],
+   "ask": [
+    { "dir": "f", "project": "machine", "by": "machine" },
+    { "dir": "f/sub", "project": "machine", "by": "machine" }
+   ]
+  },
+  {
+   "name": "a repository cloned anew at a stated folder's path: its own remote",
+   "tree": [{ "repo": "f", "remote": "https://github.com/example/beta.git" }, { "dir": "f/src" }],
+   "statements": [{ "path": "f", "minted": "11111111-1111-4111-8111-111111111111", "replaced": true }],
+   "ask": [
+    { "dir": "f", "project": { "remote": "github.com/example/beta" }, "by": "remote", "at": "f" },
+    { "dir": "f/src", "project": { "remote": "github.com/example/beta" }, "by": "remote", "at": "f" }
+   ]
+  },
+  {
+   "name": "a repository with no remote, minted, whose .smns arrived later from another branch: the minted id",
+   "tree": [{ "repo": "r" }, { "dir": "r/src" }, { "smns": "r", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" }],
+   "statements": [{ "path": "r", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "r", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "r" },
+    { "dir": "r/src", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "r" }
+   ]
+  },
+  {
+   "name": "a path asked through a symlink",
+   "tree": [{ "dir": "real/sub" }, { "symlink": "alias", "to": "real" }],
+   "statements": [{ "path": "real", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "alias", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "real" },
+    { "dir": "alias/sub", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "real" }
+   ]
+  },
+  {
+   "name": "a statement made under /private/tmp, asked as /tmp",
+   "platform": "darwin",
+   "under": "/tmp",
+   "tree": [{ "dir": "f/sub" }],
+   "statements": [{ "path": "f", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "f", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" },
+    { "dir": "f/sub", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "f" }
+   ]
+  },
+  {
+   "name": "a folder whose name is stored decomposed on disk and stated composed",
+   "platform": "darwin",
+   "tree": [{ "dir": "café/sub" }],
+   "statements": [{ "path": "café", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "café", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "café" },
+    { "dir": "café/sub", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "café" }
+   ]
+  }
+ ],
+ "anchors": [
+  {
+   "name": "the pair measured on one folder by Python 3.12 and Node: the same folder",
+   "anchor": { "dev": "16777231", "ino": "53301125", "birth": "197164871453944374" },
+   "reading": { "dev": "16777231", "ino": "53301125", "birthSeconds": 197164871.45394439 },
+   "same": true
+  },
+  {
+   "name": "Node's own reading of the measured folder: the same folder",
+   "anchor": { "dev": "16777231", "ino": "53301125", "birth": "197164871453944374" },
+   "reading": { "dev": "16777231", "ino": "53301125", "birthNs": "197164871453944374" },
+   "same": true
+  },
+  {
+   "name": "a birth 900 ns later: the same folder, within a microsecond",
+   "anchor": { "dev": "16777231", "ino": "53301125", "birth": "197164871453944374" },
+   "reading": { "dev": "16777231", "ino": "53301125", "birthNs": "197164871453945274" },
+   "same": true
+  },
+  {
+   "name": "a birth 2,000 ns later: another folder",
+   "anchor": { "dev": "16777231", "ino": "53301125", "birth": "197164871453944374" },
+   "reading": { "dev": "16777231", "ino": "53301125", "birthNs": "197164871453946374" },
+   "same": false
+  },
+  {
+   "name": "a birth 2,000 ns later, read by Python: another folder",
+   "anchor": { "dev": "16777231", "ino": "53301125", "birth": "197164871453944374" },
+   "reading": { "dev": "16777231", "ino": "53301125", "birthSeconds": 197164871.45394639 },
+   "same": false
+  },
+  {
+   "name": "an anchor with birth 0 against a reading with one: device and inode alone",
+   "anchor": { "dev": "16777231", "ino": "53301125", "birth": "0" },
+   "reading": { "dev": "16777231", "ino": "53301125", "birthNs": "197164871453944374" },
+   "same": true
+  },
+  {
+   "name": "an anchor with a birth against a reading of birth 0: device and inode alone",
+   "anchor": { "dev": "16777231", "ino": "53301125", "birth": "197164871453944374" },
+   "reading": { "dev": "16777231", "ino": "53301125", "birthNs": "0" },
+   "same": true
+  },
+  {
+   "name": "a reading with no birth time, as Python reads on Linux: device and inode alone",
+   "anchor": { "dev": "16777231", "ino": "53301125", "birth": "197164871453944374" },
+   "reading": { "dev": "16777231", "ino": "53301125" },
+   "same": true
+  },
+  {
+   "name": "a reading with no birth time and another inode: another folder",
+   "anchor": { "dev": "16777231", "ino": "53301125", "birth": "197164871453944374" },
+   "reading": { "dev": "16777231", "ino": "53301126" },
+   "same": false
+  },
+  {
+   "name": "another inode, the same birth: another folder",
+   "anchor": { "dev": "16777231", "ino": "53301125", "birth": "197164871453944374" },
+   "reading": { "dev": "16777231", "ino": "53301126", "birthNs": "197164871453944374" },
+   "same": false
+  },
+  {
+   "name": "another device, the same inode and birth: another folder",
+   "anchor": { "dev": "16777231", "ino": "53301125", "birth": "197164871453944374" },
+   "reading": { "dev": "16777232", "ino": "53301125", "birthNs": "197164871453944374" },
+   "same": false
+  }
+ ]
+}

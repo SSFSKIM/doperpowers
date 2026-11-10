@@ -4765,6 +4765,32 @@ done < <(python3 "$SCRIPT_DIR/machine_project_parity.py" "$PLUGIN_ROOT/skills/sm
 while IFS= read -r line; do
   case "$line" in "ok "*) pass "remote key parity: ${line#ok }" ;; *) fail "remote key parity: ${line#FAIL }" ;; esac
 done < <(python3 "$SCRIPT_DIR/remote_key_parity.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/remote-key.json" 2>&1)
+# A directory's project by design §8's rule, as MAWS applies it too: MAWS's vectors, vendored and pinned
+# (vectors/maws/, project_rule_parity.py), each case's project, source and folder, and the anchor comparison.
+while IFS= read -r line; do
+  case "$line" in
+    "ok "*) pass "project rule parity: ${line#ok }" ;;
+    "SKIP "*) echo "  skip project rule parity: ${line#SKIP }" ;;
+    *" cases, 0 failed") ;;
+    *) fail "project rule parity: ${line#FAIL }" ;;
+  esac
+done < <(python3 -B -I "$SCRIPT_DIR/project_rule_parity.py" "$PLUGIN_ROOT/skills/sminos/scripts" \
+  "$SCRIPT_DIR/vectors/maws/project-rule.json" 2>&1)
+# A copy that is not the pinned one fails, naming both hashes.
+mkdir -p "$TEST_ROOT/rule-pin"
+cp "$SCRIPT_DIR/vectors/maws/PIN.json" "$TEST_ROOT/rule-pin/"
+{ cat "$SCRIPT_DIR/vectors/maws/project-rule.json"; echo; } > "$TEST_ROOT/rule-pin/project-rule.json"
+set +e
+OUT="$(python3 -B -I "$SCRIPT_DIR/project_rule_parity.py" "$PLUGIN_ROOT/skills/sminos/scripts" \
+  "$TEST_ROOT/rule-pin/project-rule.json" 2>&1)"; RC=$?
+set -e
+PINNED="$(python3 -c 'import json, sys; p = json.load(open(sys.argv[1])); print(p["sha256"], p["commit"])' \
+  "$SCRIPT_DIR/vectors/maws/PIN.json")"
+VENDORED="$(python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
+  "$TEST_ROOT/rule-pin/project-rule.json")"
+assert_contains "$OUT" "project-rule.json: vendored $VENDORED is not the pinned ${PINNED% *} (MAWS ${PINNED#* })" \
+  "project rule parity: a vendored copy that is not the pinned one fails, naming both hashes"
+assert_equals "$RC" "1" "project rule parity: and exits 1"
 # The installed engine still stamps and reads `relocated` as launch_cwd reads
 # it (engine_relocated_shape.py); where no engine is installed (CI) it says SKIP.
 while IFS= read -r line; do

@@ -218,6 +218,7 @@ import time
 import unicodedata
 import uuid as uuidlib
 from contextlib import ExitStack, contextmanager
+from fractions import Fraction
 from typing import NamedTuple, NoReturn, Optional
 
 # The oldest Python sminos runs on (its annotations are evaluated: `float |
@@ -997,7 +998,8 @@ def org_path():
 def org_directory():
     """daemon/org.json — {projects, machines, at} as the uplink kept the hub's
     latest `org` frame, with `retired` the names (lower-cased) of the machines
-    it retires (machine_retired) — or None before the first (or when it is
+    it retires (machine_retired) and `locations` the stored statements its
+    `locations` carries (_stated) — or None before the first (or when it is
     unreadable)."""
     if not _ORG_DIR:
         try:
@@ -1012,7 +1014,7 @@ def org_directory():
             retired |= {str(p.get("machine") or p.get("name") or "") for p in projects
                         if p.get("kind") == "machine" and p.get("retired") is True}
             d = {"projects": projects, "machines": machines, "at": str(d.get("at") or ""),
-                 "retired": frozenset(n.lower() for n in retired if n)}
+                 "retired": frozenset(n.lower() for n in retired if n), "locations": _stated(d.get("locations"))}
         _ORG_DIR.append(d if ok else None)
     return _ORG_DIR[0]
 
@@ -1103,28 +1105,207 @@ def hub_here(pid, name, hub):
     return {"url": e["url"], "org": hub["org"]}
 
 
-def smns_at(cwd):
-    """(directory, read_smns) of the first .smns walking up from cwd; else,
-    for a linked worktree at a head that predates the file, its main
-    checkout's (owning_repo), so an old branch never splits the repository
-    into two projects; else None, as for a directory this process may not
-    read (read_refused)."""
-    if read_refused(cwd):
+# ------------------------------------------- one rule for a directory's project
+#
+# Design §8 of docs/doperpowers/specs/2026-11-10-project-registry-design.md
+# (MAWS), which MAWS's deriveOrg applies too; the two are held to one vector
+# file, sminos/tests/vectors/maws/project-rule.json (project_rule_parity.py).
+# Walking up from a directory, the nearer of a .smns and a stored statement
+# decides (at one folder a link, then a minted id, then the file), a statement
+# above a repository that derives a remote not counting; else the remote;
+# else the machine's own project. A linked worktree is in its main checkout's
+# project: that checkout's own statement first, then a .smns on the
+# worktree's path, then the rule at the main checkout. The stored statements
+# are this machine's declared locations as its endpoint last sent them, kept
+# in org.json's `locations` (stated_here); with none kept the walk is today's,
+# over the path as given, and with them over its canonical form (the real
+# path, NFC), the form MAWS writes a statement's path in.
+
+BIRTH_SLACK_NS = 1000   # an anchor's birth equals a reading within this (Python's float of seconds, Node's integer)
+
+
+class Decision(NamedTuple):
+    by: str           # link | minted | smns | remote | machine | local, or "" for no project
+    at: str           # the folder that decided ("" for machine and none): for remote, the main checkout
+    project: Optional[Project]
+
+
+def canonical(path):
+    """A path in the form both sides compare: the real path, NFC."""
+    return unicodedata.normalize("NFC", os.path.realpath(path))
+
+
+def birth_ns(seconds):
+    """A birth time in nanoseconds, exactly the float of seconds Python
+    reads (a Fraction: a float times 1e9 would round), or None for none."""
+    return Fraction(seconds) * 1_000_000_000 if seconds else None
+
+
+def anchor_same(anchor, dev, ino, birth):
+    """Whether a folder read as (dev, ino, birth in ns or None) is the one
+    a statement's anchor names (§D): device and inode exactly, and the birth
+    within BIRTH_SLACK_NS only where both sides have one (Python on Linux
+    reads none; a filesystem with none writes "0")."""
+    if anchor["dev"] != str(dev) or anchor["ino"] != str(ino):
+        return False
+    a = int(anchor["birth"])
+    return not (a and birth) or abs(birth - a) <= BIRTH_SLACK_NS
+
+
+def _stated(raw):
+    """{canonical path: (by, project id, anchor)} of an org file's
+    `locations`, the entries a stored statement decides at and that still
+    count (not `replaced`, an anchor that reads), or None when the file
+    holds no `locations` (an endpoint that sends none)."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("at"), list):
         return None
-    d = cwd
-    while True:
-        path = os.path.join(d, SMNS)
-        smns = read_smns(path) if os.path.isfile(path) else None
-        if smns:
-            return d, smns
+    out = {}
+    for e in raw["at"]:
+        if not isinstance(e, dict) or e.get("stated") not in ("minted", "linked") or e.get("state") == "replaced":
+            continue
+        path, pid, anchor = e.get("path"), e.get("project"), e.get("anchor")
+        if not (isinstance(path, str) and path.startswith("/") and isinstance(pid, str) and valid_name(pid)
+                and isinstance(anchor, dict)
+                and all(isinstance(anchor.get(k), str) and re.fullmatch(r"[0-9]+", anchor[k])
+                        for k in ("dev", "ino", "birth"))):
+            continue
+        out.setdefault(unicodedata.normalize("NFC", path),
+                       ("link" if e["stated"] == "linked" else "minted", pid, anchor))
+    return out
+
+
+def stated_here():
+    """This machine's stored statements (_stated) from the kept org file,
+    on an enrolled machine; None where none are kept."""
+    d = org_directory() if enrollment() is not None else None
+    return d["locations"] if d else None
+
+
+def statement_at(stated, d):
+    """The stored statement that counts at folder `d` as the walk reached
+    it: (by, project id), or None — none there, or the folder now at its
+    path is not the one it was made on (its anchor)."""
+    s = stated.get(unicodedata.normalize("NFC", d))
+    if s is None:
+        return None
+    try:
+        st = os.stat(d)
+    except OSError:
+        return None
+    return s[:2] if anchor_same(s[2], st.st_dev, st.st_ino, birth_ns(getattr(st, "st_birthtime", 0))) else None
+
+
+def _smns_in(d):
+    path = os.path.join(d, SMNS)
+    return read_smns(path) if os.path.isfile(path) else None
+
+
+def _ancestors(d, stop=""):
+    """`d` and each folder above it, up to `stop` (not included) or `/`."""
+    while d != stop:
+        yield d
         parent = os.path.dirname(d)
         if parent == d:
-            break
+            return
         d = parent
-    repo = owning_repo(cwd)
-    path = os.path.join(repo, SMNS) if repo and not read_refused(repo) else ""
-    smns = read_smns(path) if path and os.path.isfile(path) else None
-    return (repo, smns) if smns else None
+
+
+def worktree_main(d):
+    """The main checkout of the linked worktree `d` is in — its nearest
+    `.git` a file naming a gitdir that has a `commondir` — or ""; "" too
+    where that gitdir is one this process may not read (read_refused)."""
+    for x in _ancestors(d):
+        dot = os.path.join(x, ".git")
+        if os.path.isdir(dot):
+            return ""
+        if os.path.isfile(dot):
+            try:
+                with open(dot) as f:
+                    line = f.readline().strip()
+            except OSError:
+                return ""
+            if not line.startswith("gitdir:"):
+                return ""
+            gitdir = os.path.join(x, line[len("gitdir:"):].strip())
+            if read_refused(gitdir):
+                return ""
+            try:
+                with open(os.path.join(gitdir, "commondir")) as f:
+                    common = f.read().strip()
+            except OSError:
+                return ""
+            return os.path.dirname(os.path.abspath(os.path.join(gitdir, common))) if common else ""
+    return ""
+
+
+def decision(cwd, fresh=False):
+    """How design §8's rule decides a directory's project (Decision). On a
+    machine not enrolled no statement is kept and the last rung is the
+    owning repository's local project (none outside git)."""
+    cwd = os.path.abspath(os.path.expanduser(cwd or "."))
+    if read_refused(cwd):
+        return Decision("", "", None)
+    stated = stated_here()
+    walk = os.path.realpath(cwd) if stated is not None else cwd
+    main = worktree_main(walk)
+    if main and read_refused(main):
+        main = ""
+    elif main and stated is not None:
+        main = os.path.realpath(main)
+    if main:
+        s = statement_at(stated, main) if stated else None
+        if s:
+            return _stated_decision(s, main)
+        # A worktree inside its main checkout looks no further up than the
+        # checkout: from there the checkout's own rule decides.
+        inside = walk.startswith(main.rstrip("/") + "/")
+        for d in _ancestors(walk, main if inside else ""):
+            smns = _smns_in(d)
+            if smns:
+                return _smns_decision(d, smns)
+        walk = main
+    return _decide_at(walk, stated, fresh)
+
+
+def _decide_at(walk, stated, fresh):
+    repo = owning_repo(walk)
+    key = derivation(walk, fresh).key if stated and repo else ""
+    repo = os.path.realpath(repo) if key else repo
+    for d in _ancestors(walk):
+        # A folder above a repository that derives a remote does not take
+        # the clone beneath it; a .smns still does.
+        s = statement_at(stated, d) if stated and not (key and repo.startswith(d.rstrip("/") + "/")) else None
+        if s:
+            return _stated_decision(s, d)
+        smns = _smns_in(d)
+        if smns:
+            return _smns_decision(d, smns)
+    project = repo_project(walk, fresh)
+    if project is not None:
+        return Decision("remote", project.root, project)
+    project = own_machine_project()
+    if project is not None:
+        return Decision("machine", "", project)
+    if repo:
+        name = safe_name(os.path.basename(repo)) or "repo"
+        return Decision("local", repo, make_project("local-" + name, name, "", repo))
+    return Decision("", "", None)
+
+
+def _smns_decision(d, smns):
+    pid, name, remote, hub = smns
+    return Decision("smns", d, make_project(pid, name, remote, d, hub_here(pid, name, hub)))
+
+
+def _stated_decision(s, d):
+    """A stored statement's project: a hub project of this machine's org
+    (a link into any other is refused where it is made), rooted at its
+    folder, named as the org's directory or this machine already names it."""
+    by, pid = s
+    e = enrollment()
+    name = str((org_entry(pid) or {}).get("name") or registration(pid).get("name")
+               or safe_name(os.path.basename(d)) or "project")
+    return Decision(by, d, make_project(pid, name, "", d, {"url": e["url"], "org": e["org"]}))
 
 
 # ------------------------------------------- a repository's project, by its remote
@@ -1483,29 +1664,32 @@ def recorded_project(session):
 
 def project_source(cwd):
     """Where resolve_project finds a directory's project, as `project show`
-    says it: `.smns at <dir>`, `remote <name> → <key>`, the machine project
-    and why no remote derives one, or a machine not enrolled's local project."""
+    says it: `a link at <dir>`, `a stored id at <dir>`, `.smns at <dir>`,
+    `remote <name> → <key>`, the machine project and why no remote derives
+    one, or a machine not enrolled's local project."""
     cwd = os.path.abspath(os.path.expanduser(cwd or "."))
     if read_refused(cwd):
         return "the registrations here: %s is in a protected folder, not read from here" % cwd
-    found = smns_at(cwd)
-    if found:
-        return ".smns at %s" % found[0]
-    d = derivation(cwd)
-    if enrollment() is None:
-        return "the repository at %s, a local project: this machine is not enrolled" % d.repo if d.repo else "-"
-    return "remote %s → %s" % (d.remote, d.key) if d.key else "machine project: %s" % d.why
+    found = decision(cwd)
+    if found.by in ("link", "minted", "smns"):
+        return {"link": "a link at %s", "minted": "a stored id at %s", "smns": ".smns at %s"}[found.by] % found.at
+    if found.by == "local":
+        return "the repository at %s, a local project: this machine is not enrolled" % found.at
+    d = derivation(found.at or cwd)
+    return "remote %s → %s" % (d.remote, d.key) if found.by == "remote" else \
+        "machine project: %s" % d.why if found.by == "machine" else "-"
 
 
 UNREAD = object()   # a directory's project this process could not read and nothing recorded tells (_resolve)
 
 
 def resolve_project(cwd, fresh=False):
-    """The project of a directory: the first .smns walking up (a linked
-    worktree without one, its main checkout's); else, on an enrolled
-    machine, the project its repository's remote derives (repo_project),
-    else the machine's own project; else the local project of the owning
-    git repository; else None (no project). A directory this process may
+    """The project of a directory by design §8's rule (decision): the
+    nearer of a .smns and a stored statement walking up (a linked worktree
+    in its main checkout's project); else, on an enrolled machine, the
+    project its repository's remote derives (repo_project), else the
+    machine's own project; else the local project of the owning git
+    repository; else None (no project). A directory this process may
     not read, or whose resolution met one (read_refused), is told from the
     registrations (registered_guess): a Guessed, else None. Kept for the
     cache generation; `fresh` reads the directory as it is now."""
@@ -1528,19 +1712,7 @@ def _resolve(cwd, fresh=False):
 
 
 def _read_project(cwd, fresh):
-    project = None
-    found = smns_at(cwd)
-    if found:
-        d, (pid, name, remote, hub) = found
-        project = make_project(pid, name, remote, d, hub_here(pid, name, hub))
-    else:
-        project = repo_project(cwd, fresh) or own_machine_project()
-        if project is None:
-            repo = owning_repo(cwd)
-            if repo:
-                name = safe_name(os.path.basename(repo)) or "repo"
-                project = make_project("local-" + name, name, "", repo)
-    return project
+    return decision(cwd, fresh).project
 
 
 def seat_project(seat, fresh=False):
@@ -8020,7 +8192,7 @@ def project_init(a):
             return
         die("%s is already project %s (%s)" % (top, smns[1], smns[0]) if smns else
             "%s exists but is unreadable — fix or remove it first" % path)
-    pinned = repo_project(top, fresh=True) if hub and smns_at(top) is None else None
+    pinned = repo_project(top, fresh=True) if hub and decision(top, fresh=True).by == "remote" else None
     name = a.name or (pinned.name if pinned else safe_name(os.path.basename(owning_repo(top) or top)) or "project")
     if "/" in name or "\n" in name or not name.strip():
         die("a project name is one line without '/': %r" % name)
@@ -12263,7 +12435,7 @@ def guide_text(session, launch, source="", title=""):
     elif project_kind(project) == "machine":
         where = "this machine's own project, since no .smns or repository remote claims your launch directory, %s" \
             % launch
-    elif smns_at(launch) is None and derivation(launch).key:
+    elif decision(launch).by == "remote":
         where = "the project of your repository's remote, %s (your launch directory, %s)" % (
             derivation(launch).key, launch)
     else:

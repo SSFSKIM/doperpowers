@@ -185,6 +185,20 @@ gitq -C "$W" worktree add -q -b feat "$T/a/widget-feat"
 run_in "$T/a/widget-feat" "$SMINOS" project show
 assert_equals "$(show_field id)" "$WPID" "a linked worktree reads its main checkout's remote"
 assert_equals "$(show_field root)" "$W" "and its root is the main checkout"
+# The one change design §8 (the project registry) makes with no stored
+# statement: a worktree outside its repository takes a .smns above the main
+# checkout, as the checkout does.
+TOP="$T/a/top"
+mkdir -p "$TOP"
+write_smns "$TOP" topped
+repo "$TOP/inner" origin https://github.com/acme/inner.git
+gitq -C "$TOP/inner" worktree add -q -b feat "$T/a/inner-feat"
+run_in "$TOP/inner" "$SMINOS" project show
+assert_equals "$(show_field id)" "$(smns_field "$TOP" project)" "a .smns above a clone with a remote is its project"
+run_in "$T/a/inner-feat" "$SMINOS" project show
+assert_equals "$(show_field id)" "$(smns_field "$TOP" project)" \
+  "a worktree outside its repository takes the .smns above its main checkout"
+assert_equals "$(show_field source)" ".smns at $TOP" "and project show names that file's folder"
 U="$T/a/solo"
 repo "$U" upstream https://github.com/acme/solo.git
 run_in "$U" "$SMINOS" project show
