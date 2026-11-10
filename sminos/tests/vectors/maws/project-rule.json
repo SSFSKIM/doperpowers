@@ -1,6 +1,6 @@
 {
  "about": "Design §8's rule for a directory's project (docs/doperpowers/specs/2026-11-10-project-registry-design.md), and §D's anchor comparison, hand-written from the design's text: the contract between sminos and MAWS (Interfaces §B of docs/doperpowers/plans/2026-11-10-project-registry.md, whose sync rule alone changes it). A harness makes each case's tree in a fresh directory, in `under` spelled as written when the case names one, every P relative to it; it hands its implementation each statement at the canonical form of its path (the real path, NFC), anchored to the folder there, but for `replaced`, whose anchor is another folder's, and `removed`, a removed row's; it asks each `dir` spelled as written, and expects `project`, `by` and `at`, the deciding folder's canonical path relative to the case's directory.",
- "version": 1,
+ "version": 2,
  "org": "org-rule",
  "machine": "rule-mac",
  "cases": [
@@ -233,6 +233,25 @@
     { "dir": "r", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "r" },
     { "dir": "worktrees/r-wt", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "r" },
     { "dir": "worktrees/r-wt/src", "project": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "by": "link", "at": "r" }
+   ]
+  },
+  {
+   "name": "a worktree's own walk stops at the first folder it shares with its main checkout: a nearer statement at R beats a .smns above",
+   "tree": [
+    { "dir": "top/f" },
+    { "smns": "top", "project": "55555555-5555-4555-8555-555555555555", "name": "filed" },
+    { "repo": "top/f/repo" },
+    { "worktree": "top/f/repo/.claude/worktrees/wt", "of": "top/f/repo" },
+    { "worktree": "top/elsewhere/wt", "of": "top/f/repo" },
+    { "dir": "top/elsewhere/wt/src" }
+   ],
+   "statements": [{ "path": "top/f", "minted": "11111111-1111-4111-8111-111111111111" }],
+   "ask": [
+    { "dir": "top/f/repo", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "top/f" },
+    { "dir": "top/f/repo/.claude/worktrees/wt", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "top/f" },
+    { "dir": "top/elsewhere/wt", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "top/f" },
+    { "dir": "top/elsewhere/wt/src", "project": "11111111-1111-4111-8111-111111111111", "by": "minted", "at": "top/f" },
+    { "dir": "top/elsewhere", "project": "55555555-5555-4555-8555-555555555555", "by": "smns", "at": "top" }
    ]
   },
   {
