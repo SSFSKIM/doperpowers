@@ -1947,20 +1947,26 @@ STATED_WORDS = {"link": "a link at %s", "minted": "a stored id at %s"}   # a sto
 
 
 def overridden_smns(cwd):
-    """Where a stored statement decides a directory's project and a .smns
-    in its folder names another — at the statement's own folder, or on a
-    linked worktree's own path under its main checkout's statement —:
-    (the file's Decision, the statement's); else None. A file above the
-    statement's folder is an outer project the nearer statement nests in,
-    not one it overrides."""
+    """Where a stored statement decides a directory's project, each .smns
+    that takes part in the walk the statement wins and names another
+    project, each a (file's Decision, statement's Decision), nearest first:
+    for a linked worktree under its main checkout's statement, the nearest
+    file on the worktree's own path; then the file at the statement's own
+    folder. Read on decision()'s walk, the canonical path, so a file seen
+    only through a symlink's lexical parents is none of them. A file above
+    the statement's folder is an outer project the statement nests in, and
+    one below it would have decided: neither is overridden."""
     found = decision(cwd)
     if found.by not in STATED_WORDS:
-        return None
-    filed = _decide_files(os.path.abspath(os.path.expanduser(cwd or ".")), False)
-    if filed.by != "smns" or filed.project.id == found.project.id:
-        return None
-    at, file_at = canonical(found.at), canonical(filed.at)
-    return None if at != file_at and _within(at, file_at) else (filed, found)
+        return []
+    walk = os.path.realpath(os.path.expanduser(cwd or "."))
+    files = []
+    stop = worktree_stop(walk)
+    main = worktree_main(walk) if stop else ""
+    if main and canonical(main) == canonical(found.at):
+        files.append(_first_smns(_ancestors(walk, stop)))
+    files.append(_first_smns([found.at]))
+    return [(f, found) for f in files if f and f.project.id != found.project.id]
 
 
 def statement_over_file(top):
@@ -8542,10 +8548,10 @@ def cmd_project(a):
             kind, hub = "hub (not enrolled)", "org %s — not synced here: this machine is not enrolled in it" % p.hub["org"]
         else:
             hub = "%s (org %s)" % (p.hub["url"], p.hub["org"]) if p.hub is not None else "-"
-        over = overridden_smns(d)
-        shadow = "\nfile     .smns at %s names another project, %s (%s): the %s at %s decides here, project %s" % (
-            over[0].at, over[0].project.name, over[0].project.id, "link" if over[1].by == "link" else "stored id",
-            over[1].at, over[1].project.id) if over else ""
+        shadow = "".join(
+            "\nfile     .smns at %s names another project, %s (%s): the %s at %s decides here, project %s" % (
+                f.at, f.project.name, f.project.id, "link" if by.by == "link" else "stored id", by.at, by.project.id)
+            for f, by in overridden_smns(d))
         print("project  %s\nid       %s\nkind     %s\nsource   %s%s\nremote   %s\nhub      %s\nroot     %s\nhome     %s" % (
             p.name, p.id, kind, project_source(d), shadow, p.remote or "-", hub, p.root or "-", p.home))
     else:

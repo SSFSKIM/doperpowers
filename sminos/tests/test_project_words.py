@@ -42,6 +42,7 @@ ORG, MACHINE, URL = "org-words", "words-mac", "http://127.0.0.1:9"
 LINKED = "11111111-1111-4111-8111-111111111111"
 MINTED = "22222222-2222-4222-8222-222222222222"
 FILED = "33333333-3333-4333-8333-333333333333"
+OTHER = "44444444-4444-4444-8444-444444444444"
 
 
 def git(*args):
@@ -209,6 +210,41 @@ class Words(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("source   a stored id at %s\n" % d, out)
         self.assertNotIn("file     ", out)
+
+    def test_show_reads_the_canonical_walk_not_a_symlinks_parents(self):
+        d = os.path.join(T, "w", "declared-real")
+        os.makedirs(d)
+        aliases = os.path.join(T, "w", "aliases")
+        os.makedirs(aliases)
+        smns(aliases, FILED)   # above the symlink alone, on no path resolution walks
+        os.symlink(d, os.path.join(aliases, "link"))
+        keep_org([stated(d, MINTED, "minted")])
+        code, out, err = show(os.path.join(aliases, "link"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("source   a stored id at %s\n" % d, out)
+        self.assertNotIn("file     ", out)
+        code, out, err = init(os.path.join(aliases, "link"))   # init reads the same walk
+        self.assertNotEqual(code, 0)   # no git repository there: refused as before
+        self.assertIn("maws project add", err)
+
+    def test_a_worktree_that_agrees_still_shows_the_main_checkouts_file(self):
+        r = repo("main-filed")
+        smns(r, FILED)   # the main checkout's own file names another project
+        wt = os.path.join(r, ".claude", "worktrees", "wt")
+        git("-C", r, "worktree", "add", "-q", wt, "-b", "wt")
+        smns(wt, LINKED, "linked")   # the worktree's file names the project in effect
+        keep_org([stated(r, LINKED, "linked")])
+        code, out, err = show(wt)
+        self.assertEqual(code, 0, err)
+        self.assertIn("source   a link at %s\nfile     .smns at %s names another project, filed (%s): the link at "
+                      "%s decides here, project %s\nremote" % (r, r, FILED, r, LINKED), out)
+        smns(wt, OTHER, "other")   # both differ: both are said, the nearer first
+        code, out, err = show(wt)
+        self.assertEqual(code, 0, err)
+        self.assertIn("source   a link at %s\n"
+                      "file     .smns at %s names another project, other (%s): the link at %s decides here, project %s\n"
+                      "file     .smns at %s names another project, filed (%s): the link at %s decides here, project %s\n"
+                      % (r, wt, OTHER, r, LINKED, r, FILED, r, LINKED), out)
 
 
 def tearDownModule():
