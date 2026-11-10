@@ -388,7 +388,11 @@ def hub_projects(cred):
     still names the project decides only whether this machine holds or
     follows it (Link.holds): the org's directory, not a checkout's file, says
     which projects exist, and a .smns edit on one checkout must not strand the
-    retirements it causes."""
+    retirements it causes. The projects of this machine's declared
+    locations are registered first, rooted there (sminos.register_declared),
+    so a folder declared a moment ago is held before any session runs in
+    it."""
+    sminos.register_declared()
     out = {}
     for p in sminos.known_projects():
         if p.id in out or not (isinstance(p.hub, dict) and p.hub.get("org") == cred["org"]) \
@@ -484,6 +488,13 @@ def joined_dirs(here):
     read the machine presence's checkouts are drawn from
     (policy.known_checkouts). None for a project not read."""
     return None if here is None else tuple(dict.fromkeys(here.values()))
+
+
+def drawn_from(pid, here):
+    """What a project's checkouts are drawn from beside the plane's read:
+    its joined_dirs and the locations of it this machine declared, so a
+    declaration made or withdrawn is drawn at the next scan."""
+    return joined_dirs(here), tuple(loc.path for loc in sminos.declared_here(pid))
 
 
 # ------------------------------------------------------------- one stream
@@ -622,7 +633,7 @@ class Link:
         self.own = sminos.machine_project_id(cred["org"], cred["machine"])  # always held: its strays are its members
         self.follows = {}         # project id → whether its last `hello` on this stream said `follow`
         self.checkouts = {}       # project id → whether it had a known checkout here when last read
-        self.checkouts_from = {}  # project id → the joined_dirs its checkouts were last drawn from (draw_machine)
+        self.checkouts_from = {}  # project id → the drawn_from its checkouts were last drawn from (draw_machine)
         self.imported = {}        # project id → HubLog: imports not yet delivered (deliver_imports)
         self.log_lane = self.session_lane = None  # the stream's senders, from its welcome on
         self.reporting = collections.Counter()   # project id → frames of its rejections not yet written
@@ -1155,7 +1166,8 @@ class Link:
     def holds(self, pid):
         """Whether this machine holds the project rather than follows it: its
         own machine project, or one with a local member (the plane's) or a
-        known checkout here (as last read)."""
+        known checkout here (as last read; a location declared here is
+        one)."""
         return pid == self.own or bool(self.plane.members.get(pid)) or self.checkouts.get(pid, False)
 
     def draw_machine(self, hl):
@@ -1168,7 +1180,7 @@ class Link:
         here = self.plane.here.get(pid)
         machine = hl.presence(here)
         self.checkouts[pid] = bool(machine["message"]["body"]["checkouts"])
-        self.checkouts_from[pid] = joined_dirs(here)
+        self.checkouts_from[pid] = drawn_from(pid, here)
         return machine
 
     def open(self, hl):
@@ -1423,7 +1435,7 @@ class Link:
             # which the plane's tick, after this scan, renews: a session's
             # new directory read since the last draw is drawn at this scan,
             # not left until the deadline that may have just gone by.
-            if fresh or joined_dirs(self.plane.here.get(pid)) != self.checkouts_from.get(pid):
+            if fresh or drawn_from(pid, self.plane.here.get(pid)) != self.checkouts_from.get(pid):
                 machine = self.draw_machine(hl)
             follow = not self.holds(pid)
             if follow != self.follows.get(pid):

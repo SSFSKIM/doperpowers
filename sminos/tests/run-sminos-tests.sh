@@ -4784,6 +4784,14 @@ else
   fail "the rule beyond the vectors: worktrees with no statement, separate git dirs, submodules, an empty locations (test_project_rule.py)"
   sed 's/^/    /' "$TEST_ROOT/project-rule.out"
 fi
+# Declared locations (§E.2): known checkouts a spawn is admitted into and the presence lists; a project held,
+# registered rooted there with the hub, but where its entry says `hub: false` or it is the machine's own.
+if python3 -B "$SCRIPT_DIR/test_declared.py" > "$TEST_ROOT/declared.out" 2>&1; then
+  pass "declared locations: known checkouts, registered and held, hub: false and the machine project as today (test_declared.py)"
+else
+  fail "declared locations: known checkouts, registered and held, hub: false and the machine project as today (test_declared.py)"
+  sed 's/^/    /' "$TEST_ROOT/declared.out"
+fi
 # A copy that is not the pinned one fails, naming both hashes.
 mkdir -p "$TEST_ROOT/rule-pin"
 cp "$SCRIPT_DIR/vectors/maws/PIN.json" "$TEST_ROOT/rule-pin/"

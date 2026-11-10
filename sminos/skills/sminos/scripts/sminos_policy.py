@@ -34,8 +34,9 @@ file again. RL10 names the ceiling as O10 does (`wire_policy`): a mode, or
 `settings` for the user's settings' defaultMode — a file naming no ceiling.
 
 The known checkouts of a project (where a spawn from outside may run) are
-the working directories its sessions joined from on this machine, and the
-project's own root.
+the working directories its sessions joined from on this machine, the
+project's own root, and the locations of it this machine declared (the
+org frame's `locations`, kept in daemon/org.json).
 """
 
 import os
@@ -129,37 +130,46 @@ def outside_origin(e):
 
 def known_checkouts(project, here=None):
     """[{path, branch}]: the project's root while it is still a directory of
-    the project (its .smns still names it), and every working directory a
+    the project (its .smns still names it), every working directory a
     session of the project joined from on this machine that is still a
-    directory of this project — the checkouts a spawn from outside may run
-    in (sminos_rpc), as DX4's `machine` presence offers them. None for a
-    machine project: a stray's directory resolves to it, and is no checkout.
-    `here`: {session: the directory it joined from} of those sessions, as a
-    reader that just read the project's view holds it (the uplink's session
-    plane); else the view is read. Each directory is looked at once, however
-    many sessions joined from it."""
-    if sminos.project_kind(project) == "machine":
-        return []
+    directory of this project, and every location of it this machine
+    declared (org.json's `locations`, sminos.declared_here) that resolves
+    to it — the checkouts a spawn from outside may run in (sminos_rpc), as
+    DX4's `machine` presence offers them. A machine project's are its
+    declared locations alone: a stray's directory resolves to it, and is no
+    checkout. `here`: {session: the directory it joined from} of those
+    sessions, as a reader that just read the project's view holds it (the
+    uplink's session plane); else the view is read. Each directory is
+    looked at once, however many sessions joined from it."""
     paths = []
-    # A directory this process may not look at (sminos.read_refused) is no
-    # checkout it can vouch for.
-    if project.root and not sminos.read_refused(project.root) and os.path.isdir(project.root):
-        root = sminos.resolve_project(project.root)
-        if root is not None and root.id == project.id:
-            paths.append(project.root)
-    if here is None:
-        here = {}
-        for sid, r in sminos.view_of(project, titles=False).info.items():
-            j = (r or {}).get("joined") or {}
-            machine = str(j.get("machine") or "")
-            if not machine or sminos.is_self(machine, sid):
-                here[sid] = str(j.get("cwd") or "")
-    for cwd in dict.fromkeys(here.values()):
-        if not cwd or sminos.read_refused(cwd) or not os.path.isdir(cwd):
+    if sminos.project_kind(project) != "machine":
+        # A directory this process may not look at (sminos.read_refused) is
+        # no checkout it can vouch for.
+        if project.root and not sminos.read_refused(project.root) and os.path.isdir(project.root):
+            root = sminos.resolve_project(project.root)
+            if root is not None and root.id == project.id:
+                paths.append(project.root)
+        if here is None:
+            here = {}
+            for sid, r in sminos.view_of(project, titles=False).info.items():
+                j = (r or {}).get("joined") or {}
+                machine = str(j.get("machine") or "")
+                if not machine or sminos.is_self(machine, sid):
+                    here[sid] = str(j.get("cwd") or "")
+        for cwd in dict.fromkeys(here.values()):
+            if not cwd or sminos.read_refused(cwd) or not os.path.isdir(cwd):
+                continue
+            p = sminos.resolve_project(cwd)
+            if p is not None and p.id == project.id:
+                paths.append(cwd)
+    seen = {os.path.realpath(p) for p in paths}
+    for loc in sminos.declared_here(project.id):
+        if loc.path in seen or sminos.read_refused(loc.path) or not os.path.isdir(loc.path):
             continue
-        p = sminos.resolve_project(cwd)
+        p = sminos.resolve_project(loc.path)
         if p is not None and p.id == project.id:
-            paths.append(cwd)
+            paths.append(loc.path)
+            seen.add(loc.path)
     return [{"path": p, "branch": git_branch(p)} for p in dict.fromkeys(paths)]
 
 
