@@ -185,6 +185,40 @@ gitq -C "$W" worktree add -q -b feat "$T/a/widget-feat"
 run_in "$T/a/widget-feat" "$SMINOS" project show
 assert_equals "$(show_field id)" "$WPID" "a linked worktree reads its main checkout's remote"
 assert_equals "$(show_field root)" "$W" "and its root is the main checkout"
+# The one change design §8 (the project registry) makes with no stored
+# statement: a worktree outside its repository takes a .smns above the main
+# checkout, as the checkout does.
+TOP="$T/a/top"
+mkdir -p "$TOP"
+write_smns "$TOP" topped
+repo "$TOP/inner" origin https://github.com/acme/inner.git
+gitq -C "$TOP/inner" worktree add -q -b feat "$T/a/inner-feat"
+run_in "$TOP/inner" "$SMINOS" project show
+assert_equals "$(show_field id)" "$(smns_field "$TOP" project)" "a .smns above a clone with a remote is its project"
+run_in "$T/a/inner-feat" "$SMINOS" project show
+assert_equals "$(show_field id)" "$(smns_field "$TOP" project)" \
+  "a worktree outside its repository takes the .smns above its main checkout"
+assert_equals "$(show_field source)" ".smns at $TOP" "and project show names that file's folder"
+# A .smns on a folder the worktree shares with its main checkout is found
+# either way: the main checkout's own walk reaches it.
+SHARED="$T/a/shared"
+mkdir -p "$SHARED"
+write_smns "$SHARED" shared
+repo "$SHARED/repo" origin https://github.com/acme/shared.git
+gitq -C "$SHARED/repo" worktree add -q -b feat "$SHARED/repo-feat"
+run_in "$SHARED/repo-feat" "$SMINOS" project show
+assert_equals "$(show_field id)" "$(smns_field "$SHARED" project)" \
+  "a worktree outside its repository takes the .smns on a folder it shares with its main checkout"
+# A bare repository has no main checkout: its worktree is the project of the
+# bare repository's own remote, as before the rule.
+BARE="$T/a/bare/alpha.git"
+gitq clone -q --bare "$W" "$BARE"
+gitq -C "$BARE" remote set-url origin https://github.com/example/alpha.git
+gitq -C "$BARE" worktree add -q -b bare-feat "$T/a/alpha-wt"
+run_in "$T/a/alpha-wt" "$SMINOS" project show
+assert_equals "$(show_field id)" "$(rp_of github.com/example/alpha)" \
+  "a worktree of a bare repository is the project of the repository's remote"
+assert_equals "$(show_field source)" "remote origin → github.com/example/alpha" "and project show says so"
 U="$T/a/solo"
 repo "$U" upstream https://github.com/acme/solo.git
 run_in "$U" "$SMINOS" project show
