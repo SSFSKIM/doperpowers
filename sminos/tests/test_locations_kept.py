@@ -37,7 +37,8 @@ with open(os.path.join(T, "bin", "claude"), "w") as f:
     f.write('#!/bin/sh\n[ "$1" = agents ] && echo "[]"\nexit 0\n')
 os.chmod(os.path.join(T, "bin", "claude"), 0o755)
 os.environ.update(PATH=os.path.join(T, "bin") + os.pathsep + os.environ.get("PATH", ""), SMINOS_DERIVE_EVERY="0")
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "skills", "sminos", "scripts"))
+SCRIPTS = os.path.join(os.path.dirname(HERE), "skills", "sminos", "scripts")
+sys.path.insert(0, SCRIPTS)
 sys.path.insert(0, HERE)
 import endpoint_standin  # noqa: E402
 import sminos  # noqa: E402
@@ -226,15 +227,21 @@ class Moves(unittest.TestCase):
         cls.base = machine("moves")
         cls.plain = folder(cls.base, "plain")
         cls.own = sminos.machine_project_id(ORG, MACHINE)
+        cls.procs = {}
 
     def session(self, name, sid):
+        """A running session in the plain folder: its engine record (a
+        `sleep` as its process) and its transcript; again for a resume."""
         p = subprocess.Popen(["sleep", "600"])
         PROCS.append(p)
+        self.procs[sid] = p
         home = os.environ["HOME"]
         with open(os.path.join(home, ".claude", "sessions", name + ".json"), "w") as f:
             json.dump({"pid": p.pid, "sessionId": sid, "name": name, "nameSource": "user", "kind": "interactive",
                        "status": "idle", "cwd": self.plain}, f)
         tx = os.path.join(home, ".claude", "projects", "p-" + sid, sid + ".jsonl")
+        if os.path.exists(tx):
+            return
         os.makedirs(os.path.dirname(tx))
         with open(tx, "w") as f:
             f.write(json.dumps({"type": "user", "uuid": sid[:8] + "-u1", "isSidechain": False, "sessionId": sid,
@@ -311,6 +318,22 @@ class Moves(unittest.TestCase):
         self.tick()
         self.assertEqual(self.membership(S1), ([MINTED], 1))
         self.assertEqual(self.membership(S2), ([MINTED], 1))
+        # A session that ended and is resumed while the statements are not
+        # known rejoins the project it was last in, and moves no more.
+        self.procs[S1].kill()
+        self.procs[S1].wait()
+        self.tick()
+        self.assertEqual(self.membership(S1), ([], 1), "ended with its process")
+        os.remove(sminos.org_path())
+        self.session("one", S1)
+        self.tick()
+        self.assertEqual(self.membership(S1), ([MINTED], 1), "rejoined where it was, not the machine's project")
+        said = subprocess.run([sys.executable, "-B", os.path.join(SCRIPTS, "sminos.py"), "join"], cwd=self.plain,
+                              env=dict(os.environ, CLAUDE_CODE_SESSION_ID=S1), capture_output=True, text=True)
+        self.assertIn("is in plain, where it was last a member", said.stdout, said.stdout + said.stderr)
+        self.frame(at, gen=3)
+        self.tick()
+        self.assertEqual(self.membership(S1), ([MINTED], 1))
 
     def test_z_beside_an_endpoint_listing_no_such_capability_nothing_is_held(self):
         self.welcome(["access", "reach", "record"])

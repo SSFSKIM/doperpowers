@@ -2440,11 +2440,11 @@ def session_project(session, launch_cwd, fresh=False):
     (resolve_project; `fresh`: as it is now). A launch directory this
     process may not read (read_refused) tells nothing: the session is in the
     project its membership is recorded in (recorded_project), else the one
-    the registrations tell for the directory, each a Guessed. So too while
-    the machine's stored statements are not known yet (locations_unknown):
-    a session recorded in a project other than the one its directory's
-    files give stays in it, told. None for a session in no project, or in
-    one nothing tells."""
+    the registrations tell for the directory, each a Guessed. While the
+    machine's stored statements are not known yet (locations_unknown) a
+    session last a member of a project other than the one its directory's
+    files give is in that one (last_project). None for a session in no
+    project, or in one nothing tells."""
     project = _session_project(session, launch_cwd, fresh)
     return None if project is UNREAD else project
 
@@ -2462,12 +2462,35 @@ def _session_project(session, launch_cwd, fresh=False):
         project = recorded_project(session) or project
     elif session and locations_unknown():
         # Files alone answered while the statements are not known yet: a
-        # session recorded elsewhere stays there (told, so nothing moves it)
+        # session recorded elsewhere stays there, a resumed one rejoining it,
         # until a frame's `locations` decide; one recorded nowhere joins here.
-        held = recorded_project(session)
+        held = last_project(session)
         if held is not None and (project is None or held.id != project.id):
             project = held
     return project
+
+
+_LAST = {}   # session → last_project's answer, per cache generation
+
+
+def last_project(session):
+    """The project known here whose log holds `session`'s latest own
+    membership event, of this machine, read rather than told — joined, or
+    retired other than by a move (a session that ended there and is resumed
+    rejoins it) — or None. A `moved` retirement points at its destination,
+    whose `joined` comes later. Where a session is in while the machine's
+    stored statements are not known yet (_session_project)."""
+    if session not in _LAST:
+        best, at = None, ""
+        for path in glob.glob(os.path.join(projects_root(), "*", "project.json")):
+            p = known_project(os.path.basename(os.path.dirname(path)))
+            last = next((e for e in reversed(_own_events(p, session)) if e["kind"] in MEMBERSHIP), None) \
+                if p is not None else None
+            if last is not None and not (last["kind"] == "retired" and last.get("reason") == "moved") \
+                    and str(last.get("ts") or "") >= at:
+                best, at = p, str(last.get("ts") or "")
+        _LAST[session] = best
+    return _LAST[session]
 
 
 def record_project(rec, fresh=False):
@@ -8763,6 +8786,7 @@ def forget_caches():
     _SEAT_PIDS.clear()
     _ROOTS.clear()
     _RECORDED.clear()
+    _LAST.clear()
     _BOOT.clear()
     _GENERATION[0] += 1
 
@@ -12600,6 +12624,10 @@ def cmd_join(a):
             why = join_refusal(target) if target else "not known here"
             print("%s is in %s; its override names %s, which it cannot be in (%s)" % (
                 me, home_line, target.name if target else held, why))
+        elif now_in is not None and (home is None or now_in.id != home.id) and locations_unknown():
+            print("%s is in %s, where it was last a member: this machine's endpoint has not sent its stored folder "
+                  "statements yet, so its launch directory (%s) is not resolved again until it does; no override"
+                  % (me, now_in.name, launch))
         else:
             print("%s is in %s; no override" % (me, home_line))
         return
@@ -12691,7 +12719,10 @@ def guide_text(session, launch, source="", title=""):
     # The CLI is off PATH: its installed path is given once, and the verb lines
     # name it `sminos` (an eval round showed no session typed the bare name).
     path, cli = os.path.join(SCRIPT_DIR, "sminos"), "sminos"
-    if home is not None and home.id != project.id:
+    if home is not None and home.id != project.id and not override_of(session) and locations_unknown():
+        where = ("where you were last a member: this machine's endpoint has not sent its stored folder statements "
+                 "yet, so your launch directory, %s, is not resolved again until it does" % launch)
+    elif home is not None and home.id != project.id:
         where = ("by your own `sminos join` (your launch directory, %s, is in %s; `%s join --cwd` returns you there)"
                  % (launch, home.name, cli))
     elif project_kind(project) == "machine":

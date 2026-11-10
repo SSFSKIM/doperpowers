@@ -2187,6 +2187,12 @@ def cmd_probe(_a):
         sys.exit(1)
     finally:
         conn.close()
+    try:
+        # What it can do, kept as the uplink keeps it at every welcome: a CLI
+        # reads `locations` from it before any uplink runs (locations_unknown).
+        audience.keep_capabilities(welcome.get("capabilities"))
+    except OSError as e:
+        log("the endpoint's capabilities could not be kept (%s): the next welcome keeps them" % e)
     print("welcomed as %s of org %s: this machine is cut over" % (identity["name"], identity["org"]))
 
 
