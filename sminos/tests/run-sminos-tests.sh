@@ -4803,6 +4803,15 @@ else
   fail "locations kept and acknowledged; the unknown state holds each session where it is recorded (test_locations_kept.py)"
   sed 's/^/    /' "$TEST_ROOT/locations-kept.out"
 fi
+# Leaving (§E.4): a followed project with no folder here that complete frames lack for the counted period leaves the
+# subscription and list --org, its log kept; disconnected or incomplete time adds nothing; a listing resets and
+# brings it back; a held project never leaves.
+if python3 -B "$SCRIPT_DIR/test_leaving.py" > "$TEST_ROOT/leaving.out" 2>&1; then
+  pass "leaving: counted connected time under complete frames, reset by a listing, never a held project (test_leaving.py)"
+else
+  fail "leaving: counted connected time under complete frames, reset by a listing, never a held project (test_leaving.py)"
+  sed 's/^/    /' "$TEST_ROOT/leaving.out"
+fi
 # A copy that is not the pinned one fails, naming both hashes.
 mkdir -p "$TEST_ROOT/rule-pin"
 cp "$SCRIPT_DIR/vectors/maws/PIN.json" "$TEST_ROOT/rule-pin/"

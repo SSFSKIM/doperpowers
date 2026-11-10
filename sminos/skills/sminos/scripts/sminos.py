@@ -1040,6 +1040,44 @@ def org_retired(pid):
     return (org_entry(pid) or {}).get("retired") is True
 
 
+LEAVING_FILE = "leaving.json"
+_LEFT = []    # [the ids daemon/leaving.json's kept set holds], per invocation
+
+
+def leaving_path():
+    return os.path.join(root(), "daemon", LEAVING_FILE)
+
+
+def leaving_kept():
+    """daemon/leaving.json as the uplink keeps it (the project registry's
+    §E.4, sminos_uplink.Leaving): {counted: {project id: seconds counted},
+    left: [project ids]}; both empty with no file or one that cannot be
+    read."""
+    try:
+        d = json_at(leaving_path())   # written whole, by rename
+    except (OSError, ValueError):
+        d = None
+    d = d if isinstance(d, dict) else {}
+    counted = d.get("counted") if isinstance(d.get("counted"), dict) else {}
+    left = d.get("left") if isinstance(d.get("left"), list) else []
+    return {"counted": {k: float(v) for k, v in counted.items()
+                        if isinstance(k, str) and type(v) in (int, float) and v >= 0},
+            "left": [x for x in left if isinstance(x, str)]}
+
+
+def has_left(p):
+    """Whether a project has left this machine (§E.4): a followed project
+    with no folder here that complete directories lacked for the counted
+    period, its id in the uplink's kept set. The uplink's subscription
+    (hub_projects) and the org scope (org_scope, list's widened scope) both
+    leave it out; its log stays, and a directory that lists it again, or a
+    folder or a session of it here, takes it out of the set (the uplink's
+    scan)."""
+    if not _LEFT:
+        _LEFT.append(frozenset(leaving_kept()["left"]))
+    return p.id in _LEFT[0]
+
+
 def machine_retired(name):
     """Whether the org's directory retires machine `name`: its `machines`
     entry says `retired: true` (RL10's endpoint, for a machine no certificate
@@ -2241,8 +2279,8 @@ def find_project(q, required=True):
 def org_scope():
     """The projects an org-wide name (`@short`, `@alias#short`) is looked up
     in: every project known here, the followed ones included, but one the
-    org's directory retires."""
-    return [p for p in known_projects() if not org_retired(p.id)]
+    org's directory retires and one that has left this machine (has_left)."""
+    return [p for p in known_projects() if not org_retired(p.id) and not has_left(p)]
 
 
 def project_label(pid):
@@ -8802,6 +8840,7 @@ def forget_caches():
     _VIEWS.clear()
     _ENROLLED.clear()
     _ORG_DIR.clear()
+    _LEFT.clear()
     _UNKNOWN.clear()
     _SEAT_PIDS.clear()
     _ROOTS.clear()
@@ -12051,10 +12090,11 @@ def list_scope(a):
     """(projects, words, picked): the projects a list reads, the words its
     rows must match, and whether projects were named (so a session in no
     project is none of them). With no filter, the caller's project
-    (view_projects). Any filter widens to every project known here before it
-    narrows: a project named first (as before), or with --project;
-    --machine, --state, --here, --org and words narrow the rows. Under --org
-    or --project every argument is a word."""
+    (view_projects). Any filter widens to every project known here but one
+    that has left this machine (has_left) before it narrows: a project named
+    first (as before), or with --project; --machine, --state, --here, --org
+    and words narrow the rows. Under --org or --project every argument is a
+    word."""
     args = list(a.args)
     if a.org or a.projects:
         named, words = "", args
@@ -12070,7 +12110,7 @@ def list_scope(a):
             p = find_project(q)
             picked.setdefault(p.id, p)
         return list(picked.values()), words, True
-    return sorted(known_projects(), key=lambda p: (p.name, p.id)), words, False
+    return sorted((p for p in known_projects() if not has_left(p)), key=lambda p: (p.name, p.id)), words, False
 
 
 def row_matches(m, project, a, words):
