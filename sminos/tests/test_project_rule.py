@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""A linked worktree's walk under design §8's rule (sminos.decision), as the
-rule's author ruled it: a .smns on the worktree's own path is one below the
-first folder the worktree shares with its main checkout R; files and stored
-statements on the shared folders are weighed by the rule at R, the nearer
-deciding. Pinned here until MAWS's project-rule.json version 2 carries the
-case and its sync replaces this file. Hermetic: HOME and SMINOS_HOME are
-temporary, the tree is git's files written directly, no git run.
+"""Design §8's rule (sminos.decision) where the shared vectors
+(vectors/maws/project-rule.json, project_rule_parity.py) say nothing: a
+worktree's walk with no stored statement, a `.git` file that is no linked
+worktree, and `locations` kept with an empty `at`. Hermetic: HOME and
+SMINOS_HOME are temporary, the trees are git's files written directly, no
+git run.
 """
 
 import json
@@ -69,9 +68,10 @@ def minted(path, pid):
 
 
 class SharedFolders(unittest.TestCase):
-    """R = top/f/repo with no remote, f minted, top/.smns: a worktree inside
-    the repository and one at top/elsewhere/wt are both f's minted project,
-    where a whole upward walk from the second would reach top's file."""
+    """R = top/f/repo with no remote and top/.smns (the vectors' version 2
+    case, f minted there): with no statement, a worktree inside the
+    repository and one at top/elsewhere/wt both take top's file, which the
+    walk at R reaches, with no `locations` kept and with an empty one."""
 
     @classmethod
     def setUpClass(cls):
@@ -89,13 +89,6 @@ class SharedFolders(unittest.TestCase):
     def asked(self, d):
         got = sminos.decision(d)
         return got.project.id if got.project else None, got.by, got.at
-
-    def test_both_worktrees_are_the_minted_folders(self):
-        keep_org([minted(self.f, MINTED)])
-        for wt in (self.inside, self.outside):
-            for d in (wt, os.path.join(wt, "src")):
-                self.assertEqual(self.asked(d), (MINTED, "minted", self.f), d)
-        self.assertEqual(self.asked(self.r), (MINTED, "minted", self.f), "as its main checkout is")
 
     def test_with_no_statement_both_take_the_file_above_the_checkout(self):
         for at in (None, []):
