@@ -4776,12 +4776,13 @@ while IFS= read -r line; do
   esac
 done < <(python3 -B -I "$SCRIPT_DIR/project_rule_parity.py" "$PLUGIN_ROOT/skills/sminos/scripts" \
   "$SCRIPT_DIR/vectors/maws/project-rule.json" 2>&1)
-# A linked worktree's walk stops at the first folder it shares with its main checkout (the design's author's
-# ruling, ahead of the vectors' version 2): test_project_rule.py.
+# The rule beyond the vectors: a linked worktree's walk stops at the first folder it shares with its main checkout
+# (the design's author's ruling, ahead of the vectors' version 2), a `.git` file with no `commondir` is no
+# worktree, and `locations` kept with an empty `at` is the rule in force (test_project_rule.py).
 if python3 -B "$SCRIPT_DIR/test_project_rule.py" > "$TEST_ROOT/project-rule.out" 2>&1; then
-  pass "a worktree's walk stops at the folder it shares with its main checkout (test_project_rule.py)"
+  pass "the rule's worktrees, separate git dirs, submodules and an empty locations (test_project_rule.py)"
 else
-  fail "a worktree's walk stops at the folder it shares with its main checkout (test_project_rule.py)"
+  fail "the rule's worktrees, separate git dirs, submodules and an empty locations (test_project_rule.py)"
   sed 's/^/    /' "$TEST_ROOT/project-rule.out"
 fi
 # A copy that is not the pinned one fails, naming both hashes.

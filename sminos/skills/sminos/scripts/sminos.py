@@ -715,16 +715,23 @@ def _own_cwd():
         return ""   # an unreadable working directory is outside every folder
 
 
+def withheld(path):
+    """Whether this process may not look at `path` (read_refused), asked
+    without counting a refusal: for a look that is only skipped when it
+    would be refused, and decides nothing on its own."""
+    if not TCC or not path:
+        return False
+    folder = protected_folder(_abs(path))
+    here = _own_cwd()
+    return bool(folder) and not (here and _under(here, folder))
+
+
 def read_refused(path):
     """Whether this process may not look at `path`: on macOS, it is in a
     protected folder its own working directory is not in. Each refusal is
     counted for the thread (refusals), so a resolution that met one reads as
     told rather than read."""
-    if not TCC or not path:
-        return False
-    folder = protected_folder(_abs(path))
-    here = _own_cwd()
-    if not folder or (here and _under(here, folder)):
+    if not withheld(path):
         return False
     _GUARD.refused = refusals() + 1
     return True
@@ -1176,7 +1183,8 @@ def _stated(raw):
 
 def stated_here():
     """This machine's stored statements (_stated) from the kept org file,
-    on an enrolled machine; None where none are kept."""
+    on an enrolled machine: {} for a `locations` that holds none, None where
+    the file holds no `locations`."""
     d = org_directory() if enrollment() is not None else None
     return d["locations"] if d else None
 
@@ -1275,11 +1283,14 @@ def worktree_main(d):
 
 def worktree_stop(d):
     """For a directory in a linked worktree, the first folder above it that
-    holds the worktree's gitdir, read off the `.git` file's text alone (git
-    keeps it at <common dir>/worktrees/<id>: for a main checkout's worktree,
-    the checkout itself, or the first folder the worktree shares with it);
-    "" for any other directory. A .smns on the worktree's own path is one
-    below it."""
+    holds the worktree's gitdir (git keeps it at <common dir>/worktrees/<id>:
+    for a main checkout's worktree, the checkout itself, or the first folder
+    the worktree shares with it); "" for any other directory. A .smns on the
+    worktree's own path is one below it. A `.git` file is a linked worktree
+    only where its gitdir holds a `commondir`: a checkout whose git dir lives
+    elsewhere (`--separate-git-dir`) and a submodule (`.git/modules/<name>`)
+    have none. A gitdir this process may not read is not looked at (withheld)
+    and proves no worktree; the walk is then the whole one, as before."""
     top = _checkout_root(d)
     dot = os.path.join(top, ".git") if top else ""
     if not dot or not os.path.isfile(dot):
@@ -1292,6 +1303,8 @@ def worktree_stop(d):
     if not line.startswith("gitdir:"):
         return ""
     gitdir = os.path.abspath(os.path.join(top, line[len("gitdir:"):].strip()))
+    if withheld(gitdir) or not os.path.isfile(os.path.join(gitdir, "commondir")):
+        return ""
     return next((x for x in _ancestors(d) if _within(gitdir, x)), "")
 
 
@@ -1302,8 +1315,10 @@ def decision(cwd, fresh=False):
     cwd = os.path.abspath(os.path.expanduser(cwd or "."))
     if read_refused(cwd):
         return Decision("", "", None)
+    # The kept org file holding `locations` at all, even with no entry, is
+    # what puts the new rule in force: never how many statements it holds.
     stated = stated_here()
-    return _decide_stated(cwd, stated, fresh) if stated else _decide_files(cwd, fresh)
+    return _decide_files(cwd, fresh) if stated is None else _decide_stated(cwd, stated, fresh)
 
 
 def _first_smns(folders):
@@ -1315,7 +1330,7 @@ def _first_smns(folders):
 
 
 def _decide_files(cwd, fresh):
-    """The rule with no stored statement, on the reads resolution made
+    """The rule with no `locations` kept, on the reads resolution made
     before the registry: a .smns walking up, then the remote, the machine,
     the local repository. A linked worktree's walk stops below the first
     folder it shares with its main checkout, and goes on from the checkout,
@@ -1356,7 +1371,8 @@ def _last_rungs(d, fresh):
 
 
 def _decide_stated(cwd, stated, fresh):
-    """The rule with stored statements kept, over the canonical path. A
+    """The rule with `locations` kept (an empty one too), over the canonical
+    path. A
     linked worktree: its main checkout's own statement; else a .smns on its
     own path (below worktree_stop); else the rule at the main checkout. A
     main checkout this process may not read leaves the worktree's own .smns

@@ -104,6 +104,81 @@ class SharedFolders(unittest.TestCase):
                 self.assertEqual(self.asked(wt), (FILED, "smns", self.top), "%s, locations %r" % (wt, at))
 
 
+def git_dir(d, url):
+    """A git directory at `d` (not a checkout's `.git` beside it) with remote `url`."""
+    for sub in ("objects", "refs/heads"):
+        os.makedirs(os.path.join(d, sub), exist_ok=True)
+    write(os.path.join(d, "HEAD"), "ref: refs/heads/main\n")
+    write(os.path.join(d, "config"), '[core]\n\tbare = false\n[remote "origin"]\n\turl = %s\n' % url)
+
+
+def smns(d, pid):
+    write(os.path.join(d, ".smns"), json.dumps({"project": pid, "name": pid[:4], "remote": ""}))
+
+
+class NotAWorktree(unittest.TestCase):
+    """A `.git` file is a linked worktree only where its gitdir holds a
+    `commondir`: a checkout whose git dir lives elsewhere, and a submodule,
+    are their own repository's project, as before the rule, with or without
+    `locations` kept."""
+
+    @classmethod
+    def setUpClass(cls):
+        sminos.write_json(os.path.join(T, "s", "daemon", "identity.json"),
+                          {"org": ORG, "hub": "http://127.0.0.1:9", "name": MACHINE, "former": {}})
+
+    def each_mode(self, d, want, label):
+        for at in (None, []):
+            keep_org(at)
+            got = sminos.decision(d)
+            self.assertEqual((got.project.id if got.project else None, got.by), want, "%s, locations %r" % (label, at))
+
+    def test_a_separate_git_dir_is_its_own_repositorys(self):
+        outer = os.path.join(T, "sep", "outer")
+        git_dir(os.path.join(outer, "storage", ".git"), "https://github.com/example/sep.git")
+        smns(outer, FILED)   # beside the git dir, never above the checkout
+        checkout = os.path.join(T, "sep", "checkout")
+        write(os.path.join(checkout, ".git"), "gitdir: %s\n" % os.path.join(outer, "storage", ".git"))
+        self.each_mode(checkout, (sminos.repo_project_id(ORG, "github.com/example/sep"), "remote"),
+                       "a --separate-git-dir checkout")
+
+    def test_a_submodule_is_its_own_repositorys(self):
+        sup = os.path.join(T, "sub", "super")
+        git_dir(os.path.join(sup, ".git"), "https://github.com/example/super.git")
+        git_dir(os.path.join(sup, ".git", "modules", "m"), "https://github.com/example/m.git")
+        write(os.path.join(sup, "m", ".git"), "gitdir: ../.git/modules/m\n")
+        self.each_mode(os.path.join(sup, "m"), (sminos.repo_project_id(ORG, "github.com/example/m"), "remote"),
+                       "a submodule")
+
+
+class EmptyLocations(unittest.TestCase):
+    """`locations` kept puts the rule over canonical paths whatever it
+    holds: a session launched through a symlink, its alias and real sides
+    under different .smns files, is the same project with an empty `at` and
+    with one statement on a folder elsewhere."""
+
+    def test_an_unrelated_statement_moves_no_session(self):
+        sminos.write_json(os.path.join(T, "s", "daemon", "identity.json"),
+                          {"org": ORG, "hub": "http://127.0.0.1:9", "name": MACHINE, "former": {}})
+        real, alias = os.path.join(T, "sym", "real"), os.path.join(T, "sym", "alias")
+        os.makedirs(os.path.join(real, "x"))
+        os.makedirs(alias)
+        smns(real, FILED)
+        smns(alias, MINTED)
+        os.symlink(os.path.join(real, "x"), os.path.join(alias, "link"))
+        elsewhere = os.path.join(T, "sym", "elsewhere")
+        os.makedirs(elsewhere)
+        cwd = os.path.join(alias, "link")
+        keep_org([])
+        empty = sminos.decision(cwd)
+        keep_org([minted(elsewhere, "22222222-2222-4222-8222-222222222222")])
+        one = sminos.decision(cwd)
+        self.assertEqual((empty.project.id, empty.at), (FILED, os.path.realpath(real)), "an empty `at`: the real side")
+        self.assertEqual((one.project.id, one.at), (empty.project.id, empty.at), "one statement elsewhere: the same")
+        keep_org(None)
+        self.assertEqual(sminos.decision(cwd).project.id, MINTED, "no `locations`: the path as given, as before")
+
+
 def tearDownModule():
     shutil.rmtree(T, ignore_errors=True)
 
