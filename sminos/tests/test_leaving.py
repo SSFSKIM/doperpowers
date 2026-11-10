@@ -16,6 +16,7 @@ Run: python3 -B -I sminos/tests/test_leaving.py
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -348,6 +349,71 @@ class Counting(unittest.TestCase):
             self.org(org_frame(STAYS, complete=False))
         self.run_for(3 * DAY, step=60)
         self.assertEqual(self.counted(), before)
+
+    def test_a_scan_decides_nothing_past_a_frame_or_a_close_not_handled_yet(self):
+        """A tick after a bounded drain, with frames still queued behind it."""
+        self.org(org_frame(STAYS))
+        self.run_for(DAY - 1, step=60)
+        items = self.link.transport.items = queue.Queue()
+        # An incomplete frame the reader took 1 s from the end, and 2 s of scans after it.
+        self.clock.add(0.5)
+        items.put(("frame", None, json.dumps(org_frame(STAYS, complete=False)), time.time() - 2))
+        self.clock.add(2)
+        self.assertEqual(self.scan(), [], "counted only to the queued frame's receipt")
+        self.assertLess(self.counted(), DAY)
+        self.assertNotIn(GONE, leaving_file()["left"])
+        _, _, line, received = items.get_nowait()
+        self.link.received = received
+        self.org(json.loads(line))
+        self.link.received = None
+        self.run_for(3600)
+        self.assertLess(self.counted(), DAY, "stands still under the incomplete frame")
+        # A close queued: nothing counted or decided.
+        self.org(org_frame(STAYS))
+        self.scan()
+        items.put(("closed", "the endpoint closed the socket"))
+        self.clock.add(30)
+        self.assertEqual(self.scan(), [])
+        self.assertLess(self.counted(), DAY)
+
+    def test_a_departure_or_a_reset_whose_write_fails_holds_what_depends_on_it(self):
+        self.org(org_frame(STAYS))
+        self.run_for(DAY - 60, step=60)
+        real = sminos.write_json
+
+        def leaving_fails(path, *a, **k):
+            if path == sminos.leaving_path():
+                raise OSError(28, "No space left on device")
+            return real(path, *a, **k)
+        failing = mock.patch.object(uplink.sminos, "write_json", side_effect=leaving_fails)
+        with failing:
+            self.assertEqual(self.run_for(120, step=60), [], "not left while not kept")
+            self.assertIn(GONE, uplink.hub_projects(CRED))
+        self.assertEqual(self.scan(), [GONE], "left at the look whose write keeps it")
+        self.assertEqual(leaving_file()["left"], [GONE])
+        # A frame that lists it again, its reset not kept: no ack until it is.
+        acks = lambda: [f for f in self.link.log_lane.sent if f.get("t") == "locations-kept"]  # noqa: E731
+        with failing:
+            self.org(org_frame(GONE, STAYS, locations={"gen": 7, "at": []}))
+        self.assertEqual(acks(), [], "the reset is not kept: no ack")
+        self.scan()
+        self.assertEqual(acks(), [{"t": "locations-kept", "gen": 7}], "acknowledged once kept")
+        self.assertEqual(leaving_file()["left"], [])
+
+    def test_a_folder_that_may_not_be_read_is_a_folder(self):
+        protected = os.path.join(self.base, "w", "Documents-like")
+        os.makedirs(protected)
+        hub = {"url": URL, "org": ORG}
+        self.org(org_frame(GONE, STAYS, ROOTED))
+        sminos.project_path(sminos.make_project(ROOTED, "rooted", "", protected, hub), "log")
+        real = sminos.read_refused
+        with mock.patch.object(uplink.sminos, "read_refused",
+                               side_effect=lambda p: os.path.realpath(p) == os.path.realpath(protected) or real(p)):
+            self.scan()
+            self.org(org_frame(STAYS))
+            self.assertEqual(self.run_for(2 * DAY, step=60), [GONE], "its registered folder is unknown, not gone")
+            self.assertNotIn(ROOTED, self.link.leaving.counted)
+            self.assertIn(ROOTED, uplink.hub_projects(CRED))
 
 
 class Wire(unittest.TestCase):

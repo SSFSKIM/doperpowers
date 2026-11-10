@@ -525,6 +525,7 @@ class Leaving:
         self.counting = set()     # those whose count runs now
         self.since = None         # up to when the counts were advanced (the clock's), None while none runs
         self.dirty = False
+        self.owed = False         # a write something waits on (a frame's ack) failed: tried at every scan
         self.saved = self.now()
 
     def now(self):
@@ -549,7 +550,8 @@ class Leaving:
     def frame(self, listed, complete, ago=0.0):
         """This connection's org frame, taken by the reader `ago` seconds
         before now: the time before it counted under the one before, each
-        project it lists at zero and out of the set."""
+        project it lists at zero and out of the set. Whether what it changed
+        is kept (False: owed, written again at each scan until it is)."""
         self.advance(self.now() - max(ago, 0.0))
         for pid in listed:
             if self.counted.pop(pid, None) is not None or pid in self.left:
@@ -558,15 +560,18 @@ class Leaving:
         self.listed, self.complete = set(listed), complete is True
         self.recount()   # from `at` on, under this frame
         if self.dirty:
-            self.save()
+            self.owed = not self.save()
+        return not self.owed
 
-    def scan(self, eligible, stays):
-        """A scan's look: `eligible` the projects that may leave now, and
-        `stays(pid)` whether a project that left, or has a count, is one the
-        rule no longer reaches (a folder or a session of it here now): it
-        comes back, its count dropped. (the ids that left at this look, the
-        ids that came back)."""
-        self.advance()
+    def scan(self, eligible, stays, at=None):
+        """A scan's look, up to `at` (now by default; the receipt of a frame
+        not handled yet, Link.unread): `eligible` the projects that may leave
+        now, and `stays(pid)` whether a project that left, or has a count, is
+        one the rule no longer reaches (a folder or a session of it here
+        now): it comes back, its count dropped. (the ids that left at this
+        look, the ids that came back), each only once the set is kept: a
+        write that fails takes them back, for the next look to try again."""
+        self.advance(at)
         self.eligible = set(eligible)
         back = []
         for pid in sorted((self.left | set(self.counted)) - self.eligible):
@@ -582,8 +587,15 @@ class Leaving:
             self.left.add(pid)
             self.counted.pop(pid, None)
         self.counting -= set(gone)
-        if gone or back or (self.dirty and self.now() - self.saved >= LEAVE_SAVE_EVERY):
-            self.save()
+        if gone or back or self.owed or (self.dirty and self.now() - self.saved >= LEAVE_SAVE_EVERY):
+            if not self.save():
+                for pid in gone:
+                    self.left.discard(pid)
+                    self.counted[pid] = float(LEAVE_AFTER_S)
+                self.left |= set(back)
+                self.recount()
+                return [], []
+            self.owed = False
         return gone, back
 
     def ended(self):
@@ -593,16 +605,18 @@ class Leaving:
             self.save()
 
     def save(self):
+        """daemon/leaving.json written durably; whether it was."""
         self.dirty = True
         try:
             sminos.write_json(sminos.leaving_path(), {"counted": dict(sorted(self.counted.items())),
                                                       "left": sorted(self.left)}, durable=True)
         except OSError as e:
-            log("the leaving counts could not be kept (%s): kept at the next write" % e)
-            return
+            log("the leaving counts could not be kept (%s): tried again at the next scan" % e)
+            return False
         self.dirty = False
         self.saved = self.now()
         sminos._LEFT.clear()   # this process's next has_left reads the set as written
+        return True
 
 
 def _snapshot_index(events):
@@ -804,6 +818,7 @@ class Link:
         self.host_queued = {}     # RL10: project id → {writer: seq} of host events queued on this connection
         self.host_owed = {}       # RL10: project id → {(writer, seq): event} of an open's resend not queued yet
         self.leaving = Leaving()  # the registry's §E.4: the counts and the set, as daemon/leaving.json keeps them
+        self.ack_owed = None      # the gen of a frame whose leaving write failed: acknowledged once it is kept
         self.handlers = {"welcome": self.on_welcome, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
@@ -1300,17 +1315,24 @@ class Link:
         its projects and machines is this connection's last for the leaving
         counts (Leaving.frame), whether or not it can be kept: what it lists
         is at zero, and whether it is complete decides whether the counts of
-        what it lacks run."""
+        what it lacks run. Its ack waits for that change's write as well: a
+        failed one holds it until a scan's write succeeds (leave_pass)."""
+        kept = not self.leaving.owed
         if isinstance(frame.get("projects"), list) and isinstance(frame.get("machines"), list):
             ago = time.time() - self.received if self.received is not None else 0.0
-            self.leaving.frame({p["id"] for p in frame["projects"] if isinstance(p, dict)
-                                and isinstance(p.get("id"), str)}, frame.get("complete"), ago)
+            kept = self.leaving.frame({p["id"] for p in frame["projects"] if isinstance(p, dict)
+                                       and isinstance(p.get("id"), str)}, frame.get("complete"), ago)
         if not keep_org(frame, self.cred):
             log("an org frame without its projects and machines: passed by")
             return
         locations = frame_locations(frame)
         if locations is not None:
-            self.log_lane.send([{"t": "locations-kept", "gen": locations["gen"]}])
+            # Acknowledged once what the frame reset is kept too: now, or at the scan whose write keeps it
+            # (leave_pass). A later gen's ack releases what waits on an earlier one.
+            self.ack_owed = locations["gen"]
+        if kept and self.ack_owed is not None:
+            self.log_lane.send([{"t": "locations-kept", "gen": self.ack_owed}])
+            self.ack_owed = None
         self.next_scan = 0.0
 
     def deliver_imports(self):
@@ -1355,10 +1377,27 @@ class Link:
         declared location that still resolves to it, a directory a session
         the plane read joined from here), whatever the project was open on
         this stream or not — and no machine's own project, by the
-        directory's kind or by its id."""
+        directory's kind or by its id. A registered root or a declared
+        location this process may not look at (sminos.read_refused, macOS's
+        protected folders) is an unknown, and an unknown is a folder: the
+        project does not leave by it."""
         return not self.holds(p.id) and p.id != sminos.machine_project_id(self.cred["org"], p.name) \
             and (sminos.org_entry(p.id) or {}).get("kind") != "machine" \
+            and not (p.root and sminos.read_refused(p.root)) \
+            and not any(sminos.read_refused(loc.path) for loc in sminos.declared_here(p.id)) \
             and not policy.known_checkouts(p, self.plane.here.get(p.id) or {})
+
+    def unread(self):
+        """What the transport holds that this Link has not handled: (whether
+        a close is among it, the receipt time of the oldest frame, epoch s,
+        or None). The leaving counts decide nothing past either."""
+        items = getattr(self.transport, "items", None)
+        if not isinstance(items, queue.Queue):
+            return False, None
+        with items.mutex:
+            held = list(items.queue)
+        times = [i[3] for i in held if i[0] == "frame" and len(i) > 3 and isinstance(i[3], (int, float))]
+        return any(i[0] == "closed" for i in held), min(times) if times else None
 
     def leave_pass(self, known):
         """The scan's look at the leaving counts (Leaving.scan), over the hub
@@ -1367,12 +1406,19 @@ class Link:
         back. (the ids that left at this look, those that came back), each
         said in daemon.log."""
         every = self.member_known
+        closing, oldest = self.unread()
+        if closing:
+            return [], []   # the connection has ended: nothing is counted or decided past its last look
 
         def stays(pid):
             p = every.get(pid)
             return p is not None and not self.may_leave(p)
 
-        gone, back = self.leaving.scan([pid for pid, p in known.items() if self.may_leave(p)], stays)
+        at = None if oldest is None else self.leaving.now() - max(time.time() - oldest, 0.0)
+        gone, back = self.leaving.scan([pid for pid, p in known.items() if self.may_leave(p)], stays, at)
+        if self.ack_owed is not None and not self.leaving.owed:
+            self.log_lane.send([{"t": "locations-kept", "gen": self.ack_owed}])
+            self.ack_owed = None
         for pid in gone:
             log("%s has left this machine: complete directories lacked it for %d s of connected time (its log stays; "
                 "a directory that lists it follows it again)" % (known[pid].name, LEAVE_AFTER_S))
