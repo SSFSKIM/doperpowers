@@ -1291,6 +1291,15 @@ def worktree_stop(d):
     elsewhere (`--separate-git-dir`) and a submodule (`.git/modules/<name>`)
     have none. A gitdir this process may not read is not looked at (withheld)
     and proves no worktree; the walk is then the whole one, as before."""
+    gitdir = gitfile_dir(d)
+    if not gitdir or withheld(gitdir) or not os.path.isfile(os.path.join(gitdir, "commondir")):
+        return ""
+    return next((x for x in _ancestors(d) if _within(gitdir, x)), "")
+
+
+def gitfile_dir(d):
+    """The gitdir the nearest `.git` at or above `d` names when it is a
+    file, read off its text alone; "" for a `.git` directory or none."""
     top = _checkout_root(d)
     dot = os.path.join(top, ".git") if top else ""
     if not dot or not os.path.isfile(dot):
@@ -1302,10 +1311,7 @@ def worktree_stop(d):
         return ""
     if not line.startswith("gitdir:"):
         return ""
-    gitdir = os.path.abspath(os.path.join(top, line[len("gitdir:"):].strip()))
-    if withheld(gitdir) or not os.path.isfile(os.path.join(gitdir, "commondir")):
-        return ""
-    return next((x for x in _ancestors(d) if _within(gitdir, x)), "")
+    return os.path.abspath(os.path.join(top, line[len("gitdir:"):].strip()))
 
 
 def decision(cwd, fresh=False):
@@ -1372,12 +1378,26 @@ def _last_rungs(d, fresh):
 
 def _decide_stated(cwd, stated, fresh):
     """The rule with `locations` kept (an empty one too), over the canonical
-    path. A
-    linked worktree: its main checkout's own statement; else a .smns on its
-    own path (below worktree_stop); else the rule at the main checkout. A
-    main checkout this process may not read leaves the worktree's own .smns
-    to decide, and a .smns above it no statement is nearer than."""
+    path. A linked worktree: its main checkout's own statement; else a .smns
+    on its own path (below worktree_stop); else the rule at the main
+    checkout. A gitdir or main checkout this process may not read leaves a
+    .smns on the path to decide, up to the first folder a statement holds;
+    past it, the directory is unread."""
     walk = os.path.realpath(cwd)
+    gitdir = gitfile_dir(walk)
+    if gitdir and withheld(gitdir):
+        # A gitdir this process may not read: whether this is a linked
+        # worktree, and its main checkout, are unknown. A .smns on the path
+        # below the first folder a statement holds is what the rule gives
+        # either way; past it, it is unread, as a repository not read is.
+        for d in _ancestors(walk):
+            found = _first_smns([d])
+            if found:
+                return found
+            if statement_at(stated, d):
+                break
+        read_refused(gitdir)
+        return Decision("", "", None)
     stop = worktree_stop(walk)
     before = refusals()
     main = worktree_main(walk) if stop else ""

@@ -356,6 +356,41 @@ class GitThroughAWorktree(unittest.TestCase):
                 os.unlink(org)
             sminos.forget_caches()
 
+    def test_with_locations_kept_a_worktrees_smns_beside_a_statement_decides(self):
+        # The reviewer's reproduction: the main checkout under ~/Documents, a
+        # worktree outside it under project/, which holds a minted statement
+        # and a .smns naming another project. The gitdir is not read, so the
+        # main checkout is unknown; the .smns on the worktree's path decides.
+        tag = uuid.uuid4().hex[:6]
+        wt = worktree_into(os.path.join(DOCUMENTS, "main-" + tag), "wt-" + tag)
+        project = os.path.join(T, "project-" + tag)
+        os.makedirs(project)
+        moved = os.path.join(project, "wt")
+        os.rename(wt, moved)
+        pid = str(uuid.uuid4())
+        st = os.stat(project)
+        org = os.path.join(SH, "daemon", "org.json")
+        write(org, {"projects": [], "machines": [], "locations": {"gen": 1, "at": [{
+            "path": sminos.canonical(project), "project": str(uuid.uuid4()), "stated": "minted",
+            "anchor": {"dev": str(st.st_dev), "ino": str(st.st_ino), "birth": "0"}}]}})
+        try:
+            write(os.path.join(project, ".smns"), {"project": pid, "name": "other", "hub": {"org": ORG}})
+            with tcc(), in_dir(T), Touches(DOCUMENTS) as t:
+                sminos.forget_caches()
+                p = sminos.resolve_project(moved)
+            self.assertIsNotNone(p, "told, not unknown")
+            self.assertEqual((p.id, sminos.guessed(p)), (pid, False), "the .smns on the worktree's path")
+            self.assertEqual(t.seen, [], "nothing under ~/Documents was looked at")
+            os.unlink(os.path.join(project, ".smns"))
+            with tcc(), in_dir(T), Touches(DOCUMENTS) as t:
+                sminos.forget_caches()
+                p = sminos.resolve_project(moved)
+            self.assertIsNone(p, "with no .smns there, unknown: its repository is not read")
+            self.assertEqual(t.seen, [], "and nothing under ~/Documents was looked at")
+        finally:
+            os.unlink(org)
+            sminos.forget_caches()
+
     def test_linux_follows_it_as_before(self):
         main = os.path.join(DOWNLOADS, "main-linux")
         wt = worktree_into(main, "wt-%s" % uuid.uuid4().hex[:6])
