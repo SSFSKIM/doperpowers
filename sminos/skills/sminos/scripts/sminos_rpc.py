@@ -1601,11 +1601,15 @@ def admit_spawn(args, ceiling, checkouts):
     machine, under a mode no looser than the ceiling; the mode it runs
     under, written into `args` (absent: the ceiling)."""
     checkout = args.get("checkout")
-    known = {os.path.realpath(c["path"]) for c in checkouts}
-    if not (isinstance(checkout, str) and checkout and not sminos.read_refused(checkout)
-            and os.path.realpath(checkout) in known):
+    # Compared in the canonical form (the real path, NFC), the form a
+    # declared location's path is in; the spawn runs in the checkout as
+    # known here, never the asker's spelling of it.
+    known = {sminos.canonical(c["path"]): os.path.realpath(c["path"]) for c in checkouts}
+    at = known.get(sminos.canonical(checkout)) if isinstance(checkout, str) and checkout \
+        and not sminos.read_refused(checkout) else None
+    if at is None:
         raise Refused("unknown-checkout", "%s is not a checkout of the project on this machine" % (checkout,))
-    args["checkout"] = os.path.realpath(checkout)
+    args["checkout"] = at
     mode = args.get("permission_mode", ceiling)
     modes = policy.MODES
     if ceiling not in modes:

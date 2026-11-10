@@ -1240,6 +1240,10 @@ def register_declared():
         p = resolve_project(loc.path)
         if p is None or p.id != loc.project or not (isinstance(p.hub, dict) and p.hub.get("org") == e["org"]):
             continue
+        # Looked at again whatever used the home in this cache generation
+        # (an upload's callback on a followed, rootless registration):
+        # project_path writes only what differs.
+        _HOMES.discard(p.id)
         project_path(p._replace(root=loc.path), "log")
 
 

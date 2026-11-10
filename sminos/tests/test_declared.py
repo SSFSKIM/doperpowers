@@ -128,6 +128,7 @@ class Declared(unittest.TestCase):
         cls.nohub = folder("nohub", {"project": NOHUB, "name": "nohub", "remote": "git@example.com:o/nohub.git"})
         cls.other = folder("other", {"project": OTHER, "name": "other", "hub": {"org": "org-elsewhere"}})
         cls.stray = folder("stray")
+        cls.accented = folder("caf\u00e9")   # NFC, as MAWS writes a path
         cls.missing = folder("missing", {"project": MISSING, "name": "missing", "hub": {"org": ORG}})
         cls.replaced = folder("replaced", {"project": REPLACED, "name": "replaced", "hub": {"org": ORG}})
         cls.own = sminos.machine_project_id(ORG, MACHINE)
@@ -139,6 +140,7 @@ class Declared(unittest.TestCase):
             {"path": sminos.canonical(cls.nohub), "project": NOHUB, "hub": False},
             {"path": sminos.canonical(cls.other), "project": OTHER, "hub": False},
             {"path": sminos.canonical(cls.stray), "project": cls.own},
+            {"path": sminos.canonical(cls.accented), "project": cls.own},
             {"path": sminos.canonical(cls.missing), "project": MISSING, "state": "missing"},
             minted(cls.replaced, REPLACED, state="replaced"),
         ])
@@ -189,8 +191,12 @@ class Declared(unittest.TestCase):
     def test_e_a_machine_project_folder_takes_a_spawn_and_registers_nothing(self):
         mp = sminos.own_machine_project()
         checkouts = policy.known_checkouts(mp)
-        self.assertEqual(paths(checkouts), [self.stray])
+        self.assertEqual(paths(checkouts), [self.stray, self.accented])
         self.assertEqual(admitted(self.stray, checkouts), self.stray)
+        # Asked for in another normalization of its name, the declared folder
+        # is the one the spawn runs in.
+        decomposed = os.path.join(os.path.dirname(self.accented), "cafe\u0301")
+        self.assertEqual(admitted(decomposed, checkouts), os.path.realpath(self.accented))
         self.assertIn(sminos.registration(self.own).get("root", ""), ("",), "the machine project is rooted nowhere")
         self.assertEqual([pid for pid in os.listdir(sminos.projects_root())
                           if sminos.registration(pid).get("root") == self.stray], [])
@@ -204,6 +210,19 @@ class Declared(unittest.TestCase):
             with self.assertRaises(rpc.Refused) as refused:
                 admitted(path, policy.known_checkouts(followed))
             self.assertEqual(refused.exception.outcome["error"]["code"], "unknown-checkout")
+
+    def test_g_a_used_home_is_registered_rooted_there(self):
+        """A followed, rootless registration whose home was already used in
+        the uplink's cache generation (an upload's callback before the
+        scan) is still rooted at its declared location by the scan."""
+        hub = {"url": URL, "org": ORG}
+        sminos.write_json(os.path.join(sminos.projects_root(), MINTED, "project.json"),
+                          {"project": MINTED, "name": "plain", "remote": "", "root": "", "hub": hub})
+        sminos.forget_caches()
+        sminos.project_path(sminos.make_project(MINTED, "plain", "", "", hub), "log")
+        self.assertEqual(sminos.registration(MINTED)["root"], "")
+        uplink.hub_projects(CRED)
+        self.assertEqual(sminos.registration(MINTED)["root"], self.plain)
 
 
 class NoLocations(unittest.TestCase):
