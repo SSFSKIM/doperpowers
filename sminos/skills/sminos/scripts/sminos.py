@@ -1935,12 +1935,53 @@ def project_source(cwd):
         return "the registrations here: %s is in a protected folder, not read from here" % cwd
     found = decision(cwd)
     if found.by in ("link", "minted", "smns"):
-        return {"link": "a link at %s", "minted": "a stored id at %s", "smns": ".smns at %s"}[found.by] % found.at
+        return dict(STATED_WORDS, smns=".smns at %s")[found.by] % found.at
     if found.by == "local":
         return "the repository at %s, a local project: this machine is not enrolled" % found.at
     d = derivation(cwd)
     return "remote %s → %s" % (d.remote, d.key) if found.by == "remote" else \
         "machine project: %s" % d.why if found.by == "machine" else "-"
+
+
+STATED_WORDS = {"link": "a link at %s", "minted": "a stored id at %s"}   # a stored statement, as project show and init name it
+
+
+def overridden_smns(cwd):
+    """Where a stored statement decides a directory's project, each .smns
+    that takes part in the walk the statement wins and names another
+    project, each a (file's Decision, statement's Decision), nearest first:
+    for a linked worktree under its main checkout's statement, the nearest
+    file on the worktree's own path; then the file at the statement's own
+    folder. Read on decision()'s walk, the canonical path, so a file seen
+    only through a symlink's lexical parents is none of them. A file above
+    the statement's folder is an outer project the statement nests in, and
+    one below it would have decided: neither is overridden."""
+    found = decision(cwd)
+    if found.by not in STATED_WORDS:
+        return []
+    walk = os.path.realpath(os.path.expanduser(cwd or "."))
+    files = []
+    stop = worktree_stop(walk)
+    main = worktree_main(walk) if stop else ""
+    if main and canonical(main) == canonical(found.at):
+        files.append(_first_smns(_ancestors(walk, stop)))
+    files.append(_first_smns([found.at]))
+    return [(f, found) for f in files if f and f.project.id != found.project.id]
+
+
+def statement_over_file(top):
+    """The Decision of a stored statement that decides folder `top` even
+    with a .smns at `top` — one at `top` itself (at one folder a statement
+    is above the file), or, for a linked worktree, its main checkout's own —
+    else None: a file written at `top` would then decide."""
+    found = decision(top, fresh=True)
+    if found.by not in STATED_WORDS:
+        return None
+    at = canonical(found.at)
+    if at == canonical(top):
+        return found
+    main = worktree_main(os.path.realpath(top))
+    return found if main and canonical(main) == at else None
 
 
 UNREAD = object()   # a directory's project this process could not read and nothing recorded tells (_resolve)
@@ -8507,8 +8548,12 @@ def cmd_project(a):
             kind, hub = "hub (not enrolled)", "org %s — not synced here: this machine is not enrolled in it" % p.hub["org"]
         else:
             hub = "%s (org %s)" % (p.hub["url"], p.hub["org"]) if p.hub is not None else "-"
-        print("project  %s\nid       %s\nkind     %s\nsource   %s\nremote   %s\nhub      %s\nroot     %s\nhome     %s" % (
-            p.name, p.id, kind, project_source(d), p.remote or "-", hub, p.root or "-", p.home))
+        shadow = "".join(
+            "\nfile     .smns at %s names another project, %s (%s): the %s at %s decides here, project %s" % (
+                f.at, f.project.name, f.project.id, "link" if by.by == "link" else "stored id", by.at, by.project.id)
+            for f, by in overridden_smns(d))
+        print("project  %s\nid       %s\nkind     %s\nsource   %s%s\nremote   %s\nhub      %s\nroot     %s\nhome     %s" % (
+            p.name, p.id, kind, project_source(d), shadow, p.remote or "-", hub, p.root or "-", p.home))
     else:
         project_attach(a)
 
@@ -8518,26 +8563,46 @@ def project_init(a):
     hub in it — added to a .smns that exists, which changes nothing else. A
     hub .smns for a repository that resolves by its remote pins the project
     it is now (its derived id, and its name unless --name gives one), so
-    committing the file moves no session and splits no history."""
+    committing the file moves no session and splits no history. Where a
+    stored statement on this machine decides the folder over any file there
+    (statement_over_file), the file takes the id in effect, the
+    statement's, as a hub project of this org, and init says the file is
+    not what decides; sminos never writes a statement."""
     top = git_toplevel(os.getcwd())
     if not top:
-        die("project init needs a git repository: .smns is committed at its root")
+        die("project init needs a git repository: .smns is committed at its root; "
+            "a plain folder is declared with `maws project add`")
     path = os.path.join(top, SMNS)
-    hub = hub_module().enrolled_hub() if a.hub else None
+    stated = statement_over_file(top)
+    hub = stated.project.hub if stated else hub_module().enrolled_hub() if a.hub else None
+
+    def decides(written=False, named=False):
+        return "a stored statement on this machine decides this folder's project, %s%s: the .smns%s is not what decides here" % (
+            STATED_WORDS[stated.by] % stated.at, ", project %s (%s)" % (stated.project.name, stated.project.id) if named else "",
+            " just written, which names the id in effect," if written else "")
+
     if os.path.exists(path):
         smns = read_smns(path)
-        if hub and smns:
+        if a.hub and smns:
             hub_module().add_hub(path, smns, hub, a)
             forget_caches()
             project_path(resolve_project(top), "log")
+            if stated:
+                print(decides())
             return
-        die("%s is already project %s (%s)" % (top, smns[1], smns[0]) if smns else
+        if stated and smns and smns[0] == stated.project.id:
+            print("%s already names project %s (%s), the id in effect\n%s" % (path, smns[1], smns[0], decides()))
+            return
+        die("%s is already project %s (%s)%s" % (top, smns[1], smns[0], "; " + decides(named=True) if stated else "")
+            if smns else
             "%s exists but is unreadable — fix or remove it first" % path)
-    pinned = repo_project(top, fresh=True) if hub and decision(top, fresh=True).by == "remote" else None
-    name = a.name or (pinned.name if pinned else safe_name(os.path.basename(owning_repo(top) or top)) or "project")
+    pinned = repo_project(top, fresh=True) if hub and not stated and decision(top, fresh=True).by == "remote" else None
+    given = stated.project if stated else pinned
+    name = a.name or (given.name if given else safe_name(os.path.basename(owning_repo(top) or top)) or "project")
     if "/" in name or "\n" in name or not name.strip():
         die("a project name is one line without '/': %r" % name)
-    data = {"project": pinned.id if pinned else str(uuidlib.uuid4()), "name": name, "remote": a.remote or ""}
+    data = {"project": stated.project.id if stated else pinned.id if pinned else str(uuidlib.uuid4()),
+            "name": name, "remote": a.remote or ""}
     if hub:
         data["hub"] = {"org": hub["org"]}  # the URL is each machine's enrollment's (hub_here)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
@@ -8550,6 +8615,8 @@ def project_init(a):
     print("project %s (%s) at %s%s%s — commit it, so every clone is the same project" % (
         name, data["project"], path, ", a hub project of org %s (through %s here)" % (hub["org"], hub["url"]) if hub else "",
         ", pinning the id its remote %s gave it" % derivation(top).key if pinned else ""))
+    if stated:
+        print(decides(True))
 
 
 def project_attach(a):

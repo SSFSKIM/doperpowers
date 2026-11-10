@@ -48,6 +48,19 @@ and splits no history. Pin before changing a remote: without a `.smns`,
 a changed remote is a new project, its live sessions move there within a
 tick, and sminos says so once, naming both projects.
 
+A folder declared in MAWS (Add project, or `maws project add`) may carry
+a stored statement on this machine — a link into a project, or a stored
+id — which decides over a `.smns` at the same folder, and for a linked
+worktree its main checkout's decides over the worktree's file. `project
+init` there writes the id in effect (the link's, else the stored id), as
+a hub project of the org, so the committed file puts the other clones in
+the same project, and says the file is not what decides here; a `.smns`
+already there naming another project is refused, as always. `project
+show` names the statement, and a `.smns` in its folder that names
+another project, with both ids. sminos never writes a statement. `project
+init` needs a git repository: a plain folder is declared with `maws
+project add`.
+
 The log lives at `$SMINOS_HOME/projects/<id>/log/`, one append-only file
 per writer, so two machines never write one file. With a `remote` in
 `.smns` (any git URL the machines can push to over SSH; a bare
