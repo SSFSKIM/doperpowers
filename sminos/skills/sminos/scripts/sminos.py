@@ -5805,20 +5805,25 @@ def compose_chat_frame(project_name, ref, sender, target, unread, text, label=""
 # What would let an alias pass for a frame's own syntax: the label's `,` and
 # ` (`, a quote, the arrow and brackets, and any line break (str.splitlines').
 ALIAS_QUOTED = frozenset(',()"→[]\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029')
+# What a quoted alias writes as a `\uXXXX` escape: the line breaks JSON leaves
+# raw (JavaScript's `.` stops at U+2028 and U+2029), and every angle the peer
+# envelope's closing-tag escape starts at (ALIAS_ANGLES), which would put a
+# backslash into the literal.
+ALIAS_RAW_BREAKS = frozenset("\x85\u2028\u2029")
 
 
 def frame_alias(alias):
     """A sender's alias as a frame or a `sminos chat` line writes it. The
     alias is the writer's own claim and the label after it sminos's
-    (sender_labels), so an alias that could read as a label or as the frame's
-    syntax is a JSON string literal, never one line break raw (JSON leaves
-    U+0085, U+2028 and U+2029 as they are; JavaScript's `.` stops at the last
-    two); any other is written bare, as always. A reader decodes an alias
-    that opens with `"` and reads a bare one to its first `,` or ` (`."""
-    if not ALIAS_QUOTED.intersection(alias):
+    (sender_labels), so an alias that could read as a label, as the frame's
+    syntax or as an envelope's tag is a JSON string literal with no line
+    break and no angle raw, which nothing on the way rewrites; any other is
+    written bare, as always. A reader decodes an alias that opens with `"`
+    and reads a bare one to its first `,` or ` (`."""
+    if not ALIAS_QUOTED.intersection(alias) and not ALIAS_ANGLES.intersection(alias):
         return alias
-    return json.dumps(alias, ensure_ascii=False).replace("\x85", "\\u0085").replace(
-        "\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    escaped = ALIAS_RAW_BREAKS | ALIAS_ANGLES
+    return "".join("\\u%04x" % ord(c) if c in escaped else c for c in json.dumps(alias, ensure_ascii=False))
 
 
 def sender_labels(project):
@@ -9242,6 +9247,7 @@ PEER_TAG = "cross-session-message"
 _OPEN = "<\uff1c\ufe64\u2329\u27e8\u3008\u2039\u02c2\u1438\u276c\u276e\u2770\u29fc\u226e\u227a\u22d6"
 _CLOSE = ">\uff1e\ufe65\u232a\u27e9\u3009\u203a\u02c3\u1433\u276d\u276f\u2771\u29fd\u226f\u227b\u22d7"
 _SLASH = "/\uff0f\u2215\u2044"
+ALIAS_ANGLES = frozenset(_OPEN + _CLOSE)   # frame_alias
 # \p{Pd}, \p{Pc} and the engine's extra dashes, as one class.
 _DASH = ("\u002d\u005f\u02cd\u02d7\u058a\u05be\u0640\u07fa\u1400\u1806\u2010\u2011\u2012\u2013\u2014\u2015"
          "\u2017\u203f\u2040\u2043\u2054\u207b\u208b\u2212\u2796\u2e17\u2e1a\u2e3a\u2e3b\u2e40\u2e5d\u301c"

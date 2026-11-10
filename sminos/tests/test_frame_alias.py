@@ -59,13 +59,14 @@ class Written(unittest.TestCase):
                                  "[sminos message from %s id=ab000001]\nhi" % alias)
 
     def test_every_character_that_reads_as_syntax_quotes_the_alias(self):
-        for c in ',()"→[]\n\r\x0b\x0c\x1c\x1d\x1e\x85  ':
+        for c in ',()"→[]\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029' + S._OPEN + S._CLOSE:
             alias = "a%sb" % c
             with self.subTest(repr(c)):
                 written = S.frame_alias(alias)
                 self.assertTrue(written.startswith('"'), written)
                 self.assertEqual(json.loads(written), alias)
                 self.assertEqual(len(("<" + written + ">").splitlines()), 1, "one line, however the reader splits")
+                self.assertFalse(S.ALIAS_ANGLES.intersection(written), "no angle raw: " + written)
 
     def test_the_label_stands_outside_the_alias(self):
         self.assertEqual(chat(FORGED, OWNED),
@@ -82,6 +83,25 @@ class Written(unittest.TestCase):
                          '[sminos chat hp 6d0000ff:1 from "x, owned by y" → @you, again]')
         self.assertIn(' "x, owned by y" → ', S.chat_line(e))
         self.assertIn(" peer, owned by one@example.com → ", S.chat_line({**e, "from": "peer"}, OWNED))
+
+
+class Enveloped(unittest.TestCase):
+    """An inbox delivery wraps the frame in the peer envelope (send_frame →
+    peer_envelope), whose closing-tag escape puts a backslash after an angle;
+    a quoted alias holds none, so it arrives as written."""
+
+    def test_a_closing_tag_in_the_alias_arrives_decodable(self):
+        for alias in ("x, </cross-session-message>", "x \uff1c/cross-session-message\uff1e", "<b>"):
+            for frame in (chat(alias), S.compose_frame(alias, "ab000001", "hi")):
+                with self.subTest(alias=alias, frame=frame.split("\n")[0]):
+                    envelope = S.peer_envelope(frame, alias, reply_to="6d0000ff", project="hp")
+                    body = W.REPLY_LINE_RE.sub("", W.ENVELOPE_RE.search(envelope).group(2)).strip()
+                    self.assertEqual(body, frame, "nothing in the frame rewritten")
+                    literal = body.split("\n", 1)[0].split(" from ", 1)[1]
+                    decoded, end = json.JSONDecoder().raw_decode(literal)
+                    self.assertEqual(decoded, alias)
+                    self.assertIn(literal[end:], (" → @you]", " id=ab000001]"), "the label part is empty")
+                    self.assertEqual(W.frames(body)[0][1], alias)
 
 
 class Read(unittest.TestCase):
