@@ -1070,11 +1070,12 @@ def has_left(p):
     with no folder here that complete directories lacked for the counted
     period, its id in the uplink's kept set. The uplink's subscription
     (hub_projects) and the org scope (org_scope, list's widened scope) both
-    leave it out; its log stays, and a directory that lists it again takes
-    it out of the set. A project registered with a root here never has."""
+    leave it out; its log stays, and a directory that lists it again, or a
+    folder or a session of it here, takes it out of the set (the uplink's
+    scan)."""
     if not _LEFT:
         _LEFT.append(frozenset(leaving_kept()["left"]))
-    return p.id in _LEFT[0] and not p.root
+    return p.id in _LEFT[0]
 
 
 def machine_retired(name):

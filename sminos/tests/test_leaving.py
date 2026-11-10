@@ -50,6 +50,7 @@ STAYS = "2a000002-0000-4000-8000-0000000000a2"    # listed in every frame
 ROOTED = "2a000003-0000-4000-8000-0000000000a3"   # a folder of it here
 DECL = "2a000004-0000-4000-8000-0000000000a4"     # a declared location here
 HELD = "2a000005-0000-4000-8000-0000000000a5"     # a session of it here
+STALE = "2a000006-0000-4000-8000-0000000000a6"    # registered at a folder that is gone
 REMOTE_SID = "2b000001-0000-4000-8000-0000000000b1"
 DAY = uplink.LEAVE_AFTER_S
 
@@ -177,7 +178,7 @@ class Counting(unittest.TestCase):
         sminos.forget_caches()
         self.link.member_known = {p.id: p for p in sminos.known_projects()}
         known = uplink.hub_projects(CRED)
-        return self.link.leave_pass(known)
+        return self.link.leave_pass(known)[0]
 
     def run_for(self, seconds, step=30):
         """`seconds` of the clock, a scan's look every `step`; the ids that left."""
@@ -303,6 +304,50 @@ class Counting(unittest.TestCase):
         self.link.plane.members[GONE] = {REMOTE_SID}
         self.run_for(600)
         self.assertNotIn(GONE, self.link.leaving.counted)
+
+
+    def test_a_registered_root_that_is_gone_is_no_folder_here(self):
+        gone_root = os.path.join(self.base, "w", "was-here")
+        os.makedirs(gone_root)
+        with open(os.path.join(gone_root, ".smns"), "w") as f:
+            json.dump({"project": STALE, "name": "stale", "hub": {"org": ORG}}, f)
+        self.org(org_frame(GONE, STAYS, STALE))
+        sminos.project_path(sminos.make_project(STALE, "stale", "", gone_root, {"url": URL, "org": ORG}), "log")
+        self.scan()
+        self.org(org_frame(GONE, STAYS))
+        self.run_for(600)
+        self.assertNotIn(STALE, self.link.leaving.counted, "its folder is here: held")
+        shutil.rmtree(gone_root)
+        self.assertEqual(self.run_for(DAY + 60, step=60), [STALE], "GONE is listed")
+        # Its folder back: it comes back at the next look, the set written at once.
+        os.makedirs(gone_root)
+        with open(os.path.join(gone_root, ".smns"), "w") as f:
+            json.dump({"project": STALE, "name": "stale", "hub": {"org": ORG}}, f)
+        self.scan()
+        self.assertEqual(leaving_file()["left"], [])
+        sminos.forget_caches()
+        self.assertIn(STALE, uplink.hub_projects(CRED))
+
+    def test_a_frame_counts_from_when_it_was_taken_and_whether_or_not_it_is_kept(self):
+        self.org(org_frame(STAYS))
+        self.run_for(600)
+        # An incomplete frame the reader took 30 s ago, handled only now (a tick stalled):
+        # the 30 s counted since are taken back.
+        self.clock.add(30)
+        self.scan()
+        self.assertEqual(self.counted(), 630)
+        self.link.received = time.time() - 30
+        self.org(org_frame(STAYS, complete=False))
+        self.link.received = None
+        self.assertAlmostEqual(self.counted(), 600, delta=1)
+        # One whose write fails still stops the count: it is the connection's last frame.
+        self.org(org_frame(STAYS))
+        self.run_for(300)
+        before = self.counted()
+        with mock.patch.object(uplink.sminos, "write_json", side_effect=OSError(28, "No space left on device")):
+            self.org(org_frame(STAYS, complete=False))
+        self.run_for(3 * DAY, step=60)
+        self.assertEqual(self.counted(), before)
 
 
 class Wire(unittest.TestCase):

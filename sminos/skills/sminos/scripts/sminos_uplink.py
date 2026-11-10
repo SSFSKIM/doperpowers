@@ -503,13 +503,16 @@ class Leaving:
     its first frame), under a frame that is incomplete or says nothing of
     `complete`, and over any gap between two looks longer than
     LEAVE_STEP_MAX (a machine asleep, a loop stalled: time the uplink did
-    not see is not counted). A frame that lists the project sets it to
-    zero and takes it out of the kept set; at LEAVE_AFTER_S it enters the
-    set, which hub_projects and sminos.org_scope read (sminos.has_left).
-    Both live in daemon/leaving.json, so they survive a restart: written
-    at a frame that changed them, at a leaving, at the connection's end,
-    and every LEAVE_SAVE_EVERY while a count runs; a write lost to a crash
-    loses counted time, never adds it."""
+    not see is not counted). A frame's time is when the reader took it, not
+    when it was handled, and a connection's end counts nothing past the
+    last look. A frame that lists the project sets it to zero and takes it
+    out of the kept set; at LEAVE_AFTER_S it enters the set, which
+    hub_projects and sminos.org_scope read (sminos.has_left), and one that
+    left and has a folder or a session here again leaves the set. Both live
+    in daemon/leaving.json, so they survive a restart: written durably at
+    each change to the set or by a frame, and every LEAVE_SAVE_EVERY while a
+    count runs; a write lost to a crash loses counted time, never adds
+    it."""
 
     def __init__(self, clock=None):
         self.clock = clock
@@ -520,37 +523,40 @@ class Leaving:
         self.complete = False     # whether that frame said `complete: true`
         self.eligible = set()     # the projects the last scan found may leave (Link.may_leave)
         self.counting = set()     # those whose count runs now
-        self.since = None         # when the counts were last advanced (the clock's), None while none runs
+        self.since = None         # up to when the counts were advanced (the clock's), None while none runs
         self.dirty = False
         self.saved = self.now()
 
     def now(self):
         return (self.clock or leave_clock)()
 
-    def advance(self):
-        """The time since the last look added to every running count."""
-        now = self.now()
+    def advance(self, at=None):
+        """The time up to `at` (now by default) added to every running
+        count. An `at` before the last advance takes back what was added past
+        it: a frame taken by the reader at `at` ended the old state there."""
+        at = self.now() if at is None else at
         if self.since is not None and self.counting:
-            step = min(max(now - self.since, 0.0), LEAVE_STEP_MAX)
-            if step > 0:
+            step = min(at - self.since, LEAVE_STEP_MAX)
+            if step != 0:
                 for pid in self.counting:
-                    self.counted[pid] = self.counted.get(pid, 0.0) + step
+                    self.counted[pid] = max(self.counted.get(pid, 0.0) + step, 0.0)
                 self.dirty = True
-        self.since = now
+        self.since = at
 
     def recount(self):
         self.counting = self.eligible - self.listed if self.complete and self.listed is not None else set()
 
-    def frame(self, listed, complete):
-        """This connection's org frame: the time before it counted under the
-        one before, each project it lists at zero and out of the set."""
-        self.advance()
+    def frame(self, listed, complete, ago=0.0):
+        """This connection's org frame, taken by the reader `ago` seconds
+        before now: the time before it counted under the one before, each
+        project it lists at zero and out of the set."""
+        self.advance(self.now() - max(ago, 0.0))
         for pid in listed:
             if self.counted.pop(pid, None) is not None or pid in self.left:
                 self.left.discard(pid)
                 self.dirty = True
         self.listed, self.complete = set(listed), complete is True
-        self.recount()
+        self.recount()   # from `at` on, under this frame
         if self.dirty:
             self.save()
 
@@ -558,11 +564,15 @@ class Leaving:
         """A scan's look: `eligible` the projects that may leave now, and
         `stays(pid)` whether a project that left, or has a count, is one the
         rule no longer reaches (a folder or a session of it here now): it
-        comes back, its count dropped. The projects that left at this look."""
+        comes back, its count dropped. (the ids that left at this look, the
+        ids that came back)."""
         self.advance()
         self.eligible = set(eligible)
+        back = []
         for pid in sorted((self.left | set(self.counted)) - self.eligible):
             if stays(pid):
+                if pid in self.left:
+                    back.append(pid)
                 self.left.discard(pid)
                 self.counted.pop(pid, None)
                 self.dirty = True
@@ -572,13 +582,12 @@ class Leaving:
             self.left.add(pid)
             self.counted.pop(pid, None)
         self.counting -= set(gone)
-        if gone or (self.dirty and self.now() - self.saved >= LEAVE_SAVE_EVERY):
+        if gone or back or (self.dirty and self.now() - self.saved >= LEAVE_SAVE_EVERY):
             self.save()
-        return gone
+        return gone, back
 
     def ended(self):
-        """The connection's end: the counts advanced to it, then still."""
-        self.advance()
+        """The connection's end: the counts still from the last look on."""
         self.listed, self.complete, self.counting, self.since = None, False, set(), None
         if self.dirty:
             self.save()
@@ -1287,10 +1296,15 @@ class Link:
         directory synced; any failure sends none), `locations-kept` naming
         its `gen`,
         on this connection's lane, in order with the frames before it (§D):
-        the endpoint releases what waits on that gen. Then the frame is
-        this connection's last for the leaving counts (Leaving.frame): what
-        it lists is at zero, and whether it is complete decides whether the
-        counts of what it lacks run."""
+        the endpoint releases what waits on that gen. First, a frame with
+        its projects and machines is this connection's last for the leaving
+        counts (Leaving.frame), whether or not it can be kept: what it lists
+        is at zero, and whether it is complete decides whether the counts of
+        what it lacks run."""
+        if isinstance(frame.get("projects"), list) and isinstance(frame.get("machines"), list):
+            ago = time.time() - self.received if self.received is not None else 0.0
+            self.leaving.frame({p["id"] for p in frame["projects"] if isinstance(p, dict)
+                                and isinstance(p.get("id"), str)}, frame.get("complete"), ago)
         if not keep_org(frame, self.cred):
             log("an org frame without its projects and machines: passed by")
             return
@@ -1298,8 +1312,6 @@ class Link:
         if locations is not None:
             self.log_lane.send([{"t": "locations-kept", "gen": locations["gen"]}])
         self.next_scan = 0.0
-        self.leaving.frame({p["id"] for p in frame["projects"] if isinstance(p, dict) and isinstance(p.get("id"), str)},
-                           frame.get("complete"))
 
     def deliver_imports(self):
         """What the frames handled since the last call imported, delivered
@@ -1338,29 +1350,35 @@ class Link:
 
     def may_leave(self, p):
         """Whether the leaving rule reaches a project (§E.4): one followed
-        with no folder here — no root registered, no declared location, not
-        held (holds) — and no machine's own project, by the directory's kind
-        or by its id."""
-        return not p.root and not self.holds(p.id) and not sminos.declared_here(p.id) \
-            and p.id != sminos.machine_project_id(self.cred["org"], p.name) \
-            and (sminos.org_entry(p.id) or {}).get("kind") != "machine"
+        with no folder here — not held (holds), and no known checkout as it
+        is now (sminos_policy.known_checkouts: a registered root or a
+        declared location that still resolves to it, a directory a session
+        the plane read joined from here), whatever the project was open on
+        this stream or not — and no machine's own project, by the
+        directory's kind or by its id."""
+        return not self.holds(p.id) and p.id != sminos.machine_project_id(self.cred["org"], p.name) \
+            and (sminos.org_entry(p.id) or {}).get("kind") != "machine" \
+            and not policy.known_checkouts(p, self.plane.here.get(p.id) or {})
 
     def leave_pass(self, known):
         """The scan's look at the leaving counts (Leaving.scan), over the hub
         projects `known` lists and the projects known here as last listed
         (members): one that left and is held or has a folder here now comes
-        back. The ids that left at this look, each said in daemon.log."""
+        back. (the ids that left at this look, those that came back), each
+        said in daemon.log."""
         every = self.member_known
 
         def stays(pid):
             p = every.get(pid)
             return p is not None and not self.may_leave(p)
 
-        gone = self.leaving.scan([pid for pid, p in known.items() if self.may_leave(p)], stays)
+        gone, back = self.leaving.scan([pid for pid, p in known.items() if self.may_leave(p)], stays)
         for pid in gone:
             log("%s has left this machine: complete directories lacked it for %d s of connected time (its log stays; "
                 "a directory that lists it follows it again)" % (known[pid].name, LEAVE_AFTER_S))
-        return gone
+        for pid in back:
+            log("%s is followed again: it has a folder or a session here" % every[pid].name)
+        return gone, back
 
     def draw_machine(self, hl):
         """The project's `machine` presence (HubLog.presence), its checkouts
@@ -2045,8 +2063,11 @@ class Link:
                 self.sync_policy()
                 register_own(self.cred)
                 known = hub_projects(self.cred)
-                for pid in self.leave_pass(known):
-                    del known[pid]
+                left, back = self.leave_pass(known)
+                if back:
+                    known = hub_projects(self.cred)   # out of the set now: opened at this scan
+                for pid in left:
+                    known.pop(pid, None)
                 gone = sorted(self.opened - set(known))
                 if gone:
                     # The org's directory retired it (a revoked machine's
