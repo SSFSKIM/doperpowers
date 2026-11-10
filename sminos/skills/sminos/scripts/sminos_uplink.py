@@ -525,7 +525,8 @@ class Leaving:
         self.counting = set()     # those whose count runs now
         self.since = None         # up to when the counts were advanced (the clock's), None while none runs
         self.dirty = False
-        self.owed = False         # a write something waits on (a frame's ack) failed: tried at every scan
+        self.owed = False         # a write something waits on failed: tried again at every scan until one is kept
+        self.unsaid = set()       # departures and returns made since the last kept write, (pid, "gone"|"back")
         self.saved = self.now()
 
     def now(self):
@@ -545,7 +546,7 @@ class Leaving:
         self.since = at
 
     def recount(self):
-        self.counting = self.eligible - self.listed if self.complete and self.listed is not None else set()
+        self.counting = self.eligible - self.listed - self.left if self.complete and self.listed is not None else set()
 
     def frame(self, listed, complete, ago=0.0):
         """This connection's org frame, taken by the reader `ago` seconds
@@ -569,8 +570,11 @@ class Leaving:
         now, and `stays(pid)` whether a project that left, or has a count, is
         one the rule no longer reaches (a folder or a session of it here
         now): it comes back, its count dropped. (the ids that left at this
-        look, the ids that came back), each only once the set is kept: a
-        write that fails takes them back, for the next look to try again."""
+        look, the ids that came back), each only once a write has kept it:
+        memory is the truth, and a write that fails (before its rename or
+        after it, the directory's sync) is owed and tried again at each look,
+        what it carries reported by the first look whose write succeeds.
+        Whatever the file held meanwhile, that write makes it memory's."""
         self.advance(at)
         self.eligible = set(eligible)
         back = []
@@ -587,16 +591,14 @@ class Leaving:
             self.left.add(pid)
             self.counted.pop(pid, None)
         self.counting -= set(gone)
-        if gone or back or self.owed or (self.dirty and self.now() - self.saved >= LEAVE_SAVE_EVERY):
-            if not self.save():
-                for pid in gone:
-                    self.left.discard(pid)
-                    self.counted[pid] = float(LEAVE_AFTER_S)
-                self.left |= set(back)
-                self.recount()
+        self.unsaid |= {(pid, "gone") for pid in gone} | {(pid, "back") for pid in back}
+        if self.unsaid or self.owed or (self.dirty and self.now() - self.saved >= LEAVE_SAVE_EVERY):
+            self.owed = not self.save()
+            if self.owed:
                 return [], []
-            self.owed = False
-        return gone, back
+        said, self.unsaid = self.unsaid, set()
+        return (sorted(pid for pid, what in said if what == "gone" and pid in self.left),
+                sorted(pid for pid, what in said if what == "back" and pid not in self.left))
 
     def ended(self):
         """The connection's end: the counts still from the last look on."""
@@ -1421,9 +1423,10 @@ class Link:
             self.ack_owed = None
         for pid in gone:
             log("%s has left this machine: complete directories lacked it for %d s of connected time (its log stays; "
-                "a directory that lists it follows it again)" % (known[pid].name, LEAVE_AFTER_S))
+                "a directory that lists it follows it again)"
+                % (getattr(known.get(pid) or every.get(pid), "name", pid), LEAVE_AFTER_S))
         for pid in back:
-            log("%s is followed again: it has a folder or a session here" % every[pid].name)
+            log("%s is followed again: it has a folder or a session here" % getattr(every.get(pid), "name", pid))
         return gone, back
 
     def draw_machine(self, hl):

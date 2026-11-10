@@ -400,6 +400,31 @@ class Counting(unittest.TestCase):
         self.assertEqual(acks(), [{"t": "locations-kept", "gen": 7}], "acknowledged once kept")
         self.assertEqual(leaving_file()["left"], [])
 
+    def test_a_write_that_fails_after_its_rename_converges_and_is_reported_once_kept(self):
+        """The directory's sync fails after the rename published the file:
+        memory stays the truth, the file does not swing between scans, and
+        the departure is reported by the first look whose write succeeds."""
+        self.org(org_frame(STAYS))
+        self.run_for(DAY - 60, step=60)
+        real = sminos.write_json
+
+        def published_then_fails(path, *a, **k):
+            real(path, *a, **k)
+            if path == sminos.leaving_path():
+                raise OSError(5, "Input/output error")   # the directory's fsync, after os.replace
+        files = []
+        with mock.patch.object(uplink.sminos, "write_json", side_effect=published_then_fails):
+            for _ in range(6):
+                self.clock.add(60)
+                self.assertEqual(self.scan(), [], "not reported while no write is known kept")
+                files.append(leaving_file()["left"])
+        self.assertEqual(files, [[GONE]] * 6, "the file holds memory's set at every scan")
+        self.assertTrue(self.link.leaving.owed)
+        self.assertEqual(self.scan(), [GONE], "reported by the look whose write succeeds")
+        self.assertFalse(self.link.leaving.owed)
+        self.assertEqual(self.scan(), [], "once")
+        self.assertEqual(leaving_file()["left"], [GONE])
+
     def test_a_folder_that_may_not_be_read_is_a_folder(self):
         protected = os.path.join(self.base, "w", "Documents-like")
         os.makedirs(protected)
