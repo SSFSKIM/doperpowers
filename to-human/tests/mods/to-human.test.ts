@@ -877,7 +877,7 @@ describe('rows', () => {
     await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'm1', props: { text: '<message>Asked.</message>', isFirstOfReply: true } })
     const band = await $.ui.mount({
       plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
-      props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
+      props: { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
     })
     const texts = (await band.findAll({ type: 'Text' })).map((text) => text.text)
     expect(texts[0]).toBe('1 open question')
@@ -1187,7 +1187,7 @@ describe('surfaces', () => {
     const mixed = await message('m2', '<message>Two.</message>\nNotes.')
     const band = await $.ui.mount({
       plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
-      props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
+      props: { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
     })
     const marginTop = async (ui: { drawn: () => Promise<unknown> }) => ((await ui.drawn()) as { props?: { marginTop?: number } }).props?.marginTop
     expect(await marginTop(marked)).toBe(1)
@@ -1211,7 +1211,7 @@ describe('surfaces', () => {
     const band = await $.ui.mount({
       plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt',
       props: {
-        hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80,
+        hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80,
         scroll: { offset: 0, bodyRows: 5 }, view: {},
       },
     })
@@ -1385,7 +1385,7 @@ describe('the message tool', () => {
     const call = await callRow($, 'toolu_m1', { input: { text: 'Approve the **codesign** prompt now.' }, output: 'sent' })
     const band = await $.ui.mount({
       plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
-      props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
+      props: { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
     })
     await band.press({ key: 'to-human-mode' })
     expect(await band.find({ type: 'Button', text: 'report only' })).toBeDefined()
@@ -1494,7 +1494,7 @@ describe('the message tool', () => {
     await madeUpKept($, 'x1')
     const band = await $.ui.mount({
       plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
-      props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
+      props: { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
     })
     await band.press({ key: 'to-human-mode' })
     expect(await band.find({ type: 'Button', text: 'report only' })).toBeDefined()
