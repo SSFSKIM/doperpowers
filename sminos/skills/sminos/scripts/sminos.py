@@ -1988,18 +1988,32 @@ def seat_cwd(seat, fresh=False):
     return launch_cwd(sid, fallback=cwd, fresh=fresh) if sid and cwd else cwd
 
 
-def write_json(path, data, mode=0o600):
-    """Atomic replace: a reader sees the old file or the new one, never half."""
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
+def write_json(path, data, mode=0o600, durable=False):
+    """Atomic replace: a reader sees the old file or the new one, never half.
+    `durable`: the file's bytes synced before the rename and its directory
+    after it, so a write that returns survives a crash or a power loss (for
+    a write something outside the machine is told of); any step's failure
+    raises."""
+    parent = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".tmp-")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, ensure_ascii=False)
             f.write("\n")
+            if durable:
+                f.flush()
+                os.fsync(f.fileno())
         os.chmod(tmp, mode)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+    if durable:
+        dfd = os.open(parent or ".", os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
 
 
 def kept_root(project, held):
@@ -2474,22 +2488,28 @@ _LAST = {}   # session → last_project's answer, per cache generation
 
 
 def last_project(session):
-    """The project known here whose log holds `session`'s latest own
-    membership event, of this machine, read rather than told — joined, or
-    retired other than by a move (a session that ended there and is resumed
-    rejoins it) — or None. A `moved` retirement points at its destination,
-    whose `joined` comes later. Where a session is in while the machine's
-    stored statements are not known yet (_session_project)."""
+    """The project known here that `session`'s latest own membership event,
+    of this machine, puts it in, read rather than told: the project of a
+    `joined`, or of a retirement other than by a move (a session that ended
+    there and is resumed rejoins it); for a `moved` retirement, the project
+    it names, every move recording its destination (retire_moved, `join`'s
+    move to none: "", so None), since a move whose destination's `joined`
+    was never written (an interrupted daemon, a failed join) is still that
+    move. None for none. Where a session is in while the machine's stored
+    statements are not known yet (_session_project)."""
     if session not in _LAST:
         best, at = None, ""
         for path in glob.glob(os.path.join(projects_root(), "*", "project.json")):
             p = known_project(os.path.basename(os.path.dirname(path)))
             last = next((e for e in reversed(_own_events(p, session)) if e["kind"] in MEMBERSHIP), None) \
                 if p is not None else None
-            if last is not None and not (last["kind"] == "retired" and last.get("reason") == "moved") \
-                    and str(last.get("ts") or "") >= at:
-                best, at = p, str(last.get("ts") or "")
-        _LAST[session] = best
+            if last is not None and str(last.get("ts") or "") >= at:
+                best, at = (p, last), str(last.get("ts") or "")
+        if best is not None and best[1]["kind"] == "retired" and best[1].get("reason") == "moved":
+            dest = str(best[1].get("project") or "")
+            _LAST[session] = known_project(dest) if dest and valid_name(dest) else None
+        else:
+            _LAST[session] = best[0] if best is not None else None
     return _LAST[session]
 
 

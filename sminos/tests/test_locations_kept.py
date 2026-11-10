@@ -52,6 +52,7 @@ CRED = {"org": ORG, "hub": URL, "machine": MACHINE, "key": None}
 MINTED = "11111111-1111-4111-8111-111111111111"
 S1 = "6c000001-0000-4000-8000-0000000000c1"
 S2 = "6c000002-0000-4000-8000-0000000000c2"
+S3 = "6c000003-0000-4000-8000-0000000000c3"
 PROCS = []
 
 
@@ -180,6 +181,13 @@ class Keeping(unittest.TestCase):
         self.assertEqual(sminos.resolve_project(path).id, MINTED, "the new anchor, at once")
 
 
+    def test_d_a_write_that_does_not_reach_the_disk_is_not_acknowledged(self):
+        with mock.patch.object(uplink.sminos.os, "fsync", side_effect=OSError(5, "Input/output error")):
+            self.assertEqual(self.org(org_frame([], gen=20)), [], "no ack for a write not known durable")
+        self.assertEqual(self.org(org_frame([], gen=21)), [{"t": "locations-kept", "gen": 21}])
+        self.assertEqual(org_file()["locations"], {"gen": 21, "at": []})
+
+
 class Wire(unittest.TestCase):
     """The real uplink against the endpoint stand-in."""
 
@@ -229,23 +237,25 @@ class Moves(unittest.TestCase):
         cls.own = sminos.machine_project_id(ORG, MACHINE)
         cls.procs = {}
 
-    def session(self, name, sid):
-        """A running session in the plain folder: its engine record (a
-        `sleep` as its process) and its transcript; again for a resume."""
+    def session(self, name, sid, cwd=None):
+        """A running session in the plain folder (or `cwd`): its engine
+        record (a `sleep` as its process) and its transcript; again for a
+        resume."""
+        cwd = cwd or self.plain
         p = subprocess.Popen(["sleep", "600"])
         PROCS.append(p)
         self.procs[sid] = p
         home = os.environ["HOME"]
         with open(os.path.join(home, ".claude", "sessions", name + ".json"), "w") as f:
             json.dump({"pid": p.pid, "sessionId": sid, "name": name, "nameSource": "user", "kind": "interactive",
-                       "status": "idle", "cwd": self.plain}, f)
+                       "status": "idle", "cwd": cwd}, f)
         tx = os.path.join(home, ".claude", "projects", "p-" + sid, sid + ".jsonl")
         if os.path.exists(tx):
             return
         os.makedirs(os.path.dirname(tx))
         with open(tx, "w") as f:
             f.write(json.dumps({"type": "user", "uuid": sid[:8] + "-u1", "isSidechain": False, "sessionId": sid,
-                                "cwd": self.plain, "origin": {"kind": "human"},
+                                "cwd": cwd, "origin": {"kind": "human"},
                                 "message": {"role": "user", "content": "go"}}) + "\n")
 
     @staticmethod
@@ -334,6 +344,31 @@ class Moves(unittest.TestCase):
         self.frame(at, gen=3)
         self.tick()
         self.assertEqual(self.membership(S1), ([MINTED], 1))
+
+    def test_y_an_interrupted_move_is_still_that_move(self):
+        """A move whose destination's `joined` was never written (a daemon
+        stopped between the two writes), then the org file gone under a
+        welcome that promises locations: the session is in the move's
+        destination, and the frame moves it no more."""
+        other = folder(self.base, "other")
+        at = [minted(self.plain, MINTED)]
+        self.frame(at, gen=4)
+        self.session("three", S3, other)
+        self.tick()
+        self.assertEqual(self.membership(S3), ([self.own], 0))
+        at = at + [minted(other, MINTED)]
+        self.frame(at, gen=5)
+        sminos.retire_moved(sminos.own_machine_project(), S3, sminos.known_project(MINTED))   # and nothing more
+        self.assertEqual(self.membership(S3), ([], 1), "retired from the machine's project, joined nowhere")
+        os.remove(sminos.org_path())
+        self.welcome(["access", "locations", "reach", "record"])
+        self.tick()
+        self.assertTrue(sminos.locations_unknown())
+        self.assertEqual(self.membership(S3), ([MINTED], 1), "joined where the move was going")
+        self.frame(at, gen=6)
+        self.tick()
+        self.tick()
+        self.assertEqual(self.membership(S3), ([MINTED], 1))
 
     def test_z_beside_an_endpoint_listing_no_such_capability_nothing_is_held(self):
         self.welcome(["access", "reach", "record"])

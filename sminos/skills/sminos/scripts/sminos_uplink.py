@@ -464,7 +464,9 @@ def keep_org(frame, cred):
         locations = held_locations(path)
     if locations is not None:
         org["locations"] = locations
-    sminos.write_json(path, org)
+    # Durable before on_org acknowledges it: the endpoint releases a person's
+    # act on the ack, so a crash must not take back what it was told is kept.
+    sminos.write_json(path, org, durable=True)
     hub = {"url": cred["hub"], "org": cred["org"]}
     for p in projects:
         if not p["retired"]:
@@ -1166,7 +1168,9 @@ class Link:
         """The org's directory: kept, every project of it registered, and
         the projects looked over at once — a new one is followed, a retired
         one leaves (tick). A frame carrying `locations` is acknowledged once
-        the file holding them is written, `locations-kept` naming its `gen`,
+        the file holding them is written durably (synced, renamed, its
+        directory synced; any failure sends none), `locations-kept` naming
+        its `gen`,
         on this connection's lane, in order with the frames before it (§D):
         the endpoint releases what waits on that gen."""
         if not keep_org(frame, self.cred):
