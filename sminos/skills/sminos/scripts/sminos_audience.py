@@ -170,6 +170,19 @@ def _kept_word(capability):
     return not isinstance(caps, list) or capability in caps
 
 
+def advertised(capability):
+    """Whether the last welcome kept here listed `capability`, read the
+    other way round from _kept_word: a word not known (no file, one that
+    cannot be read, or one holding no welcome's capabilities) is not
+    advertised, for a capability whose absence leaves things as they were."""
+    try:
+        d = _read_kept()
+    except StreamUnknown:
+        return False
+    caps = None if d is None else d.get("capabilities")
+    return isinstance(caps, list) and capability in caps
+
+
 def widening_through_app():
     """Whether widening a session's reach here is the app's alone, so the
     CLI refuses it ("use MAWS") from a terminal too and keeps narrowing (P5

@@ -1191,6 +1191,24 @@ def stated_here():
     return d["locations"] if d else None
 
 
+_UNKNOWN = []   # locations_unknown's answer, per cache generation
+
+
+def locations_unknown():
+    """Whether this machine's stored statements are not known yet (the
+    registry's constraint 4, §E.3): it is enrolled, the last welcome its
+    endpoint gave listed `locations` (kept in daemon/audiences.json at every
+    welcome), and the kept org file holds no `locations` — no frame since
+    the upgrade, or the file gone. Files alone would then decide what the
+    statements may contradict a moment later, so a session keeps the
+    project it is recorded in (_session_project). Beside an endpoint that
+    lists no such capability, or none known, this is never so."""
+    if not _UNKNOWN:
+        _UNKNOWN.append(enrollment() is not None and stated_here() is None
+                        and sibling_module("sminos_audience").advertised("locations"))
+    return _UNKNOWN[0]
+
+
 class Declared(NamedTuple):
     path: str       # canonical, as MAWS writes it
     project: str    # the rule's answer as MAWS holds it
@@ -2422,8 +2440,11 @@ def session_project(session, launch_cwd, fresh=False):
     (resolve_project; `fresh`: as it is now). A launch directory this
     process may not read (read_refused) tells nothing: the session is in the
     project its membership is recorded in (recorded_project), else the one
-    the registrations tell for the directory, each a Guessed. None for a
-    session in no project, or in one nothing tells."""
+    the registrations tell for the directory, each a Guessed. So too while
+    the machine's stored statements are not known yet (locations_unknown):
+    a session recorded in a project other than the one its directory's
+    files give stays in it, told. None for a session in no project, or in
+    one nothing tells."""
     project = _session_project(session, launch_cwd, fresh)
     return None if project is UNREAD else project
 
@@ -2439,6 +2460,13 @@ def _session_project(session, launch_cwd, fresh=False):
     project = _resolve(launch_cwd, fresh)
     if session and (project is UNREAD or guessed(project)):
         project = recorded_project(session) or project
+    elif session and locations_unknown():
+        # Files alone answered while the statements are not known yet: a
+        # session recorded elsewhere stays there (told, so nothing moves it)
+        # until a frame's `locations` decide; one recorded nowhere joins here.
+        held = recorded_project(session)
+        if held is not None and (project is None or held.id != project.id):
+            project = held
     return project
 
 
@@ -8731,6 +8759,7 @@ def forget_caches():
     _VIEWS.clear()
     _ENROLLED.clear()
     _ORG_DIR.clear()
+    _UNKNOWN.clear()
     _SEAT_PIDS.clear()
     _ROOTS.clear()
     _RECORDED.clear()
