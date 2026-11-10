@@ -4786,6 +4786,14 @@ else
   fail "the rule beyond the vectors: worktrees with no statement, separate git dirs, submodules, an empty locations (test_project_rule.py)"
   sed 's/^/    /' "$TEST_ROOT/project-rule.out"
 fi
+# `project init` and `show` beside a stored statement (§E.5): init writes the id in effect and says the file does
+# not decide; show names a .smns the statement overrides, both ids; a plain folder is `maws project add`'s.
+if python3 -B "$SCRIPT_DIR/test_project_words.py" > "$TEST_ROOT/project-words.out" 2>&1; then
+  pass "project init and show beside a stored statement: the id in effect, the overridden file, a plain folder (test_project_words.py)"
+else
+  fail "project init and show beside a stored statement: the id in effect, the overridden file, a plain folder (test_project_words.py)"
+  sed 's/^/    /' "$TEST_ROOT/project-words.out"
+fi
 # Declared locations (§E.2): known checkouts a spawn is admitted into and the presence lists; a project held,
 # registered rooted there with the hub, but where its entry says `hub: false` or it is the machine's own.
 if python3 -B "$SCRIPT_DIR/test_declared.py" > "$TEST_ROOT/declared.out" 2>&1; then
