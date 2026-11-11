@@ -409,13 +409,25 @@ not the user's. The judge grants only when the block misread facts the
 evidence shows, or the user's own words authorize the exact action; two
 bars no authorization clears (sending sensitive material out, reaching a
 deny rule's effect); when in doubt it upholds and says what the user would
-need to say. A main-loop grant is run by the appeal itself through
-`$.tool.call` — the plugin's own call, which the engine runs in the
-session's loop and, in auto mode, past the classifier by its plugin-origin
-fast path, the deny and ask rules still applying — and the result is the
-appeal's; the model does not re-run it. A subagent's grant leaves a pass
-instead, since a plugin's call would run in the main loop's shell and
-directory, not the subagent's: the identical call (for Bash, its
+need to say. Every grant leaves a pass. A main-loop grant is then run by the
+appeal itself through `$.tool.call` — the plugin's own call, which the
+engine runs in the session's loop — and the result is the appeal's; the
+model does not re-run it. That call still meets the permission check, and
+one left at an ask there is never answered: on 2.1.321 and 2.1.322 it waits
+until the person interrupts (69 and 15 minutes, 2026-11-11; reproduced
+headless, where a relayed Bash outlasted a 180 s timeout and ran in 2 s
+once a hook allowed it), and older engines put it to the classifier, which
+refused long conversations outright. So the appeal first asks `$.tool.check`, which runs nothing and opens no dialog,
+and relays only when nobody would be asked: core allows the call, or its
+plain ask meets the grant's pass, which the relay spends (logged as
+`relayed`, not `used`) and which is withdrawn after the relay either way so
+the call cannot run twice; a relay its pass no longer covers when its own
+check comes (a prompt or an answer arrived, or the directory moved, after
+the ruling) is refused there rather than left at the ask. Any other verdict (a rule's or a setting's ask,
+a deny) or a check that fails leaves the call to the model's re-run, where a
+dialog is the person's to answer (`no-relay` with the reason). A subagent's
+grant is never relayed, since a plugin's call would run in the main loop's
+shell and directory, not the subagent's; its pass covers the identical call (for Bash, its
 `description` aside) in the same loop and directory, within 10 minutes,
 once, and for Bash before any other Bash call in that loop. The
 `tool.check` hook applies it only over core's plain `ask` — no `rule`,
@@ -435,9 +447,10 @@ call's input before the call runs, and answers a refusal it scrubbed or
 noted something on as a `{ deny }`, which the mod reads a block out of as it
 reads an error result, putting its notice on the deny's text. A pass is keyed
 on the input as this mod saw it, the handle form, while the permission check
-sees the restored bytes, so a non-relayed grant on a call that carries a
-handle leaves no pass and says so in its ruling (`no-pass` in the log): the
-re-run is checked as a new call. One appeal per block; a judge call that fails leaves the appeal open
+sees the restored bytes, so a grant on a call that carries a handle leaves
+no pass: a main-loop one is relayed only where core allows the call
+outright, and otherwise its ruling says so (`no-pass` or `no-relay` in the
+log): the re-run is checked as a new call. One appeal per block; a judge call that fails leaves the appeal open
 once more. Every event is logged to
 `~/.claude/appeals/<session-id>.jsonl` (seeded from the file at start, the
 writes chained), and `/appeals` prints the last 30 days — counts, the grants,
