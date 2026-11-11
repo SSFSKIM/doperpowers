@@ -231,12 +231,15 @@ export function carriesHandle(input: unknown): boolean {
 }
 
 /**
- * Records the ruling; a grant that is not relayed leaves the pass, for the
- * ledger's epoch now, unless its re-run could not match it (carriesHandle).
+ * Records the ruling; a grant leaves the pass, for the ledger's epoch now,
+ * unless its re-run could not match it (carriesHandle). A relayed grant runs
+ * on it too: a plugin's call meets the classifier wherever the user has
+ * `autoMode` deny rules, and inside the appeal its verdict can stall the
+ * session on a dialog nobody sees, so the pass answers core's ask first.
  */
 export function applyRuling(ledger: Ledger, block: Block, verdict: Verdict, now: number): void {
   block.ruling = verdict
-  if (verdict === 'grant' && !canRelay(block) && !carriesHandle(block.input)) {
+  if (verdict === 'grant' && !carriesHandle(block.input)) {
     ledger.passes.set(passKey(block.agentId, block.tool, block.input), {
       block: block.id,
       expires: now + PASS_MS,
@@ -244,6 +247,55 @@ export function applyRuling(ledger: Ledger, block: Block, verdict: Verdict, now:
       ...(block.cwd !== undefined && { cwd: block.cwd }),
     })
   }
+}
+
+/** Withdraws the block's pass, if it is still there: a relayed call is not run again on it. */
+export function endPass(ledger: Ledger, block: Block): void {
+  const key = passKey(block.agentId, block.tool, block.input)
+  if (ledger.passes.get(key)?.block === block.id) {
+    ledger.passes.delete(key)
+  }
+}
+
+/** A permission verdict as far as a pass reads it (`tool.check`'s result). */
+export type CheckVerdict = { decision: string; reason?: string; rule?: string; hook?: string; setting?: string; plugin?: unknown; ceiling?: unknown; decider?: unknown }
+
+/**
+ * Whether a pass may answer this verdict: core's plain ask, with no rule,
+ * classic hook, setting, plugin, person or host behind it and no
+ * organization's ceiling over it. Engines before 2.1.307 marked the host's
+ * and a hook's person-only ask with `decider`, so any `decider` keeps it.
+ */
+export function passCovers(verdict: CheckVerdict): boolean {
+  return (
+    verdict.decision === 'ask' &&
+    verdict.rule === undefined &&
+    verdict.hook === undefined &&
+    verdict.setting === undefined &&
+    verdict.plugin === undefined &&
+    verdict.ceiling === undefined &&
+    !('decider' in verdict)
+  )
+}
+
+/**
+ * Why a granted call is not relayed, read from the permission check asked
+ * first (`$.tool.check`, which runs nothing and opens no dialog); undefined
+ * when the relay would run without anyone being asked: core allows it, or
+ * its plain ask meets the grant's pass.
+ */
+export function relayHeldBy(verdict: CheckVerdict, hasPass: boolean): string | undefined {
+  if (verdict.decision === 'allow' || (hasPass && passCovers(verdict))) {
+    return undefined
+  }
+  if (verdict.decision === 'deny') {
+    return `the permission check refuses it${verdict.reason === undefined ? '' : `: ${verdict.reason}`}`
+  }
+  if (passCovers(verdict)) {
+    return 'the permission check would put it to the classifier or a dialog, and a grant of a call carrying a secret handle leaves no pass to answer it'
+  }
+  const by = verdict.rule !== undefined ? `rule ${verdict.rule}` : verdict.hook !== undefined ? `the ${verdict.hook} hook` : verdict.setting !== undefined ? `setting ${verdict.setting}` : verdict.ceiling !== undefined ? "the organization's ceiling" : (verdict.reason ?? 'another decider')
+  return `the permission check would put it to the person (${by})`
 }
 
 /** A judge call that ended without a ruling: the message for the model. */
@@ -296,6 +348,10 @@ export type Relay =
   | { kind: 'ran'; text: string; isError: boolean; result?: unknown }
   | { kind: 'refused'; deny: string }
   | { kind: 'stale' }
+  /** Not run: the check asked first would put it to someone (relayHeldBy). */
+  | { kind: 'held'; why: string }
+  /** Not run: the check could not be asked; `hasPass`, the re-run has the grant's pass. */
+  | { kind: 'unchecked'; error: string; hasPass: boolean }
 
 /** What a grant that leaves no pass (carriesHandle) tells the model, and the log's reason. */
 export const NO_PASS =
@@ -313,6 +369,13 @@ export function rulingText(block: Block, verdict: Verdict, response: string, rel
   }
   if (relay.kind === 'stale') {
     return `Granted (block ${block.id}): ${response} The call was not run: a prompt or an answer arrived meanwhile. Run it again if it is still wanted.`
+  }
+  if (relay.kind === 'held') {
+    return `Granted (block ${block.id}): ${response} The call was not run for you: ${relay.why}. Run it again yourself if it is still wanted.`
+  }
+  if (relay.kind === 'unchecked') {
+    const next = relay.hasPass ? 'Run the identical call again; this grant covers that one call for the next 10 minutes.' : NO_PASS
+    return `Granted (block ${block.id}): ${response} The call was not run for you (the permission check failed: ${relay.error}). ${next}`
   }
   if (relay.kind === 'refused') {
     return `Granted (block ${block.id}): ${response} The call was then run for you, and the engine refused it: ${relay.deny}`

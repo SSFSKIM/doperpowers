@@ -10,6 +10,7 @@ import {
   SUGGEST_SYSTEM,
   TRUSTED_SOURCES,
   type Block,
+  type CheckVerdict,
   type EvidenceParts,
   type Ledger,
   type LogEvent,
@@ -22,14 +23,18 @@ import {
   bumpEpoch,
   canRelay,
   carriesHandle,
+  endPass,
   isAppealable,
   judgePrompt,
   logLine,
   newLedger,
   nonTextBlocks,
   parseRuling,
+  passCovers,
+  passKey,
   recordBlock,
   recordFailure,
+  relayHeldBy,
   reportText,
   rulingText,
   settingsEvidence,
@@ -80,12 +85,15 @@ let ledger: Ledger = newLedger()
 let log: { path: string; lines: string[]; writing: Promise<void> } | undefined
 /** The ask snapshot's answered count when last read: a write that grows it ends the passes. */
 let answered = 0
+/** The block whose grant the appeal is relaying now: its pass, spent by the relay, is logged as `relayed` or `no-relay`, not `used`. */
+let relaying: string | undefined
 
 /** Forgets them all; for tests, which share this module. */
 export function resetAppeal() {
   ledger = newLedger()
   log = undefined
   answered = 0
+  relaying = undefined
 }
 
 async function record($: EngineInterface, event: LogEvent) {
@@ -283,26 +291,59 @@ export async function appeal($: EngineInterface, e: { agentId?: string; block?: 
   }
   // A main-loop grant: the call runs now, by the plugin, in the session's
   // loop — the same shell and directory the judge read — and its result is
-  // the appeal's. A plugin's own call passes the classifier by the engine's
-  // plugin-origin fast path; the deny and ask rules still apply to it. After
-  // the log's await, the epoch once more: a prompt or an answer that arrived
-  // since the ruling leaves the call unrun.
+  // the appeal's. A plugin's call still meets the permission check, and with
+  // the user's autoMode deny rules the classifier; a verdict left to a
+  // decider inside this call can hold the session on a dialog the person
+  // never sees (69 minutes, until they interrupted). So the check is asked
+  // first, running nothing, and the call runs only where nobody would be
+  // asked: core allows it, or its plain ask meets the grant's pass. Anything
+  // else is the model's re-run, where a dialog is the person's to answer.
+  // After each await, the epoch once more: a prompt or an answer that
+  // arrived since the ruling leaves the call unrun.
+  const hasPass = ledger.passes.get(passKey(block.agentId, block.tool, block.input))?.block === block.id
   let relay: Relay
   if (ledger.epoch !== epoch) {
     relay = { kind: 'stale' }
   } else {
+    let held: string | undefined
+    let unchecked: string | undefined
     try {
-      // block.tool is whichever tool the classifier blocked: a name known only at run time.
-      const ran = await $.tool.call({ tool: block.tool, ...(block.input as Record<string, unknown>) } as ToolCallArgs)
-      relay = ran.deny !== undefined ? { kind: 'refused', deny: ran.deny } : { kind: 'ran', text: ran.text ?? '', isError: ran.isError === true, result: ran.result }
+      held = relayHeldBy((await $.tool.check({ tool: block.tool, input: block.input })) as CheckVerdict, hasPass)
     } catch (error) {
-      relay = { kind: 'refused', deny: message(error) }
+      unchecked = message(error)
+    }
+    if (unchecked !== undefined) {
+      relay = { kind: 'unchecked', error: unchecked, hasPass }
+    } else if (held !== undefined) {
+      relay = { kind: 'held', why: held }
+    } else if (ledger.epoch !== epoch) {
+      relay = { kind: 'stale' }
+    } else {
+      try {
+        // block.tool is whichever tool the classifier blocked: a name known only at run time.
+        relaying = block.id
+        const ran = await $.tool.call({ tool: block.tool, ...(block.input as Record<string, unknown>) } as ToolCallArgs)
+        relay = ran.deny !== undefined ? { kind: 'refused', deny: ran.deny } : { kind: 'ran', text: ran.text ?? '', isError: ran.isError === true, result: ran.result }
+      } catch (error) {
+        relay = { kind: 'refused', deny: message(error) }
+      } finally {
+        relaying = undefined
+      }
+      endPass(ledger, block)
     }
   }
   if (relay.kind === 'ran') {
     await record($, { event: 'relayed', block: block.id, isError: relay.isError, text: relay.text })
   } else {
-    await record($, { event: 'no-relay', block: block.id, reason: relay.kind === 'stale' ? 'a prompt or an answer arrived after the ruling' : relay.deny })
+    const reason =
+      relay.kind === 'stale'
+        ? 'a prompt or an answer arrived after the ruling'
+        : relay.kind === 'held'
+          ? `not run: ${relay.why}`
+          : relay.kind === 'unchecked'
+            ? `not run: the permission check failed: ${relay.error}`
+            : relay.deny
+    await record($, { event: 'no-relay', block: block.id, reason })
   }
   const text = rulingText(block, ruling.verdict, ruling.response, relay)
   // What the tool answered beyond text (an image) rides along as content blocks.
@@ -361,17 +402,7 @@ export function registerAppeal(on: On) {
   // session started on one still loads this plugin when a reload brings it.
   on('tool.check', { tool: /^/ }, async ($, e, next) => {
     const verdict = await next(e)
-    if (
-      verdict.decision !== 'ask' ||
-      verdict.rule !== undefined ||
-      verdict.hook !== undefined ||
-      verdict.setting !== undefined ||
-      verdict.plugin !== undefined ||
-      e.approver === 'host' ||
-      'decider' in verdict ||
-      e.ceiling !== undefined ||
-      typeof e.tool_use_id !== 'string'
-    ) {
+    if (!passCovers(verdict as CheckVerdict) || e.approver === 'host' || e.ceiling !== undefined || typeof e.tool_use_id !== 'string') {
       return verdict
     }
     const epoch = ledger.epoch
@@ -379,7 +410,9 @@ export function registerAppeal(on: On) {
     if (pass === undefined) {
       return verdict
     }
-    await record($, { event: 'used', block: pass.block })
+    if (pass.block !== relaying) {
+      await record($, { event: 'used', block: pass.block })
+    }
     // After the last await: a prompt or an answer that arrived meanwhile
     // leaves the call to the classifier (the pass is spent either way).
     return ledger.epoch === epoch ? { decision: 'allow', reason: `appeal ${pass.block} granted` } : verdict

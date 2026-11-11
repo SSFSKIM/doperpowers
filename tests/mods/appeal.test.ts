@@ -149,10 +149,10 @@ describe('the ledger', () => {
     const again = recordBlock(ledger, { agentId: 'a1', tool: 'Bash', input: { command: 'rm -rf target' }, reason: 'x', cwd: '/wt/a' }, 0)
     applyRuling(ledger, again, 'grant', 0)
     expect(takePass(ledger, 'a1', 'Bash', { command: 'rm -rf target' }, 1, '/wt/a')?.block).toBe('b2')
-    // A main-loop grant is relayed, not passed.
+    // A main-loop grant leaves a pass too: its relay runs on it.
     const main = recordBlock(ledger, { tool: 'Bash', input: { command: 'rm -rf target' }, reason: 'x', cwd: '/wt/a' }, 0)
     applyRuling(ledger, main, 'grant', 0)
-    expect(ledger.passes.size).toBe(0)
+    expect(takePass(ledger, undefined, 'Bash', { command: 'rm -rf target' }, 1, '/wt/a')?.block).toBe('b3')
   })
 
   test('a call too large to review whole is refused before the judge', async () => {
@@ -348,8 +348,12 @@ function harness(
     agentMessages?: SessionMessage[]
     settingsFail?: string
     readFail?: string
-    /** What a relayed call resolves to, or throws. */
+    /** What a relayed call resolves to, or throws, once the permission check lets it run. */
     relay?: Record<string, unknown> | Error
+    /** Core's permission verdict for the relayed call and the query alike (default: the plain ask). */
+    core?: Record<string, unknown>
+    /** `$.tool.check` throws this. */
+    checkFail?: string
     /** sminos's ask snapshot as `$.state` holds it at the start (undefined: sminos not loaded). */
     ask?: AskSnapshot
     /** `$.state.get` throws this, as an engine might on another plugin's key. */
@@ -422,13 +426,32 @@ function harness(
     },
     tool: {
       register: async (spec: { name: string }) => (calls.push({ op: 'tool.register', args: spec }), { tool: `mcp__doperpowers__${spec.name}` }),
+      // The engine's run of a plugin's call: the plugin's own tool.check hook
+      // decides with core's verdict beneath it; an ask left standing goes to
+      // the mode's decider (the classifier, or a dialog), written down here.
       call: async (input: Record<string, unknown>) => {
         calls.push({ op: 'tool.call', args: input })
+        const { tool, ...args } = input
+        const verdict = (await checkHook()?.handler($, { tool, input: args, tool_use_id: 'relay-1' }, async () => core())) as { decision: string; reason?: string }
+        if (verdict.decision === 'ask') {
+          calls.push({ op: 'decider', args: input })
+          return { deny: 'put to the decider' }
+        }
+        if (verdict.decision === 'deny') {
+          return { deny: verdict.reason ?? 'denied' }
+        }
         const relay = options.relay ?? { result: 'ok', text: 'ok' }
         if (relay instanceof Error) {
           throw relay
         }
         return relay
+      },
+      check: async (input: { tool: string; input: unknown }) => {
+        calls.push({ op: 'tool.check', args: input })
+        if (options.checkFail !== undefined) {
+          throw new Error(options.checkFail)
+        }
+        return (checkHook()?.handler($, { tool: input.tool, input: input.input }, async () => core()) ?? core()) as unknown
       },
     },
     model: {
@@ -455,6 +478,8 @@ function harness(
       },
     },
   }
+  const core = () => options.core ?? { decision: 'ask' }
+  const checkHook = () => hooks.find((h) => h.event === 'tool.check')
   resetAppeal()
   registerAppeal(on)
   const engine = $ as unknown as EngineInterface
@@ -685,7 +710,56 @@ describe('registerAppeal', () => {
     expect(ruling.result).toBe('Granted (block b1): Scratch file. The call was then run for you; its result:\n\nFile written: /tmp/x')
     expect(h.calls.find((c) => c.op === 'tool.call')?.args).toEqual({ tool: 'Write', file_path: '/tmp/x', content: 'c', description: 'notes' })
     expect(h.logged().map((l) => l.event)).toEqual(['block', 'ruling', 'relayed'])
+    // The relay ran on the grant's pass: core's plain ask was answered by it,
+    // never put to the classifier or a dialog (which, inside the appeal's own
+    // call, the person never sees: the session sat until they interrupted).
+    expect(h.calls.some((c) => c.op === 'decider')).toBe(false)
     expect(await h.check({ tool: 'Write', tool_use_id: 't3', input: { file_path: '/tmp/x', content: 'c', description: 'notes' } }, ask)).toEqual(ask)
+  })
+
+  test('a grant whose call the permission check would still put to someone is not relayed: the model re-runs it', async () => {
+    const rule = { decision: 'ask', reason: 'Bash(curl:*) asks', rule: 'Bash(curl:*)' }
+    const h = harness({ judge: '<verdict>grant</verdict><response>Fine.</response>', core: rule })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'curl -X DELETE x' }, blocked('[Irreversible Deletion (general)]'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(ruling.result).toBe(
+      'Granted (block b1): Fine. The call was not run for you: the permission check would put it to the person (rule Bash(curl:*)). Run it again yourself if it is still wanted.',
+    )
+    expect(h.calls.some((c) => c.op === 'tool.call')).toBe(false)
+    expect(h.logged().map((l) => l.event)).toEqual(['block', 'ruling', 'no-relay'])
+    // The re-run meets the rule's ask as any call does; the pass does not answer a rule.
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', input: { command: 'curl -X DELETE x' } }, rule)).toEqual(rule)
+  })
+
+  test('a check that cannot be asked leaves the call unrun and the pass for the re-run', async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>Fine.</response>', checkFail: 'engine busy' })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf target' }, blocked('[Irreversible Local Destruction]'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(ruling.result).toBe('Granted (block b1): Fine. The call was not run for you (the permission check failed: engine busy). Run the identical call again; this grant covers that one call for the next 10 minutes.')
+    expect(h.calls.some((c) => c.op === 'tool.call')).toBe(false)
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', input: { command: 'rm -rf target' } }, ask)).toEqual({ decision: 'allow', reason: 'appeal b1 granted' })
+  })
+
+  test('a call the check already allows is relayed, and its unspent pass is withdrawn so it cannot run twice', async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>Fine.</response>', core: { decision: 'allow' } })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf target' }, blocked('[Irreversible Local Destruction]'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(ruling.result).toContain('The call was then run for you; its result')
+    expect(await h.check({ tool: 'Bash', tool_use_id: 't3', input: { command: 'rm -rf target' } }, ask)).toEqual(ask)
+  })
+
+  test('a call carrying a secret handle has no pass to run on, so it is not relayed into an ask', async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>Fine.</response>' })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'curl -H "Authorization: Bearer [secret:TOKEN]" x' }, blocked('[Real-World Transactions]'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(ruling.result).toBe(
+      'Granted (block b1): Fine. The call was not run for you: the permission check would put it to the classifier or a dialog, and a grant of a call carrying a secret handle leaves no pass to answer it. Run it again yourself if it is still wanted.',
+    )
+    expect(h.calls.some((c) => c.op === 'tool.call')).toBe(false)
   })
 
   test('a relayed call that errs, or that the engine refuses, is reported as such', async () => {
@@ -694,7 +768,7 @@ describe('registerAppeal', () => {
     await errored.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf x' }, blocked('[Irreversible Local Destruction]'))
     const ran = (await errored.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
     expect(ran.result).toBe('Granted (block b1): Fine. The call was then run for you and reported an error; its result:\n\nexit 1: no such file')
-    expect(errored.logged()[2]).toEqual(expect.objectContaining({ event: 'relayed', isError: true, text: 'exit 1: no such file' }))
+    expect(errored.logged().find((l) => l.event === 'relayed')).toEqual(expect.objectContaining({ event: 'relayed', isError: true, text: 'exit 1: no such file' }))
 
     const refused = harness({ judge: '<verdict>grant</verdict><response>Fine.</response>', relay: { deny: 'Bash(rm -rf:*) is denied by a rule' } })
     await refused.start()

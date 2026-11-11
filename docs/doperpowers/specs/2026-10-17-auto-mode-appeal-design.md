@@ -339,7 +339,11 @@ runs in the session's loop — the same shell and directory the judge read —
 through the permission check (a deny rule or an ask rule still applies) and,
 in auto mode, past the classifier by its plugin-origin fast path (SPEC §26.7,
 fast path 3; off where the user has `autoMode.soft_deny`/`hard_deny` rules,
-in which case the classifier judges the relay too). The result, as the model
+in which case the classifier judges the relay too). Since 2026-11-11 the
+relay runs on the grant's pass and only where nobody would be asked: the
+appeal first asks `$.tool.check`, and relays when core allows the call or
+its plain ask meets the pass; otherwise the model re-runs it (see the
+decision log). The result, as the model
 would have read it, is the appeal's result (with any content the tool
 answered beyond text — an image — as content blocks beside it), and a
 `relayed` event is logged. No pass is left, so nothing of the pass's
@@ -792,6 +796,22 @@ Dependencies: the engine's `$.model.complete`, `$.session.messages`,
   bindings of the pass are moot for a call that runs at once in its own
   directory.
   Date/Author: 2026-10-17, the authoring session.
+- Decision: the relay runs on the grant's pass, and only where nobody would
+  be asked (2026-11-11). Every grant now leaves its pass; before relaying, the
+  appeal asks `$.tool.check` (which runs nothing and opens no dialog) and runs
+  the call only when core allows it or its plain ask meets that pass, which
+  the relay spends and which is withdrawn afterwards; anything else is left
+  to the model's re-run. Why: the plugin-origin fast path is off wherever the
+  user has `autoMode` deny rules, which this machine's settings have had
+  since 2026-10-25, so every relay met the classifier: of 11 main-loop relays
+  from 2026-11-01 to 11-11, 3 ran, 6 were refused as a conversation too long
+  for the classifier, and 2 (manim-master session 904e094e)
+  held the session 69 and 15 minutes on a verdict inside the appeal's own call
+  that the person never saw, until they interrupted. Rejected: a timeout on
+  the relay, since `$.tool.call` takes no signal and a call left running past
+  the appeal's answer could still delete; dropping the relay for the re-run,
+  which costs the model turn the relay was chosen to save.
+  Date/Author: 2026-11-11, codex-exhaustion-claude-fallback session.
 - Decision: the relay's review (`doperpowers:reviewer-medium`, 2026-10-17)
   — four findings, all taken: the epoch is re-checked after the ruling's log
   write, immediately before the relay; a result's non-text content rides
