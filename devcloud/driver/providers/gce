@@ -14,7 +14,9 @@ Its environment (the account's vars, and the driver's DEVCLOUD_SEED_FILE):
 
 It runs gcloud under its own CLOUDSDK_CONFIG ($HOME/.local/state/devcloud/gce/gcloud) with the seed
 activated there, so the Mac's own gcloud identity is never read or changed; the seed's key is read
-by gcloud from its path, never printed. A VM's id is the instance's numeric id, an image's its name."""
+by gcloud from its path, never printed. gcloud's file log is off there: it would keep every invocation's
+whole JSON answer (megabytes for a list), and every `vm ssh` lists. A VM's id is the instance's numeric
+id, an image's its name."""
 import datetime
 import fcntl
 import hashlib
@@ -96,7 +98,8 @@ class Gcloud:
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("CLOUDSDK_")}
         self.env.update(CLOUDSDK_CONFIG=str(config), CLOUDSDK_CORE_PROJECT=self.project,
                         CLOUDSDK_CORE_ACCOUNT=account, CLOUDSDK_CORE_DISABLE_PROMPTS="1",
-                        CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK="1")
+                        CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK="1",
+                        CLOUDSDK_CORE_DISABLE_FILE_LOGGING="1")
         self._activate(seed, hashlib.sha256(data).hexdigest())
 
     def _activate(self, seed, digest):
