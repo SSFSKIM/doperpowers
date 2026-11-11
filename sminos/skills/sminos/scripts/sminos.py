@@ -1970,13 +1970,15 @@ def _holding_projects(session):
     here whose log holds a writer file of `session` under this machine's
     name now or a former one that held it — its plain writer's or an
     audience stream's — in the order the projects directory lists them:
-    where recorded_project and last_project read its own events. Each log
-    directory is listed once a cache generation, as their answers are kept,
-    rather than every one of its files opened under every name for every
-    session a pass asks about (the MacBook's uplink, 2026-11-11: 26
-    sessions × 101 projects × 1.65 names a generation, nearly every open
-    failing). A file made since the listing is seen in the next
-    generation."""
+    where recorded_project reads its own events. Each log directory is
+    listed once a cache generation, as its answers are kept, rather than
+    every one of its files opened under every name for every session a pass
+    asks about (the MacBook's uplink, 2026-11-11: 26 sessions × 101
+    projects × 1.65 names a generation, nearly every open failing). A file
+    made since the listing is seen in the next generation, which is only as
+    stale as a Guessed may be: nothing joins, moves or retires a session on
+    one. last_project, whose answer a reconciliation acts on, never reads
+    through here."""
     if not _PROJECT_DIRS:
         try:
             _PROJECT_DIRS.append(os.listdir(projects_root()))
@@ -2648,12 +2650,17 @@ def last_project(session):
     move to none: "", so None), since a move whose destination's `joined`
     was never written (an interrupted daemon, a failed join) is still that
     move. None for none. Where a session is in while the machine's stored
-    statements are not known yet (_session_project)."""
+    statements are not known yet (_session_project), which a reconciliation
+    acts on: so each project's files are read as they are when it is asked,
+    never from a listing an earlier lookup of the generation took
+    (_holding_projects is recorded_project's alone). Every project's files
+    under every name, but only until the first frame's `locations`."""
     if session not in _LAST:
         best, at = None, ""
-        for p, listed in _holding_projects(session):
-            last = next((e for e in reversed(_own_events(p, session, listed=listed)) if e["kind"] in MEMBERSHIP),
-                        None)
+        for path in glob.glob(os.path.join(projects_root(), "*", "project.json")):
+            p = known_project(os.path.basename(os.path.dirname(path)))
+            last = next((e for e in reversed(_own_events(p, session)) if e["kind"] in MEMBERSHIP), None) \
+                if p is not None else None
             if last is not None and str(last.get("ts") or "") >= at:
                 best, at = (p, last), str(last.get("ts") or "")
         if best is not None and best[1]["kind"] == "retired" and best[1].get("reason") == "moved":

@@ -346,8 +346,7 @@ class Recorded(Machine):
             calls = Calls()
             with calls.counting():
                 for s in self.sessions:
-                    sminos.recorded_project(s)
-                    sminos.last_project(s)
+                    sminos.recorded_project(s)   # last_project reads as 1.46.0 did (below)
             self.assertEqual(calls.of("open", ok=False), [], "no open of a file that is not there")
             listed = collections.Counter(c[1] for c in calls.made if c[0] in ("listdir", "scandir"))
             self.assertTrue(logs <= set(listed), listed)
@@ -355,6 +354,34 @@ class Recorded(Machine):
                              "generation %d" % generation)
             self.assertEqual([c for c in calls.of("stat", ok=False) if c[1].endswith("streams.json")], [],
                              "no project's missing streams.json asked once per session")
+
+    def test_last_project_reads_the_files_as_they_are_when_asked(self):
+        """last_project decides membership while the statements are unknown
+        (_session_project takes it as the session's project, and a
+        reconciliation can move it there), so it never answers from a
+        listing another session's lookup took earlier in the generation: a
+        writer file made since is read."""
+        p3 = self.ps[3]
+        self.listings_taken()
+        self.write_lines(p3, "testhost/" + S5, [{"ts": "2026-11-01T00:30:00.000Z", "seq": 1, "kind": "joined",
+                                                 "session": S5}])
+        self.assertEqual(sminos.last_project(S5), old_last_project(S5))
+        self.assertEqual(sminos.last_project(S5).id, p3.id)
+
+    def test_last_project_reads_a_stream_made_since_another_lookup(self):
+        p1 = self.ps[1]
+        self.listings_taken()
+        stream = sminos.stream_writer("testhost/" + S5, ["mem-2"])
+        sminos.audience_module().keep_stream(p1, stream, ["mem-2"])
+        self.write_lines(p1, stream, [{"ts": "2026-11-01T00:31:00.000Z", "seq": 1, "kind": "joined", "session": S5}])
+        self.assertEqual(sminos.last_project(S5), old_last_project(S5))
+        self.assertEqual(sminos.last_project(S5).id, p1.id)
+
+    def listings_taken(self):
+        """A new generation, in which another session was asked about first."""
+        sminos.forget_caches()
+        sminos.recorded_project(S1)
+        sminos.last_project(S1)
 
     def test_the_registrations_from_the_listing_alone(self):
         """known_projects, every scan: the registrations in sorted(glob)'s
