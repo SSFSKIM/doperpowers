@@ -378,10 +378,11 @@ def desk():
     """What this machine's daemon can do itself for the desk (DX4
     `machine.desk`, the desk control surface's M0): the sminos version it
     runs from, the RPCs it executes (the endpoint's, RL10_RPC_NAMES), and
-    the reads it answers without a bridge (none yet)."""
+    the reads it answers without a bridge (none yet). The manifest is read
+    by stat (sminos.json_at), not once a process: the daemon restarts its
+    uplink when a script changes, and a version bump alone changes none."""
     try:
-        with open(PLUGIN_MANIFEST) as f:
-            version = json.load(f).get("version")
+        version = sminos.json_at(PLUGIN_MANIFEST).get("version")
     except (OSError, ValueError, AttributeError):
         version = None
     return {"sminos": version if isinstance(version, str) else "unknown", "rpcs": list(rpc.RL10_RPC_NAMES), "reads": []}
@@ -400,6 +401,9 @@ class HubLog:
         self.epochs = {}     # own writer → how many bounds were set on it (bound), across streams: an upload's mark
         self.taken_failing = None   # TAKEN_FILE's write failure as last said (keep)
         self.notices_owed = None    # whether uplink.json holds notices to show (show_notices); None: not yet read
+        self.host_files = {}  # host file → (its _log_file_held key, {session writer: its last seq}) as the uplink's
+        #                       host pass last walked it (Link.host_pass)
+        self.own_names = None  # (machine, machine_identity() it was built from, the own names): is_own's
         self.reset()
 
     def reset(self):
@@ -421,12 +425,16 @@ class HubLog:
         return os.path.join(self.project.home, "log")
 
     def state(self):
+        """uplink.json as it is now, a new dict the caller may change and
+        save; {} when it is missing or holds no JSON object. Read by stat
+        (sminos.json_at) while it holds still: save writes it whole, by
+        rename, so a write moves its inode, and the upload pass asks every
+        open project's each UPLOAD_EVERY."""
         try:
-            with open(os.path.join(self.project.home, STATE_FILE)) as f:
-                d = json.load(f)
-            return d if isinstance(d, dict) else {}
+            d = sminos.json_at(os.path.join(self.project.home, STATE_FILE))
         except (OSError, ValueError):
             return {}
+        return d if isinstance(d, dict) else {}
 
     def save(self, d):
         """Written whole, by rename, and ASCII only: a writer or a nonce the
@@ -446,13 +454,13 @@ class HubLog:
         return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
             if isinstance(raw, dict) else {}
 
-    def dead(self):
+    def dead(self, d=None):
         """{writer: {"at": {seq}, "last": seq}}: this machine's writers the
         upstream refused `audience` (P5 O18: the stream is not the session's
         now), each stopped for good at the refused positions until an event
         is appended to it past `last`, its file's last seq when it was
-        stopped (stop_dead; revive)."""
-        raw = self.state().get("dead")
+        stopped (stop_dead; revive). `d`: the state as the caller read it."""
+        raw = (self.state() if d is None else d).get("dead")
         out = {}
         for w, held in (raw.items() if isinstance(raw, dict) else ()):
             if isinstance(held, dict) and isinstance(held.get("at"), list) and type(held.get("last")) is int:
@@ -461,13 +469,13 @@ class HubLog:
                     out[w] = {"at": at, "last": held["last"], **({"final": True} if held.get("final") else {})}
         return out
 
-    def voided(self):
+    def voided(self, d=None):
         """{writer: {seq}}: the positions of this machine's writers it
         uploaded a content-free `void` at in place of the event its file
         holds there (revive), kept for good: every upload of the position
         sends the void again, its echo reads present, and the archive holds
-        its tombstone."""
-        raw = self.state().get("voided")
+        its tombstone. `d`: the state as the caller read it."""
+        raw = (self.state() if d is None else d).get("voided")
         return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
             if isinstance(raw, dict) else {}
 
@@ -614,11 +622,12 @@ class HubLog:
             "sub": None, "n": None,
             "body": {"online": True, "policy": policy.wire_policy(), "checkouts": checkouts, "desk": desk()}}}
 
-    def host_sent(self):
+    def host_sent(self, d=None):
         """RL10: {writer: seq}, how far each writer of the project's host
         store (sminos.HOST_STORE) went up as sub-less `host` messages: where
-        the uplink's next host pass starts."""
-        raw = self.state().get("host_sent")
+        the uplink's next host pass starts. `d`: the state as the caller
+        read it."""
+        raw = (self.state() if d is None else d).get("host_sent")
         return {w: s for w, s in raw.items() if isinstance(w, str) and type(s) is int} \
             if isinstance(raw, dict) else {}
 
@@ -626,7 +635,7 @@ class HubLog:
         """The host events up to `reach` ({writer: seq}) were written to the
         endpoint: the cursor moves there, never back."""
         d = self.state()
-        held = self.host_sent()
+        held = self.host_sent(d)
         for w, seq in reach.items():
             held[w] = max(seq, held.get(w, 0))
         d["host_sent"] = held
@@ -1124,16 +1133,18 @@ class HubLog:
     def own(self, writer):
         return writer.startswith(self.machine + "/") or (self.archive and writer.startswith(LEGACY))
 
-    def uploads(self, live=None):
+    def uploads(self, live=None, state=None):
         """`events` frames of this machine's writers the hub lacks, each with
         the (writer, seq) it brings the hub to, drawn as they are taken: each
         writer's file is read, and its events sealed, only once the frames
         before them were taken. Yields (frame, {writer: seq}). `live`: a hot
-        look (writers)."""
+        look (writers); `state`: uplink.json as the caller read it just
+        now."""
         if self.have is None:
             return
         batch, reach, size = [], {}, 0
-        dead, voided = self.dead(), self.voided()
+        state = self.state() if state is None else state
+        dead, voided = self.dead(state), self.voided(state)
 
         def frame():
             return {"t": "events", "project": self.project.id, "events": batch}, reach
@@ -1191,16 +1202,17 @@ class HubLog:
         endpoint's verdict, which an echo kept here would carry."""
         return {k: v for k, v in e.items() if k != "verified"}
 
-    def next_upload(self, live=None):
+    def next_upload(self, live=None, state=None):
         """The next upload, (frame, {writer: seq}), or None when nothing is
         owed now. A pass the uplink paces (it stops while its lane is full)
         leaves the rest of its draw here, not yet read or sealed, and the
         next pass goes on from there, so a long backlog is read and sealed
         once, not once a pass. What would change the draw — a `have`, a `resend`, a refusal,
         a new stream — drops it, and the next call draws afresh. `live`: a
-        fresh draw looks at the hot writers alone (writers)."""
+        fresh draw looks at the hot writers alone (writers); `state`:
+        uplink.json as the caller read it just now, for a fresh draw."""
         if self.drawing is None:
-            self.drawing = self.uploads(live)
+            self.drawing = self.uploads(live, state)
         try:
             got = next(self.drawing, None)
         except BaseException:
@@ -1220,8 +1232,14 @@ class HubLog:
 
     def is_own(self, writer):
         """Whether a writer is one of this machine's, under its name or a
-        former one (RL10: the endpoint returns those only as echoes)."""
-        return writer.split("/", 1)[0] in {self.machine, *sminos.machine_identity()[1]}
+        former one (RL10: the endpoint returns those only as echoes). The
+        names are built again only once the identity they came from is
+        another (a welcome that renames forgets the caches, and the next
+        machine_identity is a new tuple)."""
+        ident, held = sminos.machine_identity(), self.own_names
+        if held is None or held[0] != self.machine or held[1] is not ident:
+            held = self.own_names = (self.machine, ident, frozenset({self.machine, *ident[1]}))
+        return writer.split("/", 1)[0] in held[2]
 
     def same(self, held, e):
         """Whether an arriving event is the one held at its position: an own
