@@ -233,9 +233,9 @@ export function carriesHandle(input: unknown): boolean {
 /**
  * Records the ruling; a grant leaves the pass, for the ledger's epoch now,
  * unless its re-run could not match it (carriesHandle). A relayed grant runs
- * on it too: a plugin's call meets the classifier wherever the user has
- * `autoMode` deny rules, and inside the appeal its verdict can stall the
- * session on a dialog nobody sees, so the pass answers core's ask first.
+ * on it too: the engine never answers a plugin's call left at core's ask
+ * (2.1.321, 2.1.322: it waits until the person interrupts), so the pass
+ * answers that ask first.
  */
 export function applyRuling(ledger: Ledger, block: Block, verdict: Verdict, now: number): void {
   block.ruling = verdict

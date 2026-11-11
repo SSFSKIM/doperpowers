@@ -413,15 +413,17 @@ need to say. Every grant leaves a pass. A main-loop grant is then run by the
 appeal itself through `$.tool.call` — the plugin's own call, which the
 engine runs in the session's loop — and the result is the appeal's; the
 model does not re-run it. That call still meets the permission check, and
-the classifier wherever the user has `autoMode` deny rules (the
-plugin-origin fast path is off then), and a verdict left to a decider
-inside the appeal's own call can hold the session on a dialog the person
-never sees (69 and 15 minutes, until they interrupted, 2026-11-11). So the
-appeal first asks `$.tool.check`, which runs nothing and opens no dialog,
+one left at an ask there is never answered: on 2.1.321 and 2.1.322 it waits
+until the person interrupts (69 and 15 minutes, 2026-11-11; reproduced
+headless, where a relayed Bash outlasted a 180 s timeout and ran in 2 s
+once a hook allowed it), and older engines put it to the classifier, which
+refused long conversations outright. So the appeal first asks `$.tool.check`, which runs nothing and opens no dialog,
 and relays only when nobody would be asked: core allows the call, or its
 plain ask meets the grant's pass, which the relay spends (logged as
 `relayed`, not `used`) and which is withdrawn after the relay either way so
-the call cannot run twice. Any other verdict (a rule's or a setting's ask,
+the call cannot run twice; a relay its pass no longer covers when its own
+check comes (a prompt or an answer arrived, or the directory moved, after
+the ruling) is refused there rather than left at the ask. Any other verdict (a rule's or a setting's ask,
 a deny) or a check that fails leaves the call to the model's re-run, where a
 dialog is the person's to answer (`no-relay` with the reason). A subagent's
 grant is never relayed, since a plugin's call would run in the main loop's

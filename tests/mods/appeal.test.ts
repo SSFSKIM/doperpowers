@@ -429,22 +429,29 @@ function harness(
       // The engine's run of a plugin's call: the plugin's own tool.check hook
       // decides with core's verdict beneath it; an ask left standing goes to
       // the mode's decider (the classifier, or a dialog), written down here.
+      // The mod's other tool.call hook sees the call first (the engine skips
+      // only the calling one), as its Bash generation moves.
       call: async (input: Record<string, unknown>) => {
         calls.push({ op: 'tool.call', args: input })
-        const { tool, ...args } = input
-        const verdict = (await checkHook()?.handler($, { tool, input: args, tool_use_id: 'relay-1' }, async () => core())) as { decision: string; reason?: string }
-        if (verdict.decision === 'ask') {
-          calls.push({ op: 'decider', args: input })
-          return { deny: 'put to the decider' }
+        const e = { ...input, tool_use_id: 'relay-1' }
+        const every = hooks.find((h) => h.event === 'tool.call' && h.matcher?.tool instanceof RegExp)
+        const run = async (inner: Record<string, unknown>) => {
+          const { tool, tool_use_id, ...args } = inner
+          const verdict = (await checkHook()?.handler($, { tool, input: args, tool_use_id }, async () => core())) as { decision: string; reason?: string }
+          if (verdict.decision === 'ask') {
+            calls.push({ op: 'decider', args: input })
+            return { deny: 'put to the decider' }
+          }
+          if (verdict.decision === 'deny') {
+            return { deny: verdict.reason ?? 'denied' }
+          }
+          const relay = options.relay ?? { result: 'ok', text: 'ok' }
+          if (relay instanceof Error) {
+            throw relay
+          }
+          return relay
         }
-        if (verdict.decision === 'deny') {
-          return { deny: verdict.reason ?? 'denied' }
-        }
-        const relay = options.relay ?? { result: 'ok', text: 'ok' }
-        if (relay instanceof Error) {
-          throw relay
-        }
-        return relay
+        return every === undefined ? run(e) : every.handler($, e, run)
       },
       check: async (input: { tool: string; input: unknown }) => {
         calls.push({ op: 'tool.check', args: input })
@@ -711,8 +718,8 @@ describe('registerAppeal', () => {
     expect(h.calls.find((c) => c.op === 'tool.call')?.args).toEqual({ tool: 'Write', file_path: '/tmp/x', content: 'c', description: 'notes' })
     expect(h.logged().map((l) => l.event)).toEqual(['block', 'ruling', 'relayed'])
     // The relay ran on the grant's pass: core's plain ask was answered by it,
-    // never put to the classifier or a dialog (which, inside the appeal's own
-    // call, the person never sees: the session sat until they interrupted).
+    // never left standing (which the engine never resolves for a plugin's
+    // call: the session sat until the person interrupted).
     expect(h.calls.some((c) => c.op === 'decider')).toBe(false)
     expect(await h.check({ tool: 'Write', tool_use_id: 't3', input: { file_path: '/tmp/x', content: 'c', description: 'notes' } }, ask)).toEqual(ask)
   })
@@ -730,6 +737,44 @@ describe('registerAppeal', () => {
     expect(h.logged().map((l) => l.event)).toEqual(['block', 'ruling', 'no-relay'])
     // The re-run meets the rule's ask as any call does; the pass does not answer a rule.
     expect(await h.check({ tool: 'Bash', tool_use_id: 't3', input: { command: 'curl -X DELETE x' } }, rule)).toEqual(rule)
+  })
+
+  test("a relay whose pass lapsed before its own check is refused there, never left at the ask", async () => {
+    // A prompt arrives while the relay's check reads the clock.
+    const prompted = harness({ judge: '<verdict>grant</verdict><response>Fine.</response>' })
+    await prompted.start()
+    await prompted.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf target', description: 'clean' }, blocked('[Irreversible Local Destruction]'))
+    let checks = 0
+    prompted.onClock(() => {
+      if (prompted.calls.some((c) => c.op === 'tool.call') && checks++ === 0) {
+        void prompted.prompt('wait, keep target')
+      }
+    })
+    const ruling = (await prompted.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(prompted.calls.some((c) => c.op === 'decider')).toBe(false)
+    expect(ruling.result).toContain('The call was then run for you, and the engine refused it: The grant of appeal b1 no longer covers this call')
+
+    // The session's directory moved between the block and the relay.
+    const moved = harness({ judge: '<verdict>grant</verdict><response>Fine.</response>' })
+    await moved.start()
+    await moved.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf target' }, blocked('[Irreversible Local Destruction]'))
+    moved.onClock(() => {
+      if (moved.calls.some((c) => c.op === 'tool.call')) {
+        moved.move('/elsewhere')
+      }
+    })
+    await moved.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })
+    expect(moved.calls.some((c) => c.op === 'decider')).toBe(false)
+    expect(moved.logged().map((l) => l.event)).toEqual(['block', 'ruling', 'no-relay'])
+  })
+
+  test("a Bash relay keeps its own pass through the Bash generation its call moves", async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>Fine.</response>' })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'rm -rf target', description: 'clean up' }, blocked('[Irreversible Local Destruction]'))
+    const ruling = (await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })) as { result: string }
+    expect(ruling.result).toContain('The call was then run for you; its result')
+    expect(h.calls.some((c) => c.op === 'decider')).toBe(false)
   })
 
   test('a check that cannot be asked leaves the call unrun and the pass for the re-run', async () => {

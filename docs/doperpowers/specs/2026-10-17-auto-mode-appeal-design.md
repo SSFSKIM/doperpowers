@@ -346,10 +346,10 @@ its plain ask meets the pass; otherwise the model re-runs it (see the
 decision log). The result, as the model
 would have read it, is the appeal's result (with any content the tool
 answered beyond text — an image — as content blocks beside it), and a
-`relayed` event is logged. No pass is left, so nothing of the pass's
-bindings below applies: the call ran before any prompt could arrive and in
-the directory of the block — the epoch is re-checked after the ruling's log
-write, immediately before the relay, and a prompt or an answer that arrived
+`relayed` event is logged. The relay runs on the grant's pass (below), so
+the pass's bindings hold for it too; it is withdrawn once the relay ends,
+whatever its outcome. The epoch is re-checked after the ruling's log
+write and after the permission query, immediately before the relay, and a prompt or an answer that arrived
 since leaves the call unrun (`The call was not run: a prompt or an answer
 arrived meanwhile. Run it again if it is still wanted`; the re-run is
 classified as usual). A relay the engine refused, or one not run, is logged
@@ -800,17 +800,22 @@ Dependencies: the engine's `$.model.complete`, `$.session.messages`,
   be asked (2026-11-11). Every grant now leaves its pass; before relaying, the
   appeal asks `$.tool.check` (which runs nothing and opens no dialog) and runs
   the call only when core allows it or its plain ask meets that pass, which
-  the relay spends and which is withdrawn afterwards; anything else is left
-  to the model's re-run. Why: the plugin-origin fast path is off wherever the
-  user has `autoMode` deny rules, which this machine's settings have had
-  since 2026-10-25, so every relay met the classifier: of 11 main-loop relays
-  from 2026-11-01 to 11-11, 3 ran, 6 were refused as a conversation too long
-  for the classifier, and 2 (manim-master session 904e094e)
-  held the session 69 and 15 minutes on a verdict inside the appeal's own call
-  that the person never saw, until they interrupted. Rejected: a timeout on
-  the relay, since `$.tool.call` takes no signal and a call left running past
-  the appeal's answer could still delete; dropping the relay for the re-run,
-  which costs the model turn the relay was chosen to save.
+  the relay spends and which is withdrawn afterwards; a relay whose pass
+  lapsed before its own check (a prompt or an answer, a moved directory) is
+  refused there; anything else is left to the model's re-run. Why: a
+  plugin's call left at core's ask is never answered. On 2.1.321 two relays
+  (manim-master session 904e094e) held the session 69 and 15 minutes until
+  the person interrupted; reproduced headless on 2.1.321 and 2.1.322 with a
+  probe plugin relaying a Bash write from its own tool (left at the plain
+  ask it outlasted a 180 s timeout; answered `allow` by the probe's
+  `tool.check` hook it ran in 2 s), although those engines' declarations say
+  such a call runs with nobody asked. On older engines the relay met the
+  classifier wherever the user has `autoMode` deny rules: of 11 main-loop
+  relays from 2026-11-01 to 11-11, 3 ran, 6 were refused as a conversation
+  too long for the classifier, and 2 were the hangs. Rejected: a timeout on
+  the relay, since `$.tool.call` takes no signal and a call left running
+  past the appeal's answer could still delete; dropping the relay for the
+  re-run, which costs the model turn the relay was chosen to save.
   Date/Author: 2026-11-11, codex-exhaustion-claude-fallback session.
 - Decision: the relay's review (`doperpowers:reviewer-medium`, 2026-10-17)
   — four findings, all taken: the epoch is re-checked after the ruling's log

@@ -85,15 +85,26 @@ let ledger: Ledger = newLedger()
 let log: { path: string; lines: string[]; writing: Promise<void> } | undefined
 /** The ask snapshot's answered count when last read: a write that grows it ends the passes. */
 let answered = 0
-/** The block whose grant the appeal is relaying now: its pass, spent by the relay, is logged as `relayed` or `no-relay`, not `used`. */
-let relaying: string | undefined
+/**
+ * The calls the appeal is relaying now, by pass key, each to its block: the
+ * pass the relay spends is logged as `relayed` or `no-relay`, not `used`, and
+ * a relay its pass no longer answers is refused rather than left at an ask,
+ * which the engine never resolves for a plugin's call (2.1.321, 2.1.322).
+ */
+const relaying = new Map<string, string>()
+
+/** What refuses a relayed call whose grant's pass no longer covers it. */
+const RELAY_UNCOVERED = (block: string) => ({
+  decision: 'deny' as const,
+  reason: `The grant of appeal ${block} no longer covers this call: a prompt or an answer arrived, or the directory changed, after the ruling. Run it again if it is still wanted.`,
+})
 
 /** Forgets them all; for tests, which share this module. */
 export function resetAppeal() {
   ledger = newLedger()
   log = undefined
   answered = 0
-  relaying = undefined
+  relaying.clear()
 }
 
 async function record($: EngineInterface, event: LogEvent) {
@@ -291,16 +302,18 @@ export async function appeal($: EngineInterface, e: { agentId?: string; block?: 
   }
   // A main-loop grant: the call runs now, by the plugin, in the session's
   // loop — the same shell and directory the judge read — and its result is
-  // the appeal's. A plugin's call still meets the permission check, and with
-  // the user's autoMode deny rules the classifier; a verdict left to a
-  // decider inside this call can hold the session on a dialog the person
-  // never sees (69 minutes, until they interrupted). So the check is asked
+  // the appeal's. A plugin's call still meets the permission check, and a
+  // call left at an ask there is never answered: on 2.1.321 and 2.1.322 it
+  // waits until the person interrupts (69 minutes once; reproduced headless,
+  // where it outlasted a 180 s timeout and ran in 2 s once a hook allowed
+  // it), and older engines put it to the classifier. So the check is asked
   // first, running nothing, and the call runs only where nobody would be
   // asked: core allows it, or its plain ask meets the grant's pass. Anything
-  // else is the model's re-run, where a dialog is the person's to answer.
+  // else is the model's re-run, where an ask is the person's to answer.
   // After each await, the epoch once more: a prompt or an answer that
   // arrived since the ruling leaves the call unrun.
-  const hasPass = ledger.passes.get(passKey(block.agentId, block.tool, block.input))?.block === block.id
+  const key = passKey(block.agentId, block.tool, block.input)
+  const hasPass = ledger.passes.get(key)?.block === block.id
   let relay: Relay
   if (ledger.epoch !== epoch) {
     relay = { kind: 'stale' }
@@ -321,13 +334,13 @@ export async function appeal($: EngineInterface, e: { agentId?: string; block?: 
     } else {
       try {
         // block.tool is whichever tool the classifier blocked: a name known only at run time.
-        relaying = block.id
+        relaying.set(key, block.id)
         const ran = await $.tool.call({ tool: block.tool, ...(block.input as Record<string, unknown>) } as ToolCallArgs)
         relay = ran.deny !== undefined ? { kind: 'refused', deny: ran.deny } : { kind: 'ran', text: ran.text ?? '', isError: ran.isError === true, result: ran.result }
       } catch (error) {
         relay = { kind: 'refused', deny: message(error) }
       } finally {
-        relaying = undefined
+        relaying.delete(key)
       }
       endPass(ledger, block)
     }
@@ -402,21 +415,28 @@ export function registerAppeal(on: On) {
   // session started on one still loads this plugin when a reload brings it.
   on('tool.check', { tool: /^/ }, async ($, e, next) => {
     const verdict = await next(e)
+    const relayed = typeof e.tool_use_id === 'string' ? relaying.get(passKey(e.agentId, e.tool, e.input)) : undefined
+    const unanswered = relayed !== undefined && verdict.decision === 'ask' ? RELAY_UNCOVERED(relayed) : verdict
     if (!passCovers(verdict as CheckVerdict) || e.approver === 'host' || e.ceiling !== undefined || typeof e.tool_use_id !== 'string') {
-      return verdict
+      return unanswered
     }
     const epoch = ledger.epoch
     const pass = takePass(ledger, e.agentId, e.tool, e.input, await $.clock.now(), await $.session.cwd())
     if (pass === undefined) {
-      return verdict
+      return unanswered
     }
-    if (pass.block !== relaying) {
+    if (pass.block !== relayed) {
       await record($, { event: 'used', block: pass.block })
     }
     // After the last await: a prompt or an answer that arrived meanwhile
-    // leaves the call to the classifier (the pass is spent either way).
-    return ledger.epoch === epoch ? { decision: 'allow', reason: `appeal ${pass.block} granted` } : verdict
-  }).catch((_, e, next) => next(e))
+    // leaves the call to the classifier (the pass is spent either way), and a
+    // relay refused.
+    return ledger.epoch === epoch ? { decision: 'allow', reason: `appeal ${pass.block} granted` } : unanswered
+  }).catch(async (_, e, next) => {
+    const verdict = await next(e)
+    const relayed = typeof e.tool_use_id === 'string' ? relaying.get(passKey(e.agentId, e.tool, e.input)) : undefined
+    return relayed !== undefined && verdict.decision === 'ask' ? RELAY_UNCOVERED(relayed) : verdict
+  })
 
   // Any prompt — the user's words, or anything that starts a turn in their
   // place — ends the passes: what a judge ruled on may no longer be wanted.
