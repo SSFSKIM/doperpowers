@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""What an idle uplink reads again (sminos 1.46.1; the MacBook's uplink at
-11-13 % of a core, 7,550 file syscalls a second with nothing happening,
-2026-11-11): uplink.json read by stat, and once a project's upload pass;
+"""What an idle uplink reads again (both Macs' uplinks at 11-13 % of a
+core with nothing happening, the MacBook's making 7,550 file syscalls a
+second, 2026-11-11): uplink.json read by stat, and once a project's upload pass;
 where a session whose directory may not be read is recorded, told from one
 listing of each log directory a cache generation, never by opening every
 project's files under every name, and the registrations from the listing
