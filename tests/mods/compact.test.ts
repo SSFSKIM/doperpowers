@@ -78,6 +78,7 @@ describe('texts', () => {
     const description = describeCompact()
     expect(description).toContain('Runs when\nthis turn ends')
     expect(description).toContain('subagents keep running')
+    expect(description).toContain('nothing needs saving beforehand')
     expect(description.endsWith('How: the last tool call of the turn, alone, after pending results have\narrived; then end your turn.')).toBe(true)
     expect(description).not.toContain('When.')
   })
@@ -91,6 +92,8 @@ describe('texts', () => {
     expect(compactGuidance(967_000)).toContain('Prefer not to pass 600k')
     expect(compactGuidance(967_000)).toContain('a backstop, not the plan')
     expect(compactGuidance(967_000)).toContain('never as a percentage of the window')
+    // In the guidance, not only the description: the tool waits behind ToolSearch, and a note is written before it loads.
+    expect(compactGuidance(967_000)).toContain("nothing needs saving beforehand: no note to\nyourself on disk, no state restated in the call's arguments.")
     expect(compactGuidance(967_000)).toContain('Not during a design discussion: its state is the conversation itself,')
     expect(compactGuidance(967_000).endsWith('Nor while something is pending: an unanswered question to\nthe human, a decision you are still weighing, a subagent or job whose\nresult you will judge against what sent it; settling it takes the\ncontext that raised it.')).toBe(true)
   })

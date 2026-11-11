@@ -347,10 +347,38 @@ UUID (forks inherit them), clearing it on reload; reload does not await
 transcript keeps the engine's text. Until 7.207.0 a `tool.describe` hook
 answered `isDeferred: false` and the definition (about 2.3k characters,
 the guidance in its description) shipped inline in every request of every
-loop, subagents' included; now every loop carries the guidance (about 1.7k
-characters), and the description (about 0.4k) and schema load on demand,
+loop, subagents' included; now every loop carries the guidance (about 1.9k
+characters), and the description (about 0.6k) and schema load on demand,
 at the price of a `ToolSearch` step when the model compacts with the tool
 not loaded.
+
+The guidance and the description both say that nothing needs saving before
+a call, and `instructions` reads "Omit unless the summary needs steering…".
+Through 7.219.0 the field read "What to keep verbatim or drop, beyond the
+standard summary", and the 605 calls on the MacBook (2026-10-06 → 11-11,
+64 sessions) show what that drew: `instructions` never omitted, 1.5k
+characters at the median and 91% with the word "verbatim", a draft of the
+summary rather than steering; a checkpoint note written to disk in the
+compaction turn in 54% of calls (9% at a session's first compaction, 68%
+from the eleventh on) and read back within six tool calls of the reset in
+78%. Against the 127 typed `/compact` runs in the same sessions, which
+carry no instructions, the instructed summaries copied 27% of the previous
+summary word for word instead of 12%, grew their first section by half and
+shrank Files, Errors and User messages, and were followed by a look into
+the transcript no less often (21% against 17%). The sentence sits in the
+guidance as well as the description because the note is written before
+`ToolSearch` loads the tool. Wording test, one-shot calls over three of
+those sessions' states at an offer (Opus 5.5 five per cell, Fable 5.2
+three): the old text drew a note in 10 of 10 on the two sessions that kept
+a state file and instructions of 0.6–1.8k characters (Fable 5.9–6.3k); the
+shipped text drew no note in 18 and no instructions in 10 of 18, 250–590
+characters otherwise, mostly superseded leads to drop. The same field text
+without "no state restated in the call's arguments" was never omitted
+(0.5–1.0k), and a field asking for "what the work ahead depends on most"
+drew longer instructions than the old text on those two sessions
+(0.8–2.3k). The census scripts
+and both tests' outputs are in `~/.local/share/compact-audit/` on the
+MacBook; rerun them after about 50 compactions on the new text.
 Appeal is deferred too. Its answer is a line.
 
 Known limits: the offer's threshold is read once, at session start, so a window
