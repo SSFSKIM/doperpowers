@@ -581,11 +581,14 @@ class HostPass(Machine):
             self.link.host_pass(self.hl)
         self.assertEqual([c[0] for c in calls.made if c[1] == where], ["stat"], "no host store: a stat, no listing")
         self.host(self.w, "one")
-        self.link.host_pass(self.hl)
-        self.assertEqual(len(self.link.session_lane.sent), 1)
-        calls = Calls()
-        with calls.counting():
+        # the clock the listing is judged by, a moment after the directory's change whatever the machine's speed
+        now = os.stat(where).st_mtime_ns + 10 ** 8
+        with mock.patch.object(hublog, "time", mock.Mock(wraps=hublog.time, time_ns=lambda: now)):
             self.link.host_pass(self.hl)
+            self.assertEqual(len(self.link.session_lane.sent), 1)
+            calls = Calls()
+            with calls.counting():
+                self.link.host_pass(self.hl)
         self.assertTrue(calls.of("listdir", where), "a directory changed within RACY_NS: listed again")
         os.utime(where, ns=(os.stat(where).st_atime_ns, os.stat(where).st_mtime_ns - 10 ** 10))   # held still
         self.link.host_pass(self.hl)
@@ -597,6 +600,21 @@ class HostPass(Machine):
         self.host("testhost/" + S2, "two")   # a new file moves the directory's mtime
         self.link.host_pass(self.hl)
         self.assertIn('"two"', json.dumps(self.link.session_lane.sent[-1]), "a new writer file, at the next pass")
+
+    def test_a_host_store_replaced_with_its_old_mtime_is_listed_again(self):
+        where = os.path.join(self.p.home, sminos.HOST_STORE)
+        self.host(self.w, "one")
+        old = os.stat(where).st_mtime_ns - 10 ** 10
+        os.utime(where, ns=(old, old))   # held still
+        self.link.host_pass(self.hl)
+        sent = len(self.link.session_lane.sent)
+        os.rename(where, where + ".old")
+        self.host("testhost/" + S2, "two")   # another directory, another writer
+        os.utime(where, ns=(old, old))   # the old one's mtime kept
+        shutil.rmtree(where + ".old")
+        self.link.host_pass(self.hl)
+        self.assertEqual(len(self.link.session_lane.sent), sent + 1, "the new writer's event is sent")
+        self.assertIn('"two"', json.dumps(self.link.session_lane.sent[-1]))
 
     def test_a_rename_of_the_machine_is_followed(self):
         old = "oldhost/" + S2

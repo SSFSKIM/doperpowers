@@ -404,7 +404,7 @@ class HubLog:
         self.host_files = {}  # host file → (its _log_file_held key, {session writer: its last seq}) as the uplink's
         #                       host pass last walked it (Link.host_pass)
         self.own_names = None  # (machine, machine_identity() it was built from, the own names): is_own's
-        self.host_listing = None  # ((host store dir, its mtime_ns), its writer files): host_paths
+        self.host_listing = None  # ((host store dir, its inode, mtime_ns, ctime_ns), its writer files): host_paths
         self.reset()
 
     def reset(self):
@@ -569,18 +569,22 @@ class HubLog:
         """The host store's writer files in sorted order, as sorted(glob) of
         its `*.jsonl` gives them, listed again only once the directory
         changed, by own_paths' rule (a listing kept only once the directory
-        held still RACY_NS before it, none that failed); [] while there is
+        held still RACY_NS before it, none that failed); the directory is
+        known by its inode and ctime as well as its mtime, so one replaced
+        with its old mtime kept is not taken for the same; [] while there is
         no host store. The uplink's host pass asks every open project's at
         every UPLOAD_EVERY."""
         where = os.path.join(self.project.home, sminos.HOST_STORE)
         before = time.time_ns()
         try:
-            mtime = os.stat(where).st_mtime_ns
+            st = os.stat(where)
         except OSError:
             self.host_listing = None
             return []
+        mtime = st.st_mtime_ns
+        key = (where, st.st_ino, mtime, st.st_ctime_ns)
         held = self.host_listing
-        if held is not None and held[0] == (where, mtime):
+        if held is not None and held[0] == key:
             return held[1]
         try:
             names = os.listdir(where)
@@ -588,7 +592,7 @@ class HubLog:
             self.host_listing = None
             return []
         paths = sorted(os.path.join(where, name) for name in glob_names(names, ""))
-        self.host_listing = ((where, mtime), paths) if before - mtime >= RACY_NS else None
+        self.host_listing = (key, paths) if before - mtime >= RACY_NS else None
         return paths
 
     def hot(self, held, wall, mono):
