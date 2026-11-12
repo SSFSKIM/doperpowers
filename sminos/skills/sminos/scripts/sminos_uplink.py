@@ -734,7 +734,7 @@ class Here:
 
     def record(self, sid):
         plane_ = self.link.plane
-        plane_.live = plane_.records.scan()
+        plane_.scan()
         return plane_.live.get(sid) if plane_.running(sid) else None
 
     def checkouts(self, project):

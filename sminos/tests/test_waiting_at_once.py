@@ -4,8 +4,9 @@ that word, so it and the word that ends it are published on the daemon's
 first tick that sees them, where a change between busy and idle waits for a
 second tick (the flip inside a tool round); and the uplink's session plane,
 which looks at the engine's records five times a second, asks the daemon for
-that tick as soon as a live session's word enters or leaves `waiting` —
-one nudge a look, however many sessions moved. Hermetic: HOME and
+that tick at any look that finds a session's word entered or left
+`waiting`, its first look and its last included — one nudge a look,
+however many sessions moved. Hermetic: HOME and
 SMINOS_HOME are temporary.
 Run: python3 -B sminos/tests/test_waiting_at_once.py
 """
@@ -35,6 +36,7 @@ sys.path.insert(0, SCRIPTS)
 
 import sminos_daemon as daemon  # noqa: E402
 import sminos_plane as plane  # noqa: E402
+import sminos_uplink as uplink  # noqa: E402
 
 A = "6f00000a-0000-4000-8000-0000000000aa"
 
@@ -144,7 +146,7 @@ class PlaneNudge(unittest.TestCase):
 
     def test_entering_and_leaving_waiting_nudge(self):
         a = self.session("busy")
-        self.assertEqual(self.look(), 0, "the first look has nothing to compare")
+        self.assertEqual(self.look(), 0, "a first look with nobody waiting")
         self.assertIn(a, self.p.live)
         self.status(a, "waiting")
         self.assertEqual(self.look(), 1, "entered waiting")
@@ -175,6 +177,44 @@ class PlaneNudge(unittest.TestCase):
             self.p.presence("0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59", force=True)
         self.assertEqual(nudge.call_count, 1)
         self.assertEqual(self.look(), 0, "the tick's next look has nothing new")
+
+    def test_a_session_rpc_s_look_nudges_too(self):
+        """An RPC's admission reads the session's record afresh: a move it
+        sees is nudged there, not lost to the plane's next look."""
+        a = self.session("busy")
+        self.look()
+        self.status(a, "waiting")
+        with mock.patch.object(plane.sminos, "nudge_daemon") as nudge:
+            uplink.Here(types.SimpleNamespace(plane=self.p)).record(a)
+        self.assertEqual(nudge.call_count, 1)
+        self.assertEqual(self.look(), 0, "the plane's next look has nothing new")
+
+    def test_a_session_first_seen_waiting_nudges(self):
+        self.session("busy")
+        self.look()
+        self.session("waiting")
+        self.assertEqual(self.look(), 1, "a new or resumed session stopped on a prompt at once")
+        self.session("busy")
+        self.assertEqual(self.look(), 0, "one first seen busy does not")
+
+    def test_a_session_that_ends_waiting_nudges(self):
+        a, b = self.session("waiting"), self.session("busy")
+        self.look()
+        for sid in (a, b):
+            h = next(h for h in self.holders if h.pid == self.pids[sid])
+            h.kill()
+            h.wait(5)
+            if sid == a:
+                self.assertEqual(self.look(), 1, "its word is stopped or gone now")
+            else:
+                self.assertEqual(self.look(), 0, "one that ends busy does not")
+
+    def test_a_first_look_with_a_session_waiting_nudges_once(self):
+        """A new stream's plane: whatever waits then is published at once."""
+        self.session("waiting")
+        self.session("busy")
+        self.assertEqual(self.look(), 1)
+        self.assertEqual(self.look(), 0)
 
     def test_one_nudge_a_look_however_many_moved(self):
         a, b, c = self.session("busy"), self.session("idle"), self.session("waiting")

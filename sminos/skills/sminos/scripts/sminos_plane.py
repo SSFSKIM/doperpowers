@@ -2496,12 +2496,17 @@ class Records:
 
 
 def waiting_moved(before, after):
-    """Whether a session live at both looks ({session: engine record}) entered
-    or left `waiting` between them: a person acts on that word, so the
-    daemon is asked for a tick now (one, however many moved) rather than
-    publishing it up to its interval late, or never for a short one."""
-    return any((sminos.peer_state(before[sid]) == "waiting") != (sminos.peer_state(rec) == "waiting")
-               for sid, rec in after.items() if sid in before)
+    """Whether a session entered or left `waiting` between two looks
+    ({session: engine record}), over the sessions of either, one absent from
+    a look not waiting there: one first seen waiting (a new or resumed
+    session stopped on a prompt at once, or any at a new stream's first
+    look) and one whose process ended while waiting count too. A person acts
+    on that word, so the daemon is asked for a tick now (one, however many
+    moved) rather than publishing it up to its interval late, or never for a
+    short one."""
+    def waiting(rec):
+        return rec is not None and sminos.peer_state(rec) == "waiting"
+    return any(waiting(before.get(sid)) != waiting(after.get(sid)) for sid in before.keys() | after.keys())
 
 
 def record_body(rec):
@@ -2703,9 +2708,10 @@ class Plane:
 
     def scan(self):
         """The engine's records as they are now, into `live`, by whichever
-        look takes them (the tick's, a subscription's, a forced presence's),
-        the daemon nudged when a live session's word entered or left
-        `waiting` since the last one: it publishes that word and its end at
+        look takes them (the tick's, a subscription's, a forced presence's,
+        a session RPC's admission, sminos_uplink.Here.record), the daemon
+        nudged when a session's word entered or left `waiting` since the
+        last one (waiting_moved): it publishes that word and its end at
         once (sminos_daemon.publish_state)."""
         before, self.live = self.live, self.records.scan()
         if waiting_moved(before, self.live):
