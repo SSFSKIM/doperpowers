@@ -13491,7 +13491,7 @@ def tick(project):
 def cmd_daemon(a):
     if not a.op:
         die("usage: sminos daemon run [--interval N] | tick | install | status | owed | policy [--read-only on|off] "
-            "[--ceiling MODE|settings]")
+            "[--ceiling MODE|settings] | profile [--seconds S] [--of uplink|run]")
     daemon_module().cmd_daemon(a)
 
 
@@ -13712,6 +13712,9 @@ def build_parser():
     dr.add_argument("--interval", type=float, default=5.0)
     for op in ("tick", "install", "status", "owed", "uplink", "probe"):
         dsub.add_parser(op, add_help=False)
+    dpr = dsub.add_parser("profile", add_help=False)
+    dpr.add_argument("--seconds", type=float, default=20.0)
+    dpr.add_argument("--of", choices=("uplink", "run"), default="uplink")
     dp = dsub.add_parser("policy", add_help=False)
     dp.add_argument("--read-only", dest="read_only", choices=("on", "off"), default=None)
     dp.add_argument("--ceiling", default=None)
@@ -13924,9 +13927,9 @@ def main(argv=None):
         # so no migration rewrites a record or takes the registry's lock.
         cmd_rpc_query(a)
         return
-    if a.cmd == "daemon" and a.op == "owed":
-        # B2's gate on a machine about to cut over (O14), run beside its
-        # daemon: it reads what is owed and never migrates or takes a lock.
+    if a.cmd == "daemon" and a.op in ("owed", "profile"):
+        # B2's gate on a machine about to cut over (O14), and a profile of the
+        # running daemon, run beside it: neither migrates or takes a lock.
         cmd_daemon(a)
         return
     if a.cmd == "who" and not a.target:
