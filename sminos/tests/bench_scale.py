@@ -10,6 +10,10 @@ with `git archive`), so a change is measured before and after.
                                                  [--import-events N] [--profile-uplink OUT]
     python3 bench_scale.py verbs   <scripts-dir>
     python3 bench_scale.py opens   <scripts-dir> [--large G] [--large-rows N] [--warm-after S]
+    python3 bench_scale.py shape   <scripts-dir>
+    python3 bench_scale.py passes  <profile> [--top N]
+
+    python3 bench_scale.py run <scripts-dir> --preset macbook --warmup 90 --strace 20 --pycalls 30 --nudges 6
 
 `run` and `opens` run on RL10, against the endpoint stand-in: the DX2 hub's
 arms went with #153 M5. Each still accepts --rl10, which the commands of
@@ -80,25 +84,160 @@ kept as history.
   last has sent the projects' hellos: else the moment is said missing, with
   when it was ready, never sampled late under its name, and the run ends
   with status 3.
+- `shape`: the machine built, cut over by the stand-in's welcome and joined
+  by a tick, then counted as the uplink would see it (projects registered
+  and open, seats and those it may not read, members and their session
+  records, engine records and live ones, bridges answering, host stores, own
+  and former-name writer files, log events), to hold against the Mac it
+  stands for.
+- `passes`: a profile `run --pycalls` kept, read by pass: the callees of
+  the uplink's Link.tick and of the plane's tick with their cumulative time,
+  the threads' roots, and the functions with the most time of their own.
+
+--preset macbook or mini builds a machine of that Mac's shape (PRESETS:
+the counts read on each, 2026-11-12; a flag given beside it wins), with
+what the default machine has none of: hub projects followed without a
+checkout and retired ones that kept an uplink.json, seats whose directory
+is in a folder macOS protects, read as macOS would (--tcc: sminos.TCC on in
+every sminos process the bench starts, the uplink's working directory
+outside them), a former machine name holding writer files, session
+records, engine records of processes gone, bridge sockets (most answering
+`GET /status` from this process), host stores with their cursors kept,
+one large log, the history aged past HOT_FOR, and one live session's
+engine record rewritten every --working seconds, as a working session's
+is. With no preset the machine is the one the B2 gate was set on.
+
+`run` also takes, each in a window of its own after the CPU window, so
+neither touches the CPU figure: --strace S, the uplink's system calls for S
+seconds (strace -f, through `sudo -n` where ptrace is scoped), a second by
+kind and by path pattern; --pycalls S, the uplink's Python-level calls for
+S seconds (cProfile, begun and ended by signal through the bench's hook),
+a second in all, of Python functions, and of each file call, its profile
+kept with --pycalls-prof; --nudges N, N nudges of `daemon run` a few seconds
+apart, each its tick's wall time and how long after the nudge it ended.
+Every `daemon run` tick's wall and CPU time is recorded through the hook
+(tick_all timed), the CPU window's said. --poll and --presence-every set the
+uplink's POLL and the plane's PRESENCE_EVERY. --measures-out FILE keeps
+every figure as JSON. The hook is a sitecustomize on the PYTHONPATH of every
+process the bench starts; none of it is in the scripts measured.
 """
 
 import argparse
+import datetime
 import json
 import os
 import random
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ORG, MACHINE, OTHER = "org-1", "testhost", "mini"
 HUB_ROOTED = ("doperpowers", "MAWS", "desk-walk", "scratch")
-TS = "2026-10-18T%02d:%02d:%02d.000Z"
+EPOCH = datetime.datetime(2026, 10, 18)   # the events' clock: its first event a second after
+
+# The counts read on each Mac (2026-11-12), as this machine's flags. Where a
+# Mac's count was not read, the MacBook's stands in (the mini's open
+# projects, members, host stores, own writers, log volume), and the mini
+# has no former name: its report says which.
+PRESETS = {
+    "macbook": dict(dirs=1650, seats=73, live=15, gone=27, local=25, rooted=20, followed=36, retired=20, remote=12,
+                    says=700, own=36, refused=26, seat_members=40, records=251, bridges=12, answering=10,
+                    host_projects=8, host_files=78, host_events=3900, former="oldbook", former_sessions=17,
+                    big_log=30000, seat_brief=3000, age=3.0, working=3.0, tcc=True),
+    "mini": dict(dirs=1200, seats=205, live=8, gone=13, local=9, rooted=15, followed=43, retired=19, remote=12,
+                 says=700, own=30, refused=20, seat_members=40, records=150, bridges=14, answering=12,
+                 host_projects=8, host_files=78, host_events=3900, former="", former_sessions=0,
+                 big_log=30000, seat_brief=3000, age=3.0, working=3.0, tcc=True),
+}
+
+# The bench's hook, a sitecustomize on the PYTHONPATH of every process it
+# starts: what it sets from outside the scripts, each by an environment
+# variable, applied as each sminos module is imported (and to __main__ when
+# that is sminos.py). Nothing in it is the scripts' own.
+HOOK = r'''
+import importlib.abc
+import importlib.machinery
+import json
+import os
+import sys
+import time
+
+KNOBS = {"sminos": [("TCC", "BENCH_TCC", lambda v: v == "1")],
+         "sminos_uplink": [("POLL", "BENCH_POLL", float)],
+         "sminos_plane": [("PRESENCE_EVERY", "BENCH_PRESENCE_EVERY", float)]}
+
+
+def patch(name, mod):
+    for attr, var, conv in KNOBS.get(name, ()):
+        if os.environ.get(var):
+            setattr(mod, attr, conv(os.environ[var]))
+    if name == "sminos_daemon" and os.environ.get("BENCH_TICK_TIMES") and not hasattr(mod, "_bench_timed"):
+        real, path = mod.tick_all, os.environ["BENCH_TICK_TIMES"]
+
+        def tick_all(*args, **kwargs):
+            at, cpu = time.time(), time.process_time()
+            try:
+                return real(*args, **kwargs)
+            finally:
+                with open(path, "a") as f:
+                    f.write(json.dumps({"at": at, "wall": time.time() - at, "cpu": time.process_time() - cpu,
+                                        "pid": os.getpid()}) + "\n")
+        mod.tick_all, mod._bench_timed = tick_all, True
+
+
+class Finder(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path, target=None):
+        if not name.startswith("sminos"):
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(name, path)
+        if spec is None or spec.loader is None:
+            return spec
+        real = spec.loader.exec_module
+
+        def exec_module(module):
+            real(module)
+            patch(name, module)
+            main = sys.modules.get("__main__")
+            if main is not None and str(getattr(main, "__file__", "")).endswith("sminos.py"):
+                patch("sminos", main)
+        spec.loader.exec_module = exec_module
+        return spec
+
+
+sys.meta_path.insert(0, Finder())
+
+if os.environ.get("BENCH_PROFILE") and sys.argv[1:3] == ["daemon", "uplink"]:
+    import signal
+    held = {}
+
+    def begin(*_):
+        import cProfile
+        if "pr" not in held:
+            held["at"] = time.time()
+            held["pr"] = cProfile.Profile()
+            held["pr"].enable()
+
+    def end(*_):
+        pr = held.pop("pr", None)
+        if pr is None:
+            return
+        pr.disable()
+        out = os.environ["BENCH_PROFILE"]
+        pr.dump_stats(out + ".tmp")
+        with open(out + ".window", "w") as f:
+            json.dump({"from": held["at"], "to": time.time()}, f)
+        os.replace(out + ".tmp", out)
+    signal.signal(signal.SIGUSR1, begin)
+    signal.signal(signal.SIGUSR2, end)
+'''
 
 
 def machine_project_id(org, machine):
@@ -124,6 +263,8 @@ class Env:
         self.home, self.sh = os.path.join(root, "h"), os.path.join(root, "s")
         self.projects = os.path.join(self.home, ".claude", "projects")
         self.sleepers = []
+        self.servers = []
+        self.stopping = threading.Event()
         self.n = 0
         self.seqs = {}
         self.build(hub_url)
@@ -133,7 +274,7 @@ class Env:
 
     def ts(self):
         self.n += 1
-        return TS % (self.n // 3600 % 24, self.n // 60 % 60, self.n % 60)
+        return (EPOCH + datetime.timedelta(seconds=self.n)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     def transcript(self, cwd, sid, title=""):
         rows = [{"type": "user", "cwd": cwd, "sessionId": sid, "uuid": self.uid(),
@@ -197,15 +338,27 @@ class Env:
         # The checkouts: hub projects with a .smns here, and local repositories
         # (no .smns: on an enrolled machine, this machine's own project).
         hubs = {}
-        for name in HUB_ROOTED:
+        for name in (HUB_ROOTED + tuple("hub%d" % i for i in range(len(HUB_ROOTED), a.rooted)))[:a.rooted]:
             pid = self.uid()
             hubs[name] = (pid, self.repo(name, {"project": pid, "name": name, "hub": {"org": ORG}}))
             self.register(pid, name, hubs[name][1])
-        own, mini, follow = machine_project_id(ORG, MACHINE), machine_project_id(ORG, OTHER), self.uid()
+        own, mini = machine_project_id(ORG, MACHINE), machine_project_id(ORG, OTHER)
+        follows = [self.uid() for _ in range(a.followed)]
         self.register(own, MACHINE, "")
         self.register(mini, OTHER, "")
-        self.register(follow, "phone walk", "")
-        self.hub_ids = [p for p, _ in hubs.values()] + [own, mini, follow]
+        names = {p: n for n, (p, _) in hubs.items()}
+        names.update({own: MACHINE, mini: OTHER})
+        for i, follow in enumerate(follows):
+            # Hub projects of the org with no checkout here, which the uplink opens to read and deliver.
+            names[follow] = "phone walk" if i == 0 else "followed%d" % i
+            self.register(follow, names[follow], "")
+        self.hub_ids = [p for p, _ in hubs.values()] + [own, mini] + follows
+        # Hub projects the org's directory retired: registered, each with the uplink.json it kept when open.
+        self.retired_ids = [self.uid() for _ in range(a.retired)]
+        for i, pid in enumerate(self.retired_ids):
+            names[pid] = "retired%d" % i
+            self.register(pid, names[pid], "")
+            write(os.path.join(self.sh, "projects", pid, "uplink.json"), {"host_sent": {}, "voided": {}, "dead": {}})
         locals_ = [self.repo("local%d" % i) for i in range(a.local)]
         for i, d in enumerate(locals_):
             pid = "local-local%d" % i
@@ -218,16 +371,45 @@ class Env:
                                   {"kind": "retired", "session": sid, "by": "", "reason": "ended"}])
         cwds = [d for _, d in hubs.values()] * 3 + locals_
         project_of = {d: p for p, d in hubs.values()}
-        # Seats: most retired or long idle, and most of those without a transcript here.
+        # Seats: most retired or long idle, and most of those without a transcript here. The first REFUSED
+        # in a folder macOS protects (~/Documents), which the uplink may not read (with --tcc, as on macOS):
+        # where each is is told from the writer files this machine holds of it, under its name now or, for
+        # the first FORMER_SESSIONS, a former one. SEAT_MEMBERS of the rest, when given, are not retired
+        # (the daemon's tick joins each where its directory resolves), the others retired.
+        self.member_seats, self.refused_seats, self.former_held = [], [], []
         for i in range(a.seats):
-            sid, cwd = self.uid(), cwds[i % len(cwds)]
+            sid = self.uid()
+            refused = i < a.refused
+            if refused:
+                cwd = os.path.join(self.home, "Documents", "work%d" % (i % 6))
+                status = ("retired", "idle", "done")[i % 3]
+                self.refused_seats.append(sid)
+                held_in = [x for x in self.hub_ids if x not in (own, mini)] or self.hub_ids
+                pid = held_in[i % len(held_in)]
+                former = i < a.former_sessions and a.former
+                if former:
+                    self.former_held.append(sid)
+                self.log(pid, "%s/%s" % (a.former if former else MACHINE, sid), [
+                    {"kind": "joined", "session": sid, "alias": "seat%d" % i, "name_source": "derived",
+                     "machine": a.former if former else MACHINE, "cwd": cwd, "session_kind": "interactive"},
+                    {"kind": "retired", "session": sid, "by": "", "reason": "ended"}])
+            else:
+                cwd = cwds[i % len(cwds)]
+                if a.seat_members is None:
+                    status = ("retired", "idle", "done")[i % 3]
+                else:
+                    status = "idle" if i - a.refused < a.seat_members else "retired"
+                if status != "retired":
+                    self.member_seats.append(sid)
             missing = (i % 10) < a.missing
             if not missing:
                 self.transcript(cwd, sid, "seat work %d" % i)
-            write(os.path.join(self.sh, "%s.json" % self.uid()), {
-                "alias": "seat%d" % i, "group": "fleet", "current": sid, "cwd": cwd, "status":
-                    ("retired", "idle", "done")[i % 3], "host": "" if missing else MACHINE, "created": self.ts(),
-                "updated": self.ts(), "role": "", "worktree": ""})
+            seat = {"alias": "seat%d" % i, "group": "fleet", "current": sid, "cwd": cwd, "status": status,
+                    "host": "" if missing else MACHINE, "created": self.ts(), "updated": self.ts(), "role": "",
+                    "worktree": ""}
+            if a.seat_brief:
+                seat["brief"] = "a seat's brief " + "b" * a.seat_brief
+            write(os.path.join(self.sh, "%s.json" % self.uid()), seat)
         # Live sessions: interactive ones in the checkouts, each a `sleep` under an engine record;
         # with `opens`'s --large, the first G of those in hub checkouts hold a large transcript.
         self.live_sessions = []
@@ -243,18 +425,30 @@ class Env:
             else:
                 self.transcript(cwd, sid, "live work %d" % i)
                 size = "small"
-            self.live_sessions.append({"sid": sid, "cwd": cwd, "size": size, "project": project_of.get(cwd, own)})
             p = spawn(["sleep", "86399"], start_new_session=True, stdin=subprocess.DEVNULL,
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.sleepers.append(p)
+            rec = {"pid": p.pid, "sessionId": sid, "cwd": cwd, "kind": "interactive", "entrypoint": "cli",
+                   "status": "idle", "name": "live%d" % i, "nameSource": "derived",
+                   "updatedAt": int(time.time() * 1000)}
+            path = os.path.join(self.home, ".claude", "sessions", "%d.json" % p.pid)
+            write(path, rec)
+            self.live_sessions.append({"sid": sid, "cwd": cwd, "size": size, "project": project_of.get(cwd, own),
+                                       "pid": p.pid, "engine": path, "rec": rec})
+        # Engine records of sessions whose process is gone (each a pid that ran and was reaped).
+        for i in range(a.gone):
+            p = subprocess.Popen(["true"])
+            p.wait()
             write(os.path.join(self.home, ".claude", "sessions", "%d.json" % p.pid), {
-                "pid": p.pid, "sessionId": sid, "cwd": cwd, "kind": "interactive", "entrypoint": "cli",
-                "status": "idle", "name": "live%d" % i, "nameSource": "derived",
-                "updatedAt": int(time.time() * 1000)})
+                "pid": p.pid, "sessionId": self.uid(), "cwd": cwds[i % len(cwds)], "kind": "interactive",
+                "entrypoint": "cli", "status": "idle", "name": "gone%d" % i, "nameSource": "derived",
+                "updatedAt": int(time.time() * 1000) - 86400000})
         # This machine's own history in its hub checkouts: sessions that joined, worked and ended.
+        self.own_sids = {}
         for pid, d in hubs.values():
             for _ in range(a.own):
                 sid = self.uid()
+                self.own_sids.setdefault(pid, []).append(sid)
                 self.log(pid, "%s/%s" % (MACHINE, sid), [
                     {"kind": "joined", "session": sid, "alias": "past", "name_source": "derived",
                      "machine": MACHINE, "cwd": d, "session_kind": "interactive"},
@@ -265,6 +459,13 @@ class Env:
         for pid in self.hub_ids:
             n = a.mini if pid == mini else a.remote
             self.remote_members(pid, n, a.says if pid != mini else 0)
+        for pid in self.retired_ids:
+            self.remote_members(pid, 2, 0)
+        if a.big_log and follows:
+            # One log of tens of thousands of events: two machines' title loop over one session (manim-master's).
+            sid = self.uid()
+            self.log(follows[0], "%s/%s" % (OTHER, sid), [{"kind": "titled", "session": sid, "title": "loop %d" % k}
+                                                          for k in range(a.big_log)])
         # `run`: a person's words owed to each live session in a hub checkout, one event from each of WORDS
         # members' devices, stored as an arrival over RL10 is (its signer under `verified`).
         self.words_owed = 0
@@ -277,17 +478,18 @@ class Env:
                         "to": [{"session": s["sid"], "alias": "live%d" % i}], "text": "words %d for %d" % (k, i),
                         "verified": {"signer": {"kind": "device", "member": "mem-%d" % k, "device": "dev-%d" % k,
                                                 "keyId": "k-dev-%d" % k}}}])
-        # Its enrolment. `run` and `opens` cut the machine over by the endpoint stand-in's welcome to a probe,
-        # so before it the machine is named by DAEMON_HOST alone (below); `tick`, `profile` and `verbs`
+        self.session_records(a)
+        self.host_stores(a, [p for p, _ in hubs.values()])
+        # Its enrolment. `run`, `opens` and `shape` cut the machine over by the endpoint stand-in's welcome to a
+        # probe, so before it the machine is named by DAEMON_HOST alone (below); `tick`, `profile` and `verbs`
         # measure a machine cut over, as the owner's Macs are.
-        if a.mode not in ("run", "opens"):
+        if a.mode not in ("run", "opens", "shape"):
             from rl10_identity import write_identity
-            write_identity(self.sh, MACHINE, org=ORG, hub=hub_url)
-        names = {p: n for n, (p, _) in hubs.items()}
-        names.update({own: MACHINE, mini: OTHER, follow: "phone walk"})
+            write_identity(self.sh, MACHINE, org=ORG, hub=hub_url,
+                           former={a.former: sorted(self.former_held)} if self.former_held else None)
         write(os.path.join(self.sh, "daemon", "org.json"), {
             "projects": [{"id": p, "name": names[p], "kind": "machine" if p in (own, mini) else "hub",
-                          "retired": False} for p in self.hub_ids],
+                          "retired": p in self.retired_ids} for p in self.hub_ids + self.retired_ids],
             "machines": [{"name": MACHINE, "online": True, "seen": None}, {"name": OTHER, "online": True, "seen": None}],
             "at": "2026-10-18T00:00:00.000Z"})
         stub = os.path.join(self.root, "bin")
@@ -295,12 +497,142 @@ class Env:
         with open(os.path.join(stub, "claude"), "w") as f:
             f.write('#!/bin/sh\ncase "$1" in agents) echo "[]";; esac\nexit 0\n')
         os.chmod(os.path.join(stub, "claude"), 0o755)
+        site = os.path.join(self.root, "site")
+        os.makedirs(site, exist_ok=True)
+        with open(os.path.join(site, "sitecustomize.py"), "w") as f:
+            f.write(HOOK)
         self.env = {k: v for k, v in os.environ.items()
-                    if not k.startswith(("CLAUDE_CODE_", "SMNS_", "SMINOS_", "DAEMON_"))}
+                    if not k.startswith(("CLAUDE_CODE_", "SMNS_", "SMINOS_", "DAEMON_", "BENCH_", "PYTHON"))}
         self.env.update(HOME=self.home, SMINOS_HOME=self.sh, PATH=stub + os.pathsep + os.environ["PATH"],
-                        SMINOS_DERIVE_EVERY="0", DAEMON_HOST=MACHINE)
+                        SMINOS_DERIVE_EVERY="0", DAEMON_HOST=MACHINE, PYTHONPATH=site)
+        if a.tcc:
+            self.env["BENCH_TCC"] = "1"
+        if a.mode == "run":
+            self.env["BENCH_TICK_TIMES"] = os.path.join(self.root, "ticks.jsonl")
+            if a.poll:
+                self.env["BENCH_POLL"] = str(a.poll)
+            if a.presence_every:
+                self.env["BENCH_PRESENCE_EVERY"] = str(a.presence_every)
+            if a.pycalls:
+                self.env["BENCH_PROFILE"] = os.path.join(self.root, "uplink.prof")
+        if a.age:
+            # The history as old as on the Macs: no writer file changed within HOT_FOR (what a hot look
+            # skips), no directory just made (what a kept listing waits out).
+            then = time.time() - a.age * 86400
+            for top in (self.sh, self.projects):
+                for d, _, files in os.walk(top):
+                    for name in files:
+                        os.utime(os.path.join(d, name), (then, then))
+                    os.utime(d, (then, then))
+        self.bridges(a)
+        if a.working:
+            threading.Thread(target=self.working, args=(a.working,), daemon=True).start()
+
+    def session_records(self, a):
+        """RECORDS session records (what the hooks write for each session): the
+        live sessions' and the member seats' first, then those of sessions long
+        gone."""
+        sids = [s["sid"] for s in self.live_sessions] + self.member_seats + self.refused_seats
+        sids = sids[:a.records]
+        sids += [self.uid() for _ in range(a.records - len(sids))]
+        for sid in sids:
+            write(os.path.join(self.sh, "session-records", sid + ".json"), {
+                "session": sid, "origin": {"kind": "terminal"}, "owners": ["@machine"], "ownersProof": [],
+                "principal": "@machine", "inference": {"kind": "slot", "configDir": os.path.join(self.home, ".claude")},
+                "source": "hook", "basis": "hook", "created": self.ts(), "updated": self.ts()})
+
+    def host_stores(self, a, rooted):
+        """HOST_FILES host files (what sessions sent their person, the host
+        store of a cut-over machine) over the first HOST_PROJECTS hub
+        checkouts, HOST_EVENTS events in all, each written under one of the
+        project's own ended sessions, every one gone up already: uplink.json
+        holds each file's last seq as its cursor."""
+        projects = rooted[:a.host_projects]
+        if not projects or not a.host_files:
+            return
+        per = max(1, a.host_events // a.host_files)
+        for k in range(a.host_files):
+            pid = projects[k % len(projects)]
+            sids = self.own_sids.get(pid) or [self.uid()]
+            sid = sids[(k // len(projects)) % len(sids)]
+            writer = "%s/%s" % (MACHINE, sid)
+            rows = [{"ts": self.ts(), "writer": writer, "seq": seq, "kind": "message", "session": sid,
+                     "text": "to the person %d " % seq + "m" * 1400} for seq in range(1, per + 1)]
+            jsonl(os.path.join(self.sh, "projects", pid, "host", writer.replace("/", ".") + ".jsonl"), rows)
+            state = os.path.join(self.sh, "projects", pid, "uplink.json")
+            try:
+                with open(state) as f:
+                    d = json.load(f)
+            except OSError:
+                d = {"host_sent": {}, "voided": {}, "dead": {}}
+            d["host_sent"][writer] = per
+            write(state, d)
+
+    def bridges(self, a):
+        """A bridge socket for each of the first BRIDGES live sessions, the
+        first ANSWERING of them answering from a thread of this process
+        `GET /status` (DX5) and `GET /events`, the requests' stream, held
+        open after its snapshot of nothing pending, as a quiet session's
+        bridge holds it; the rest a socket nothing listens on (a child gone)."""
+        import http.server
+        import socketserver
+        d = os.path.join(self.sh, "bridge")
+        for i, s in enumerate(self.live_sessions[:a.bridges]):
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            path = os.path.join(d, s["sid"] + ".sock")
+            if i >= a.answering:
+                dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                dead.bind(path)
+                dead.close()
+                continue
+            body = json.dumps({"session": s["sid"], "pid": s["pid"], "launch": "launch-%d" % i,
+                               "capabilities": {"send": True, "interrupt": True, "ask": True},
+                               "permissionMode": "default", "permissionModeAt": 1760000000000}).encode()
+
+            class Status(http.server.BaseHTTPRequestHandler):
+                protocol_version = "HTTP/1.1"
+                data, stopping = body, self.stopping
+
+                def do_GET(self):
+                    if self.path == "/events":
+                        self.send_response(200)
+                        self.send_header("content-type", "application/x-ndjson")
+                        self.end_headers()
+                        self.wfile.write(b'{"type": "snapshot", "pending": [], "settled": []}\n')
+                        self.wfile.flush()
+                        self.stopping.wait()
+                        self.close_connection = True
+                        return
+                    self.send_response(200)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(self.data)))
+                    self.send_header("connection", "close")
+                    self.end_headers()
+                    self.wfile.write(self.data)
+                    self.close_connection = True
+
+                def log_message(self, *args):
+                    pass
+
+            srv = socketserver.ThreadingUnixStreamServer(path, Status)
+            srv.daemon_threads = True
+            threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True).start()
+            self.servers.append(srv)
+
+    def working(self, every):
+        """The first live session's engine record rewritten every `every`
+        seconds, whole, by rename, as the engine does for a session at work."""
+        s = self.live_sessions[0]
+        while not self.stopping.wait(every):
+            s["rec"].update(status="busy", updatedAt=int(time.time() * 1000))
+            write(s["engine"] + ".tmp", s["rec"])
+            os.replace(s["engine"] + ".tmp", s["engine"])
 
     def close(self):
+        self.stopping.set()
+        for srv in self.servers:
+            srv.shutdown()
+            srv.server_close()
         for p in self.sleepers:
             p.kill()
             p.wait()
@@ -317,6 +649,31 @@ def scale(p):
     p.add_argument("--mini", type=int, default=100)
     p.add_argument("--says", type=int, default=300)
     p.add_argument("--own", type=int, default=150, help="this machine's ended sessions in each hub checkout")
+    p.add_argument("--preset", choices=sorted(PRESETS), help="a Mac's shape (PRESETS); a flag given beside it wins")
+    p.add_argument("--rooted", type=int, default=len(HUB_ROOTED), help="hub projects with a checkout here")
+    p.add_argument("--followed", type=int, default=1, help="hub projects of the org with no checkout here")
+    p.add_argument("--retired", type=int, default=0, help="hub projects the org retired, each with its uplink.json")
+    p.add_argument("--refused", type=int, default=0,
+                   help="of the seats, how many work in ~/Documents (a folder macOS protects)")
+    p.add_argument("--tcc", action="store_true",
+                   help="read macOS's protected folders as macOS would (sminos.TCC on in every sminos process)")
+    p.add_argument("--seat-members", type=int, default=None, metavar="N",
+                   help="of the other seats, how many are not retired (default: one in three retired)")
+    p.add_argument("--seat-brief", type=int, default=0, metavar="BYTES", help="each seat record's brief")
+    p.add_argument("--former", default="", metavar="NAME", help="a name this machine wrote under before")
+    p.add_argument("--former-sessions", type=int, default=0, metavar="N",
+                   help="of the refused seats, how many hold their writer file under the former name")
+    p.add_argument("--records", type=int, default=0, help="session records (the live sessions' and seats' first)")
+    p.add_argument("--gone", type=int, default=0, help="engine records of sessions whose process is gone")
+    p.add_argument("--bridges", type=int, default=0, help="live sessions with a bridge socket")
+    p.add_argument("--answering", type=int, default=0, help="of those, how many answer GET /status")
+    p.add_argument("--host-projects", type=int, default=0, help="hub checkouts with a host store")
+    p.add_argument("--host-files", type=int, default=0, help="host files over those")
+    p.add_argument("--host-events", type=int, default=0, help="host events over those files")
+    p.add_argument("--big-log", type=int, default=0, metavar="N", help="one followed project's log of N events")
+    p.add_argument("--age", type=float, default=0, metavar="DAYS", help="the history's files this old")
+    p.add_argument("--working", type=float, default=0, metavar="S",
+                   help="one live session's engine record rewritten every S seconds")
     p.add_argument("--keep", action="store_true", help="leave the synthetic machine on disk")
     p.add_argument("--joined-by", metavar="SCRIPTS", help="make the first tick with this copy of the scripts")
 
@@ -327,6 +684,8 @@ def in_process(env, scripts):
     os.environ.update(env.env)
     sys.path.insert(0, os.path.abspath(scripts))
     import sminos
+    if env.a.tcc:
+        sminos.TCC = True
     return sminos, sminos.daemon_module()
 
 
@@ -412,8 +771,11 @@ class EndpointStandin:
 
     def __init__(self, env):
         self.dir = os.path.join(env.root, "ep")
+        # A former name, as an endpoint that renamed the machine says it: the welcome's cut-over keeps the
+        # sessions held under it this machine's (sminos_rl10.welcomed).
+        identity = {**self.IDENTITY, "former": [env.a.former] if env.a.former else []}
         self.proc = spawn([sys.executable, os.path.join(HERE, "endpoint_standin.py"), "serve", self.dir,
-                           json.dumps({"identity": self.IDENTITY})],
+                           json.dumps({"identity": identity})],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             deadline = time.time() + 10
@@ -567,6 +929,30 @@ def cmd_run(a, env):
         else:
             p95 = None
             print("words pass: no pass in the window (longest gap %.2f s)" % gap)
+        ticks = tick_rows(env, run.pid, t0, t1)
+        measures = {"preset": a.preset, "scripts": os.path.abspath(a.scripts), "window": dt, "warmup": a.warmup,
+                    "poll": a.poll, "presence_every": a.presence_every, "load1": os.getloadavg()[0],
+                    "cpu": {"daemon run": 100 * (r1 - r0) / dt, "uplink": uplink_share,
+                            "stand-in": 100 * (e1 - e0) / dt},
+                    "words": {"wall": spread(walls), "gap": gap},
+                    "ticks": {"wall": spread([r["wall"] for r in ticks]), "cpu": spread([r["cpu"] for r in ticks])}}
+        if ticks:
+            print("daemon run ticks: %d in the window; wall p50 %.3f s, p95 %.3f s, max %.3f s; CPU p50 %.3f s, "
+                  "p95 %.3f s" % (len(ticks), measures["ticks"]["wall"]["p50"], measures["ticks"]["wall"]["p95"],
+                                  measures["ticks"]["wall"]["max"], measures["ticks"]["cpu"]["p50"],
+                                  measures["ticks"]["cpu"]["p95"]))
+        # Each in a window of its own, after the CPU window: none of them is in its figure.
+        if a.strace:
+            measures["strace"] = strace_window(env, up, a.strace)
+            print_strace(measures["strace"])
+        if a.pycalls:
+            measures["pycalls"] = pycalls_window(env, up, a.pycalls, a.pycalls_prof)
+            print_pycalls(measures["pycalls"])
+        if a.nudges:
+            measures["nudges"] = nudged = nudge_window(env, run.pid, a.nudges)
+            print("nudged ticks: %d of %d; wall %s; began after the nudge %s; ended after it %s" % (
+                len(nudged), a.nudges, " ".join("%.3f" % r["wall"] for r in nudged),
+                " ".join("%.3f" % r["began"] for r in nudged), " ".join("%.3f" % r["ended"] for r in nudged)))
         if a.import_events:
             took, got = import_burst(env, ep, a.import_events)
             print("import: %d of %d events from the endpoint, one RL10 events frame each, in the log after %.1f s%s"
@@ -583,6 +969,9 @@ def cmd_run(a, env):
         for what, ok, said in checks:
             print("gate: %s: %s (%s)" % (what, "ok" if ok else "FAILED", said))
         ok = all(c[1] for c in checks)
+        if a.measures_out:
+            measures["gate"] = {what: [bool(ok_), said] for what, ok_, said in checks}
+            write(a.measures_out, measures)
         print("gate (O14 B2 step 2): %s" % ("PASS" if ok else "FAIL"))
         return 0 if ok else 1
     finally:
@@ -593,6 +982,324 @@ def cmd_run(a, env):
             except subprocess.TimeoutExpired:
                 run.kill()
         ep.stop()
+
+
+def spread(xs):
+    """{n, p50, p95, max} of a list of numbers ({n: 0} for none)."""
+    xs = sorted(xs)
+    return {"n": len(xs), "p50": percentile(xs, 50), "p95": percentile(xs, 95), "max": xs[-1]} if xs else {"n": 0}
+
+
+def tick_rows(env, pid, t0, t1):
+    """The `daemon run` ticks (pid's) the hook timed that began in [t0, t1]."""
+    try:
+        with open(env.env["BENCH_TICK_TIMES"]) as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    except (OSError, KeyError):
+        return []
+    return [r for r in rows if r["pid"] == pid and t0 <= r["at"] <= t1]
+
+
+# What strace shows that is no file call: waits, signals, memory, threads, sockets, the clock.
+NOT_FILE = frozenset((
+    "futex", "poll", "ppoll", "epoll_wait", "epoll_pwait", "epoll_pwait2", "epoll_ctl", "epoll_create1", "select",
+    "pselect6", "clock_nanosleep", "nanosleep", "clock_gettime", "gettimeofday", "wait4", "waitid", "rt_sigaction",
+    "rt_sigprocmask", "rt_sigreturn", "sigaltstack", "getpid", "gettid", "getppid", "getuid", "geteuid", "getgid",
+    "getegid", "mmap", "munmap", "mprotect", "madvise", "mremap", "brk", "clone", "clone3", "set_robust_list",
+    "rseq", "exit", "exit_group", "socket", "socketpair", "connect", "bind", "listen", "accept", "accept4",
+    "getsockopt", "setsockopt", "getsockname", "getpeername", "sendto", "recvfrom", "sendmsg", "recvmsg",
+    "sendmmsg", "recvmmsg", "shutdown", "getrandom", "sched_yield", "sched_getaffinity", "kill", "tgkill", "prctl",
+    "pidfd_open", "pidfd_send_signal", "prlimit64", "uname", "sysinfo", "getrusage", "times", "eventfd2", "pipe2",
+    "dup", "dup2", "dup3", "restart_syscall"))
+PATH_CALLS = frozenset((
+    "openat", "open", "newfstatat", "stat", "lstat", "statx", "access", "faccessat", "faccessat2", "readlink",
+    "readlinkat", "mkdir", "mkdirat", "unlink", "unlinkat", "rename", "renameat", "renameat2", "utimensat", "chdir",
+    "statfs", "truncate", "execve", "connect", "chmod", "fchmodat", "getcwd"))
+STRACE_LINE = re.compile(r"(\d+) +(\d+\.\d+) (.*)")
+QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
+RESUMED = re.compile(r"<\.\.\. (\w+) resumed>(.*)")
+ERRNO = re.compile(r"= -1 (E[A-Z]+)")
+UUID_ANY = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def path_pattern(path, marks):
+    """A path as the evidence's tables name it: the synthetic SMINOS_HOME
+    `$S`, HOME `~`, its root `$R`; a project `<p>`, an engine project
+    directory `<dir>`, a checkout `<repo>`, a session or seat `<uuid>`."""
+    for root, mark in marks:
+        if path == root or path.startswith(root + "/"):
+            path = mark + path[len(root):]
+            break
+    for rx, to in ((r"^(\$S/projects/)[^/]+", r"\1<p>"), (r"^(~/\.claude/projects/)[^/]+", r"\1<dir>"),
+                   (r"^(~/\.claude/sessions/)\d+", r"\1<pid>"), (r"^(\$R/r/)[^/]+", r"\1<repo>"),
+                   (r"^(~/Documents/)[^/]+", r"\1<d>"), (r"^/proc/\d+", "/proc/<pid>")):
+        path = re.sub(rx, to, path)
+    return UUID_ANY.sub("<uuid>", path)
+
+
+def ptrace_scoped():
+    try:
+        with open("/proc/sys/kernel/yama/ptrace_scope") as f:
+            return int(f.read()) > 0
+    except (OSError, ValueError):
+        return False
+
+
+def strace_window(env, pid, seconds):
+    """The uplink's system calls for `seconds` (strace -f attached to it,
+    through `sudo -n` where ptrace is scoped to descendants), a second by
+    kind and by path pattern; the attaching and the detaching left out."""
+    out = os.path.join(env.root, "uplink.strace")
+    cmd = ["strace", "-f", "-qq", "-ttt", "-s", "256", "-o", out, "-p", str(pid)]
+    if os.geteuid() != 0 and ptrace_scoped():
+        cmd = ["sudo", "-n"] + cmd
+    p = spawn(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(2.0)
+    t0 = time.time()
+    time.sleep(seconds)
+    t1 = time.time()
+    p.send_signal(signal.SIGINT)
+    try:
+        p.wait(60)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+    return strace_summary(env, out, t0, t1)
+
+
+def strace_summary(env, path, t0, t1):
+    import collections
+    kinds, patterns, pending = collections.Counter(), collections.Counter(), {}
+    marks = sorted(((env.sh, "$S"), (env.home, "~"), (env.root, "$R")), key=lambda m: -len(m[0]))
+
+    def count(name, args, result):
+        kinds[name] += 1
+        if name in NOT_FILE:
+            return
+        m = QUOTED.search(args) if name in PATH_CALLS else None
+        err = ERRNO.search(result)
+        patterns[(name, err.group(1) if err else "", path_pattern(m.group(1), marks) if m else "")] += 1
+    try:
+        f = open(path, errors="replace")
+    except OSError:
+        return None
+    with f:
+        for line in f:
+            m = STRACE_LINE.match(line)
+            if not m:
+                continue
+            tid, at, rest = m.group(1), float(m.group(2)), m.group(3)
+            if rest.startswith("<... "):
+                r, held = RESUMED.match(rest), pending.pop(tid, None)
+                if r and held and t0 <= held[0] <= t1:
+                    count(held[1], held[2], r.group(2))
+                continue
+            name, _, args = rest.partition("(")
+            if not name.isidentifier():
+                continue   # +++ exited, --- a signal
+            if rest.endswith("<unfinished ...>"):
+                pending[tid] = (at, name, args)
+            elif t0 <= at <= t1:
+                count(name, args, args)
+    dt = t1 - t0
+    return {"seconds": dt, "calls": sum(kinds.values()) / dt,
+            "file": sum(n for k, n in kinds.items() if k not in NOT_FILE) / dt,
+            "kinds": {k: n / dt for k, n in kinds.most_common()},
+            "patterns": [[name, err, pat, n / dt] for (name, err, pat), n in patterns.most_common(80)]}
+
+
+def print_strace(s):
+    if not s or not s["kinds"]:
+        print("strace: nothing traced (is strace there, and may it attach?)")
+        return
+    print("strace (%.0f s): %.0f calls a second, %.0f of them file calls" % (s["seconds"], s["calls"], s["file"]))
+    print("  by kind: " + ", ".join("%s %.0f" % (k, n) for k, n in s["kinds"].items() if k not in NOT_FILE and n >= 1))
+    for name, err, pat, n in s["patterns"][:30]:
+        print("  %8.1f/s %-10s %-7s %s" % (n, name, err, pat))
+
+
+FILE_BUILTIN = re.compile(r"posix\.\w+>|io\.open>|DirEntry")
+WAITS = re.compile(r"acquire|select|poll|sleep|recv|accept|'wait'|\.wait>|connect|sendall|send'|readinto")
+
+
+def pycalls_window(env, pid, seconds, keep=None):
+    """The uplink's Python-level calls for `seconds`: cProfile begun and
+    ended in it by signal (the hook's BENCH_PROFILE), every thread's calls
+    counted; a second in all, of Python functions (cProfile's entries with
+    a file), and of each file call; its profile kept at `keep`."""
+    import pstats
+    out = env.env["BENCH_PROFILE"]
+    os.kill(pid, signal.SIGUSR1)
+    time.sleep(seconds)
+    os.kill(pid, signal.SIGUSR2)
+    deadline = time.time() + 120
+    while not os.path.exists(out):
+        if time.time() > deadline:
+            return None
+        time.sleep(0.2)
+    with open(out + ".window") as f:
+        w = json.load(f)
+    dt = w["to"] - w["from"]
+    total = python = 0
+    files = {}
+    for (fn, _, name), (_, nc, _, _, _) in pstats.Stats(out).stats.items():
+        total += nc
+        if fn != "~":
+            python += nc
+        elif FILE_BUILTIN.search(name):
+            files[name] = files.get(name, 0) + nc
+    if keep:
+        shutil.copy(out, keep)
+        shutil.copy(out + ".window", keep + ".window")
+    return {"seconds": dt, "calls": total / dt, "python": python / dt,
+            "file": {k: n / dt for k, n in sorted(files.items(), key=lambda kv: -kv[1])}}
+
+
+def print_pycalls(s):
+    if not s:
+        print("python calls: no profile came back")
+        return
+    print("python calls (%.0f s, cProfile): %.0f calls a second, %.0f of them Python functions; file calls a second: %s"
+          % (s["seconds"], s["calls"], s["python"], ", ".join("%s %.0f" % (re.sub(r"<built-in method |>", "", k), n)
+                                                          for k, n in s["file"].items() if n >= 1)))
+
+
+def nudge_window(env, pid, n):
+    """`n` nudges of `daemon run` (sminos.nudge_daemon's touch), each two
+    seconds after a tick ended, so none lands on the interval's own: the
+    tick it brought (the first to begin after it), its wall and CPU time,
+    and how long after the nudge it began and ended."""
+    path = os.path.join(env.sh, "daemon", "nudge")
+    out = []
+    for _ in range(n):
+        last = tick_rows(env, pid, 0, time.time())
+        if last:
+            time.sleep(max(0.0, last[-1]["at"] + last[-1]["wall"] + 2.0 - time.time()))
+        at = time.time()
+        with open(path, "a"):
+            pass
+        os.utime(path)
+        row, deadline = None, at + 30
+        while row is None and time.time() < deadline:
+            time.sleep(0.05)
+            row = next(iter(tick_rows(env, pid, at, at + 30)), None)
+        if row is not None:
+            out.append({"began": row["at"] - at, "wall": row["wall"], "cpu": row["cpu"],
+                        "ended": row["at"] + row["wall"] - at})
+    return out
+
+
+def cmd_shape(a, env):
+    """`shape`: see the module's docstring."""
+    import glob
+    ep = EndpointStandin(env)
+    try:
+        run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "probe"], env=env.env,
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not cut_over(env):
+            print("the endpoint stand-in's welcome did not cut the machine over")
+            return 1
+        run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    finally:
+        ep.stop()
+    sminos, _ = in_process(env, a.scripts)
+    up, pl, br = (sminos.sibling_module(m) for m in ("sminos_uplink", "sminos_plane", "sminos_bridge"))
+    records = sminos.records_module()
+    known = sminos.known_projects()
+    opened = up.hub_projects({"org": ORG, "machine": sminos.host_name()})
+    rows = {}
+    for p in known:
+        rows[p.id] = {m.session for m in sminos.view_of(p, titles=False).members if m.local and m.session}
+    members = set().union(*rows.values()) if rows else set()
+    in_open = set().union(*(rows.get(pid, set()) for pid in opened)) if opened else set()
+    seats = sminos.seats()
+    socks = glob.glob(os.path.join(env.sh, "bridge", "*.sock"))
+    answering = 0
+    for path in socks:
+        try:
+            answering += br.request(path, "GET", "/status", timeout=2)[0] == 200
+        except Exception:  # noqa: BLE001 — a socket nobody answers on
+            pass
+    logs = glob.glob(os.path.join(env.sh, "projects", "*", "log", "*.jsonl"))
+    events = 0
+    for path in logs:
+        with open(path, "rb") as f:
+            events += sum(1 for _ in f)
+    states = {os.path.basename(os.path.dirname(x)) for x in glob.glob(os.path.join(env.sh, "projects", "*",
+                                                                                     "uplink.json"))}
+    own = sum(len(glob.glob(os.path.join(p.home, "log", MACHINE + ".*.jsonl"))) for p in opened.values())
+    print("registered projects %d; hub projects open %d; with an uplink.json once open %d" % (
+        len(known), len(opened), len(states | set(opened))))
+    print("seats %d, %d of them where this machine may not read (TCC %s)" % (
+        len(seats), sum(1 for s in seats if sminos.read_refused(str(s.get("cwd") or ""))), sminos.TCC))
+    print("session-record files %d; members %d (%d in open projects), %d with a record" % (
+        len(glob.glob(os.path.join(env.sh, "session-records", "*.json"))), len(members), len(in_open),
+        sum(1 for s in members if records.read(s) is not None)))
+    print("engine records %d, live %d; bridge sockets %d, answering %d" % (
+        len(glob.glob(os.path.join(env.home, ".claude", "sessions", "*.json"))), len(pl.Records().scan()),
+        len(socks), answering))
+    print("host stores %d (%d files); own writer files in open projects %d; under the former name %d" % (
+        len(glob.glob(os.path.join(env.sh, "projects", "*", "host"))),
+        len(glob.glob(os.path.join(env.sh, "projects", "*", "host", "*.jsonl"))), own,
+        len(glob.glob(os.path.join(env.sh, "projects", "*", "log", a.former + ".*.jsonl"))) if a.former else 0))
+    print("log files %d, events %d; engine project dirs %d" % (len(logs), events, len(os.listdir(env.projects))))
+
+
+def cmd_passes(argv):
+    """`passes`: see the module's docstring."""
+    import pstats
+    p = argparse.ArgumentParser(prog="bench_scale.py passes")
+    p.add_argument("profile")
+    p.add_argument("--top", type=int, default=25)
+    a = p.parse_args(argv)
+    st = pstats.Stats(a.profile)
+    st.calc_callees()
+    try:
+        with open(a.profile + ".window") as f:
+            w = json.load(f)
+        secs = w["to"] - w["from"]
+    except (OSError, ValueError, KeyError):
+        secs = None
+
+    def pct(t):
+        return 100 * t / secs if secs else float("nan")
+
+    def label(k):
+        return k[2] if k[0] == "~" else "%s:%d %s" % (os.path.basename(k[0]), k[1], k[2])
+
+    def find(file, name, caller=None):
+        for k, v in st.stats.items():
+            if k[0].endswith(file) and k[2] == name and (
+                    caller is None or any(c[0].endswith(caller[0]) and c[2] == caller[1] for c in v[4])):
+                return k
+        return None
+
+    def show(title, key):
+        if key is None:
+            print("%s: not in the profile" % title)
+            return
+        _, nc, tt, ct, _ = st.stats[key]
+        print("%s: %d calls, %.3f s cumulative (%.1f%% of the window), %.3f s its own" % (title, nc, ct, pct(ct), tt))
+        for k, edge in sorted(st.all_callees.get(key, {}).items(), key=lambda kv: -kv[1][3])[:a.top]:
+            print("  %-60s %8d calls %8.3f s %6.2f%%" % (label(k), edge[0], edge[3], pct(edge[3])))
+    print("window %.1f s; times are wall time under the profiler, every thread's" % (secs or float("nan")))
+    link_tick = find("sminos_uplink.py", "tick", ("sminos_uplink.py", "serve_link"))
+    show("Link.tick", link_tick)
+    show("Link.members", find("sminos_uplink.py", "members", ("sminos_uplink.py", "tick")))
+    show("Link.upload_pass", find("sminos_uplink.py", "upload_pass", ("sminos_uplink.py", "tick")))
+    show("Plane.tick", find("sminos_plane.py", "tick", ("sminos_uplink.py", "tick")))
+    show("Bridges.probe (its threads)", find("sminos_plane.py", "probe"))
+    roots = sorted(((k, v) for k, v in st.stats.items() if not v[4]), key=lambda kv: -kv[1][3])
+    print("entries no profiled caller called (the frames running when the profile began, the threads' roots):")
+    for k, v in roots[:8]:
+        print("  %-60s %8d calls %8.3f s %6.2f%%" % (label(k), v[1], v[3], pct(v[3])))
+    own = sorted(((k, v) for k, v in st.stats.items() if not WAITS.search(k[2])), key=lambda kv: -kv[1][2])
+    print("most time of their own (waits left out):")
+    for k, v in own[:a.top]:
+        print("  %-60s %8d calls %8.3f s %6.2f%%" % (label(k), v[1], v[2], pct(v[2])))
+    total = sum(v[1] for v in st.stats.values())
+    print("calls: %d in all, %.0f a second" % (total, total / secs if secs else float("nan")))
 
 
 def endpoint_host(env, scripts):
@@ -843,9 +1550,11 @@ def end_started():
 def main():
     if sys.argv[1:2] == ["_profiled"]:
         return profiled(sys.argv[2], sys.argv[3], sys.argv[4:])
+    if sys.argv[1:2] == ["passes"]:
+        return cmd_passes(sys.argv[2:])
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="mode", required=True)
-    for mode in ("tick", "profile", "run", "verbs", "opens"):
+    for mode in ("tick", "profile", "run", "verbs", "opens", "shape"):
         s = sub.add_parser(mode)
         s.add_argument("scripts")
         if mode == "profile":
@@ -859,6 +1568,17 @@ def main():
                                          "the log")
     sub.choices["run"].add_argument("--profile-uplink", metavar="OUT",
                                     help="run the uplink alone under cProfile for warmup + seconds, its profile to OUT")
+    sub.choices["run"].add_argument("--strace", type=float, default=0, metavar="S",
+                                    help="after the CPU window, the uplink's system calls for S seconds")
+    sub.choices["run"].add_argument("--pycalls", type=float, default=0, metavar="S",
+                                    help="then its Python-level calls for S seconds, under cProfile")
+    sub.choices["run"].add_argument("--pycalls-prof", metavar="OUT", help="keep that profile at OUT (see `passes`)")
+    sub.choices["run"].add_argument("--nudges", type=int, default=0, metavar="N",
+                                    help="then N nudges of daemon run, each its tick's wall time")
+    sub.choices["run"].add_argument("--poll", type=float, default=0, metavar="S", help="the uplink's POLL")
+    sub.choices["run"].add_argument("--presence-every", type=float, default=0, metavar="S",
+                                    help="the plane's PRESENCE_EVERY")
+    sub.choices["run"].add_argument("--measures-out", metavar="FILE", help="every figure of the run as JSON")
     sub.choices["run"].add_argument("--words", type=int, default=2, metavar="W",
                                     help="words-gated events owed to each live session in a hub checkout, "
                                          "one from each of W members, never answered")
@@ -870,6 +1590,9 @@ def main():
     for mode in ("run", "opens"):
         sub.choices[mode].add_argument("--rl10", action="store_true",
                                        help="accepted, and changes nothing: RL10 is the only path (#153 M5)")
+    preset = next((sys.argv[i + 1] for i, x in enumerate(sys.argv[:-1]) if x == "--preset"), None)
+    for s in sub.choices.values():
+        s.set_defaults(**PRESETS.get(preset, {}))   # under the flags given: argparse's defaults
     a = p.parse_args()
     stop_on_signals()
     root = env = None
@@ -881,6 +1604,13 @@ def main():
         print("built %s in %.1f s: %d engine project dirs, %d seats (%d0%% without a transcript), %d live sessions, "
               "%d hub projects, %d local" % (root, time.perf_counter() - t, a.dirs, a.seats, a.missing, a.live,
                                              len(env.hub_ids), a.local), flush=True)
+        if a.preset:
+            print("preset %s: %d retired hub projects, %d seats in ~/Documents (TCC %s), %d session records, %d "
+                  "engine records of processes gone, %d bridges (%d answering), %d host files, former name %r "
+                  "holding %d, a log of %d events, history %g days old, a working session every %g s" % (
+                      a.preset, a.retired, a.refused, "on" if a.tcc else "off", a.records, a.gone, a.bridges,
+                      a.answering, a.host_files, a.former, a.former_sessions, a.big_log, a.age, a.working),
+                  flush=True)
         if a.joined_by:
             # The first tick's joins made by another copy of the scripts (the
             # same events any copy writes), so a slow copy's steady state is
@@ -890,7 +1620,7 @@ def main():
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print("joined by %s's first tick in %.1f s" % (a.joined_by, time.perf_counter() - t), flush=True)
         status = {"tick": cmd_tick, "profile": cmd_profile, "run": cmd_run, "verbs": cmd_verbs,
-                  "opens": cmd_opens}[a.mode](a, env)
+                  "opens": cmd_opens, "shape": cmd_shape}[a.mode](a, env)
     except Stopped:
         pass
     finally:
