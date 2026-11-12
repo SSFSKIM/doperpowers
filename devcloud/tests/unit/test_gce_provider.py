@@ -155,6 +155,13 @@ class IdentityTest(GceBase):
             self.assertEqual(call["env"].get("CLOUDSDK_CORE_ACCOUNT"), SEED_EMAIL)
             self.assertEqual(call["env"].get("CLOUDSDK_CORE_PROJECT"), "example-project")
 
+    def test_gcloud_keeps_no_log_file(self):
+        """gcloud writes a debug log of every invocation under its config directory, the whole JSON
+        answer included: megabytes for each list, and a loop of `vm ssh` filled a disk with them."""
+        self.ok("list")
+        for call in self.state()["calls"]:
+            self.assertEqual(call["env"].get("CLOUDSDK_CORE_DISABLE_FILE_LOGGING"), "1")
+
     def test_a_changed_seed_is_activated_again(self):
         self.ok("list")
         self.seed.write_text(self.seed.read_text().replace("not-a-key", "not-a-key-either"))
