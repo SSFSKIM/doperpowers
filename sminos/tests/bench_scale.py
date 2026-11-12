@@ -729,7 +729,16 @@ def cmd_profile(a, env):
 
 
 def cpu_seconds(pid):
-    """A process's CPU time so far (user + system), from ps."""
+    """A process's CPU time so far (user + system): from /proc where there is
+    one (clock ticks, a hundredth of a second), else from ps, which prints
+    hundredths on macOS and whole seconds on Linux — over a 60 s window a
+    whole second is 1.7 % of a core, coarser than the 5 % gate can be read by."""
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            fields = f.read().rpartition(")")[2].split()   # after the command's name, which may hold spaces
+        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")   # utime, stime
+    except (OSError, ValueError, IndexError):
+        pass
     out = run_child(["ps", "-o", "time=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
     if not out:
         return None
