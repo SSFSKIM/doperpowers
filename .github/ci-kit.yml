@@ -59,7 +59,7 @@ gates:
   - name: sminos-idle
     run: python3 -B sminos/tests/bench_scale.py run sminos/skills/sminos/scripts --preset macbook --words 0 --working 30 --warmup 60 --seconds 10 --pycalls 60 --idle-gate
     timeout: 10
-    paths: ["sminos/**", ".github/**"]
+    paths: ["sminos/**", ".github/ci-kit.yml"]
 
   # The sminos plugin's mods (the bridge, the ask, the address), installed as the mods gate is.
   - name: sminos-mods
