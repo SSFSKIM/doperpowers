@@ -1,7 +1,7 @@
 {
   "what": "rl10-conversation.json is O10's RL10 conversation fixture, copied byte for byte; rl10_conformance.py checks the copy against `blob` before it replays it.",
   "repository": "MAWS",
-  "commit": "67e104ba4bb218f25f0f22978cf2b4afefe67dfc",
+  "commit": "85e9343689a2a759f812c6568ba7c6d1c80ff510",
   "path": "test/endpoint/rl10/conversation.json",
-  "blob": "038ffeb6dbc513aea52f804a264e45b1ae4b6b27"
+  "blob": "7e73b4115f90a4e24b9d484e70e7dd4f4f72f694"
 }
