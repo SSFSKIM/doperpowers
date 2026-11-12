@@ -90,9 +90,13 @@ kept as history.
   records, engine records and live ones, bridges answering, host stores, own
   and former-name writer files, log events), to hold against the Mac it
   stands for.
-- `passes`: a profile `run --pycalls` kept, read by pass: the callees of
-  the uplink's Link.tick and of the plane's tick with their cumulative time,
-  the threads' roots, and the functions with the most time of their own.
+- `passes`: a profile `run --pycalls` kept, read by pass: the CPU time of
+  each thread and of each pass (the hook's timers: every call's CPU time on
+  its own thread, the two member publishes, the plane's tick, presence and
+  member reads, the upload pass, the scan, the words pass, the records scan,
+  the bridge probes, each subscription's pump, the transcripts' workers and
+  the metas look), then cProfile's callees of the main passes and the
+  functions with the most time of their own.
 
 --preset macbook or mini builds a machine of that Mac's shape (PRESETS:
 the counts read on each, 2026-11-12; a flag given beside it wins), with
@@ -105,7 +109,15 @@ records, engine records of processes gone, bridge sockets (most answering
 `GET /status` from this process), host stores with their cursors kept,
 one large log, the history aged past HOT_FOR, and one live session's
 engine record rewritten every --working seconds, as a working session's
-is. With no preset the machine is the one the B2 gate was set on.
+is; the mini's, 11 transcript subscriptions held open (--subs). With no
+preset the machine is the one the B2 gate was set on.
+
+`run --subs N` subscribes, once the uplink's stream has opened their
+projects, to N sessions' transcripts (the live sessions in hub checkouts
+first, then the member seats that have one), as a desk window does, and
+holds every one open through the CPU window and the windows after it:
+the sessions idle, nothing appended. It says how many snapshots arrived
+before the CPU window, and how many subscriptions had ended by its end.
 
 `run` also takes, each in a window of its own after the CPU window, so
 neither touches the CPU figure: --strace S, the uplink's system calls for S
@@ -151,11 +163,15 @@ PRESETS = {
     "macbook": dict(dirs=1650, seats=73, live=15, gone=27, local=25, rooted=20, followed=36, retired=20, remote=12,
                     says=700, own=36, refused=26, seat_members=40, records=251, bridges=12, answering=10,
                     host_projects=8, host_files=78, host_events=3900, former="oldbook", former_sessions=17,
-                    big_log=30000, seat_brief=3000, age=3.0, working=3.0, tcc=True),
-    "mini": dict(dirs=1200, seats=205, live=8, gone=13, local=9, rooted=15, followed=43, retired=19, remote=12,
-                 says=700, own=30, refused=20, seat_members=40, records=150, bridges=14, answering=12,
-                 host_projects=8, host_files=78, host_events=3900, former="", former_sessions=0,
-                 big_log=30000, seat_brief=3000, age=3.0, working=3.0, tcc=True),
+                    big_log=30000, seat_brief=3000, age=3.0, working=3.0, tcc=True, subs=0),
+    # The mini's own counts, read there: 88 projects, 555 own writer files, 3,002 files under the logs, 6
+    # host stores of 52 files, 1,510 engine project directories, 11 transcript subscriptions held open by a
+    # MAWS window (11 `plane-transcript` threads in a sample of its uplink); its 14 bridge sockets make 14 of its
+    # 21 engine records live sessions (a socket is a running session's).
+    "mini": dict(dirs=1480, seats=205, live=14, gone=7, local=9, rooted=15, followed=43, retired=19, remote=39,
+                 says=700, own=32, refused=20, seat_members=40, records=150, bridges=14, answering=12,
+                 host_projects=6, host_files=52, host_events=2600, former="", former_sessions=0,
+                 big_log=30000, seat_brief=3000, age=3.0, working=3.0, tcc=True, subs=11),
 }
 
 # The bench's hook, a sitecustomize on the PYTHONPATH of every process it
@@ -175,7 +191,43 @@ KNOBS = {"sminos": [("TCC", "BENCH_TCC", lambda v: v == "1")],
          "sminos_plane": [("PRESENCE_EVERY", "BENCH_PRESENCE_EVERY", float)]}
 
 
+# The passes timed in the profile's window, each call's CPU time on its own thread (inclusive of what it
+# calls): (class or None for a module function, name). Absent ones (another version's) are passed by.
+PASSES = {"sminos_uplink": [("Link", n) for n in (
+              "tick", "members", "publish_members", "upload_pass", "upload", "deliveries", "host_pass",
+              "machine_presence", "leave_pass", "sync_policy", "words_pass", "ask_words", "relay_requests",
+              "relay_rpcs", "deliver_imports", "post_session")] + [(None, "hub_projects")],
+          "sminos_plane": [("Plane", n) for n in ("tick", "presence", "stale", "reread", "refresh")]
+              + [("Records", "scan"), ("Subscription", "pump"), ("Bridges", "probe"), ("Bridges", "answers"),
+                 ("Warmer", "tick"), ("Transcript", "work"), ("Disk", "meta"), ("Disk", "facts"), (None, "look")]}
+TIMED, ON = {}, [False]
+
+
+def timed(label, fn):
+    def call(*args, **kwargs):
+        if not ON[0]:
+            return fn(*args, **kwargs)
+        t = time.thread_time_ns()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            r = TIMED.setdefault(label, [0, 0])
+            r[0] += 1
+            r[1] += time.thread_time_ns() - t
+    return call
+
+
+def time_passes(name, mod):
+    for cls, fn in PASSES.get(name, ()):
+        owner = getattr(mod, cls, None) if cls else mod
+        if owner is not None and callable(getattr(owner, fn, None)):
+            setattr(owner, fn, timed("%s.%s" % (cls or name, fn), getattr(owner, fn)))
+
+
 def patch(name, mod):
+    if os.environ.get("BENCH_PROFILE") and name in PASSES and not hasattr(mod, "_bench_passes"):
+        time_passes(name, mod)
+        mod._bench_passes = True
     for attr, var, conv in KNOBS.get(name, ()):
         if os.environ.get(var):
             setattr(mod, attr, conv(os.environ[var]))
@@ -214,6 +266,21 @@ class Finder(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, Finder())
 
+def thread_ticks():
+    """{native id: (thread name, its CPU clock ticks)} of the threads running
+    now, and the whole process's ticks under the key None (Linux's /proc)."""
+    import threading
+    out = {}
+    for tid, name in [(None, "")] + [(t.native_id, t.name) for t in threading.enumerate()]:
+        try:
+            with open("/proc/self/stat" if tid is None else "/proc/self/task/%d/stat" % tid) as f:
+                fields = f.read().rpartition(")")[2].split()
+            out[tid] = (name, int(fields[11]) + int(fields[12]))
+        except (OSError, ValueError, IndexError):
+            pass
+    return out
+
+
 if os.environ.get("BENCH_PROFILE") and sys.argv[1:3] == ["daemon", "uplink"]:
     import signal
     held = {}
@@ -222,6 +289,9 @@ if os.environ.get("BENCH_PROFILE") and sys.argv[1:3] == ["daemon", "uplink"]:
         import cProfile
         if "pr" not in held:
             held["at"] = time.time()
+            held["threads"] = thread_ticks()
+            TIMED.clear()
+            ON[0] = True
             held["pr"] = cProfile.Profile()
             held["pr"].enable()
 
@@ -230,10 +300,21 @@ if os.environ.get("BENCH_PROFILE") and sys.argv[1:3] == ["daemon", "uplink"]:
         if pr is None:
             return
         pr.disable()
+        ON[0] = False
+        now, before = thread_ticks(), held.pop("threads")
+        tck = os.sysconf("SC_CLK_TCK")
+        threads = {}
+        for tid, (name, ticks) in now.items():
+            if tid is not None:
+                threads.setdefault(name, [0, 0.0])
+                threads[name][0] += 1
+                threads[name][1] += (ticks - before.get(tid, (name, 0))[1]) / tck
+        whole = (now[None][1] - before[None][1]) / tck if None in now and None in before else None
         out = os.environ["BENCH_PROFILE"]
         pr.dump_stats(out + ".tmp")
         with open(out + ".window", "w") as f:
-            json.dump({"from": held["at"], "to": time.time()}, f)
+            json.dump({"from": held["at"], "to": time.time(), "cpu": whole, "threads": threads,
+                       "passes": {k: {"calls": n, "cpu": ns / 1e9} for k, (n, ns) in TIMED.items()}}, f)
         os.replace(out + ".tmp", out)
     signal.signal(signal.SIGUSR1, begin)
     signal.signal(signal.SIGUSR2, end)
@@ -352,7 +433,8 @@ class Env:
             # Hub projects of the org with no checkout here, which the uplink opens to read and deliver.
             names[follow] = "phone walk" if i == 0 else "followed%d" % i
             self.register(follow, names[follow], "")
-        self.hub_ids = [p for p, _ in hubs.values()] + [own, mini] + follows
+        self.rooted_ids = [p for p, _ in hubs.values()]
+        self.hub_ids = self.rooted_ids + [own, mini] + follows
         # Hub projects the org's directory retired: registered, each with the uplink.json it kept when open.
         self.retired_ids = [self.uid() for _ in range(a.retired)]
         for i, pid in enumerate(self.retired_ids):
@@ -376,7 +458,7 @@ class Env:
         # where each is is told from the writer files this machine holds of it, under its name now or, for
         # the first FORMER_SESSIONS, a former one. SEAT_MEMBERS of the rest, when given, are not retired
         # (the daemon's tick joins each where its directory resolves), the others retired.
-        self.member_seats, self.refused_seats, self.former_held = [], [], []
+        self.member_seats, self.refused_seats, self.former_held, self.seat_targets = [], [], [], []
         for i in range(a.seats):
             sid = self.uid()
             refused = i < a.refused
@@ -402,6 +484,8 @@ class Env:
                 if status != "retired":
                     self.member_seats.append(sid)
             missing = (i % 10) < a.missing
+            if not refused and status != "retired" and not missing and cwd in project_of:
+                self.seat_targets.append({"sid": sid, "project": project_of[cwd]})
             if not missing:
                 self.transcript(cwd, sid, "seat work %d" % i)
             seat = {"alias": "seat%d" % i, "group": "fleet", "current": sid, "cwd": cwd, "status": status,
@@ -592,13 +676,20 @@ class Env:
             class Status(http.server.BaseHTTPRequestHandler):
                 protocol_version = "HTTP/1.1"
                 data, stopping = body, self.stopping
+                # A quiet session's bridge snapshot (sminos_bridge's Child.snapshot): nothing streaming,
+                # nothing pending, its named blocks kept.
+                snapshot = (json.dumps({
+                    "type": "snapshot", "session": s["sid"], "protocol": 1, "pid": s["pid"], "sessionInfo": {},
+                    "turns": [], "streaming": [], "agents": [], "usage": None, "override": None,
+                    "capabilities": {"send": True, "interrupt": True, "ask": True}, "cut": {},
+                    "namedBlocks": True, "pending": [], "settled": []}) + "\n").encode()
 
                 def do_GET(self):
                     if self.path == "/events":
                         self.send_response(200)
                         self.send_header("content-type", "application/x-ndjson")
                         self.end_headers()
-                        self.wfile.write(b'{"type": "snapshot", "pending": [], "settled": []}\n')
+                        self.wfile.write(self.snapshot)
                         self.wfile.flush()
                         self.stopping.wait()
                         self.close_connection = True
@@ -898,7 +989,9 @@ def cmd_run(a, env):
             return 0
         run = spawn([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "run", "--interval",
                      "5"], env=env.env, stdout=log, stderr=subprocess.STDOUT)
-        time.sleep(a.warmup)
+        began = time.time()
+        subs = hold_subscriptions(env, ep, a.subs, began + a.warmup) if a.subs else []
+        time.sleep(max(0.0, began + a.warmup - time.time()))
         status = run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "status"],
                            env=env.env, capture_output=True, text=True).stdout
         if not cut_over(env) or "uplink: RL10 (local-only), running" not in status:
@@ -906,6 +999,7 @@ def cmd_run(a, env):
                 a.warmup, next((x for x in status.splitlines() if x.startswith("uplink")), "no uplink line")))
             return 1
         up = int(open(os.path.join(env.sh, "daemon", "uplink.lock")).read().split()[1])
+        held = subscription_states(ep, subs) if subs else None
         r0, u0, e0, t0, seen = cpu_seconds(run.pid), cpu_seconds(up), cpu_seconds(ep.proc.pid), time.time(), \
             ticks_ended(env)
         stamps = set()
@@ -938,9 +1032,14 @@ def cmd_run(a, env):
         else:
             p95 = None
             print("words pass: no pass in the window (longest gap %.2f s)" % gap)
+        if subs:
+            print("subscriptions: %d of %d asked, %d snapshots before the CPU window, %d ended by its end%s" % (
+                held["asked"], a.subs, held["snapshots"], subscription_states(ep, subs)["ended"],
+                "" if held["asked"] == a.subs else " (fewer sessions to subscribe to than asked)"))
         ticks = tick_rows(env, run.pid, t0, t1)
         measures = {"preset": a.preset, "scripts": os.path.abspath(a.scripts), "window": dt, "warmup": a.warmup,
                     "poll": a.poll, "presence_every": a.presence_every, "load1": os.getloadavg()[0],
+                    "subs": {"asked": a.subs, **(held or {})},
                     "cpu": {"daemon run": 100 * (r1 - r0) / dt, "uplink": uplink_share,
                             "stand-in": 100 * (e1 - e0) / dt},
                     "words": {"wall": spread(walls), "gap": gap},
@@ -957,6 +1056,8 @@ def cmd_run(a, env):
         if a.pycalls:
             measures["pycalls"] = pycalls_window(env, up, a.pycalls, a.pycalls_prof)
             print_pycalls(measures["pycalls"])
+        if subs:
+            measures["subs"]["ended after the windows"] = subscription_states(ep, subs)["ended"]
         if a.nudges:
             measures["nudges"] = nudged = nudge_window(env, run.pid, a.nudges)
             print("nudged ticks: %d of %d; wall %s; began after the nudge %s; ended after it %s" % (
@@ -991,6 +1092,41 @@ def cmd_run(a, env):
             except subprocess.TimeoutExpired:
                 run.kill()
         ep.stop()
+
+
+def hold_subscriptions(env, ep, n, by):
+    """`n` subscriptions to sessions' transcripts, sent down the uplink's
+    stream by the stand-in once that stream has opened their projects (by
+    `by` at the latest): the live sessions in hub checkouts first, then the
+    member seats with a transcript. Never unsubscribed. [(project, sub)]."""
+    import base64
+    targets = [s for s in env.live_sessions if s["project"] in env.rooted_ids] + env.seat_targets
+    targets = targets[:n]
+    pids = {s["project"] for s in targets}
+    while time.time() < by:
+        o = ep.ctl("opened")
+        if o.get("conn") is not None and pids <= set(o.get("projects") or ()):
+            break
+        time.sleep(0.5)
+    out = []
+    for s in targets:
+        sub = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
+        ep.ctl("send", {"frames": [{"t": "subscribe", "project": s["project"], "session": s["sid"], "agentId": None,
+                                    "sub": sub}]})
+        out.append((s["project"], sub))
+    return out
+
+
+def subscription_states(ep, subs):
+    """How many of `subs` the stand-in has had a snapshot for, and how many an
+    `end` for, from what it received."""
+    mine = {sub for _, sub in subs}
+    snaps, ends = set(), set()
+    for r in ep.ctl("state")["received"]:
+        m = r["frame"].get("message") if r["frame"].get("t") == "session" else None
+        if isinstance(m, dict) and m.get("sub") in mine:
+            (snaps if m.get("kind") == "snapshot" else ends if m.get("kind") == "end" else set()).add(m["sub"])
+    return {"asked": len(subs), "snapshots": len(snaps), "ended": len(ends)}
 
 
 def spread(xs):
@@ -1269,7 +1405,7 @@ def cmd_passes(argv):
             w = json.load(f)
         secs = w["to"] - w["from"]
     except (OSError, ValueError, KeyError):
-        secs = None
+        w, secs = {}, None
 
     def pct(t):
         return 100 * t / secs if secs else float("nan")
@@ -1277,12 +1413,12 @@ def cmd_passes(argv):
     def label(k):
         return k[2] if k[0] == "~" else "%s:%d %s" % (os.path.basename(k[0]), k[1], k[2])
 
-    def find(file, name, caller=None):
-        for k, v in st.stats.items():
-            if k[0].endswith(file) and k[2] == name and (
-                    caller is None or any(c[0].endswith(caller[0]) and c[2] == caller[1] for c in v[4])):
-                return k
-        return None
+    def find(file, name):
+        """The function of that name in that file with the most time: the
+        pass timers' wrappers stand between a pass and its caller, so callers
+        cannot tell two methods of one name apart."""
+        found = [k for k in st.stats if k[0].endswith(file) and k[2] == name]
+        return max(found, key=lambda k: st.stats[k][3]) if found else None
 
     def show(title, key):
         if key is None:
@@ -1292,13 +1428,27 @@ def cmd_passes(argv):
         print("%s: %d calls, %.3f s cumulative (%.1f%% of the window), %.3f s its own" % (title, nc, ct, pct(ct), tt))
         for k, edge in sorted(st.all_callees.get(key, {}).items(), key=lambda kv: -kv[1][3])[:a.top]:
             print("  %-60s %8d calls %8.3f s %6.2f%%" % (label(k), edge[0], edge[3], pct(edge[3])))
-    print("window %.1f s; times are wall time under the profiler, every thread's" % (secs or float("nan")))
-    link_tick = find("sminos_uplink.py", "tick", ("sminos_uplink.py", "serve_link"))
-    show("Link.tick", link_tick)
-    show("Link.members", find("sminos_uplink.py", "members", ("sminos_uplink.py", "tick")))
-    show("Link.upload_pass", find("sminos_uplink.py", "upload_pass", ("sminos_uplink.py", "tick")))
-    show("Plane.tick", find("sminos_plane.py", "tick", ("sminos_uplink.py", "tick")))
+    print("window %.1f s" % (secs or float("nan")))
+    if w.get("passes") is not None:
+        print("CPU in the window: %.2f s, %.1f%% of a core (under the profiler); by thread (threads that came and "
+              "went inside the window are in the whole only):" % (w["cpu"], pct(w["cpu"])))
+        for name, (n, cpu) in sorted(w["threads"].items(), key=lambda kv: -kv[1][1]):
+            print("  %-28s %3d threads %7.2f s %6.2f%%" % (name, n, cpu, pct(cpu)))
+        print("passes, each call's CPU time on its own thread, what it calls included (so they nest):")
+        for name, r in sorted(w["passes"].items(), key=lambda kv: -kv[1]["cpu"]):
+            print("  %-34s %8d calls %7.3f s %6.2f%% %8.3f ms a call" % (
+                name, r["calls"], r["cpu"], pct(r["cpu"]), 1000 * r["cpu"] / max(1, r["calls"])))
+    print("cProfile (wall time; on Python 3.12 one stack serves every thread, so a caller's cumulative time can "
+          "read below its callees' while threads run: read the edges' calls, and the times as rough):")
+    show("Link.tick", find("sminos_uplink.py", "tick"))
+    show("Link.members", find("sminos_uplink.py", "members"))
+    show("Link.upload_pass", find("sminos_uplink.py", "upload_pass"))
+    show("Plane.tick (or the warmer's, whichever took longer)", find("sminos_plane.py", "tick"))
     show("Bridges.probe (its threads)", find("sminos_plane.py", "probe"))
+    show("Subscription.pump (each subscription, each plane tick)", find("sminos_plane.py", "pump"))
+    for k in sorted(k for k in st.stats if k[0].endswith("sminos_plane.py") and k[2] in ("work", "look", "meta",
+                                                                                            "facts")):
+        show("plane %s (line %d: the transcripts' workers, the metas look)" % (k[2], k[1]), k)
     roots = sorted(((k, v) for k, v in st.stats.items() if not v[4]), key=lambda kv: -kv[1][3])
     print("entries no profiled caller called (the frames running when the profile began, the threads' roots):")
     for k, v in roots[:8]:
@@ -1588,6 +1738,8 @@ def main():
     sub.choices["run"].add_argument("--presence-every", type=float, default=0, metavar="S",
                                     help="the plane's PRESENCE_EVERY")
     sub.choices["run"].add_argument("--measures-out", metavar="FILE", help="every figure of the run as JSON")
+    sub.choices["run"].add_argument("--subs", type=int, default=0, metavar="N",
+                                    help="transcript subscriptions held open from the warm-up through every window")
     sub.choices["run"].add_argument("--words", type=int, default=2, metavar="W",
                                     help="words-gated events owed to each live session in a hub checkout, "
                                          "one from each of W members, never answered")
