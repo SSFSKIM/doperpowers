@@ -4828,6 +4828,14 @@ else
   fail "leaving: counted connected time under complete frames, reset by a listing, never a held project (test_leaving.py)"
   sed 's/^/    /' "$TEST_ROOT/leaving.out"
 fi
+# daemon profile: the live uplink and daemon run profile themselves at a request riding the nudge; no look without a
+# nudge, an older process untouched and said so, names and counts only, mode 0600.
+if python3 -B "$SCRIPT_DIR/test_daemon_profile.py" > "$TEST_ROOT/daemon-profile.out" 2>&1; then
+  pass "daemon profile: a window at a nudge's request, every thread, no idle look, an older daemon said so (test_daemon_profile.py)"
+else
+  fail "daemon profile: a window at a nudge's request, every thread, no idle look, an older daemon said so (test_daemon_profile.py)"
+  sed 's/^/    /' "$TEST_ROOT/daemon-profile.out"
+fi
 # A copy that is not the pinned one fails, naming both hashes.
 mkdir -p "$TEST_ROOT/rule-pin"
 cp "$SCRIPT_DIR/vectors/maws/PIN.json" "$TEST_ROOT/rule-pin/"

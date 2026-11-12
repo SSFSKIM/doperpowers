@@ -128,6 +128,7 @@ import sminos_hublog as hublog  # noqa: E402
 import sminos_outcomes as outcomes  # noqa: E402
 import sminos_plane as plane  # noqa: E402
 import sminos_policy as policy  # noqa: E402
+import sminos_profile as profile  # noqa: E402
 import sminos_requests as requests  # noqa: E402
 import sminos_rl10 as rl10  # noqa: E402
 import sminos_rpc as rpc  # noqa: E402
@@ -2113,6 +2114,15 @@ class Link:
         now = time.time()
         nudge = daemon.nudged_at()
         nudged, self.nudge = nudge != self.nudge, nudge
+        if nudged:
+            profile.noticed("uplink")   # `daemon profile`: its window begins after this tick
+        try:
+            self.tick_passes(now, nudged)
+        finally:
+            profile.after_pass()
+
+    def tick_passes(self, now, nudged):
+        """tick's passes, once it has looked at the nudge."""
         words = self.words_now(nudged)
         held = True   # until the member set is published (a failure there holds the tick)
         try:
