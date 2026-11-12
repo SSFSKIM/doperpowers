@@ -79,14 +79,15 @@
         { "open": "main" },
         { "up": { "t": "hello", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["audience", "record", "locations"], "token": "{{token}}", "sminos": { "version": "1.25.0" }, "policy": { "read_only": false, "ceiling": "settings" } }, "vary": ["sminos.version"], "note": "the policy is taken only while the endpoint holds none" },
         {
-          "down": { "t": "welcome", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["access", "reach", "record"], "build": "{{build}}", "identity": { "org": "{{org}}", "hub": "{{hub}}", "name": "{{name}}", "former": [], "ref": "{{ref}}", "enrolled": "{{enrolled}}" }, "policy": { "read_only": false, "ceiling": "settings" }, "stateVersion": 3 },
+          "down": { "t": "welcome", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["access", "reach", "record", "locations"], "build": "{{build}}", "identity": { "org": "{{org}}", "hub": "{{hub}}", "name": "{{name}}", "former": [], "ref": "{{ref}}", "enrolled": "{{enrolled}}" }, "policy": { "read_only": false, "ceiling": "settings" }, "stateVersion": 3 },
           "vary": ["stateVersion"],
           "note": "former is names only; capabilities name no kind filter"
         },
         { "down": { "t": "revoked", "version": 3, "devices": [], "members": [], "keys": [] }, "vary": ["version"], "note": "the head's whole set, first after every welcome" },
         {
-          "down": { "t": "org", "projects": [{ "id": "{{project:machine}}", "name": "{{name}}", "kind": "machine", "machine": "{{name}}", "retired": false }], "machines": [{ "name": "{{name}}", "online": false, "seen": null }] },
-          "note": "DX2's org shape built from the head: online is unknown on RL1"
+          "down": { "t": "org", "projects": [{ "id": "{{project:machine}}", "name": "{{name}}", "kind": "machine", "machine": "{{name}}", "retired": false }], "machines": [{ "name": "{{name}}", "online": false, "seen": null }], "complete": true },
+          "vary": ["complete"],
+          "note": "DX2's org shape built from the head: online is unknown on RL1; complete (the registry's §D) for a hello that lists locations, no locations while the endpoint knows none"
         },
         { "down": { "t": "legacy-key?" }, "note": "asked while no legacy.json is held" }
       ]
@@ -295,7 +296,7 @@
         { "closed": "main" },
         { "open": "main" },
         { "up": { "t": "hello", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["audience", "record", "locations"], "token": "{{token}}", "sminos": { "version": "1.25.0" }, "policy": { "read_only": false, "ceiling": "settings" } }, "vary": ["sminos.version"] },
-        { "down": { "t": "welcome", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["access", "reach", "record"], "build": "{{build}}", "identity": { "org": "{{org}}", "hub": "{{hub}}", "name": "{{name}}", "former": [], "ref": "{{ref}}", "enrolled": "{{enrolled}}" }, "policy": { "read_only": false, "ceiling": "settings" }, "stateVersion": 3 }, "vary": ["stateVersion"] },
+        { "down": { "t": "welcome", "protocol": { "major": 1, "minor": 0 }, "capabilities": ["access", "reach", "record", "locations"], "build": "{{build}}", "identity": { "org": "{{org}}", "hub": "{{hub}}", "name": "{{name}}", "former": [], "ref": "{{ref}}", "enrolled": "{{enrolled}}" }, "policy": { "read_only": false, "ceiling": "settings" }, "stateVersion": 3 }, "vary": ["stateVersion"] },
         { "down": { "t": "revoked", "version": 3, "devices": [], "members": [], "keys": [] }, "vary": ["version"] },
         { "quiet": ["legacy-key?"], "ms": 300, "note": "the key is held: not asked again" },
         { "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": null, "kind": "machine", "sub": null, "n": null, "body": { "online": true, "policy": { "read_only": false, "ceiling": "settings" }, "checkouts": [{ "path": "{{checkout}}", "branch": "main" }], "desk": { "sminos": "1.25.0", "rpcs": [], "reads": [] } } } }, "vary": ["message.body.desk"] },
