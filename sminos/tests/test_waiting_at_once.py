@@ -164,6 +164,18 @@ class PlaneNudge(unittest.TestCase):
         self.status(a, "busy")
         self.assertEqual(self.look(), 0)
 
+    def test_a_look_outside_the_tick_nudges_too(self):
+        """A forced presence (a project opened on the stream) takes the
+        records itself: the move it sees is nudged there, not lost to the
+        tick's next look, which compares against it."""
+        a = self.session("busy")
+        self.look()
+        self.status(a, "waiting")
+        with mock.patch.object(plane.sminos, "nudge_daemon") as nudge:
+            self.p.presence("0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59", force=True)
+        self.assertEqual(nudge.call_count, 1)
+        self.assertEqual(self.look(), 0, "the tick's next look has nothing new")
+
     def test_one_nudge_a_look_however_many_moved(self):
         a, b, c = self.session("busy"), self.session("idle"), self.session("waiting")
         self.look()

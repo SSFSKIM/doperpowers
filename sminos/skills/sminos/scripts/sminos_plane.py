@@ -2701,6 +2701,16 @@ class Plane:
         if self.own_warmer:
             self.warmer.close()
 
+    def scan(self):
+        """The engine's records as they are now, into `live`, by whichever
+        look takes them (the tick's, a subscription's, a forced presence's),
+        the daemon nudged when a live session's word entered or left
+        `waiting` since the last one: it publishes that word and its end at
+        once (sminos_daemon.publish_state)."""
+        before, self.live = self.live, self.records.scan()
+        if waiting_moved(before, self.live):
+            sminos.nudge_daemon()
+
     # ---------------------------------------------------- who is here
 
     def refresh(self, project):
@@ -2819,7 +2829,7 @@ class Plane:
         def not_running(sid):
             out.append(envelope(pid, self.machine, sid, "presence", None, None, {"record": None, "bridge": False}))
         if force:
-            self.live = self.records.scan()
+            self.scan()
             mark = tombstone_marks().get(pid)
             since = None if mark is None else mark - TOMBSTONE_MARGIN
             for sid, at in sorted(self.left.get(pid, {}).items()):
@@ -2888,7 +2898,7 @@ class Plane:
             self.refresh(project)
             if sid not in self.here.get(project.id, {}):
                 return refuse("no session %s of %s on this machine" % (sid, project.name))
-        self.live = self.records.scan()
+        self.scan()
         reader = None
         if os.path.exists(bridge.endpoint(sid)):
             # The reader finds out whether it answers, off this thread: a
@@ -3013,9 +3023,7 @@ class Plane:
         out = []
         if now >= self.next_scan:
             self.next_scan = now + PRESENCE_EVERY
-            before, self.live = self.live, self.records.scan()
-            if waiting_moved(before, self.live):
-                sminos.nudge_daemon()   # the daemon publishes `waiting` and its end at once (publish_state)
+            self.scan()
         if set(self.live) != self.read_for or now >= self.next_members:
             whole = set(self.live) != self.read_for or now >= self.next_whole
             sminos.forget_caches()  # the engine's records as they are now, not as sminos last read them
