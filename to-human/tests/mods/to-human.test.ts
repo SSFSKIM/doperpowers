@@ -879,9 +879,12 @@ describe('rows', () => {
       plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
       props: { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
     })
-    const texts = (await band.findAll({ type: 'Text' })).map((text) => text.text)
-    expect(texts[0]).toBe('1 open question')
-    expect(texts.some((text) => text.includes('to-human view'))).toBe(true)
+    // What is beneath draws in the view's column, ahead of its line; the kit
+    // draws it as a ref in its place (its text then follows the tree).
+    expect(await band.keepsBeneath()).toBe(true)
+    const column = JSON.stringify(await band.drawn())
+    expect(column.indexOf('"type":"engine"')).toBeGreaterThan(-1)
+    expect(column.indexOf('"type":"engine"')).toBeLessThan(column.indexOf('to-human view'))
     expect(await band.find({ type: 'Button', text: 'full transcript' })).toBeDefined()
   })
 
@@ -1327,6 +1330,22 @@ describe('the message tool', () => {
     expect(await before.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await before.find({ type: 'Text', text: 'Reading the logs.' })).toBeUndefined()
     expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('a call a group held and let go of draws as a message', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    // A resume's first frame puts every call in one group, then the group lets the message go.
+    const props = (calls: string[]) =>
+      ({ calls: calls.map((id) => ({ tool_use_id: id, tool: id.startsWith('b') ? 'Bash' : MESSAGE_TOOL, input: {} })), isExpanded: false, isActive: false }) as never
+    const group = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'collapsed-1', props: props(['b1', 'toolu_m1']) } as never)
+    await group.redraw(props(['b1']))
+    const call = await callRow($, 'toolu_m1', { input: { text: 'Done.' }, output: 'sent' })
+
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
   })
 
   test('its result row draws nothing', async ($, on) => {

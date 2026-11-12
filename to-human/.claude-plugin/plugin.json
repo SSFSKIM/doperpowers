@@ -1,7 +1,7 @@
 {
   "name": "to-human",
   "description": "Read a session as a report, not a transcript: under the to-human output style the session sends you messages through its message tool (mcp__to-human__message), the terminal folds its working record (tool calls, scratch notes, other sessions' messages) behind buttons, and each message raises a notification",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "author": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com"
