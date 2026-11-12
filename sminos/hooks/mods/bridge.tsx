@@ -15,6 +15,7 @@ import {
   boundedSuggestions,
   claimCheck,
   decisionRecorded,
+  dismissFromOutside,
   engineDecision,
   firstQuestion,
   isBackground,
@@ -308,7 +309,7 @@ function recoverMainTurn(turnId: string) {
 export const TURN_UNKNOWN = 'turn state unknown since the bridge reloaded; retry after the next model request'
 const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
 /** The ops this bridge answers (DX5 `capabilities.ops`), and the reads (`read`'s kinds). */
-export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media', 'ask']
+export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media', 'ask', 'dismiss']
 export const READS = ['status', 'catalog', ...READ_KINDS]
 /**
  * The ops an observer refuses (O12 M3): every op that acts on the session.
@@ -449,6 +450,8 @@ function commandAnswer($: EngineInterface, command: Command): Answered | Promise
       return deliver($, command.key, command.text)
     case 'answer':
       return answerFromOutside(command)
+    case 'dismiss':
+      return dismissFromOutside(command)
     case 'read':
       return read($, command.what, command.args)
     case 'command':

@@ -127,7 +127,8 @@ and the model is told, in the delivery's form, that no answer will come
 makes a turn's end submit a prompt, but rides the next route another opens
 (the model's next result, the human's next prompt, or a prompt an answer
 submits). Nothing for an ask whose dialog is up. The bridge settles the
-question withdrawn by `terminal`, and a resumed session reads the dismissal
+question withdrawn by `terminal` (by the client, for a dismissal from outside,
+below), and a resumed session reads the dismissal
 back from the delivery as it reads an answer.
 
 Answering an async ask runs the blocking path from the press: the dialog is
@@ -176,7 +177,12 @@ the code before).
 An async ask can also be answered from outside the terminal (`sminos answer`,
 later the web): the bridge hands the answers to `answerAsync`, which refuses
 one already answered or whose dialog is up, and otherwise delivers them by the
-same routes as a press's.
+same routes as a press's. It can be dismissed from outside too: the bridge
+hands a client's dismissal to `dismissAsync`, which makes the `[ dismiss ]`
+press's own dismissal (the same row, the same quiet delivery, nothing counted
+as an answer), tells the observer who dismissed it, and refuses, saying why,
+where the press does nothing: an ask already answered or dismissed, or whose
+dialog is up.
 
 A resumed session rebuilds its async asks from the transcript (the classic
 `SessionStart` payload's path). Without a rewind every row of the file is
@@ -224,7 +230,10 @@ answer the engine does not mark), are not sent; a reload of the plugin
 takes up the asks, the undelivered answers and the store from `$.state`, and
 an answer on its way to the model at the reload is held again, so it may
 reach the model twice but is never lost; an answer held when the session
-ends is lost with the process, and its ask reads open on resume; an async picture reaches the model as a path it has to Read,
+ends is lost with the process, and its ask reads open on resume (a dismissal
+too, which is held until another route opens: dismissed in an idle session
+that then ends, the question is open again on resume, and raised again to
+the bridge's clients); an async picture reaches the model as a path it has to Read,
 and the store is the engine's temp directory, cleaned with old sessions, so a
 path delivered long after can be gone; the row reads its answers back from the
 engine's text, so a question text that also appears inside an earlier answer
@@ -347,7 +356,8 @@ rows read from the transcript, and the export to the host).
   question of the ask mod is raised as it opens, or as the bridge starts when
   it was open before (a resumed session's, which the ask mod reads back while
   the session is still starting; a reloaded module's), and answered through
-  the ask mod's external path (`answerAsync`). Each ends with one `settled` naming
+  the ask mod's external path (`answerAsync`), or dismissed through it
+  (`dismissAsync`, below). Each ends with one `settled` naming
   the side whose answer the engine used, read from the engine's
   `tool_decision` record of the call (raised to the mod through
   `telemetry.log`), else the transcript's mark of a hook's decision.
@@ -379,6 +389,25 @@ rows read from the transcript, and the export to the host).
   never a rule a client wrote), still with no input but a question's or a
   plan's; measured on 2.1.310, such an allow on a call an ask rule put to
   the dialog adds the rule and runs the call.
+  An async question is answered or dismissed, never denied. Its dismissal
+  is the decision `{behavior: "dismiss", by}` on `POST
+  /requests/<id>/decision`, with no message, answers or rules: what the
+  terminal's own `[ dismiss ]` does, asked by a client. The child relays it
+  to the mod as op `dismiss` (`{request, by}`, answered `{dismissed: true}`),
+  the ask mod closes the question, and it settles `withdrawn` by that `by`
+  (winner `web` for a member, `other` for `cli`), where the terminal's own
+  settles by `terminal`. The answers: 200 `{accepted: true, request}`; 409
+  with `settled` for a question already settled, however it ended; 404 for a
+  request the session does not hold; 400 for one that is not an async
+  question (a question in the dialog is declined with a deny, a permission
+  allowed or denied) or for a body that carries more; 409 with the ask mod's
+  reason when the terminal has the question's dialog up, the question left
+  pending; the route's other refusals as for any decision (`lane-b`,
+  `launch`, a 504 when the session did not answer in 5 s). A client tells a
+  bridge that carries it from one that does not by `GET /status`:
+  `capabilities.controls["decide.dismiss"]` is `{available: true}` (an
+  observer's `{available: false, reason}`; a bridge from before the
+  dismissal names no such key), and `capabilities.ops` lists `dismiss`.
 - **Messages to the host.** The main loop's rows that may carry one — a text
   row with a mark, an async ask with its result, a row that may answer one
   (the ask mod's delivery, as its prompt row or a context attachment; a MAWS

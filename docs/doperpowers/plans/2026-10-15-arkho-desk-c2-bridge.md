@@ -587,7 +587,7 @@ and M2 left them. Changed rows are marked **[M3]**; rows fix wave 1 changed are 
 | `GET /requests` | M3 **[M3]** | — | 200 `{pending: [<raised>…], settled: [<settlement>…]}` (the snapshot's two lists) |
 | `GET /requests/<request>` | M3 **[M3]** | — | 200 the pending request's `raised` fields plus `session` (DC7's digest check); 404 `{error}` when not pending; 410 `{error: "settled", settled}` once settled |
 | `GET /requests/<request>/wait?ms=` | M3 **[M3]** **[fw1]** (the mod's) | — | Held up to `min(ms, 20000)`. 200 `{decision: {behavior, message?, updatedInput?}, by}`: a client's decision, handed out once. 410 `{reason: "terminal"}`: the terminal answered it (the session record left `waiting`); this only ends the poll and closes the request to new decisions, and settles nothing. 410 `{reason: "settled", settled}`: settled. 204: nothing yet (an unknown request is held too, since its `raised` may still be in flight). **[fw1]** `watch=1` is gone: once its hook stops polling, nothing watches a request; the engine's record settles it |
-| `POST /requests/<request>/decision` | M3 **[M3]** | `{behavior: "allow"\|"deny", message?, updatedInput?: {answers: {<question>: <answer>}}, by}`. `by` is `cli` or a member id (`terminal` and `bridge` are reserved). `updatedInput` only for a question, whose allow requires `answers` keyed by its questions. An async question cannot be denied | 200 `{accepted: true, request}`: the settlement follows on the stream. 400 `{error}`: malformed or not allowed. 404: not pending. 409 `{error: "already settled", settled}`. 409 `{error: "already answered by <by>; …", by}` (`by` added after DC2's close, by DC7's M3: composite bb8b8773). 409 `{error: "the window … closed; the terminal answers it", terminalOnly: true}`: past a background deadline minus 200 ms. 409 `{error: "the terminal answered it; …", winner: "terminal", by: "terminal"}` (likewise). For an async question, the child relays it as op `answer` (wait 5 s); the mod's refusal is a 409 carrying its error |
+| `POST /requests/<request>/decision` | M3 **[M3]** | `{behavior: "allow"\|"deny", message?, updatedInput?: {answers: {<question>: <answer>}}, by}`. `by` is `cli` or a member id (`terminal` and `bridge` are reserved). `updatedInput` only for a question, whose allow requires `answers` keyed by its questions. An async question cannot be denied; **[1.47.0]** it is dismissed with `behavior: "dismiss"` (the extension below) | 200 `{accepted: true, request}`: the settlement follows on the stream. 400 `{error}`: malformed or not allowed. 404: not pending. 409 `{error: "already settled", settled}`. 409 `{error: "already answered by <by>; …", by}` (`by` added after DC2's close, by DC7's M3: composite bb8b8773). 409 `{error: "the window … closed; the terminal answers it", terminalOnly: true}`: past a background deadline minus 200 ms. 409 `{error: "the terminal answered it; …", winner: "terminal", by: "terminal"}` (likewise). For an async question, the child relays it as op `answer` (wait 5 s); the mod's refusal is a 409 carrying its error |
 
 ##### The child's stdout: lines for the mod
 
@@ -968,6 +968,54 @@ a full backlog refuses too). The child's listen backlog is 128.
   switched nor taken a prompt has no mode yet. A module reload keeps the last report
   (`$.state`, `{plugin: 'sminos', key: 'mode'}`), its `permissionModeAt` unchanged; a new
   process starts with none.
+
+#### An async question's dismissal (sminos 1.47.0; supersedes the M3 rows above where they differ)
+
+- **What it is.** The ask mod's own `[ dismiss ]`, asked by a client: the question closes
+  unanswered, its row in the terminal reads dismissed, and the model is told in the
+  delivery's form that no answer will come (`DISMISSED`), quietly: no idle session is
+  woken, and the dismissal rides the next route another opens (the model's next result,
+  the human's next prompt, a prompt an answer submits). It counts as no answer of the
+  human's (`answered` in the ask's snapshot does not move).
+- **`POST /requests/<request>/decision`** takes `{behavior: "dismiss", by}` (and `launch`,
+  as any decision) for a pending async question. `by` as for any decision (`cli` or a
+  member id; `terminal` and `bridge` reserved). It carries no `message`, `updatedInput` or
+  `updatedPermissions`: the model is told only that no answer will come.
+
+  | Answer | When |
+  | --- | --- |
+  | 200 `{accepted: true, request}` | The ask mod closed the question. Its `settled` (below) is posted before this answer |
+  | 400 `{error}` | `by` missing or reserved; a body that carries `message`, `updatedInput` or `updatedPermissions`; or the request is pending and is not an async question (`only an async question is dismissed: …`: a question in the dialog is declined with a deny, a permission allowed or denied) |
+  | 404 `{error}` | The session holds no such request, pending or among its recent settlements |
+  | 409 `{error: "already settled", settled}` | Settled already, however it ended: answered, dismissed (here or at the terminal), forgotten |
+  | 409 `{error: "already answered by <by>; …", by}` | Another client's answer or dismissal was taken and has not settled yet |
+  | 409 `{error}` | The ask mod refused it, in its words: the terminal has the question's dialog up (`… is open in the terminal's dialog`), or it was answered or dismissed there meanwhile. The question stays pending for another decision |
+  | 409 `{code: "lane-b"}`, 409 `{code: "launch"}` | As for any decision: an observer's session; a body sealed for another launch |
+  | 504 `{id, error}`, 503 `{error}` | The session did not answer within 5 s (it may still take it: the stream's `settled` says); the session is gone |
+
+- **Command `dismiss`** `{request, by}` → `{dismissed: true}`: what the child relays the
+  decision as (wait 5 s), as it relays an async question's answer as `answer`. `ok: false`
+  with a reason for a body without `request` and `by`, for a request that is not a pending
+  async question (`no async question <request> is pending`), and with the ask mod's own
+  reason otherwise (already answered, already dismissed, its dialog is up, not serving). A
+  control op: an observer refuses it `lane-b`.
+- **`settled`** for a dismissal is `outcome: "withdrawn"` with `by` whoever dismissed it
+  and the winner that `by` has for any answer (`web` for a member id, `other` for `cli`);
+  the terminal's own `[ dismiss ]` stays `withdrawn` by `terminal`. So `withdrawn` by
+  `bridge` (the M3 row's only `withdrawn`) is now one of three: `bridge` when nobody
+  ended it (a `/clear`, the session's end, a dialog nobody is known to have answered),
+  `terminal` and a client's `by` when a person dismissed it.
+- **How a client knows** (`GET /status`, `capabilities`): `controls["decide.dismiss"]` is
+  `{available: true}` on a bridge that carries the dismissal and `{available: false,
+  reason: "MAWS controls this session"}` on an observer's; a bridge before 1.47.0 names no
+  such key, which a client reads as unavailable, as it reads any key it does not find.
+  `ops` lists `dismiss` (an observer's `ops` is empty). The key is the bridge's own, as
+  `ask` is: the lane map's `ControlCapabilities` does not name it.
+- **Not carried here:** the daemon's `decide` RPC (DX6) still takes `allow` or `deny`
+  only, so a member on another machine cannot ask for a dismissal until DX6 names one;
+  the daemon's digest check already applies the bridge's own rule (`_check_decision`),
+  so its part would be the argument's shape alone. `sminos decide` takes `allow` or
+  `deny` only.
 
 ## Decision Log
 
@@ -1472,6 +1520,33 @@ a full backlog refuses too). The child's listen backlog is 128.
   `from-mode` or another sender name on the frame to carry authority — the
   inbox is the peer channel whatever it names.
   Date/Author: 2026-10-18, smns-esc-owner builder.
+
+- Decision ([dismiss], 2026-11-12, for MAWS's UX wave): a client ends an
+  async question without an answer through the decision route, as
+  `behavior: "dismiss"`, and the bridge declares it as the control
+  `decide.dismiss`. M3's rule stands as amended: an async question is
+  answered or dismissed, never denied. The dismissal is the ask mod's own
+  (`dismissAsk`, shared by the press and by `dismissAsync`), so a client
+  gets what the terminal's `[ dismiss ]` does and nothing else: the same
+  row, the same quiet delivery, no count as an answer. Why the decision
+  route: it is where a client already ends this very request (an answer is
+  its allow), so its refusals are the ones a client already reads (404,
+  409 with the settlement, `lane-b`, `launch`), the claim that keeps two
+  clients from both ending one request covers a dismissal against an
+  answer, and the daemon's digest check applies the same rule unchanged.
+  Why a control key: a client reads `capabilities.controls` for what a
+  decision may carry (`decide.scope`, `decide.interrupt`), an older bridge
+  names no such key and an observer's says why not. Rejected: reading a
+  `deny` of an async question as its dismissal (declining the question's
+  own dialog in the terminal means not now and leaves it open, so a
+  decline from outside must not end it; a deny carries a message the
+  dismissal cannot deliver; and an older bridge refuses the deny with a
+  400 no client can tell from a malformed body); a new route, or a command
+  posted to `/command` alone (the request's claim and its settled and
+  not-pending answers live on the decision route); a `dismissed` outcome
+  (the terminal's own dismissal already settles `withdrawn`, and `by`
+  tells who).
+  Date/Author: 2026-11-12, the bridge-dismissal builder.
 
 ## Surprises & Discoveries
 

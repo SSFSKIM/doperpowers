@@ -1,6 +1,6 @@
 import type { PermissionRequestDecision } from 'claude-code'
 
-import { ASK_TOOL, answerAsync } from './ask'
+import { ASK_TOOL, answerAsync, dismissAsync } from './ask'
 import type { AskNote } from './ask'
 import { canonical, capped, isObserver, isRecord, parsed, state, utf8Bytes } from './bridge-state'
 import type { Answer, Capped, Check, Command, Decision, Outcome, Request } from './bridge-state'
@@ -11,7 +11,7 @@ import { emit, raisedFields } from './bridge-stream'
  * engine puts to its dialog is `raised`, and its `classic.PermissionRequest`
  * hook long-polls the child for a decision while the terminal's dialog stays
  * up; an async question of the ask mod is raised as it opens and answered
- * through it. Each ends with one `settled` naming the side whose answer the
+ * or dismissed through it. Each ends with one `settled` naming the side whose answer the
  * engine used, read from what the engine did: its mark of a hook's decision
  * beside the call's result, the result itself, the dialog closing in the
  * terminal (the child watches the session record), the turn ending.
@@ -336,10 +336,10 @@ export function onAskNote(note: AskNote) {
       answeredThrough(note.id, { outcome: 'withdrawn', by: 'bridge' })
     }
   } else if (note.kind === 'dismissed') {
-    // The person closed it at the terminal unanswered: no answer will settle it.
+    // Closed unanswered, at the terminal or by whoever dismissed it from outside: no answer will settle it.
     const r = state.requests.get(note.id)
     if (r?.isAsync) {
-      settle(r, 'withdrawn', 'terminal')
+      settle(r, 'withdrawn', note.by ?? 'terminal')
     }
   } else if (note.kind === 'forgotten') {
     for (const id of note.ids) {
@@ -368,6 +368,23 @@ export function answerFromOutside(command: Command): Answer {
   }
   const done = answerAsync(request, answers as Record<string, string>, by)
   return done.ok ? { ok: true, result: { answered: true } } : { ok: false, error: done.error }
+}
+
+/**
+ * An async question's dismissal from outside (the child relays a client's),
+ * handed to the ask mod, which closes it as its own `[ dismiss ]` does; the
+ * ask mod's note settles it withdrawn by `by`.
+ */
+export function dismissFromOutside(command: Command): Answer {
+  const { request, by } = command
+  if (typeof request !== 'string' || typeof by !== 'string') {
+    return { ok: false, error: 'dismiss needs request and by' }
+  }
+  if (state.requests.get(request)?.isAsync !== true) {
+    return { ok: false, error: `no async question ${request} is pending` }
+  }
+  const done = dismissAsync(request, by)
+  return done.ok ? { ok: true, result: { dismissed: true } } : { ok: false, error: done.error }
 }
 
 /** The session ended: what it left pending is withdrawn. */

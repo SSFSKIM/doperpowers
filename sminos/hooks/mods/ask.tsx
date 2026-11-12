@@ -464,14 +464,15 @@ let describedFrom: string | undefined
  * What the session's asks do, as an observer (the bridge) is told: an async
  * ask opened, was answered (`by` whoever answered it from outside, or
  * through the `dialog` a press opened, whose answer the bridge attributes),
- * was dismissed unanswered, or was forgotten (a new conversation); a dialog this mod raised settled,
+ * was dismissed unanswered (at the terminal, or `by` whoever dismissed it
+ * from outside), or was forgotten (a new conversation); a dialog this mod raised settled,
  * with what the engine returned for its call.
  */
 export type AskNote =
   | { kind: 'open'; id: string; questions: AskQuestion[] }
   | { kind: 'answered'; id: string; by: string }
   | { kind: 'answered'; id: string; dialog: string }
-  | { kind: 'dismissed'; id: string }
+  | { kind: 'dismissed'; id: string; by?: string }
   | { kind: 'forgotten'; ids: string[] }
   | { kind: 'dialog'; toolUseId: string; isError: boolean; text: string }
 
@@ -1203,9 +1204,10 @@ export function answerAsync(id: string, answers: Readonly<Record<string, string>
 /**
  * A press on `[ dismiss ]`: the ask closes unanswered, and the model is told
  * so quietly, never woken for it. Nothing for an ask that is not open, or
- * whose dialog is up (its answer is the dialog's).
+ * whose dialog is up (its answer is the dialog's). `by`: whoever dismissed
+ * it from outside the terminal (`dismissAsync`), whom the observer is told.
  */
-function dismissAsk(out: Out, id: string) {
+function dismissAsk(out: Out, id: string, by?: string) {
   const ask = asks.find((candidate) => candidate.id === id)
   if (ask === undefined || ask.status !== 'open' || raisedAsks.has(id)) {
     return
@@ -1214,7 +1216,32 @@ function dismissAsk(out: Out, id: string) {
   ask.answer = DISMISSED
   deliver(out, { id, text: deliveryText(id, DISMISSED), isQuiet: true })
   out.invalidate()
-  note({ kind: 'dismissed', id })
+  note({ kind: 'dismissed', id, ...(by !== undefined && { by }) })
+}
+
+/**
+ * An async ask dismissed from outside the terminal (the bridge, for a person
+ * at another client): the press's own dismissal, the observer told `by`
+ * whom. Refused where the press does nothing (an ask that is not open, or
+ * whose dialog the terminal has up), and said why.
+ */
+export function dismissAsync(id: string, by: string): { ok: true } | { ok: false; error: string } {
+  const ask = asks.find((candidate) => candidate.id === id)
+  if (ask === undefined) {
+    return { ok: false, error: `no async question ${id} is open in this session` }
+  }
+  if (ask.status !== 'open') {
+    // By its opening words, as the row reads it (askRow): a resumed session's answer is its delivery's text, which may carry more after them.
+    return { ok: false, error: `the question ${id} was already ${ask.answer?.startsWith(DISMISSED) === true ? 'dismissed' : 'answered'}` }
+  }
+  if (raisedAsks.has(id)) {
+    return { ok: false, error: `the question ${id} is open in the terminal's dialog` }
+  }
+  if (external === undefined) {
+    return { ok: false, error: 'the ask tool does not serve this session' }
+  }
+  dismissAsk(external, id, by)
+  return { ok: true }
 }
 
 /** A press: opens the ask's dialog, and hands an answer, or "Chat about this", to the model. Esc leaves it open. */

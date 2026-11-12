@@ -10,6 +10,7 @@ import {
   DIALOG_SOURCE,
   PLUGIN,
   answerAsync,
+  dismissAsync,
   observeAsks,
   ASYNC_PARAGRAPH,
   ASYNC_RESULT,
@@ -2079,6 +2080,71 @@ describe("the snapshot under { plugin: 'sminos', key: 'ask' }: the channel doper
     await h.turnComplete('answer')
     expect(snapshot(h)).toMatchObject({ isTurnRunning: false })
   })
+})
+
+describe('dismissed from outside the terminal (the bridge)', () => {
+  /** A started session watched by an observer, with an async ask of BACKEND open. */
+  const opened = async () => {
+    const notes: AskNote[] = []
+    const h = harness()
+    observeAsks((note) => notes.push(note))
+    await h.start()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    return { h, notes, id: asyncAsks().at(-1)?.id ?? '' }
+  }
+
+  test("the press's own dismissal: the ask closes with no dialog, no idle session is woken, the observer is told who dismissed it, and nothing counts as an answer", async () => {
+    const { h, notes, id } = await opened()
+    expect(dismissAsync(id, 'm-1')).toEqual({ ok: true })
+    await h.settle()
+    expect(h.raises).toEqual([])
+    expect(asyncAsks()[0]).toMatchObject({ status: 'answered', answer: DISMISSED })
+    expect(h.submitted()).toEqual([])
+    expect(notes.at(-1)).toEqual({ kind: 'dismissed', id, by: 'm-1' })
+    expect(h.kept.get('sminos.ask')).toMatchObject({ answered: 0, asks: [{ status: 'answered', answer: DISMISSED }] })
+    expect(askRow({ input: { questions: [BACKEND] }, output: ASYNC_RESULT, isRunning: false, isErrored: false }, asyncAsks()[0], false).kind).toBe('dismissed')
+    expect((await h.prompt('go on')).context).toEqual([deliveryText(id, DISMISSED)])
+    expect((await h.prompt('again')).context).toBeUndefined()
+  })
+
+  test("while a turn runs it rides the model's next result; alone it never makes the turn's end submit", async () => {
+    const { h, id } = await opened()
+    await h.turnStart()
+    expect(dismissAsync(id, 'cli')).toEqual({ ok: true })
+    await h.settle()
+    await h.turnComplete('answer')
+    await h.settle()
+    expect(h.submitted()).toEqual([])
+    await h.turnStart()
+    expect((await h.call('Bash', { command: 'ls' })).result).toMatchObject({ context: [deliveryText(id, DISMISSED)] })
+  })
+
+  test('dismissed once: a second dismissal, an answer after it, or a dismissal of an ask that is answered or is none, is refused and says why', async () => {
+    const { h, notes, id } = await opened()
+    expect(dismissAsync(id, 'm-1')).toEqual({ ok: true })
+    expect(dismissAsync(id, 'm-2')).toEqual({ ok: false, error: `the question ${id} was already dismissed` })
+    expect(answerAsync(id, { 'Which backend?': 'SQLite' }, 'm-2')).toEqual({ ok: false, error: `the question ${id} was already answered` })
+    await h.call(ASK_TOOL, { questions: [FEATURES], async: true })
+    const other = asyncAsks().at(-1)?.id ?? ''
+    expect(answerAsync(other, { 'Which features?': 'Auth' }, 'cli')).toEqual({ ok: true })
+    expect(dismissAsync(other, 'm-1')).toEqual({ ok: false, error: `the question ${other} was already answered` })
+    expect(dismissAsync('toolu_none', 'm-1')).toEqual({ ok: false, error: 'no async question toolu_none is open in this session' })
+    expect(notes.filter((n) => n.kind === 'dismissed')).toEqual([{ kind: 'dismissed', id, by: 'm-1' }])
+    expect(asyncAsks().find((a) => a.id === other)?.answer).not.toBe(DISMISSED)
+  })
+
+  test('refused while its dialog is open in the terminal: the terminal has it', async () => {
+    const { h, id } = await opened()
+    const pressed = h.press(`ask-answer:${id}`)
+    await h.settle()
+    expect(dismissAsync(id, 'm-1')).toEqual({ ok: false, error: `the question ${id} is open in the terminal's dialog` })
+    expect(asyncAsks()[0]?.status).toBe('open')
+    await h.raise(0, answered(ANSWER))
+    await pressed
+    await h.settle()
+    expect(asyncAsks()[0]?.answer).toBe(ANSWER)
+  })
+
 })
 
 describe('answered from outside the terminal (the bridge)', () => {

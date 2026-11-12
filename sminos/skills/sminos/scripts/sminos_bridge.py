@@ -93,7 +93,9 @@ set and the recent settlements for the snapshot, takes a client's decision
 (GET /requests/<id>/wait). The session record leaving `waiting` while a
 request's dialog is drawn is the terminal's answer: the poll ends, and a
 decision after it is refused. An async question's answer goes to the mod as
-an `answer` command.
+an `answer` command, and its dismissal (`behavior: "dismiss"`: closed
+unanswered, as the terminal's own `[ dismiss ]` closes it) as a `dismiss`
+command.
 
     GET  /requests                     the pending set and the recent settlements
     GET  /requests/<id>                one pending request (404 none, 410 settled)
@@ -177,7 +179,7 @@ POLL_HOLD_MAX = 20000          # ms: the mod's poll is held this long at most, u
 SETTLED_KEPT = 100             # recent settlements a late subscriber still sees
 PRESENCE_EVERY = 0.25          # s: how often the session record is read while a dialog may be open
 WINDOW_MARGIN_MS = 200         # a background window's decision must reach the mod before its deadline
-ANSWER_WAIT_MS = 5000          # an async question's answer, relayed to the mod
+ANSWER_WAIT_MS = 5000          # an async question's answer or dismissal, relayed to the mod
 EXPORTS_QUEUED = 1000          # the mod's exports waiting for the log; past it, the Stop hook's export has them
 STALE_TRIES, STALE_PAUSE = 3, 0.1  # a socket refused this many times, this far apart, is stale
 TAIL_BLOCK = 65536             # a transcript's tail is read backward this many bytes at a time
@@ -766,11 +768,12 @@ def _check_decision(raised, body):
     A permission is allowed or denied as asked, its allow adding at most
     PERMISSIONS_MAX rules (`updatedPermissions`, a scoped allow's); a
     question's allow carries its answers, keyed by the questions it asks, and
-    no rules; an async question is answered, never denied."""
+    no rules; an async question is answered or dismissed, never denied. A
+    dismissal is an async question's alone, and carries only who made it."""
     if not isinstance(body, dict):
         return "a decision is an object"
-    if body.get("behavior") not in ("allow", "deny"):
-        return "behavior is allow or deny"
+    if body.get("behavior") not in ("allow", "deny", "dismiss"):
+        return "behavior is allow, deny or dismiss"
     by = body.get("by")
     if not isinstance(by, str) or not by.strip():
         return "by names who decided (cli, or the member's id)"
@@ -778,6 +781,14 @@ def _check_decision(raised, body):
         return "%r is the bridge's own; a client answers as itself" % by
     if "message" in body and not isinstance(body["message"], str):
         return "message is text"
+    if body["behavior"] == "dismiss":
+        if not raised.get("async"):
+            return "only an async question is dismissed: %s" % (
+                "a question in the dialog is declined with a deny" if is_question(raised)
+                else "a permission is allowed or denied")
+        if any(k in body for k in ("message", "updatedInput", "updatedPermissions")):
+            return "a dismissal carries no message, answers or rules: the model is told only that no answer will come"
+        return None
     rules = body.get("updatedPermissions")
     if rules is not None:
         if is_question(raised):
@@ -792,7 +803,7 @@ def _check_decision(raised, body):
             return "a permission is allowed or denied as asked: updatedInput carries a question's answers only"
         return None
     if body["behavior"] == "deny":
-        return "an async question waits for an answer; it cannot be denied" if raised.get("async") else None
+        return "an async question is answered or dismissed; it cannot be denied" if raised.get("async") else None
     answers = updated.get("answers") if isinstance(updated, dict) else None
     if not isinstance(answers, dict) or not answers:
         return "a question is allowed with its answers: updatedInput.answers, keyed by the question"
@@ -1416,8 +1427,8 @@ class Bridge:
     def decide(self, rid, body):
         """A client's decision: (status, answer). Taken once, while the
         request is pending, its dialog not answered in the terminal, and a
-        background window not past its deadline; an async question's answer
-        goes to the mod at once."""
+        background window not past its deadline; an async question's answer,
+        or its dismissal, goes to the mod at once."""
         refused = self.fenced(body)
         if refused is not None:
             return refused
@@ -1465,11 +1476,12 @@ class Bridge:
             if not raised.get("async"):
                 self.changed.notify_all()
                 return 200, {"accepted": True, "request": rid}
-        # An async question has no hook polling for it: its answer goes to the
-        # mod as a command, which hands it to the ask mod.
+        # An async question has no hook polling for it: its answer, or its
+        # dismissal, goes to the mod as a command, which hands it to the ask mod.
+        dismissed = body["behavior"] == "dismiss"
+        relayed = {"op": "dismiss"} if dismissed else {"op": "answer", "answers": body["updatedInput"]["answers"]}
         try:
-            code, out = self.command({"op": "answer", "request": rid, "answers": body["updatedInput"]["answers"],
-                                      "by": body["by"]}, ANSWER_WAIT_MS)
+            code, out = self.command({**relayed, "request": rid, "by": body["by"]}, ANSWER_WAIT_MS)
         except OSError:
             code, out = 503, {"error": "the session is gone"}
         if code == 200 and out.get("ok"):
@@ -1479,7 +1491,8 @@ class Bridge:
             if p is not None:
                 p["decided"] = None
         if code == 200:
-            return 409, {"error": out.get("error") or "the session refused the answer"}
+            return 409, {"error": out.get("error") or "the session refused the %s" % (
+                "dismissal" if dismissed else "answer")}
         return code, out
 
     def subscribe(self):
