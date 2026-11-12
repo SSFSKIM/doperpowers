@@ -91,8 +91,9 @@ kept as history.
   and former-name writer files, log events), to hold against the Mac it
   stands for.
 - `passes`: a profile `run --pycalls` kept, read by pass: the CPU time of
-  each thread and of each pass (the hook's timers: every call's CPU time on
-  its own thread, the two member publishes, the plane's tick, presence and
+  each thread (in a profile taken on Linux) and of each pass (the hook's
+  timers: every call's CPU time on its own thread, the two member
+  publishes, the plane's tick, presence and
   member reads, the upload pass, the scan, the words pass, the records scan,
   the bridge probes, each subscription's pump, the transcripts' workers and
   the metas look), then cProfile's callees of the main passes and the
@@ -135,9 +136,14 @@ process the bench starts; none of it is in the scripts measured.
 
 --idle-gate judges the run by its --pycalls counts and not by B2's gate:
 the idle uplink's Python-function calls and file calls a second, each under
-its limit (IDLE_GATE_PYTHON, IDLE_GATE_FILE). A count is the same on a
-loaded or slow machine, which a CPU share is not, so this is the form a CI
-runner can judge. The gate's run, as the `sminos-idle` gate makes it:
+its limit (IDLE_GATE_PYTHON, IDLE_GATE_FILE) and at least IDLE_GATE_FLOOR of
+it (less is an uplink that stopped doing its work), the uplink's ticks a
+second (Link.tick's calls in the window, printed beside the counts) inside
+IDLE_GATE_TICKS, and no line of daemon.log saying "failed". A count holds on
+a loaded or slow machine, as a CPU share does not: it moves only with the
+ticks a second, a few percent, which is why the limits are read on the
+runner class that judges and a run outside the band is not judged. The
+gate's run, as the `sminos-idle` gate makes it:
 
     python3 bench_scale.py run <scripts-dir> --preset macbook --words 0 --working 30 \
         --warmup 60 --seconds 10 --pycalls 60 --idle-gate
@@ -965,7 +971,14 @@ GATE_P95, GATE_CPU = 1.0, 5.0         # O14 B2 step 2: p95 per pass under 1 s, t
 # outside or inside it, a 60 s one 49,671, 49,680 and 49,679 Python-function calls and 2,769, 2,770 and 2,770 file
 # calls a second in three runs of sminos 1.46.1 (2026-11-12; 1.46.0 read 111,935 and 4,624). Each limit is that figure
 # plus 10 %. A change that lowers the figures lowers the limits with it; one that must raise them says so in its diff.
+# The counts still move a few percent with the runner's speed: the loop waits POLL after each tick ends, so the ticks a
+# second are 1 / (POLL + a tick's length), and the per-tick work moves with them. So the limits are set from figures
+# read on the runner class that judges (the sminos-idle gate's), the gate judges no run whose ticks a second fall
+# outside IDLE_GATE_TICKS (a runner on which the counts cannot be judged), and a count under IDLE_GATE_FLOOR of its
+# limit fails too: an uplink doing less than an idle one does has stopped doing its work (Link.tick catches a pass's
+# exception and goes on), as has one whose daemon.log says "failed".
 IDLE_GATE_PYTHON, IDLE_GATE_FILE = 54600, 3050
+IDLE_GATE_TICKS, IDLE_GATE_FLOOR = (3.0, 4.0), 0.6
 IDLE_FILE_CALLS = ("posix.stat>", "posix.lstat>", "posix.fstat>", "'stat' of 'posix.DirEntry'", "posix.scandir>",
                    "posix.listdir>", "_io.open>", "posix.open>", "posix.readlink>", "posix.getcwd>")
 
@@ -1101,10 +1114,22 @@ def cmd_run(a, env):
         if a.idle_gate:
             gate, pc = "idle counts", measures.get("pycalls") or {}
             files = sum(n for k, n in (pc.get("file") or {}).items() if any(x in k for x in IDLE_FILE_CALLS))
-            checks = [("the idle uplink under %d Python-function calls a second" % IDLE_GATE_PYTHON,
-                       bool(pc) and pc["python"] < IDLE_GATE_PYTHON, "%.0f" % pc["python"] if pc else "no profile"),
-                      ("and under %d file calls a second" % IDLE_GATE_FILE, bool(pc) and files < IDLE_GATE_FILE,
-                       "%.0f" % files if pc else "no profile")]
+            lo, hi = IDLE_GATE_TICKS
+            tps = pc.get("ticks_a_second")
+
+            def counted(what, n, limit):
+                floor = IDLE_GATE_FLOOR * limit
+                return ("%s %d to %d a second" % (what, floor, limit), bool(pc) and floor <= n < limit,
+                        "no profile" if not pc else "%.0f%s" % (n, ": less than an idle uplink does" if n < floor
+                                                               else ""))
+            checks = [("the uplink ticking %g to %g times a second, a runner on which the counts can be judged"
+                       % (lo, hi), tps is not None and lo <= tps <= hi,
+                       "no profile" if not pc else "Link.tick not timed" if tps is None else
+                       "%.2f a second%s" % (tps, "" if lo <= tps <= hi else ": the counts cannot be judged here")),
+                      counted("the idle uplink's Python-function calls", pc.get("python", 0), IDLE_GATE_PYTHON),
+                      counted("its file calls", files, IDLE_GATE_FILE),
+                      ("daemon.log without a failure", not failed,
+                       "%d, the first: %s" % (len(failed), failed[0].strip()) if failed else "none")]
         for what, ok, said in checks:
             print("gate: %s: %s (%s)" % (what, "ok" if ok else "FAILED", said))
         ok = all(c[1] for c in checks)
@@ -1325,8 +1350,10 @@ def pycalls_window(env, pid, seconds, keep=None):
     if keep:
         shutil.copy(out, keep)
         shutil.copy(out + ".window", keep + ".window")
+    ticks = (w.get("passes") or {}).get("Link.tick", {}).get("calls")
     return {"seconds": dt, "calls": total / dt, "python": python / dt,
-            "file": {k: n / dt for k, n in sorted(files.items(), key=lambda kv: -kv[1])}}
+            "file": {k: n / dt for k, n in sorted(files.items(), key=lambda kv: -kv[1])},
+            "ticks": ticks, "ticks_a_second": None if ticks is None else ticks / dt}
 
 
 def print_pycalls(s):
@@ -1336,6 +1363,11 @@ def print_pycalls(s):
     print("python calls (%.0f s, cProfile): %.0f calls a second, %.0f of them Python functions; file calls a second: %s"
           % (s["seconds"], s["calls"], s["python"], ", ".join("%s %.0f" % (re.sub(r"<built-in method |>", "", k), n)
                                                           for k, n in s["file"].items() if n >= 1)))
+    if s.get("ticks") is None:
+        print("uplink ticks: Link.tick not timed in the window")
+    else:
+        print("uplink ticks: Link.tick ran %d times in the %.0f s, %.2f a second" % (
+            s["ticks"], s["seconds"], s["ticks_a_second"]))
 
 
 def nudge_window(env, pid, n):
@@ -1458,11 +1490,14 @@ def cmd_passes(argv):
         for k, edge in sorted(st.all_callees.get(key, {}).items(), key=lambda kv: -kv[1][3])[:a.top]:
             print("  %-60s %8d calls %8.3f s %6.2f%%" % (label(k), edge[0], edge[3], pct(edge[3])))
     print("window %.1f s" % (secs or float("nan")))
-    if w.get("passes") is not None:
+    if w.get("cpu") is not None:
         print("CPU in the window: %.2f s, %.1f%% of a core (under the profiler); by thread (threads that came and "
               "went inside the window are in the whole only):" % (w["cpu"], pct(w["cpu"])))
         for name, (n, cpu) in sorted(w["threads"].items(), key=lambda kv: -kv[1][1]):
             print("  %-28s %3d threads %7.2f s %6.2f%%" % (name, n, cpu, pct(cpu)))
+    elif w.get("passes") is not None:
+        print("CPU in the window: not read (the process and thread totals come from Linux's /proc)")
+    if w.get("passes") is not None:
         print("passes, each call's CPU time on its own thread, what it calls included (so they nest):")
         for name, r in sorted(w["passes"].items(), key=lambda kv: -kv[1]["cpu"]):
             print("  %-34s %8d calls %7.3f s %6.2f%% %8.3f ms a call" % (
@@ -1782,9 +1817,10 @@ def main():
     for mode in ("run", "opens"):
         sub.choices[mode].add_argument("--rl10", action="store_true",
                                        help="accepted, and changes nothing: RL10 is the only path (#153 M5)")
-    preset = next((sys.argv[i + 1] for i, x in enumerate(sys.argv[:-1]) if x == "--preset"), None)
+    # The preset as argparse reads it (--preset X, --preset=X), its values then the defaults under the flags given.
+    preset = p.parse_args().preset
     for s in sub.choices.values():
-        s.set_defaults(**PRESETS.get(preset, {}))   # under the flags given: argparse's defaults
+        s.set_defaults(**PRESETS.get(preset, {}))
     a = p.parse_args()
     stop_on_signals()
     root = env = None
