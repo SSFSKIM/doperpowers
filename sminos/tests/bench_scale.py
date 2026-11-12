@@ -126,8 +126,12 @@ seconds (strace -f, through `sudo -n` where ptrace is scoped), a second by
 kind and by path pattern; --pycalls S, the uplink's Python-level calls for
 S seconds (cProfile, begun and ended by signal through the bench's hook),
 a second in all, of Python functions, and of each file call, its profile
-kept with --pycalls-prof; --nudges N, N nudges of `daemon run` a few seconds
-apart, each its tick's wall time and how long after the nudge it ended.
+kept with --pycalls-prof. A window shorter than MEMBERS_WHOLE (60 s) holds
+the whole member round, a member read of every project (103 at the
+MacBook's shape), or not, as its phase falls, and so does a live
+machine's profile: compare windows of 60 s. --nudges N, N nudges of
+`daemon run` a few seconds apart, each its tick's wall time and how long
+after the nudge it ended.
 Every `daemon run` tick's wall and CPU time is recorded through the hook
 (tick_all timed), the CPU window's said. --poll and --presence-every set the
 uplink's POLL and the plane's PRESENCE_EVERY. --measures-out FILE keeps
@@ -175,11 +179,14 @@ EPOCH = datetime.datetime(2026, 10, 18)   # the events' clock: its first event a
 
 # The counts read on each Mac (2026-11-12), as this machine's flags. Where a
 # Mac's count was not read, the MacBook's stands in (the mini's open
-# projects, members, host stores, own writers, log volume), and the mini
-# has no former name: its report says which.
+# projects, host stores, own writers, log volume), and the mini has no
+# former name: its report says which. The member rows are each Mac's
+# published members (member frames a publish in its live uplink's profile:
+# 57 on the MacBook, 96 on the mini), made up of its live sessions and as
+# many seats as the rest.
 PRESETS = {
     "macbook": dict(dirs=1650, seats=73, live=15, gone=27, local=25, rooted=20, followed=36, retired=20, remote=12,
-                    says=700, own=36, refused=26, seat_members=40, records=251, bridges=12, answering=10,
+                    says=700, own=36, refused=26, seat_members=42, records=251, bridges=12, answering=10,
                     host_projects=8, host_files=78, host_events=3900, former="oldbook", former_sessions=17,
                     big_log=30000, seat_brief=3000, age=3.0, working=3.0, tcc=True, subs=0),
     # The mini's own counts, read there: 88 projects, 555 own writer files, 3,002 files under the logs, 6
@@ -187,7 +194,7 @@ PRESETS = {
     # MAWS window (11 `plane-transcript` threads in a sample of its uplink); its 14 bridge sockets make 14 of its
     # 21 engine records live sessions (a socket is a running session's).
     "mini": dict(dirs=1480, seats=205, live=14, gone=7, local=9, rooted=15, followed=43, retired=19, remote=39,
-                 says=700, own=32, refused=20, seat_members=40, records=150, bridges=14, answering=12,
+                 says=700, own=32, refused=20, seat_members=82, records=150, bridges=14, answering=12,
                  host_projects=6, host_files=52, host_events=2600, former="", former_sessions=0,
                  big_log=30000, seat_brief=3000, age=3.0, working=3.0, tcc=True, subs=11),
 }
@@ -968,16 +975,16 @@ GATE_P95, GATE_CPU = 1.0, 5.0         # O14 B2 step 2: p95 per pass under 1 s, t
 # The idle gate (`run --idle-gate`, on --preset macbook --words 0 --pycalls 60): the idle uplink's calls a second
 # under cProfile. A count holds on a loaded or slow machine, where a CPU share does not, so a CI runner can judge it.
 # The window is 60 s, the longest period in the loop (MEMBERS_WHOLE): a 20 s one read 46 k or 56 k as that round fell
-# outside or inside it, a 60 s one 30,513, 30,390 and 30,379 Python-function calls and 2,680, 2,675 and 2,674 file
-# calls a second in three runs of sminos 1.46.3 (2026-11-12; 1.46.1 read 49,679 and 2,770, 1.46.0 111,935 and 4,624).
-# Each limit is the highest figure plus 10 %. A change that lowers the figures lowers the limits with it; one that must raise them says so in its diff.
+# outside or inside it, a 60 s one 30,515, 30,513 and 30,516 Python-function calls and 2,694 file calls a second in
+# each of three runs of sminos 1.46.3 at the presets' member rows of 2026-11-12 (1.46.2 read 50,263 and 2,789, 1.46.0
+# 112,648 and 4,634). Each limit is the highest figure plus 10 %, rounded up to ten. A change that lowers the figures lowers the limits with it; one that must raise them says so in its diff.
 # The counts still move a few percent with the runner's speed: the loop waits POLL after each tick ends, so the ticks a
 # second are 1 / (POLL + a tick's length), and the per-tick work moves with them. So the limits are set from figures
 # read on the runner class that judges (the sminos-idle gate's), the gate judges no run whose ticks a second fall
 # outside IDLE_GATE_TICKS (a runner on which the counts cannot be judged), and a count under IDLE_GATE_FLOOR of its
 # limit fails too: an uplink doing less than an idle one does has stopped doing its work (Link.tick catches a pass's
 # exception and goes on), as has one whose daemon.log says "failed".
-IDLE_GATE_PYTHON, IDLE_GATE_FILE = 33560, 2950
+IDLE_GATE_PYTHON, IDLE_GATE_FILE = 33570, 2970
 IDLE_GATE_TICKS, IDLE_GATE_FLOOR = (3.0, 4.0), 0.6
 IDLE_FILE_CALLS = ("posix.stat>", "posix.lstat>", "posix.fstat>", "'stat' of 'posix.DirEntry'", "posix.scandir>",
                    "posix.listdir>", "_io.open>", "posix.open>", "posix.readlink>", "posix.getcwd>")
