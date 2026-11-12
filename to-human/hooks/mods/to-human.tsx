@@ -1223,6 +1223,7 @@ export function registerToHuman(on: On) {
   // row stands in, and which call is a group's last, whose row draws the
   // run's end in the group's place.
   const groupOf = new Map<string, string>()
+  const membersOf = new Map<string, ReadonlySet<string>>()
   const lastOf = new Map<string, string>()
   const expanded = new Set<string>()
 
@@ -1423,6 +1424,16 @@ export function registerToHuman(on: On) {
     }
     note(view, id, e.props)
     see($, view, id, 'record')
+    // A group can let a call go: a resume's first frame groups every call of
+    // a turn, a message's included, then draws the message as a row of its
+    // own. A call let go stands in no group, or its row is the engine's.
+    const held = new Set(e.props.calls.map((call) => call.tool_use_id))
+    for (const call of membersOf.get(id) ?? []) {
+      if (!held.has(call) && groupOf.get(call) === id) {
+        groupOf.delete(call)
+      }
+    }
+    membersOf.set(id, held)
     let last: string | undefined
     for (const call of e.props.calls) {
       if (call.tool_use_id) {

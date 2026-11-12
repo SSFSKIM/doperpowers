@@ -1329,6 +1329,22 @@ describe('the message tool', () => {
     expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 
+  test('a call a group held and let go of draws as a message', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    // A resume's first frame puts every call in one group, then the group lets the message go.
+    const props = (calls: string[]) =>
+      ({ calls: calls.map((id) => ({ tool_use_id: id, tool: id.startsWith('b') ? 'Bash' : MESSAGE_TOOL, input: {} })), isExpanded: false, isActive: false }) as never
+    const group = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'collapsed-1', props: props(['b1', 'toolu_m1']) } as never)
+    await group.redraw(props(['b1']))
+    const call = await callRow($, 'toolu_m1', { input: { text: 'Done.' }, output: 'sent' })
+
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+  })
+
   test('its result row draws nothing', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
