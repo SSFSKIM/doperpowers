@@ -2533,12 +2533,16 @@ class Bridges:
 
     def answers(self, sid, now, socks=None):
         """`socks`: the sessions with a socket in the bridges' directory as
-        just listed (bridge_socks), so a session with none costs no stat."""
+        just listed, each with its socket's inode (bridge_socks), so the
+        listing stands for a stat of each (the plane's presence and each
+        member publish ask for every member, three times a tick)."""
         try:
-            if socks is not None and sid not in socks:
+            if socks is None:
+                ino = os.stat(bridge.endpoint(sid)).st_ino
+            elif sid in socks:
+                ino = socks[sid]
+            else:
                 raise FileNotFoundError(sid)
-            path = bridge.endpoint(sid)
-            ino = os.stat(path).st_ino
         except OSError:
             with self.lock:
                 self.held.pop(sid, None)
@@ -2548,8 +2552,8 @@ class Bridges:
             if not h[3] and (h[0] != ino or h[2] is None or now - h[2] >= BRIDGE_RECHECK):
                 h[3] = True
                 self.probes += 1
-                threading.Thread(target=self.probe, args=(sid, path, ino, now, self.probes), name="plane-probe",
-                                 daemon=True).start()
+                threading.Thread(target=self.probe, args=(sid, bridge.endpoint(sid), ino, now, self.probes),
+                                 name="plane-probe", daemon=True).start()
             return h[1]
 
     def probe(self, sid, path, ino, now, number):
@@ -2636,11 +2640,15 @@ def _stat_key(path):
 
 
 def bridge_socks():
-    """The sessions with a socket in the bridges' directory, from one listing."""
+    """{session: its socket's inode} for the sockets in the bridges'
+    directory, from one listing: the entry's inode is the socket's
+    (readdir's d_ino, which a stat of the path gives too: a socket is no
+    link and no mount point), so a replaced socket is a new inode here."""
     try:
-        return {n[:-len(".sock")] for n in os.listdir(bridge.bridge_dir()) if n.endswith(".sock")}
+        with os.scandir(bridge.bridge_dir()) as it:
+            return {e.name[:-len(".sock")]: e.inode() for e in it if e.name.endswith(".sock")}
     except OSError:
-        return set()
+        return {}
 
 
 def tombstone_path():

@@ -9,7 +9,11 @@ alone; the working directory asked only for a path inside a protected
 folder; the plugin manifest read by stat; the words and reach passes on the shared
 merged log, its addressee index built once while no file moved; and the
 host pass walking only a host file that moved or holds something past its
-cursor. Counted by wrapping the calls, never timed. Hermetic: every test
+cursor; and (2026-11-12) a member's frame built once per state of its
+record, row, launch and visibility, what a writer's name says worked out
+once per name, a bridge's socket taken from the listing rather than a stat,
+a registration's project made once while the file holds, and the host
+store listed again only once its directory moved. Counted by wrapping the calls, never timed. Hermetic: every test
 has its own HOME and SMINOS_HOME under one temporary directory.
 Run: python3 -B sminos/tests/test_idle_reads.py
 """
@@ -482,6 +486,19 @@ class WordsPass(Machine):
         self.assertEqual([(e["writer"], e["seq"]) for e in first[0][S1]], [("hub/mem-1", 1)])
         self.assertEqual([(e["writer"], e["seq"]) for e in first[1][S1]], [("mini/" + S9, 1)])
 
+    def test_a_member_s_owed_events_are_worked_out_once_while_log_and_record_hold(self):
+        first = self.passes()
+        with mock.patch.object(sminos, "_owed", wraps=sminos._owed) as owed:
+            self.assertEqual(self.passes(), first)
+            self.assertEqual(owed.call_count, 0, "the log and the delivery record as they were")
+            os.makedirs(os.path.join(self.p.home, "delivered"), exist_ok=True)
+            sminos.write_json(os.path.join(self.p.home, "delivered", S1 + ".json"),
+                              {"hub/mem-1": {"settled": 1, "pending": None, "attempts": 0}})
+            words, reach = self.passes()
+            self.assertEqual(owed.call_count, 1, "its record moved: worked out again, once for both passes")
+        self.assertEqual(words, {}, "settled: owed no more")
+        self.assertEqual([(e["writer"], e["seq"]) for e in reach[S1]], [("mini/" + S9, 1)])
+
     def test_an_appended_event_is_seen_by_the_next_pass(self):
         self.passes()
         self.arrive("hub/mem-2", 1, "human", signer={**DEV, "member": "mem-2"})
@@ -557,6 +574,48 @@ class HostPass(Machine):
         self.link.host_pass(self.hl, again=True)
         self.assertEqual(len(self.link.session_lane.sent), before + 2, "each session's last ones")
 
+    def test_a_host_store_that_held_still_is_not_listed_again(self):
+        where = os.path.join(self.p.home, sminos.HOST_STORE)
+        calls = Calls()
+        with calls.counting():
+            self.link.host_pass(self.hl)
+        self.assertEqual([c[0] for c in calls.made if c[1] == where], ["stat"], "no host store: a stat, no listing")
+        self.host(self.w, "one")
+        # the clock the listing is judged by, a moment after the directory's change whatever the machine's speed
+        now = os.stat(where).st_mtime_ns + 10 ** 8
+        with mock.patch.object(hublog, "time", mock.Mock(wraps=hublog.time, time_ns=lambda: now)):
+            self.link.host_pass(self.hl)
+            self.assertEqual(len(self.link.session_lane.sent), 1)
+            calls = Calls()
+            with calls.counting():
+                self.link.host_pass(self.hl)
+        self.assertTrue(calls.of("listdir", where), "a directory changed within RACY_NS: listed again")
+        os.utime(where, ns=(os.stat(where).st_atime_ns, os.stat(where).st_mtime_ns - 10 ** 10))   # held still
+        self.link.host_pass(self.hl)
+        calls = Calls()
+        with calls.counting():
+            self.link.host_pass(self.hl)
+            self.link.host_pass(self.hl)
+        self.assertEqual(calls.of("listdir", where) + calls.of("scandir", where), [], "held still: its listing kept")
+        self.host("testhost/" + S2, "two")   # a new file moves the directory's mtime
+        self.link.host_pass(self.hl)
+        self.assertIn('"two"', json.dumps(self.link.session_lane.sent[-1]), "a new writer file, at the next pass")
+
+    def test_a_host_store_replaced_with_its_old_mtime_is_listed_again(self):
+        where = os.path.join(self.p.home, sminos.HOST_STORE)
+        self.host(self.w, "one")
+        old = os.stat(where).st_mtime_ns - 10 ** 10
+        os.utime(where, ns=(old, old))   # held still
+        self.link.host_pass(self.hl)
+        sent = len(self.link.session_lane.sent)
+        os.rename(where, where + ".old")
+        self.host("testhost/" + S2, "two")   # another directory, another writer
+        os.utime(where, ns=(old, old))   # the old one's mtime kept
+        shutil.rmtree(where + ".old")
+        self.link.host_pass(self.hl)
+        self.assertEqual(len(self.link.session_lane.sent), sent + 1, "the new writer's event is sent")
+        self.assertIn('"two"', json.dumps(self.link.session_lane.sent[-1]))
+
     def test_a_rename_of_the_machine_is_followed(self):
         old = "oldhost/" + S2
         self.host(old, "before the rename")
@@ -571,6 +630,263 @@ class HostPass(Machine):
         self.cut_over()
         self.assertFalse(self.hl.is_own(old), "a name the identity no longer lists")
         self.assertTrue(self.hl.is_own(self.w))
+
+
+# ------------------------------------------------------------- G: the member frames
+
+
+class MemberFrames(Machine):
+    """A member's frame built once per state of what it is made of: an
+    unchanged member costs a stat of its record at each publish, and each
+    kind of change is sent at the publish that follows it, as before."""
+
+    def setUp(self):
+        super().setUp()
+        self.p = self.project("work")
+        self.records = sminos.records_module()
+        for sid in (S1, S2):
+            self.records.establish(sid, {**self.records.default_provenance("launch"), "owners": ["mem-1"]})
+        self.link = self.link()
+        self.link.visibility = True
+        self.link.member_known = {self.p.id: self.p}
+        self.rows = self.link.plane.member_rows = {self.p.id: {S1: member(S1), S2: member(S2)}}
+        self.launches = {}
+        patcher = mock.patch.object(self.link.plane.bridges, "launch", side_effect=self.launches.get)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.publish()
+
+    def publish(self):
+        """One publish: (records read, frames built, frames sent)."""
+        before = len(self.link.session_lane.sent)
+        with mock.patch.object(self.records, "read", wraps=self.records.read) as read, \
+                mock.patch.object(uplink, "member_frame", wraps=uplink.member_frame) as built:
+            self.link.publish_members(0.0)
+        return read.call_count, built.call_count, self.link.session_lane.sent[before:]
+
+    def test_an_unchanged_member_is_neither_read_nor_built_again(self):
+        calls = Calls()
+        with calls.counting():
+            got = [self.publish() for _ in range(3)]
+        self.assertEqual(got, [(0, 0, [])] * 3)
+        path = self.records.record_path(S1)
+        self.assertEqual(calls.of("open", path), [])
+        self.assertEqual(len(calls.of("stat", path)), 3, "a stat of its record at each publish")
+
+    def test_a_rewritten_record_is_sent_at_the_next_publish(self):
+        rec, changed = self.records.set_policy(S1, lambda _a, s: ("private", s))
+        self.assertTrue(changed)
+        read, built, sent = self.publish()
+        self.assertEqual((read, built), (1, 1), "its record alone")
+        self.assertEqual([(f["session"], f["access"], f["policyRev"]) for f in sent],
+                         [(S1, "private", rec["policyRev"])])
+        self.assertEqual(self.publish(), (0, 0, []))
+
+    def test_a_record_that_cannot_be_read_withdraws_its_frame_until_it_reads(self):
+        path = self.records.record_path(S1)
+        good = Path(path).read_bytes()
+        Path(path).write_text("{not json")
+        self.assertEqual(self.publish()[2], [{"t": "member", "session": S1, "gone": True}])
+        self.assertEqual(self.publish(), (1, 0, []), "still unreadable: read again, nothing built, nothing sent")
+        tmp = path + ".tmp"
+        Path(tmp).write_bytes(good)
+        os.replace(tmp, path)
+        self.assertEqual([f["session"] for f in self.publish()[2]], [S1], "listed again once it reads")
+        if os.geteuid() != 0:
+            os.chmod(path, 0)   # the same inode, size and mtime: its ctime moved
+            self.addCleanup(os.chmod, path, 0o600)
+            self.assertEqual(self.publish()[2], [{"t": "member", "session": S1, "gone": True}],
+                             "made unreadable in place")
+
+    def read_once(self, of, before):
+        """records.read patched so that its next read of session `of` runs
+        `before` first (and returns what it returns, if it returns a 1-tuple)."""
+        real, left = self.records.read, [1]
+
+        def read(sid, *a, **kw):
+            if sid == of and left:
+                left.pop()
+                got = before(sid)
+                if got is not None:
+                    return got[0]
+            return real(sid, *a, **kw)
+        return mock.patch.object(self.records, "read", side_effect=read)
+
+    def test_a_read_that_fails_once_is_read_again_at_the_next_publish(self):
+        os.utime(self.records.record_path(S1))   # the stat moved, the record the same
+        with self.read_once(S1, lambda sid: (None,)):   # as an open failing with EMFILE
+            self.assertEqual(self.publish()[2], [{"t": "member", "session": S1, "gone": True}])
+        self.assertEqual([f["session"] for f in self.publish()[2]], [S1], "it reads again: listed again")
+
+    def test_a_record_made_between_the_stat_and_the_read_is_not_kept_for_a_missing_file(self):
+        self.rows[self.p.id][S3] = member(S3)
+        self.assertEqual([(f["session"], f["owners"]) for f in self.publish()[2]], [(S3, list(sminos.DEFAULT_OWNERS))])
+
+        def establish(sid):
+            self.records.establish(sid, {**self.records.default_provenance("launch"), "owners": ["mem-2"]})
+        self.rows[self.p.id][S3] = member(S3)._replace(state="busy")   # a miss, its record not there at the stat
+        with self.read_once(S3, establish):
+            sent = self.publish()[2]
+        self.assertIn((S3, ["mem-2"]), [(f["session"], f["owners"]) for f in sent])
+        os.unlink(self.records.record_path(S3))
+        sent = self.publish()[2]
+        self.assertEqual([(f["session"], f["owners"]) for f in sent], [(S3, list(sminos.DEFAULT_OWNERS))])
+
+    def test_a_launch_named_during_the_read_is_in_that_publish(self):
+        os.utime(self.records.record_path(S1))
+
+        def named(sid):
+            self.launches[S1] = "launch-1"
+        with self.read_once(S1, named):
+            sent = self.publish()[2]
+        self.assertEqual([(f["session"], f.get("launch")) for f in sent], [(S1, "launch-1")])
+        self.assertEqual(self.publish(), (0, 0, []), "kept with the launch it was built with")
+
+    def test_a_record_removed_sends_the_defaults(self):
+        os.unlink(self.records.record_path(S2))
+        sent = self.publish()[2]
+        self.assertEqual([(f["session"], f["owners"]) for f in sent], [(S2, list(sminos.DEFAULT_OWNERS))])
+
+    def test_a_launch_a_visibility_and_a_row_change_build_again(self):
+        self.launches[S1] = "launch-1"
+        _, built, sent = self.publish()
+        self.assertEqual((built, [(f["session"], f.get("launch")) for f in sent]), (1, [(S1, "launch-1")]))
+        self.link.visibility = False
+        _, built, sent = self.publish()
+        self.assertEqual(built, 2)
+        self.assertEqual([("access" in f) for f in sent], [False, False])
+        self.rows[self.p.id][S2] = member(S2)._replace(state="busy")
+        _, built, sent = self.publish()
+        self.assertEqual((built, [(f["session"], f["state"]) for f in sent]), (1, [(S2, "busy")]))
+        self.rows[self.p.id][S2] = self.rows[self.p.id][S2]._replace(state_age=99.0, active_age=3.0)
+        self.assertEqual(self.publish(), (0, 0, []), "a reread row whose carried fields held: not built again")
+
+    def test_a_row_gone_is_withdrawn_and_forgotten(self):
+        del self.rows[self.p.id][S2]
+        self.assertEqual(self.publish()[2], [{"t": "member", "session": S2, "gone": True}])
+        self.assertNotIn(S2, self.link.frames)
+        self.rows[self.p.id][S2] = member(S2)
+        self.assertEqual([f["session"] for f in self.publish()[2]], [S2])
+
+    def test_members_before_reads_the_record_and_sends_a_rewritten_one_first(self):
+        self.assertTrue(uplink.Link.members_before(self.link, self.p, {S1}))
+        rec, _ = self.records.set_policy(S1, lambda _a, s: ("private", s))
+        before = len(self.link.session_lane.sent)
+        with mock.patch.object(self.records, "read", wraps=self.records.read) as read:
+            self.assertTrue(uplink.Link.members_before(self.link, self.p, {S1}))
+        self.assertGreaterEqual(read.call_count, 1, "the record read again before what depends on it")
+        self.assertEqual([(f["session"], f["policyRev"]) for f in self.link.session_lane.sent[before:]],
+                         [(S1, rec["policyRev"])])
+
+
+# ------------------------------------------------------------- H: what a writer's name says
+
+
+def old_writer_session(writer):
+    """writer_session as it was at 1.46.2: the reference."""
+    m = sminos.STREAM_RE.fullmatch(writer)
+    last = (m.group(1) if m else writer).rsplit("/", 1)[-1]
+    return last if sminos.UUID_RE.fullmatch(last) else ""
+
+
+class WriterNames(Machine):
+    NAMES = ["testhost/" + S1, "testhost/%s~0123456789abcdef" % S1, "testhost/human", "testhost/human~0123456789abcdef",
+             "mini/x", "hub/mem-1", "legacy/" + S2, "a/b/" + S3, "testhost/%s~0123" % S1, "", "plain"]
+
+    def test_it_answers_as_before(self):
+        with mock.patch.object(sminos, "WRITER_NAMES_KEPT", 3):
+            for _ in range(2):
+                for w in self.NAMES:
+                    self.assertEqual(sminos.writer_session(w), old_writer_session(w), w)
+                    m = sminos.STREAM_RE.fullmatch(w)
+                    self.assertEqual(sminos.stream_of(w), (m.group(1), m.group(2)) if m else (w, None), w)
+            self.assertLessEqual(len(sminos._WRITER_SESSION), 3)
+        self.assertEqual(sminos.stream_of(None), (None, None))
+
+    def test_a_hot_look_reads_no_name_again(self):
+        p = self.project("work")
+        for sid in (S1, S2, S3, S4):
+            self.write_lines(p, "testhost/" + sid, [{"seq": 1, "kind": "say", "ts": "2026-11-12T00:00:00.000Z"}])
+        log_dir = os.path.join(p.home, "log")
+        os.utime(log_dir, ns=(os.stat(log_dir).st_atime_ns, os.stat(log_dir).st_mtime_ns - 10 ** 10))   # held still
+        hl = hublog.HubLog(p, {"key": None, "machine": "testhost"})
+        whole = hl.writers(own=True)
+        self.assertEqual(len(whole), 4)
+        with mock.patch.object(hl, "hot", wraps=hl.hot) as hot:
+            hl.writers(own=True, live=set())
+        self.assertEqual(hot.call_count, 4, "a hot look, its listing kept")
+        stream_re = mock.Mock(wraps=sminos.STREAM_RE)
+        uuid_re = mock.Mock(wraps=sminos.UUID_RE)
+        with mock.patch.object(sminos, "STREAM_RE", stream_re), mock.patch.object(sminos, "UUID_RE", uuid_re):
+            got = [hl.writers(own=True, live=set()) for _ in range(3)]
+        self.assertEqual(got, [whole] * 3)
+        self.assertEqual((stream_re.fullmatch.call_count, uuid_re.fullmatch.call_count), (0, 0))
+
+
+# ------------------------------------------------------------- I: the bridges' answers
+
+
+class BridgeAnswers(Machine):
+    def socket_file(self, sid):
+        """A bridge socket's place in the listing (a probe of a file that is
+        no socket answers nothing, as a dead bridge's does)."""
+        path = sminos.sibling_module("sminos_bridge").endpoint(sid)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".new"
+        Path(tmp).write_text("")
+        os.replace(tmp, path)
+        return path
+
+    def settled(self, bridges, sid):
+        for _ in range(500):
+            with bridges.lock:
+                if not bridges.held[sid][3]:
+                    return
+            import time
+            time.sleep(0.01)
+        self.fail("the probe did not end")
+
+    def test_a_listed_socket_costs_no_stat_and_a_replaced_one_is_probed(self):
+        import sminos_plane as plane
+        bridges = plane.Bridges()
+        path = self.socket_file(S1)
+        socks = plane.bridge_socks()
+        self.assertEqual(socks, {S1: os.stat(path).st_ino})
+        calls = Calls()
+        with calls.counting():
+            got = [bridges.answers(S1, 0.0, socks), bridges.answers(S2, 0.0, socks)]
+        self.assertEqual(got, [False, False])
+        self.assertEqual(calls.of("stat"), [], "the listing stands for the stats")
+        self.settled(bridges, S1)
+        begun = bridges.probes
+        bridges.answers(S1, 1.0, plane.bridge_socks())
+        self.assertEqual(bridges.probes, begun, "the same socket, probed within BRIDGE_RECHECK: not again")
+        self.socket_file(S1)
+        bridges.answers(S1, 1.0, plane.bridge_socks())
+        self.assertEqual(bridges.probes, begun + 1, "a replaced socket: probed at the next listing")
+        self.settled(bridges, S1)
+        os.unlink(path)
+        self.assertFalse(bridges.answers(S1, 2.0, plane.bridge_socks()))
+        self.assertNotIn(S1, bridges.held, "gone from the listing: forgotten")
+
+
+# ------------------------------------------------------------- J: the registrations
+
+
+class Registrations(Machine):
+    def test_an_unchanged_registration_makes_no_project_again(self):
+        p, q = self.project("work"), self.project("other")
+        first = sorted(sminos.known_projects())
+        with mock.patch.object(sminos, "make_project", wraps=sminos.make_project) as made:
+            self.assertEqual(sorted(sminos.known_projects()), first)
+            self.assertEqual(made.call_count, 0)
+            path = os.path.join(sminos.projects_root(), q.id, "project.json")
+            d = json.loads(Path(path).read_text())
+            Path(path + ".tmp").write_text(json.dumps({**d, "name": "renamed"}))
+            os.replace(path + ".tmp", path)
+            got = {x.id: x.name for x in sminos.known_projects()}
+            self.assertEqual(made.call_count, 1, "the rewritten one alone")
+        self.assertEqual(got, {p.id: "work", q.id: "renamed"})
 
 
 def tearDownModule():
