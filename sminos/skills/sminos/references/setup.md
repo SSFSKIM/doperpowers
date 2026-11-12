@@ -113,6 +113,7 @@ start (the `smns-guide.sh` hook).
     sminos daemon install              # write the machine's service: a launchd agent (macOS), a systemd user unit (Linux)
     sminos daemon status               # whether a loop and its uplink run; each project's last tick
     sminos daemon owed                 # what this machine still owes, per project; exit 0 when nothing
+    sminos daemon profile [--seconds 20] [--of uplink|run]   # where the running process's time goes
 
 Install it on every machine whose sessions should reach, and be reached
 by, other machines. Each tick, per project: sync the mirror (projects
@@ -140,6 +141,20 @@ exit 1 too: it cannot say nothing is owed. Events owed to a closed terminal sess
 own and owe nothing: they are in the log, delivered if the session comes
 back. It only reads, so it runs beside the daemon; O14's cutover gate
 runs it before a machine moves to its endpoint.
+
+`daemon profile` has the running uplink (the default) or `daemon run`
+profile itself for `--seconds` (20; at most 600) and prints where its
+time went: the process's CPU over the window (under the profiler, which
+adds its own), its calls a second, the counts of its file calls
+(`posix.stat`, `posix.lstat`, `open`, `os.open`, `listdir`, `scandir`)
+and the functions with the most time of their own, waits left out. The
+profile is kept under `$SMINOS_HOME/daemon/` (mode 0600, the newest five
+of each process; `python3 -m pstats <file>` reads it) and holds function
+names and counts, never an argument or a file's contents. It needs the
+process on sminos 1.46.2 or later and Python 3.12 or later, and is
+refused, with why, when no daemon or uplink runs here; a process on older
+code takes one tick at the request and nothing else, and the verb says it
+did not take it. It runs beside the daemon and never migrates.
 
 `daemon install` writes, on macOS,
 `~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist` and prints

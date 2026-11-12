@@ -77,6 +77,7 @@ from xml.sax.saxutils import escape
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
+import sminos_profile as profile  # noqa: E402
 import sminos_rl10 as rl10  # noqa: E402
 
 # The fetch and the push wait on the network, never under .sync.lock, each at
@@ -1774,9 +1775,11 @@ def cmd_run(a):
     code = own_code()
     uplink = UplinkSupervisor()
     uplink.start()
+    watch = profile.Watch("run")   # `daemon profile --of run`: looked for at a new nudge only
     try:
         while not stop:
             started, nudge = time.time(), nudged_at()
+            watch.look(nudge)
             try:
                 tick_all(quiet=True)
             except MachineClaimed as e:
@@ -1784,6 +1787,7 @@ def cmd_run(a):
                 sminos.die(str(e), 1)
             except Exception as e:  # noqa: BLE001 — the loop outlives one bad tick
                 sminos.daemon_log("tick failed: %r" % e)
+            watch.after_pass()
             sys.stdout.flush()
             changed = own_code()
             if changed != code:
@@ -2382,6 +2386,9 @@ def cmd_daemon(a):
         return
     if a.op == "policy":
         sminos.sibling_module("sminos_policy").cmd_policy(a)
+        return
+    if a.op == "profile":
+        profile.cmd_profile(a)
         return
     {"run": cmd_run, "tick": cmd_tick, "install": cmd_install, "status": cmd_status,
      "owed": cmd_owed}[a.op](a)
