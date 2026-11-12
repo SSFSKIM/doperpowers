@@ -132,6 +132,18 @@ Every `daemon run` tick's wall and CPU time is recorded through the hook
 uplink's POLL and the plane's PRESENCE_EVERY. --measures-out FILE keeps
 every figure as JSON. The hook is a sitecustomize on the PYTHONPATH of every
 process the bench starts; none of it is in the scripts measured.
+
+--idle-gate judges the run by its --pycalls counts and not by B2's gate:
+the idle uplink's Python-function calls and file calls a second, each under
+its limit (IDLE_GATE_PYTHON, IDLE_GATE_FILE). A count is the same on a
+loaded or slow machine, which a CPU share is not, so this is the form a CI
+runner can judge. The gate's run, as the `sminos-idle` gate makes it:
+
+    python3 bench_scale.py run <scripts-dir> --preset macbook --words 0 --working 30 \
+        --warmup 60 --seconds 10 --pycalls 60 --idle-gate
+
+The counting window is 60 s so that it holds one whole member round (the
+loop's longest period) wherever it falls.
 """
 
 import argparse
@@ -947,6 +959,15 @@ def percentile(xs, q):
 
 WORDS_EVERY, POLL_SLACK = 10.0, 1.0   # sminos_uplink.WORDS_EVERY; the tick loop's poll and the tick itself
 GATE_P95, GATE_CPU = 1.0, 5.0         # O14 B2 step 2: p95 per pass under 1 s, the uplink under 5 % of a core
+# The idle gate (`run --idle-gate`, on --preset macbook --words 0 --pycalls 60): the idle uplink's calls a second
+# under cProfile. A count holds on a loaded or slow machine, where a CPU share does not, so a CI runner can judge it.
+# The window is 60 s, the longest period in the loop (MEMBERS_WHOLE): a 20 s one read 46 k or 56 k as that round fell
+# outside or inside it, a 60 s one 49,671, 49,680 and 49,679 Python-function calls and 2,769, 2,770 and 2,770 file
+# calls a second in three runs of sminos 1.46.1 (2026-11-12; 1.46.0 read 111,935 and 4,624). Each limit is that figure
+# plus 10 %. A change that lowers the figures lowers the limits with it; one that must raise them says so in its diff.
+IDLE_GATE_PYTHON, IDLE_GATE_FILE = 54600, 3050
+IDLE_FILE_CALLS = ("posix.stat>", "posix.lstat>", "posix.fstat>", "'stat' of 'posix.DirEntry'", "posix.scandir>",
+                   "posix.listdir>", "_io.open>", "posix.open>", "posix.readlink>", "posix.getcwd>")
 
 
 def words_passes(path, t0, t1):
@@ -1076,13 +1097,21 @@ def cmd_run(a, env):
                   ("uplink under %g%% of a core" % GATE_CPU, uplink_share < GATE_CPU, "%.1f%%" % uplink_share),
                   ("a words pass at least every %g s" % WORDS_EVERY, gap <= WORDS_EVERY + POLL_SLACK,
                    "longest gap %.2f s, %g s allowed past the period for the tick loop" % (gap, POLL_SLACK))]
+        gate = "O14 B2 step 2"
+        if a.idle_gate:
+            gate, pc = "idle counts", measures.get("pycalls") or {}
+            files = sum(n for k, n in (pc.get("file") or {}).items() if any(x in k for x in IDLE_FILE_CALLS))
+            checks = [("the idle uplink under %d Python-function calls a second" % IDLE_GATE_PYTHON,
+                       bool(pc) and pc["python"] < IDLE_GATE_PYTHON, "%.0f" % pc["python"] if pc else "no profile"),
+                      ("and under %d file calls a second" % IDLE_GATE_FILE, bool(pc) and files < IDLE_GATE_FILE,
+                       "%.0f" % files if pc else "no profile")]
         for what, ok, said in checks:
             print("gate: %s: %s (%s)" % (what, "ok" if ok else "FAILED", said))
         ok = all(c[1] for c in checks)
         if a.measures_out:
             measures["gate"] = {what: [bool(ok_), said] for what, ok_, said in checks}
             write(a.measures_out, measures)
-        print("gate (O14 B2 step 2): %s" % ("PASS" if ok else "FAIL"))
+        print("gate (%s): %s" % (gate, "PASS" if ok else "FAIL"))
         return 0 if ok else 1
     finally:
         if run is not None:
@@ -1732,6 +1761,8 @@ def main():
     sub.choices["run"].add_argument("--pycalls", type=float, default=0, metavar="S",
                                     help="then its Python-level calls for S seconds, under cProfile")
     sub.choices["run"].add_argument("--pycalls-prof", metavar="OUT", help="keep that profile at OUT (see `passes`)")
+    sub.choices["run"].add_argument("--idle-gate", action="store_true",
+                                    help="judge the run by its --pycalls counts (IDLE_GATE_*), not by B2's gate")
     sub.choices["run"].add_argument("--nudges", type=int, default=0, metavar="N",
                                     help="then N nudges of daemon run, each its tick's wall time")
     sub.choices["run"].add_argument("--poll", type=float, default=0, metavar="S", help="the uplink's POLL")
