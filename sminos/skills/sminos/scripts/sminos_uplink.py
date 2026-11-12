@@ -107,7 +107,6 @@ session writer, plain and stream (on_snapshots, snapshot_page; O18 D7).
 
 import collections
 import fcntl
-import glob
 import itertools
 import json
 import os
@@ -1635,14 +1634,15 @@ class Link:
         upload (members_before): the endpoint lists, and notifies for, a
         session by its record. A host file is walked again only once it
         moved or holds a session writer's event past the cursor as it is
-        now (HubLog.host_files): one that did neither has nothing to send.
+        now (HubLog.host_files): one that did neither has nothing to send;
+        the store listed again only once its directory moved (host_paths).
         `state`: uplink.json as the caller read it just now."""
         pid = hl.project.id
         queued = self.host_queued.setdefault(pid, {})
         owed = self.host_owed.setdefault(pid, {})
         sent = hl.host_sent(state)
         by_writer, seen = {}, {}
-        for path in sorted(glob.glob(os.path.join(glob.escape(hl.project.home), sminos.HOST_STORE, "*.jsonl"))):
+        for path in hl.host_paths():
             key, events = sminos._log_file_held(path)
             held = hl.host_files.get(path)
             if not again and key is not None and held is not None and held[0] == key \
@@ -1825,6 +1825,7 @@ class Link:
         current = {}
         socks = plane.bridge_socks()
         records = sminos.records_module()
+        where = records.records_dir()
         seen = set()
         for pid in sorted(pid for pid, rows in self.plane.member_rows.items() if rows and pid in self.member_known):
             for sid, m in sorted(self.plane.member_rows[pid].items()):
@@ -1834,7 +1835,7 @@ class Link:
                     # presence carries it); asked here too, so a session of
                     # a project not open on the stream has it as well.
                     self.plane.bridges.answers(sid, now, socks)
-                    frame = self.fresh_frame(pid, m, records)
+                    frame = self.fresh_frame(pid, m, records, where)
                     if frame is None:
                         # An established record that cannot be read (P5 O18 D10): its policy is unknown, so no
                         # frame goes, and one sent before is withdrawn (`gone` below), until it reads again.
@@ -1861,7 +1862,7 @@ class Link:
         if not unsent:
             self.members_whole = True
 
-    def fresh_frame(self, pid, m, records=None):
+    def fresh_frame(self, pid, m, records=None, where=None):
         """The member frame of a plane row from its session's record as it
         reads now (the row's may be a stale one, from before a repair or a
         policy change), or None while the record file exists and cannot be
@@ -1882,7 +1883,7 @@ class Link:
         records = records or sminos.records_module()
         sid = str(m.session or "")
         launch = self.plane.bridges.launch(m.session)
-        path = records.record_path(sid) if sminos.UUID_RE.fullmatch(sid) else None
+        path = records.record_path(sid, where) if sminos.UUID_RE.fullmatch(sid) else None
         if path is None:
             at = None
         else:

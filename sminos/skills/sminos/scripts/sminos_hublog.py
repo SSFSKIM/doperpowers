@@ -404,6 +404,7 @@ class HubLog:
         self.host_files = {}  # host file → (its _log_file_held key, {session writer: its last seq}) as the uplink's
         #                       host pass last walked it (Link.host_pass)
         self.own_names = None  # (machine, machine_identity() it was built from, the own names): is_own's
+        self.host_listing = None  # ((host store dir, its mtime_ns), its writer files): host_paths
         self.reset()
 
     def reset(self):
@@ -563,6 +564,32 @@ class HubLog:
         paths = [os.path.join(self.log_dir, name) for prefix in prefixes for name in glob_names(names, prefix)]
         self.listing = (mtime, prefixes, paths) if mtime is not None and before - mtime >= RACY_NS else None
         return paths, True
+
+    def host_paths(self):
+        """The host store's writer files in sorted order, as sorted(glob) of
+        its `*.jsonl` gives them, listed again only once the directory
+        changed, by own_paths' rule (a listing kept only once the directory
+        held still RACY_NS before it, none that failed); [] while there is
+        no host store. The uplink's host pass asks every open project's at
+        every UPLOAD_EVERY."""
+        where = os.path.join(self.project.home, sminos.HOST_STORE)
+        before = time.time_ns()
+        try:
+            mtime = os.stat(where).st_mtime_ns
+        except OSError:
+            self.host_listing = None
+            return []
+        held = self.host_listing
+        if held is not None and held[0] == (where, mtime):
+            return held[1]
+        try:
+            names = os.listdir(where)
+        except OSError:
+            self.host_listing = None
+            return []
+        paths = sorted(os.path.join(where, name) for name in glob_names(names, ""))
+        self.host_listing = ((where, mtime), paths) if before - mtime >= RACY_NS else None
+        return paths
 
     def hot(self, held, wall, mono):
         """Whether a look between scans looks at this own writer file again:

@@ -12,7 +12,8 @@ host pass walking only a host file that moved or holds something past its
 cursor; and (2026-11-12) a member's frame built once per state of its
 record, row, launch and visibility, what a writer's name says worked out
 once per name, a bridge's socket taken from the listing rather than a stat,
-and a registration's project made once while the file holds. Counted by wrapping the calls, never timed. Hermetic: every test
+a registration's project made once while the file holds, and the host
+store listed again only once its directory moved. Counted by wrapping the calls, never timed. Hermetic: every test
 has its own HOME and SMINOS_HOME under one temporary directory.
 Run: python3 -B sminos/tests/test_idle_reads.py
 """
@@ -572,6 +573,30 @@ class HostPass(Machine):
         before = len(self.link.session_lane.sent)
         self.link.host_pass(self.hl, again=True)
         self.assertEqual(len(self.link.session_lane.sent), before + 2, "each session's last ones")
+
+    def test_a_host_store_that_held_still_is_not_listed_again(self):
+        where = os.path.join(self.p.home, sminos.HOST_STORE)
+        calls = Calls()
+        with calls.counting():
+            self.link.host_pass(self.hl)
+        self.assertEqual([c[0] for c in calls.made if c[1] == where], ["stat"], "no host store: a stat, no listing")
+        self.host(self.w, "one")
+        self.link.host_pass(self.hl)
+        self.assertEqual(len(self.link.session_lane.sent), 1)
+        calls = Calls()
+        with calls.counting():
+            self.link.host_pass(self.hl)
+        self.assertTrue(calls.of("listdir", where), "a directory changed within RACY_NS: listed again")
+        os.utime(where, ns=(os.stat(where).st_atime_ns, os.stat(where).st_mtime_ns - 10 ** 10))   # held still
+        self.link.host_pass(self.hl)
+        calls = Calls()
+        with calls.counting():
+            self.link.host_pass(self.hl)
+            self.link.host_pass(self.hl)
+        self.assertEqual(calls.of("listdir", where) + calls.of("scandir", where), [], "held still: its listing kept")
+        self.host("testhost/" + S2, "two")   # a new file moves the directory's mtime
+        self.link.host_pass(self.hl)
+        self.assertIn('"two"', json.dumps(self.link.session_lane.sent[-1]), "a new writer file, at the next pass")
 
     def test_a_rename_of_the_machine_is_followed(self):
         old = "oldhost/" + S2
