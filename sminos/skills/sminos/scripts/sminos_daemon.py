@@ -617,11 +617,14 @@ def publish_state(project, view, record):
     once a word other than the last one published for it has held for two
     consecutive ticks (one tick of persistence drops the flip inside a tool
     round) — the first word at once, so another machine never waits on an
-    unpublished member. The word each member was last seen holding while it
-    differed (its candidate) is kept in `record` between ticks. Into the
-    session's own file. Only another machine reads a published word (a local
-    view computes it live), so a project with neither a remote nor a hub
-    publishes none.
+    unpublished member, and `waiting` and the word that ends it at once too:
+    a person acts on that word, and is neither kept from a question nor sent
+    to one already answered (the uplink's session plane nudges the daemon for
+    this tick as either is seen, `sminos_plane.waiting_moved`). The word each
+    member was last seen holding while it differed (its candidate) is kept
+    in `record` between ticks. Into the session's own file. Only another
+    machine reads a published word (a local view computes it live), so a
+    project with neither a remote nor a hub publishes none.
     Returns how many events it appended."""
     before = record.get("candidates")
     before = before if isinstance(before, dict) else {}
@@ -632,7 +635,7 @@ def publish_state(project, view, record):
         last = ((view.info.get(m.session) or {}).get("state") or {}).get("state")
         if m.state == last:
             continue
-        if last is None or before.get(m.session) == m.state:
+        if last is None or "waiting" in (m.state, last) or before.get(m.session) == m.state:
             n += len(sminos.lifecycle(project, m.session, "state", required=False,
                                       state=m.state, machine=sminos.host_name()))
         else:

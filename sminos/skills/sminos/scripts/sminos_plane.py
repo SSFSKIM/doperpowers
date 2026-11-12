@@ -2495,6 +2495,15 @@ class Records:
         return held[0]
 
 
+def waiting_moved(before, after):
+    """Whether a session live at both looks ({session: engine record}) entered
+    or left `waiting` between them: a person acts on that word, so the
+    daemon is asked for a tick now (one, however many moved) rather than
+    publishing it up to its interval late, or never for a short one."""
+    return any((sminos.peer_state(before[sid]) == "waiting") != (sminos.peer_state(rec) == "waiting")
+               for sid, rec in after.items() if sid in before)
+
+
 def record_body(rec):
     return {k: rec[k] for k in RECORD_FIELDS if k in rec} if rec is not None else None
 
@@ -3004,7 +3013,9 @@ class Plane:
         out = []
         if now >= self.next_scan:
             self.next_scan = now + PRESENCE_EVERY
-            self.live = self.records.scan()
+            before, self.live = self.live, self.records.scan()
+            if waiting_moved(before, self.live):
+                sminos.nudge_daemon()   # the daemon publishes `waiting` and its end at once (publish_state)
         if set(self.live) != self.read_for or now >= self.next_members:
             whole = set(self.live) != self.read_for or now >= self.next_whole
             sminos.forget_caches()  # the engine's records as they are now, not as sminos last read them

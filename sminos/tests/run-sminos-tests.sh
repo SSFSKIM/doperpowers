@@ -4820,6 +4820,14 @@ else
   fail "leaving: counted connected time under complete frames, reset by a listing, never a held project (test_leaving.py)"
   sed 's/^/    /' "$TEST_ROOT/leaving.out"
 fi
+# A member's `waiting`, and the word that ends it, published on the daemon's first tick that sees them, the uplink's
+# session plane nudging the daemon as a live session's word enters or leaves it; busy and idle wait for a second tick.
+if python3 -B "$SCRIPT_DIR/test_waiting_at_once.py" > "$TEST_ROOT/waiting-at-once.out" 2>&1; then
+  pass "waiting published at once, its end too, the plane nudging the daemon once a look (test_waiting_at_once.py)"
+else
+  fail "waiting published at once, its end too, the plane nudging the daemon once a look (test_waiting_at_once.py)"
+  sed 's/^/    /' "$TEST_ROOT/waiting-at-once.out"
+fi
 # A copy that is not the pinned one fails, naming both hashes.
 mkdir -p "$TEST_ROOT/rule-pin"
 cp "$SCRIPT_DIR/vectors/maws/PIN.json" "$TEST_ROOT/rule-pin/"
@@ -6884,8 +6892,7 @@ run env "${H1[@]}" "$SMINOS" daemon tick
 run env "${H1[@]}" "$SMINOS" say "after the sync"
 md_peer h2 b "$B" waiting
 run env "${H2[@]}" "$SMINOS" daemon tick
-run env "${H2[@]}" "$SMINOS" daemon tick
-assert_contains "$OUT" "published 1 · delivered 0 · pushed" "meanwhile h2 publishes and pushes"
+assert_contains "$OUT" "published 1 · delivered 0 · pushed" "meanwhile h2 publishes b's waiting at once and pushes"
 H2_HEAD="$(gitq -C "$LOG2" rev-parse HEAD)"
 run env "${H1[@]}" "$SMINOS" daemon tick
 assert_contains "$OUT" "demo: synced" "h1's next tick syncs"
@@ -6898,23 +6905,25 @@ if gitq -C "$REMOTE" merge-base --is-ancestor "$H1_SAY" main && gitq -C "$REMOTE
   pass "the remote holds both histories"; else fail "the remote holds both histories"; fi
 assert_equals "$(gitq -C "$LOG1" status --porcelain)" "" "h1's mirror is clean: every event is in a commit"
 
-# A state flip lasting one tick is not published.
+# A flip between busy and idle lasting one tick is not published; `waiting`,
+# which a person acts on, is published on the first tick that sees it, and so
+# is the word that ends it.
 STATES_BEFORE="$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")"
 md_peer h1 a "$A" busy
 run env "${H1[@]}" "$SMINOS" daemon tick
 md_peer h1 a "$A" idle
 run env "${H1[@]}" "$SMINOS" daemon tick
-assert_equals "$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")" "$STATES_BEFORE" "a state flip lasting one tick is not published"
+assert_equals "$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")" "$STATES_BEFORE" "a flip between busy and idle lasting one tick is not published"
 md_peer h1 a "$A" busy
 run env "${H1[@]}" "$SMINOS" daemon tick
+assert_equals "$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")" "$STATES_BEFORE" "one tick of busy publishes nothing"
 md_peer h1 a "$A" waiting
 run env "${H1[@]}" "$SMINOS" daemon tick
-assert_equals "$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")" "$STATES_BEFORE" "two different unpublished words, a tick each, publish nothing"
-run env "${H1[@]}" "$SMINOS" daemon tick
-assert_contains "$(tail -1 "$LOG1/h1.$A.jsonl")" '"state": "waiting", "machine": "h1"' "the second word held for a second tick is published"
+assert_equals "$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")" "$((STATES_BEFORE + 1))" "waiting after it, a tick each, publishes one word"
+assert_contains "$(tail -1 "$LOG1/h1.$A.jsonl")" '"state": "waiting", "machine": "h1"' "waiting, on the first tick that sees it"
 md_peer h1 a "$A" idle
 run env "${H1[@]}" "$SMINOS" daemon tick
-run env "${H1[@]}" "$SMINOS" daemon tick
+assert_contains "$(tail -1 "$LOG1/h1.$A.jsonl")" '"state": "idle", "machine": "h1"' "the word that ends waiting is published on its first tick too"
 STATES_BEFORE="$(grep -c '"kind": "state"' "$LOG1/h1.$A.jsonl")"
 md_peer h1 a "$A" busy
 run env "${H1[@]}" "$SMINOS" daemon tick

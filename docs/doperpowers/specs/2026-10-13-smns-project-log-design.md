@@ -665,7 +665,10 @@ per tick):
 3. **Publish.** For each local member, compute `state()` as today; when it
    differs from the last `state` published for that session and differed on
    the previous tick too, append `state` (one tick of persistence drops the
-   flip inside a tool round). When the harness name differs from the last
+   flip inside a tool round); `waiting`, and the word that ends it, at once,
+   since a person acts on that word, and the uplink's session plane nudges
+   the daemon for that tick as a live session's word enters or leaves it
+   (sminos 1.46.2). When the harness name differs from the last
    known alias, append `renamed` with its `name_source`. When the session's
    title (§5, source 4) is not empty and differs from the last `titled`
    published for it, append `titled`: a member is named by it on the desk
