@@ -4802,6 +4802,14 @@ else
   fail "declared locations: known checkouts, registered and held, hub: false and the machine project as today (test_declared.py)"
   sed 's/^/    /' "$TEST_ROOT/declared.out"
 fi
+# The idle reads (sminos 1.46.1): what an idle uplink reads again, counted in calls and never in time, so a machine's
+# load cannot fail it. Written with 1.46.1 and named by no gate until 2026-11-12.
+if python3 -B "$SCRIPT_DIR/test_idle_reads.py" > "$TEST_ROOT/idle-reads.out" 2>&1; then
+  pass "idle reads: an unchanged uplink.json never opened, one listing of a log a generation, no getcwd outside a protected folder, one addressee index over a still log (test_idle_reads.py)"
+else
+  fail "idle reads: an unchanged uplink.json never opened, one listing of a log a generation, no getcwd outside a protected folder, one addressee index over a still log (test_idle_reads.py)"
+  sed 's/^/    /' "$TEST_ROOT/idle-reads.out"
+fi
 # The org frame's `locations` (§D, §E.3): kept with the directory in one write, a frame without them keeping the
 # held ones, each kept gen acknowledged, the hello listing them; while a welcome promises them and none is kept, a
 # session keeps its recorded project, so none moves twice.
