@@ -1874,7 +1874,11 @@ class Link:
         unchanged member costs a stat at each publish (twice a tick, every
         member: their parse and build were most of an idle uplink's work,
         2026-11-12). The stat is taken before the read, so a record
-        rewritten between them is built again at the next publish."""
+        rewritten between them is built again at the next publish. Kept
+        only when the read agrees with the stat (a record read from a file
+        that was there, or none from one that was not), with the launch as
+        it stood after the read; an unreadable record is never kept, so it
+        is read again at each publish."""
         records = records or sminos.records_module()
         sid = str(m.session or "")
         launch = self.plane.bridges.launch(m.session)
@@ -1893,10 +1897,14 @@ class Link:
             return held[1]
         rec = records.read(m.session)
         if rec is None and path is not None and os.path.lexists(path):
-            frame = None
+            self.frames.pop(m.session, None)
+            return None
+        launch = self.plane.bridges.launch(m.session)
+        frame = member_frame(pid, m._replace(record=rec), launch, self.visibility)
+        if (at is not None and len(at) == 5) == (rec is not None):
+            self.frames[m.session] = (made_of[:-2] + (launch, self.visibility), frame)
         else:
-            frame = member_frame(pid, m._replace(record=rec), launch, self.visibility)
-        self.frames[m.session] = (made_of, frame)
+            self.frames.pop(m.session, None)
         return frame
 
     def send_members(self, batch):

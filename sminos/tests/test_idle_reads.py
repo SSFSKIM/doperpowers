@@ -644,7 +644,7 @@ class MemberFrames(Machine):
         good = Path(path).read_bytes()
         Path(path).write_text("{not json")
         self.assertEqual(self.publish()[2], [{"t": "member", "session": S1, "gone": True}])
-        self.assertEqual(self.publish(), (0, 0, []), "still unreadable: nothing read again, nothing sent")
+        self.assertEqual(self.publish(), (1, 0, []), "still unreadable: read again, nothing built, nothing sent")
         tmp = path + ".tmp"
         Path(tmp).write_bytes(good)
         os.replace(tmp, path)
@@ -654,6 +654,50 @@ class MemberFrames(Machine):
             self.addCleanup(os.chmod, path, 0o600)
             self.assertEqual(self.publish()[2], [{"t": "member", "session": S1, "gone": True}],
                              "made unreadable in place")
+
+    def read_once(self, of, before):
+        """records.read patched so that its next read of session `of` runs
+        `before` first (and returns what it returns, if it returns a 1-tuple)."""
+        real, left = self.records.read, [1]
+
+        def read(sid, *a, **kw):
+            if sid == of and left:
+                left.pop()
+                got = before(sid)
+                if got is not None:
+                    return got[0]
+            return real(sid, *a, **kw)
+        return mock.patch.object(self.records, "read", side_effect=read)
+
+    def test_a_read_that_fails_once_is_read_again_at_the_next_publish(self):
+        os.utime(self.records.record_path(S1))   # the stat moved, the record the same
+        with self.read_once(S1, lambda sid: (None,)):   # as an open failing with EMFILE
+            self.assertEqual(self.publish()[2], [{"t": "member", "session": S1, "gone": True}])
+        self.assertEqual([f["session"] for f in self.publish()[2]], [S1], "it reads again: listed again")
+
+    def test_a_record_made_between_the_stat_and_the_read_is_not_kept_for_a_missing_file(self):
+        self.rows[self.p.id][S3] = member(S3)
+        self.assertEqual([(f["session"], f["owners"]) for f in self.publish()[2]], [(S3, list(sminos.DEFAULT_OWNERS))])
+
+        def establish(sid):
+            self.records.establish(sid, {**self.records.default_provenance("launch"), "owners": ["mem-2"]})
+        self.rows[self.p.id][S3] = member(S3)._replace(state="busy")   # a miss, its record not there at the stat
+        with self.read_once(S3, establish):
+            sent = self.publish()[2]
+        self.assertIn((S3, ["mem-2"]), [(f["session"], f["owners"]) for f in sent])
+        os.unlink(self.records.record_path(S3))
+        sent = self.publish()[2]
+        self.assertEqual([(f["session"], f["owners"]) for f in sent], [(S3, list(sminos.DEFAULT_OWNERS))])
+
+    def test_a_launch_named_during_the_read_is_in_that_publish(self):
+        os.utime(self.records.record_path(S1))
+
+        def named(sid):
+            self.launches[S1] = "launch-1"
+        with self.read_once(S1, named):
+            sent = self.publish()[2]
+        self.assertEqual([(f["session"], f.get("launch")) for f in sent], [(S1, "launch-1")])
+        self.assertEqual(self.publish(), (0, 0, []), "kept with the launch it was built with")
 
     def test_a_record_removed_sends_the_defaults(self):
         os.unlink(self.records.record_path(S2))
