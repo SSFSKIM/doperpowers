@@ -718,12 +718,17 @@ def _own_cwd():
 def withheld(path):
     """Whether this process may not look at `path` (read_refused), asked
     without counting a refusal: for a look that is only skipped when it
-    would be refused, and decides nothing on its own."""
+    would be refused, and decides nothing on its own. The working
+    directory is asked only for a path inside a protected folder (macOS's
+    getcwd is five calls): outside every one it cannot be why a look is
+    refused."""
     if not TCC or not path:
         return False
     folder = protected_folder(_abs(path))
+    if not folder:
+        return False
     here = _own_cwd()
-    return bool(folder) and not (here and _under(here, folder))
+    return not (here and _under(here, folder))
 
 
 def read_refused(path):
@@ -1851,6 +1856,18 @@ def remote_moved(project, key):
             pass
 
 
+def registration_paths():
+    """`projects/*/project.json` in sorted order, as sorted(glob) gives
+    them, but from the listing alone: the read that follows each fails for
+    one that is not there, so glob's lstat of every one is spent twice."""
+    root = projects_root()
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return []
+    return sorted(os.path.join(root, name, "project.json") for name in names if not name.startswith("."))
+
+
 _ROOTS = []   # [{registered root: [project ids]}], per cache generation (_registered_at)
 
 
@@ -1915,14 +1932,72 @@ def recorded_project(session):
     process may not read is told to be in."""
     if session not in _RECORDED:
         best, at = None, ""
-        for path in glob.glob(os.path.join(projects_root(), "*", "project.json")):
-            p = known_project(os.path.basename(os.path.dirname(path)))
-            last = next((e for e in reversed(_own_events(p, session)) if e["kind"] in MEMBERSHIP), None) \
-                if p is not None else None
+        for p, listed in _holding_projects(session):
+            last = next((e for e in reversed(_own_events(p, session, listed=listed)) if e["kind"] in MEMBERSHIP),
+                        None)
             if last is not None and last["kind"] == "joined" and str(last.get("ts") or "") >= at:
                 best, at = p, str(last.get("ts") or "")
         _RECORDED[session] = Guessed(*best) if best is not None else None
     return _RECORDED[session]
+
+
+_LOG_LISTED = {}   # project dir name → its log/'s (names, stream bases), per cache generation (_log_listed)
+_PROJECT_DIRS = []  # [the names under projects/, as listed], per cache generation (_holding_projects)
+
+
+def _log_listed(name):
+    """(the names in projects/<name>/log, the plain writer file names its
+    audience stream files are of: `<host>.<session>` for each
+    `<host>.<session>~<digest>.jsonl`), listed once per cache generation;
+    empty for a directory that is not there; None when it cannot be listed
+    (EMFILE is no empty directory), not kept: read as if unlisted."""
+    if name not in _LOG_LISTED:
+        try:
+            names = frozenset(os.listdir(os.path.join(projects_root(), name, "log")))
+        except (FileNotFoundError, NotADirectoryError):
+            names = frozenset()
+        except OSError:
+            return None
+        _LOG_LISTED[name] = (names, frozenset(m.group(1) for m in map(STREAM_FILE_RE.fullmatch, names) if m))
+    return _LOG_LISTED[name]
+
+
+STREAM_FILE_RE = re.compile(r"(.+)~[0-9a-f]{16}\.jsonl")
+
+
+def _holding_projects(session):
+    """(project, its log's listing or None) for each project registered
+    here whose log holds a writer file of `session` under this machine's
+    name now or a former one that held it — its plain writer's or an
+    audience stream's — in the order the projects directory lists them:
+    where recorded_project reads its own events. Each log directory is
+    listed once a cache generation, as its answers are kept, rather than
+    every one of its files opened under every name for every session a pass
+    asks about (the MacBook's uplink, 2026-11-11: 26 sessions × 101
+    projects × 1.65 names a generation, nearly every open failing). A file
+    made since the listing is seen in the next generation, which is only as
+    stale as a Guessed may be: nothing joins, moves or retires a session on
+    one. last_project, whose answer a reconciliation acts on, never reads
+    through here."""
+    if not _PROJECT_DIRS:
+        try:
+            _PROJECT_DIRS.append(os.listdir(projects_root()))
+        except OSError:
+            return
+    hosts = [host for host, held in machine_identity()[1].items() if session in held] + [host_name()]
+    for name in _PROJECT_DIRS[0]:
+        if name.startswith("."):
+            continue   # what glob's `*` passes by
+        listed = _log_listed(name)
+        if listed is not None:
+            names, bases = listed
+            plain = ["%s.%s" % (host, session) for host in hosts]
+            if not any(f + ".jsonl" in names for f in plain) \
+                    and not any(("%s/%s" % (host, session)).replace("/", ".") in bases for host in hosts):
+                continue
+        p = known_project(name)
+        if p is not None:
+            yield p, listed
 
 
 def project_source(cwd):
@@ -2244,7 +2319,7 @@ def known_projects(all_seats=None):
     """Every project this machine knows: those with a home here, and those of
     the seats it holds (`all_seats`: a seat read the caller already made)."""
     out = {}
-    for path in sorted(glob.glob(os.path.join(projects_root(), "*", "project.json"))):
+    for path in registration_paths():
         d = _registration_at(path)
         try:
             pid = str(d["project"])
@@ -2575,7 +2650,11 @@ def last_project(session):
     move to none: "", so None), since a move whose destination's `joined`
     was never written (an interrupted daemon, a failed join) is still that
     move. None for none. Where a session is in while the machine's stored
-    statements are not known yet (_session_project)."""
+    statements are not known yet (_session_project), which a reconciliation
+    acts on: so each project's files are read as they are when it is asked,
+    never from a listing an earlier lookup of the generation took
+    (_holding_projects is recorded_project's alone). Every project's files
+    under every name, but only until the first frame's `locations`."""
     if session not in _LAST:
         best, at = None, ""
         for path in glob.glob(os.path.join(projects_root(), "*", "project.json")):
@@ -5782,11 +5861,15 @@ def words_due(project, members):
     as the daemon's delivery pass splits it: each member's owed events are
     read from its own share, not from the whole log again. What the uplink
     asks `words?` about. An outside event on a read-only machine is none:
-    deliver_next settles it `refused-read-only` unasked."""
+    deliver_next settles it `refused-read-only` unasked. The log is the
+    shared merged list (_store_whole), so the split is kept while no file
+    of it moves: what is handed out is read, never changed (the uplink's
+    asks keep the events, its frames copy them, and deliver_verdict reads
+    the log again)."""
     policy = sibling_module("sminos_policy")
     holder = holder_module()
     read_only = policy.read_only()
-    to = addressees(log_read(project))
+    to = addressees(_store_whole(project, "log", shared=True)[1])
     out = {}
     for m in members:
         if not m.session or m.session not in to:
@@ -5824,7 +5907,7 @@ def reach_due(project, members):
         return {}
     words = WordsGate(project)
     read_only = policy.read_only()
-    to = addressees(log_read(project))
+    to = addressees(_store_whole(project, "log", shared=True)[1])
     out = {}
     for m in members:
         if not m.session or m.session not in to or records.unreadable(m.session):
@@ -7408,19 +7491,23 @@ def export_host(project, session, tpath, alias):
         return len(events)
 
 
-def _writer_events(project, host, session, store="log"):
+def _writer_events(project, host, session, store="log", listed=None):
     """The events of the writer `<host>/<session>` and of its audience
     streams (`<host>/<session>~<digest>`, P5 O18 D6), read directly: the
     plain file's, then each stream's, merged by ts, each file in its own
-    order."""
+    order. `listed`: the log directory's listing (_log_listed), which a
+    file must be in to be opened, and a stream of the writer to be looked
+    for."""
     where = os.path.join(project.home, store)
     paths = [os.path.join(where, "%s.%s.jsonl" % (host, session))]
-    if store == "log":
+    if store == "log" and (listed is None or ("%s/%s" % (host, session)).replace("/", ".") in listed[1]):
         # Its streams are those this machine kept the audience of as it wrote their first event (keep_stream): a
         # stat while the project's streams.json holds, never a listing of the log on every read.
         base = "%s/%s" % (host, session)
         paths += [writer_path(project, w) for w in sorted(audience_module().streams_of(project))
                   if writer_base(w) == base]
+    if listed is not None:
+        paths = [path for path in paths if os.path.dirname(path) != where or os.path.basename(path) in listed[0]]
     files = []
     for path in paths:
         try:
@@ -7433,19 +7520,21 @@ def _writer_events(project, host, session, store="log"):
     return list(heapq.merge(*files, key=lambda e: e["ts"]))
 
 
-def _former_events(project, session, store="log"):
+def _former_events(project, session, store="log", listed=None):
     """The session's events under the names this machine wrote under before
     it enrolled, for a session it held under them (is_self), oldest name
     first: still the session's own, though nothing appends to them any more."""
     return [e for host, held in machine_identity()[1].items() if session in held
-            for e in _writer_events(project, host, session, store)]
+            for e in _writer_events(project, host, session, store, listed)]
 
 
-def _own_events(project, session, store="log"):
+def _own_events(project, session, store="log", listed=None):
     """The session's own writer files, read directly (the hook reads nothing
     else of the log): under this machine's former names, then its name now
-    (its plain writer and its audience streams, merged by ts)."""
-    return _former_events(project, session, store) + _writer_events(project, host_name(), session, store)
+    (its plain writer and its audience streams, merged by ts). `listed`:
+    the log's listing, which a file must be in (_writer_events)."""
+    return _former_events(project, session, store, listed) \
+        + _writer_events(project, host_name(), session, store, listed)
 
 
 def _own_events_but(project, session, writer):
@@ -8912,6 +9001,8 @@ def forget_caches():
     _SEAT_PIDS.clear()
     _ROOTS.clear()
     _RECORDED.clear()
+    _LOG_LISTED.clear()
+    _PROJECT_DIRS.clear()
     _LAST.clear()
     _BOOT.clear()
     _GENERATION[0] += 1

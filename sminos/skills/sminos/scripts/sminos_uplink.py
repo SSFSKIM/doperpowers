@@ -1543,7 +1543,19 @@ class Link:
             self.unsettled[key] = line
             log(line)
 
-    def upload(self, hl, live=None):
+    def upload_pass(self, hl, live):
+        """One open project's turn of the upload pass: its uploads, its
+        delivery outcomes, its notices and its host events. uplink.json is
+        read once for the upload's fresh draw and the host pass's cursor:
+        nothing in the turn moves `host_sent`, which only a write's
+        continuation does, run between ticks (`ran`)."""
+        state = hl.state()
+        self.upload(hl, live, state)
+        self.deliveries(hl)
+        hl.show_notices()   # what the hub withheld, told its sending session (P5 O18 D5)
+        self.host_pass(hl, state=state)
+
+    def upload(self, hl, live=None, state=None):
         """The project's uploads queued, each its own entry, as far as the log
         lane holds less than UPLOAD_AHEAD unsent: the rest go on a later pass,
         so a long backlog paces itself instead of filling the lane past its
@@ -1552,9 +1564,11 @@ class Link:
         lane is full draws nothing, and no event is sealed twice. On RL10 the
         member frames of the sessions a drawn frame carries go first
         (members_before); while one cannot be queued yet, the frame is drawn
-        again on a later pass (HubLog.undraw)."""
+        again on a later pass (HubLog.undraw). `state`: uplink.json as the
+        caller read it just now (upload_pass)."""
         while self.log_lane.queued() < UPLOAD_AHEAD:
-            got = hl.next_upload(live)
+            got = hl.next_upload(live, state)
+            state = None   # a later draw in this call reads it as it is then
             if got is None:
                 return
             frame, reach = got
@@ -1599,7 +1613,7 @@ class Link:
 
         self.log_lane.send(frames, then=answered)
 
-    def host_pass(self, hl, again=False):
+    def host_pass(self, hl, again=False, state=None):
         """RL10: what the project's sessions sent their person (its host
         store, sminos.HOST_STORE) up the session lane, each event a sub-less
         `host` message {id: {writer, seq}, event}, whether or not anyone
@@ -1617,16 +1631,31 @@ class Link:
         (sminos.host_order), so a pass that stops never leaves an unsent seq
         behind the cursor. The sessions' member frames go first, as for an
         upload (members_before): the endpoint lists, and notifies for, a
-        session by its record."""
+        session by its record. A host file is walked again only once it
+        moved or holds a session writer's event past the cursor as it is
+        now (HubLog.host_files): one that did neither has nothing to send.
+        `state`: uplink.json as the caller read it just now."""
         pid = hl.project.id
         queued = self.host_queued.setdefault(pid, {})
         owed = self.host_owed.setdefault(pid, {})
-        sent = hl.host_sent()
-        by_writer = {}
+        sent = hl.host_sent(state)
+        by_writer, seen = {}, {}
         for path in sorted(glob.glob(os.path.join(glob.escape(hl.project.home), sminos.HOST_STORE, "*.jsonl"))):
-            for e in sminos._log_file_events(path):
-                if hl.is_own(e["writer"]) and sminos.writer_session(e["writer"]):
-                    by_writer.setdefault(e["writer"], []).append(e)
+            key, events = sminos._log_file_held(path)
+            held = hl.host_files.get(path)
+            if not again and key is not None and held is not None and held[0] == key \
+                    and all(seq <= sent.get(w, 0) for w, seq in held[1].items()):
+                seen[path] = held
+                continue
+            tops = {}
+            for e in events:
+                if sminos.writer_session(e["writer"]):
+                    tops[e["writer"]] = max(e["seq"], tops.get(e["writer"], 0))
+                    if hl.is_own(e["writer"]):
+                        by_writer.setdefault(e["writer"], []).append(e)
+            if key is not None:
+                seen[path] = (key, tops)
+        hl.host_files = seen
         due = dict(owed)
         for writer, events in by_writer.items():
             at = max(sent.get(writer, 0), queued.get(writer, 0))
@@ -2151,10 +2180,7 @@ class Link:
                 live = None if self.look_whole or nudged or words else set(self.plane.live)
                 self.look_whole = False
                 for pid in sorted(self.opened):
-                    self.upload(self.logs[pid], live)
-                    self.deliveries(self.logs[pid])
-                    self.logs[pid].show_notices()   # what the hub withheld, told its sending session (P5 O18 D5)
-                    self.host_pass(self.logs[pid])
+                    self.upload_pass(self.logs[pid], live)
             self.failing = ""
         except EndStream:
             raise
