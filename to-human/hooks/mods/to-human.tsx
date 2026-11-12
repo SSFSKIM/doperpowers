@@ -1427,7 +1427,7 @@ export function registerToHuman(on: On) {
     // A group can let a call go: a resume's first frame groups every call of
     // a turn, a message's included, then draws the message as a row of its
     // own. A call let go stands in no group, or its row is the engine's.
-    const held = new Set(e.props.calls.map((call) => call.tool_use_id))
+    const held = new Set(e.props.calls.flatMap((call) => (call.tool_use_id ? [call.tool_use_id] : [])))
     for (const call of membersOf.get(id) ?? []) {
       if (!held.has(call) && groupOf.get(call) === id) {
         groupOf.delete(call)

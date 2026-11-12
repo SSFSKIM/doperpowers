@@ -879,9 +879,12 @@ describe('rows', () => {
       plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
       props: { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
     })
-    const texts = (await band.findAll({ type: 'Text' })).map((text) => text.text)
-    expect(texts[0]).toBe('1 open question')
-    expect(texts.some((text) => text.includes('to-human view'))).toBe(true)
+    // What is beneath draws in the view's column, ahead of its line; the kit
+    // draws it as a ref in its place (its text then follows the tree).
+    expect(await band.keepsBeneath()).toBe(true)
+    const column = JSON.stringify(await band.drawn())
+    expect(column.indexOf('"type":"engine"')).toBeGreaterThan(-1)
+    expect(column.indexOf('"type":"engine"')).toBeLessThan(column.indexOf('to-human view'))
     expect(await band.find({ type: 'Button', text: 'full transcript' })).toBeDefined()
   })
 
