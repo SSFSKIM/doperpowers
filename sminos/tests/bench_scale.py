@@ -968,16 +968,16 @@ GATE_P95, GATE_CPU = 1.0, 5.0         # O14 B2 step 2: p95 per pass under 1 s, t
 # The idle gate (`run --idle-gate`, on --preset macbook --words 0 --pycalls 60): the idle uplink's calls a second
 # under cProfile. A count holds on a loaded or slow machine, where a CPU share does not, so a CI runner can judge it.
 # The window is 60 s, the longest period in the loop (MEMBERS_WHOLE): a 20 s one read 46 k or 56 k as that round fell
-# outside or inside it, a 60 s one 49,671, 49,680 and 49,679 Python-function calls and 2,769, 2,770 and 2,770 file
-# calls a second in three runs of sminos 1.46.1 (2026-11-12; 1.46.0 read 111,935 and 4,624). Each limit is that figure
-# plus 10 %. A change that lowers the figures lowers the limits with it; one that must raise them says so in its diff.
+# outside or inside it, a 60 s one 30,513, 30,390 and 30,379 Python-function calls and 2,680, 2,675 and 2,674 file
+# calls a second in three runs of sminos 1.46.3 (2026-11-12; 1.46.1 read 49,679 and 2,770, 1.46.0 111,935 and 4,624).
+# Each limit is the highest figure plus 10 %. A change that lowers the figures lowers the limits with it; one that must raise them says so in its diff.
 # The counts still move a few percent with the runner's speed: the loop waits POLL after each tick ends, so the ticks a
 # second are 1 / (POLL + a tick's length), and the per-tick work moves with them. So the limits are set from figures
 # read on the runner class that judges (the sminos-idle gate's), the gate judges no run whose ticks a second fall
 # outside IDLE_GATE_TICKS (a runner on which the counts cannot be judged), and a count under IDLE_GATE_FLOOR of its
 # limit fails too: an uplink doing less than an idle one does has stopped doing its work (Link.tick catches a pass's
 # exception and goes on), as has one whose daemon.log says "failed".
-IDLE_GATE_PYTHON, IDLE_GATE_FILE = 54600, 3050
+IDLE_GATE_PYTHON, IDLE_GATE_FILE = 33560, 2950
 IDLE_GATE_TICKS, IDLE_GATE_FLOOR = (3.0, 4.0), 0.6
 IDLE_FILE_CALLS = ("posix.stat>", "posix.lstat>", "posix.fstat>", "'stat' of 'posix.DirEntry'", "posix.scandir>",
                    "posix.listdir>", "_io.open>", "posix.open>", "posix.readlink>", "posix.getcwd>")
