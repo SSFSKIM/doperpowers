@@ -147,12 +147,14 @@ profile itself for `--seconds` (20; at most 600) and prints where its
 time went: the process's CPU over the window (under the profiler, which
 adds its own), its calls a second, the counts of its file calls
 (`posix.stat`, `posix.lstat`, `open`, `os.open`, `listdir`, `scandir`)
-and the functions with the most time of their own, waits left out. The
+and the functions with the most time of their own, waits left out (the
+counts are exact; own time is approximate while threads overlap). The
 profile is kept under `$SMINOS_HOME/daemon/` (mode 0600, the newest five
 of each process; `python3 -m pstats <file>` reads it) and holds function
 names and counts, never an argument or a file's contents. It needs the
 process on sminos 1.46.2 or later and Python 3.12 or later, and is
-refused, with why, when no daemon or uplink runs here; a process on older
+refused, with why, when no daemon or uplink runs here or another profile
+of the same process is already being asked for; a process on older
 code takes one tick at the request and nothing else, and the verb says it
 did not take it. It runs beside the daemon and never migrates.
 

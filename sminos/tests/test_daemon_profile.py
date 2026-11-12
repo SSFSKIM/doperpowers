@@ -259,6 +259,50 @@ class Window(Home):
         self.assertIsNone(profile.take("run"))
         self.assertFalse(os.path.exists(profile.request_path("run")))
 
+    def test_a_refusal_that_cannot_be_written_never_reaches_the_loop(self):
+        self.request("run")
+        watch = profile.Watch("run")
+        watch.look(1)
+        logged = []
+        full = OSError(28, "No space left on device")
+        with mock.patch.object(profile.sys, "version_info", (3, 11, 9)), \
+                mock.patch.object(profile, "_private", side_effect=full), \
+                mock.patch.object(profile.sminos, "daemon_log", side_effect=logged.append):
+            watch.after_pass()
+        self.assertEqual(len(logged), 1, logged)
+        self.assertIn("not written", logged[0])
+        with mock.patch.object(profile, "_private", side_effect=full), \
+                mock.patch.object(profile, "_begin", side_effect=RuntimeError("boom")), \
+                mock.patch.object(profile.sminos, "daemon_log", side_effect=OSError(28, "full")):
+            self.request("run")
+            watch.look(2)
+            watch.after_pass()   # nor when daemon.log cannot be written either
+
+    def test_an_unexpected_error_in_noticing_never_reaches_the_loop(self):
+        logged = []
+        with mock.patch.object(profile, "take", side_effect=RuntimeError("boom")), \
+                mock.patch.object(profile.sminos, "daemon_log", side_effect=logged.append):
+            profile.noticed("uplink")
+            profile.Watch("run").look(1)
+        self.assertEqual(len(logged), 2, logged)
+        self.assertIsNone(profile._STATE["pending"])
+
+    def test_a_start_that_fails_after_enable_leaves_no_profiler_running(self):
+        req = self.request("run", seconds=0.5)
+        watch = profile.Watch("run")
+        watch.look(1)
+        with mock.patch.object(threading.Timer, "start", side_effect=RuntimeError("can't start new thread")):
+            watch.after_pass()
+        _, got = self.result("run", req, timeout=3)
+        self.assertIn("could not begin", got["refused"])
+        self.assertIsNone(profile._STATE["running"], "no window is left counted as running")
+        self.assertIsNone(sys.monitoring.get_tool(sys.monitoring.PROFILER_ID), "the profiler is disabled")
+        again = self.request("run", seconds=0.2)
+        watch.look(2)
+        watch.after_pass()
+        _, done = self.result("run", again)
+        self.assertNotIn("refused", done, "the next request profiles")
+
     def test_only_the_newest_profiles_are_kept(self):
         for _ in range(profile.KEEP + 2):
             req = self.request("run", seconds=0.05)
@@ -320,6 +364,77 @@ class Refusals(Home):
         self.assertIn("pid %d" % old.pid, err)
         self.assertIsNone(old.poll(), "the process runs on")
         self.assertFalse(os.path.exists(profile.request_path("run")), "the request is withdrawn")
+
+    def test_a_request_already_waiting_for_the_process_is_left_and_the_verb_refuses(self):
+        self.hold("run.lock")
+        waiting = self.request("run", seconds=5)
+        code, _, err = self.verb("--of", "run", "--seconds", "1")
+        self.assertEqual(code, 1)
+        self.assertIn("already waiting", err)
+        with open(profile.request_path("run")) as f:
+            self.assertEqual(json.load(f)["id"], waiting["id"], "the waiting request is untouched")
+
+    def test_a_stale_waiting_request_is_replaced(self):
+        self.hold("run.lock")
+        self.request("run", at=time.time() - profile.STALE - 5)
+        seen = []
+
+        def watch():
+            def own():
+                try:
+                    with open(profile.request_path("run")) as f:
+                        got = json.load(f)
+                except (OSError, ValueError):
+                    return None
+                return got if abs(time.time() - got["at"]) < 60 else None
+            seen.append(wait_for(own, timeout=5))
+        t = threading.Thread(target=watch)
+        t.start()
+        with mock.patch.object(profile, "TAKE_WITHIN", 1.0):
+            code, _, err = self.verb("--of", "run", "--seconds", "1")
+        t.join()
+        self.assertEqual(code, 1)
+        self.assertIn("did not take", err)
+        self.assertTrue(seen[0], "the verb's own request replaced the stale one")
+        self.assertFalse(os.path.exists(profile.request_path("run")), "and is withdrawn")
+
+    def test_a_request_replaced_by_another_counts_as_taken_and_the_other_is_kept(self):
+        self.hold("run.lock")
+        other = profile.new_request("run", 3)
+
+        def replace():
+            def mine():
+                try:
+                    with open(profile.request_path("run")) as f:
+                        return json.load(f)["id"] != other["id"]
+                except (OSError, ValueError):
+                    return False
+            wait_for(mine, timeout=5)
+            sminos.write_json(profile.request_path("run"), other)
+        t = threading.Thread(target=replace)
+        t.start()
+        with mock.patch.object(profile, "RESULT_GRACE", 0.3):
+            code, out, err = self.verb("--of", "run", "--seconds", "0.2")
+        t.join()
+        self.assertIn("took the request", out)
+        self.assertEqual(code, 1)
+        self.assertIn("no profile came back", err)
+        with open(profile.request_path("run")) as f:
+            self.assertEqual(json.load(f)["id"], other["id"], "the other request is never withdrawn")
+
+    def test_a_withdrawal_removes_only_its_own_request(self):
+        mine, other = profile.new_request("run", 1), profile.new_request("run", 1)
+        path = profile.request_path("run")
+        sminos.write_json(path, other)
+        self.assertFalse(profile._withdraw(path, mine["id"]), "another's request is not withdrawn")
+        with open(path) as f:
+            self.assertEqual(json.load(f)["id"], other["id"])
+        os.unlink(path)
+        self.assertFalse(profile._withdraw(path, mine["id"]), "nothing there: taken")
+        sminos.write_json(path, mine)
+        self.assertTrue(profile._withdraw(path, mine["id"]))
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual([n for n in os.listdir(os.path.dirname(path)) if "request" in n], [], "nothing left aside")
 
     def test_no_uplink_here(self):
         self.hold("run.lock")
