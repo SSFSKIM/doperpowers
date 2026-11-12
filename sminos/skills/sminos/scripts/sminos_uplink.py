@@ -107,7 +107,6 @@ session writer, plain and stream (on_snapshots, snapshot_page; O18 D7).
 
 import collections
 import fcntl
-import glob
 import itertools
 import json
 import os
@@ -772,6 +771,7 @@ class Link:
         self.revoked_whole = False  # RL10: the next revocation set is the welcome's, kept whole
         self.revoked_due = False  # RL10: a revocation set was kept that the owed events have not been marked by
         self.members_sent = {}    # RL10: session → the `member` frame last sent on this connection
+        self.frames = {}          # RL10: session → (what its frame was built from, the frame or None): fresh_frame
         self.visibility = False   # RL10: the endpoint's welcome advertised `access` (P5 O18 D9): member frames carry it
         self.reach = False        # RL10: it advertised `reach` (P5 O18 D3): every peer push here waits for its answer
         self.members_unsent = set()   # RL10: the sessions whose frame is due and not yet queued (publish_members)
@@ -1634,14 +1634,15 @@ class Link:
         upload (members_before): the endpoint lists, and notifies for, a
         session by its record. A host file is walked again only once it
         moved or holds a session writer's event past the cursor as it is
-        now (HubLog.host_files): one that did neither has nothing to send.
+        now (HubLog.host_files): one that did neither has nothing to send;
+        the store listed again only once its directory moved (host_paths).
         `state`: uplink.json as the caller read it just now."""
         pid = hl.project.id
         queued = self.host_queued.setdefault(pid, {})
         owed = self.host_owed.setdefault(pid, {})
         sent = hl.host_sent(state)
         by_writer, seen = {}, {}
-        for path in sorted(glob.glob(os.path.join(glob.escape(hl.project.home), sminos.HOST_STORE, "*.jsonl"))):
+        for path in hl.host_paths():
             key, events = sminos._log_file_held(path)
             held = hl.host_files.get(path)
             if not again and key is not None and held is not None and held[0] == key \
@@ -1823,19 +1824,25 @@ class Link:
         (members_unsent), and what depends on it waits for it."""
         current = {}
         socks = plane.bridge_socks()
+        records = sminos.records_module()
+        where = records.records_dir()
+        seen = set()
         for pid in sorted(pid for pid, rows in self.plane.member_rows.items() if rows and pid in self.member_known):
             for sid, m in sorted(self.plane.member_rows[pid].items()):
+                seen.add(sid)
                 if sid not in current:
                     # The bridge's probe keeps its launch (the plane's
                     # presence carries it); asked here too, so a session of
                     # a project not open on the stream has it as well.
                     self.plane.bridges.answers(sid, now, socks)
-                    frame = self.fresh_frame(pid, m)
+                    frame = self.fresh_frame(pid, m, records, where)
                     if frame is None:
                         # An established record that cannot be read (P5 O18 D10): its policy is unknown, so no
                         # frame goes, and one sent before is withdrawn (`gone` below), until it reads again.
                         continue
                     current[sid] = frame
+        if len(self.frames) > len(seen):
+            self.frames = {sid: held for sid, held in self.frames.items() if sid in seen}   # those of rows gone
         frames = [f for sid, f in current.items() if self.members_sent.get(sid) != f]
         frames += [{"t": "member", "session": sid, "gone": True} for sid in self.members_sent if sid not in current]
         batch, size, unsent = [], 0, set()
@@ -1855,17 +1862,51 @@ class Link:
         if not unsent:
             self.members_whole = True
 
-    def fresh_frame(self, pid, m):
+    def fresh_frame(self, pid, m, records=None, where=None):
         """The member frame of a plane row from its session's record as it
         reads now (the row's may be a stale one, from before a repair or a
         policy change), or None while the record file exists and cannot be
         read. One read serves both, so the frame never pairs a fresh check
-        with an older record."""
-        records = sminos.records_module()
+        with an older record. Built again only once what it is made of
+        moved: the record file's stat (inode, size, mtime, ctime, as
+        file_bytes reads it: a record is written whole, by rename, and a
+        chmod moves the ctime), the project, the row's fields the frame
+        carries, the launch the bridge names and the visibility. An
+        unchanged member costs a stat at each publish (twice a tick, every
+        member: their parse and build were most of an idle uplink's work,
+        2026-11-12). The stat is taken before the read, so a record
+        rewritten between them is built again at the next publish. Kept
+        only when the read agrees with the stat (a record read from a file
+        that was there, or none from one that was not), with the launch as
+        it stood after the read; an unreadable record is never kept, so it
+        is read again at each publish."""
+        records = records or sminos.records_module()
+        sid = str(m.session or "")
+        launch = self.plane.bridges.launch(m.session)
+        path = records.record_path(sid, where) if sminos.UUID_RE.fullmatch(sid) else None
+        if path is None:
+            at = None
+        else:
+            try:
+                st = os.stat(path)
+                at = (path, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            except OSError:
+                at = (path, os.path.lexists(path))
+        made_of = (at, pid, m.session, m.alias, m.state, m.title, m.cwd, m.worktree, launch, self.visibility)
+        held = self.frames.get(m.session)
+        if held is not None and held[0] == made_of:
+            return held[1]
         rec = records.read(m.session)
-        if rec is None and sminos.UUID_RE.fullmatch(m.session) and os.path.lexists(records.record_path(m.session)):
+        if rec is None and path is not None and os.path.lexists(path):
+            self.frames.pop(m.session, None)
             return None
-        return member_frame(pid, m._replace(record=rec), self.plane.bridges.launch(m.session), self.visibility)
+        launch = self.plane.bridges.launch(m.session)
+        frame = member_frame(pid, m._replace(record=rec), launch, self.visibility)
+        if (at is not None and len(at) == 5) == (rec is not None):
+            self.frames[m.session] = (made_of[:-2] + (launch, self.visibility), frame)
+        else:
+            self.frames.pop(m.session, None)
+        return frame
 
     def send_members(self, batch):
         """One entry of member frames queued, and taken as sent."""

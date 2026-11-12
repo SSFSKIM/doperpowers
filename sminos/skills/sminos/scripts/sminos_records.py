@@ -113,8 +113,9 @@ def records_dir():
     return os.path.join(sminos.root(), "session-records")
 
 
-def record_path(sid):
-    return os.path.join(records_dir(), sid + ".json")
+def record_path(sid, where=None):
+    """`where`: records_dir() as the caller just took it, for many at once."""
+    return os.path.join(where or records_dir(), sid + ".json")
 
 
 def pending_path(launch):
