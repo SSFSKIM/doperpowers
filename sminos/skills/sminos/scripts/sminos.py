@@ -2315,19 +2315,37 @@ def json_at(path):
     return json.loads(file_bytes(path))
 
 
+_REGISTERED = {}  # project.json → (its JSON as _registration_at holds it, projects_root(), the project it makes)
+
+
+def _registered_project(path, d):
+    """The project a registration makes, or None: a function of its JSON
+    (which _registration_at reads again only once the file moved, a new
+    object then) and of where the projects live, so known_projects makes
+    it again only once either moved (the uplink lists every project at
+    every scan)."""
+    try:
+        pid = str(d["project"])
+    except (KeyError, TypeError):
+        return None
+    if not (valid_name(pid) and os.path.basename(os.path.dirname(path)) == pid):
+        return None
+    return make_project(pid, str(d.get("name") or pid), str(d.get("remote") or ""), str(d.get("root") or ""),
+                        dict(d["hub"]) if isinstance(d.get("hub"), dict) else None)
+
+
 def known_projects(all_seats=None):
     """Every project this machine knows: those with a home here, and those of
     the seats it holds (`all_seats`: a seat read the caller already made)."""
     out = {}
+    home = projects_root()
     for path in registration_paths():
         d = _registration_at(path)
-        try:
-            pid = str(d["project"])
-        except (KeyError, TypeError):
-            continue
-        if valid_name(pid) and os.path.basename(os.path.dirname(path)) == pid:
-            out[pid] = make_project(pid, str(d.get("name") or pid), str(d.get("remote") or ""), str(d.get("root") or ""),
-                                    dict(d["hub"]) if isinstance(d.get("hub"), dict) else None)
+        held = _REGISTERED.get(path)
+        if held is None or held[0] is not d or held[1] != home:
+            held = _REGISTERED[path] = (d, home, _registered_project(path, d))
+        if held[2] is not None:
+            out[held[2].id] = held[2]
     for s in seats() if all_seats is None else all_seats:
         p = seat_project(s)
         if p:
@@ -2699,11 +2717,27 @@ def writer_id(session_uuid=None):
 STREAM_RE = re.compile(r"^([^/]+/[^~]+)~([0-9a-f]{16})$")
 
 
+# What a writer's name says, by name: a function of the name alone, asked of every own writer file at every upload
+# pass and of every owed event at every words pass (2026-11-12: 129 k regex matches in 30 s of an idle uplink).
+# Forgotten whole once it holds WRITER_NAMES_KEPT names.
+_STREAM_OF = {}
+_WRITER_SESSION = {}
+WRITER_NAMES_KEPT = 1 << 16
+
+
 def stream_of(writer):
     """(the plain writer, the audience's digest) of a writer: (writer, None)
     for a plain one."""
-    m = STREAM_RE.fullmatch(writer) if isinstance(writer, str) else None
-    return (m.group(1), m.group(2)) if m else (writer, None)
+    if not isinstance(writer, str):
+        return writer, None
+    held = _STREAM_OF.get(writer)
+    if held is None:
+        m = STREAM_RE.fullmatch(writer)
+        held = (m.group(1), m.group(2)) if m else (writer, None)
+        if len(_STREAM_OF) >= WRITER_NAMES_KEPT:
+            _STREAM_OF.clear()
+        _STREAM_OF[writer] = held
+    return held
 
 
 def writer_base(writer):
@@ -2728,8 +2762,14 @@ def stream_writer(base, audience):
 
 
 def writer_session(writer):
-    last = writer_base(writer).rsplit("/", 1)[-1]
-    return last if UUID_RE.fullmatch(last) else ""
+    held = _WRITER_SESSION.get(writer) if isinstance(writer, str) else None
+    if held is None:
+        last = writer_base(writer).rsplit("/", 1)[-1]
+        held = last if UUID_RE.fullmatch(last) else ""
+        if len(_WRITER_SESSION) >= WRITER_NAMES_KEPT:
+            _WRITER_SESSION.clear()
+        _WRITER_SESSION[writer] = held
+    return held
 
 
 def owner_event(e):
