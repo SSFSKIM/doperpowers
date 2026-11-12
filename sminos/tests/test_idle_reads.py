@@ -485,6 +485,19 @@ class WordsPass(Machine):
         self.assertEqual([(e["writer"], e["seq"]) for e in first[0][S1]], [("hub/mem-1", 1)])
         self.assertEqual([(e["writer"], e["seq"]) for e in first[1][S1]], [("mini/" + S9, 1)])
 
+    def test_a_member_s_owed_events_are_worked_out_once_while_log_and_record_hold(self):
+        first = self.passes()
+        with mock.patch.object(sminos, "_owed", wraps=sminos._owed) as owed:
+            self.assertEqual(self.passes(), first)
+            self.assertEqual(owed.call_count, 0, "the log and the delivery record as they were")
+            os.makedirs(os.path.join(self.p.home, "delivered"), exist_ok=True)
+            sminos.write_json(os.path.join(self.p.home, "delivered", S1 + ".json"),
+                              {"hub/mem-1": {"settled": 1, "pending": None, "attempts": 0}})
+            words, reach = self.passes()
+            self.assertEqual(owed.call_count, 1, "its record moved: worked out again, once for both passes")
+        self.assertEqual(words, {}, "settled: owed no more")
+        self.assertEqual([(e["writer"], e["seq"]) for e in reach[S1]], [("mini/" + S9, 1)])
+
     def test_an_appended_event_is_seen_by_the_next_pass(self):
         self.passes()
         self.arrive("hub/mem-2", 1, "human", signer={**DEV, "member": "mem-2"})

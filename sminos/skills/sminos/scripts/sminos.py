@@ -5241,6 +5241,19 @@ def _owed(events, session, record):
     return out
 
 
+def _owed_kept(events, to, session, record):
+    """_owed of a member's share (`to`, addressees of the merged log
+    `events`), kept beside that log (log_memo) while the member's delivery
+    record reads the same: a function of the two alone, which the words and
+    reach passes ask of every member every WORDS_EVERY. Read it, never
+    change it."""
+    kept = log_memo(events, "owed", lambda _events: {})
+    held = kept.get(session)
+    if held is None or held[0] != record:
+        held = kept[session] = (record, _owed(to.get(session, ()), session, record))
+    return held[1]
+
+
 def addressees(events):
     """{session: the events addressed to it, in the log's order}: the part of
     the log _owed reads for each session, read once for all of them (the
@@ -5909,14 +5922,15 @@ def words_due(project, members):
     policy = sibling_module("sminos_policy")
     holder = holder_module()
     read_only = policy.read_only()
-    to = addressees(_store_whole(project, "log", shared=True)[1])
+    events = _store_whole(project, "log", shared=True)[1]
+    to = addressees(events)
     out = {}
     for m in members:
         if not m.session or m.session not in to:
             continue
         record = delivered_load(project, m.session)
         firsts = {}
-        for e in _owed(to[m.session], m.session, record):
+        for e in _owed_kept(events, to, m.session, record):
             firsts.setdefault(e["writer"], e)
         due = [e for w, e in sorted(firsts.items())
                if words_route(project, e) == "ask" and (_delivery(record, w).get("pushed") or [None])[0] != e["seq"]
@@ -5947,14 +5961,15 @@ def reach_due(project, members):
         return {}
     words = WordsGate(project)
     read_only = policy.read_only()
-    to = addressees(_store_whole(project, "log", shared=True)[1])
+    events = _store_whole(project, "log", shared=True)[1]
+    to = addressees(events)
     out = {}
     for m in members:
         if not m.session or m.session not in to or records.unreadable(m.session):
             continue
         record = delivered_load(project, m.session)
         firsts = {}
-        for e in _owed(to[m.session], m.session, record):
+        for e in _owed_kept(events, to, m.session, record):
             firsts.setdefault(e["writer"], e)
         due = []
         for w, e in sorted(firsts.items()):
