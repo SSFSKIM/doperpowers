@@ -23,13 +23,11 @@ summaries for folds that closed before the feature was installed.
 ## Progress
 
 - [x] (2026-11-13 00:24Z) Design approved; spec written.
-- [ ] PR #499 merged to `main` (a subagent's rows stand in no run of the main
-      conversation). As of 2026-11-13 01:04Z: CI green on `5ffc7690`; its second review
-      found two defects in its start-up scan, with its author for a fix; a
-      follow-up probe may replace the scan. M1 does not wait for it ("What
-      this builds on").
+- [x] (2026-11-13 03:10Z) PR #499 merged to `main` (48e1a9a9, to-human 0.7.4: a
+      drawn row the main conversation never kept shapes no run); taken into
+      this branch after M1.
 - [x] (2026-11-13 00:34Z) Spec review and execution-section review absorbed (eight findings, six distinct, all taken; Decision Log).
-- [ ] M1 — the run tracker and the live line.
+- [x] (2026-11-13 03:10Z) M1 — the run tracker and the live line (2e734e06, review fix 4a590714; task review clean; ci-gate GREEN on 4a590714; acceptance 1 seen live, 7's one fold pinned by the kit).
 - [ ] M2 — summaries, storage, the live check, docs.
 - [ ] Whole-branch review (`doperpowers:reviewer-medium`), retrospective, merge.
 
