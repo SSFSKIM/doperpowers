@@ -25,7 +25,7 @@ summaries for folds that closed before the feature was installed.
 - [x] (2026-11-13 00:24Z) Design approved; spec written.
 - [ ] The repeated-button bug's fix merged to `main` (a subagent's PR, in
       progress when this was written; see "What this builds on").
-- [ ] Spec review and execution-section review absorbed.
+- [x] (2026-11-13 00:34Z) Spec review and execution-section review absorbed (eight findings, six distinct, all taken; Decision Log).
 - [ ] M1 — the run tracker and the live line.
 - [ ] M2 — summaries, storage, the live check, docs.
 - [ ] Whole-branch review (`doperpowers:reviewer-medium`), retrospective, merge.
@@ -64,9 +64,6 @@ summaries for folds that closed before the feature was installed.
   behalf. They outlive a reload of the plugin's code (module variables do not)
   and end with the process. A drawing that reads one is drawn again when it is
   written. sminos keeps its ask mod's state there (`sminos/types/sminos.d.ts`).
-- **`$.store`**: a plugin's key-value file, kept between sessions
-  (`~/.claude/plugins/store/`, outside what the owner's `~/.claude`
-  repository tracks).
 
 ## What the person sees
 
@@ -83,7 +80,8 @@ summary has come back, failed or been skipped:
 | not live, no summary (the call failed, the run predates the feature, the tracker did not hold the run whole) | `› working record` |
 
 So a closed fold shows its last call's line for the few seconds its summary
-takes, then the summary. The engine's own row for the newest call
+takes (longer when one of its calls is still running as the run closes: "When
+a run closes"), then the summary. The engine's own row for the newest call
 (description, command, cut output) was the alternative for the live fold; the
 human partner chose one line, which keeps the report quiet and the fold one
 row high.
@@ -127,7 +125,7 @@ their records (see Evidence); what they left out is one press away.
 
 ## When a run closes
 
-A run closes, and its summary is asked for, at whichever comes first:
+A run closes, and is due a summary, at whichever comes first:
 
 1. A read row is kept after it.
 2. The turn ends (`turn.complete` of the main conversation) while the open run
@@ -138,6 +136,15 @@ sending anything. In a census of the owner's sessions (Evidence), the person's
 next prompt closed 22% of folds: work nobody was told about, where a summary
 is worth most. Without rule 2 those would read a stale live line until the
 person typed.
+
+The summary is asked for once the run has closed and every call in it has its
+result, or at the turn's end if one never comes. A response can hold a call
+beside a message or a spawn (`[Bash, message]`): the message closes the run as
+it is kept, before the Bash call has run, and the view draws that call's
+result inside the earlier fold, at its call. Asked for at the close, the
+summary would miss the very result the run was for. Until the result is kept
+the run stays live and reads the call's line, which is true: the call is
+still running.
 
 A run summarized under rule 2 is still the open run. If a later row joins it
 (a notification wakes the session and it works on with no read row between),
@@ -166,9 +173,25 @@ rules, and the two meet only at a row's place.
 
 ### What each kept row does
 
-Classification goes through the view's exported helpers, so the two agree:
-`isRead(tool)`, `parse(text)`, `promptRow(props, spawns)`,
-`isApiError(origin, message)` (export it), `FINAL_ANSWER`.
+The tracker classifies with the view's exported rules: `isRead(tool)`,
+`parse(text)`, `promptRow(props, spawns)`, `isApiError(origin, message)`
+(export it), `FINAL_ANSWER`. A kept prompt carries less than its drawing,
+though: the engine hands the drawn row `from` (who sent it) and `task` (the
+background task it reports on), and `promptRow` leans on both. So one function
+of the tracker's rebuilds them from a kept prompt before asking `promptRow`,
+for every prompt however it was kept:
+
+- `task`: from a `<task-notification>` body in the text, its `<tool-use-id>`
+  and `<status>`.
+- `from`: present when the row is a sender's and not the person's typing: its
+  origin's kind is `channel` (the engine gives a channel's message a sender,
+  and `promptRow` reads a `channel` origin without one as the person's), or
+  the row is `isMeta`, the engine's mark on a user-side row the person does
+  not see as typed.
+
+`promptRow({ origin, text, task, from }, spawns)` then answers as it does for
+the drawing: `record`, a delivery in the open run; `user` or `marked` (the
+failure of a spawn the report shows), a read row.
 
 | Row | Effect |
 |---|---|
@@ -176,9 +199,8 @@ Classification goes through the view's exported helpers, so the two agree:
 | Assistant text with marks | a read row. If `parse(text).hasRecord`, the row is also the first row of the next run and its text that run's first note (the view draws such a message's button on the message itself) |
 | A `tool_use` block of a read tool (`isRead`) | a read row; an `Agent` or `Workflow` call's id is remembered as a spawn |
 | Any other `tool_use` block | a call in the open run; it sets the live line |
-| A tool result | the result of its call, if that call is in the open run; a read tool's result is ignored |
-| A prompt or a delivery kept between turns (doors `prompt`, `delivery`) | `promptRow({ origin, text, task }, spawns)`, `task` read from a `<task-notification>` body's `<tool-use-id>` and `<status>`: `record` → a delivery in the open run; `user` or `marked` → a read row |
-| A prompt folded into a running turn (an attachment named `queued_command`) | the person's → a read row; anyone else's → a delivery in the open run (how the sender is known: below) |
+| A tool result | the result of its call, in the run that holds the call, open or closed; a read tool's result is ignored |
+| A prompt or a delivery, kept between turns (doors `prompt`, `delivery`) or folded into a running turn (an attachment named `queued_command`) | its kind by the rule above: a delivery in the open run, or a read row |
 | An API error row (`isApiError`) | a read row |
 | The response the message mod makes up after a final message (text `FINAL_ANSWER`, no request) | ignored |
 | A compaction's rows (door `compaction`) | a read row |
@@ -192,13 +214,16 @@ is the engine's rendering of the prompt (its reference: "a prompt or
 notification delivered into a running turn are the engine's too"). The sender
 is on the queue record the engine raised when the prompt was queued, under the
 door `queue`, with the prompt's own origin and text. The tracker remembers the
-queue records that `promptRow` reads as the person's; a `queued_command` row
-whose rendering contains such a record's text is the person's and spends the
-record, and any other is a delivery. Unmatched means delivery because
-deliveries are the common case (seven groups of them in the 45-call stretch
-that showed the bug) and a mistake here only moves a summary's boundary. This
-is the one place the tracker rests on the engine's documentation alone; M1
-checks it against the probe log ("What this builds on") before building on it.
+last 50 queue records; a `queued_command` row whose rendering contains a
+remembered record's text is classified from that record, exactly as the same
+prompt kept between turns would be (the person's, a delivery, or a shown
+spawn's failure), and spends it. A row that matches no record is classified
+from its rendering alone: a failed notification of a spawn the report shows is
+a read row, anything else a delivery, since deliveries are the common case
+(seven groups of them in the 45-call stretch that showed the bug) and a
+mistake here only moves a summary's boundary. This is the one place the
+tracker rests on the engine's documentation alone; M1 checks it against the
+probe log ("What this builds on") before building on it.
 
 A message call that sends nothing (refused or errored) is a read row here and
 a record row in the view, which learns of the refusal from the result. The
@@ -219,8 +244,12 @@ of the to-human plugin (the contract is in Interfaces):
 The view reads both where it draws a fold's button and finds the run of the
 row that draws it by place: the open run if the row's place is at or after the
 open run's first row's, else the closed run whose first and last rows' places
-hold it. A row in no run reads `working record`. The label is the run's live
-line or summary by the table in "What the person sees".
+hold it. A row in no run reads `working record`, and so does one whose place,
+or whose run's bound's place, the view does not know (`View.place`; a place
+the view only guessed for a row drawn before it was kept is not one). A group
+of calls is one row the view knows as `group:<its first call's id>`: the
+lookup takes the call's id, as the view's `keyOf` does. The label is the run's
+live line or summary by the table in "What the person sees".
 
 Finding the run by place is why whichever row happens to draw the button finds
 the label (in fullscreen the earliest *drawn* row of a run is not always its
@@ -332,31 +361,41 @@ the mark and reads its summary, or `working record`.
 
 ### Storage
 
-Summaries are kept past the session so a resume shows the ones already made.
-In `$.store`:
+Summaries are kept past the session so a resume shows the ones already made:
+one JSON file per session, `to-human/folds/<session id>.json` under the
+configuration directory (`CLAUDE_CONFIG_DIR`, else `$HOME/.claude`), written
+whole through `$.fs.write`:
 
-    key   `folds:<session id>`
-    value { at: <ms of the last write>, runs: [[<first row id>, <last row id>, <summary>], …] }
+    { shape: 1, runs: [[<first row id>, <last row id>, <summary>], …] }
 
-Only settled summaries of closed runs are stored, written after each one. At
-`session.start`, when `$.state` holds no `folds` yet (a new process), the
-tracker publishes its session's stored entry, and deletes entries whose `at`
-is more than 30 days old. On a `classic.SessionStart` whose source is `clear`,
-`resume` or `fork` (the view resets on the same event) it drops what it
-published and publishes the entry of the session it now is. At about 250 bytes
-a run and 200 folds a day across the owner's sessions, 30 days is about
-1.5 MB of the store's 4 MiB. A write the store refuses is logged to the debug
-log; the summary stays in `$.state`.
+Every run with a settled summary is in it, the open run among them with the
+last row its summary covered, and the file is written each time a summary
+settles: a turn that ends without a message is the case rule 2 exists for, and
+its summary has to outlive a quit as any other does.
 
-No plugin in this repository uses `$.store` yet, and two things about it are
-not in the engine's documentation: whether two sessions writing different keys
-at the same time both keep their writes, and whether a plugin's store carries
-over a version bump (the file's name ends in a hash). M2 opens by checking
-both (Concrete Steps). If either fails, the tracker keeps the same value in
-one file per session instead, `to-human/folds/<session id>.json` under the
-configuration directory, through `$.fs`, pruned by modification time; the
-choice sits behind two functions (load a session's runs, save them) so nothing
-else changes.
+At `session.start`, when `$.state` holds no `folds` yet (a new process), the
+tracker publishes its session's file, every run of it as a closed one, and
+removes files older than 30 days (one `find … -mtime +30 -delete` through
+`$.process.run`: `$.fs` has no delete). A new process did not see the rows of
+the run that was open at the quit, so it cannot hold that run whole: rows that
+join the same fold after a resume start a run of their own, and the fold goes
+on reading the stored summary until a read row is kept. Restoring it as the
+open run would let it take those rows' live lines, and would hand its summary
+to every later fold if the session had meanwhile run without the plugin.
+
+On a `classic.SessionStart` whose source is `clear`, `resume` or `fork` (the
+view resets on the same event) the tracker drops what it published and
+publishes the file of the session it now is. A write that fails is logged to
+the debug log; the summary stays in `$.state`.
+
+A file per session is how the appeal mod keeps its log
+(`hooks/mods/appeal.tsx`: `~/.claude/appeals/<session id>.jsonl`). The
+engine's plugin store (`$.store`) was the first choice and lost: it is one
+file shared by every session of the plugin on the machine, no plugin here uses
+it yet, and the engine's documentation says neither whether two sessions'
+writes both survive nor whether the file carries over an installed update (its
+name ends in a hash). Settling that takes a probe through a real marketplace
+update; a file one session alone writes has nothing to settle.
 
 ### Where it runs
 
@@ -398,7 +437,7 @@ large runs.
 
 Each is checked in a real terminal session under the `doperpowers:to-human`
 output style with this branch's plugin loaded; `live-folds-check.py` (M2)
-automates 1, 2, 4 and 5.
+automates 1 to 5.
 
 1. While a turn runs tool calls after a message, the fold under that message
    reads `› ` and the newest call's line: for a Bash call, its description.
@@ -408,7 +447,8 @@ automates 1, 2, 4 and 5.
    fold that reads a summary once the turn has ended, before anything is
    typed.
 4. After `/reload-plugins`, and after quitting and `claude --resume`, the
-   folds summarized before still read their summaries.
+   folds summarized before still read their summaries, the fold of item 3
+   among them when the quit comes right after its turn.
 5. With the model call made to fail (`TO_HUMAN_FOLD_MODEL` set to a model id
    that does not exist), a closed fold reads `› working record`, pressing it
    unfolds the run, and the session is otherwise unaffected.
@@ -468,8 +508,12 @@ Touches: `to-human/hooks/mods/folds.tsx` (new), `to-human/types/to-human.d.ts`
 `to-human/hooks/mods/to-human.tsx` (the two places a fold's button is drawn,
 `recordRow` and the mixed message's button; the export of `isApiError`; the
 registration beside `registerEdits`), `to-human/tests/mods/folds.test.ts`
-(new), `to-human/tests/mods/to-human.test.ts`, and whatever
-`tests/mods/typecheck.sh` needs to see the contract.
+(new), `to-human/tests/mods/to-human.test.ts`, whatever
+`tests/mods/typecheck.sh` needs to see the contract, and every live check
+that stages the to-human plugin (`live-message-check.py` and
+`live-resume-check.py` copy `.claude-plugin` and `hooks` for it by a `PLUGINS`
+list, and `live-final-check.py` stages it likewise): each must copy `types`
+too, or its staged manifest names a contract that was not copied.
 
 Exposes: the `$.state` contract, `registerFolds`, `labelOf`, `lineOf`
 (Interfaces).
@@ -486,15 +530,18 @@ Decisions that are this milestone's:
   they keep passing for runs with no call, and the new tests press by the
   label the run should carry.
 
-Does not touch: the model call, the digest, `$.store`, the docs.
+Does not touch: the model call, the digest, the summaries' file, the docs.
 
 Proves: acceptance 1 and 7 (7's "one fold"; its "one summary" is M2's), by
-unit tests that pin: each row of "What each kept row does" has its effect, a
-prompt folded into a running turn as the person's and as a delivery among
-them, from fixtures the probe log supplies; blocks of one response are taken
+unit tests that pin: each row of "What each kept row does" has its effect,
+from fixtures the probe log supplies where it has them and the engine's types
+where it does not (no channel is configured on the owner's machines): a
+prompt as the person's, as a delivery, as a channel's message, and as the
+failure of a shown spawn, each kept between turns and folded into a running
+turn; a result kept after its run closed joins that run; blocks of one response are taken
 in order; the live line of each tool in the table, cut and flattened; a label
-found from any row of its run, of the open run and of a closed one, and from
-no row outside them; a live run with no call reads its summary or nothing; a
+found from any row of its run, of the open run and of a closed one, a group's
+row among them, and from no row outside them or without a known place; a live run with no call reads its summary or nothing; a
 subagent's rows change nothing; a module that starts over an open run in
 `$.state` goes on with its live line.
 
@@ -507,7 +554,8 @@ Touches: `to-human/hooks/mods/folds.tsx`, `to-human/tests/mods/folds.test.ts`,
 `to-human/tests/mods/live-folds-check.py` (new, beside the other live checks,
 which show the isolated launch: a temporary config directory, the worktree's
 plugins by `--plugin-dir`, a tmux pane, Haiku through the gateway keys in the
-environment), `to-human/CLAUDE.md` (a paragraph for `folds.tsx`; the sentences
+environment; it stages `types` with the plugin), `to-human/CLAUDE.md` (a
+paragraph for `folds.tsx`; the sentences
 that say a run folds behind `› working record`), `to-human/hooks/hooks.json`
 (its description), `docs/whats-inside.md` (the report view's row),
 `hooks/mods/README.md` (the to-human section's lines on the button),
@@ -517,16 +565,30 @@ Consumes: M1's tracker and contract. Exposes `LABEL_SYSTEM`.
 
 Decisions that are this milestone's:
 
-- A summary request carries the run's generation (bumped whenever a row joins
-  the run); a reply for an older generation is dropped. That is the whole of
-  the concurrency: closes do not queue behind each other.
+- The tracker's own memory is the authority for the runs. `$.state` and the
+  session's file are written from it, whole, each through one chain of writes so
+  they land in order (`keepOpen` in `sminos/hooks/mods/bridge-btw.tsx` is the
+  pattern), and nothing reads them back after start: a `$.state.get` made in a
+  hook reads the moment of that hook's dispatch, whatever was written since.
+  A reply merges into memory by its run, so replies for different runs settle
+  in any order.
+- A summary request carries the session's epoch (bumped on a `clear`, `resume`
+  or `fork`, which change the session without loading the module again), its
+  run, and the run's generation (bumped whenever a row or a result joins the
+  run). A reply whose epoch or generation is no longer current is dropped, and
+  writes nothing to `$.state` or to any session's file.
 - The live check is run by hand, like its siblings (it spends Haiku calls, so
   no CI gate runs it); say so in its header.
 
 Does not touch: the view's run logic, the message tool, sminos, MAWS.
 
 Proves: acceptance 2 to 6, and 7's "one summary". Unit tests pin: a close at
-each kind of read row asks once, with the digest of exactly that run; a turn's
+each kind of read row asks once, with the digest of exactly that run; a run
+closed while one of its calls runs is asked for when that result is kept, with
+the result in its digest, and at the turn's end if it never is; two runs'
+replies settling in the reverse order leave both summaries in `$.state` and in
+the session's file; a reply held across a `clear`, a `resume` and a `fork` and
+then released changes neither `$.state` nor either session's file; a turn's
 end asks for the open run, a later row makes it live again, the next close
 asks for the whole run, and a late reply for the earlier generation changes
 nothing; a turn's end with nothing new asks nothing; the digest's parts, cuts
@@ -534,9 +596,9 @@ and cap; the summary's first-line and 120-character rules; unanswered, empty
 and thrown calls leave the summary as it was; no call before a mark, when not
 interactive, under MAWS, under `SMNS_INTERNAL`; a run not held whole is never
 asked for; a closed run left live by an old module loses the mark at start;
-the stored entry's shape, its publication into an empty `$.state`, the 30-day
-prune, the reset on `clear`, `resume` and `fork`; a refused write keeps the
-summary. Then the acceptance section as written.
+the file's shape, a turn-end summary of the open run in it, its publication
+into an empty `$.state` as closed runs, the prune's command, the reset on
+`clear`, `resume` and `fork`; a failed write keeps the summary. Then the acceptance section as written.
 
 ### Concrete Steps
 
@@ -548,23 +610,16 @@ From the worktree's root.
     scripts/bump-version.sh --since origin/main   # exit 0 once to-human's version is above main's
     ci-gate                             # the repo's gates on the committed HEAD; ends GREEN <run-url>
 
-M2's store check, before the storage code: a scratch plugin (outside the
-repository, loaded with `--plugin-dir`) whose `session.start` hook sets one
-key named by an environment variable and logs `$.store.keys()`. Start two
-headless sessions at once with different key names, then a third: it should
-log both keys. Then change the scratch plugin's version and start a fourth: it
-should still log both. Record both answers in Surprises & Discoveries and
-take the store or the per-session files accordingly ("Storage").
-
 M2's live check, by hand, with the gateway keys in the environment as the
 sibling checks' headers describe:
 
     to-human/tests/mods/live-folds-check.py [--keep]
 
 It starts one isolated session and prints one line per acceptance item it
-automates (1, 2, 4, 5) with PASS or FAIL and the pane text it judged. Items 3,
-6 and 7 are checked in the same kind of session by hand, or added to the
-script where that is cheap; record which in Progress.
+automates (1 to 5; for 4, a reload after item 2 and a quit and resume right
+after item 3's turn) with PASS or FAIL and the pane text it judged. Items 6
+and 7 are checked in the same kind of session by hand, or added to the script
+where that is cheap; record which in Progress.
 
 ### Interfaces and Dependencies
 
@@ -607,9 +662,9 @@ In `to-human/hooks/mods/folds.tsx`:
 calls `registerEdits`, and reads the two keys itself where it draws a button
 (`$` stays in the file whose hook received it).
 
-Engine calls used: `$.state.get/set`, `$.model.complete`,
-`$.store.get/set/delete/keys` (or `$.fs`, per the store check), `$.ui.log`,
-`$.env.get`, `$.session.id`, `$.clock.now`. No new dependency.
+Engine calls used: `$.state.get/set`, `$.model.complete`, `$.fs.read/write`,
+`$.process.run` (the prune), `$.ui.log`, `$.env.get`, `$.session.id`. No new
+dependency.
 
 ## Surprises & Discoveries
 
@@ -655,6 +710,36 @@ Engine calls used: `$.state.get/set`, `$.model.complete`,
   make the call fail without breaking the session's own model.
   Rationale: each is given where it is described above.
   Date/Author: 2026-11-12, the authoring session.
+
+- Decision: the spec review's four findings, all taken (2026-11-13). A kept
+  prompt is classified after rebuilding the `from` and `task` its drawing
+  carries, with all three outcomes for a prompt folded into a running turn. A
+  result kept after its run closed joins that run, and the summary waits for
+  the run's results. The open run's turn-end summary is stored, and a resume
+  restores stored runs as closed. The tracker's memory is the one authority,
+  written out through one chain per destination, and a request is bound to the
+  session's epoch as well as its run's generation.
+  Rationale: each closed a way for a fold to carry a wrong, partial or lost
+  label that the first draft allowed: a channel message or a failed spawn
+  splitting or joining runs the view draws otherwise; a `[Bash, message]`
+  response summarized without the Bash result; acceptance 4 failing for the
+  silent turn rule 2 exists for; two replies overwriting each other, or one
+  landing in a cleared session. Restoring the stored open run as open (the
+  reviewer's suggestion) was not taken: see "Storage".
+  Date/Author: 2026-11-13, the authoring session, from `doperpowers:adversarial-reviewer`.
+
+- Decision: summaries are kept in one file per session, not in `$.store`; and
+  the execution review's other findings, taken (2026-11-13): every live check
+  that stages the to-human plugin copies the new `types` folder (M1); a reply
+  held across a `clear`, `resume` or `fork` is dropped, and tested so; the
+  live check quits and resumes right after a silent turn.
+  Rationale: the reviewer showed the store probe as written (a version field
+  edited under `--plugin-dir`) would not show what an installed update does to
+  the store's file. Rather than build the heavier probe, the question is
+  removed: a file only its session writes has no cross-session or
+  cross-version behaviour to establish, and the appeal mod already keeps its
+  log that way. `$.store` with a marketplace-update probe was the alternative.
+  Date/Author: 2026-11-13, the authoring session, from `doperpowers:adversarial-reviewer`.
 
 ## Outcomes & Retrospective
 
