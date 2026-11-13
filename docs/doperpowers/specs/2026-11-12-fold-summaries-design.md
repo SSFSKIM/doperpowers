@@ -32,7 +32,8 @@ summaries for folds that closed before the feature was installed.
 - [x] (2026-11-13 00:34Z) Spec review and execution-section review absorbed (eight findings, six distinct, all taken; Decision Log).
 - [x] (2026-11-13 02:22Z) M1 — the run tracker and the live line (2e734e06, review fix 4a590714; task review clean; ci-gate GREEN on 4a590714; acceptance 1 seen live, 7's one fold pinned by the kit).
 - [x] (2026-11-13 04:09Z) M2 — summaries, storage, the live check, docs (ca71b3b4, review fix 96afbe02; task review clean; ci-gate GREEN on 96afbe02). `live-folds-check.py` automates acceptance 1 to 7, the press of item 5 excepted (the tmux main screen takes no click; the kit pins it); all PASS on ca71b3b4 (`~/.local/share/fold-runs/m2-live-folds-2.log`).
-- [ ] Whole-branch review (`doperpowers:reviewer-medium`), retrospective, merge.
+- [x] (2026-11-13 04:35Z) Whole-branch review (`doperpowers:reviewer-medium`, 48e1a9a9..83473620): one finding, fixed in 7c47dfd1 and re-reviewed clean; retrospective written.
+- [ ] Merge (the pull request, after its review).
 
 ## Terms
 
@@ -938,6 +939,55 @@ dependency.
   Date/Author: 2026-11-13, M2's executor from `doperpowers:task-reviewer` and
   the authoring session, folded by the plan executor.
 
+- Decision: the whole-branch review's one finding, taken (2026-11-13). A
+  result joining a closed run marks it live, as one joining the open run
+  does, so a closed run whose turn-end summary settled while two of its calls
+  ran, and which then takes one of their results, is asked again when its
+  last result is kept or at the next turn's end, whichever comes first; before
+  the fix the next turn's end skipped it and the summary stayed stale while the
+  other result was missing.
+  Rationale: "When a run closes": the summary waits for the run's results, or
+  the turn's end if one never comes.
+  Date/Author: 2026-11-13, from `doperpowers:reviewer-medium`, fixed by M2's
+  executor (7c47dfd1).
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+2026-11-13, at the branch's finish (to-human 0.8.0).
+
+What shipped is what "What the person sees" describes: a live fold reads its
+newest call's line, a closed fold its Haiku summary a second or three after
+the run closes, a silent turn's fold its summary once the turn ends, and the
+summaries outlive a reload and a quit and resume. `live-folds-check.py` ran
+every acceptance item but item 5's press (the tmux main screen takes no click;
+the kit pins it) in real 2.1.323 sessions, all PASS, on M2's first commit and
+again on the branch's last code commit. Typical lines: "Waited on a background
+task until its completion notice arrived, then echoed a done marker.", "Ran
+two echo commands; both printed their test strings". `run.sh` went from 158 to
+272 tests.
+
+What the reviews caught. M1's task review was clean; the authoring session's
+refinement moved the open run's newest row to its own key (`foldLast`) so
+that rows that change no label redraw no button. M2's task review found one
+defect that would have lost a summary for good (the reset read a session's
+file ahead of its pending write) and a cap that ran slightly over; the
+authoring session closed the executor's own concern by opening the gate on a
+kept mark, since a skipped run settles for good. The branch review found a
+late result on a closed run that left it unasked. Each was a path by which a
+fold could lose or keep a stale summary permanently: the design's choice that
+settling is final (no retry, one attempt per generation) makes every gate and
+ordering condition a one-shot, and the reviews were where that bit.
+
+What the spec had wrong about the codebase, each fixed in place: the loader
+takes `$` only into top-level functions and `$.env.get` only with a literal
+name; `tests/CLAUDE.md` lists no live checks; #499's merge needed seven of its
+tests to find a run's button by its call's line rather than `working record`,
+the tracker and #499 agreeing on every run's bounds.
+
+Known limits, accepted: a fork starts with no summaries (its new session id
+has no file); after a reload the tracker's remembered spawns start empty, so a
+pre-reload spawn's failure notification is a delivery to it; a run taken up
+after a reload is stored bounded by its published newest row; a refused
+message call opens the gate as a mark; an `isMeta` auto-continuation row is a
+delivery to the tracker. Whether #499 explains the report that started this
+initiative is still unconfirmed (Surprises & Discoveries).
