@@ -94,7 +94,8 @@ The report view for sessions under the `to-human` output style; it installs `smi
 | Part | What it does |
 |---|---|
 | message tool | `mcp__to-human__message`: how a message reaches the human, mid-turn or at the turn's end; `final: true` ends the turn with no request after it |
-| report view | Folds each response to its messages and the working record (tool calls, scratch notes, other sessions' messages) behind `› working record` buttons |
+| report view | Folds each response to its messages and the working record (tool calls, scratch notes, other sessions' messages) behind one button per stretch, which reads the newest tool call while the stretch runs and a one-line summary of it (by Haiku) once it closed |
+| `/to-human-dump` | Writes the report view's state (its rows' order, kinds and places, its unfolded runs, the versions) to a file under `to-human/dumps/` in the configuration directory, for a fold drawn wrong |
 | edit folding | A run of file edits draws as one line, `Edited build.py +3 -1, created notes.md +12 ›`, unfolding on a click |
 | notifications | Each message raises a notification through your own notification hooks |
 | reminder | Puts the rule for sending back in front of the model in long contexts |

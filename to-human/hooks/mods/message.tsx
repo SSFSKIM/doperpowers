@@ -178,13 +178,35 @@ const madeUpRows = new Set<string>()
 
 const isFinalAnswer = (text: string) => text.trim() === FINAL_ANSWER
 
+const ROW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/**
+ * What a kept row is known by wherever a drawn row is matched to it: its
+ * id's first 24 characters. `session.append` and the transcript file name a
+ * row by its own id, and the engine draws it under that id only until one
+ * message in its list holds more than one block (a prompt with an image, a
+ * response that arrived whole and not streamed): from that message on, every
+ * text and prompt row of the process draws under its row's id with the last
+ * twelve characters replaced by the block's index (`…-000000000000`). Seen
+ * on 2.1.322 in two sessions' dumps, 121 of 121 such rows kept under the
+ * same 24 characters. An id of another shape (a tool call's) is its own key.
+ */
+export const rowKey = (id: string) => (ROW_ID.test(id) ? id.slice(0, 24) : id)
+
+/**
+ * Which block of its kept row a drawn row is, so blocks that share a key keep
+ * their order: a derived id's tail is the block's index in hex padded with
+ * zeros (2.1.322's own form), and the row's own id, a random tail, is block 0.
+ */
+export const blockOf = (id: string) => (ROW_ID.test(id) && id.startsWith('00000000', 24) ? parseInt(id.slice(24), 16) : 0)
+
 /**
  * Whether the assistant row `id`, which reads `text`, is the response this
  * module made up after a final message, not a model's saying the same: a row
  * kept as one, or, while the made-up response's row is still to be kept, a
  * row with its text. The view reads a resumed transcript's for itself.
  */
-export const isMadeUp = (id: string, text: string) => isFinalAnswer(text) && (madeUpRows.has(id) || isMakingUp)
+export const isMadeUp = (id: string, text: string) => isFinalAnswer(text) && (madeUpRows.has(rowKey(id)) || isMakingUp)
 
 /** Whether this session registered the tool under its contract name: the reminder names it. */
 export const isMessageToolOn = () => isRegistered
@@ -295,7 +317,7 @@ export function registerMessage(on: On) {
     if (e.agentId === undefined && result.deny === undefined) {
       const [block, ...rest] = result.message.content
       if (isMakingUp && e.door === 'response' && rest.length === 0 && block?.type === 'text' && isFinalAnswer(String(block.text))) {
-        madeUpRows.add(result.uuid)
+        madeUpRows.add(rowKey(result.uuid))
         isMakingUp = false
       }
       since = note(since, e.door, result.message)
