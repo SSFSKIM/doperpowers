@@ -1345,6 +1345,58 @@ describe('rows nothing keeps', () => {
     expect(await made.find({ type: 'Button' })).toBeUndefined()
   })
 
+  /** The person's next prompt after `derivedTurn`, where a run of its own starts after it. */
+  const askAgain = async ($: Engine) => {
+    await delivered($, rowId(30), 'prompt', 'composer')
+    await prompt($, drawnId(30), 'Report back.', { kind: 'composer' })
+  }
+
+  test("a response's blocks drawn newest first stand in its order: the record after its message has a button of its own", async ($, on) => {
+    live(on)
+    await derivedTurn($, on)
+    await askAgain($)
+    // A response that arrived whole, its note then its message, and the record after it.
+    await kept($, rowId(31), [text('Before report.'), text('<message>Report.</message>')])
+    await kept($, rowId(32), [text('After report.')])
+    // Drawn newest first, as a fullscreen window draws what scrolls into it from above.
+    const after = await message($, drawnId(32), 'After report.')
+    const report = await message($, drawnId(31, 1), '<message>Report.</message>')
+    const before = await message($, drawnId(31, 0), 'Before report.')
+
+    expect(await before.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await report.find({ type: 'Markdown', text: 'Report.' })).toBeDefined()
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await after.find({ type: 'Text', text: 'After report.' })).toBeUndefined()
+  })
+
+  test('a row that draws under its own id, then under its derived one, keeps its run\'s button', async ($, on) => {
+    live(on)
+    await derivedTurn($, on)
+    await askAgain($)
+    await kept($, rowId(31), [text('Working.')])
+    await message($, rowId(31), 'Working.')
+    // Another view draws the same row under the other form of its id.
+    const derived = await message($, drawnId(31), 'Working.')
+
+    expect(await derived.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await derived.find({ type: 'Text', text: 'Working.' })).toBeUndefined()
+  })
+
+  test('an unfolded run whose first row changes the form of its id stays unfolded, and folds from it', async ($, on) => {
+    live(on)
+    await derivedTurn($, on)
+    await askAgain($)
+    await kept($, rowId(31), [text('Working.')])
+    const own = await message($, rowId(31), 'Working.')
+    await own.press({ key: 'to-human-toggle' })
+    const derived = await message($, drawnId(31), 'Working.')
+
+    expect(await derived.find({ type: 'Text', text: 'Working.' })).toBeDefined()
+    await derived.press({ key: 'to-human-toggle' })
+    expect(await derived.find({ type: 'Text', text: 'Working.' })).toBeUndefined()
+    expect(await derived.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
   test("/to-human-dump writes the view's order with each row's kind and place", async ($, on) => {
     live(on)
     const writes: { path: string; text: string }[] = []

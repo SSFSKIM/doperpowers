@@ -2,7 +2,7 @@ import type { ApiContentBlock, EngineInterface, On, PromptOrigin, RenderElement,
 
 import { registerEdits } from './edits'
 import { labelOf, registerFolds } from './folds'
-import { FINAL_ANSWER, MESSAGE_TOOL, isMadeUp, readMessage, rowKey } from './message'
+import { FINAL_ANSWER, MESSAGE_TOOL, blockOf, isMadeUp, readMessage, rowKey } from './message'
 
 /**
  * The ask mod's tool, the model's one way to ask the human in an interactive
@@ -744,14 +744,20 @@ function placeOf(view: View, id: string): number {
   return view.place.get(key) ?? view.guess.get(key) ?? Infinity
 }
 
-/** The index `id` takes in `order`: after every drawn row placed at or before it. */
+/**
+ * The index `id` takes in `order`: after every drawn row placed before it,
+ * and of those placed with it (the blocks of one kept row), every one of a
+ * block up to its own.
+ */
 function slotOf(view: View, id: string): number {
-  const at = placeOf(view, id)
+  const [at, block] = [placeOf(view, id), blockOf(id)]
   let low = 0
   let high = view.order.length
   while (low < high) {
     const middle = (low + high) >> 1
-    if (placeOf(view, view.order[middle] as string) <= at) {
+    const row = view.order[middle] as string
+    const there = placeOf(view, row)
+    if (there < at || (there === at && blockOf(row) <= block)) {
       low = middle + 1
     } else {
       high = middle
@@ -760,11 +766,11 @@ function slotOf(view: View, id: string): number {
   return low
 }
 
-/** Sorts the drawn rows by their places, now that more are known; whether any moved. */
+/** Sorts the drawn rows by their places, then their blocks, now that more are known; whether any moved. */
 export function reorder(view: View): boolean {
   const sorted = view.order
-    .map((id, i) => ({ id, i, at: placeOf(view, id) }))
-    .sort((a, b) => (a.at === b.at ? a.i - b.i : a.at < b.at ? -1 : 1))
+    .map((id, i) => ({ id, i, at: placeOf(view, id), block: blockOf(id) }))
+    .sort((a, b) => (a.at !== b.at ? (a.at < b.at ? -1 : 1) : a.block - b.block || a.i - b.i))
     .map(({ id }) => id)
   if (sorted.every((id, i) => id === view.order[i])) {
     return false
@@ -1018,6 +1024,41 @@ function drawsApart(view: View, id: string): boolean {
 }
 
 /**
+ * Moves a kept row's block to the id it now draws under, where it drew under
+ * another before: the engine draws a row under its own id or a derived one by
+ * which list a view renders (the ordinary view drops rows before it derives
+ * the ids, the ctrl+o view does not), so switching views can change a row's
+ * form, and the stale entry, standing first in its run, took the run's button
+ * with it. Its slot, its kind, its run's unfolding and where it stood in the
+ * window go to the new id.
+ */
+function adopt(view: View, requestId: string) {
+  const key = rowKey(requestId)
+  if (key === requestId || view.rowOf.has(requestId)) {
+    return
+  }
+  const block = blockOf(requestId)
+  const old = view.order.find((row) => rowKey(row) === key && blockOf(row) === block)
+  if (old === undefined) {
+    return
+  }
+  view.order[view.order.indexOf(old)] = requestId
+  view.rowOf.set(requestId, view.rowOf.get(old) as RowKind)
+  view.rowOf.delete(old)
+  if (view.unfolded.delete(old)) {
+    view.unfolded.add(requestId)
+  }
+  const shown = view.shown.get(old)
+  if (shown !== undefined && !view.shown.has(requestId)) {
+    view.shown.set(requestId, shown)
+  }
+  view.shown.delete(old)
+  if (view.folded === old) {
+    view.folded = requestId
+  }
+}
+
+/**
  * Notes a row as it draws: its place among the rows drawn so far, and what it
  * is. A row that lands beside another, or turns into a kind that ends or joins
  * its run, can change what that neighbour draws (whether it opens its run and
@@ -1027,6 +1068,7 @@ function drawsApart(view: View, id: string): boolean {
  * before it, when a row lands among those already drawn while a run is open.
  */
 function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
+  adopt(view, requestId)
   const { order, rowOf } = view
   const known = rowOf.get(requestId)
   if (known === kind) {
