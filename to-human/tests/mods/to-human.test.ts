@@ -1050,7 +1050,8 @@ describe('rows nothing keeps', () => {
     expect(await note.find({ type: 'Button' })).toBeUndefined()
     // The prompt kept into the turn is the person's and cuts the run, as it shows.
     expect(await typed.find({ type: 'Text', text: QUEUED })).toBeDefined()
-    expect(await second.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    // A live run's button reads its newest call's line (folds.tsx): here a Bash call's, with no description.
+    expect((await second.find({ type: 'Button' }))?.text).toBe('› Bash')
   })
 
   test('a hand-back queued right after a row the person reads leaves the next run its button', async ($, on) => {
@@ -1068,7 +1069,7 @@ describe('rows nothing keeps', () => {
     await delivered($, 'h1', 'delivery', 'peer')
     const handBack = await prompt($, 'h1', 'done', peer.origin, { from: peer.from })
 
-    expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect((await first.find({ type: 'Button' }))?.text).toBe('› Bash')
     expect(await preview.find({ type: 'Button' })).toBeUndefined()
     expect(await preview.find({ type: 'Text', text: 'done' })).toBeUndefined()
     expect(await handBack.find({ type: 'Button' })).toBeUndefined()
@@ -1107,7 +1108,7 @@ describe('rows nothing keeps', () => {
     expect(await agentGroup.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
     expect(await agentGroup.find({ type: 'Button' })).toBeUndefined()
     // One run between the message and the turn's end, behind the first group's one button.
-    expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect((await first.find({ type: 'Button' }))?.text).toBe('› Bash')
     expect(await handBack.find({ type: 'Button' })).toBeUndefined()
     expect(await second.find({ type: 'Button' })).toBeUndefined()
     await first.press({ key: 'to-human-toggle' })
@@ -1125,7 +1126,7 @@ describe('rows nothing keeps', () => {
     await kept($, 'a2', [bashUse('toolu_b2')])
 
     expect(await agentText.find({ type: 'Text', text: '<message>agent hello</message>' })).toBeDefined()
-    expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect((await first.find({ type: 'Button' }))?.text).toBe('› Bash')
     expect(await later.find({ type: 'Button' })).toBeUndefined()
   })
 
@@ -1148,7 +1149,7 @@ describe('rows nothing keeps', () => {
     expect(await agentPrompt.find({ type: 'Button' })).toBeUndefined()
     expect(await agentText.find({ type: 'Text', text: '<message>agent hello</message>' })).toBeDefined()
     expect(await agentGroup.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
-    expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect((await first.find({ type: 'Button' }))?.text).toBe('› Bash')
     expect(await second.find({ type: 'Button' })).toBeUndefined()
     expect(await handBack.find({ type: 'Button' })).toBeUndefined()
   })
@@ -1186,7 +1187,7 @@ describe('rows nothing keeps', () => {
     await kept($, 'a2', [{ type: 'tool_use', id: 'toolu_s1', name: 'SendMessage', input: {} }])
     await result($, 'u1', 'toolu_s1')
 
-    expect(await streaming.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect((await streaming.find({ type: 'Button' }))?.text).toBe('› SendMessage')
     expect(await streaming.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
   })
 
@@ -1201,7 +1202,7 @@ describe('rows nothing keeps', () => {
 
     expect(await next.find({ type: 'Text', text: 'And now this.' })).toBeDefined()
     expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
-    expect(await second.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect((await second.find({ type: 'Button' }))?.text).toBe('› Bash')
   })
 
   test("a transcript's list past one run's output is read whole: its last rows fold in its order", async ($, on) => {

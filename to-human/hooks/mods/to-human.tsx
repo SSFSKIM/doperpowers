@@ -1,6 +1,7 @@
 import type { ApiContentBlock, EngineInterface, On, PromptOrigin, RenderElement, RenderInput, SessionAppendInput, Timer } from 'claude-code'
 
 import { registerEdits } from './edits'
+import { labelOf, registerFolds } from './folds'
 import { FINAL_ANSWER, MESSAGE_TOOL, isMadeUp, readMessage } from './message'
 
 /**
@@ -594,7 +595,7 @@ function control<E extends RenderInput>(
   )
 }
 
-const isSpawn = (tool: string) => tool === 'Agent' || tool === 'Workflow'
+export const isSpawn = (tool: string) => tool === 'Agent' || tool === 'Workflow'
 
 /**
  * Questions (the built-in's and the ask mod's), agent spawns and the message
@@ -612,7 +613,7 @@ export const isRead = (tool: string) => tool === 'AskUserQuestion' || ASK_TOOLS.
  * mid-response), the model never writes the person about it, so the row
  * stays in the report.
  */
-function isApiError(origin: SessionAppendInput['origin'], message: { content: readonly ApiContentBlock[] }): boolean {
+export function isApiError(origin: SessionAppendInput['origin'], message: { content: readonly ApiContentBlock[] }): boolean {
   if (origin.kind !== 'model' || !('model' in origin) || origin.model !== '<synthetic>') return false
   const text = message.content.map((block) => (block.type === 'text' ? block.text : '')).join('').trim()
   return text !== '' && text !== 'No response requested.'
@@ -723,7 +724,7 @@ const GROUP = 'group:'
 /** Where the rows appended while the session runs are placed: past any line of a file. */
 const LIVE = 1e12
 
-const keyOf = (id: string) => (id.startsWith(GROUP) ? id.slice(GROUP.length) : id)
+export const keyOf = (id: string) => (id.startsWith(GROUP) ? id.slice(GROUP.length) : id)
 
 function placeOf(view: View, id: string): number {
   const key = keyOf(id)
@@ -1043,9 +1044,27 @@ function toggle(view: View, id: string) {
 }
 
 /**
+ * The runs the tracker publishes (`folds.tsx`, the plugin's contract in
+ * `types/to-human.d.ts`): a button that reads them is drawn again when
+ * either is written.
+ */
+const FOLDS_KEPT = { plugin: 'to-human', key: 'folds' } as const
+const OPEN_KEPT = { plugin: 'to-human', key: 'fold' } as const
+
+/** What the button of the run `id` stands in reads: its live line or summary, else `working record`. */
+async function foldLabel($: EngineInterface, view: View, id: string): Promise<string> {
+  try {
+    const [folds, open] = await Promise.all([$.state.get(FOLDS_KEPT), $.state.get(OPEN_KEPT)])
+    return labelOf(folds.value, open.value, view, id) ?? 'working record'
+  } catch {
+    return 'working record'
+  }
+}
+
+/**
  * A row of working record, drawn as its run is. Folded, the row the run
- * starts at draws the one `› working record` button and the rest draw
- * nothing. Unfolded, each row is the engine's own drawing, as the transcript
+ * starts at draws the one button, `› ` and what the run's label reads
+ * (`foldLabel`), and the rest draw nothing. Unfolded, each row is the engine's own drawing, as the transcript
  * draws it, and the row the run ends at draws `‹ fold to report` a line
  * under it, as the rows stand apart, where the person is when they finish
  * reading.
@@ -1075,7 +1094,7 @@ async function recordRow<E extends RenderInput>(
   if (!view.unfolded.has(start)) {
     return opens && start === id ? (
       <Box marginTop={1}>
-        {control($, e, { key: TOGGLE, label: 'working record', mark: UNFOLD, onPress: toggleRun, children: <Text dimColor>{bullet}</Text> })}
+        {control($, e, { key: TOGGLE, label: await foldLabel($, view, id), mark: UNFOLD, onPress: toggleRun, children: <Text dimColor>{bullet}</Text> })}
       </Box>
     ) : (
       <Box />
@@ -1620,7 +1639,7 @@ export function registerToHuman(on: On) {
       parsed.hasRecord ? (
         // The one button of this message's record and of the run after it.
         <Box paddingLeft={2} marginTop={1}>
-          {control($, e, { key: TOGGLE, label: 'working record', mark: UNFOLD, onPress: toggleThis })}
+          {control($, e, { key: TOGGLE, label: await foldLabel($, view, requestId), mark: UNFOLD, onPress: toggleThis })}
         </Box>
       ) : null,
     )
@@ -1882,4 +1901,8 @@ export function registerToHuman(on: On) {
   // The summary lines of file changes, beneath every hook above, so they draw
   // wherever the view hands a row on to be drawn as the engine would.
   registerEdits(on, view, () => hasSeenMark)
+
+  // The run tracker, which follows the rows as they are kept and publishes
+  // what each fold's button reads (`foldLabel`).
+  registerFolds(on, view, () => hasSeenMark)
 }

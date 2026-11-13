@@ -55,10 +55,12 @@ GATEWAY_KEYS = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT
                 "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
                 "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")
 BASE_KEYS = ("PATH", "TERM", "LANG", "USER", "LOGNAME", "SHELL", "TMPDIR")
-PLUGINS = {"to-human": (".claude-plugin", "hooks"), "sminos": (".claude-plugin", "hooks", "skills", "types")}
+PLUGINS = {"to-human": (".claude-plugin", "hooks", "types"), "sminos": (".claude-plugin", "hooks", "skills", "types")}
 MESSAGE_TOOL = "mcp__to-human__message"
 STYLE = "doperpowers:to-human"
 LABEL = "● message"
+# A fold's button: `› ` and its label (`working record`, or the run's live line or summary), on a line of its own.
+FOLD = re.compile(r"^\s*› \S", re.M)
 TEXT = "Checkpoint alpha: the first step ran."
 SUB = "subzebra"  # what the subagent is told to send, spelled out so no prompt carries it whole
 REFUSAL = "message is for the main conversation"
@@ -305,12 +307,12 @@ class Live:
         frame_one = frame_one[frame_one.find("and nothing else."):]
         at = frame_one.find(TEXT)
         label = frame_one.rfind(LABEL, 0, at) if at >= 0 else -1
-        before = frame_one.rfind("› working record", 0, label) if label >= 0 else -1
-        after = frame_one.find("› working record", at) if at >= 0 else -1
+        before = max((m.start() for m in FOLD.finditer(frame_one, 0, label)), default=-1) if label >= 0 else -1
+        after = next((m.start() for m in FOLD.finditer(frame_one, at)), -1) if at >= 0 else -1
         raw = re.search(r"to-human.{0,4}message|⎿\s+sent\s*$", frame_one, re.M)
         self.check("2 drawn as a message row between the tool calls",
                    label >= 0 and frame_one[label:at].count("\n") <= 2 and 0 <= before < label and after > at and not raw,
-                   "label at %d, text at %d, working record before %d and after %d, engine row %r" % (
+                   "label at %d, text at %d, a fold before %d and after %d, engine row %r" % (
                        label, at, before, after, raw and raw.group(0)))
 
         # 3. The notification.
