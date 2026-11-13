@@ -31,7 +31,7 @@ summaries for folds that closed before the feature was installed.
       run's bounds).
 - [x] (2026-11-13 00:34Z) Spec review and execution-section review absorbed (eight findings, six distinct, all taken; Decision Log).
 - [x] (2026-11-13 02:22Z) M1 — the run tracker and the live line (2e734e06, review fix 4a590714; task review clean; ci-gate GREEN on 4a590714; acceptance 1 seen live, 7's one fold pinned by the kit).
-- [ ] M2 — summaries, storage, the live check, docs.
+- [x] (2026-11-13 04:09Z) M2 — summaries, storage, the live check, docs (ca71b3b4, review fix 96afbe02; task review clean; ci-gate GREEN on 96afbe02). `live-folds-check.py` automates acceptance 1 to 7, the press of item 5 excepted (the tmux main screen takes no click; the kit pins it); all PASS on ca71b3b4 (`~/.local/share/fold-runs/m2-live-folds-2.log`).
 - [ ] Whole-branch review (`doperpowers:reviewer-medium`), retrospective, merge.
 
 ## Terms
