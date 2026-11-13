@@ -1,7 +1,7 @@
 import type { EngineInterface, On, SessionAppendInput } from 'claude-code'
 
 import type { FoldRun, Folds, OpenFold, OpenFoldLast } from '../../types/to-human'
-import { isMadeUp } from './message'
+import { MESSAGE_TOOL, isMadeUp } from './message'
 import type { PromptRowProps, View } from './to-human'
 import { isApiError, isRead, isSpawn, keyOf, parse, promptRow } from './to-human'
 
@@ -255,29 +255,42 @@ function callPart(tool: string, input: unknown): string {
   return `CALL ${tool} ${clip(JSON.stringify(input ?? {}), INPUT_MAX)}`
 }
 
+/** What stands between a digest's parts. */
+const SEPARATOR = '\n\n'
+/** The line that stands for the parts a capped digest left out. */
+const omission = (count: number) => `…[${count} rows of the run omitted here]…`
+
 /**
- * A run's digest as it grows: its parts in order while they fit the cap;
- * past it, the parts that fit 40% of it from the start (`head` of them), and
- * those that fit 60% from the end, the ones between dropped and counted.
+ * A run's digest as it grows, measured as the text it joins to: its parts in
+ * order while that fits the cap; past it, the parts that fit 40% of it from
+ * the start (`head` of them), and those that fit what is left of the cap
+ * from the end once the omission line and its separators are counted, the
+ * ones between dropped and counted. `size` is the joined length of the parts
+ * after the head (of them all while there is none), `headSize` the head's.
  */
 type Digest = { parts: string[]; size: number; head?: number; headSize: number; omitted: number }
 
 const newDigest = (): Digest => ({ parts: [], size: 0, headSize: 0, omitted: 0 })
 
 function addPart(digest: Digest, part: string) {
+  digest.size += (digest.parts.length > (digest.head ?? 0) ? SEPARATOR.length : 0) + part.length
   digest.parts.push(part)
-  digest.size += part.length
   if (digest.head === undefined) {
     if (digest.size <= DIGEST_MAX) return
     let head = 0
-    while (head < digest.parts.length && digest.headSize + digest.parts[head]!.length <= DIGEST_MAX * 0.4) {
-      digest.headSize += digest.parts[head]!.length
+    while (head < digest.parts.length) {
+      const next = digest.headSize + (head > 0 ? SEPARATOR.length : 0) + digest.parts[head]!.length
+      if (next > DIGEST_MAX * 0.4) break
+      digest.headSize = next
       head += 1
     }
     digest.head = head
+    digest.size = digest.parts.slice(head).join(SEPARATOR).length
   }
-  while (digest.size - digest.headSize > DIGEST_MAX * 0.6 && digest.parts.length > digest.head) {
-    digest.size -= digest.parts.splice(digest.head, 1)[0]!.length
+  const room = () => DIGEST_MAX * 0.6 - 2 * SEPARATOR.length - omission(digest.omitted).length
+  while (digest.parts.length > digest.head && digest.size > room()) {
+    const dropped = digest.parts.splice(digest.head, 1)[0]!
+    digest.size -= dropped.length + (digest.parts.length > digest.head ? SEPARATOR.length : 0)
     digest.omitted += 1
   }
 }
@@ -285,8 +298,8 @@ function addPart(digest: Digest, part: string) {
 const digestText = (digest: Digest) =>
   (digest.head === undefined
     ? digest.parts
-    : [...digest.parts.slice(0, digest.head), `…[${digest.omitted} rows of the run omitted here]…`, ...digest.parts.slice(digest.head)]
-  ).join('\n\n')
+    : [...digest.parts.slice(0, digest.head), omission(digest.omitted), ...digest.parts.slice(digest.head)]
+  ).join(SEPARATOR)
 
 /** A run as the tracker holds it. */
 type Run = {
@@ -531,6 +544,8 @@ type Following = {
   written: { folds: string; fold: string; foldLast: string }
   /** The view's "a mark has been seen". */
   isOn: () => boolean
+  /** The tracker has followed a kept mark: the view's condition, read where the row is kept rather than drawn. */
+  hasKeptMark: boolean
   /** `session.start`'s: nobody reads a headless session's terminal. */
   isInteractive: boolean
   settings?: Settings
@@ -541,9 +556,23 @@ type Following = {
   fileWrites: Promise<void>
 }
 
-/** Whether a run due its summary is asked for: a to-human reader, at this terminal, not MAWS's or a sminos internal fork's. */
+/**
+ * Whether a run due its summary is asked for: a to-human reader (a mark the
+ * view drew, or one the tracker followed, so the message that closes a
+ * session's first run counts for that run though it has not drawn yet), at
+ * this terminal, not MAWS's or a sminos internal fork's.
+ */
 const isAsking = (following: Following) =>
-  following.isOn() && following.isInteractive && following.settings !== undefined && !following.settings.isQuiet
+  (following.isOn() || following.hasKeptMark) && following.isInteractive && following.settings !== undefined && !following.settings.isQuiet
+
+/** A kept response that is a mark, as the view reads a drawn one: a message-tool call, or text with a marked span. */
+const isMark = (row: KeptRow) =>
+  row.door === 'response' &&
+  row.message.content.some(
+    (block) =>
+      (block.type === 'tool_use' && block.name === MESSAGE_TOOL) ||
+      (block.type === 'text' && typeof block.text === 'string' && parse(block.text).spans.length > 0),
+  )
 
 /** Reads the settings once. */
 function readSettings($: EngineInterface, following: Following): Promise<Settings | undefined> {
@@ -733,7 +762,9 @@ function track($: EngineInterface, following: Following, steps: Step[]) {
 
 /**
  * Drops the runs of the conversation before and publishes that, then the
- * file of the session it now is; the rows kept meanwhile wait for it.
+ * file of the session it now is, once the writes already queued have
+ * landed (a switch back to a session whose summary is still being written
+ * would read its file without that summary); the rows kept meanwhile wait.
  */
 function reset($: EngineInterface, following: Following, sessionId: string | undefined) {
   following.epoch += 1
@@ -743,8 +774,10 @@ function reset($: EngineInterface, following: Following, sessionId: string | und
   publish($, following)
   const file = fileOf($, following, sessionId)
   following.file = file
+  const written = following.fileWrites
   following.loading = (async () => {
     try {
+      await written
       const runs = await readStored($, await file)
       if (runs !== undefined && at === following.epoch) takeUp(following.tracker, { shape: 1, runs }, null, null)
     } finally {
@@ -772,6 +805,7 @@ export function registerFolds(on: On, view: View, isOn: () => boolean) {
     writes: Promise.resolve(),
     written: { folds: '', fold: '', foldLast: '' },
     isOn,
+    hasKeptMark: false,
     isInteractive: false,
     file: Promise.resolve(undefined),
     fileWrites: Promise.resolve(),
@@ -788,7 +822,10 @@ export function registerFolds(on: On, view: View, isOn: () => boolean) {
     const stored = await next(e)
     if (e.agentId === undefined && stored.deny === undefined) {
       try {
-        track($, following, stepsOf({ door: e.door, origin: e.origin, uuid: stored.uuid, message: stored.message }, following.tracker.spawns))
+        const row: KeptRow = { door: e.door, origin: e.origin, uuid: stored.uuid, message: stored.message }
+        // Noted before its steps are followed, so the mark that closes a run counts for it, a row waiting for the start-up read too.
+        if (isMark(row)) following.hasKeptMark = true
+        track($, following, stepsOf(row, following.tracker.spawns))
       } catch (error) {
         // The row is kept whatever this hook makes of it; only its run is lost.
         $.ui.log(`to-human: a kept row could not be followed (${String(error)})`, { to: 'debug' })

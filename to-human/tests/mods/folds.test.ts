@@ -365,13 +365,18 @@ type HookOptions = {
   /** The files `$.fs` holds, by path. */
   files?: Map<string, string>
   failFile?: boolean
+  /** Each write of a file waits until the test lets it land (`landWrites`). */
+  holdFile?: boolean
   isOn?: () => boolean
   sessionId?: string
 }
 
 /** The tracker's hooks over a hand-made engine whose `$.state` is a map, as the host keeps it across a reload. */
 function trackerHooks(kept = new Map<string, unknown>(), options: HookOptions = {}) {
-  const { failWrites = false, writes = [], env = { HOME: '/home/u' }, files = new Map<string, string>(), failFile = false, isOn = () => true, sessionId = 's1' } = options
+  const { failWrites = false, writes = [], env = { HOME: '/home/u' }, files = new Map<string, string>(), failFile = false, holdFile = false, isOn = () => true, sessionId = 's1' } = options
+  const landing: (() => void)[] = []
+  /** Lets every held write of a file land. */
+  const landWrites = () => landing.splice(0).forEach((land) => land())
   type Hook = (engine: EngineInterface, e: Record<string, unknown>, next: (e: unknown) => Promise<unknown>) => Promise<unknown>
   const hooks: { event: string; handler: Hook }[] = []
   const on = ((event: string, ...rest: unknown[]) => hooks.push({ event, handler: rest[rest.length - 1] as Hook })) as unknown as On
@@ -401,6 +406,7 @@ function trackerHooks(kept = new Map<string, unknown>(), options: HookOptions = 
       },
       write: async (path: string, value: string) => {
         if (failFile) throw new Error('disk full')
+        if (holdFile) await new Promise<void>((land) => landing.push(land))
         files.set(path, value)
       },
     },
@@ -427,7 +433,7 @@ function trackerHooks(kept = new Map<string, unknown>(), options: HookOptions = 
     hook('turn.complete')(engine, { turnId: 't1', answer: '', durationMs: 1, isAborted: false, reason: 'answer', ...(agentId !== undefined && { agentId }) }, async () => ({ text: '' }))
   /** Lets the chained writes land. */
   const settle = () => Promise.resolve().then(() => undefined)
-  return { kept, logs, held, files, runs, append, start, sessionStart, turnEnd, settle }
+  return { kept, logs, held, files, runs, append, start, sessionStart, turnEnd, settle, landWrites }
 }
 
 const drain = async (settle: () => Promise<void>) => {
@@ -715,9 +721,26 @@ describe('the digest: what the model reads of a run', () => {
     expect(parts.slice(16).map((part) => part.slice(5, 8))).toEqual(Array.from({ length: 23 }, (_, i) => String(77 + i).padStart(3, '0')))
   })
 
-  test('a digest of 60,000 characters or under is kept whole', () => {
-    const notes = Array.from({ length: 39 }, (_, i) => response(`a${i}`, text('y'.repeat(1500))))
-    expect(digestOf(...notes).split('\n\n')).toHaveLength(39)
+  test('the cap counts the digest as joined, its separators and the omission line with it', () => {
+    // 39 parts of 1,505 characters and one of 1,227, joined by 39 blank lines: exactly 60,000.
+    const notes = (last: number) => [
+      ...Array.from({ length: 39 }, (_, i) => response(`a${i}`, text('y'.repeat(1500)))),
+      response('a39', text('z'.repeat(last))),
+    ]
+    const whole = digestOf(...notes(1222))
+    expect(whole.length).toBe(60_000)
+    expect(whole.split('\n\n')).toHaveLength(40)
+    const capped = digestOf(...notes(1223))
+    expect(capped.length).toBeLessThanOrEqual(60_000)
+    expect(capped.split('\n\n')).toContain('…[1 rows of the run omitted here]…')
+    // A last part of 1,330 leaves an end of 35,991 characters, within 60% of the cap but not with the omission line beside it.
+    const tight = digestOf(...notes(1325))
+    expect(tight.length).toBeLessThanOrEqual(60_000)
+    expect(tight.split('\n\n')).toContain('…[2 rows of the run omitted here]…')
+    // 40 notes of 1,495 characters: their parts alone are 60,000, their joined text 60,078.
+    const close = digestOf(...Array.from({ length: 40 }, (_, i) => response(`b${i}`, text('x'.repeat(1495)))))
+    expect(close.length).toBeLessThanOrEqual(60_000)
+    expect(close).toContain('rows of the run omitted here')
   })
 })
 
@@ -922,10 +945,11 @@ describe('registerFolds: summaries', () => {
     test(`no call ${name}: each run settles on what it had`, async () => {
       const h = trackerHooks(new Map(), options)
       await h.start(isInteractive)
-      await h.append(sent('a0', 'toolu_m0'))
+      // The person's prompts close the runs: no row of this session is a mark.
+      await h.append(userRow('p0', 'prompt', { kind: 'composer' }, 'List them.'))
       await h.append(bash('a1', 'toolu_1', 'List the files'))
       await h.append(result('u1', 'toolu_1'))
-      await h.append(sent('a2', 'toolu_m'))
+      await h.append(userRow('p1', 'prompt', { kind: 'composer' }, 'Now the tests.'))
       await h.append(bash('a3', 'toolu_3', 'Run the tests'))
       await h.append(result('u3', 'toolu_3'))
       await h.turnEnd()
@@ -935,6 +959,32 @@ describe('registerFolds: summaries', () => {
       expect(h.kept.get('fold')).toEqual({ first: 'toolu_3' })
     })
   }
+
+  for (const [name, mark] of [
+    ['a message call', sent('a2', 'toolu_m')],
+    ['a marked text', response('a2', text('<message>Listed.</message>'))],
+  ] as const) {
+    test(`the first run's close at ${name} kept before any mark drew is summarized: the tracker counts the mark it follows`, async () => {
+      const h = trackerHooks(new Map(), { isOn: () => false })
+      await h.start()
+      await h.append(bash('a1', 'toolu_1', 'List the files'))
+      await h.append(result('u1', 'toolu_1'))
+      await h.append(mark)
+      await drain(h.settle)
+      expect(h.held.map((ask) => ask.request.prompt)).toEqual(['<stretch>\nCALL Bash — List the files\n$ true\n\nRESULT ok\n</stretch>'])
+    })
+  }
+
+  test("a subagent's message is no mark", async () => {
+    const h = trackerHooks(new Map(), { isOn: () => false })
+    await h.start()
+    await h.append({ ...sent('s1', 'toolu_sm'), agentId: 'a7' } as KeptRow)
+    await h.append(bash('a1', 'toolu_1', 'List the files'))
+    await h.append(result('u1', 'toolu_1'))
+    await h.turnEnd()
+    await drain(h.settle)
+    expect(h.held).toEqual([])
+  })
 
   test('MAWS_NATIVE_TO_HUMAN set empty is no MAWS', async () => {
     const h = trackerHooks(new Map(), { env: { HOME: '/home/u', MAWS_NATIVE_TO_HUMAN: '' } })
@@ -1002,6 +1052,34 @@ describe("registerFolds: the session's file", () => {
     h.held[0]!.answer(answered('Linted'))
     await drain(h.settle)
     expect(stored(files)).toEqual({ shape: 1, runs: [['toolu_1', 'a2', 'Listed the files'], ['toolu_3', 'toolu_4', 'Ran the tests'], ['toolu_5', 'toolu_5', 'Linted']] })
+  })
+
+  test("a switch away and back to a session whose summary is still being written reads its file once the write has landed", async () => {
+    const files = new Map<string, string>()
+    const h = trackerHooks(new Map(), { files, holdFile: true })
+    await asking(h)
+    await h.append(bash('a1', 'toolu_1', 'List the files'))
+    await h.append(result('u1', 'toolu_1'))
+    await h.turnEnd()
+    await drain(h.settle)
+    h.held[0]!.answer(answered('First summary'))
+    await drain(h.settle)
+    // The write of s1's file is held: the session goes to s2 and back before it lands.
+    await h.sessionStart('resume', 's2')
+    await h.sessionStart('resume', 's1')
+    await drain(h.settle)
+    h.landWrites()
+    await drain(h.settle)
+    expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_1', last: 'toolu_1', summary: 'First summary' }] })
+    await h.append(bash('a2', 'toolu_2', 'Run the tests'))
+    await h.append(result('u2', 'toolu_2'))
+    await h.turnEnd()
+    await drain(h.settle)
+    h.held.at(-1)!.answer(answered('Second summary'))
+    await drain(h.settle)
+    h.landWrites()
+    await drain(h.settle)
+    expect(stored(files)?.runs.map((run: string[]) => run[2])).toEqual(['First summary', 'Second summary'])
   })
 
   test('a reload, whose $.state holds the runs, reads no file and prunes nothing', async () => {
