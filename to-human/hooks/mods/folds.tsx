@@ -14,7 +14,10 @@ import { isApiError, isRead, isSpawn, keyOf, parse, promptRow } from './to-human
  * `parse`, `promptRow`, `isApiError`) into the runs of working record between
  * the rows the person reads, and publishes each run's bounds and live line
  * in `$.state` (`types/to-human.d.ts`), where the view's buttons read them.
- * The two meet only at a row's place in the transcript (`View.place`).
+ * The two meet only at a row's place in the transcript (`View.place`). Each
+ * run that closes, and the open run at a turn's end, is summarized in one
+ * line by a model call over its digest (`LABEL_SYSTEM`), kept in the
+ * session's file so a resume shows it again.
  */
 
 /** A row as the main conversation keeps it: what `session.append` hands a hook, and the row as stored. */
@@ -24,17 +27,32 @@ export type KeptRow = Pick<SessionAppendInput, 'door' | 'origin' | 'uuid' | 'age
  * What one kept row does to the runs, block by block in order: a note, a call
  * or a delivery joins the open run (a call's row known by its call's id, any
  * other by the row's), a result joins its call's run wherever that stands,
- * and a read row closes the open run.
+ * and a read row closes the open run. `end` is the main conversation's
+ * turn's end, which no row stands for.
  */
 export type Step =
   | { kind: 'note'; id: string; text: string }
   | { kind: 'call'; id: string; tool: string; input: unknown }
   | { kind: 'delivery'; id: string; text: string }
-  | { kind: 'result'; call: string }
+  | { kind: 'result'; call: string; text: string; isError: boolean }
   | { kind: 'read'; id: string }
+  | { kind: 'end' }
 
 const textOf = (content: SessionAppendInput['message']['content']) =>
   content.flatMap((block) => (block.type === 'text' && typeof block.text === 'string' ? [block.text] : [])).join('\n')
+
+/** A tool result's content as text: its texts, one to a line, any other block by its type. */
+function resultText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .flatMap((block: unknown) => {
+      if (typeof block !== 'object' || block === null) return []
+      const { type, text } = block as { type?: unknown; text?: unknown }
+      return [type === 'text' ? (typeof text === 'string' ? text : '') : `[${String(type)}]`]
+    })
+    .join('\n')
+}
 
 /**
  * The background task a kept prompt reports on, from the engine's
@@ -101,7 +119,9 @@ export function stepsOf(row: KeptRow, spawns: Set<string>): Step[] {
       return responseSteps(row, spawns)
     case 'tool-result':
       return row.message.content.flatMap((block): Step[] =>
-        block.type === 'tool_result' && typeof block.tool_use_id === 'string' ? [{ kind: 'result', call: block.tool_use_id }] : [],
+        block.type === 'tool_result' && typeof block.tool_use_id === 'string'
+          ? [{ kind: 'result', call: block.tool_use_id, text: resultText(block.content), isError: block.is_error === true }]
+          : [],
       )
     case 'prompt':
     case 'delivery':
@@ -173,6 +193,101 @@ export function lineOf(tool: string, input: unknown): string {
   return oneLine(lineFor(tool, field) ?? tool)
 }
 
+/** The summary: the reply's first non-empty line, trimmed and cut at 120 characters; undefined for none. */
+export function summaryOf(reply: string): string | undefined {
+  const line = reply.split(/\r?\n/).map((part) => part.trim()).find((part) => part !== '')
+  return line === undefined ? undefined : oneLine(line)
+}
+
+/**
+ * The system prompt of the summary call: what the person sees in place of a
+ * folded run, in plain words (the wording the human partner chose over a
+ * specific and a terse one on the same twelve runs).
+ */
+export const LABEL_SYSTEM = [
+  'You label folded stretches of a coding agent\'s working record. The person supervising the agent sees your label in place of the stretch and decides from it whether to open the stretch. They have not read the stretch and do not know the names the agent made up while working.',
+  'You are given one stretch: the agent\'s own notes (NOTE), its tool calls (CALL), their results cut to their ends (RESULT), and messages delivered to it from subagents, jobs or other sessions (DELIVERED).',
+  'Write one line of at most 90 characters, in the past tense with no subject: what was done and what it came to, in plain words. Keep pull request and issue numbers and the counts that matter (tests passed, files changed); leave out commit hashes, run ids and the agent\'s own working labels, saying what the thing is instead. Write in the language the agent\'s notes are written in, and in English when there are none. State nothing the record does not show. Answer with the line alone.',
+].join('\n\n')
+
+// The digest's cuts, in characters: each part's as it is added, the whole's at the end.
+const NOTE_MAX = 1500
+const COMMAND_MAX = 600
+const INPUT_MAX = 400
+const DELIVERY_MAX = 600
+const RESULT_HEAD = 600
+const RESULT_TAIL = 400
+/** Past this the digest keeps its start, to 40% of it, and its end, to 60%: about 30k tokens, under the 100k where Haiku's price steps up. */
+const DIGEST_MAX = 60_000
+
+const isHighSurrogate = (unit: string | undefined) => unit !== undefined && /[\uD800-\uDBFF]/.test(unit)
+const isLowSurrogate = (unit: string | undefined) => unit !== undefined && /[\uDC00-\uDFFF]/.test(unit)
+/** The first `n` units of `text`, never half a pair. */
+const headOf = (text: string, n: number) => text.slice(0, isHighSurrogate(text[n - 1]) ? n - 1 : n)
+/** The last `n` units of `text`, never half a pair. */
+const tailOf = (text: string, n: number) => text.slice(text.length - n + (isLowSurrogate(text[text.length - n]) ? 1 : 0))
+
+/** `text` trimmed, and past `max` characters cut, saying how many more there were. */
+function clip(text: string, max: number): string {
+  const whole = text.trim()
+  return whole.length <= max ? whole : `${headOf(whole, max)} …[${whole.length - max} more chars]`
+}
+
+/** `text` trimmed, and past `head + tail` characters cut to its ends: test and build output puts its verdict last. */
+function clipEnds(text: string, head: number, tail: number): string {
+  const whole = text.trim()
+  return whole.length <= head + tail ? whole : `${headOf(whole, head)}\n…[${whole.length - head - tail} chars cut]…\n${tailOf(whole, tail)}`
+}
+
+/** A call as the digest has it: a command with its description, a file by its path, anything else by its input. */
+function callPart(tool: string, input: unknown): string {
+  const fields = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {}
+  const field = (name: string) => (typeof fields[name] === 'string' ? (fields[name] as string) : undefined)
+  if (tool === 'Bash') {
+    const description = field('description')?.trim()
+    return `CALL Bash${description ? ` — ${description}` : ''}\n$ ${clip(field('command') ?? '', COMMAND_MAX)}`
+  }
+  const path = field('file_path') ?? field('path') ?? field('notebook_path')
+  if (path !== undefined) {
+    const pattern = field('pattern')
+    return `CALL ${tool} ${path}${pattern === undefined ? '' : ` pattern=${JSON.stringify(pattern)}`}`
+  }
+  return `CALL ${tool} ${clip(JSON.stringify(input ?? {}), INPUT_MAX)}`
+}
+
+/**
+ * A run's digest as it grows: its parts in order while they fit the cap;
+ * past it, the parts that fit 40% of it from the start (`head` of them), and
+ * those that fit 60% from the end, the ones between dropped and counted.
+ */
+type Digest = { parts: string[]; size: number; head?: number; headSize: number; omitted: number }
+
+const newDigest = (): Digest => ({ parts: [], size: 0, headSize: 0, omitted: 0 })
+
+function addPart(digest: Digest, part: string) {
+  digest.parts.push(part)
+  digest.size += part.length
+  if (digest.head === undefined) {
+    if (digest.size <= DIGEST_MAX) return
+    let head = 0
+    while (head < digest.parts.length && digest.headSize + digest.parts[head]!.length <= DIGEST_MAX * 0.4) {
+      digest.headSize += digest.parts[head]!.length
+      head += 1
+    }
+    digest.head = head
+  }
+  while (digest.size - digest.headSize > DIGEST_MAX * 0.6 && digest.parts.length > digest.head) {
+    digest.size -= digest.parts.splice(digest.head, 1)[0]!.length
+    digest.omitted += 1
+  }
+}
+
+const digestText = (digest: Digest) =>
+  (digest.head === undefined
+    ? digest.parts
+    : [...digest.parts.slice(0, digest.head), `…[${digest.omitted} rows of the run omitted here]…`, ...digest.parts.slice(digest.head)]
+  ).join('\n\n')
+
 /** A run as the tracker holds it. */
 type Run = {
   first: string
@@ -180,12 +295,22 @@ type Run = {
   last: string
   line?: string
   summary?: string
+  /** The last row its summary covered: the open run's bound in the session's file. */
+  covered?: string
   isLive: boolean
   /** Its calls whose results have not been kept. */
   running: Set<string>
   /** The tracker saw every row of it: false for a run a module before this one held. */
   isWhole: boolean
+  /** Bumped whenever a row or a result joins it: a reply asked for at another is stale. */
+  generation: number
+  /** The generation its summary was last asked for at: one attempt each. */
+  asked?: number
+  digest: Digest
 }
+
+/** A summary to ask for: the run, the generation it was asked at, and what the model reads. */
+export type Ask = { run: Run; generation: number; digest: string }
 
 /** The tracker's memory, the authority for what it publishes. */
 export type Tracker = {
@@ -200,42 +325,84 @@ export type Tracker = {
 
 export const newTracker = (): Tracker => ({ closed: [], open: null, runOfCall: new Map(), spawns: new Set() })
 
-/**
- * A run due its summary: closed, every call's result kept. This milestone
- * makes none, so the run settles at once, its live line let go and its
- * summary, if a module before made one, kept.
- */
-function due(run: Run) {
+const newRun = (id: string): Run => ({ first: id, last: id, isLive: true, running: new Set(), isWhole: true, generation: 0, digest: newDigest() })
+
+/** A run's summary settled, or its call failed or was skipped: no longer live, its live line let go, any summary it had kept. */
+function settle(run: Run, summary: string | undefined) {
+  if (summary !== undefined) {
+    run.summary = summary
+    run.covered = run.last
+  }
   run.isLive = false
   delete run.line
 }
 
-/** Takes the steps of one kept row, in order. */
-export function follow(tracker: Tracker, steps: readonly Step[]) {
+/**
+ * A run due its summary: closed with every call's result kept, or at a
+ * turn's end. Asked for once a generation, and only of a run held whole in a
+ * session that asks; any other settles at once. Asked, it stays live until
+ * the reply settles it.
+ */
+function due(run: Run, isAsking: boolean, asks: Ask[]) {
+  if (run.asked === run.generation) return
+  if (!isAsking || !run.isWhole) {
+    settle(run, undefined)
+    return
+  }
+  run.asked = run.generation
+  run.isLive = true
+  asks.push({ run, generation: run.generation, digest: digestText(run.digest) })
+}
+
+const join = (run: Run, part: string) => {
+  run.generation += 1
+  addPart(run.digest, part)
+}
+
+/**
+ * Takes the steps of one kept row, in order; the summaries they make due
+ * where `isAsking`. A run closes at a read row and is due once its calls'
+ * results are kept; at a turn's end a closed run still waiting on one is due
+ * as it stands, and so is the open run if rows joined it since its last
+ * summary, which it stays.
+ */
+export function follow(tracker: Tracker, steps: readonly Step[], isAsking = false): Ask[] {
+  const asks: Ask[] = []
   for (const step of steps) {
     if (step.kind === 'result') {
       const run = tracker.runOfCall.get(step.call)
       if (run === undefined) continue
       tracker.runOfCall.delete(step.call)
       run.running.delete(step.call)
-      if (run !== tracker.open && run.running.size === 0) due(run)
+      join(run, `RESULT ${step.isError ? '(error) ' : ''}${clipEnds(step.text, RESULT_HEAD, RESULT_TAIL)}`)
+      if (run === tracker.open) run.isLive = true
+      else if (run.running.size === 0) due(run, isAsking, asks)
     } else if (step.kind === 'read') {
       const run = tracker.open
       if (run === null) continue
       tracker.open = null
       tracker.closed.push(run)
-      if (run.running.size === 0) due(run)
+      if (run.running.size === 0) due(run, isAsking, asks)
+    } else if (step.kind === 'end') {
+      for (const run of tracker.closed) {
+        if (run.isLive && run.running.size > 0) due(run, isAsking, asks)
+      }
+      if (tracker.open?.isLive) due(tracker.open, isAsking, asks)
     } else {
-      const run = (tracker.open ??= { first: step.id, last: step.id, isLive: true, running: new Set(), isWhole: true })
+      const run = (tracker.open ??= newRun(step.id))
       run.last = step.id
       run.isLive = true
       if (step.kind === 'call') {
         run.line = lineOf(step.tool, step.input)
         run.running.add(step.id)
         tracker.runOfCall.set(step.id, run)
+        join(run, callPart(step.tool, step.input))
+      } else {
+        join(run, step.kind === 'note' ? `NOTE ${clip(step.text, NOTE_MAX)}` : `DELIVERED ${clip(step.text, DELIVERY_MAX)}`)
       }
     }
   }
+  return asks
 }
 
 /** A run as published; the open run's newest row goes under `foldLast` instead, which no drawing reads. */
@@ -254,32 +421,64 @@ export const published = (tracker: Tracker): { folds: Folds; fold: OpenFold; fol
   foldLast: tracker.open?.last ?? null,
 })
 
+/** The session's file: each run with a summary by its first row, the last row it holds and the summary. */
+export type StoredFolds = { shape: 1; runs: [string, string, string][] }
+
+/** What the session's file keeps: every run with a summary, the open run's bounded by the last row its summary covered. */
+export function stored(tracker: Tracker): StoredFolds {
+  const runs = tracker.closed.flatMap((run): [string, string, string][] => (run.summary === undefined ? [] : [[run.first, run.last, run.summary]]))
+  const open = tracker.open
+  if (open?.summary !== undefined) runs.push([open.first, open.covered ?? open.last, open.summary])
+  return { shape: 1, runs }
+}
+
+/** A session's file read back as closed runs, or undefined when it is not one. */
+export function storedRuns(text: string): FoldRun[] | undefined {
+  let value: unknown
+  try {
+    value = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  const { shape, runs } = (typeof value === 'object' && value !== null ? value : {}) as { shape?: unknown; runs?: unknown }
+  if (shape !== 1 || !Array.isArray(runs)) return undefined
+  return runs.flatMap((run: unknown) =>
+    Array.isArray(run) && run.length === 3 && run.every((part) => typeof part === 'string') ? [{ first: run[0] as string, last: run[1] as string, summary: run[2] as string }] : [],
+  )
+}
+
 const isFoldRun = (value: unknown): value is FoldRun =>
   typeof value === 'object' && value !== null && typeof (value as { first?: unknown }).first === 'string'
 
-const held = (run: FoldRun, last: unknown = run.last): Run => ({
-  first: run.first,
-  last: typeof last === 'string' ? last : run.first,
-  ...(typeof run.line === 'string' && { line: run.line }),
-  ...(typeof run.summary === 'string' && { summary: run.summary }),
-  isLive: run.isLive === true,
-  running: new Set(),
-  isWhole: false,
-})
+const held = (run: FoldRun, last: unknown = run.last): Run => {
+  const bound = typeof last === 'string' ? last : run.first
+  return {
+    first: run.first,
+    last: bound,
+    ...(typeof run.line === 'string' && { line: run.line }),
+    ...(typeof run.summary === 'string' && { summary: run.summary, covered: bound }),
+    isLive: run.isLive === true,
+    running: new Set(),
+    isWhole: false,
+    generation: 0,
+    digest: newDigest(),
+  }
+}
 
 /**
  * Takes up the runs a module before this one published (a reload of the
- * plugin's code loses the module's memory; `$.state` outlives it). The open
- * run goes on, held not whole: its calls' results are unknown here, and so is
- * what it held; its newest row (`openLast`) bounds it when it closes. A closed
- * run still live was waiting on something that died with that module, so it
- * settles with what it had.
+ * plugin's code loses the module's memory; `$.state` outlives it), or a
+ * session's file. The open run goes on, held not whole: its calls' results
+ * are unknown here, and so is what it held; its newest row (`openLast`)
+ * bounds it when it closes, and its summary in the file. A closed run still
+ * live was waiting on something that died with that module, so it settles
+ * with what it had.
  */
 export function takeUp(tracker: Tracker, folds: Folds | undefined, open: OpenFold | undefined, openLast: OpenFoldLast | undefined) {
   const runs = folds?.shape === 1 && Array.isArray(folds.runs) ? folds.runs.filter(isFoldRun) : []
   tracker.closed = runs.map((run) => {
     const closed = held(run)
-    if (closed.isLive) due(closed)
+    if (closed.isLive) settle(closed, undefined)
     return closed
   })
   tracker.open = isFoldRun(open) ? held(open, openLast) : null
@@ -315,18 +514,96 @@ const FOLDS = { plugin: 'to-human', key: 'folds' } as const
 const OPEN = { plugin: 'to-human', key: 'fold' } as const
 const OPEN_LAST = { plugin: 'to-human', key: 'foldLast' } as const
 
+/** What a session reads once: the summaries' model, whether it is one nobody reads the report of here, and the files' folder. */
+type Settings = { model: string; isQuiet: boolean; dir?: string }
+
 /** What one registration of the tracker keeps between its hooks. */
 type Following = {
   tracker: Tracker
   /** The rows' steps kept before the start-up read landed, in order; undefined once it has. */
   backlog: Step[][] | undefined
   loading?: Promise<void>
-  /** Bumped by a clear, a resume or a fork: a start-up read begun before one takes up nothing. */
+  /** Bumped by a clear, a resume or a fork: a read or a reply begun before one takes up nothing. */
   epoch: number
   /** The writes to `$.state`, one after another. */
   writes: Promise<void>
   /** What was last written under each key, as JSON. */
   written: { folds: string; fold: string; foldLast: string }
+  /** The view's "a mark has been seen". */
+  isOn: () => boolean
+  /** `session.start`'s: nobody reads a headless session's terminal. */
+  isInteractive: boolean
+  settings?: Settings
+  reading?: Promise<Settings | undefined>
+  /** The session's file, for the conversation it was found in. */
+  file: Promise<string | undefined>
+  /** The writes of the session's file, one after another. */
+  fileWrites: Promise<void>
+}
+
+/** Whether a run due its summary is asked for: a to-human reader, at this terminal, not MAWS's or a sminos internal fork's. */
+const isAsking = (following: Following) =>
+  following.isOn() && following.isInteractive && following.settings !== undefined && !following.settings.isQuiet
+
+/** Reads the settings once. */
+function readSettings($: EngineInterface, following: Following): Promise<Settings | undefined> {
+  following.reading ??= (async () => {
+    try {
+      const [model, maws, internal, configured, home] = await Promise.all([
+        $.env.get('TO_HUMAN_FOLD_MODEL'),
+        $.env.get('MAWS_NATIVE_TO_HUMAN'),
+        $.env.get('SMNS_INTERNAL'),
+        $.env.get('CLAUDE_CONFIG_DIR'),
+        $.env.get('HOME'),
+      ])
+      const config = configured || (home ? `${home}/.claude` : undefined)
+      following.settings = {
+        model: model || 'haiku',
+        isQuiet: (maws !== undefined && maws !== '') || internal !== undefined,
+        ...(config !== undefined && { dir: `${config}/to-human/folds` }),
+      }
+      return following.settings
+    } catch (error) {
+      $.ui.log(`to-human: the folds' settings could not be read (${String(error)}); no summaries`, { to: 'debug' })
+      return undefined
+    }
+  })()
+  return following.reading
+}
+
+/** The file of the session `id` names (this one when undefined), under the configuration's `to-human/folds/`; undefined where there is no configuration directory. */
+async function fileOf($: EngineInterface, following: Following, id: string | undefined): Promise<string | undefined> {
+  try {
+    const dir = (await readSettings($, following))?.dir
+    return dir === undefined ? undefined : `${dir}/${id ?? (await $.session.id())}.json`
+  } catch (error) {
+    $.ui.log(`to-human: the session's folds file could not be named (${String(error)})`, { to: 'debug' })
+    return undefined
+  }
+}
+
+/** The runs a session's file holds, or undefined for none. */
+async function readStored($: EngineInterface, path: string | undefined): Promise<FoldRun[] | undefined> {
+  if (path === undefined) return undefined
+  try {
+    if (!(await $.fs.exists(path))) return undefined
+    const runs = storedRuns(await $.fs.read(path))
+    if (runs === undefined) $.ui.log(`to-human: ${path} holds no folds it can read`, { to: 'debug' })
+    return runs
+  } catch (error) {
+    $.ui.log(`to-human: ${path} could not be read (${String(error)})`, { to: 'debug' })
+    return undefined
+  }
+}
+
+/** Removes the sessions' files older than 30 days (`$.fs` has no delete). */
+async function prune($: EngineInterface, dir: string | undefined) {
+  if (dir === undefined) return
+  try {
+    if (await $.fs.exists(dir)) await $.process.run(['find', dir, '-type', 'f', '-name', '*.json', '-mtime', '+30', '-delete'])
+  } catch (error) {
+    $.ui.log(`to-human: the old folds files could not be removed (${String(error)})`, { to: 'debug' })
+  }
 }
 
 /**
@@ -350,14 +627,82 @@ function publish($: EngineInterface, following: Following) {
     .catch((error: unknown) => $.ui.log(`to-human: the folds could not be published (${String(error)})`, { to: 'debug' }))
 }
 
-/** Takes up what a module before this one published, once, then the rows that waited for it. */
+/** Writes the session's file whole, from memory, after any write of it before. */
+function keepFile($: EngineInterface, following: Following) {
+  const text = `${JSON.stringify(stored(following.tracker))}\n`
+  const file = following.file
+  following.fileWrites = following.fileWrites
+    .then(async () => {
+      const path = await file
+      if (path !== undefined) await $.fs.write(path, text)
+    })
+    .catch((error: unknown) => $.ui.log(`to-human: the folds could not be kept in the session's file (${String(error)})`, { to: 'debug' }))
+}
+
+/**
+ * Asks the model for one run's summary, unawaited by any hook, and merges the
+ * reply into memory by its run: dropped when the conversation changed (a
+ * clear, a resume, a fork) or the run took a row since it was asked. A reply
+ * unanswered or empty, or a call that throws, leaves the summary as it was:
+ * one attempt, no retry.
+ */
+async function summarize($: EngineInterface, following: Following, ask: Ask) {
+  const epoch = following.epoch
+  let summary: string | undefined
+  try {
+    const reply = await $.model.complete({
+      model: following.settings?.model ?? 'haiku',
+      system: LABEL_SYSTEM,
+      prompt: `<stretch>\n${ask.digest}\n</stretch>`,
+      effort: 'high',
+      maxTokens: 4000,
+      timeoutMs: 30_000,
+    })
+    summary = reply.isAnswered ? summaryOf(reply.text) : undefined
+    if (summary === undefined) {
+      $.ui.log(`to-human: a fold's summary came back ${reply.isAnswered ? 'empty' : `unanswered (${reply.reason})`}`, { to: 'debug' })
+    }
+  } catch (error) {
+    $.ui.log(`to-human: a fold's summary could not be asked for (${String(error)})`, { to: 'debug' })
+  }
+  if (epoch !== following.epoch || ask.run.generation !== ask.generation) return
+  settle(ask.run, summary)
+  publish($, following)
+  if (summary !== undefined) keepFile($, following)
+}
+
+/** Follows steps, publishes what they changed, and asks for the summaries they made due. */
+function apply($: EngineInterface, following: Following, waiting: readonly Step[][]) {
+  const asks = waiting.flatMap((steps) => follow(following.tracker, steps, isAsking(following)))
+  publish($, following)
+  for (const ask of asks) void summarize($, following, ask)
+}
+
+/** Lets through the rows that waited for a read, unless the conversation changed since it began. */
+function release($: EngineInterface, following: Following, epoch: number) {
+  if (epoch !== following.epoch) return
+  const waiting = following.backlog ?? []
+  following.backlog = undefined
+  apply($, following, waiting)
+}
+
+/**
+ * Takes up what a module before this one published, once, then the rows
+ * that waited for it. A new process, whose `$.state` holds none of the
+ * tracker's keys, takes up its session's file instead, every run of it as a
+ * closed one, and removes the files older than 30 days.
+ */
 function load($: EngineInterface, following: Following): Promise<void> {
   following.loading ??= (async () => {
     const at = following.epoch
+    following.file = fileOf($, following, undefined)
     try {
       const [folds, open, openLast] = await Promise.all([$.state.get(FOLDS), $.state.get(OPEN), $.state.get(OPEN_LAST)])
+      const isNew = folds.value === undefined && open.value === undefined && openLast.value === undefined
+      const fromFile = isNew ? await readStored($, await following.file) : undefined
+      if (isNew) void prune($, (await readSettings($, following))?.dir)
       if (at === following.epoch) {
-        takeUp(following.tracker, folds.value, open.value, openLast.value)
+        takeUp(following.tracker, fromFile === undefined ? folds.value : { shape: 1, runs: fromFile }, open.value, openLast.value)
         // Nothing kept reads as no runs, so a start over nothing writes nothing.
         following.written = {
           folds: JSON.stringify(folds.value ?? published(newTracker()).folds),
@@ -368,52 +713,73 @@ function load($: EngineInterface, following: Following): Promise<void> {
     } catch (error) {
       $.ui.log(`to-human: the folds a module before left could not be read (${String(error)}); they start over`, { to: 'debug' })
     } finally {
-      const waiting = following.backlog ?? []
-      following.backlog = undefined
-      for (const steps of waiting) follow(following.tracker, steps)
-      publish($, following)
+      await readSettings($, following)
+      release($, following, at)
     }
   })()
   return following.loading
 }
 
-/** Follows one kept row: at once, or after the start-up read while it has not landed. */
-function track($: EngineInterface, following: Following, row: KeptRow) {
-  const steps = stepsOf(row, following.tracker.spawns)
+/** Follows one row's steps: at once, or after the read under way, in order. */
+function track($: EngineInterface, following: Following, steps: Step[]) {
   if (steps.length === 0) return
   if (following.backlog !== undefined) {
     following.backlog.push(steps)
     void load($, following)
     return
   }
-  follow(following.tracker, steps)
-  publish($, following)
-}
-
-/** Drops the runs of the conversation before, and publishes that. */
-function reset($: EngineInterface, following: Following) {
-  following.epoch += 1
-  following.tracker = newTracker()
-  following.backlog = undefined
-  following.loading ??= Promise.resolve()
-  publish($, following)
+  apply($, following, [steps])
 }
 
 /**
- * Registers the tracker's hooks. `isOn` is the view's "a mark has been seen";
- * the live lines are published in every session the plugin loads in (a few
- * small writes), so this milestone reads neither it nor `view`, which the
- * summaries' gate and the view's lookup are for.
+ * Drops the runs of the conversation before and publishes that, then the
+ * file of the session it now is; the rows kept meanwhile wait for it.
+ */
+function reset($: EngineInterface, following: Following, sessionId: string | undefined) {
+  following.epoch += 1
+  const at = following.epoch
+  following.tracker = newTracker()
+  following.backlog = []
+  publish($, following)
+  const file = fileOf($, following, sessionId)
+  following.file = file
+  following.loading = (async () => {
+    try {
+      const runs = await readStored($, await file)
+      if (runs !== undefined && at === following.epoch) takeUp(following.tracker, { shape: 1, runs }, null, null)
+    } finally {
+      release($, following, at)
+    }
+  })()
+}
+
+/**
+ * Registers the tracker's hooks. `isOn` is the view's "a mark has been
+ * seen": the live lines are published in every session the plugin loads in
+ * (a few small writes), the summaries asked for only where the session
+ * writes for a to-human reader (`isAsking`).
  *
  * Rows are followed in the order their appends resolve; those kept before
  * the start-up read of `$.state` landed wait for it. Nothing here holds or
- * fails a row's keeping: each hook hands the row on as it was stored.
+ * fails a row's keeping: each hook hands the row on as it was stored, and no
+ * hook awaits a summary.
  */
 export function registerFolds(on: On, view: View, isOn: () => boolean) {
-  const following: Following = { tracker: newTracker(), backlog: [], epoch: 0, writes: Promise.resolve(), written: { folds: '', fold: '', foldLast: '' } }
+  const following: Following = {
+    tracker: newTracker(),
+    backlog: [],
+    epoch: 0,
+    writes: Promise.resolve(),
+    written: { folds: '', fold: '', foldLast: '' },
+    isOn,
+    isInteractive: false,
+    file: Promise.resolve(undefined),
+    fileWrites: Promise.resolve(),
+  }
 
   // Each load of the module raises this, the first and every reload.
   on('session.start', { cwd: /./ }, async ($, e, next) => {
+    following.isInteractive = e.isInteractive
     void load($, following)
     return next(e)
   })
@@ -422,7 +788,7 @@ export function registerFolds(on: On, view: View, isOn: () => boolean) {
     const stored = await next(e)
     if (e.agentId === undefined && stored.deny === undefined) {
       try {
-        track($, following, { door: e.door, origin: e.origin, uuid: stored.uuid, message: stored.message })
+        track($, following, stepsOf({ door: e.door, origin: e.origin, uuid: stored.uuid, message: stored.message }, following.tracker.spawns))
       } catch (error) {
         // The row is kept whatever this hook makes of it; only its run is lost.
         $.ui.log(`to-human: a kept row could not be followed (${String(error)})`, { to: 'debug' })
@@ -431,10 +797,23 @@ export function registerFolds(on: On, view: View, isOn: () => boolean) {
     return stored
   })
 
+  // The main conversation's turn's end: the open run is summarized if it took rows since its last summary.
+  on('turn.complete', { turnId: /./ }, async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined) {
+      try {
+        track($, following, [{ kind: 'end' }])
+      } catch (error) {
+        $.ui.log(`to-human: a turn's end could not be followed (${String(error)})`, { to: 'debug' })
+      }
+    }
+    return result
+  })
+
   // A cleared, resumed or forked session's rows are another conversation's,
   // as the view's places are: the runs of the one before are dropped.
   on('classic.SessionStart', { source: /^(?:clear|resume|fork)$/ }, async ($, e, next) => {
-    reset($, following)
+    reset($, following, e.session_id)
     return next(e)
   })
 }

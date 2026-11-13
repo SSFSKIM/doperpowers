@@ -84,7 +84,7 @@ describe('MAWS native to-human', () => {
       }))
     }
     expect(calls).toEqual([])
-    // Every hook but the view's four and the run tracker's three draws or
+    // Every hook but the view's four and the run tracker's four draws or
     // answers the view's command, so every one is gated: none is left that
     // answers a question or a prompt. These draw nothing: the view's learn
     // whether a mark was sent, where each row stands in the transcript, which
@@ -93,7 +93,7 @@ describe('MAWS native to-human', () => {
     // (folds.tsx), handing every event on.
     expect(hooks.map((hook) => hook.event).filter((event) => !gated(event))).toEqual([
       'session.start', 'classic.SessionStart', 'session.append', 'turn.complete',
-      'session.start', 'session.append', 'classic.SessionStart',
+      'session.start', 'session.append', 'turn.complete', 'classic.SessionStart',
     ])
     expect(envReads).toEqual(['MAWS_NATIVE_TO_HUMAN'])
   })
