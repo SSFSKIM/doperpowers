@@ -24,8 +24,10 @@ summaries for folds that closed before the feature was installed.
 
 - [x] (2026-11-13 00:24Z) Design approved; spec written.
 - [ ] PR #499 merged to `main` (a subagent's rows stand in no run of the main
-      conversation; CI green on `5ffc7690`, its second review running at
-      2026-11-13 00:57Z; see "What this builds on").
+      conversation). As of 2026-11-13 01:04Z: CI green on `5ffc7690`; its second review
+      found two defects in its start-up scan, with its author for a fix; a
+      follow-up probe may replace the scan. M1 does not wait for it ("What
+      this builds on").
 - [x] (2026-11-13 00:34Z) Spec review and execution-section review absorbed (eight findings, six distinct, all taken; Decision Log).
 - [ ] M1 — the run tracker and the live line.
 - [ ] M2 — summaries, storage, the live check, docs.
@@ -468,8 +470,17 @@ of the agent's cut a main run in two. With #499 a row the view knows for
 another loop's (`View.apart`: an append with `agentId`, or a row of a
 subagent's transcript file) draws as the engine draws it and stands in no run.
 The tracker ignores a subagent's rows already. Whether this is what the owner
-saw is not confirmed (Surprises & Discoveries). #499 merges before M1 starts
-and this branch takes `main` then.
+saw is not confirmed (Surprises & Discoveries).
+
+M1 does not wait for #499: the tracker ignores a subagent's rows by their
+`agentId` whether or not the view sets them apart, and nothing else here
+depends on it. #499 is still changing as M1 starts (its start-up scan has two
+open review findings, and a follow-up probe may replace the scan with a
+general rule about rows the conversation never kept), and it edits
+`to-human.tsx` around `place`, `placeAll`, the `session.append` hook and the
+first lines of each render hook. This branch takes `main` when it lands; until
+then M1 keeps its own edits to that file to the places "M1" names, so that
+merge stays small.
 
 The diagnosis's probe is the source for the tracker's fixtures:
 `~/.local/share/fold-runs/probe-runs.py` on the owner's MacBook starts an
@@ -529,9 +540,10 @@ Exposes: the `$.state` contract, `registerFolds`, `labelOf`, `lineOf`
 
 Decisions that are this milestone's:
 
-- First, probe the one delivery the kept logs lack: the person's own prompt
+- First, settle the one delivery the kept logs lack: the person's own prompt
   typed into a running turn (keys sent to the pane while a foreground command
-  runs). Record its door and origin in Surprises & Discoveries, and classify
+  runs). The diagnosis's follow-up probe was asked to log it: look in
+  `evidence/` for it before running one. Record its door and origin in Surprises & Discoveries, and classify
   it as "A prompt folded into a running turn" says.
 - Keep the classification, the live line and the lookup as pure exported
   functions the tests call without an engine; the hooks are thin.
