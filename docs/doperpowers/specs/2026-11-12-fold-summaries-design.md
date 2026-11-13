@@ -23,11 +23,14 @@ summaries for folds that closed before the feature was installed.
 ## Progress
 
 - [x] (2026-11-13 00:24Z) Design approved; spec written.
-- [x] (2026-11-13 03:10Z) PR #499 merged to `main` (48e1a9a9, to-human 0.7.4: a
+- [x] (2026-11-13 02:22Z) PR #499 merged to `main` (48e1a9a9, to-human 0.7.4: a
       drawn row the main conversation never kept shapes no run); taken into
-      this branch after M1.
+      this branch after M1 (d7ea5c85: three version and hook-list conflicts;
+      seven of #499's tests that found a run's button by `working record`
+      now find it by the call's line, the tracker and #499 agreeing on every
+      run's bounds).
 - [x] (2026-11-13 00:34Z) Spec review and execution-section review absorbed (eight findings, six distinct, all taken; Decision Log).
-- [x] (2026-11-13 03:10Z) M1 — the run tracker and the live line (2e734e06, review fix 4a590714; task review clean; ci-gate GREEN on 4a590714; acceptance 1 seen live, 7's one fold pinned by the kit).
+- [x] (2026-11-13 02:22Z) M1 — the run tracker and the live line (2e734e06, review fix 4a590714; task review clean; ci-gate GREEN on 4a590714; acceptance 1 seen live, 7's one fold pinned by the kit).
 - [ ] M2 — summaries, storage, the live check, docs.
 - [ ] Whole-branch review (`doperpowers:reviewer-medium`), retrospective, merge.
 
