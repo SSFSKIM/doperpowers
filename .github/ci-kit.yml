@@ -157,7 +157,7 @@ gates:
       done
       bash tests/mods/typecheck.sh --lay
     timeout: 10
-    paths: [".claude-plugin/**", "hooks/**", "tests/mods/**", "sminos/.claude-plugin/**", "sminos/hooks/**", "sminos/types/**", "sminos/tests/mods/**", "to-human/.claude-plugin/**", "to-human/hooks/**", "to-human/tests/mods/**", "devcloud/.claude-plugin/**", "devcloud/hooks/**", "devcloud/types/**", "devcloud/tests/mods/**", "web/.claude-plugin/**", "web/hooks/**", "web/tests/mods/**", ".github/**"]
+    paths: [".claude-plugin/**", "hooks/**", "tests/mods/**", "sminos/.claude-plugin/**", "sminos/hooks/**", "sminos/types/**", "sminos/tests/mods/**", "to-human/.claude-plugin/**", "to-human/hooks/**", "to-human/types/**", "to-human/tests/mods/**", "devcloud/.claude-plugin/**", "devcloud/hooks/**", "devcloud/types/**", "devcloud/tests/mods/**", "web/.claude-plugin/**", "web/hooks/**", "web/tests/mods/**", ".github/**"]
 
   # The devcloud host in four parts, run side by side (DEVCLOUD_PART in
   # devcloud/tests/run.sh; about 8.5 min serial): the unit tests, and the

@@ -53,7 +53,7 @@ GATEWAY_KEYS = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT
                 "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
                 "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")
 BASE_KEYS = ("PATH", "TERM", "LANG", "USER", "LOGNAME", "SHELL", "TMPDIR")
-PLUGINS = {"to-human": (".claude-plugin", "hooks"), "sminos": (".claude-plugin", "hooks", "skills", "types")}
+PLUGINS = {"to-human": (".claude-plugin", "hooks", "types"), "sminos": (".claude-plugin", "hooks", "skills", "types")}
 # The engine's bullet is ⏺ on macOS and ● elsewhere; the view's label is ● everywhere.
 RAW = ("⏺" if sys.platform == "darwin" else "●") + " <message>"
 LABEL = "● message"
