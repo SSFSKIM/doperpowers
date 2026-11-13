@@ -19,6 +19,10 @@ loudly, in a terminal session and a `--bg` job:
 - the ask mod's question answered with `sminos answer` reaches the model,
   blocking (through the engine's dialog) and async (by the ask mod's own
   delivery);
+- an async question dismissed through the decision route (`behavior:
+  "dismiss"`, which the bridge's capabilities declare) settles withdrawn by
+  the client, wakes no idle session, and reaches the model with the human's
+  next prompt;
 - a `--bg` job's permission prompt is answered from the CLI;
 - every block-row names a transcript row of its block's kind, and whether a
   step's nth response row is its block n is counted.
@@ -58,6 +62,7 @@ NAME = LB.NAME
 wait_for = LB.wait_for
 is_main = LC.is_main
 DIALOG = "Do you want to proceed"
+DISMISSED = "The human dismissed these questions without answering them"   # ask.tsx's DISMISSED, its opening
 KIND = {"text": "text", "thinking": "thinking", "redacted_thinking": "thinking", "tool_use": "tool"}
 
 
@@ -371,6 +376,48 @@ class Requests(LC.Control):
                    "%s; settled %s" % (r.stdout.strip(), self.outcome(s)))
         bg.stop.set()
 
+    def async_dismissed(self, term):
+        """An async question dismissed by a client of the bridge: the ask
+        mod's own `[ dismiss ]`, asked through the decision route."""
+        t = time.time()
+        self.prompt("Ask me with your question tool, async true, which season I prefer: Spring or Autumn. "
+                    "Then end your turn saying waiting.")
+        at, raised = self.raised(term, t, lambda e: e.get("async") is True, "the async question to dismiss")
+        rid = raised["request"]
+        self.turn_end(term, t)
+        self.idle(self.endpoint())
+        caps = (self.status() or {}).get("capabilities") or {}
+        declared = (caps.get("controls") or {}).get("decide.dismiss"), "dismiss" in (caps.get("ops") or [])
+        url = "/requests/%s/decision" % rid
+        denied = LB.request(self.endpoint(), "POST", url, {"behavior": "deny", "by": "m-live"})
+        t1 = time.time()
+        took = LB.request(self.endpoint(), "POST", url, {"behavior": "dismiss", "by": "m-live"}, timeout=15)
+        _, s = self.settled(term, rid)
+        again = LB.request(self.endpoint(), "POST", url, {"behavior": "dismiss", "by": "m-live"})
+
+        def told():
+            return [r for r in self.transcript_rows(self.session) if DISMISSED in json.dumps(r) and rid in json.dumps(r)]
+
+        # A quiet delivery: no turn starts on its own, and no row carries it yet.
+        time.sleep(6)
+        woke = term.seen(lambda e: is_main(e, "turn", "start"), t1)
+        before = told()
+        row = "dismissed" in self.pane()
+        t2 = time.time()
+        self.prompt("In one word: did I answer that question, or dismiss it?")
+        self.turn_end(term, t2)
+        text = LC.main_text(term, t2)
+        self.check("an async question dismissed through the decision route: declared, settled withdrawn by the client, "
+                   "no idle session woken, and the model told with the next prompt",
+                   declared == ({"available": True}, True) and denied[0] == 400 and took[0] == 200
+                   and self.outcome(s) == "web/withdrawn/m-live" and again[0] == 409 and not woke and not before
+                   and row and told() and "dismiss" in text.lower(),
+                   "declared %s; a deny %s; the dismissal %s %s; settled %s; a second %s %s; main turns it started %d; "
+                   "rows carrying it before the next prompt %d, after %d; the row reads dismissed %s; model said %r" % (
+                       declared, denied[0], took[0], took[1], self.outcome(s), again[0], (again[1] or {}).get("error"),
+                       len(woke), len(before), len(told()), row, text[-80:]))
+        self.idle(self.endpoint())
+
     def records_check(self, term):
         """Every settled request whose call the engine decided has its
         `tool_decision` record, as a mod receives it, naming who decided."""
@@ -445,6 +492,7 @@ class Requests(LC.Control):
         self.background(term, "out", within=False)
         self.question(term)
         self.async_question(term)
+        self.async_dismissed(term)
         self.records_check(term)
         self.block_rows(term)
         self.bg_job()

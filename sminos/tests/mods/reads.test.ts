@@ -1,6 +1,6 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 import type { ConfigRow, EngineInterface, ToolInfo } from 'claude-code'
-import { CONTROL_KEYS, STANDING, controlsOf, notInVersion } from '../../hooks/mods/bridge-controls'
+import { CONTROL_KEYS, OBSERVER_REASON, STANDING, controlsOf, notInVersion } from '../../hooks/mods/bridge-controls'
 import { configCut, mcpServers, readKind, ruleOf, settingsCut } from '../../hooks/mods/bridge-reads'
 
 tier('user')
@@ -155,12 +155,15 @@ describe('read usage', () => {
 })
 
 describe('capabilities.controls', () => {
-  test("carries every key of the lane map: the controls before the wave and each the wave built (MW1's reads, MW2's side question, MW3's scoped allows, MW4's agent stop and tell, MW5's media) available, lane A's standing four with a reason; and the manager's fork agent (ask), available", () => {
+  test("carries every key of the lane map: the controls before the wave and each the wave built (MW1's reads, MW2's side question, MW3's scoped allows, MW4's agent stop and tell, MW5's media) available, lane A's standing four with a reason; and the bridge's own, the manager's fork agent (ask) and an async question's dismissal (decide.dismiss), available", () => {
     const map = controlsOf('9.9.9')
     expect(Object.keys(map)).toEqual([...CONTROL_KEYS])
-    expect(CONTROL_KEYS).toHaveLength(21)
+    expect(CONTROL_KEYS).toHaveLength(22)
     const available = CONTROL_KEYS.filter((k) => map[k].available)
-    expect(available).toEqual(['read.usage', 'read.config', 'read.settings', 'read.mcp', 'btw', 'compact', 'model', 'mcp.enable', 'mcp.disable', 'mcp.reconnect', 'decide', 'decide.scope', 'decide.addDirectory', 'stop-agent', 'tell', 'media', 'ask'])
+    expect(available).toEqual(['read.usage', 'read.config', 'read.settings', 'read.mcp', 'btw', 'compact', 'model', 'mcp.enable', 'mcp.disable', 'mcp.reconnect', 'decide', 'decide.scope', 'decide.addDirectory', 'stop-agent', 'tell', 'media', 'ask', 'decide.dismiss'])
+    // What a client reads to tell a bridge that carries the dismissal from one that does not: an observer's says why not.
+    expect(map['decide.dismiss']).toEqual({ available: true })
+    expect(controlsOf('9.9.9', true)['decide.dismiss']).toEqual({ available: false, reason: OBSERVER_REASON })
     for (const key of ['decide.interrupt', 'forget', 'rewind-files', 'elicitation.answer'] as const) {
       expect(map[key]).toEqual({ available: false, reason: STANDING[key] })
     }

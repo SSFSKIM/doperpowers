@@ -3,8 +3,8 @@
 # Requests from outside and their settlement (DC2 M3, DX5): the endpoint's
 # pending set and recent settlements, the mod's long-poll for a decision, a
 # client's decision and its refusals, the session record as the terminal's
-# answer, a background subagent's window, an async question relayed to the
-# mod, and `sminos decide` / `sminos answer`. A stand-in for the mod
+# answer, a background subagent's window, an async question answered or
+# dismissed through the mod, and `sminos decide` / `sminos answer`. A stand-in for the mod
 # (fakemod) spawns the child as the mod does and, like the mod, polls for
 # each permission request it raised and settles it with what the engine
 # would have used; the test raises requests by posting the mod's events.
@@ -128,7 +128,9 @@ elif op == "postto":        # sock url body
     print(status, text)
 elif op == "fakemod":       # sminos session lines-file decisions-file mode-file
     # The mod's stand-in. Spawns the child, answers its command lines (an
-    # async question's `answer`), and for every permission request it is
+    # async question's `answer` and `dismiss`; a `dismiss` for a request named
+    # `…_updialog` refused as the ask mod refuses one whose dialog the
+    # terminal has up), and for every permission request it is
     # told of (a `raised` on the stream that is not async) polls the child as
     # the mod's hook does, then settles it as the engine would have:
     # the decision handed out wins, unless the mode file says the terminal
@@ -205,6 +207,13 @@ elif op == "fakemod":       # sminos session lines-file decisions-file mode-file
                 result = {"ok": True, "result": {"answered": True}}
                 events = [{"type": "settled", "request": msg["request"], "winner": WINNER.get(msg["by"], "web"),
                            "outcome": "answered", "by": msg["by"]}]
+            elif o == "dismiss" and msg["request"].endswith("_updialog"):
+                result = {"ok": False, "error": "the question %s is open in the terminal's dialog" % msg["request"]}
+                events = []
+            elif o == "dismiss":
+                result = {"ok": True, "result": {"dismissed": True}}
+                events = [{"type": "settled", "request": msg["request"], "winner": WINNER.get(msg["by"], "web"),
+                           "outcome": "withdrawn", "by": msg["by"]}]
             else:
                 result, events = {"ok": False, "error": "unknown op: %s" % o}, []
             post(sock, events + [{"type": "result", "id": cid, "op": o, **result}])
@@ -427,6 +436,63 @@ assert_equals "$(field_of "$L" request)" "toolu_async1" "relayed to the mod as a
 assert_equals "$(field_of "$L" answers)" '{"Which fruit?": "Apple", "Which sides?": "Soup"}' "with the answers"
 assert_equals "$(field_of "$L" by)" "cli" "and who answered"
 
+echo "an async question dismissed:"
+ASYNC_RAISE='"tool":"mcp__sminos__AskUserQuestion","input":'"$QUESTIONS"',"agentId":null,"async":true'
+ctl post "$SOCK" '[{"type":"raised","request":"toolu_async2",'"$ASYNC_RAISE"'}]' >/dev/null
+run ctl postto "$SOCK" /requests/toolu_async2/decision '{"behavior":"dismiss"}'
+assert_contains "$OUT" "400 " "a dismissal that names nobody is refused"
+run ctl postto "$SOCK" /requests/toolu_async2/decision '{"behavior":"dismiss","by":"terminal"}'
+assert_contains "$OUT" "400 " "a client dismisses as itself, never as the terminal"
+run ctl postto "$SOCK" /requests/toolu_async2/decision '{"behavior":"dismiss","by":"m-7","message":"never mind"}'
+assert_contains "$OUT" "400 " "a dismissal carries no message"
+run ctl postto "$SOCK" /requests/toolu_async2/decision '{"behavior":"dismiss","by":"m-7","updatedInput":{"answers":{"Which fruit?":"Apple"}}}'
+assert_contains "$OUT" "400 " "nor answers"
+assert_not_contains "$(cat "$T/lines")" '"op": "dismiss"' "and nothing refused went to the mod"
+run ctl postto "$SOCK" /requests/toolu_async2/decision '{"behavior":"dismiss","by":"m-7"}'
+assert_contains "$OUT" "200 " "an async question is dismissed"
+assert_contains "$OUT" '"accepted": true' "accepted, as an answer is"
+L="$(grep '"op": "dismiss"' "$T/lines" | tail -1)"
+assert_equals "$(field_of "$L" request)" "toolu_async2" "relayed to the mod as a dismiss command"
+assert_equals "$(field_of "$L" by)" "m-7" "naming who dismissed it"
+assert_equals "$(field_of "$L" answers)" "null" "and carrying no answers"
+run ctl get "$SOCK" /requests/toolu_async2
+assert_contains "$OUT" "410 " "the request is settled"
+assert_contains "$OUT" '"outcome": "withdrawn"' "withdrawn"
+assert_contains "$OUT" '"by": "m-7"' "by whoever dismissed it"
+assert_contains "$OUT" '"winner": "web"' "a member's dismissal a web winner's, as its answer is"
+run ctl postto "$SOCK" /requests/toolu_async2/decision '{"behavior":"dismiss","by":"m-8"}'
+assert_contains "$OUT" "409 " "a second dismissal is too late"
+assert_contains "$OUT" '"error": "already settled"' "already settled"
+assert_contains "$OUT" '"by": "m-7"' "and carries the settlement, which names the first"
+run ctl postto "$SOCK" /requests/toolu_async1/decision '{"behavior":"dismiss","by":"m-8"}'
+assert_contains "$OUT" "409 " "as is a dismissal of a question already answered"
+assert_contains "$OUT" '"outcome": "answered"' "whose settlement says it was answered"
+run ctl postto "$SOCK" /requests/toolu_async_none/decision '{"behavior":"dismiss","by":"m-7"}'
+assert_contains "$OUT" "404 " "a question the session never raised is not pending"
+N="$(grep -c '"op": "dismiss"' "$T/lines" || true)"
+assert_equals "$N" "1" "none of them reached the mod"
+ctl post "$SOCK" '[{"type":"raised","request":"toolu_async_updialog",'"$ASYNC_RAISE"'}]' >/dev/null
+run ctl postto "$SOCK" /requests/toolu_async_updialog/decision '{"behavior":"dismiss","by":"m-7"}'
+assert_contains "$OUT" "409 " "a dismissal the mod refuses (its dialog is up in the terminal) is a 409"
+assert_contains "$OUT" "open in the terminal's dialog" "carrying the mod's reason"
+run ctl get "$SOCK" /requests/toolu_async_updialog
+assert_contains "$OUT" "200 " "and the question is still pending"
+run "$SMINOS" answer "$SID" toolu_async_updialog Apple Soup
+assert_rc 0 "$RC" "so an answer still reaches it"
+echo "only an async question is dismissed:"
+ctl post "$SOCK" '[{"type":"raised","request":"toolu_plugin_q3","tool":"AskUserQuestion","input":'"$QUESTIONS"',"agentId":null}]' >/dev/null
+run ctl postto "$SOCK" /requests/toolu_plugin_q3/decision '{"behavior":"dismiss","by":"m-7"}'
+assert_contains "$OUT" "400 " "a question in the terminal's dialog is not dismissed"
+assert_contains "$OUT" "declined with a deny" "it is declined with a deny"
+raise_bash toolu_perm03d
+run ctl postto "$SOCK" /requests/toolu_perm03d/decision '{"behavior":"dismiss","by":"m-7"}'
+assert_contains "$OUT" "400 " "nor is a permission prompt"
+assert_contains "$OUT" "allowed or denied" "which is allowed or denied"
+assert_equals "$(decision_of toolu_plugin_q3)$(decision_of toolu_perm03d)" "" "and neither's poll was handed anything"
+run ctl get "$SOCK" /requests/toolu_perm03d
+assert_contains "$OUT" "200 " "both still pending"
+ctl post "$SOCK" '[{"type":"settled","request":"toolu_plugin_q3","winner":"terminal","outcome":"answered","by":"terminal"},{"type":"settled","request":"toolu_perm03d","winner":"terminal","outcome":"allow","by":"terminal"}]' >/dev/null
+
 echo "sminos decide:"
 raise_bash toolu_perm04
 run "$SMINOS" decide "$SID" toolu_perm04 deny --message "not that directory"
@@ -512,6 +578,8 @@ assert_contains "$OUT" "409 " "a client's decision on an observer's request is r
 assert_contains "$OUT" '"code": "lane-b"' "with the code lane-b"
 run ctl postto "$LSOCK" /requests/toolu_nothing/decision '{"behavior":"allow","by":"cli"}'
 assert_contains "$OUT" '"code": "lane-b"' "a request nobody raised is refused the same, before it is looked up"
+run ctl postto "$LSOCK" /requests/toolu_laneq/decision '{"behavior":"dismiss","by":"cli"}'
+assert_contains "$OUT" '"code": "lane-b"' "and so is a dismissal"
 run "$SMINOS" decide "$LSID" toolu_lane1 allow
 assert_rc 1 "$RC" "sminos decide against it exits 1"
 assert_contains "$OUT" "lane-b" "naming lane-b"
@@ -520,6 +588,7 @@ assert_rc 1 "$RC" "sminos answer against it exits 1"
 assert_contains "$OUT" "lane-b" "naming lane-b too"
 assert_equals "$(cat "$T/decisions-l" 2>/dev/null | grep -c toolu_lane || true)" "0" "the mod's poll was handed nothing"
 assert_not_contains "$(cat "$T/lines-l")" '"op": "answer"' "and no answer went to the mod"
+assert_not_contains "$(cat "$T/lines-l")" '"op": "dismiss"' "nor a dismissal"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

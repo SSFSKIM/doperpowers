@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
-import { ASK_TOOL, ASYNC_RESULT, PLUGIN, deliveryText, registerAsk, resetAsk } from '../../hooks/mods/ask'
+import { ASK_TOOL, ASYNC_RESULT, DISMISSED, PLUGIN, asyncAsks, deliveryText, registerAsk, resetAsk } from '../../hooks/mods/ask'
 import {
   AGENTS_REFRESH_MS,
   BACKGROUND_WINDOW_MS,
@@ -4482,7 +4482,19 @@ describe('requests from outside: questions', () => {
     onAskNote({ kind: 'open', id: 'toolu_a4', questions: [FRUIT] })
     onAskNote({ kind: 'dismissed', id: 'toolu_a4' })
     await h.settle()
-    expect(h.ofType('settled').at(-1)).toMatchObject({ request: 'toolu_a4', outcome: 'withdrawn', by: 'terminal' })
+    expect(h.ofType('settled').at(-1)).toMatchObject({ request: 'toolu_a4', winner: 'terminal', outcome: 'withdrawn', by: 'terminal' })
+    // Dismissed from outside: withdrawn by whoever dismissed it (a member on the web, the CLI).
+    onAskNote({ kind: 'open', id: 'toolu_a5', questions: [FRUIT] })
+    // No ask of the ask mod's: the dismissal is refused there, and said so.
+    expect(await h.command({ op: 'dismiss', request: 'toolu_a5', by: 'm-7' })).toMatchObject({ ok: false })
+    onAskNote({ kind: 'dismissed', id: 'toolu_a5', by: 'm-7' })
+    onAskNote({ kind: 'open', id: 'toolu_a6', questions: [FRUIT] })
+    onAskNote({ kind: 'dismissed', id: 'toolu_a6', by: 'cli' })
+    await h.settle()
+    expect(h.ofType('settled').slice(-2)).toEqual([
+      expect.objectContaining({ request: 'toolu_a5', winner: 'web', outcome: 'withdrawn', by: 'm-7' }),
+      expect.objectContaining({ request: 'toolu_a6', winner: 'other', outcome: 'withdrawn', by: 'cli' }),
+    ])
     // An async question does not end with a turn.
     onAskNote({ kind: 'open', id: 'toolu_a3', questions: [FRUIT] })
     await h.turn('t9')
@@ -4507,6 +4519,52 @@ describe('requests from outside: questions', () => {
     const h = harness()
     await h.ready()
     expect(h.ofType('resync')[0]).toMatchObject({ pending: [expect.objectContaining({ request: 'toolu_r1', tool: ASK_TOOL, input: { questions: [FRUIT] }, async: true })] })
+    resetAsk()
+  })
+
+  test("op dismiss: an async question closed unanswered by the ask mod's own dismissal, quiet, settled withdrawn by whoever dismissed it; one that is not a pending async question is refused", async () => {
+    const hooks = askHooks()
+    const submitted: string[] = []
+    const context: unknown[] = []
+    // The ask mod serving the session: its session.start keeps the `$` an answer or a dismissal from outside is delivered through.
+    const ask$ = {
+      env: { get: async () => undefined },
+      state: { get: async () => ({ value: undefined, version: 0 }), set: async () => ({ isSet: true }) },
+      tool: { list: async () => [{ name: 'AskUserQuestion', description: 'd' }], register: async () => ({}) },
+      prompt: { submit: async ({ text }: { text: string }) => (submitted.push(text), {}) },
+      ui: { invalidate: () => {}, toast: () => {}, log: () => {}, notify: async () => ({ isSent: true, channel: 'terminal_bell' }) },
+    }
+    await hooks.find((x) => x.event === 'session.start')?.handler(ask$, {}, async () => ({}))
+    const h = harness()
+    await h.ready()
+    const ask = (id: string) => hooks.find((x) => x.event === 'tool.call' && x.matcher?.tool === ASK_TOOL)?.handler(ask$, { tool: ASK_TOOL, tool_use_id: id, questions: [FRUIT], async: true }, async () => ({}))
+    await ask('toolu_d1')
+    await h.settle()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_d1', tool: ASK_TOOL, async: true })])
+    expect(await h.command({ op: 'dismiss', request: 'toolu_d1' })).toMatchObject({ ok: false, error: 'dismiss needs request and by' })
+    const done = await h.command({ op: 'dismiss', request: 'toolu_d1', by: 'm-7' })
+    expect(done).toEqual(expect.objectContaining({ ok: true, result: { dismissed: true } }))
+    await h.settle()
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_d1', winner: 'web', outcome: 'withdrawn', by: 'm-7' })])
+    // The settlement goes out ahead of the op's answer: a client told the dismissal was taken finds it settled.
+    expect(h.events().findIndex((e) => e.type === 'settled')).toBeLessThan(h.events().findIndex((e) => e.type === 'result' && e.id === done.id))
+    expect(asyncAsks()).toEqual([expect.objectContaining({ id: 'toolu_d1', status: 'answered', answer: DISMISSED })])
+    // Quiet: no prompt wakes the idle session; the dismissal rides the human's next prompt, in the delivery's form.
+    expect(submitted).toEqual([])
+    const prompted = (await hooks.find((x) => x.event === 'prompt.submit')?.handler(ask$, { text: 'go on' }, async (e: unknown) => (context.push(e), {}))) as { context?: unknown } | undefined
+    expect([prompted?.context, ...context.map((e) => (e as { context?: unknown }).context)].flat().filter((c) => c !== undefined)).toEqual([deliveryText('toolu_d1', DISMISSED)])
+    // Settled: a second dismissal, or an answer, finds no pending question.
+    expect(await h.command({ op: 'dismiss', request: 'toolu_d1', by: 'm-7' })).toMatchObject({ ok: false, error: 'no async question toolu_d1 is pending' })
+    expect(await h.command({ op: 'answer', request: 'toolu_d1', answers: { 'Which fruit?': 'Apple' }, by: 'm-7' })).toMatchObject({ ok: false, error: 'no async question toolu_d1 is pending' })
+    expect(await h.command({ op: 'dismiss', request: 'toolu_none', by: 'm-7' })).toMatchObject({ ok: false, error: 'no async question toolu_none is pending' })
+    // A permission prompt is no async question: it is allowed or denied.
+    await h.turn('t1')
+    await h.called('toolu_p1', 'Bash', { command: 'make' })
+    void h.permission('Bash', { command: 'make' })
+    await h.nextPoll()
+    expect(h.ofType('raised').at(-1)).toMatchObject({ request: 'toolu_p1', tool: 'Bash' })
+    expect(await h.command({ op: 'dismiss', request: 'toolu_p1', by: 'm-7' })).toMatchObject({ ok: false, error: 'no async question toolu_p1 is pending' })
+    expect(h.ofType('settled').map((e) => e.request)).toEqual(['toolu_d1'])
     resetAsk()
   })
 
@@ -6215,7 +6273,7 @@ describe('the desk: capabilities and read', () => {
       sminos: '1.7.0',
       protocol: 2,
       engine: '2.1.307',
-      ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media', 'ask'],
+      ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media', 'ask', 'dismiss'],
       reads: ['status', 'catalog', 'usage', 'config', 'settings', 'mcp'],
       routes: { measured: '2.1.307' },
       controls: controlsOf('1.7.0'),
@@ -6815,6 +6873,7 @@ describe('lane B: the observer (O12 M3)', () => {
     { op: 'tell', agentId: 'a1', text: 'x' },
     { op: 'media', upload: 'u1', root: '/w', files: [] },
     { op: 'ask', prompt: 'why?' },
+    { op: 'dismiss', request: 'toolu_a1', by: 'cli' },
   ]
   const started = async (env: Record<string, string> = MARKED, lane?: string, extra: Parameters<typeof harness>[0] = {}) => {
     const h = harness({ env, messages: [], ...extra })
