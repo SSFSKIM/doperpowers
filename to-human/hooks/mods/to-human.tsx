@@ -2,7 +2,7 @@ import type { ApiContentBlock, EngineInterface, On, PromptOrigin, RenderElement,
 
 import { registerEdits } from './edits'
 import { labelOf, registerFolds } from './folds'
-import { FINAL_ANSWER, MESSAGE_TOOL, isMadeUp, readMessage } from './message'
+import { FINAL_ANSWER, MESSAGE_TOOL, isMadeUp, readMessage, rowKey } from './message'
 
 /**
  * The ask mod's tool, the model's one way to ask the human in an interactive
@@ -724,7 +724,20 @@ const GROUP = 'group:'
 /** Where the rows appended while the session runs are placed: past any line of a file. */
 const LIVE = 1e12
 
-export const keyOf = (id: string) => (id.startsWith(GROUP) ? id.slice(GROUP.length) : id)
+/**
+ * What a row is known by in every table a kept row's id reads or writes
+ * (`place`, `guess`, `apart`, `unkept`, `errors`, `unrequested`): a group by
+ * its first call's id, a kept row by `rowKey`, since the engine can draw it
+ * under another form of its id than the one it was kept under. The tables of
+ * drawn rows (`rowOf`, `order`, `unfolded`) hold the ids the rows draw under.
+ */
+export const keyOf = (id: string) => rowKey(id.startsWith(GROUP) ? id.slice(GROUP.length) : id)
+
+/** Whether a row known by `id` (a kept row's, a call's) has drawn, under whatever id the engine drew it. */
+function hasDrawn(view: View, id: string): boolean {
+  const key = keyOf(id)
+  return view.rowOf.has(id) || view.rowOf.has(GROUP + id) || view.order.some((row) => keyOf(row) === key)
+}
 
 function placeOf(view: View, id: string): number {
   const key = keyOf(id)
@@ -770,12 +783,13 @@ export function reorder(view: View): boolean {
 export function placeAll(view: View, ids: readonly string[], at = 0, step = 1): boolean {
   let isRevoked = false
   ids.forEach((id, i) => {
-    if (!view.place.has(id)) {
-      view.place.set(id, at + i * step)
+    const key = keyOf(id)
+    if (!view.place.has(key)) {
+      view.place.set(key, at + i * step)
     }
-    isRevoked = view.apart.get(id) === true || isRevoked
-    view.apart.delete(id)
-    view.unkept.delete(id)
+    isRevoked = view.apart.get(key) === true || isRevoked
+    view.apart.delete(key)
+    view.unkept.delete(key)
   })
   return isRevoked
 }
@@ -945,16 +959,17 @@ function shapeOf(view: View, id: string | undefined): string {
 export function setApart(view: View, ids: readonly string[]): boolean {
   let isMoved = false
   for (const id of ids) {
-    if (view.place.has(id) || view.apart.has(id)) {
+    const key = keyOf(id)
+    if (view.place.has(key) || view.apart.has(key)) {
       continue
     }
-    view.apart.set(id, false)
-    view.guess.delete(id)
-    for (const key of [id, GROUP + id]) {
-      if (view.rowOf.delete(key)) {
-        view.order.splice(view.order.indexOf(key), 1)
-        isMoved = true
-      }
+    view.apart.set(key, false)
+    view.guess.delete(key)
+    // Under whatever id the engine drew it.
+    for (const row of view.order.filter((drawn) => keyOf(drawn) === key)) {
+      view.rowOf.delete(row)
+      view.order.splice(view.order.indexOf(row), 1)
+      isMoved = true
     }
   }
   return isMoved
@@ -1148,12 +1163,12 @@ async function place($: EngineInterface, view: View, search: (list: string) => s
     return
   }
   const isRevoked = placeAll(view, placesIn(main))
-  const errors = errorsIn(main).filter((id) => !view.errors.has(id))
-  errors.forEach((id) => view.errors.add(id))
-  const unrequested = unrequestedIn(main).filter((id) => !view.unrequested.has(id))
-  unrequested.forEach((id) => view.unrequested.add(id))
+  const errors = errorsIn(main).filter((id) => !view.errors.has(keyOf(id)))
+  errors.forEach((id) => view.errors.add(keyOf(id)))
+  const unrequested = unrequestedIn(main).filter((id) => !view.unrequested.has(keyOf(id)))
+  unrequested.forEach((id) => view.unrequested.add(keyOf(id)))
   view.isWhole = true
-  if ((reorder(view) || isRevoked || [...errors, ...unrequested].some((id) => view.rowOf.has(id))) && view.isFolding()) {
+  if ((reorder(view) || isRevoked || [...errors, ...unrequested].some((id) => hasDrawn(view, id))) && view.isFolding()) {
     $.ui.invalidate('ui.render')
   }
 }
@@ -1476,11 +1491,11 @@ export function registerToHuman(on: On) {
         const isRevoked = placeAll(view, ids, LIVE + view.appended, 1 / 1000)
         const isError = isApiError(e.origin, stored.message)
         if (isError) {
-          view.errors.add(stored.uuid)
+          view.errors.add(keyOf(stored.uuid))
         }
-        const moved = ids.some((id) => view.rowOf.has(id) || view.rowOf.has(GROUP + id)) && reorder(view)
+        const moved = ids.some((id) => hasDrawn(view, id)) && reorder(view)
         const isJudged = STEP_DOORS.has(e.door) && judgeUnkept(view)
-        if ((moved || isRevoked || isJudged || (isError && view.rowOf.has(stored.uuid))) && isFolding()) {
+        if ((moved || isRevoked || isJudged || (isError && hasDrawn(view, stored.uuid))) && isFolding()) {
           $.ui.invalidate('ui.render')
         }
       } catch (error) {
@@ -1539,7 +1554,7 @@ export function registerToHuman(on: On) {
     // and so does a loop's own instructions from whoever dispatched it
     // (`coordinator`), which the main conversation's queue never holds.
     if (drawsApart(view, e.requestId) || judgeUnkept(view, [e.requestId])) {
-      if (view.unkept.has(e.requestId) && isFolding() && kind === 'record' && e.props.origin?.kind !== 'coordinator') {
+      if (view.unkept.has(keyOf(e.requestId)) && isFolding() && kind === 'record' && e.props.origin?.kind !== 'coordinator') {
         const { Box } = $.ui.resolve(e)
         return <Box />
       }
@@ -1568,7 +1583,7 @@ export function registerToHuman(on: On) {
     if (!isFolding()) {
       return next(e)
     }
-    const prior = view.place.has(e.requestId) ? view.order[slotOf(view, e.requestId) - 1] : before.get(e.requestId)
+    const prior = view.place.has(keyOf(e.requestId)) ? view.order[slotOf(view, e.requestId) - 1] : before.get(e.requestId)
     const isShown =
       prior !== undefined && inRun(view.rowOf.get(prior)) && unfolded.has(runStart(view.order, view.rowOf, prior))
     if (isShown) {
@@ -1588,12 +1603,12 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     if (drawsApart(view, e.requestId)) return next(e)
-    if (isMadeUp(e.requestId, e.props.text) || (view.unrequested.has(e.requestId) && e.props.text.trim() === FINAL_ANSWER)) {
+    if (isMadeUp(e.requestId, e.props.text) || (view.unrequested.has(keyOf(e.requestId)) && e.props.text.trim() === FINAL_ANSWER)) {
       const { Box } = $.ui.resolve(e)
       return <Box />
     }
     const parsed = parse(e.props.text)
-    const isError = view.errors.has(e.requestId)
+    const isError = view.errors.has(keyOf(e.requestId))
     note(view, e.requestId, e.props)
     see($, view, e.requestId, isError ? 'marked' : parsed.spans.length === 0 ? 'record' : parsed.hasRecord ? 'mixed' : 'marked')
 

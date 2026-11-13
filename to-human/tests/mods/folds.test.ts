@@ -6,7 +6,7 @@ import type { Folds, OpenFold } from '../../types/to-human'
 import type { Ask, KeptRow, Step } from '../../hooks/mods/folds'
 import { LABEL_SYSTEM, follow, labelOf, lineOf, newTracker, published, registerFolds, stepsOf, summaryOf, takeUp } from '../../hooks/mods/folds'
 import { FINAL_ANSWER, MESSAGE_TOOL } from '../../hooks/mods/message'
-import { newView } from '../../hooks/mods/to-human'
+import { newView, placeAll } from '../../hooks/mods/to-human'
 
 tier('user')
 
@@ -327,6 +327,21 @@ describe('labelOf: the run a row stands in, by place', () => {
     expect(labelOf(folds, open, view, 'toolu_8')).toBe('Run the tests')
     expect(labelOf(folds, open, view, 'group:toolu_7')).toBe('Run the tests')
     expect(labelOf(folds, open, view, 'group:toolu_1')).toBe('Listed the files')
+  })
+
+  test('a row the engine draws under a derived id reads the run its kept row stands in', () => {
+    // Kept under their own ids, drawn under their first 24 characters and the block's index (to-human.tsx, `keyOf`).
+    const kept = (n: number) => `${String(n).padStart(8, '0')}-3136-4b66-9326-2f14b701b37b`
+    const drawn = (n: number) => `${kept(n).slice(0, 24)}000000000000`
+    const derived = newView(() => true)
+    placeAll(derived, [kept(0), kept(1), 'toolu_2', kept(3), kept(4), kept(5)])
+    const closed: Folds = { shape: 1, runs: [{ first: kept(1), last: 'toolu_2', summary: 'Listed the files' }] }
+    const going: OpenFold = { first: kept(4), line: 'Run the tests', isLive: true }
+
+    expect(labelOf(closed, going, derived, drawn(1))).toBe('Listed the files')
+    expect(labelOf(closed, going, derived, drawn(4))).toBe('Run the tests')
+    expect(labelOf(closed, going, derived, drawn(5))).toBe('Run the tests')
+    expect(labelOf(closed, going, derived, drawn(3))).toBeUndefined()
   })
 
   test('a row outside every run, or without a known place, reads nothing', () => {

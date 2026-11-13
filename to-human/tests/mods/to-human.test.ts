@@ -1219,6 +1219,132 @@ describe('rows nothing keeps', () => {
     expect(await r2.find({ type: 'Button' })).toBeUndefined()
   })
 
+  // Once one message in the engine's list holds more than one block (a
+  // prompt with an image, a response that arrived whole), the engine draws
+  // every later text and prompt row under its row's id with the last twelve
+  // characters replaced by the block's index, while the row's append names it
+  // by its own id. The events are those a probe recorded live on 2.1.323
+  // after a prompt with a pasted image (`probe-runs.py --scenario image`,
+  // `~/.local/share/fold-runs/`).
+  const rowId = (n: number) => `${String(n).padStart(8, '0')}-3136-4b66-9326-2f14b701b37b`
+  const drawnId = (n: number, block = 0) => `${rowId(n).slice(0, 24)}${block.toString(16).padStart(12, '0')}`
+  const text = (value: string) => ({ type: 'text', text: value })
+  const apiError = ($: Engine, uuid: string, value: string) =>
+    $.session.append({ door: 'response', uuid, origin: { kind: 'model', model: '<synthetic>' }, message: { type: 'assistant', role: 'assistant', content: [text(value)] } } as never)
+
+  /** A turn after the image's prompt: a message sent, a call, a note, a call, and a last text that sends nothing. */
+  const derivedTurn = async ($: Engine, on: On) => {
+    on('turn.complete', () => ({ text: '' }))
+    await delivered($, rowId(1), 'prompt', 'composer')
+    const asked = await prompt($, drawnId(1), 'Run the steps.', { kind: 'composer' })
+    await kept($, rowId(2), [{ type: 'tool_use', id: 'toolu_m1', name: MESSAGE_TOOL, input: { text: 'starting image' } }])
+    await call($, 'toolu_m1', MESSAGE_TOOL, { text: 'starting image' }, 'sent')
+    await result($, rowId(3), 'toolu_m1')
+    const first = await group($, 'grouped-b1', ['toolu_b1'])
+    await kept($, rowId(4), [bashUse('toolu_b1')])
+    await result($, rowId(5), 'toolu_b1')
+    await kept($, rowId(6), [text('note alpha')])
+    const note = await message($, drawnId(6), 'note alpha')
+    await group($, 'grouped-b2', ['toolu_b2'])
+    await kept($, rowId(7), [bashUse('toolu_b2')])
+    await result($, rowId(8), 'toolu_b2')
+    await kept($, rowId(9), [text('turn note one')])
+    const last = await message($, drawnId(9), 'turn note one')
+    await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+    return { asked, first, note, last }
+  }
+
+  test('a note and a turn\'s last text drawn under a derived id fold into their run', async ($, on) => {
+    live(on)
+    const { asked, first, note, last } = await derivedTurn($, on)
+
+    expect(await asked.find({ type: 'Text', text: 'Run the steps.' })).toBeDefined()
+    expect(await first.find({ type: 'Button' })).toBeDefined()
+    expect(await note.find({ type: 'Text', text: 'note alpha' })).toBeUndefined()
+    expect(await note.find({ type: 'Button' })).toBeUndefined()
+    expect(await last.find({ type: 'Text', text: 'turn note one' })).toBeUndefined()
+    expect(await last.find({ type: 'Button' })).toBeUndefined()
+  })
+
+  test('a prompt and a delivery drawn under a derived id are the person\'s and the run\'s', async ($, on) => {
+    live(on)
+    const { first } = await derivedTurn($, on)
+    // A hand-back opens the next turn: working record, in the run the turn's last text is in.
+    await delivered($, rowId(10), 'delivery', 'peer')
+    const handBack = await prompt($, drawnId(10), 'done', peer.origin, { from: peer.from })
+    const third = await group($, 'grouped-b3', ['toolu_b3'])
+    await kept($, rowId(11), [bashUse('toolu_b3')])
+    await result($, rowId(12), 'toolu_b3')
+    // The person's next prompt cuts the run, and the run after it has a button of its own.
+    await delivered($, rowId(13), 'prompt', 'composer')
+    const again = await prompt($, drawnId(13), 'And now this.', { kind: 'composer' })
+    const fourth = await group($, 'grouped-b4', ['toolu_b4'])
+    await kept($, rowId(14), [bashUse('toolu_b4')])
+    await result($, rowId(15), 'toolu_b4')
+
+    expect(await first.find({ type: 'Button' })).toBeDefined()
+    expect(await handBack.find({ type: 'Text', text: 'done' })).toBeUndefined()
+    expect(await handBack.find({ type: 'Button' })).toBeUndefined()
+    expect(await third.find({ type: 'Button' })).toBeUndefined()
+    expect(await again.find({ type: 'Text', text: 'And now this.' })).toBeDefined()
+    expect(await fourth.find({ type: 'Button' })).toBeDefined()
+  })
+
+  test('an API error drawn under a derived id stays in the report, kept before it drew or after', async ($, on) => {
+    live(on)
+    const { first } = await derivedTurn($, on)
+    const error = 'API Error: Connection refused'
+    await apiError($, rowId(20), error)
+    const late = await message($, drawnId(20), error)
+    const early = await message($, drawnId(21), error)
+    expect(await early.find({ type: 'Text', text: error })).toBeUndefined()
+    await apiError($, rowId(21), error)
+
+    expect(await late.find({ type: 'Text', text: error })).toBeDefined()
+    expect(await early.find({ type: 'Text', text: error })).toBeDefined()
+    expect(await first.find({ type: 'Button' })).toBeDefined()
+  })
+
+  test("a subagent's row drawn under a derived id draws as the engine does and stands in no run", async ($, on) => {
+    live(on)
+    const first = await turnStart($)
+    await kept($, rowId(30), [text('agent note')], 'agent-1')
+    const agentNote = await message($, drawnId(30), 'agent note')
+    const early = await message($, drawnId(31), 'agent note two')
+    await kept($, rowId(31), [text('agent note two')], 'agent-1')
+
+    expect(await agentNote.find({ type: 'Text', text: 'agent note' })).toBeDefined()
+    expect(await early.find({ type: 'Text', text: 'agent note two' })).toBeDefined()
+    expect(await first.find({ type: 'Button' })).toBeDefined()
+  })
+
+  test('a resumed transcript\'s rows drawn under derived ids take the places its list gives them', async ($, on) => {
+    const list = [1, 2, 3, 4, 5, 6].map((n) => `"uuid":"${rowId(n)}"`)
+    // Row 2 sent a message; row 4 is an API error; row 6 a response a hook answered without a request.
+    list.splice(2, 0, '"type":"tool_use","id":"toolu_m1"')
+    list.splice(5, 0, '"isApiErrorMessage":true')
+    list.push('"answeredWithoutRequest":true')
+    live(on, list.join('\n'))
+    on('classic.SessionStart', () => ({}))
+    on('turn.complete', () => ({ text: '' }))
+    await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
+    await call($, 'toolu_m1', MESSAGE_TOOL, { text: 'starting' }, 'sent')
+    // Drawn out of order, as a fullscreen window draws what scrolls into it.
+    const made = await message($, drawnId(6), FINAL_ANSWER)
+    const later = await message($, drawnId(5), 'Later note.')
+    const error = await message($, drawnId(4), 'API Error: Connection refused')
+    const note = await message($, drawnId(3), 'Working.')
+    await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+
+    expect(await note.find({ type: 'Button' })).toBeDefined()
+    expect(await note.find({ type: 'Text', text: 'Working.' })).toBeUndefined()
+    expect(await error.find({ type: 'Text', text: 'API Error: Connection refused' })).toBeDefined()
+    expect(await later.find({ type: 'Button' })).toBeDefined()
+    expect(await later.find({ type: 'Text', text: 'Later note.' })).toBeUndefined()
+    expect(await made.find({ type: 'Text' })).toBeUndefined()
+    expect(await made.find({ type: 'Button' })).toBeUndefined()
+  })
+
   test("/to-human-dump writes the view's order with each row's kind and place", async ($, on) => {
     live(on)
     const writes: { path: string; text: string }[] = []
@@ -1810,6 +1936,24 @@ describe('the message tool', () => {
     expect(await before.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await before.find({ type: 'Text', text: 'Reading the logs.' })).toBeUndefined()
     // It stands in no run: the next turn's record opens one of its own, behind its own button.
+    expect(await next.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('the made-up response kept under its own id and drawn under a derived one draws nothing', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    const before = await message($, 'r1', 'Reading the logs.')
+    await finalTurn($)
+    await callRow($, 'toolu_m1', { input: { text: 'Done.', final: true }, output: 'sent' })
+    await resultRow($, 'toolu_m1', 'sent')
+    // The engine draws a later row under its id's first 24 characters and the block's index (`rowKey`).
+    await madeUpKept($, '0a4be947-9653-4b24-9b84-4c47aaa6e7a7')
+    const made = await message($, '0a4be947-9653-4b24-9b84-000000000000', FINAL_ANSWER)
+    const next = await bash($, 'toolu_b1')
+
+    expect(await isBlank(made)).toBe(true)
+    expect(await before.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await next.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 

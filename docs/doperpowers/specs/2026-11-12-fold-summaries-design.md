@@ -802,6 +802,23 @@ dependency.
   Evidence: `~/.local/share/fold-runs/m2-live-folds-2.log`,
   `evidence/m2-live-folds-2-{main,failing,plain}-frames.txt`.
 
+- Observation (after the merge, 2026-11-13): the engine draws a kept row
+  under another form of its id. Once one message in its list holds more than
+  one block (a prompt with a pasted image, a response that arrived whole:
+  both sessions here took one at 00:19Z), every later text and prompt row of
+  the process draws under its row's id with the last twelve characters
+  replaced by the block's index (`…-000000000000`), while `session.append`
+  and the transcript file name the row by its own id. PR #499's rule (a drawn
+  row with no place is nobody's) matched whole ids, so on 0.7.4 such a
+  session's notes drew as the engine draws them; the tracker's `labelOf`
+  would have read `working record` for a button drawn by such a row. Fixed in
+  0.8.1: `rowKey` (message.tsx), the first 24 characters, under every table a
+  kept row's id reads, `keyOf` in `labelOf` included.
+  Evidence: `~/.claude/to-human/dumps/2026-11-13T05-13-08-688Z-10d85d03.json`
+  (121 drawn rows set apart, all 121 kept under the same 24 characters: 64
+  notes, 57 prompts); `~/.local/share/fold-runs/derived_ids.py`; the live
+  probe `probe-runs.py --scenario image` before and after (2.1.323).
+
 ## Decision Log
 
 - Decision: verification. One independent review of this spec and one of its
