@@ -237,6 +237,10 @@ of the to-human plugin (the contract is in Interfaces):
   ids. Written when a run closes and when its summary settles.
 - `fold`: the open run, with its first row id. Written when its live line or
   summary changes.
+- `foldLast`: the open run's newest row id, which no drawing reads. Written
+  when a row joins the open run, so a module that takes the run up after a
+  reload can bound it when it closes, while a row that changes no label (a
+  result, a note, a delivery) redraws no button.
 
 The view reads both where it draws a fold's button and finds the run of the
 row that draws it by place: the open run if the row's place is at or after the
@@ -648,7 +652,7 @@ under the plugin's name in `PluginState`, as `sminos/types/sminos.d.ts` does):
     export type FoldRun = {
       /** The run's first row; a tool call's row by its call's id. */
       first: string
-      /** Its last row: of a closed run, the last that joined it; of the open run, the newest so far. */
+      /** Its last row, once the run is closed (the open run's newest row is under `foldLast`). */
       last?: string
       /** The newest call's line, shown while the run is live; cleared when a summary settles. */
       line?: string
@@ -661,6 +665,8 @@ under the plugin's name in `PluginState`, as `sminos/types/sminos.d.ts` does):
     export type Folds = { shape: 1; runs: FoldRun[] }
     /** key `fold`: the open run, or null when there is none. */
     export type OpenFold = FoldRun | null
+    /** key `foldLast`: the open run's newest row, or null when there is none; no drawing reads it. */
+    export type OpenFoldLast = string | null
 
 In `to-human/hooks/mods/folds.tsx`:
 
@@ -768,6 +774,12 @@ dependency.
   final message closed the run (M1: no summary). Acceptance 1, seen live.
   Evidence: `~/.local/share/fold-runs/evidence/m1-live-line-frames.txt` (2.1.323).
 
+- Observation: PR #499 adds a `turn.complete` hook to `to-human.tsx` with the
+  matcher `{ turnId: /^/ }`, beside a `command.run` hook, `judgeUnkept` and a
+  start-up read through a temporary file; M2's `turn.complete` hook in
+  `folds.tsx` takes a matcher distinct from that one.
+  Evidence: the authoring session's note on #499's branch, 2026-11-13.
+
 ## Decision Log
 
 - Decision: verification. One independent review of this spec and one of its
@@ -829,11 +841,14 @@ dependency.
   round, from the engine's reference.
   Date/Author: 2026-11-13, the authoring session.
 
-- Decision: M1's gaps, settled by its executor (2026-11-13). (1) The open run
-  publishes `last` too, the newest row that joined it, so `fold` is written
-  whenever a row joins; without it a module that takes up the open run after a
-  reload cannot bound it when the next read row closes it, and M2 would lose
-  its turn-end summary (acceptance 4). The contract's comment says so. (2) In
+- Decision: M1's gaps, settled by its executor (2026-11-13). (1) The open run's
+  newest row is published too; without it a module that takes up the open run
+  after a reload cannot bound it when the next read row closes it, and M2
+  would lose its turn-end summary (acceptance 4). M1 first put it in `fold` as
+  `last`; revised in its review round (the authoring session's refinement) to
+  a key of its own, `foldLast`, that no drawing reads, so that `fold` is still
+  written only when its line or summary changes: every `fold` write draws the
+  fold buttons again, and a result, a note or a delivery changes no label. (2) In
   M1 a run due a summary settles at once (`due(run)` in `folds.tsx` is where M2
   asks): it loses `isLive` and `line` and keeps any summary it had, staying
   live on its last call's line while a call of it runs. (3) Clearing a closed
