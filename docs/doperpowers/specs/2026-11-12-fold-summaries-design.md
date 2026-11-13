@@ -405,8 +405,11 @@ The tracker follows rows and publishes live lines in every session the plugin
 loads in; that is a few small `$.state` writes. It asks for a summary only
 when all of these hold:
 
-- the view has seen a mark (the session writes for a to-human reader: the same
-  `hasSeenMark` that turns folding on);
+- the session has a mark (it writes for a to-human reader): the view has seen
+  one (the same `hasSeenMark` that turns folding on), or the tracker has
+  followed a kept one (a main-conversation message call, or response text
+  whose `parse` has spans), noted at the append before that row's steps, so
+  the message that closes a session's first run counts for that run;
 - the session is interactive (`session.start`'s `isInteractive`): nobody reads
   a headless session's terminal;
 - `MAWS_NATIVE_TO_HUMAN` is unset or empty: MAWS draws its own report;
@@ -919,6 +922,21 @@ dependency.
   Rationale: each in the M2 report; none changes what the person sees beyond
   (2), which follows the table.
   Date/Author: 2026-11-13, M2's executor, folded by the plan executor.
+
+- Decision: M2's review round (2026-11-13). The reset on `clear`, `resume` or
+  `fork` reads the destination session's file only after that file's pending
+  writes have landed (the task review reproduced a settled summary lost on a
+  switch away and back); the start-up load needs no wait, since no summary can
+  settle before it reads. The digest's cap measures the joined text, separators
+  and the omission line included. And the summary gate also opens on a kept
+  mark (the authoring session's refinement, "Where it runs" revised): a run
+  skipped at its due point settles for good (M2's decision 2), so a gate that
+  read false only because no mark had drawn yet would cost a session's first
+  run its summary permanently. A refused message call counts as a mark here,
+  where the view, which learns of the refusal from the result, does not; rare.
+  Rationale: each closes a way for a fold to lose its summary for good.
+  Date/Author: 2026-11-13, M2's executor from `doperpowers:task-reviewer` and
+  the authoring session, folded by the plan executor.
 
 ## Outcomes & Retrospective
 
