@@ -23,8 +23,9 @@ summaries for folds that closed before the feature was installed.
 ## Progress
 
 - [x] (2026-11-13 00:24Z) Design approved; spec written.
-- [ ] The repeated-button bug's fix merged to `main` (a subagent's PR, in
-      progress when this was written; see "What this builds on").
+- [ ] PR #499 merged to `main` (a subagent's rows stand in no run of the main
+      conversation; CI green on `5ffc7690`, its second review running at
+      2026-11-13 00:57Z; see "What this builds on").
 - [x] (2026-11-13 00:34Z) Spec review and execution-section review absorbed (eight findings, six distinct, all taken; Decision Log).
 - [ ] M1 — the run tracker and the live line.
 - [ ] M2 — summaries, storage, the live check, docs.
@@ -200,7 +201,7 @@ failure of a spawn the report shows), a read row.
 | A `tool_use` block of a read tool (`isRead`) | a read row; an `Agent` or `Workflow` call's id is remembered as a spawn |
 | Any other `tool_use` block | a call in the open run; it sets the live line |
 | A tool result | the result of its call, in the run that holds the call, open or closed; a read tool's result is ignored |
-| A prompt or a delivery, kept between turns (doors `prompt`, `delivery`) or folded into a running turn (an attachment named `queued_command`) | its kind by the rule above: a delivery in the open run, or a read row |
+| A prompt or a delivery (doors `prompt`, `delivery`), kept between turns or folded into a running turn | its kind by the rule above: a delivery in the open run, or a read row |
 | An API error row (`isApiError`) | a read row |
 | The response the message mod makes up after a final message (text `FINAL_ANSWER`, no request) | ignored |
 | A compaction's rows (door `compaction`) | a read row |
@@ -208,22 +209,18 @@ failure of a spawn the report shows), a read row.
 
 A first row that joins when no run is open starts one.
 
-**A prompt folded into a running turn** does not say who sent it: the engine
-keeps it as an attachment whose origin is the engine's own and whose content
-is the engine's rendering of the prompt (its reference: "a prompt or
-notification delivered into a running turn are the engine's too"). The sender
-is on the queue record the engine raised when the prompt was queued, under the
-door `queue`, with the prompt's own origin and text. The tracker remembers the
-last 50 queue records; a `queued_command` row whose rendering contains a
-remembered record's text is classified from that record, exactly as the same
-prompt kept between turns would be (the person's, a delivery, or a shown
-spawn's failure), and spends it. A row that matches no record is classified
-from its rendering alone: a failed notification of a spawn the report shows is
-a read row, anything else a delivery, since deliveries are the common case
-(seven groups of them in the 45-call stretch that showed the bug) and a
-mistake here only moves a summary's boundary. This is the one place the
-tracker rests on the engine's documentation alone; M1 checks it against the
-probe log ("What this builds on") before building on it.
+**A prompt folded into a running turn** is kept, by the diagnosis's probe log
+("What this builds on"), through the door `delivery` with its sender's own
+origin, right after the tool result it rides: `peer` for a subagent's
+hand-back, `task-notification` for a task's. (The engine's reference describes
+the kept row, an attachment named `queued_command` holding the engine's
+rendering; the event carries the sender.) So it is classified as any prompt
+is, and the tracker keeps no memory of the queue: a queue record, door
+`queue`, carries the engine as its origin and is ignored. One case the probe
+did not run: the person's own prompt typed into a running turn. M1 runs it
+first; if its origin does not read as the person's, the tracker reads the
+frame the engine puts on the rendering instead (the view already reads engine
+frames: `ASK_DELIVERY`).
 
 A message call that sends nothing (refused or errored) is a read row here and
 a record row in the view, which learns of the refusal from the result. The
@@ -462,15 +459,27 @@ automates 1 to 5.
 
 ### What this builds on
 
-The view was found on 2026-11-12 drawing one run as many folds, back to back,
-in a session that took in prompts mid-turn (acceptance 7 fails on `main` as of
-`07f85a81`). A subagent is diagnosing it with a live probe and fixing it in a
-PR of its own. That PR merges before M1 starts, and this branch takes `main`
-then. Its probe log, which lists the doors, origins and components a real
-engine raised for mid-turn prompts, is the source for the tracker's test
-fixtures and the check of "A prompt folded into a running turn": the PR's
-number and the log's path are recorded in Surprises & Discoveries when it
-lands.
+The report that came with this request, one run drawn as many folds back to
+back, led to PR #499. Its cause as reproduced: a subagent's transcript, opened
+in the fullscreen terminal (the agent picked in the strip under the prompt),
+draws through the view's hooks, nothing on the event says whose row it is, and
+the view stood those rows in the main conversation's order, where a read row
+of the agent's cut a main run in two. With #499 a row the view knows for
+another loop's (`View.apart`: an append with `agentId`, or a row of a
+subagent's transcript file) draws as the engine draws it and stands in no run.
+The tracker ignores a subagent's rows already. Whether this is what the owner
+saw is not confirmed (Surprises & Discoveries). #499 merges before M1 starts
+and this branch takes `main` then.
+
+The diagnosis's probe is the source for the tracker's fixtures:
+`~/.local/share/fold-runs/probe-runs.py` on the owner's MacBook starts an
+isolated haiku session with a probe plugin outermost, which logs every
+`session.append` (door, origin, role, blocks) and every `ui.render` (the props
+that classify the row); its scenarios are `notify`, `agent`, `view`, `view2`,
+`resume` and `compact`, and two logs are kept in `evidence/` beside it. A
+fixture the kept logs do not hold (a typed prompt folded into a running turn,
+a failed spawn's notification) is made by running the script with a scenario
+added, a few haiku calls each.
 
 ### Constraints on every milestone
 
@@ -520,10 +529,10 @@ Exposes: the `$.state` contract, `registerFolds`, `labelOf`, `lineOf`
 
 Decisions that are this milestone's:
 
-- First, read the probe log and confirm how a prompt folded into a running
-  turn is kept and what its queue record carries. If the queue record does not
-  carry the sender, classify by the rendering's own framing instead (the view
-  already reads engine framings: `ASK_DELIVERY`), and record what was found.
+- First, probe the one delivery the kept logs lack: the person's own prompt
+  typed into a running turn (keys sent to the pane while a foreground command
+  runs). Record its door and origin in Surprises & Discoveries, and classify
+  it as "A prompt folded into a running turn" says.
 - Keep the classification, the live line and the lookup as pure exported
   functions the tests call without an engine; the hooks are thin.
 - Tests that press a fold find the button by the text `working record` today;
@@ -681,12 +690,37 @@ dependency.
   Evidence: the claude-api skill's price table (cached 2026-11-03); the first
   estimate of the fork's cost, 4 to 5% of spend from the usual ratios, became
   3.1% at these prices.
-- Observation: a kept row does not carry everything its drawing does. A prompt
-  folded into a running turn is kept with the engine as its origin, and a
-  delivery's `task` and `from` are props of the drawn row only.
-  Evidence: the engine's `SessionAppendOrigin` and `PromptAttachmentOrigin`
-  types and the reference's `session.append` section (2.1.322); not yet seen
-  in a probe.
+- Observation: a delivery folded into a running turn is kept through the door
+  `delivery` with its sender's origin; a queue record's origin is the
+  engine's; `task` and `from` are props of the drawn row only. The first
+  draft, reading the engine's reference, had the kept row carry the engine as
+  its origin and looked the sender up on the queue record.
+  Evidence: `~/.local/share/fold-runs/evidence/agent-view-before-fix.jsonl`
+  (2.1.322): `append delivery {"kind":"peer"}` then
+  `append delivery {"kind":"task-notification"}` after a tool result, and
+  three `append queue {"kind":"engine"}`.
+- Observation: a prompt waiting in the queue is drawn under ids the
+  conversation never keeps (a hand-back drew under three before its kept row
+  drew under its own), and the prompt being submitted draws as `placeholder`.
+  The view keeps each such id in its order for good. As working record they
+  cut no run; whether one can take a run's button, or cut a run when it is the
+  person's queued prompt, is not established. A follow-up probe is the owner
+  session's, outside this spec.
+  Evidence: the same log, `render UserMessage` rids `506ab97e`, `ee71ec46`,
+  `79e5fe7e`, then `e42720d2` after `append delivery e42720d2`.
+- Observation: the bug that came with this request is reproduced for one
+  cause and not confirmed as the owner's. PR #499's probe showed a subagent's
+  rows entering the main order once its transcript was opened, and the main
+  run's button then drawn on an agent's row, off the main screen; an extra
+  fold follows by the same logic where the row that lands is a read row, and
+  the PR's unit tests pin that case. Mid-turn deliveries, `SendMessage`, a
+  reload, a compaction and a resume of a copy of the owner's transcript each
+  folded correctly. The owner's stretch
+  held seven groups of mid-turn deliveries and showed at least seven folds,
+  which the reproduced cause does not explain by itself: the subagents active
+  in that stretch kept four read-class rows in it.
+  Evidence: PR #499's body; `~/.local/share/fold-labels/agents_window.py` over
+  the session's `subagents/` for 23:01 to 23:22Z.
 
 ## Decision Log
 
@@ -740,6 +774,14 @@ dependency.
   cross-version behaviour to establish, and the appeal mod already keeps its
   log that way. `$.store` with a marketplace-update probe was the alternative.
   Date/Author: 2026-11-13, the authoring session, from `doperpowers:adversarial-reviewer`.
+
+- Decision: a prompt folded into a running turn is classified from its own
+  append (door `delivery`, the sender's origin), and the queue-record memory
+  is dropped (2026-11-13).
+  Rationale: the diagnosis's probe log shows the event carries the sender, and
+  shows the queue record does not. The first draft had it the other way
+  round, from the engine's reference.
+  Date/Author: 2026-11-13, the authoring session.
 
 ## Outcomes & Retrospective
 
