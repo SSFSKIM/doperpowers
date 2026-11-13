@@ -1,4 +1,4 @@
-import type { ApiContentBlock, EngineInterface, On, PromptOrigin, RenderElement, RenderInput, SessionAppendInput, Timer } from 'claude-code'
+import type { ApiContentBlock, EngineInterface, On, ProcessRunResult, PromptOrigin, RenderElement, RenderInput, SessionAppendInput, Timer } from 'claude-code'
 
 import { registerEdits } from './edits'
 import { FINAL_ANSWER, MESSAGE_TOOL, isMadeUp, readMessage } from './message'
@@ -674,8 +674,8 @@ export type View = {
   errors: Set<string>
   /** The rows the engine kept as answered without a request (a hook's own response), read from the transcript file with the places. */
   unrequested: Set<string>
-  /** The rows another loop keeps (a subagent's), by their ids: no run of the main conversation holds them (`setApart`). */
-  apart: Set<string>
+  /** The rows another loop keeps (a subagent's), by their ids, each with whether it has drawn so: no run of the main conversation holds them (`setApart`). */
+  apart: Map<string, boolean>
   /** The module's start-up read (`started`) while one runs; it settles once it finished or was cut short. */
   reading?: Promise<void>
   /** Settles once the start-up read finished, or the rows stopped waiting for it. */
@@ -704,7 +704,7 @@ export const newView = (isFolding: () => boolean): View => {
     shown: new Map(),
     errors: new Set(),
     unrequested: new Set(),
-    apart: new Set(),
+    apart: new Map(),
     start: { promise, settle },
     isStarted: false,
     isPastWait: false,
@@ -753,13 +753,24 @@ export function reorder(view: View): boolean {
   return true
 }
 
-/** Places `ids` in the order given, from `at` by `step`, each one whose place is not known yet. */
-export function placeAll(view: View, ids: readonly string[], at = 0, step = 1) {
+/**
+ * Places `ids` as the main conversation's, in the order given, from `at` by
+ * `step`, each one whose place is not known yet. A row placed so is no other
+ * loop's, whatever set it apart before (a fork's transcript carries main
+ * rows' ids, read while the main search had failed or been cut): whether one
+ * of those had drawn apart, which it now draws in the main order once asked
+ * for again.
+ */
+export function placeAll(view: View, ids: readonly string[], at = 0, step = 1): boolean {
+  let isRevoked = false
   ids.forEach((id, i) => {
     if (!view.place.has(id)) {
       view.place.set(id, at + i * step)
     }
+    isRevoked = view.apart.get(id) === true || isRevoked
+    view.apart.delete(id)
   })
+  return isRevoked
 }
 
 /**
@@ -796,6 +807,19 @@ export function sessionPlaceArgs(sessionId: string): string[] {
   return ['sh', '-c', script, 'sh', sessionId, PLACES]
 }
 
+/** The files of `$@` that exist, one path a line, exiting 0 when one did and 1 when none did (an unmatched glob stays itself). */
+const LIST = 'list() { n=1; for f in "$@"; do if [ -f "$f" ]; then printf "%s\\n" "$f"; n=0; fi; done; exit $n; }'
+
+/** The subagents' transcripts kept beside the transcript `path` (`<path less .jsonl>/subagents/*.jsonl`), listed as `LIST` lists them. */
+export function subagentsArgs(path: string): string[] {
+  return ['sh', '-c', `${LIST}; list "\${1%.jsonl}"/subagents/*.jsonl`, 'sh', path]
+}
+
+/** The same list beside the session's own transcript, found by its id as `sessionPlaceArgs` finds it. */
+export function sessionSubagentsArgs(sessionId: string): string[] {
+  return ['sh', '-c', `${LIST}; list "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1"/subagents/*.jsonl`, 'sh', sessionId]
+}
+
 /**
  * The search of the files `$@` (after the pattern `$1`) as one, for the rows'
  * and calls' ids alone (`IDS`), exiting as `SEARCH` does.
@@ -803,16 +827,9 @@ export function sessionPlaceArgs(sessionId: string): string[] {
 const SEARCH_ALL = 'searchAll() { p=$1; shift; if command -v rg >/dev/null 2>&1; then exec rg --no-config -a -o -N --no-filename -e "$p" -- "$@"; fi; exec grep -o -h -E -e "$p" -- "$@"; }'
 const IDS = '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"'
 
-/** The search that lists the rows of the subagents' transcripts kept beside the transcript `path` (`<path less .jsonl>/subagents/`). */
-export function apartArgs(path: string): string[] {
-  const script = `${SEARCH_ALL}; p=$2; set -- "\${1%.jsonl}"/subagents/*.jsonl; [ -f "$1" ] || exit 1; searchAll "$p" "$@"`
-  return ['sh', '-c', script, 'sh', path, IDS]
-}
-
-/** The same search beside the session's own transcript, found by its id as `sessionPlaceArgs` finds it. */
-export function sessionApartArgs(sessionId: string): string[] {
-  const script = `${SEARCH_ALL}; id=$1 p=$2; for d in "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$id"/subagents; do set -- "$d"/*.jsonl; [ -f "$1" ] && searchAll "$p" "$@"; done; exit 1`
-  return ['sh', '-c', script, 'sh', sessionId, IDS]
+/** The search that lists the rows and calls of the subagents' transcripts `files`, a batch of what `subagentsArgs` listed. */
+export function apartArgs(files: readonly string[]): string[] {
+  return ['sh', '-c', `${SEARCH_ALL}; searchAll "$@"`, 'sh', IDS, ...files]
 }
 
 /** The ids `placeArgs`' output names, in the transcript's order. */
@@ -860,7 +877,8 @@ function shapeOf(view: View, id: string | undefined): string {
  * and a main row whose run began at one of its rows drew no button at all.
  * A row is known for another loop's by its append (`agentId` set) or by its
  * subagent's transcript file; one already placed as the main conversation's
- * is left there. Whether any had drawn in the main order, which it leaves.
+ * is left there, and one placed so later is the main conversation's again
+ * (`placeAll`). Whether any had drawn in the main order, which it leaves.
  */
 export function setApart(view: View, ids: readonly string[]): boolean {
   let isMoved = false
@@ -868,7 +886,7 @@ export function setApart(view: View, ids: readonly string[]): boolean {
     if (view.place.has(id) || view.apart.has(id)) {
       continue
     }
-    view.apart.add(id)
+    view.apart.set(id, false)
     view.guess.delete(id)
     for (const key of [id, GROUP + id]) {
       if (view.rowOf.delete(key)) {
@@ -880,8 +898,15 @@ export function setApart(view: View, ids: readonly string[]): boolean {
   return isMoved
 }
 
-/** Whether a row is another loop's (`setApart`): it draws as the engine draws it, in no run. */
-const isApart = (view: View, id: string) => view.apart.has(keyOf(id))
+/** Whether a row is another loop's (`setApart`), noting that it drew so: it draws as the engine draws it, in no run. */
+function drawsApart(view: View, id: string): boolean {
+  const key = keyOf(id)
+  if (!view.apart.has(key)) {
+    return false
+  }
+  view.apart.set(key, true)
+  return true
+}
 
 /**
  * Notes a row as it draws: its place among the rows drawn so far, and what it
@@ -975,52 +1000,94 @@ async function recordRow<E extends RenderInput>(
   )
 }
 
-/** A transcript search's output; undefined where it failed (said in the debug log, unless `signal`'s abort cut it short). */
-async function searched($: EngineInterface, search: string[], signal: AbortSignal, what: string): Promise<string | undefined> {
+/**
+ * A search's result; undefined where it failed, said in the debug log as
+ * `what` could not be read, `meaning` after, unless `signal`'s abort cut it
+ * short.
+ */
+async function searched($: EngineInterface, search: string[], signal: AbortSignal, what: string, meaning: string): Promise<ProcessRunResult | undefined> {
   try {
     const found = await $.process.run(search)
     // grep: 0 found, 1 none, anything else a failure.
     if (found.exitCode > 1) {
       throw new Error(`grep exited ${found.exitCode}`)
     }
-    return found.stdout
+    return found
   } catch (error) {
     if (!signal.aborted) {
-      $.ui.log(`to-human: ${what} could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
+      $.ui.log(`to-human: ${what} could not be read (${String(error)}); ${meaning}`, { to: 'debug' })
     }
     return undefined
   }
 }
 
+/** How many subagents' transcripts one search takes; a batch whose output the run cut (past 4 MiB) is halved. */
+const APART_BATCH = 32
+
 /**
- * Places the rows a transcript search lists (see `View`), and notes which of
- * them are API errors; then sets apart the rows its subagents' transcripts
- * list (`setApart`), once the main conversation's are placed. A transcript
- * can be far past what one read takes whole, so a search lists its rows; one
- * that fails, or is cut, leaves the rows it could not place to draw in the
- * order they come. `signal` is the dispatch's that searches: a search its
- * abort cut short says nothing.
+ * Sets apart the rows of the subagents' transcripts `list` lists
+ * (`setApart`), and asks for the rows again where any had drawn in the main
+ * order. A long session's subagents list far more than one run returns (its
+ * stdout is cut at 4 MiB: one session's search came to 22 MB), so the files
+ * are searched a batch at a time, one after another, and a batch cut short is
+ * searched again in halves; a single file still cut sets apart the rows
+ * before the cut, said in the debug log.
  */
-async function place($: EngineInterface, view: View, search: string[], apart: string[], signal: AbortSignal) {
-  const [main, others] = await Promise.all([
-    searched($, search, signal, "the transcript's order"),
-    searched($, apart, signal, "the subagents' rows"),
-  ])
-  let isChanged = false
-  if (main !== undefined) {
-    placeAll(view, placesIn(main))
-    const errors = errorsIn(main).filter((id) => !view.errors.has(id))
-    errors.forEach((id) => view.errors.add(id))
-    const unrequested = unrequestedIn(main).filter((id) => !view.unrequested.has(id))
-    unrequested.forEach((id) => view.unrequested.add(id))
-    isChanged = reorder(view) || [...errors, ...unrequested].some((id) => view.rowOf.has(id))
+async function scanApart($: EngineInterface, view: View, list: string[], signal: AbortSignal) {
+  const failed = "those rows stand in the main conversation's order where they draw"
+  const listed = await searched($, list, signal, "the subagents' transcripts", failed)
+  const batches: string[][] = []
+  const files = listed?.stdout.split('\n').filter((line) => line !== '') ?? []
+  for (let i = 0; i < files.length; i += APART_BATCH) {
+    batches.push(files.slice(i, i + APART_BATCH))
   }
-  if (others !== undefined) {
-    isChanged = setApart(view, placesIn(others)) || isChanged
+  let isMoved = false
+  for (let batch = batches.shift(); batch !== undefined && !signal.aborted; batch = batches.shift()) {
+    const found = await searched($, apartArgs(batch), signal, `${batch.length} subagents' transcripts`, failed)
+    if (found?.isStdoutTruncated === true && batch.length > 1) {
+      const half = Math.ceil(batch.length / 2)
+      batches.unshift(batch.slice(0, half), batch.slice(half))
+      continue
+    }
+    if (found?.isStdoutTruncated === true) {
+      $.ui.log(`to-human: ${batch[0]} lists more rows than one search returns; those past 4 MiB ${failed}`, { to: 'debug' })
+    }
+    isMoved = setApart(view, placesIn(found?.stdout ?? '')) || isMoved
   }
-  if (isChanged && view.isFolding()) {
+  if (isMoved && view.isFolding()) {
     $.ui.invalidate('ui.render')
   }
+}
+
+/**
+ * Places the rows a transcript search lists (see `View`), and notes which of
+ * them are API errors. A transcript can be far past what one read takes
+ * whole, so a search lists its rows; one that fails, or is cut, leaves the
+ * rows it could not place to draw in the order they come. `signal` is the
+ * dispatch's that searches: a search its abort cut short says nothing.
+ *
+ * Once the main conversation's rows are placed it settles, and the rows of
+ * the subagents' transcripts `subagents` lists are set apart after
+ * (`scanApart`), holding no row back: a scan of many files runs long, and a
+ * fork's file carries main rows' ids, which only a placed row keeps for the
+ * main conversation's, so where the main search failed none is scanned.
+ */
+async function place($: EngineInterface, view: View, search: string[], subagents: string[], signal: AbortSignal) {
+  const main = await searched($, search, signal, "the transcript's order", 'its runs follow the order rows draw in')
+  if (main === undefined) {
+    return
+  }
+  const isRevoked = placeAll(view, placesIn(main.stdout))
+  const errors = errorsIn(main.stdout).filter((id) => !view.errors.has(id))
+  errors.forEach((id) => view.errors.add(id))
+  const unrequested = unrequestedIn(main.stdout).filter((id) => !view.unrequested.has(id))
+  unrequested.forEach((id) => view.unrequested.add(id))
+  if ((reorder(view) || isRevoked || [...errors, ...unrequested].some((id) => view.rowOf.has(id))) && view.isFolding()) {
+    $.ui.invalidate('ui.render')
+  }
+  scanApart($, view, subagents, signal).catch((error) => {
+    $.ui.log(`to-human: the subagents' rows could not be set apart (${String(error)})`, { to: 'debug' })
+  })
 }
 
 /** Whether the conversation holds a marked assistant message, or a message sent through the tool. */
@@ -1041,7 +1108,7 @@ async function sentMark($: EngineInterface, signal: AbortSignal): Promise<boolea
 async function placeSession($: EngineInterface, view: View, signal: AbortSignal) {
   try {
     const id = await $.session.id()
-    await place($, view, sessionPlaceArgs(id), sessionApartArgs(id), signal)
+    await place($, view, sessionPlaceArgs(id), sessionSubagentsArgs(id), signal)
   } catch (error) {
     if (!signal.aborted) {
       $.ui.log(`to-human: the session's id could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
@@ -1052,7 +1119,8 @@ async function placeSession($: EngineInterface, view: View, signal: AbortSignal)
 /**
  * Reads, under one dispatch, whether the session has sent a mark (`onMark`
  * runs as soon as one is found, the conversation answering well before the
- * transcript's search) and where its rows stand; false when that dispatch
+ * transcript's search) and where its rows stand (the main conversation's:
+ * the subagents' are set apart after, see `place`); false when that dispatch
  * was aborted before the read finished, which leaves it for another to make.
  * Rows that stopped waiting for it are asked for again.
  */
@@ -1261,8 +1329,9 @@ export function registerToHuman(on: On) {
       return next(e)
     }
     // The hooks beneath run while this searches: sminos' ask mod reads
-    // the same transcript for the questions it draws.
-    const [result] = await Promise.all([next(e), place($, view, placeArgs(e.transcript_path), apartArgs(e.transcript_path), next.signal)])
+    // the same transcript for the questions it draws. The subagents' scan
+    // goes on after both.
+    const [result] = await Promise.all([next(e), place($, view, placeArgs(e.transcript_path), subagentsArgs(e.transcript_path), next.signal)])
     return result
   })
 
@@ -1288,13 +1357,14 @@ export function registerToHuman(on: On) {
         view.appended += 1
         const calls = stored.message.content.flatMap((block) => (block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : []))
         const ids = [stored.uuid, ...calls]
-        placeAll(view, ids, LIVE + view.appended, 1 / 1000)
+        // A row that drew apart, taken for a subagent's, is the main conversation's again.
+        const isRevoked = placeAll(view, ids, LIVE + view.appended, 1 / 1000)
         const isError = isApiError(e.origin, stored.message)
         if (isError) {
           view.errors.add(stored.uuid)
         }
         const moved = ids.some((id) => view.rowOf.has(id) || view.rowOf.has(GROUP + id)) && reorder(view)
-        if ((moved || (isError && view.rowOf.has(stored.uuid))) && isFolding()) {
+        if ((moved || isRevoked || (isError && view.rowOf.has(stored.uuid))) && isFolding()) {
           $.ui.invalidate('ui.render')
         }
       } catch (error) {
@@ -1324,7 +1394,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    if (isApart(view, e.requestId)) return next(e)
+    if (drawsApart(view, e.requestId)) return next(e)
     const kind = promptRow(e.props, spawns)
     note(view, e.requestId, e.props)
     see($, view, e.requestId, kind)
@@ -1368,7 +1438,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    if (isApart(view, e.requestId)) return next(e)
+    if (drawsApart(view, e.requestId)) return next(e)
     if (isMadeUp(e.requestId, e.props.text) || (view.unrequested.has(e.requestId) && e.props.text.trim() === FINAL_ANSWER)) {
       const { Box } = $.ui.resolve(e)
       return <Box />
@@ -1449,7 +1519,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    if (isApart(view, e.props.tool_use_id)) return next(e)
+    if (drawsApart(view, e.props.tool_use_id)) return next(e)
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
     }
@@ -1506,7 +1576,7 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = `${GROUP}${e.props.calls[0]?.tool_use_id ?? e.requestId}`
-    if (isApart(view, id)) return next(e)
+    if (drawsApart(view, id)) return next(e)
     view.requestIds.set(id, e.requestId)
     if (e.props.isExpanded) {
       expanded.add(id)
@@ -1554,7 +1624,7 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = groupOf.get(e.props.tool_use_id) ?? e.props.tool_use_id
-    if (expanded.has(id) || isApart(view, e.props.tool_use_id)) {
+    if (drawsApart(view, e.props.tool_use_id) || expanded.has(id)) {
       return next(e)
     }
     if (!pills.has(id)) {
@@ -1586,7 +1656,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    if (isApart(view, e.requestId)) return next(e)
+    if (drawsApart(view, e.requestId)) return next(e)
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
     }

@@ -4,7 +4,7 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
 import { FINAL_ANSWER, MESSAGE_TOOL } from '../../hooks/mods/message'
-import { START_WAIT_MS, editorUrl, errorsIn, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionApartArgs, sessionPlaceArgs, unrequestedIn } from '../../hooks/mods/to-human'
+import { START_WAIT_MS, apartArgs, editorUrl, errorsIn, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs, sessionSubagentsArgs, unrequestedIn } from '../../hooks/mods/to-human'
 
 // The kit runs tests with the timer the hooks' declarations leave out.
 declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => unknown
@@ -524,7 +524,9 @@ describe('rows off the window', () => {
     const transcript = ['m1', 'r1', 'r2', 'm2'].map((id) => `"uuid":"${id}"`).join('\n')
     on('process.run', async (_, e) => {
       searches.push(e.argv)
-      return { value: { exitCode: 0, stdout: transcript, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+      // The session's transcript, and no subagents beside it.
+      const isMain = e.argv.join(' ') === sessionPlaceArgs('s1').join(' ')
+      return { value: { exitCode: isMain ? 0 : 1, stdout: isMain ? transcript : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     })
     const message = (requestId: string, text: string) =>
       $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: false } })
@@ -536,7 +538,7 @@ describe('rows off the window', () => {
     expect(rawAnswers).toBe(0)
     expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await r2.find({ type: 'Button' })).toBeUndefined()
-    expect(searches).toEqual([sessionPlaceArgs('s1'), sessionApartArgs('s1')])
+    expect(searches).toEqual([sessionPlaceArgs('s1'), sessionSubagentsArgs('s1')])
   })
 
   // The kit's mounted rows do not say where the transcript scrolls, so the
@@ -1010,18 +1012,28 @@ describe("another loop's rows", () => {
     expect(await delivery.find({ type: 'Button' })).toBeUndefined()
   })
 
-  test("a module that starts over reads the subagents' transcripts for their rows, after the main conversation's", async ($, on) => {
+  // A module that starts over: the conversation has sent a mark, and the
+  // searches answer by what they are (`argv`).
+  const startingOver = (on: On, answer: (argv: string) => Promise<{ stdout: string; exitCode?: number }> | { stdout: string; exitCode?: number }) => {
     mock.env(on, {})
     mock.store(on)
     engineDrawing(on)
     on('session.messages', () => ({ value: [{ role: 'assistant', text: '<message>Earlier.</message>', toolUses: [] }] }))
     on('session.id', () => ({ value: 's1' }))
-    const rows = (ids: string[]) => ids.map((id) => `"uuid":"${id}"`).join('\n')
     on('process.run', async (_, e) => {
-      // A fork's transcript can carry the main conversation's rows: m1 and r2 stay the main conversation's.
-      const stdout = e.argv.join(' ') === sessionApartArgs('s1').join(' ') ? rows(['m1', 'a1', 'r2']) : rows(['m1', 'r1', 'r2'])
-      return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+      const { stdout, exitCode = stdout === '' ? 1 : 0 } = await answer(e.argv.join(' '))
+      return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     })
+  }
+  const rows = (ids: string[]) => ids.map((id) => `"uuid":"${id}"`).join('\n')
+  const MAIN = sessionPlaceArgs('s1').join(' ')
+  const LISTED = sessionSubagentsArgs('s1').join(' ')
+  const AGENT = apartArgs(['/c/projects/-w/s1/subagents/agent-1.jsonl']).join(' ')
+  const AGENT_FILE = '/c/projects/-w/s1/subagents/agent-1.jsonl\n'
+
+  test("a module that starts over reads the subagents' transcripts for their rows, after the main conversation's", async ($, on) => {
+    // A fork's transcript can carry the main conversation's rows: m1 and r2 stay the main conversation's.
+    startingOver(on, (argv) => ({ stdout: argv === MAIN ? rows(['m1', 'r1', 'r2']) : argv === LISTED ? AGENT_FILE : argv === AGENT ? rows(['m1', 'a1', 'r2']) : '' }))
     const r1 = await message($, 'r1', 'Reading.')
     const agentText = await message($, 'a1', '<message>agent hello</message>')
     const r2 = await message($, 'r2', 'Testing.')
@@ -1029,6 +1041,54 @@ describe("another loop's rows", () => {
     expect(await agentText.find({ type: 'Text', text: '<message>agent hello</message>' })).toBeDefined()
     expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await r2.find({ type: 'Button' })).toBeUndefined()
+  })
+
+  test("the main conversation's rows fold in the transcript's order before the subagents' scan lands", async ($, on) => {
+    let release = () => {}
+    const held = new Promise<void>((resolve) => (release = resolve))
+    startingOver(on, async (argv) => {
+      if (argv === MAIN) return { stdout: rows(['m1', 'r1', 'r2', 'm2']) }
+      await held
+      return { stdout: '' }
+    })
+    // Asked about newest first, as a module that starts over is.
+    const r2 = await message($, 'r2', 'Testing.')
+    const r1 = await message($, 'r1', 'Reading.')
+
+    expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await r2.find({ type: 'Button' })).toBeUndefined()
+    release()
+  })
+
+  test('where the main search failed, a fork\'s copy of a main row sets nothing apart: kept by the main conversation, it folds as its record', async ($, on) => {
+    startingOver(on, (argv) => (argv === MAIN ? { stdout: '', exitCode: 2 } : { stdout: argv === LISTED ? AGENT_FILE : argv === AGENT ? rows(['r1']) : '' }))
+    const m1 = await message($, 'm1', '<message>Starting.</message>')
+    const r1 = await message($, 'r1', 'Reading.')
+    // Its rows draw in the order they come, r1 among them.
+    expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    await kept($, 'r1', [{ type: 'text', text: 'Reading.' }])
+
+    expect(await m1.find({ type: 'Button' })).toBeUndefined()
+    expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('a row set apart by a fork\'s copy is the main conversation\'s again once the main conversation keeps it', async ($, on) => {
+    // The main search lists m1 alone, as one cut short before r1.
+    let isScanned = false
+    startingOver(on, (argv) => {
+      if (argv === AGENT) isScanned = true
+      return { stdout: argv === MAIN ? rows(['m1']) : argv === LISTED ? AGENT_FILE : argv === AGENT ? rows(['r1']) : '' }
+    })
+    await message($, 'm1', '<message>Starting.</message>')
+    const r1 = await message($, 'r1', 'Reading.')
+    for (let i = 0; i < 100 && !isScanned; i++) await tick()
+    await tick(5)
+    // Taken for the fork's, it draws as the engine draws it.
+    expect(await r1.find({ type: 'Text', text: 'Reading.' })).toBeDefined()
+    expect(await r1.find({ type: 'Button' })).toBeUndefined()
+
+    await kept($, 'r1', [{ type: 'text', text: 'Reading.' }])
+    expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 })
 
