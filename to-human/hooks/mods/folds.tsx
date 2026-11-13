@@ -1,6 +1,6 @@
 import type { EngineInterface, On, SessionAppendInput } from 'claude-code'
 
-import type { FoldRun, Folds, OpenFold } from '../../types/to-human'
+import type { FoldRun, Folds, OpenFold, OpenFoldLast } from '../../types/to-human'
 import { isMadeUp } from './message'
 import type { PromptRowProps, View } from './to-human'
 import { isApiError, isRead, isSpawn, keyOf, parse, promptRow } from './to-human'
@@ -238,26 +238,28 @@ export function follow(tracker: Tracker, steps: readonly Step[]) {
   }
 }
 
-const shown = (run: Run): FoldRun => ({
+/** A run as published; the open run's newest row goes under `foldLast` instead, which no drawing reads. */
+const shown = (run: Run, isClosed: boolean): FoldRun => ({
   first: run.first,
-  last: run.last,
+  ...(isClosed && { last: run.last }),
   ...(run.line !== undefined && { line: run.line }),
   ...(run.summary !== undefined && { summary: run.summary }),
   ...(run.isLive && { isLive: true as const }),
 })
 
-/** What the tracker publishes: the closed runs (`folds`) and the open one (`fold`). */
-export const published = (tracker: Tracker): { folds: Folds; fold: OpenFold } => ({
-  folds: { shape: 1, runs: tracker.closed.map(shown) },
-  fold: tracker.open === null ? null : shown(tracker.open),
+/** What the tracker publishes: the closed runs (`folds`), the open one (`fold`) and its newest row (`foldLast`). */
+export const published = (tracker: Tracker): { folds: Folds; fold: OpenFold; foldLast: OpenFoldLast } => ({
+  folds: { shape: 1, runs: tracker.closed.map((run) => shown(run, true)) },
+  fold: tracker.open === null ? null : shown(tracker.open, false),
+  foldLast: tracker.open?.last ?? null,
 })
 
 const isFoldRun = (value: unknown): value is FoldRun =>
   typeof value === 'object' && value !== null && typeof (value as { first?: unknown }).first === 'string'
 
-const held = (run: FoldRun): Run => ({
+const held = (run: FoldRun, last: unknown = run.last): Run => ({
   first: run.first,
-  last: typeof run.last === 'string' ? run.last : run.first,
+  last: typeof last === 'string' ? last : run.first,
   ...(typeof run.line === 'string' && { line: run.line }),
   ...(typeof run.summary === 'string' && { summary: run.summary }),
   isLive: run.isLive === true,
@@ -269,17 +271,18 @@ const held = (run: FoldRun): Run => ({
  * Takes up the runs a module before this one published (a reload of the
  * plugin's code loses the module's memory; `$.state` outlives it). The open
  * run goes on, held not whole: its calls' results are unknown here, and so is
- * what it held. A closed run still live was waiting on something that died
- * with that module, so it settles with what it had.
+ * what it held; its newest row (`openLast`) bounds it when it closes. A closed
+ * run still live was waiting on something that died with that module, so it
+ * settles with what it had.
  */
-export function takeUp(tracker: Tracker, folds: Folds | undefined, open: OpenFold | undefined) {
+export function takeUp(tracker: Tracker, folds: Folds | undefined, open: OpenFold | undefined, openLast: OpenFoldLast | undefined) {
   const runs = folds?.shape === 1 && Array.isArray(folds.runs) ? folds.runs.filter(isFoldRun) : []
   tracker.closed = runs.map((run) => {
     const closed = held(run)
     if (closed.isLive) due(closed)
     return closed
   })
-  tracker.open = isFoldRun(open) ? held(open) : null
+  tracker.open = isFoldRun(open) ? held(open, openLast) : null
 }
 
 /** The label a run's button reads: the live line while it is live (else its summary), its summary once it is not. */
@@ -310,6 +313,7 @@ export function labelOf(folds: Folds | undefined, open: OpenFold | undefined, vi
 
 const FOLDS = { plugin: 'to-human', key: 'folds' } as const
 const OPEN = { plugin: 'to-human', key: 'fold' } as const
+const OPEN_LAST = { plugin: 'to-human', key: 'foldLast' } as const
 
 /** What one registration of the tracker keeps between its hooks. */
 type Following = {
@@ -322,22 +326,24 @@ type Following = {
   /** The writes to `$.state`, one after another. */
   writes: Promise<void>
   /** What was last written under each key, as JSON. */
-  written: { folds: string; fold: string }
+  written: { folds: string; fold: string; foldLast: string }
 }
 
 /**
  * Writes what changed of the tracker's runs, after any write before it, so
- * the writes land in order: `folds` before `fold`, so a run that closes is
- * never in neither.
+ * the writes land in order: `foldLast` first, then `folds` before `fold`, so
+ * a run that closes is never in neither. Each `fold` write draws the fold
+ * buttons again, so `fold` changes only with what a button reads.
  */
 function publish($: EngineInterface, following: Following) {
-  const { folds, fold } = published(following.tracker)
-  const now = { folds: JSON.stringify(folds), fold: JSON.stringify(fold) }
-  const [isFolds, isFold] = [now.folds !== following.written.folds, now.fold !== following.written.fold]
-  if (!isFolds && !isFold) return
+  const { folds, fold, foldLast } = published(following.tracker)
+  const now = { folds: JSON.stringify(folds), fold: JSON.stringify(fold), foldLast: JSON.stringify(foldLast) }
+  const [isFolds, isFold, isLast] = [now.folds !== following.written.folds, now.fold !== following.written.fold, now.foldLast !== following.written.foldLast]
+  if (!isFolds && !isFold && !isLast) return
   following.written = now
   following.writes = following.writes
     .then(async () => {
+      if (isLast) await $.state.set(OPEN_LAST, foldLast)
       if (isFolds) await $.state.set(FOLDS, folds)
       if (isFold) await $.state.set(OPEN, fold)
     })
@@ -349,11 +355,15 @@ function load($: EngineInterface, following: Following): Promise<void> {
   following.loading ??= (async () => {
     const at = following.epoch
     try {
-      const [folds, open] = await Promise.all([$.state.get(FOLDS), $.state.get(OPEN)])
+      const [folds, open, openLast] = await Promise.all([$.state.get(FOLDS), $.state.get(OPEN), $.state.get(OPEN_LAST)])
       if (at === following.epoch) {
-        takeUp(following.tracker, folds.value, open.value)
+        takeUp(following.tracker, folds.value, open.value, openLast.value)
         // Nothing kept reads as no runs, so a start over nothing writes nothing.
-        following.written = { folds: JSON.stringify(folds.value ?? published(newTracker()).folds), fold: JSON.stringify(open.value ?? null) }
+        following.written = {
+          folds: JSON.stringify(folds.value ?? published(newTracker()).folds),
+          fold: JSON.stringify(open.value ?? null),
+          foldLast: JSON.stringify(openLast.value ?? null),
+        }
       }
     } catch (error) {
       $.ui.log(`to-human: the folds a module before left could not be read (${String(error)}); they start over`, { to: 'debug' })
@@ -400,7 +410,7 @@ function reset($: EngineInterface, following: Following) {
  * fails a row's keeping: each hook hands the row on as it was stored.
  */
 export function registerFolds(on: On, view: View, isOn: () => boolean) {
-  const following: Following = { tracker: newTracker(), backlog: [], epoch: 0, writes: Promise.resolve(), written: { folds: '', fold: '' } }
+  const following: Following = { tracker: newTracker(), backlog: [], epoch: 0, writes: Promise.resolve(), written: { folds: '', fold: '', foldLast: '' } }
 
   // Each load of the module raises this, the first and every reload.
   on('session.start', { cwd: /./ }, async ($, e, next) => {

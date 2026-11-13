@@ -193,7 +193,7 @@ const sent = (uuid: string, id: string) => response(uuid, use(id, MESSAGE_TOOL, 
 describe('follow: the runs the rows make', () => {
   test("a call opens a run and sets its live line; the newest call's line wins", () => {
     const tracker = tracked(sent('a0', 'toolu_m0'), call('a1', 'toolu_1', 'List the files'), result('u1', 'toolu_1'), call('a2', 'toolu_2', 'Run the tests'))
-    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [] }, fold: { first: 'toolu_1', last: 'toolu_2', line: 'Run the tests', isLive: true } })
+    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [] }, fold: { first: 'toolu_1', line: 'Run the tests', isLive: true }, foldLast: 'toolu_2' })
   })
 
   test('several calls in one response: the last one\'s line', () => {
@@ -203,7 +203,7 @@ describe('follow: the runs the rows make', () => {
 
   test('a live run with no call yet carries no line', () => {
     const tracker = tracked(response('a1', text('Reading the logs.')))
-    expect(published(tracker).fold).toEqual({ first: 'a1', last: 'a1', isLive: true })
+    expect(published(tracker).fold).toEqual({ first: 'a1', isLive: true })
   })
 
   test('a read row closes the open run with its last row; the next row opens another', () => {
@@ -216,23 +216,24 @@ describe('follow: the runs the rows make', () => {
     expect(published(tracker)).toEqual({
       // Closed with every result kept, and no summary made (M1): no longer live.
       folds: { shape: 1, runs: [{ first: 'toolu_1', last: 'a2' }] },
-      fold: { first: 'toolu_4', last: 'toolu_4', line: 'Run the tests', isLive: true },
+      fold: { first: 'toolu_4', line: 'Run the tests', isLive: true },
+      foldLast: 'toolu_4',
     })
   })
 
   test("a run closed while one of its calls runs stays live on that call's line until its result is kept, which joins it", () => {
     // One response, a call beside a message: the message is kept, and closes the run, before the call has run.
     const tracker = tracked(response('a1', use('toolu_b', 'Bash', { command: 'make', description: 'Build it' }), use('toolu_m', MESSAGE_TOOL, { text: 'Building.' })))
-    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [{ first: 'toolu_b', last: 'toolu_b', line: 'Build it', isLive: true }] }, fold: null })
+    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [{ first: 'toolu_b', last: 'toolu_b', line: 'Build it', isLive: true }] }, fold: null, foldLast: null })
     follow(tracker, stepsOf(result('u2', 'toolu_m', MESSAGE_TOOL, 'sent'), tracker.spawns))
     expect(published(tracker).folds.runs[0]?.isLive).toBe(true)
     follow(tracker, stepsOf(result('u3', 'toolu_b'), tracker.spawns))
-    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [{ first: 'toolu_b', last: 'toolu_b' }] }, fold: null })
+    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [{ first: 'toolu_b', last: 'toolu_b' }] }, fold: null, foldLast: null })
   })
 
   test('a mixed message closes the run before it and opens the next with its own record', () => {
     const tracker = tracked(call('a1', 'toolu_1', 'List the files'), result('u1', 'toolu_1'), response('a2', text('<message>Found it.</message>\nChecking the rest.')))
-    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [{ first: 'toolu_1', last: 'toolu_1' }] }, fold: { first: 'a2', last: 'a2', isLive: true } })
+    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [{ first: 'toolu_1', last: 'toolu_1' }] }, fold: { first: 'a2', isLive: true }, foldLast: 'a2' })
   })
 
   test('prompts taken in mid-turn stand in the run they fall in: one run', () => {
@@ -245,7 +246,7 @@ describe('follow: the runs the rows make', () => {
       userRow('d2', 'delivery', { kind: 'peer' }, 'Another Claude session sent a message: done', true),
       call('a2', 'toolu_2', 'Read the output'),
     )
-    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [] }, fold: { first: 'toolu_1', last: 'toolu_2', line: 'Read the output', isLive: true } })
+    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [] }, fold: { first: 'toolu_1', line: 'Read the output', isLive: true }, foldLast: 'toolu_2' })
   })
 
   test('a subagent\'s rows change nothing', () => {
@@ -261,7 +262,7 @@ describe('follow: the runs the rows make', () => {
 
   test('a read row with no open run, and a result of a call no run holds, change nothing', () => {
     const tracker = tracked(sent('a1', 'toolu_m'), result('u1', 'toolu_m', MESSAGE_TOOL, 'sent'), result('u2', 'toolu_unknown'))
-    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [] }, fold: null })
+    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [] }, fold: null, foldLast: null })
   })
 })
 
@@ -271,23 +272,31 @@ describe('takeUp: a module that starts over the runs another left', () => {
     takeUp(
       tracker,
       { shape: 1, runs: [{ first: 'toolu_1', last: 'a2', summary: 'Listed the files' }, { first: 'toolu_3', last: 'toolu_3', line: 'Build it', isLive: true }] },
-      { first: 'toolu_5', last: 'toolu_5', line: 'Run the tests', isLive: true },
+      { first: 'toolu_5', line: 'Run the tests', isLive: true },
+      'toolu_5',
     )
     expect(tracker.open?.isWhole).toBe(false)
     expect(published(tracker).folds.runs).toEqual([{ first: 'toolu_1', last: 'a2', summary: 'Listed the files' }, { first: 'toolu_3', last: 'toolu_3' }])
     follow(tracker, stepsOf(call('a6', 'toolu_6', 'Lint it'), tracker.spawns))
-    expect(published(tracker).fold).toEqual({ first: 'toolu_5', last: 'toolu_6', line: 'Lint it', isLive: true })
+    expect(published(tracker)).toMatchObject({ fold: { first: 'toolu_5', line: 'Lint it', isLive: true }, foldLast: 'toolu_6' })
     follow(tracker, stepsOf(result('u6', 'toolu_6'), tracker.spawns))
     follow(tracker, stepsOf(sent('a7', 'toolu_m'), tracker.spawns))
     expect(published(tracker).folds.runs.at(-1)).toEqual({ first: 'toolu_5', last: 'toolu_6' })
   })
 
+  test('a taken-up open run that no row joins after closes with the last bound it was published with', () => {
+    const tracker = newTracker()
+    takeUp(tracker, { shape: 1, runs: [] }, { first: 'toolu_5', line: 'Run the tests', isLive: true }, 'a9')
+    follow(tracker, stepsOf(sent('a10', 'toolu_m'), tracker.spawns))
+    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [{ first: 'toolu_5', last: 'a9' }] }, fold: null, foldLast: null })
+  })
+
   test('nothing kept, or a value of another shape, starts empty', () => {
     const tracker = newTracker()
-    takeUp(tracker, undefined, undefined)
-    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [] }, fold: null })
-    takeUp(tracker, { shape: 2, runs: 'no' } as unknown as Folds, 'x' as unknown as OpenFold)
-    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [] }, fold: null })
+    takeUp(tracker, undefined, undefined, undefined)
+    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [] }, fold: null, foldLast: null })
+    takeUp(tracker, { shape: 2, runs: 'no' } as unknown as Folds, 'x' as unknown as OpenFold, 7 as unknown as string)
+    expect(published(tracker)).toEqual({ folds: { shape: 1, runs: [] }, fold: null, foldLast: null })
   })
 })
 
@@ -340,7 +349,7 @@ describe('labelOf: the run a row stands in, by place', () => {
 })
 
 /** The tracker's hooks over a hand-made engine whose `$.state` is a map, as the host keeps it across a reload. */
-function trackerHooks(kept = new Map<string, unknown>(), { failWrites = false } = {}) {
+function trackerHooks(kept = new Map<string, unknown>(), { failWrites = false, writes = [] as string[] } = {}) {
   type Hook = (engine: EngineInterface, e: Record<string, unknown>, next: (e: unknown) => Promise<unknown>) => Promise<unknown>
   const hooks: { event: string; handler: Hook }[] = []
   const on = ((event: string, ...rest: unknown[]) => hooks.push({ event, handler: rest[rest.length - 1] as Hook })) as unknown as On
@@ -351,6 +360,7 @@ function trackerHooks(kept = new Map<string, unknown>(), { failWrites = false } 
       get: async (ref: { key: string }) => ({ value: kept.get(ref.key), version: 0 }),
       set: async (ref: { key: string }, value: unknown) => {
         if (failWrites) throw new Error('refused')
+        writes.push(ref.key)
         kept.set(ref.key, value)
         return { isSet: true, version: 1 }
       },
@@ -381,10 +391,12 @@ describe('registerFolds: the hooks', () => {
     await h.append(sent('a0', 'toolu_m0'))
     await h.append(call('a1', 'toolu_1', 'List the files'))
     await drain(h.settle)
-    expect(h.kept.get('fold')).toEqual({ first: 'toolu_1', last: 'toolu_1', line: 'List the files', isLive: true })
+    expect(h.kept.get('fold')).toEqual({ first: 'toolu_1', line: 'List the files', isLive: true })
+    expect(h.kept.get('foldLast')).toBe('toolu_1')
     await h.append(sent('a2', 'toolu_m'))
     await drain(h.settle)
     expect(h.kept.get('fold')).toBeNull()
+    expect(h.kept.get('foldLast')).toBeNull()
     expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_1', last: 'toolu_1', line: 'List the files', isLive: true }] })
   })
 
@@ -398,17 +410,50 @@ describe('registerFolds: the hooks', () => {
     await second.start()
     await second.append(call('a2', 'toolu_2', 'Run the tests'))
     await drain(second.settle)
-    expect(second.kept.get('fold')).toEqual({ first: 'toolu_1', last: 'toolu_2', line: 'Run the tests', isLive: true })
+    expect(second.kept.get('fold')).toEqual({ first: 'toolu_1', line: 'Run the tests', isLive: true })
+    expect(second.kept.get('foldLast')).toBe('toolu_2')
+  })
+
+  test('a taken-up open run still closes with its last bound', async () => {
+    const first = trackerHooks()
+    await first.start()
+    await first.append(call('a1', 'toolu_1', 'List the files'))
+    await first.append(response('a2', text('Now the tests.')))
+    await drain(first.settle)
+    const second = trackerHooks(first.kept)
+    await second.start()
+    await second.append(sent('a3', 'toolu_m'))
+    await drain(second.settle)
+    expect(second.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_1', last: 'a2' }] })
+  })
+
+  test('a note, a delivery or a result joining the open run writes foldLast, never fold, which the buttons read', async () => {
+    const writes: string[] = []
+    const kept = new Map<string, unknown>()
+    const h = trackerHooks(kept, { writes })
+    await h.start()
+    await h.append(sent('a0', 'toolu_m0'))
+    await h.append(call('a1', 'toolu_1', 'Wait for the build'))
+    await drain(h.settle)
+    writes.length = 0
+    await h.append(result('u1', 'toolu_1'))
+    await h.append(response('a2', text('Reading the output.')))
+    await h.append(userRow('d1', 'delivery', { kind: 'task-notification' }, notification('toolu_bg', 'completed')))
+    await drain(h.settle)
+    expect(writes).toEqual(['foldLast', 'foldLast'])
+    expect(kept.get('foldLast')).toBe('d1')
+    expect(kept.get('fold')).toEqual({ first: 'toolu_1', line: 'Wait for the build', isLive: true })
   })
 
   test('rows kept before the start-up read lands wait for it, in order', async () => {
-    const kept = new Map<string, unknown>([['fold', { first: 'toolu_1', last: 'toolu_1', line: 'List the files', isLive: true }]])
+    const kept = new Map<string, unknown>([['fold', { first: 'toolu_1', line: 'List the files', isLive: true }], ['foldLast', 'toolu_1']])
     const h = trackerHooks(kept)
     // No session.start first: the first row begins the read.
     await h.append(call('a2', 'toolu_2', 'Run the tests'))
     await h.append(call('a3', 'toolu_3', 'Lint it'))
     await drain(h.settle)
-    expect(h.kept.get('fold')).toEqual({ first: 'toolu_1', last: 'toolu_3', line: 'Lint it', isLive: true })
+    expect(h.kept.get('fold')).toEqual({ first: 'toolu_1', line: 'Lint it', isLive: true })
+    expect(h.kept.get('foldLast')).toBe('toolu_3')
   })
 
   test('a subagent\'s rows write nothing', async () => {
@@ -439,6 +484,7 @@ describe('registerFolds: the hooks', () => {
       await drain(h.settle)
       expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [] })
       expect(h.kept.get('fold')).toBeNull()
+      expect(h.kept.get('foldLast')).toBeNull()
     }
   })
 })
@@ -560,7 +606,7 @@ describe('the fold\'s button', () => {
     expect(await button(first)).toBe('› Read the output')
     expect(await button(delivery)).toBeUndefined()
     expect(await button(second)).toBeUndefined()
-    expect(seen.fold.at(-1)).toEqual({ first: 'toolu_1', last: 'toolu_2', line: 'Read the output', isLive: true })
+    expect(seen.fold.at(-1)).toEqual({ first: 'toolu_1', line: 'Read the output', isLive: true })
     expect(seen.folds).toEqual([])
   })
 
@@ -578,6 +624,6 @@ describe('the fold\'s button', () => {
     expect(seen.fold).toEqual([])
     // The next turn's record opens a run of its own.
     await keep($, call('a3', 'toolu_3', 'List the files'))
-    expect(seen.fold).toEqual([{ first: 'toolu_3', last: 'toolu_3', line: 'List the files', isLive: true }])
+    expect(seen.fold).toEqual([{ first: 'toolu_3', line: 'List the files', isLive: true }])
   })
 })
