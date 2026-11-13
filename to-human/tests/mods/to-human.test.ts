@@ -4,7 +4,7 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
 import { FINAL_ANSWER, MESSAGE_TOOL } from '../../hooks/mods/message'
-import { START_WAIT_MS, editorUrl, errorsIn, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs, unrequestedIn } from '../../hooks/mods/to-human'
+import { LIST_FILE_ARGS, START_WAIT_MS, editorUrl, errorsIn, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, readList, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs, unrequestedIn } from '../../hooks/mods/to-human'
 
 // The kit runs tests with the timer the hooks' declarations leave out.
 declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => unknown
@@ -373,8 +373,21 @@ describe('transcript order', () => {
   // The plugin under test.
   const PLUGIN = 'to-human'
 
+  test("a list's file goes when the search's own run rejects, as on a timeout", async () => {
+    const runs: string[][] = []
+    const read = readList(async (argv) => {
+      runs.push(argv)
+      if (argv === LIST_FILE_ARGS) return { exitCode: 0, stdout: '/tmp/to-human-places.abc\n' }
+      if (argv[0] === 'rm') return { exitCode: 0, stdout: '' }
+      throw new Error('process.run timed out')
+    }, (list) => placeArgs('/t.jsonl', list))
+
+    await expect(read).rejects.toThrow('timed out')
+    expect(runs.at(-1)).toEqual(['rm', '-f', '--', '/tmp/to-human-places.abc'])
+  })
+
   test('the search lists each row by its id and each call by its tool_use_id, in the file\'s order', async () => {
-    expect(placeArgs('/t.jsonl').includes('/t.jsonl')).toBe(true)
+    expect(placeArgs('/t.jsonl', '/tmp/list').includes('/t.jsonl')).toBe(true)
     const stdout = ['"uuid":"u1"', '"type":"tool_use","id":"toolu_1"', '"uuid":"u2"', '"isApiErrorMessage":true', '', 'noise'].join('\n')
 
     expect(placesIn(stdout)).toEqual(['u1', 'toolu_1', 'u2'])
@@ -430,7 +443,7 @@ describe('transcript order', () => {
     mock.store(on)
     on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
     const transcript = ['m1', 'r1', 'r2', 'm2', 'r3'].map((id) => `"uuid":"${id}"`).join('\n')
-    on('process.run', async () => ({ value: { exitCode: 0, stdout: transcript, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('process.run', listing(transcript))
     on('classic.SessionStart', () => ({}))
     await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
     const message = (requestId: string, text: string) =>
@@ -484,7 +497,7 @@ describe('transcript order', () => {
     mock.store(on)
     on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
     const transcript = ['m1', 'r1', 'r2', 'm2'].map((id) => `"uuid":"${id}"`).join('\n')
-    on('process.run', async () => ({ value: { exitCode: 0, stdout: transcript, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('process.run', listing(transcript))
     on('classic.SessionStart', () => ({}))
     const message = (requestId: string, text: string) =>
       $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: false } })
@@ -522,9 +535,10 @@ describe('rows off the window', () => {
     on('session.id', () => ({ value: 's1' }))
     const searches: (readonly string[])[] = []
     const transcript = ['m1', 'r1', 'r2', 'm2'].map((id) => `"uuid":"${id}"`).join('\n')
+    const answer = listing(transcript)
     on('process.run', async (_, e) => {
       searches.push(e.argv)
-      return { value: { exitCode: 0, stdout: transcript, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+      return answer(_, e)
     })
     const message = (requestId: string, text: string) =>
       $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: false } })
@@ -536,7 +550,7 @@ describe('rows off the window', () => {
     expect(rawAnswers).toBe(0)
     expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await r2.find({ type: 'Button' })).toBeUndefined()
-    expect(searches).toEqual([sessionPlaceArgs('s1')])
+    expect(searches).toContainEqual(sessionPlaceArgs('s1', '/tmp/to-human-places.test'))
   })
 
   // The kit's mounted rows do not say where the transcript scrolls, so the
@@ -933,6 +947,298 @@ describe('rows', () => {
 
 })
 
+/**
+ * A `process.run` answer for the transcript's search as the engine runs it:
+ * the list's file is made (`LIST_FILE_ARGS`), the search writes `list` to it
+ * (`placeArgs`), a piece is read back from it (`pieceArgs`), and the file
+ * goes; `cap` is the engine's bound on one run's output, 4 MiB.
+ */
+const listing = (list: string, { exitCode = list === '' ? 1 : 0, cap = 4 * 1024 * 1024 } = {}) =>
+  async (_: unknown, e: { argv: readonly string[] }) => {
+    const script = e.argv[2] ?? ''
+    const answer = (stdout: string, code = 0) => ({ value: { exitCode: code, stdout: stdout.slice(0, cap), stderr: '', isStdoutTruncated: stdout.length > cap, isStderrTruncated: false } })
+    if (script.startsWith('tail -c')) {
+      const from = Number(e.argv[5]) - 1
+      return answer(list.slice(from, from + Number(e.argv[6])))
+    }
+    if (script.startsWith('mktemp')) return answer('/tmp/to-human-places.test\n')
+    // The search itself: its exit code; a search that printed its list, as one did before the list went to a file, is cut at `cap`.
+    if (script.includes('search')) return answer(list, exitCode)
+    return answer('')
+  }
+
+// Rows the engine draws under ids the main conversation never keeps: a
+// prompt's preview while it waits in the queue (the person's own, a
+// hand-back), a subagent's transcript opened in the fullscreen view. The
+// events below are those a probe recorded live on 2.1.322, in their order
+// (`~/.local/share/fold-runs/evidence/`): rows kept before they draw, a group
+// drawn while its call streams, previews drawn under a new id at each redraw.
+describe('rows nothing keeps', () => {
+  const PLUGIN = 'to-human'
+  const engineDrawing = (on: On) =>
+    on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
+  /** A live session: a new one, whose transcript lists no rows yet. */
+  const live = (on: On, list = '') => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    on('session.id', () => ({ value: 's1' }))
+    on('process.run', listing(list))
+  }
+  const message = ($: Engine, requestId: string, text: string) =>
+    $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+  const group = ($: Engine, requestId: string, calls: string[]) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId,
+      props: { calls: calls.map((id) => ({ tool_use_id: id, tool: 'Bash', input: {} })), isExpanded: false, isActive: false, isCallsOnly: true },
+    } as never)
+  const call = ($: Engine, id: string, tool: string, input: unknown, output?: unknown) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: id,
+      props: { tool_use_id: id, tool, input, isRunning: false, isErrored: false, isInterrupted: false, output },
+    } as never)
+  const prompt = ($: Engine, requestId: string, text: string, origin: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'UserMessage', requestId, props: { text, origin, isExpanded: false, ...extra } } as never)
+  const kept = ($: Engine, uuid: string, content: unknown[], agentId?: string) =>
+    $.session.append({
+      door: 'response', uuid, origin: { kind: 'model', model: 'claude-haiku' },
+      message: { type: 'assistant', role: 'assistant', content },
+      ...(agentId !== undefined && { agentId }),
+    } as never)
+  const result = ($: Engine, uuid: string, id: string) =>
+    $.session.append({
+      door: 'tool-result', uuid, origin: { kind: 'tool', tool: 'Bash' },
+      message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
+    } as never)
+  const delivered = ($: Engine, uuid: string, door: 'delivery' | 'prompt', kind: string) =>
+    $.session.append({ door, uuid, origin: { kind }, message: { type: 'user', role: 'user', content: [{ type: 'text', text: 'x' }] } } as never)
+  const bashUse = (id: string) => ({ type: 'tool_use', id, name: 'Bash', input: {} })
+  const peer = { origin: { kind: 'peer' }, from: { name: 'general-purpose' } }
+  const QUEUED = 'Queued note from me while you work: no reply needed, carry on.'
+
+  /** The turn's start as the probe saw it: the prompt, a message sent, then a group whose call streams before its row is kept. */
+  const turnStart = async ($: Engine) => {
+    await delivered($, 'p0', 'prompt', 'composer')
+    await prompt($, 'p0', 'Run the steps.', { kind: 'composer' })
+    await kept($, 'a0', [{ type: 'tool_use', id: 'toolu_m1', name: MESSAGE_TOOL, input: { text: 'starting six' } }])
+    await call($, 'toolu_m1', MESSAGE_TOOL, { text: 'starting six' }, 'sent')
+    await result($, 'u0', 'toolu_m1')
+    const first = await group($, 'grouped-b1', ['toolu_b1'])
+    await kept($, 'a1', [bashUse('toolu_b1')])
+    await result($, 'u1', 'toolu_b1')
+    return first
+  }
+
+  test('a prompt typed into a running turn draws no button more, however often its preview redraws', async ($, on) => {
+    live(on)
+    const first = await turnStart($)
+    // The person types while a command runs: the queued prompt draws under a new id at each redraw.
+    const previews = [await prompt($, 'q1', QUEUED, { kind: 'composer' }), await prompt($, 'q2', QUEUED, { kind: 'composer' }), await prompt($, 'q3', QUEUED, { kind: 'composer' })]
+    // The command's notification, then the prompt itself, kept into the turn.
+    await delivered($, 'n1', 'delivery', 'task-notification')
+    const note = await prompt($, 'n1', 'Background command finished', { kind: 'task-notification' }, { task: { id: 't1', status: 'completed', toolUseId: 'toolu_b1' } })
+    await delivered($, 'p1', 'delivery', 'composer')
+    const typed = await prompt($, 'p1', QUEUED, { kind: 'composer' })
+    const second = await group($, 'grouped-b2', ['toolu_b2'])
+    await kept($, 'a2', [bashUse('toolu_b2')])
+
+    for (const preview of previews) {
+      expect(await preview.find({ type: 'Text', text: QUEUED })).toBeDefined()
+      expect(await preview.find({ type: 'Button' })).toBeUndefined()
+    }
+    expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await note.find({ type: 'Button' })).toBeUndefined()
+    // The prompt kept into the turn is the person's and cuts the run, as it shows.
+    expect(await typed.find({ type: 'Text', text: QUEUED })).toBeDefined()
+    // A live run's button reads its newest call's line (folds.tsx): here a Bash call's, with no description.
+    expect((await second.find({ type: 'Button' }))?.text).toBe('› Bash')
+  })
+
+  test('a hand-back queued right after a row the person reads leaves the next run its button', async ($, on) => {
+    live(on)
+    await delivered($, 'p0', 'prompt', 'composer')
+    await prompt($, 'p0', 'Run the steps.', { kind: 'composer' })
+    await kept($, 'a0', [{ type: 'tool_use', id: 'toolu_m1', name: MESSAGE_TOOL, input: { text: 'waiting' } }])
+    await call($, 'toolu_m1', MESSAGE_TOOL, { text: 'waiting' }, 'sent')
+    await result($, 'u0', 'toolu_m1')
+    // The group draws while its call streams; the agent's hand-back, queued, draws its preview.
+    const first = await group($, 'grouped-b1', ['toolu_b1'])
+    const preview = await prompt($, 'h0', 'done', peer.origin, { from: peer.from })
+    await kept($, 'a1', [bashUse('toolu_b1')])
+    await result($, 'u1', 'toolu_b1')
+    await delivered($, 'h1', 'delivery', 'peer')
+    const handBack = await prompt($, 'h1', 'done', peer.origin, { from: peer.from })
+
+    expect((await first.find({ type: 'Button' }))?.text).toBe('› Bash')
+    expect(await preview.find({ type: 'Button' })).toBeUndefined()
+    expect(await preview.find({ type: 'Text', text: 'done' })).toBeUndefined()
+    expect(await handBack.find({ type: 'Button' })).toBeUndefined()
+  })
+
+  test("a run unfolded mid-turn is not cut by a preview and keeps its fold at its end", async ($, on) => {
+    live(on)
+    const first = await turnStart($)
+    await first.press({ key: 'to-human-toggle' })
+    await prompt($, 'q1', QUEUED, { kind: 'composer' })
+    await prompt($, 'q2', QUEUED, { kind: 'composer' })
+    await delivered($, 'n1', 'delivery', 'task-notification')
+    const note = await prompt($, 'n1', 'Background command finished', { kind: 'task-notification' }, { task: { id: 't1', status: 'completed', toolUseId: 'toolu_b1' } })
+
+    expect(await note.find({ type: 'Text', text: 'Background command finished' })).toBeDefined()
+    expect(await note.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    expect(await note.find({ type: 'Button', text: 'working record' })).toBeUndefined()
+    expect(await first.find({ type: 'Button', text: 'fold to report' })).toBeUndefined()
+  })
+
+  test("an agent's transcript, opened mid-turn, draws as the engine does and leaves the main run whole", async ($, on) => {
+    live(on)
+    const first = await turnStart($)
+    // The agent's rows, kept as it ran, drawn once its transcript is opened.
+    await kept($, 'x1', [{ type: 'text', text: '<message>agent hello</message>' }], 'agent-1')
+    await kept($, 'x2', [bashUse('toolu_a1')], 'agent-1')
+    const agentGroup = await group($, 'grouped-x2', ['toolu_a1'])
+    const agentText = await message($, 'x1', '<message>agent hello</message>')
+    // Back in the main view, the turn goes on: the agent's hand-back, then more calls.
+    await delivered($, 'h1', 'delivery', 'peer')
+    const handBack = await prompt($, 'h1', 'done', peer.origin, { from: peer.from })
+    const second = await group($, 'grouped-b2', ['toolu_b2'])
+    await kept($, 'a2', [bashUse('toolu_b2')])
+
+    expect(await agentText.find({ type: 'Text', text: '<message>agent hello</message>' })).toBeDefined()
+    expect(await agentGroup.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+    expect(await agentGroup.find({ type: 'Button' })).toBeUndefined()
+    // One run between the message and the turn's end, behind the first group's one button.
+    expect((await first.find({ type: 'Button' }))?.text).toBe('› Bash')
+    expect(await handBack.find({ type: 'Button' })).toBeUndefined()
+    expect(await second.find({ type: 'Button' })).toBeUndefined()
+    await first.press({ key: 'to-human-toggle' })
+    expect(await handBack.find({ type: 'Text', text: 'done' })).toBeDefined()
+    expect(await second.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+  })
+
+  test('an agent row that drew before it was kept leaves the main order once it is', async ($, on) => {
+    live(on)
+    const first = await turnStart($)
+    // The agent writes while its transcript is open: its row draws as it streams.
+    const agentText = await message($, 'x1', '<message>agent hello</message>')
+    const later = await group($, 'grouped-b2', ['toolu_b2'])
+    await kept($, 'x1', [{ type: 'text', text: '<message>agent hello</message>' }], 'agent-1')
+    await kept($, 'a2', [bashUse('toolu_b2')])
+
+    expect(await agentText.find({ type: 'Text', text: '<message>agent hello</message>' })).toBeDefined()
+    expect((await first.find({ type: 'Button' }))?.text).toBe('› Bash')
+    expect(await later.find({ type: 'Button' })).toBeUndefined()
+  })
+
+  test("an agent's older rows, kept before the module loaded, stand in no run once the main conversation's step ends", async ($, on) => {
+    live(on)
+    const first = await turnStart($)
+    // Its transcript opened: its prompt, its marked text, its group, none of them kept as the module saw.
+    const agentPrompt = await prompt($, 'x0', 'Write the document.', { kind: 'coordinator' })
+    const agentText = await message($, 'x1', '<message>agent hello</message>')
+    const agentGroup = await group($, 'grouped-x2', ['toolu_a1'])
+    // The main conversation's next step: a row kept between its steps judges them.
+    const second = await group($, 'grouped-b2', ['toolu_b2'])
+    await kept($, 'a2', [bashUse('toolu_b2')])
+    await result($, 'u2', 'toolu_b2')
+    await delivered($, 'h1', 'delivery', 'peer')
+    const handBack = await prompt($, 'h1', 'done', peer.origin, { from: peer.from })
+
+    // Its own instructions, from whoever dispatched it, still read in its transcript.
+    expect(await agentPrompt.find({ type: 'Text', text: 'Write the document.' })).toBeDefined()
+    expect(await agentPrompt.find({ type: 'Button' })).toBeUndefined()
+    expect(await agentText.find({ type: 'Text', text: '<message>agent hello</message>' })).toBeDefined()
+    expect(await agentGroup.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+    expect((await first.find({ type: 'Button' }))?.text).toBe('› Bash')
+    expect(await second.find({ type: 'Button' })).toBeUndefined()
+    expect(await handBack.find({ type: 'Button' })).toBeUndefined()
+  })
+
+  test("every call of an older agent's group the engine expands draws as the engine does once the group is judged", async ($, on) => {
+    live(on)
+    await turnStart($)
+    // Its transcript opened in the ctrl+o form: the group expanded, each call a row of its own.
+    const calls = (ids: string[]) => ids.map((id) => ({ tool_use_id: id, tool: 'Bash', input: {} }))
+    await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'grouped-x1',
+      props: { calls: calls(['toolu_a1', 'toolu_a2']), isExpanded: true, isActive: false, isCallsOnly: true },
+    } as never)
+    const rows = [await call($, 'toolu_a1', 'Bash', {}, 'ok'), await call($, 'toolu_a2', 'Bash', {}, 'ok')]
+    // The main conversation's next step's end judges the group.
+    await kept($, 'a2', [bashUse('toolu_b2')])
+    await result($, 'u2', 'toolu_b2')
+
+    for (const row of rows) {
+      expect(await row.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    }
+  })
+
+  test("a response's blocks streaming across another's row are not judged away; its step's end keeps them", async ($, on) => {
+    live(on)
+    await delivered($, 'p0', 'prompt', 'composer')
+    await prompt($, 'p0', 'Run the steps.', { kind: 'composer' })
+    await kept($, 'a0', [{ type: 'tool_use', id: 'toolu_m1', name: MESSAGE_TOOL, input: { text: 'waiting' } }])
+    await call($, 'toolu_m1', MESSAGE_TOOL, { text: 'waiting' }, 'sent')
+    await result($, 'u0', 'toolu_m1')
+    // A response's blocks, each kept as it ends: its thinking, then a call that streamed meanwhile.
+    const streaming = await call($, 'toolu_s1', 'SendMessage', { to: 'agent', message: 'hello' })
+    await kept($, 'a1', [{ type: 'thinking', thinking: '…' }])
+    expect(await streaming.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    await kept($, 'a2', [{ type: 'tool_use', id: 'toolu_s1', name: 'SendMessage', input: {} }])
+    await result($, 'u1', 'toolu_s1')
+
+    expect((await streaming.find({ type: 'Button' }))?.text).toBe('› SendMessage')
+    expect(await streaming.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+  })
+
+  test("the person's prompt drawn before its row is kept is theirs once it is, and cuts the run after it", async ($, on) => {
+    live(on)
+    const first = await turnStart($)
+    // The next prompt draws as it is submitted, then its row is kept.
+    const next = await prompt($, 'p1', 'And now this.', { kind: 'composer' })
+    await delivered($, 'p1', 'prompt', 'composer')
+    const second = await group($, 'grouped-b2', ['toolu_b2'])
+    await kept($, 'a2', [bashUse('toolu_b2')])
+
+    expect(await next.find({ type: 'Text', text: 'And now this.' })).toBeDefined()
+    expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect((await second.find({ type: 'Button' }))?.text).toBe('› Bash')
+  })
+
+  test("a transcript's list past one run's output is read whole: its last rows fold in its order", async ($, on) => {
+    // About 5 MB of rows before the ones drawn, past the 4 MiB one run returns.
+    const older = Array.from({ length: 200_000 }, (_, i) => `"uuid":"older-${String(i).padStart(7, '0')}"`)
+    live(on, [...older, '"uuid":"m1"', '"uuid":"r1"', '"uuid":"r2"'].join('\n'))
+    on('session.messages', () => ({ value: [{ role: 'assistant', text: '<message>Earlier.</message>', toolUses: [] }] }))
+    // A module that starts over is asked about its rows newest first.
+    const r2 = await message($, 'r2', 'Testing.')
+    const r1 = await message($, 'r1', 'Reading.')
+    await message($, 'm1', '<message>Starting.</message>')
+
+    expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await r2.find({ type: 'Button' })).toBeUndefined()
+  })
+
+  test("/to-human-dump writes the view's order with each row's kind and place", async ($, on) => {
+    live(on)
+    const writes: { path: string; text: string }[] = []
+    on('fs.write', (_, e) => (writes.push(e as { path: string; text: string }), { value: undefined }))
+    on('fs.read', () => ({ value: '{"version":"9.9.9"}' }))
+    on('session.version', () => ({ value: { version: '2.1.322' } }))
+    await turnStart($)
+    await prompt($, 'q1', QUEUED, { kind: 'composer' })
+    await $.command.run({ command: 'to-human-dump', args: '' } as never)
+
+    expect(writes).toHaveLength(1)
+    expect(writes[0]!.path).toMatch(/\/to-human\/dumps\/.+-s1\.json$/)
+    const dump = JSON.parse(writes[0]!.text) as { engine: string; plugin: string; order: { id: string; kind: string; place: string }[]; apart: { id: string; isUnkept: boolean }[] }
+    expect(dump.engine).toBe('2.1.322')
+    expect(dump.plugin).toBe('9.9.9')
+    expect(dump.order).toContainEqual({ id: 'group:toolu_b1', kind: 'record', place: 'placed' })
+    expect(dump.apart).toContainEqual({ id: 'q1', hasDrawn: true, isUnkept: true })
+  })
+})
+
 describe('failures', () => {
   const PLUGIN = 'to-human'
   const engineDrawing = (on: On) =>
@@ -992,7 +1298,7 @@ describe('failures', () => {
     expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 
-  test("the model's text, a subagent's error and the stand-in for no response are working record", async ($, on) => {
+  test("the model's text and the stand-in for no response are working record; a subagent's error is its own transcript's", async ($, on) => {
     mock.env(on, {})
     mock.store(on)
     engineDrawing(on)
@@ -1002,15 +1308,18 @@ describe('failures', () => {
     await $.session.append(response('r3', 'No response requested.'))
     const rows = [
       await message($, 'r1', 'API Error: quoted by the model'),
-      await message($, 'r2', 'API Error: terminated'),
       await message($, 'r3', 'No response requested.'),
     ]
+    // Drawn only where the subagent's transcript is open, as the engine draws it.
+    const subagent = await message($, 'r2', 'API Error: terminated')
 
     // One run, folded behind the first row's button.
     expect(await rows[0]!.find({ type: 'Button', text: 'working record' })).toBeDefined()
     for (const row of rows) {
       expect((await row.findAll({ type: 'Text' })).some((text) => text.text.startsWith('API Error') || text.text.startsWith('No response'))).toBe(false)
     }
+    expect(await subagent.find({ type: 'Text', text: 'API Error: terminated' })).toBeDefined()
+    expect(await subagent.find({ type: 'Button' })).toBeUndefined()
   })
 
   test('an API error a resumed transcript holds stays in the report', async ($, on) => {
@@ -1018,7 +1327,7 @@ describe('failures', () => {
     mock.store(on)
     engineDrawing(on)
     const transcript = ['"uuid":"m1"', '"uuid":"r1"', '"uuid":"e1"', '"isApiErrorMessage":true', '"uuid":"p2"'].join('\n')
-    on('process.run', async () => ({ value: { exitCode: 0, stdout: transcript, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('process.run', listing(transcript))
     on('classic.SessionStart', () => ({}))
     await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
     await message($, 'm1', '<message>Starting.</message>')
@@ -1544,7 +1853,7 @@ describe('the message tool', () => {
     engineDrawing(on)
     // The made-up row, a model's row saying the same, and another hook's own response (sminos' synthetic Read).
     const transcript = ['"uuid":"m1"', '"uuid":"h1"', '"answeredWithoutRequest":true', '"uuid":"w1"', '"uuid":"m2"', '"uuid":"h2"', '"answeredWithoutRequest":true', '"uuid":"p2"'].join('\n')
-    on('process.run', async () => ({ value: { exitCode: 0, stdout: transcript, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('process.run', listing(transcript))
     on('classic.SessionStart', () => ({}))
     await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
     await message($, 'm1', '<message>Starting.</message>')

@@ -406,6 +406,16 @@ the spec's Decision Log entry "the branch review round"
   taken from each `session.append` after, and drawn rows sort by it. In the
   resumed-session repro, PageUp through the whole report found two
   back-to-back `[ working record ]` sites before and none after.
+- **An older subagent's transcript hides some of its own rows (to-human
+  0.7.4).** A row no loop was seen to keep stands in no run. A subagent that
+  ran before the module loaded is one: its rows were never appended under its
+  `agentId` while this module ran. A prompt row of such a loop that reads as
+  working record draws nothing, as a queued delivery's preview does. Its own
+  instructions (origin `coordinator`) still show. What stays hidden is the
+  rest: its tasks' notifications, a nested agent's hand-back. The band's
+  `full transcript ›` draws them. Telling them apart from a queued preview of
+  the main conversation's needs more than the event says. T3. Trigger:
+  someone needs those rows in an agent's transcript.
 
 ## interim-notification filter (2026-10-17, 7.165.0, PR #218)
 
