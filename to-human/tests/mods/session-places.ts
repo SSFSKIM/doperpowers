@@ -8,9 +8,10 @@
 // Each writes its list to a file of its own, read back whole a piece at a
 // time (readList, pieceArgs), the file gone after: here in pieces far smaller
 // than the engine's, so a list runs across many, and a piece ends mid-line.
+// A search cut short (its run rejected, as on a timeout) leaves no file either.
 // Run with bun (to-human/tests/mods/run.sh); not a kit test, as it starts
 // processes.
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -44,7 +45,7 @@ try {
     console.log('session-places: no rg on this machine; the grep searches alone')
   }
   for (const [tool, PATH] of paths) {
-    const check = async (name: string, argv: string[], env: Record<string, string>, ids: string[], code: number, errors: string[] = [], unrequested: string[] = [], bytes = 37) => {
+    const check = async (name: string, argv: (list: string) => string[], env: Record<string, string>, ids: string[], code: number, errors: string[] = [], unrequested: string[] = [], bytes = 37) => {
       const run = async (command: string[]) => {
         const [shell, ...args] = command
         const done = spawnSync(shell!, args, { env: { PATH, TMPDIR: temp, ...env }, encoding: 'utf8' })
@@ -57,14 +58,30 @@ try {
       }
       checks += 1
     }
-    const session = sessionPlaceArgs('0b6f')
+    const session = (list: string) => sessionPlaceArgs('0b6f', list)
     await check('~/.claude', session, { HOME: join(root, 'home') }, ['a', 't1', 'b', 'e', 'h'], 0, ['e'], ['h'])
     await check('CLAUDE_CONFIG_DIR', session, { HOME: join(root, 'home'), CLAUDE_CONFIG_DIR: join(root, 'config') }, ['c'], 0)
     await check('no transcript yet', session, { HOME: join(root, 'empty') }, [], 1)
-    await check('a resumed transcript', placeArgs(join(root, 'home/.claude/projects/-work/0b6f.jsonl')), {}, ['a', 't1', 'b', 'e', 'h'], 0, ['e'], ['h'])
+    await check('a resumed transcript', (list) => placeArgs(join(root, 'home/.claude/projects/-work/0b6f.jsonl'), list), {}, ['a', 't1', 'b', 'e', 'h'], 0, ['e'], ['h'])
     await check('a list of many pieces', session, { HOME: join(root, 'many') }, many, 0)
     await check('a list in one piece', session, { HOME: join(root, 'many') }, many, 0, [], [], 1 << 20)
   }
+  // A search whose run is cut by its timeout (an rg that never ends, killed
+  // as the engine's process.run kills a run past its time) leaves no file.
+  const slow = join(root, 'slow')
+  mkdirSync(slow)
+  writeFileSync(join(slow, 'rg'), '#!/bin/sh\nwhile :; do :; done\n', { mode: 0o700 })
+  const timed = (argv: string[]) => new Promise<{ exitCode: number; stdout: string }>((resolve, reject) => {
+    const child = spawn(argv[0]!, argv.slice(1), { detached: true, env: { PATH: `${slow}:/usr/bin:/bin`, TMPDIR: temp }, stdio: ['ignore', 'pipe', 'ignore'] })
+    let stdout = ''
+    let isExpired = false
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    const timer = setTimeout(() => ((isExpired = true), process.kill(-child.pid!, 'SIGKILL')), 300)
+    child.on('close', (code) => (clearTimeout(timer), isExpired ? reject(new Error('process.run timed out')) : resolve({ exitCode: code ?? 2, stdout })))
+  })
+  const cut = await readList(timed, (list) => placeArgs(join(root, 'home/.claude/projects/-work/0b6f.jsonl'), list)).then(() => 'read', (error: unknown) => String(error))
+  if (!cut.includes('timed out')) failures.push(`a search cut by its timeout: ${cut}`)
+  checks += 1
   // Every list's file is gone once read.
   const left = spawnSync('ls', [temp], { encoding: 'utf8' }).stdout.trim()
   if (left !== '' || !existsSync(temp)) failures.push(`the lists' files were left: ${left}`)

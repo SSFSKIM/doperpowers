@@ -4,7 +4,7 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
 import { FINAL_ANSWER, MESSAGE_TOOL } from '../../hooks/mods/message'
-import { START_WAIT_MS, editorUrl, errorsIn, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs, unrequestedIn } from '../../hooks/mods/to-human'
+import { LIST_FILE_ARGS, START_WAIT_MS, editorUrl, errorsIn, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, readList, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs, unrequestedIn } from '../../hooks/mods/to-human'
 
 // The kit runs tests with the timer the hooks' declarations leave out.
 declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => unknown
@@ -373,8 +373,21 @@ describe('transcript order', () => {
   // The plugin under test.
   const PLUGIN = 'to-human'
 
+  test("a list's file goes when the search's own run rejects, as on a timeout", async () => {
+    const runs: string[][] = []
+    const read = readList(async (argv) => {
+      runs.push(argv)
+      if (argv === LIST_FILE_ARGS) return { exitCode: 0, stdout: '/tmp/to-human-places.abc\n' }
+      if (argv[0] === 'rm') return { exitCode: 0, stdout: '' }
+      throw new Error('process.run timed out')
+    }, (list) => placeArgs('/t.jsonl', list))
+
+    await expect(read).rejects.toThrow('timed out')
+    expect(runs.at(-1)).toEqual(['rm', '-f', '--', '/tmp/to-human-places.abc'])
+  })
+
   test('the search lists each row by its id and each call by its tool_use_id, in the file\'s order', async () => {
-    expect(placeArgs('/t.jsonl').includes('/t.jsonl')).toBe(true)
+    expect(placeArgs('/t.jsonl', '/tmp/list').includes('/t.jsonl')).toBe(true)
     const stdout = ['"uuid":"u1"', '"type":"tool_use","id":"toolu_1"', '"uuid":"u2"', '"isApiErrorMessage":true', '', 'noise'].join('\n')
 
     expect(placesIn(stdout)).toEqual(['u1', 'toolu_1', 'u2'])
@@ -537,7 +550,7 @@ describe('rows off the window', () => {
     expect(rawAnswers).toBe(0)
     expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await r2.find({ type: 'Button' })).toBeUndefined()
-    expect(searches[0]).toEqual(sessionPlaceArgs('s1'))
+    expect(searches).toContainEqual(sessionPlaceArgs('s1', '/tmp/to-human-places.test'))
   })
 
   // The kit's mounted rows do not say where the transcript scrolls, so the
@@ -936,9 +949,9 @@ describe('rows', () => {
 
 /**
  * A `process.run` answer for the transcript's search as the engine runs it:
- * the search writes `list` to a file and prints its path (`placeArgs`), a
- * piece is read back from it (`pieceArgs`), and the file goes; `cap` is the
- * engine's bound on one run's output, 4 MiB.
+ * the list's file is made (`LIST_FILE_ARGS`), the search writes `list` to it
+ * (`placeArgs`), a piece is read back from it (`pieceArgs`), and the file
+ * goes; `cap` is the engine's bound on one run's output, 4 MiB.
  */
 const listing = (list: string, { exitCode = list === '' ? 1 : 0, cap = 4 * 1024 * 1024 } = {}) =>
   async (_: unknown, e: { argv: readonly string[] }) => {
@@ -948,8 +961,8 @@ const listing = (list: string, { exitCode = list === '' ? 1 : 0, cap = 4 * 1024 
       const from = Number(e.argv[5]) - 1
       return answer(list.slice(from, from + Number(e.argv[6])))
     }
-    if (script.includes('mktemp')) return answer('/tmp/to-human-places.test\n', exitCode)
-    // A search that prints its list itself, as before the list went to a file.
+    if (script.startsWith('mktemp')) return answer('/tmp/to-human-places.test\n')
+    // The search itself: its exit code; a search that printed its list, as one did before the list went to a file, is cut at `cap`.
     if (script.includes('search')) return answer(list, exitCode)
     return answer('')
   }
@@ -1130,12 +1143,33 @@ describe('rows nothing keeps', () => {
     await delivered($, 'h1', 'delivery', 'peer')
     const handBack = await prompt($, 'h1', 'done', peer.origin, { from: peer.from })
 
+    // Its own instructions, from whoever dispatched it, still read in its transcript.
+    expect(await agentPrompt.find({ type: 'Text', text: 'Write the document.' })).toBeDefined()
     expect(await agentPrompt.find({ type: 'Button' })).toBeUndefined()
     expect(await agentText.find({ type: 'Text', text: '<message>agent hello</message>' })).toBeDefined()
     expect(await agentGroup.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
     expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await second.find({ type: 'Button' })).toBeUndefined()
     expect(await handBack.find({ type: 'Button' })).toBeUndefined()
+  })
+
+  test("every call of an older agent's group the engine expands draws as the engine does once the group is judged", async ($, on) => {
+    live(on)
+    await turnStart($)
+    // Its transcript opened in the ctrl+o form: the group expanded, each call a row of its own.
+    const calls = (ids: string[]) => ids.map((id) => ({ tool_use_id: id, tool: 'Bash', input: {} }))
+    await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'grouped-x1',
+      props: { calls: calls(['toolu_a1', 'toolu_a2']), isExpanded: true, isActive: false, isCallsOnly: true },
+    } as never)
+    const rows = [await call($, 'toolu_a1', 'Bash', {}, 'ok'), await call($, 'toolu_a2', 'Bash', {}, 'ok')]
+    // The main conversation's next step's end judges the group.
+    await kept($, 'a2', [bashUse('toolu_b2')])
+    await result($, 'u2', 'toolu_b2')
+
+    for (const row of rows) {
+      expect(await row.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    }
   })
 
   test("a response's blocks streaming across another's row are not judged away; its step's end keeps them", async ($, on) => {

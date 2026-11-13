@@ -33,6 +33,7 @@ describe('MAWS native to-human', () => {
         resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }),
         invalidate: () => { calls.push('invalidate') },
         toast: () => { calls.push('toast') },
+        log: () => {},
       },
     } as unknown as EngineInterface
     const text = '<message>One.</message>\n<need-input>Which branch?\n<choice>main</choice>\n</need-input>'

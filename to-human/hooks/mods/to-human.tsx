@@ -797,15 +797,12 @@ const PLACES = '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"|"isApiErrorMessage
 const SEARCH = 'search() { if command -v rg >/dev/null 2>&1; then exec rg --no-config -a -o -N --no-filename -e "$2" -- "$1"; fi; exec grep -o -E -e "$2" -- "$1"; }'
 
 /**
- * Where a search's list goes: a file of its own, whose path is the one line
- * printed, since a run's output stops at 4 MiB and a long session's list runs
- * past it (`readList` reads it back).
+ * The search that lists a transcript's rows in its order (`PLACES`) into the
+ * file `list`: a run's output stops at 4 MiB and a long session's list runs
+ * past it, so `readList` makes the file and reads it back.
  */
-const TO_FILE = 't=$(mktemp "${TMPDIR:-/tmp}/to-human-places.XXXXXX") || exit 2; printf "%s\\n" "$t"'
-
-/** The search that lists a transcript's rows in its order (`PLACES`), into a file (`TO_FILE`). */
-export function placeArgs(path: string): string[] {
-  return ['sh', '-c', `${SEARCH}; ${TO_FILE}; ( search "$1" "$2" ) > "$t"`, 'sh', path, PLACES]
+export function placeArgs(path: string, list: string): string[] {
+  return ['sh', '-c', `${SEARCH}; ( search "$1" "$2" ) > "$3"`, 'sh', path, PLACES, list]
 }
 
 /**
@@ -815,10 +812,13 @@ export function placeArgs(path: string): string[] {
  * by. A session with no file yet (a new one, a fork before its first write)
  * lists no rows, as a search that finds none.
  */
-export function sessionPlaceArgs(sessionId: string): string[] {
-  const script = `${SEARCH}; ${TO_FILE}; ( for f in "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl; do [ -f "$f" ] && search "$f" "$2"; done; exit 1 ) > "$t"`
-  return ['sh', '-c', script, 'sh', sessionId, PLACES]
+export function sessionPlaceArgs(sessionId: string, list: string): string[] {
+  const script = `${SEARCH}; ( for f in "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl; do [ -f "$f" ] && search "$f" "$2"; done; exit 1 ) > "$3"`
+  return ['sh', '-c', script, 'sh', sessionId, PLACES, list]
 }
+
+/** The run that makes a list's file, printing its path. */
+export const LIST_FILE_ARGS = ['sh', '-c', 'mktemp "${TMPDIR:-/tmp}/to-human-places.XXXXXX"']
 
 /** How much of a search's list one run reads back: under the 4 MiB a run's output stops at. */
 export const PIECE_BYTES = 3 * 1024 * 1024
@@ -843,19 +843,22 @@ function utf8Length(text: string): number {
 export type Run = (argv: string[]) => Promise<{ exitCode: number; stdout: string }>
 
 /**
- * A search's whole list and its exit code: the search (`placeArgs`) writes
- * the list to a file, read back here a piece at a time (`pieceArgs`), each
- * piece cut at its last line's end, and the file goes once read. A search
- * that failed (an exit past 1) reads nothing back.
+ * A search's whole list and its exit code: the list's file is made first
+ * (`LIST_FILE_ARGS`), the search (`placeArgs` for that file) writes it, and it
+ * is read back a piece at a time (`pieceArgs`), each piece cut at its last
+ * line's end. The file is this read's from its making on, so it goes however
+ * the read ends: a search that failed (an exit past 1, which reads nothing
+ * back), or a run that rejected (a timeout, an abort). A file that could not
+ * be made is a failed search.
  */
-export async function readList(run: Run, search: string[], bytes = PIECE_BYTES): Promise<{ exitCode: number; stdout: string }> {
-  const listed = await run(search)
-  const path = listed.stdout.split('\n')[0] ?? ''
-  if (path === '') {
-    // No file to read back: a search that failed before writing one, or one that listed nothing.
-    return { exitCode: listed.exitCode, stdout: '' }
+export async function readList(run: Run, search: (list: string) => string[], bytes = PIECE_BYTES): Promise<{ exitCode: number; stdout: string }> {
+  const made = await run(LIST_FILE_ARGS)
+  const path = made.stdout.trim()
+  if (made.exitCode !== 0 || path === '') {
+    return { exitCode: 2, stdout: '' }
   }
   try {
+    const listed = await run(search(path))
     if (listed.exitCode > 1) {
       return { exitCode: listed.exitCode, stdout: '' }
     }
@@ -1095,7 +1098,7 @@ async function recordRow<E extends RenderInput>(
  * debug log as `what` could not be read, `meaning` after, unless `signal`'s
  * abort cut it short.
  */
-async function searched($: EngineInterface, search: string[], signal: AbortSignal, what: string, meaning: string): Promise<string | undefined> {
+async function searched($: EngineInterface, search: (list: string) => string[], signal: AbortSignal, what: string, meaning: string): Promise<string | undefined> {
   try {
     const found = await readList((argv) => $.process.run(argv), search)
     // grep: 0 found, 1 none, anything else a failure.
@@ -1120,7 +1123,7 @@ async function searched($: EngineInterface, search: string[], signal: AbortSigna
  * `signal` is the dispatch's that searches: a search its abort cut short says
  * nothing.
  */
-async function place($: EngineInterface, view: View, search: string[], signal: AbortSignal) {
+async function place($: EngineInterface, view: View, search: (list: string) => string[], signal: AbortSignal) {
   const main = await searched($, search, signal, "the transcript's order", 'its runs follow the order rows draw in')
   if (main === undefined) {
     return
@@ -1154,7 +1157,7 @@ async function sentMark($: EngineInterface, signal: AbortSignal): Promise<boolea
 async function placeSession($: EngineInterface, view: View, signal: AbortSignal) {
   try {
     const id = await $.session.id()
-    await place($, view, sessionPlaceArgs(id), signal)
+    await place($, view, (list) => sessionPlaceArgs(id, list), signal)
   } catch (error) {
     if (!signal.aborted) {
       $.ui.log(`to-human: the session's id could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
@@ -1423,7 +1426,7 @@ export function registerToHuman(on: On) {
     }
     // The hooks beneath run while this searches: sminos' ask mod reads
     // the same transcript for the questions it draws.
-    const [result] = await Promise.all([next(e), place($, view, placeArgs(e.transcript_path), next.signal)])
+    const [result] = await Promise.all([next(e), place($, view, (list) => placeArgs(e.transcript_path, list), next.signal)])
     return result
   })
 
@@ -1513,9 +1516,11 @@ export function registerToHuman(on: On) {
     // A prompt row is kept before it draws (the person's own only now and
     // then after, which their append takes back): one with no place is a
     // preview of a queued one, or another loop's. A queued delivery's
-    // preview draws nothing, as the delivery does; the person's own shows.
+    // preview draws nothing, as the delivery does; the person's own shows,
+    // and so does a loop's own instructions from whoever dispatched it
+    // (`coordinator`), which the main conversation's queue never holds.
     if (drawsApart(view, e.requestId) || judgeUnkept(view, [e.requestId])) {
-      if (view.unkept.has(e.requestId) && isFolding() && kind === 'record') {
+      if (view.unkept.has(e.requestId) && isFolding() && kind === 'record' && e.props.origin?.kind !== 'coordinator') {
         const { Box } = $.ui.resolve(e)
         return <Box />
       }
@@ -1644,7 +1649,9 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    if (drawsApart(view, e.props.tool_use_id)) return next(e)
+    // A call stands apart with the group it is drawn in: a group is set apart by its first call alone.
+    const held = groupOf.get(e.requestId)
+    if (drawsApart(view, e.props.tool_use_id) || (held !== undefined && drawsApart(view, held))) return next(e)
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
     }
@@ -1749,7 +1756,7 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = groupOf.get(e.props.tool_use_id) ?? e.props.tool_use_id
-    if (drawsApart(view, e.props.tool_use_id) || expanded.has(id)) {
+    if (drawsApart(view, e.props.tool_use_id) || drawsApart(view, id) || expanded.has(id)) {
       return next(e)
     }
     if (!pills.has(id)) {
