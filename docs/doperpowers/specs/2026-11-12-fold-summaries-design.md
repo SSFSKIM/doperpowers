@@ -218,11 +218,9 @@ hand-back, `task-notification` for a task's. (The engine's reference describes
 the kept row, an attachment named `queued_command` holding the engine's
 rendering; the event carries the sender.) So it is classified as any prompt
 is, and the tracker keeps no memory of the queue: a queue record, door
-`queue`, carries the engine as its origin and is ignored. One case the probe
-did not run: the person's own prompt typed into a running turn. M1 runs it
-first; if its origin does not read as the person's, the tracker reads the
-frame the engine puts on the rendering instead (the view already reads engine
-frames: `ASK_DELIVERY`).
+`queue`, carries the engine as its origin and is ignored. The person's own
+prompt typed into a running turn is kept the same way, door `delivery`, origin
+`composer`, which `promptRow` reads as theirs.
 
 A message call that sends nothing (refused or errored) is a read row here and
 a record row in the view, which learns of the refusal from the result. The
@@ -488,9 +486,10 @@ isolated haiku session with a probe plugin outermost, which logs every
 `session.append` (door, origin, role, blocks) and every `ui.render` (the props
 that classify the row); its scenarios are `notify`, `agent`, `view`, `view2`,
 `resume` and `compact`, and two logs are kept in `evidence/` beside it. A
-fixture the kept logs do not hold (a typed prompt folded into a running turn,
-a failed spawn's notification) is made by running the script with a scenario
-added, a few haiku calls each.
+fixture the kept logs do not hold is made by running the script with a
+scenario added, a few haiku calls each; the scenarios `ghost` and `ghost2`
+(logs `queued-prompt-*` and `queued-handback-*`) hold a prompt typed into a
+running turn and a hand-back queued behind a message.
 
 ### Constraints on every milestone
 
@@ -540,11 +539,9 @@ Exposes: the `$.state` contract, `registerFolds`, `labelOf`, `lineOf`
 
 Decisions that are this milestone's:
 
-- First, settle the one delivery the kept logs lack: the person's own prompt
-  typed into a running turn (keys sent to the pane while a foreground command
-  runs). The diagnosis's follow-up probe was asked to log it: look in
-  `evidence/` for it before running one. Record its door and origin in Surprises & Discoveries, and classify
-  it as "A prompt folded into a running turn" says.
+- The kept logs hold no failed spawn's notification (none could be provoked
+  cheaply): build that fixture from the engine's types and `promptRow`'s rule
+  for it, kept between turns and folded into a running turn.
 - Keep the classification, the live line and the lookup as pure exported
   functions the tests call without an engine; the hooks are thin.
 - Tests that press a fold find the button by the text `working record` today;
@@ -715,11 +712,20 @@ dependency.
   conversation never keeps (a hand-back drew under three before its kept row
   drew under its own), and the prompt being submitted draws as `placeholder`.
   The view keeps each such id in its order for good. As working record they
-  cut no run; whether one can take a run's button, or cut a run when it is the
-  person's queued prompt, is not established. A follow-up probe is the owner
-  session's, outside this spec.
+  cut no run. The follow-up probe then reproduced both harms live: each redraw
+  of the person's queued prompt adds an entry of the person's kind, and every
+  one cuts the main run (an extra fold with nothing between); a hand-back's
+  preview drawn right after a read row becomes the next run's start, and that
+  run draws no fold at all. PR #499 is being reworked into one rule for all of
+  it: a drawn row the main conversation never kept shapes no run. That work is
+  the owner session's, outside this spec.
   Evidence: the same log, `render UserMessage` rids `506ab97e`, `ee71ec46`,
-  `79e5fe7e`, then `e42720d2` after `append delivery e42720d2`.
+  `79e5fe7e`, then `e42720d2` after `append delivery e42720d2`; and
+  `evidence/queued-prompt-full-order.jsonl` lines 5 to 7,
+  `queued-handback-full-pane-end.txt`.
+- Observation: the person's prompt typed into a running turn is kept through
+  the door `delivery` with origin `composer`.
+  Evidence: `evidence/queued-prompt-full-renders.jsonl` (2.1.322).
 - Observation: the bug that came with this request is reproduced for one
   cause and not confirmed as the owner's. PR #499's probe showed a subagent's
   rows entering the main order once its transcript was opened, and the main
