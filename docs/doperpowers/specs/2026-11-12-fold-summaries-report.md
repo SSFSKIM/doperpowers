@@ -11,7 +11,7 @@ spec's verification entry names). to-human 0.7.4 on `main` becomes 0.8.0.
 
 DONE. Both milestones are built, every review is clean, CI is green on the
 last code commit, and the live check passes every item it automates on that
-commit.
+commit. Pull request: #500 (open, not merged).
 
 ## What was built
 
