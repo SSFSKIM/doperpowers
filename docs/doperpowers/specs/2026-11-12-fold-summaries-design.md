@@ -648,7 +648,7 @@ under the plugin's name in `PluginState`, as `sminos/types/sminos.d.ts` does):
     export type FoldRun = {
       /** The run's first row; a tool call's row by its call's id. */
       first: string
-      /** Its last row, once the run is closed. */
+      /** Its last row: of a closed run, the last that joined it; of the open run, the newest so far. */
       last?: string
       /** The newest call's line, shown while the run is live; cleared when a summary settles. */
       line?: string
@@ -740,6 +740,34 @@ dependency.
   Evidence: PR #499's body; `~/.local/share/fold-labels/agents_window.py` over
   the session's `subagents/` for 23:01 to 23:22Z.
 
+- Observation: the hooks loader takes `$` only into functions declared at the
+  top level of the file: a closure inside `registerFolds` that takes `$` fails
+  the whole plugin's load. Per-registration state lives in an object handed to
+  top-level functions instead.
+  Evidence: `hooks module did not load … $ is passed to "load", which is not a
+  function declared at the top of this file` (M1, 2.1.323).
+- Observation: the test kit's own `$` has no `state` noun, while the plugin's
+  `$.state` works in the kit, a button that read it redrawn on a write; a test
+  sees the plugin's writes through `on('state.set', { plugin: 'to-human', key })`.
+  Evidence: M1's `folds.test.ts`.
+- Observation: `isMeta` in the owner's transcripts: every `peer` hand-back is
+  (4,253 of 40 transcripts' rows), task notifications are not (1,394), nor the
+  ask mod's or sminos' asUser frames. One `auto-continuation` row ("Permission
+  granted for this exact command only…") was `isMeta`: the tracker reads it as
+  a delivery where the view, whose drawn row probably carries no `from`, likely
+  reads it as the person's. Rare; the rule stands as written.
+  Evidence: M1's tally, task report.
+- Observation: after a reload the tracker's remembered spawns start empty, so
+  the failure notification of a spawn made before the reload is a delivery to
+  it while the view, whose spawns refill as rows redraw, shows it. One boundary,
+  rarely; left.
+  Evidence: M1's report.
+- Observation: live, the open fold's button read `› working record` for about
+  one frame before the call's append gave it a place, then `› Wait ten
+  seconds` through the call, `› Print done`, and `› working record` once the
+  final message closed the run (M1: no summary). Acceptance 1, seen live.
+  Evidence: `~/.local/share/fold-runs/evidence/m1-live-line-frames.txt` (2.1.323).
+
 ## Decision Log
 
 - Decision: verification. One independent review of this spec and one of its
@@ -800,6 +828,31 @@ dependency.
   shows the queue record does not. The first draft had it the other way
   round, from the engine's reference.
   Date/Author: 2026-11-13, the authoring session.
+
+- Decision: M1's gaps, settled by its executor (2026-11-13). (1) The open run
+  publishes `last` too, the newest row that joined it, so `fold` is written
+  whenever a row joins; without it a module that takes up the open run after a
+  reload cannot bound it when the next read row closes it, and M2 would lose
+  its turn-end summary (acceptance 4). The contract's comment says so. (2) In
+  M1 a run due a summary settles at once (`due(run)` in `folds.tsx` is where M2
+  asks): it loses `isLive` and `line` and keeps any summary it had, staying
+  live on its last call's line while a call of it runs. (3) Clearing a closed
+  run left live by an old module, and the reset on `clear`, `resume` and
+  `fork` (a `classic.SessionStart` hook that publishes no runs, with an epoch
+  so an in-flight start-up read takes up nothing old), are built in M1: M1
+  already makes closed live runs, and the view resets on the same event; M2
+  adds the session's file to both. (4) The start-up read of `$.state` is lazy:
+  `session.start` or the first tracked row begins it, rows kept before it lands
+  wait in order. (5) `task` is rebuilt only from a `<task-notification>` that
+  opens the text, so a prompt quoting one stays the person's; `from` is
+  `{ name: origin.server }` for a channel, `{ name: origin.kind }` for `isMeta`.
+  (6) `keyOf` and `isSpawn` are exported from `to-human.tsx` beside
+  `isApiError`, so the tracker resolves `group:` ids and spawns by the view's
+  own rules. (7) `live-message-check.py` item 2 matches any fold button, since
+  the open run after its message now reads a live line. (8) `.github/ci-kit.yml`
+  adds `to-human/types/**` to the `mods-types` gate's paths, beside sminos'.
+  Rationale: each in the M1 report; none changes what the person sees.
+  Date/Author: 2026-11-13, M1's executor, folded by the plan executor.
 
 ## Outcomes & Retrospective
 
