@@ -781,6 +781,23 @@ dependency.
   `folds.tsx` takes a matcher distinct from that one.
   Evidence: the authoring session's note on #499's branch, 2026-11-13.
 
+- Observation: the transcript file keeps a delivery folded into a running
+  turn as an `attachment` row of type `queued_command`, while `session.append`
+  carries it through the door `delivery`; only a reader of the file (the live
+  check's probe) meets the difference.
+  Evidence: M2's live run 1 transcript, line 55, between the `enqueue` and
+  `remove` queue operations (2.1.323).
+- Observation: the loader takes `$.env.get` only with a literal name at each
+  call site; `names.map((n) => $.env.get(n))` fails the module's load ("so the
+  variables a module reads and writes can be listed").
+  Evidence: M2's loader refusal (2.1.323).
+- Observation: live, a closed fold's summary came back 1 to 3 s after its
+  turn's end (2 runs, 2 summaries each), the fold reading its last call's line
+  meanwhile; haiku's lines were plain and stated only what the record showed
+  ("Ran two echo commands; both printed their expected output.").
+  Evidence: `~/.local/share/fold-runs/m2-live-folds-2.log`,
+  `evidence/m2-live-folds-2-{main,failing,plain}-frames.txt`.
+
 ## Decision Log
 
 - Decision: verification. One independent review of this spec and one of its
@@ -869,6 +886,39 @@ dependency.
   adds `to-human/types/**` to the `mods-types` gate's paths, beside sminos'.
   Rationale: each in the M1 report; none changes what the person sees.
   Date/Author: 2026-11-13, M1's executor, folded by the plan executor.
+
+- Decision: M2's gaps, settled by its executor (2026-11-13). (1) A turn's end
+  is a step `follow` takes (`{ kind: 'end' }`), and `follow` returns the asks
+  it made, so classifying and deciding to ask stay pure; a turn's end before
+  the start-up read lands waits in order with the rows. (2) A run skipped at
+  its due point (the gate off, or not held whole) settles there, the open run
+  at a turn's end included, so a stale call line does not read as running:
+  the table's "until its summary has come back, failed or been skipped". (3) A
+  result joining a run bumps its generation; for the open run it makes the run
+  live again (an interrupted call's result kept after the turn-end summary),
+  and a closed run asked for at a turn's end while a call ran is asked again
+  when that result comes. (4) The file stores a closed run by its `last` and
+  the open run by `covered`, the last row its summary covered; a run taken up
+  after a reload takes its published bound (`foldLast` for the open run) as
+  `covered`. (5) "A new process" is `$.state` holding none of `folds`, `fold`
+  or `foldLast`: an old module that only had an open run wrote no `folds`, and
+  reading the file then would bring that run back as a duplicate closed one.
+  (6) The reset reads the file of `classic.SessionStart`'s `session_id`,
+  publishing no runs at once and the file's after, kept rows waiting meanwhile;
+  a fork's new id has no file. (7) With neither `CLAUDE_CONFIG_DIR` nor `HOME`
+  there is no file (summaries still made); the prune runs only where the folder
+  exists, as `find <dir> -type f -name '*.json' -mtime +30 -delete`. (8) The
+  session counts as not interactive until `session.start` says otherwise. (9)
+  The tracker's `turn.complete` matcher is `{ turnId: /./ }`. (10) The live
+  checks are listed in `to-human/CLAUDE.md`'s Tests line, not `tests/CLAUDE.md`,
+  which lists none and covers the repository's `tests/`. (11) The digest's cut
+  markers follow the label test's `digest.py` (` …[N more chars]`,
+  `…[N chars cut]…`, `…[N rows of the run omitted here]…`); cuts never split a
+  surrogate pair. (12) The live check automates acceptance 1 to 7 but the press
+  of item 5, which the tmux main screen does not take and the kit pins.
+  Rationale: each in the M2 report; none changes what the person sees beyond
+  (2), which follows the table.
+  Date/Author: 2026-11-13, M2's executor, folded by the plan executor.
 
 ## Outcomes & Retrospective
 
