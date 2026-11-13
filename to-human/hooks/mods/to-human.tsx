@@ -2,7 +2,7 @@ import type { ApiContentBlock, EngineInterface, On, PromptOrigin, RenderElement,
 
 import { registerEdits } from './edits'
 import { labelOf, registerFolds } from './folds'
-import { FINAL_ANSWER, MESSAGE_TOOL, isMadeUp, readMessage, rowKey } from './message'
+import { FINAL_ANSWER, MESSAGE_TOOL, blockOf, isMadeUp, readMessage, rowKey } from './message'
 
 /**
  * The ask mod's tool, the model's one way to ask the human in an interactive
@@ -667,6 +667,8 @@ export type View = {
   appended: number
   /** The `requestId` the engine draws a row under, where the view knows it by another id (a group, by its first call's). */
   requestIds: Map<string, string>
+  /** The id each drawn row a later drawing took over stood under, to the id that took it (`adopt`). */
+  heldBy: Map<string, string>
   /** The run a press just folded, by its first row, which the press then brings into view if its top is out of the window. */
   folded?: string
   /** Where each row stood in the window when it last drew, as its `onScreen` said; only the fullscreen transcript says. */
@@ -677,6 +679,8 @@ export type View = {
   unrequested: Set<string>
   /** The drawn rows that are not the main conversation's, by their ids, each with whether it has drawn so: no run holds them (`setApart`, `judgeUnkept`). */
   apart: Map<string, boolean>
+  /** What each of those that drew drew as (`noteApart`), by its key. */
+  drewAs: Map<string, string>
   /** Of those, the ones no loop was seen to keep (`judgeUnkept`): a preview of a queued prompt, an older subagent's row. */
   unkept: Set<string>
   /** The module's start-up read (`started`) while one runs; it settles once it finished or was cut short. */
@@ -706,10 +710,12 @@ export const newView = (isFolding: () => boolean): View => {
     guess: new Map(),
     appended: 0,
     requestIds: new Map(),
+    heldBy: new Map(),
     shown: new Map(),
     errors: new Set(),
     unrequested: new Set(),
     apart: new Map(),
+    drewAs: new Map(),
     unkept: new Set(),
     start: { promise, settle },
     isStarted: false,
@@ -744,7 +750,13 @@ function placeOf(view: View, id: string): number {
   return view.place.get(key) ?? view.guess.get(key) ?? Infinity
 }
 
-/** The index `id` takes in `order`: after every drawn row placed at or before it. */
+/**
+ * The index `id` takes in `order`: after every drawn row placed at or before
+ * it, but before any block of its own kept row with a larger index. Rows of
+ * one place stand as they drew, except the blocks of one kept row, which
+ * stand in block order among themselves: rows of other kept rows share a
+ * place only while it is a guess, where the order they drew in is all there is.
+ */
 function slotOf(view: View, id: string): number {
   const at = placeOf(view, id)
   let low = 0
@@ -757,15 +769,39 @@ function slotOf(view: View, id: string): number {
       high = middle
     }
   }
-  return low
+  const [key, block] = [keyOf(id), blockOf(id)]
+  let slot = low
+  for (let i = low - 1; i >= 0 && placeOf(view, view.order[i] as string) === at; i -= 1) {
+    const row = view.order[i] as string
+    if (keyOf(row) === key && blockOf(row) > block) {
+      slot = i
+    }
+  }
+  return slot
 }
 
-/** Sorts the drawn rows by their places, now that more are known; whether any moved. */
+/** Sorts the drawn rows by their places as `slotOf` places one, now that more are known; whether any moved. */
 export function reorder(view: View): boolean {
   const sorted = view.order
     .map((id, i) => ({ id, i, at: placeOf(view, id) }))
     .sort((a, b) => (a.at === b.at ? a.i - b.i : a.at < b.at ? -1 : 1))
     .map(({ id }) => id)
+  // Within each stretch of one place, each kept row's blocks in block order across the slots they hold.
+  for (let start = 0; start < sorted.length; ) {
+    const at = placeOf(view, sorted[start] as string)
+    let end = start
+    while (end < sorted.length && placeOf(view, sorted[end] as string) === at) end += 1
+    const slotsOf = new Map<string, number[]>()
+    for (let i = start; i < end; i += 1) {
+      const key = keyOf(sorted[i] as string)
+      slotsOf.set(key, [...(slotsOf.get(key) ?? []), i])
+    }
+    for (const slots of slotsOf.values()) {
+      const rows = slots.map((i) => sorted[i] as string).sort((a, b) => blockOf(a) - blockOf(b))
+      slots.forEach((i, n) => (sorted[i] = rows[n] as string))
+    }
+    start = end
+  }
   if (sorted.every((id, i) => id === view.order[i])) {
     return false
   }
@@ -1007,14 +1043,58 @@ export function judgeUnkept(view: View, ids: readonly string[] = view.order): bo
   return unkept.length > 0
 }
 
-/** Whether a row is another loop's (`setApart`, `judgeUnkept`), noting that it drew so: it stands in no run. */
-function drawsApart(view: View, id: string): boolean {
+/** Notes what a row set apart drew as, for `/to-human-dump`: its component, and its text's start or its tool's name. */
+function noteApart(view: View, id: string, component: string, what: string) {
+  view.drewAs.set(keyOf(id), `${component}: ${what.slice(0, 60)}`)
+}
+
+/** Whether a row is another loop's (`setApart`, `judgeUnkept`), noting that it drew so, and as what: it stands in no run. */
+function drawsApart(view: View, id: string, component: string, what: string): boolean {
   const key = keyOf(id)
   if (!view.apart.has(key)) {
     return false
   }
   view.apart.set(key, true)
+  noteApart(view, id, component, what)
   return true
+}
+
+/**
+ * Moves a kept row's block to the id it now draws under, where it drew under
+ * another before: the engine draws a row under its own id or a derived one by
+ * which list a view renders (the ordinary view drops rows before it derives
+ * the ids, the ctrl+o view does not), so switching views can change a row's
+ * form, and the stale entry, standing first in its run, took the run's button
+ * with it. Its slot, its kind, its run's unfolding and where it stood in the
+ * window go to the new id, and a control drawn before under the old one acts
+ * on the new (`holderOf`).
+ */
+function adopt(view: View, requestId: string) {
+  const key = rowKey(requestId)
+  if (key === requestId || view.rowOf.has(requestId)) {
+    return
+  }
+  const block = blockOf(requestId)
+  const old = view.order.find((row) => rowKey(row) === key && blockOf(row) === block)
+  if (old === undefined) {
+    return
+  }
+  view.order[view.order.indexOf(old)] = requestId
+  view.heldBy.set(old, requestId)
+  view.heldBy.delete(requestId)
+  view.rowOf.set(requestId, view.rowOf.get(old) as RowKind)
+  view.rowOf.delete(old)
+  if (view.unfolded.delete(old)) {
+    view.unfolded.add(requestId)
+  }
+  const shown = view.shown.get(old)
+  if (shown !== undefined && !view.shown.has(requestId)) {
+    view.shown.set(requestId, shown)
+  }
+  view.shown.delete(old)
+  if (view.folded === old) {
+    view.folded = requestId
+  }
 }
 
 /**
@@ -1027,6 +1107,7 @@ function drawsApart(view: View, id: string): boolean {
  * before it, when a row lands among those already drawn while a run is open.
  */
 function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
+  adopt(view, requestId)
   const { order, rowOf } = view
   const known = rowOf.get(requestId)
   if (known === kind) {
@@ -1049,8 +1130,21 @@ function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
   }
 }
 
+/**
+ * The id a drawn row stands under now, for an id a control or a stored value
+ * took when it was drawn: the row may since draw under the other form of its
+ * id (`adopt`), and a drawing cached before still holds the old one.
+ */
+function holderOf(view: View, id: string): string {
+  for (let held = view.heldBy.get(id); held !== undefined; held = view.heldBy.get(id)) {
+    id = held
+  }
+  return id
+}
+
 /** Unfolds the run or message `id` stands for, or folds it, noting the fold for the press's hook. */
-function toggle(view: View, id: string) {
+function toggle(view: View, drawn: string) {
+  const id = holderOf(view, drawn)
   if (view.unfolded.delete(id)) {
     view.folded = id
   } else {
@@ -1394,7 +1488,7 @@ async function dumpView($: EngineInterface, view: View, state: { isFolding: bool
     appended: view.appended,
     unfolded: [...view.unfolded],
     order: view.order.map((id) => ({ id, kind: view.rowOf.get(id), place: placeKind(id) })),
-    apart: [...view.apart].map(([id, hasDrawn]) => ({ id, hasDrawn, isUnkept: view.unkept.has(id) })),
+    apart: [...view.apart].map(([id, hasDrawn]) => ({ id, hasDrawn, isUnkept: view.unkept.has(id), drewAs: view.drewAs.get(id) })),
   }
   await $.fs.write(path, `${JSON.stringify(dump, null, 1)}\n`)
   return path
@@ -1449,7 +1543,9 @@ export function registerToHuman(on: On) {
       view.errors.clear()
       view.unrequested.clear()
       view.apart.clear()
+      view.drewAs.clear()
       view.unkept.clear()
+      view.heldBy.clear()
       unfolded.clear()
       // A cleared conversation keeps no row yet; a resumed one's are listed by its file.
       view.isWhole = e.source === 'clear'
@@ -1553,7 +1649,8 @@ export function registerToHuman(on: On) {
     // preview draws nothing, as the delivery does; the person's own shows,
     // and so does a loop's own instructions from whoever dispatched it
     // (`coordinator`), which the main conversation's queue never holds.
-    if (drawsApart(view, e.requestId) || judgeUnkept(view, [e.requestId])) {
+    if (drawsApart(view, e.requestId, 'UserMessage', e.props.text) || judgeUnkept(view, [e.requestId])) {
+      noteApart(view, e.requestId, 'UserMessage', e.props.text)
       if (view.unkept.has(keyOf(e.requestId)) && isFolding() && kind === 'record' && e.props.origin?.kind !== 'coordinator') {
         const { Box } = $.ui.resolve(e)
         return <Box />
@@ -1583,7 +1680,8 @@ export function registerToHuman(on: On) {
     if (!isFolding()) {
       return next(e)
     }
-    const prior = view.place.has(keyOf(e.requestId)) ? view.order[slotOf(view, e.requestId) - 1] : before.get(e.requestId)
+    const drawn = before.get(e.requestId)
+    const prior = view.place.has(keyOf(e.requestId)) ? view.order[slotOf(view, e.requestId) - 1] : drawn === undefined ? undefined : holderOf(view, drawn)
     const isShown =
       prior !== undefined && inRun(view.rowOf.get(prior)) && unfolded.has(runStart(view.order, view.rowOf, prior))
     if (isShown) {
@@ -1602,7 +1700,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    if (drawsApart(view, e.requestId)) return next(e)
+    if (drawsApart(view, e.requestId, 'AssistantMessage', e.props.text)) return next(e)
     if (isMadeUp(e.requestId, e.props.text) || (view.unrequested.has(keyOf(e.requestId)) && e.props.text.trim() === FINAL_ANSWER)) {
       const { Box } = $.ui.resolve(e)
       return <Box />
@@ -1685,7 +1783,7 @@ export function registerToHuman(on: On) {
     await started($, view, next.signal, markSeen)
     // A call stands apart with the group it is drawn in: a group is set apart by its first call alone.
     const held = groupOf.get(e.requestId)
-    if (drawsApart(view, e.props.tool_use_id) || (held !== undefined && drawsApart(view, held))) return next(e)
+    if (drawsApart(view, e.props.tool_use_id, 'ToolUse', e.props.tool) || (held !== undefined && drawsApart(view, held, 'ToolUse', e.props.tool))) return next(e)
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
     }
@@ -1742,7 +1840,7 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = `${GROUP}${e.props.calls[0]?.tool_use_id ?? e.requestId}`
-    if (drawsApart(view, id)) return next(e)
+    if (drawsApart(view, id, 'ToolGroup', e.props.calls[0]?.tool ?? '')) return next(e)
     view.requestIds.set(id, e.requestId)
     if (e.props.isExpanded) {
       expanded.add(id)
@@ -1790,7 +1888,7 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = groupOf.get(e.props.tool_use_id) ?? e.props.tool_use_id
-    if (drawsApart(view, e.props.tool_use_id) || drawsApart(view, id) || expanded.has(id)) {
+    if (drawsApart(view, e.props.tool_use_id, 'ToolProgress', e.props.hint) || drawsApart(view, id, 'ToolProgress', e.props.hint) || expanded.has(id)) {
       return next(e)
     }
     if (!pills.has(id)) {
@@ -1822,7 +1920,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    if (drawsApart(view, e.requestId)) return next(e)
+    if (drawsApart(view, e.requestId, 'ToolResult', e.props.tool)) return next(e)
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
     }

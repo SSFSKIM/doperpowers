@@ -1345,6 +1345,93 @@ describe('rows nothing keeps', () => {
     expect(await made.find({ type: 'Button' })).toBeUndefined()
   })
 
+  /** The person's next prompt after `derivedTurn`, where a run of its own starts after it. */
+  const askAgain = async ($: Engine) => {
+    await delivered($, rowId(30), 'prompt', 'composer')
+    await prompt($, drawnId(30), 'Report back.', { kind: 'composer' })
+  }
+
+  test("a response's blocks drawn newest first stand in its order: the record after its message has a button of its own", async ($, on) => {
+    live(on)
+    await derivedTurn($, on)
+    await askAgain($)
+    // A response that arrived whole, its note then its message, and the record after it.
+    await kept($, rowId(31), [text('Before report.'), text('<message>Report.</message>')])
+    await kept($, rowId(32), [text('After report.')])
+    // Drawn newest first, as a fullscreen window draws what scrolls into it from above.
+    const after = await message($, drawnId(32), 'After report.')
+    const report = await message($, drawnId(31, 1), '<message>Report.</message>')
+    const before = await message($, drawnId(31, 0), 'Before report.')
+
+    expect(await before.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await report.find({ type: 'Markdown', text: 'Report.' })).toBeDefined()
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await after.find({ type: 'Text', text: 'After report.' })).toBeUndefined()
+  })
+
+  test('a row that draws under its own id, then under its derived one, keeps its run\'s button', async ($, on) => {
+    live(on)
+    await derivedTurn($, on)
+    await askAgain($)
+    await kept($, rowId(31), [text('Working.')])
+    await message($, rowId(31), 'Working.')
+    // Another view draws the same row under the other form of its id.
+    const derived = await message($, drawnId(31), 'Working.')
+
+    expect(await derived.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await derived.find({ type: 'Text', text: 'Working.' })).toBeUndefined()
+  })
+
+  test('an unfolded run whose first row changes the form of its id stays unfolded, and folds from it', async ($, on) => {
+    live(on)
+    await derivedTurn($, on)
+    await askAgain($)
+    await kept($, rowId(31), [text('Working.')])
+    const own = await message($, rowId(31), 'Working.')
+    await own.press({ key: 'to-human-toggle' })
+    const derived = await message($, drawnId(31), 'Working.')
+
+    expect(await derived.find({ type: 'Text', text: 'Working.' })).toBeDefined()
+    await derived.press({ key: 'to-human-toggle' })
+    expect(await derived.find({ type: 'Text', text: 'Working.' })).toBeUndefined()
+    expect(await derived.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test("rows of other kept rows at one guessed place stand as they drew, whatever their blocks", async ($, on) => {
+    // No list of the transcript: every row drawn before an append is guessed at one place.
+    live(on)
+    on('session.messages', () => ({ value: [{ role: 'assistant', text: '<message>Earlier.</message>', toolUses: [] }] }))
+    // A whole response's second block, then another response's message, then a third's note.
+    const before = await message($, drawnId(1, 1), 'Before report.')
+    const report = await message($, drawnId(2), '<message>Report.</message>')
+    const after = await message($, drawnId(3), 'After report.')
+
+    expect(await before.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await report.find({ type: 'Markdown', text: 'Report.' })).toBeDefined()
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test("a run's fold drawn before its first row changed the form of its id folds the run", async ($, on) => {
+    live(on)
+    await derivedTurn($, on)
+    await askAgain($)
+    await kept($, rowId(31), [text('Working.')])
+    const own = await message($, rowId(31), 'Working.')
+    const end = await group($, 'grouped-b9', ['toolu_b9'])
+    await kept($, rowId(32), [bashUse('toolu_b9')])
+    await own.press({ key: 'to-human-toggle' })
+    expect(await end.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    // The window draws the run's end first, then its first row under the other form of its id.
+    const derived = await message($, drawnId(31), 'Working.')
+    expect(await derived.find({ type: 'Text', text: 'Working.' })).toBeDefined()
+    await end.press({ key: 'to-human-toggle' })
+
+    // Folded, the run's button reads its live call's line.
+    expect(await derived.find({ type: 'Text', text: 'Working.' })).toBeUndefined()
+    expect(await derived.find({ type: 'Button', text: '› Bash' })).toBeDefined()
+    expect(await end.find({ type: 'Button' })).toBeUndefined()
+  })
+
   test("/to-human-dump writes the view's order with each row's kind and place", async ($, on) => {
     live(on)
     const writes: { path: string; text: string }[] = []
@@ -1361,7 +1448,26 @@ describe('rows nothing keeps', () => {
     expect(dump.engine).toBe('2.1.322')
     expect(dump.plugin).toBe('9.9.9')
     expect(dump.order).toContainEqual({ id: 'group:toolu_b1', kind: 'record', place: 'placed' })
-    expect(dump.apart).toContainEqual({ id: 'q1', hasDrawn: true, isUnkept: true })
+    expect(dump.apart).toContainEqual({ id: 'q1', hasDrawn: true, isUnkept: true, drewAs: `UserMessage: ${QUEUED.slice(0, 60)}` })
+  })
+
+  test('/to-human-dump says what each row set apart drew as, and nothing for one that never drew', async ($, on) => {
+    live(on)
+    const writes: { path: string; text: string }[] = []
+    on('fs.write', (_, e) => (writes.push(e as { path: string; text: string }), { value: undefined }))
+    await turnStart($)
+    const long = 'An agent note long enough that the dump keeps only its first sixty characters of it.'
+    await kept($, 'g1', [text(long)], 'agent-1')
+    await message($, 'g1', long)
+    await kept($, 'g2', [bashUse('toolu_g2')], 'agent-1')
+    await call($, 'toolu_g2', 'Bash', {})
+    await kept($, 'g3', [text('never drawn')], 'agent-1')
+    await $.command.run({ command: 'to-human-dump', args: '' } as never)
+
+    const dump = JSON.parse(writes[0]!.text) as { apart: { id: string; hasDrawn: boolean; drewAs?: string }[] }
+    expect(dump.apart).toContainEqual({ id: 'g1', hasDrawn: true, isUnkept: false, drewAs: `AssistantMessage: ${long.slice(0, 60)}` })
+    expect(dump.apart).toContainEqual({ id: 'toolu_g2', hasDrawn: true, isUnkept: false, drewAs: 'ToolUse: Bash' })
+    expect(dump.apart).toContainEqual({ id: 'g3', hasDrawn: false, isUnkept: false })
   })
 })
 

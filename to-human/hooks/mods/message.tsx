@@ -194,6 +194,13 @@ const ROW_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export const rowKey = (id: string) => (ROW_ID.test(id) ? id.slice(0, 24) : id)
 
 /**
+ * Which block of its kept row a drawn row is, so blocks that share a key keep
+ * their order: a derived id's tail is the block's index in hex padded with
+ * zeros (2.1.322's own form), and the row's own id, a random tail, is block 0.
+ */
+export const blockOf = (id: string) => (ROW_ID.test(id) && id.startsWith('00000000', 24) ? parseInt(id.slice(24), 16) : 0)
+
+/**
  * Whether the assistant row `id`, which reads `text`, is the response this
  * module made up after a final message, not a model's saying the same: a row
  * kept as one, or, while the made-up response's row is still to be kept, a
