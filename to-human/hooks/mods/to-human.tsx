@@ -1,4 +1,4 @@
-import type { ApiContentBlock, EngineInterface, On, ProcessRunResult, PromptOrigin, RenderElement, RenderInput, SessionAppendInput, Timer } from 'claude-code'
+import type { ApiContentBlock, EngineInterface, On, PromptOrigin, RenderElement, RenderInput, SessionAppendInput, Timer } from 'claude-code'
 
 import { registerEdits } from './edits'
 import { FINAL_ANSWER, MESSAGE_TOOL, isMadeUp, readMessage } from './message'
@@ -674,14 +674,18 @@ export type View = {
   errors: Set<string>
   /** The rows the engine kept as answered without a request (a hook's own response), read from the transcript file with the places. */
   unrequested: Set<string>
-  /** The rows another loop keeps (a subagent's), by their ids, each with whether it has drawn so: no run of the main conversation holds them (`setApart`). */
+  /** The drawn rows that are not the main conversation's, by their ids, each with whether it has drawn so: no run holds them (`setApart`, `judgeUnkept`). */
   apart: Map<string, boolean>
+  /** Of those, the ones no loop was seen to keep (`judgeUnkept`): a preview of a queued prompt, an older subagent's row. */
+  unkept: Set<string>
   /** The module's start-up read (`started`) while one runs; it settles once it finished or was cut short. */
   reading?: Promise<void>
   /** Settles once the start-up read finished, or the rows stopped waiting for it. */
   start: { promise: Promise<void>; settle: () => void }
   /** The read finished under a dispatch that ran on. */
   isStarted: boolean
+  /** Every row the main conversation kept is placed: the transcript's list was read whole (or there was none), so a drawn row with no place is another's. */
+  isWhole: boolean
   /** `START_WAIT_MS` ran out before the read finished: the rows draw with what is known. */
   isPastWait: boolean
   /** The timer that ends the rows' wait, set by the first row that waited. */
@@ -705,8 +709,10 @@ export const newView = (isFolding: () => boolean): View => {
     errors: new Set(),
     unrequested: new Set(),
     apart: new Map(),
+    unkept: new Set(),
     start: { promise, settle },
     isStarted: false,
+    isWhole: false,
     isPastWait: false,
     isFolding,
   }
@@ -756,10 +762,9 @@ export function reorder(view: View): boolean {
 /**
  * Places `ids` as the main conversation's, in the order given, from `at` by
  * `step`, each one whose place is not known yet. A row placed so is no other
- * loop's, whatever set it apart before (a fork's transcript carries main
- * rows' ids, read while the main search had failed or been cut): whether one
- * of those had drawn apart, which it now draws in the main order once asked
- * for again.
+ * loop's, whatever set it apart before (a person's prompt can draw before
+ * its row is kept, and is judged unkept meanwhile): whether one of those had
+ * drawn apart, which it now draws in the main order once asked for again.
  */
 export function placeAll(view: View, ids: readonly string[], at = 0, step = 1): boolean {
   let isRevoked = false
@@ -769,6 +774,7 @@ export function placeAll(view: View, ids: readonly string[], at = 0, step = 1): 
     }
     isRevoked = view.apart.get(id) === true || isRevoked
     view.apart.delete(id)
+    view.unkept.delete(id)
   })
   return isRevoked
 }
@@ -790,9 +796,16 @@ const PLACES = '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"|"isApiErrorMessage
  */
 const SEARCH = 'search() { if command -v rg >/dev/null 2>&1; then exec rg --no-config -a -o -N --no-filename -e "$2" -- "$1"; fi; exec grep -o -E -e "$2" -- "$1"; }'
 
-/** The search that lists a transcript's rows in its order (`PLACES`). */
+/**
+ * Where a search's list goes: a file of its own, whose path is the one line
+ * printed, since a run's output stops at 4 MiB and a long session's list runs
+ * past it (`readList` reads it back).
+ */
+const TO_FILE = 't=$(mktemp "${TMPDIR:-/tmp}/to-human-places.XXXXXX") || exit 2; printf "%s\\n" "$t"'
+
+/** The search that lists a transcript's rows in its order (`PLACES`), into a file (`TO_FILE`). */
 export function placeArgs(path: string): string[] {
-  return ['sh', '-c', `${SEARCH}; search "$1" "$2"`, 'sh', path, PLACES]
+  return ['sh', '-c', `${SEARCH}; ${TO_FILE}; ( search "$1" "$2" ) > "$t"`, 'sh', path, PLACES]
 }
 
 /**
@@ -803,33 +816,68 @@ export function placeArgs(path: string): string[] {
  * lists no rows, as a search that finds none.
  */
 export function sessionPlaceArgs(sessionId: string): string[] {
-  const script = `${SEARCH}; for f in "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl; do [ -f "$f" ] && search "$f" "$2"; done; exit 1`
+  const script = `${SEARCH}; ${TO_FILE}; ( for f in "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl; do [ -f "$f" ] && search "$f" "$2"; done; exit 1 ) > "$t"`
   return ['sh', '-c', script, 'sh', sessionId, PLACES]
 }
 
-/** The files of `$@` that exist, one path a line, exiting 0 when one did and 1 when none did (an unmatched glob stays itself). */
-const LIST = 'list() { n=1; for f in "$@"; do if [ -f "$f" ]; then printf "%s\\n" "$f"; n=0; fi; done; exit $n; }'
+/** How much of a search's list one run reads back: under the 4 MiB a run's output stops at. */
+export const PIECE_BYTES = 3 * 1024 * 1024
 
-/** The subagents' transcripts kept beside the transcript `path` (`<path less .jsonl>/subagents/*.jsonl`), listed as `LIST` lists them. */
-export function subagentsArgs(path: string): string[] {
-  return ['sh', '-c', `${LIST}; list "\${1%.jsonl}"/subagents/*.jsonl`, 'sh', path]
+/** The run that prints `bytes` bytes of the file `path` from byte `from` (0 the first). */
+export function pieceArgs(path: string, from: number, bytes = PIECE_BYTES): string[] {
+  return ['sh', '-c', 'tail -c +"$2" -- "$1" | head -c "$3"', 'sh', path, String(from + 1), String(bytes)]
 }
 
-/** The same list beside the session's own transcript, found by its id as `sessionPlaceArgs` finds it. */
-export function sessionSubagentsArgs(sessionId: string): string[] {
-  return ['sh', '-c', `${LIST}; list "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1"/subagents/*.jsonl`, 'sh', sessionId]
+/** The UTF-8 length of `text`, in bytes. */
+function utf8Length(text: string): number {
+  if (/^[\x00-\x7f]*$/.test(text)) return text.length
+  let bytes = 0
+  for (const char of text) {
+    const code = char.codePointAt(0) as number
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4
+  }
+  return bytes
 }
+
+/** How a list is read: a run of `argv`, its exit code and output. */
+export type Run = (argv: string[]) => Promise<{ exitCode: number; stdout: string }>
 
 /**
- * The search of the files `$@` (after the pattern `$1`) as one, for the rows'
- * and calls' ids alone (`IDS`), exiting as `SEARCH` does.
+ * A search's whole list and its exit code: the search (`placeArgs`) writes
+ * the list to a file, read back here a piece at a time (`pieceArgs`), each
+ * piece cut at its last line's end, and the file goes once read. A search
+ * that failed (an exit past 1) reads nothing back.
  */
-const SEARCH_ALL = 'searchAll() { p=$1; shift; if command -v rg >/dev/null 2>&1; then exec rg --no-config -a -o -N --no-filename -e "$p" -- "$@"; fi; exec grep -o -h -E -e "$p" -- "$@"; }'
-const IDS = '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"'
-
-/** The search that lists the rows and calls of the subagents' transcripts `files`, a batch of what `subagentsArgs` listed. */
-export function apartArgs(files: readonly string[]): string[] {
-  return ['sh', '-c', `${SEARCH_ALL}; searchAll "$@"`, 'sh', IDS, ...files]
+export async function readList(run: Run, search: string[], bytes = PIECE_BYTES): Promise<{ exitCode: number; stdout: string }> {
+  const listed = await run(search)
+  const path = listed.stdout.split('\n')[0] ?? ''
+  if (path === '') {
+    // No file to read back: a search that failed before writing one, or one that listed nothing.
+    return { exitCode: listed.exitCode, stdout: '' }
+  }
+  try {
+    if (listed.exitCode > 1) {
+      return { exitCode: listed.exitCode, stdout: '' }
+    }
+    let text = ''
+    for (let from = 0; ;) {
+      const piece = await run(pieceArgs(path, from, bytes))
+      if (piece.exitCode !== 0) {
+        throw new Error(`a piece of the list was not read (exit ${piece.exitCode})`)
+      }
+      if (utf8Length(piece.stdout) < bytes) {
+        return { exitCode: listed.exitCode, stdout: text + piece.stdout }
+      }
+      const lines = piece.stdout.slice(0, piece.stdout.lastIndexOf('\n') + 1)
+      if (lines === '') {
+        throw new Error('a line of the list is longer than a piece')
+      }
+      text += lines
+      from += utf8Length(lines)
+    }
+  } finally {
+    await run(['rm', '-f', '--', path]).catch(() => {})
+  }
 }
 
 /** The ids `placeArgs`' output names, in the transcript's order. */
@@ -867,18 +915,28 @@ function shapeOf(view: View, id: string | undefined): string {
 }
 
 /**
- * Sets rows another loop keeps apart from the main conversation's. A
- * subagent's transcript, opened in the fullscreen view (its agent picked in
- * the strip under the prompt), draws through these same hooks, and nothing on
- * the event says whose row it is: taken for the main conversation's, its rows
- * stood in the main order where they first drew, after every row appended by
- * then, so its spawns and questions there cut the main run in two where the
- * main view shows nothing (a `› working record` more, with nothing between),
- * and a main row whose run began at one of its rows drew no button at all.
- * A row is known for another loop's by its append (`agentId` set) or by its
- * subagent's transcript file; one already placed as the main conversation's
- * is left there, and one placed so later is the main conversation's again
- * (`placeAll`). Whether any had drawn in the main order, which it leaves.
+ * A drawn row is the main conversation's only if the main conversation kept
+ * it: its append placed it, or the transcript's list names it. Rows the
+ * engine draws under ids nothing keeps stood in the main order where they
+ * first drew, after every row appended by then, and shaped its runs from
+ * there, where the main view shows nothing (live on 2.1.322):
+ * - a prompt the person types while a turn runs draws a preview under a new
+ *   id at each redraw, each a prompt of theirs: every one cut the run, a
+ *   `› working record` more with nothing between;
+ * - a hand-back waiting in the queue draws a preview so too, working record:
+ *   right after a row the person reads it took the next run's start, and the
+ *   run's button with it, gone once the preview went;
+ * - an unfolded run ended at such a preview, its `‹ fold to report` drawn
+ *   there and the next button right under it;
+ * - a subagent's transcript, opened in the fullscreen view (its agent picked
+ *   in the strip under the prompt), draws through these same hooks, with
+ *   nothing on the event to say whose row it is.
+ *
+ * Sets apart rows another loop keeps (a subagent's, by its append's
+ * `agentId`); `judgeUnkept` the rest. One already placed as the main
+ * conversation's is left there, and one placed so later is the main
+ * conversation's again (`placeAll`). Whether any had drawn in the main order,
+ * which it leaves.
  */
 export function setApart(view: View, ids: readonly string[]): boolean {
   let isMoved = false
@@ -898,7 +956,39 @@ export function setApart(view: View, ids: readonly string[]): boolean {
   return isMoved
 }
 
-/** Whether a row is another loop's (`setApart`), noting that it drew so: it draws as the engine draws it, in no run. */
+/**
+ * The doors through which the main conversation keeps a row between two of
+ * its steps: a tool's result, a delivery, a prompt. Every block of a response
+ * is kept, one row each, before any of them, while a response's blocks
+ * stream one after another, each drawing before its row is kept.
+ */
+const STEP_DOORS: ReadonlySet<string> = new Set(['tool-result', 'delivery', 'prompt'])
+
+/**
+ * Sets apart the drawn rows the main conversation has not kept, once it
+ * reached a step's end (a row kept through a `STEP_DOORS` door, the turn's
+ * end), where every row it drew is kept: they are no row of its (see
+ * `setApart`). Never while the transcript's list is not whole, where a row
+ * with no place can be one of its older rows. Whether any had drawn in the
+ * main order, which it leaves.
+ */
+export function judgeUnkept(view: View, ids: readonly string[] = view.order): boolean {
+  if (!view.isWhole) {
+    return false
+  }
+  const unkept = ids.filter((id) => !view.place.has(keyOf(id)) && !view.apart.has(keyOf(id)))
+  for (const id of unkept) {
+    const key = keyOf(id)
+    view.apart.set(key, true)
+    view.unkept.add(key)
+    if (view.rowOf.delete(id)) {
+      view.order.splice(view.order.indexOf(id), 1)
+    }
+  }
+  return unkept.length > 0
+}
+
+/** Whether a row is another loop's (`setApart`, `judgeUnkept`), noting that it drew so: it stands in no run. */
 function drawsApart(view: View, id: string): boolean {
   const key = keyOf(id)
   if (!view.apart.has(key)) {
@@ -1001,18 +1091,18 @@ async function recordRow<E extends RenderInput>(
 }
 
 /**
- * A search's result; undefined where it failed, said in the debug log as
- * `what` could not be read, `meaning` after, unless `signal`'s abort cut it
- * short.
+ * A search's whole list (`readList`); undefined where it failed, said in the
+ * debug log as `what` could not be read, `meaning` after, unless `signal`'s
+ * abort cut it short.
  */
-async function searched($: EngineInterface, search: string[], signal: AbortSignal, what: string, meaning: string): Promise<ProcessRunResult | undefined> {
+async function searched($: EngineInterface, search: string[], signal: AbortSignal, what: string, meaning: string): Promise<string | undefined> {
   try {
-    const found = await $.process.run(search)
+    const found = await readList((argv) => $.process.run(argv), search)
     // grep: 0 found, 1 none, anything else a failure.
     if (found.exitCode > 1) {
       throw new Error(`grep exited ${found.exitCode}`)
     }
-    return found
+    return found.stdout
   } catch (error) {
     if (!signal.aborted) {
       $.ui.log(`to-human: ${what} could not be read (${String(error)}); ${meaning}`, { to: 'debug' })
@@ -1021,73 +1111,29 @@ async function searched($: EngineInterface, search: string[], signal: AbortSigna
   }
 }
 
-/** How many subagents' transcripts one search takes; a batch whose output the run cut (past 4 MiB) is halved. */
-const APART_BATCH = 32
-
-/**
- * Sets apart the rows of the subagents' transcripts `list` lists
- * (`setApart`), and asks for the rows again where any had drawn in the main
- * order. A long session's subagents list far more than one run returns (its
- * stdout is cut at 4 MiB: one session's search came to 22 MB), so the files
- * are searched a batch at a time, one after another, and a batch cut short is
- * searched again in halves; a single file still cut sets apart the rows
- * before the cut, said in the debug log.
- */
-async function scanApart($: EngineInterface, view: View, list: string[], signal: AbortSignal) {
-  const failed = "those rows stand in the main conversation's order where they draw"
-  const listed = await searched($, list, signal, "the subagents' transcripts", failed)
-  const batches: string[][] = []
-  const files = listed?.stdout.split('\n').filter((line) => line !== '') ?? []
-  for (let i = 0; i < files.length; i += APART_BATCH) {
-    batches.push(files.slice(i, i + APART_BATCH))
-  }
-  let isMoved = false
-  for (let batch = batches.shift(); batch !== undefined && !signal.aborted; batch = batches.shift()) {
-    const found = await searched($, apartArgs(batch), signal, `${batch.length} subagents' transcripts`, failed)
-    if (found?.isStdoutTruncated === true && batch.length > 1) {
-      const half = Math.ceil(batch.length / 2)
-      batches.unshift(batch.slice(0, half), batch.slice(half))
-      continue
-    }
-    if (found?.isStdoutTruncated === true) {
-      $.ui.log(`to-human: ${batch[0]} lists more rows than one search returns; those past 4 MiB ${failed}`, { to: 'debug' })
-    }
-    isMoved = setApart(view, placesIn(found?.stdout ?? '')) || isMoved
-  }
-  if (isMoved && view.isFolding()) {
-    $.ui.invalidate('ui.render')
-  }
-}
-
 /**
  * Places the rows a transcript search lists (see `View`), and notes which of
  * them are API errors. A transcript can be far past what one read takes
- * whole, so a search lists its rows; one that fails, or is cut, leaves the
- * rows it could not place to draw in the order they come. `signal` is the
- * dispatch's that searches: a search its abort cut short says nothing.
- *
- * Once the main conversation's rows are placed it settles, and the rows of
- * the subagents' transcripts `subagents` lists are set apart after
- * (`scanApart`), holding no row back: a scan of many files runs long, and a
- * fork's file carries main rows' ids, which only a placed row keeps for the
- * main conversation's, so where the main search failed none is scanned.
+ * whole, so a search lists its rows, read back whole in pieces; one that
+ * fails leaves the rows it could not place to draw in the order they come,
+ * and leaves the list short of whole (`isWhole`), so no row is judged unkept.
+ * `signal` is the dispatch's that searches: a search its abort cut short says
+ * nothing.
  */
-async function place($: EngineInterface, view: View, search: string[], subagents: string[], signal: AbortSignal) {
+async function place($: EngineInterface, view: View, search: string[], signal: AbortSignal) {
   const main = await searched($, search, signal, "the transcript's order", 'its runs follow the order rows draw in')
   if (main === undefined) {
     return
   }
-  const isRevoked = placeAll(view, placesIn(main.stdout))
-  const errors = errorsIn(main.stdout).filter((id) => !view.errors.has(id))
+  const isRevoked = placeAll(view, placesIn(main))
+  const errors = errorsIn(main).filter((id) => !view.errors.has(id))
   errors.forEach((id) => view.errors.add(id))
-  const unrequested = unrequestedIn(main.stdout).filter((id) => !view.unrequested.has(id))
+  const unrequested = unrequestedIn(main).filter((id) => !view.unrequested.has(id))
   unrequested.forEach((id) => view.unrequested.add(id))
+  view.isWhole = true
   if ((reorder(view) || isRevoked || [...errors, ...unrequested].some((id) => view.rowOf.has(id))) && view.isFolding()) {
     $.ui.invalidate('ui.render')
   }
-  scanApart($, view, subagents, signal).catch((error) => {
-    $.ui.log(`to-human: the subagents' rows could not be set apart (${String(error)})`, { to: 'debug' })
-  })
 }
 
 /** Whether the conversation holds a marked assistant message, or a message sent through the tool. */
@@ -1108,7 +1154,7 @@ async function sentMark($: EngineInterface, signal: AbortSignal): Promise<boolea
 async function placeSession($: EngineInterface, view: View, signal: AbortSignal) {
   try {
     const id = await $.session.id()
-    await place($, view, sessionPlaceArgs(id), sessionSubagentsArgs(id), signal)
+    await place($, view, sessionPlaceArgs(id), signal)
   } catch (error) {
     if (!signal.aborted) {
       $.ui.log(`to-human: the session's id could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
@@ -1119,8 +1165,7 @@ async function placeSession($: EngineInterface, view: View, signal: AbortSignal)
 /**
  * Reads, under one dispatch, whether the session has sent a mark (`onMark`
  * runs as soon as one is found, the conversation answering well before the
- * transcript's search) and where its rows stand (the main conversation's:
- * the subagents' are set apart after, see `place`); false when that dispatch
+ * transcript's search) and where its rows stand; false when that dispatch
  * was aborted before the read finished, which leaves it for another to make.
  * Rows that stopped waiting for it are asked for again.
  */
@@ -1278,6 +1323,46 @@ const native = async ($: EngineInterface, e: object) =>
   (await (maws ??= $.env.get('MAWS_NATIVE_TO_HUMAN').then((value) => value !== undefined && value !== ''))) &&
   (!('surface' in e) || e.surface !== 'terminal')
 
+/** The slash command that writes the view's state to a file (`dumpView`). */
+export const DUMP_COMMAND = 'to-human-dump'
+
+/**
+ * Writes the view's state as it stands, for a fold drawn wrong to be read
+ * after: each drawn row in the main order with its kind and whether its place
+ * is known (`placed`) or only guessed (`guessed`), the rows set apart (another
+ * loop's, or kept by none), the unfolded runs, and the engine's and the
+ * plugin's versions; under the configuration's `to-human/dumps/`. Its path.
+ */
+async function dumpView($: EngineInterface, view: View, state: { isFolding: boolean; isFullTranscript: boolean }): Promise<string> {
+  const [engine, sessionId, configured, home] = await Promise.all([
+    $.session.version().catch(() => undefined),
+    $.session.id().catch(() => 'session'),
+    $.env.get('CLAUDE_CONFIG_DIR'),
+    $.env.get('HOME'),
+  ])
+  const manifest = await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`).catch(() => '{}')
+  const plugin = (JSON.parse(manifest) as { version?: string }).version
+  const at = new Date().toISOString()
+  const path = `${configured ?? `${home}/.claude`}/to-human/dumps/${at.replace(/[:.]/g, '-')}-${sessionId.slice(0, 8)}.json`
+  const placeKind = (id: string) => (view.place.has(keyOf(id)) ? 'placed' : view.guess.has(keyOf(id)) ? 'guessed' : 'none')
+  const dump = {
+    at,
+    engine: engine?.version,
+    plugin,
+    session: sessionId,
+    ...state,
+    isWhole: view.isWhole,
+    isStarted: view.isStarted,
+    isPastWait: view.isPastWait,
+    appended: view.appended,
+    unfolded: [...view.unfolded],
+    order: view.order.map((id) => ({ id, kind: view.rowOf.get(id), place: placeKind(id) })),
+    apart: [...view.apart].map(([id, hasDrawn]) => ({ id, hasDrawn, isUnkept: view.unkept.has(id) })),
+  }
+  await $.fs.write(path, `${JSON.stringify(dump, null, 1)}\n`)
+  return path
+}
+
 /**
  * Registers the view. Nothing changes until the session's first marked
  * assistant message, whether the module finds it in the conversation when it
@@ -1307,6 +1392,11 @@ export function registerToHuman(on: On) {
     if (!view.isStarted) {
       begin($, view, next.signal, markSeen)
     }
+    try {
+      await $.command.register({ name: DUMP_COMMAND, description: "Writes the to-human view's state (its rows' order and kinds) to a file, for a fold drawn wrong.", immediate: true })
+    } catch (error) {
+      $.ui.log(`to-human: /${DUMP_COMMAND} could not be registered (${String(error)})`, { to: 'debug' })
+    }
     return next(e)
   })
 
@@ -1322,16 +1412,18 @@ export function registerToHuman(on: On) {
       view.errors.clear()
       view.unrequested.clear()
       view.apart.clear()
+      view.unkept.clear()
       unfolded.clear()
+      // A cleared conversation keeps no row yet; a resumed one's are listed by its file.
+      view.isWhole = e.source === 'clear'
       $.ui.invalidate('ui.render')
     }
     if (e.source !== 'resume' && e.source !== 'fork') {
       return next(e)
     }
     // The hooks beneath run while this searches: sminos' ask mod reads
-    // the same transcript for the questions it draws. The subagents' scan
-    // goes on after both.
-    const [result] = await Promise.all([next(e), place($, view, placeArgs(e.transcript_path), subagentsArgs(e.transcript_path), next.signal)])
+    // the same transcript for the questions it draws.
+    const [result] = await Promise.all([next(e), place($, view, placeArgs(e.transcript_path), next.signal)])
     return result
   })
 
@@ -1339,7 +1431,8 @@ export function registerToHuman(on: On) {
   // after every row before it, its tool calls with it, and noted when it is
   // an API error. A row that drew while it streamed, before its place was
   // known, moves to it; one that drew before it was known for an error is
-  // asked for again.
+  // asked for again. A row kept between two steps judges the drawn rows that
+  // still have no place (`judgeUnkept`).
   on('session.append', { door: /./ }, async ($, e, next) => {
     const stored = await next(e)
     if (e.agentId !== undefined && e.door !== 'queue' && stored.deny === undefined) {
@@ -1357,14 +1450,15 @@ export function registerToHuman(on: On) {
         view.appended += 1
         const calls = stored.message.content.flatMap((block) => (block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : []))
         const ids = [stored.uuid, ...calls]
-        // A row that drew apart, taken for a subagent's, is the main conversation's again.
+        // A row that drew apart, taken for none of the main conversation's, is its again.
         const isRevoked = placeAll(view, ids, LIVE + view.appended, 1 / 1000)
         const isError = isApiError(e.origin, stored.message)
         if (isError) {
           view.errors.add(stored.uuid)
         }
         const moved = ids.some((id) => view.rowOf.has(id) || view.rowOf.has(GROUP + id)) && reorder(view)
-        if ((moved || isRevoked || (isError && view.rowOf.has(stored.uuid))) && isFolding()) {
+        const isJudged = STEP_DOORS.has(e.door) && judgeUnkept(view)
+        if ((moved || isRevoked || isJudged || (isError && view.rowOf.has(stored.uuid))) && isFolding()) {
           $.ui.invalidate('ui.render')
         }
       } catch (error) {
@@ -1373,6 +1467,27 @@ export function registerToHuman(on: On) {
       }
     }
     return stored
+  })
+
+  // The main conversation's turn's end is a step's end too: every row it drew is kept.
+  on('turn.complete', { turnId: /^/ }, async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined && judgeUnkept(view) && isFolding()) {
+      $.ui.invalidate('ui.render')
+    }
+    return result
+  })
+
+  // `/to-human-dump`: the view's state as it stands, to a file, for a wrong fold seen live.
+  on('command.run', { command: DUMP_COMMAND }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
+    try {
+      const path = await dumpView($, view, { isFolding: isFolding(), isFullTranscript })
+      $.ui.toast(`to-human: the view's state is in ${path}`)
+    } catch (error) {
+      $.ui.toast(`to-human: the view's state could not be written (${String(error)})`)
+    }
+    return {}
   })
 
   // Where the engine expands a group itself (`--verbose`, the ctrl+o
@@ -1394,8 +1509,18 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    if (drawsApart(view, e.requestId)) return next(e)
     const kind = promptRow(e.props, spawns)
+    // A prompt row is kept before it draws (the person's own only now and
+    // then after, which their append takes back): one with no place is a
+    // preview of a queued one, or another loop's. A queued delivery's
+    // preview draws nothing, as the delivery does; the person's own shows.
+    if (drawsApart(view, e.requestId) || judgeUnkept(view, [e.requestId])) {
+      if (view.unkept.has(e.requestId) && isFolding() && kind === 'record') {
+        const { Box } = $.ui.resolve(e)
+        return <Box />
+      }
+      return next(e)
+    }
     note(view, e.requestId, e.props)
     see($, view, e.requestId, kind)
     return isFolding() && kind === 'record' ? recordRow($, e, next, view) : next(e)

@@ -56,7 +56,7 @@ describe('MAWS native to-human', () => {
     // guard on AbovePrompt could look like a pass-through simply because
     // there was nothing to do yet.
     calls.length = 0
-    const gated = (event: string) => event === 'ui.render' || event === 'ui.press'
+    const gated = (event: string) => event === 'ui.render' || event === 'ui.press' || event === 'command.run'
     const drawing = hooks.filter((hook) => gated(hook.event))
     for (const surface of ['desktop', 'vscode', 'mobile', undefined]) {
       await Promise.all(drawing.map(async (hook) => {
@@ -83,12 +83,13 @@ describe('MAWS native to-human', () => {
       }))
     }
     expect(calls).toEqual([])
-    // Every hook but three draws, so every one is gated: none is left that
-    // answers a question or a prompt. The three draw nothing: they learn
-    // whether a mark was sent, where each row stands in the transcript and
-    // which rows are API errors (`session.start`, `classic.SessionStart`,
-    // `session.append`), for the terminal's report.
-    expect(hooks.map((hook) => hook.event).filter((event) => !gated(event))).toEqual(['session.start', 'classic.SessionStart', 'session.append'])
+    // Every hook but four draws or answers the view's command, so every one is
+    // gated: none is left that answers a question or a prompt. The four draw
+    // nothing: they learn whether a mark was sent, where each row stands in
+    // the transcript, which rows are API errors and where a step ends
+    // (`session.start`, `classic.SessionStart`, `session.append`,
+    // `turn.complete`), for the terminal's report.
+    expect(hooks.map((hook) => hook.event).filter((event) => !gated(event))).toEqual(['session.start', 'classic.SessionStart', 'session.append', 'turn.complete'])
     expect(envReads).toEqual(['MAWS_NATIVE_TO_HUMAN'])
   })
 })
