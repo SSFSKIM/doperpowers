@@ -513,12 +513,12 @@ const labelFor = (run: FoldRun) => (run.isLive === true ? run.line ?? run.summar
 export function labelOf(folds: Folds | undefined, open: OpenFold | undefined, view: View, rowId: string): string | undefined {
   const at = view.place.get(keyOf(rowId))
   if (at === undefined) return undefined
-  const from = open === null || open === undefined ? undefined : view.place.get(open.first)
+  const from = open === null || open === undefined ? undefined : view.place.get(keyOf(open.first))
   if (open && from !== undefined && at >= from) return labelFor(open)
   const runs = folds?.runs ?? []
   for (let i = runs.length - 1; i >= 0; i -= 1) {
     const run = runs[i]!
-    const [first, last] = [view.place.get(run.first), run.last === undefined ? undefined : view.place.get(run.last)]
+    const [first, last] = [view.place.get(keyOf(run.first)), run.last === undefined ? undefined : view.place.get(keyOf(run.last))]
     if (first !== undefined && last !== undefined && first <= at && at <= last) return labelFor(run)
   }
   return undefined
