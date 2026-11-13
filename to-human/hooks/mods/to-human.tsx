@@ -674,6 +674,8 @@ export type View = {
   errors: Set<string>
   /** The rows the engine kept as answered without a request (a hook's own response), read from the transcript file with the places. */
   unrequested: Set<string>
+  /** The rows another loop keeps (a subagent's), by their ids: no run of the main conversation holds them (`setApart`). */
+  apart: Set<string>
   /** The module's start-up read (`started`) while one runs; it settles once it finished or was cut short. */
   reading?: Promise<void>
   /** Settles once the start-up read finished, or the rows stopped waiting for it. */
@@ -702,6 +704,7 @@ export const newView = (isFolding: () => boolean): View => {
     shown: new Map(),
     errors: new Set(),
     unrequested: new Set(),
+    apart: new Set(),
     start: { promise, settle },
     isStarted: false,
     isPastWait: false,
@@ -793,6 +796,25 @@ export function sessionPlaceArgs(sessionId: string): string[] {
   return ['sh', '-c', script, 'sh', sessionId, PLACES]
 }
 
+/**
+ * The search of the files `$@` (after the pattern `$1`) as one, for the rows'
+ * and calls' ids alone (`IDS`), exiting as `SEARCH` does.
+ */
+const SEARCH_ALL = 'searchAll() { p=$1; shift; if command -v rg >/dev/null 2>&1; then exec rg --no-config -a -o -N --no-filename -e "$p" -- "$@"; fi; exec grep -o -h -E -e "$p" -- "$@"; }'
+const IDS = '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"'
+
+/** The search that lists the rows of the subagents' transcripts kept beside the transcript `path` (`<path less .jsonl>/subagents/`). */
+export function apartArgs(path: string): string[] {
+  const script = `${SEARCH_ALL}; p=$2; set -- "\${1%.jsonl}"/subagents/*.jsonl; [ -f "$1" ] || exit 1; searchAll "$p" "$@"`
+  return ['sh', '-c', script, 'sh', path, IDS]
+}
+
+/** The same search beside the session's own transcript, found by its id as `sessionPlaceArgs` finds it. */
+export function sessionApartArgs(sessionId: string): string[] {
+  const script = `${SEARCH_ALL}; id=$1 p=$2; for d in "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$id"/subagents; do set -- "$d"/*.jsonl; [ -f "$1" ] && searchAll "$p" "$@"; done; exit 1`
+  return ['sh', '-c', script, 'sh', sessionId, IDS]
+}
+
 /** The ids `placeArgs`' output names, in the transcript's order. */
 export function placesIn(stdout: string): string[] {
   return stdout.split('\n').flatMap((line) => {
@@ -826,6 +848,40 @@ function shapeOf(view: View, id: string | undefined): string {
   const isOpen = view.unfolded.has(start)
   return `${start === id}:${isOpen}:${isOpen && runEnd(view.order, view.rowOf, id) === id}`
 }
+
+/**
+ * Sets rows another loop keeps apart from the main conversation's. A
+ * subagent's transcript, opened in the fullscreen view (its agent picked in
+ * the strip under the prompt), draws through these same hooks, and nothing on
+ * the event says whose row it is: taken for the main conversation's, its rows
+ * stood in the main order where they first drew, after every row appended by
+ * then, so its spawns and questions there cut the main run in two where the
+ * main view shows nothing (a `› working record` more, with nothing between),
+ * and a main row whose run began at one of its rows drew no button at all.
+ * A row is known for another loop's by its append (`agentId` set) or by its
+ * subagent's transcript file; one already placed as the main conversation's
+ * is left there. Whether any had drawn in the main order, which it leaves.
+ */
+export function setApart(view: View, ids: readonly string[]): boolean {
+  let isMoved = false
+  for (const id of ids) {
+    if (view.place.has(id) || view.apart.has(id)) {
+      continue
+    }
+    view.apart.add(id)
+    view.guess.delete(id)
+    for (const key of [id, GROUP + id]) {
+      if (view.rowOf.delete(key)) {
+        view.order.splice(view.order.indexOf(key), 1)
+        isMoved = true
+      }
+    }
+  }
+  return isMoved
+}
+
+/** Whether a row is another loop's (`setApart`): it draws as the engine draws it, in no run. */
+const isApart = (view: View, id: string) => view.apart.has(keyOf(id))
 
 /**
  * Notes a row as it draws: its place among the rows drawn so far, and what it
@@ -919,32 +975,51 @@ async function recordRow<E extends RenderInput>(
   )
 }
 
-/**
- * Places the rows a transcript search lists (see `View`), and notes which of
- * them are API errors. A transcript can be far past what one read takes
- * whole, so a search lists its rows; one that fails, or is cut, leaves the
- * rows it could not place to draw in the order they come. `signal` is the
- * dispatch's that searches: a search its abort cut short says nothing.
- */
-async function place($: EngineInterface, view: View, search: string[], signal: AbortSignal) {
+/** A transcript search's output; undefined where it failed (said in the debug log, unless `signal`'s abort cut it short). */
+async function searched($: EngineInterface, search: string[], signal: AbortSignal, what: string): Promise<string | undefined> {
   try {
     const found = await $.process.run(search)
     // grep: 0 found, 1 none, anything else a failure.
     if (found.exitCode > 1) {
       throw new Error(`grep exited ${found.exitCode}`)
     }
-    placeAll(view, placesIn(found.stdout))
-    const errors = errorsIn(found.stdout).filter((id) => !view.errors.has(id))
-    errors.forEach((id) => view.errors.add(id))
-    const unrequested = unrequestedIn(found.stdout).filter((id) => !view.unrequested.has(id))
-    unrequested.forEach((id) => view.unrequested.add(id))
-    if ((reorder(view) || [...errors, ...unrequested].some((id) => view.rowOf.has(id))) && view.isFolding()) {
-      $.ui.invalidate('ui.render')
-    }
+    return found.stdout
   } catch (error) {
     if (!signal.aborted) {
-      $.ui.log(`to-human: the transcript's order could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
+      $.ui.log(`to-human: ${what} could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
     }
+    return undefined
+  }
+}
+
+/**
+ * Places the rows a transcript search lists (see `View`), and notes which of
+ * them are API errors; then sets apart the rows its subagents' transcripts
+ * list (`setApart`), once the main conversation's are placed. A transcript
+ * can be far past what one read takes whole, so a search lists its rows; one
+ * that fails, or is cut, leaves the rows it could not place to draw in the
+ * order they come. `signal` is the dispatch's that searches: a search its
+ * abort cut short says nothing.
+ */
+async function place($: EngineInterface, view: View, search: string[], apart: string[], signal: AbortSignal) {
+  const [main, others] = await Promise.all([
+    searched($, search, signal, "the transcript's order"),
+    searched($, apart, signal, "the subagents' rows"),
+  ])
+  let isChanged = false
+  if (main !== undefined) {
+    placeAll(view, placesIn(main))
+    const errors = errorsIn(main).filter((id) => !view.errors.has(id))
+    errors.forEach((id) => view.errors.add(id))
+    const unrequested = unrequestedIn(main).filter((id) => !view.unrequested.has(id))
+    unrequested.forEach((id) => view.unrequested.add(id))
+    isChanged = reorder(view) || [...errors, ...unrequested].some((id) => view.rowOf.has(id))
+  }
+  if (others !== undefined) {
+    isChanged = setApart(view, placesIn(others)) || isChanged
+  }
+  if (isChanged && view.isFolding()) {
+    $.ui.invalidate('ui.render')
   }
 }
 
@@ -965,7 +1040,8 @@ async function sentMark($: EngineInterface, signal: AbortSignal): Promise<boolea
 /** Places the rows of the session's own transcript, found by its id. */
 async function placeSession($: EngineInterface, view: View, signal: AbortSignal) {
   try {
-    await place($, view, sessionPlaceArgs(await $.session.id()), signal)
+    const id = await $.session.id()
+    await place($, view, sessionPlaceArgs(id), sessionApartArgs(id), signal)
   } catch (error) {
     if (!signal.aborted) {
       $.ui.log(`to-human: the session's id could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
@@ -1177,6 +1253,7 @@ export function registerToHuman(on: On) {
       view.guess.clear()
       view.errors.clear()
       view.unrequested.clear()
+      view.apart.clear()
       unfolded.clear()
       $.ui.invalidate('ui.render')
     }
@@ -1185,7 +1262,7 @@ export function registerToHuman(on: On) {
     }
     // The hooks beneath run while this searches: sminos' ask mod reads
     // the same transcript for the questions it draws.
-    const [result] = await Promise.all([next(e), place($, view, placeArgs(e.transcript_path), next.signal)])
+    const [result] = await Promise.all([next(e), place($, view, placeArgs(e.transcript_path), apartArgs(e.transcript_path), next.signal)])
     return result
   })
 
@@ -1196,7 +1273,17 @@ export function registerToHuman(on: On) {
   // asked for again.
   on('session.append', { door: /./ }, async ($, e, next) => {
     const stored = await next(e)
-    if (e.agentId === undefined && e.door !== 'queue' && stored.deny === undefined) {
+    if (e.agentId !== undefined && e.door !== 'queue' && stored.deny === undefined) {
+      // A subagent's row: its transcript, opened, draws through these hooks too.
+      try {
+        const calls = stored.message.content.flatMap((block) => (block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : []))
+        if (setApart(view, [stored.uuid, ...calls]) && isFolding()) {
+          $.ui.invalidate('ui.render')
+        }
+      } catch (error) {
+        $.ui.log(`to-human: a subagent's row could not be set apart (${String(error)})`, { to: 'debug' })
+      }
+    } else if (e.agentId === undefined && e.door !== 'queue' && stored.deny === undefined) {
       try {
         view.appended += 1
         const calls = stored.message.content.flatMap((block) => (block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : []))
@@ -1237,6 +1324,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
+    if (isApart(view, e.requestId)) return next(e)
     const kind = promptRow(e.props, spawns)
     note(view, e.requestId, e.props)
     see($, view, e.requestId, kind)
@@ -1280,6 +1368,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
+    if (isApart(view, e.requestId)) return next(e)
     if (isMadeUp(e.requestId, e.props.text) || (view.unrequested.has(e.requestId) && e.props.text.trim() === FINAL_ANSWER)) {
       const { Box } = $.ui.resolve(e)
       return <Box />
@@ -1360,6 +1449,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
+    if (isApart(view, e.props.tool_use_id)) return next(e)
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
     }
@@ -1416,6 +1506,7 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = `${GROUP}${e.props.calls[0]?.tool_use_id ?? e.requestId}`
+    if (isApart(view, id)) return next(e)
     view.requestIds.set(id, e.requestId)
     if (e.props.isExpanded) {
       expanded.add(id)
@@ -1463,7 +1554,7 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = groupOf.get(e.props.tool_use_id) ?? e.props.tool_use_id
-    if (expanded.has(id)) {
+    if (expanded.has(id) || isApart(view, e.props.tool_use_id)) {
       return next(e)
     }
     if (!pills.has(id)) {
@@ -1495,6 +1586,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
+    if (isApart(view, e.requestId)) return next(e)
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
     }

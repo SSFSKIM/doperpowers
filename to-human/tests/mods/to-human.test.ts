@@ -4,7 +4,7 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
 import { FINAL_ANSWER, MESSAGE_TOOL } from '../../hooks/mods/message'
-import { START_WAIT_MS, editorUrl, errorsIn, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs, unrequestedIn } from '../../hooks/mods/to-human'
+import { START_WAIT_MS, editorUrl, errorsIn, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionApartArgs, sessionPlaceArgs, unrequestedIn } from '../../hooks/mods/to-human'
 
 // The kit runs tests with the timer the hooks' declarations leave out.
 declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => unknown
@@ -536,7 +536,7 @@ describe('rows off the window', () => {
     expect(rawAnswers).toBe(0)
     expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await r2.find({ type: 'Button' })).toBeUndefined()
-    expect(searches).toEqual([sessionPlaceArgs('s1')])
+    expect(searches).toEqual([sessionPlaceArgs('s1'), sessionApartArgs('s1')])
   })
 
   // The kit's mounted rows do not say where the transcript scrolls, so the
@@ -933,6 +933,105 @@ describe('rows', () => {
 
 })
 
+// A subagent's transcript, opened in the fullscreen view, draws through the
+// same hooks as the main conversation's rows, with nothing on the event to
+// say whose row it is (live, 2.1.322: an agent's prompt, its groups, its
+// `<message>` text, its hand-back call). The events below are those a probe
+// recorded with the agent's view opened mid-turn: the agent's rows kept
+// first, then drawn newest first, then the main turn going on.
+describe("another loop's rows", () => {
+  const PLUGIN = 'to-human'
+  const engineDrawing = (on: On) =>
+    on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
+  const message = ($: Engine, requestId: string, text: string) =>
+    $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+  const group = ($: Engine, requestId: string, calls: string[]) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId,
+      props: { calls: calls.map((id) => ({ tool_use_id: id, tool: 'Bash', input: {} })), isExpanded: false, isActive: false, isCallsOnly: true },
+    } as never)
+  const kept = ($: Engine, uuid: string, content: unknown[], agentId?: string) =>
+    $.session.append({
+      door: 'response', uuid, origin: { kind: 'model', model: 'claude-haiku' },
+      message: { type: 'assistant', role: 'assistant', content },
+      ...(agentId !== undefined && { agentId }),
+    } as never)
+  const bashUse = (id: string) => ({ type: 'tool_use', id, name: 'Bash', input: {} })
+  const handBack = ($: Engine, requestId: string) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'UserMessage', requestId,
+      props: { text: 'done', origin: { kind: 'peer' }, from: { name: 'general-purpose' }, isExpanded: false },
+    })
+
+  test("an agent's transcript, opened mid-turn, draws as the engine does and leaves the main run whole", async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await kept($, 'm1', [{ type: 'text', text: '<message>Starting.</message>' }])
+    await message($, 'm1', '<message>Starting.</message>')
+    await kept($, 'r1', [bashUse('toolu_b1')])
+    const first = await group($, 'grouped-r1', ['toolu_b1'])
+    // The agent's rows, kept as it ran, drawn once its transcript is opened.
+    await kept($, 'a1', [{ type: 'text', text: '<message>agent hello</message>' }], 'agent-1')
+    await kept($, 'a2', [bashUse('toolu_a1')], 'agent-1')
+    const agentGroup = await group($, 'grouped-a2', ['toolu_a1'])
+    const agentText = await message($, 'a1', '<message>agent hello</message>')
+    // Back in the main view, the turn goes on: the agent's hand-back, then more calls.
+    const delivery = await handBack($, 'u1')
+    await kept($, 'r2', [bashUse('toolu_b2')])
+    const second = await group($, 'grouped-r2', ['toolu_b2'])
+
+    expect(await agentText.find({ type: 'Text', text: '<message>agent hello</message>' })).toBeDefined()
+    expect(await agentGroup.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+    expect(await agentGroup.find({ type: 'Button' })).toBeUndefined()
+    // One run between the message and the turn's end, behind the first group's one button.
+    expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await delivery.find({ type: 'Button' })).toBeUndefined()
+    expect(await second.find({ type: 'Button' })).toBeUndefined()
+    await first.press({ key: 'to-human-toggle' })
+    expect(await delivery.find({ type: 'Text', text: 'done' })).toBeDefined()
+    expect(await second.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+  })
+
+  test('an agent row that drew before it was kept leaves the main order once it is', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm1', '<message>Starting.</message>')
+    await kept($, 'r1', [bashUse('toolu_b1')])
+    const first = await group($, 'grouped-r1', ['toolu_b1'])
+    // The agent writes while its transcript is open: its row draws as it streams.
+    const agentText = await message($, 'a1', '<message>agent hello</message>')
+    const delivery = await handBack($, 'u1')
+    await kept($, 'a1', [{ type: 'text', text: '<message>agent hello</message>' }], 'agent-1')
+
+    expect(await agentText.find({ type: 'Text', text: '<message>agent hello</message>' })).toBeDefined()
+    expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await delivery.find({ type: 'Button' })).toBeUndefined()
+  })
+
+  test("a module that starts over reads the subagents' transcripts for their rows, after the main conversation's", async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    on('session.messages', () => ({ value: [{ role: 'assistant', text: '<message>Earlier.</message>', toolUses: [] }] }))
+    on('session.id', () => ({ value: 's1' }))
+    const rows = (ids: string[]) => ids.map((id) => `"uuid":"${id}"`).join('\n')
+    on('process.run', async (_, e) => {
+      // A fork's transcript can carry the main conversation's rows: m1 and r2 stay the main conversation's.
+      const stdout = e.argv.join(' ') === sessionApartArgs('s1').join(' ') ? rows(['m1', 'a1', 'r2']) : rows(['m1', 'r1', 'r2'])
+      return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    const r1 = await message($, 'r1', 'Reading.')
+    const agentText = await message($, 'a1', '<message>agent hello</message>')
+    const r2 = await message($, 'r2', 'Testing.')
+
+    expect(await agentText.find({ type: 'Text', text: '<message>agent hello</message>' })).toBeDefined()
+    expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await r2.find({ type: 'Button' })).toBeUndefined()
+  })
+})
+
 describe('failures', () => {
   const PLUGIN = 'to-human'
   const engineDrawing = (on: On) =>
@@ -992,7 +1091,7 @@ describe('failures', () => {
     expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 
-  test("the model's text, a subagent's error and the stand-in for no response are working record", async ($, on) => {
+  test("the model's text and the stand-in for no response are working record; a subagent's error is its own transcript's", async ($, on) => {
     mock.env(on, {})
     mock.store(on)
     engineDrawing(on)
@@ -1002,15 +1101,18 @@ describe('failures', () => {
     await $.session.append(response('r3', 'No response requested.'))
     const rows = [
       await message($, 'r1', 'API Error: quoted by the model'),
-      await message($, 'r2', 'API Error: terminated'),
       await message($, 'r3', 'No response requested.'),
     ]
+    // Drawn only where the subagent's transcript is open, as the engine draws it.
+    const subagent = await message($, 'r2', 'API Error: terminated')
 
     // One run, folded behind the first row's button.
     expect(await rows[0]!.find({ type: 'Button', text: 'working record' })).toBeDefined()
     for (const row of rows) {
       expect((await row.findAll({ type: 'Text' })).some((text) => text.text.startsWith('API Error') || text.text.startsWith('No response'))).toBe(false)
     }
+    expect(await subagent.find({ type: 'Text', text: 'API Error: terminated' })).toBeDefined()
+    expect(await subagent.find({ type: 'Button' })).toBeUndefined()
   })
 
   test('an API error a resumed transcript holds stays in the report', async ($, on) => {

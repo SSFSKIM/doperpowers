@@ -5,7 +5,9 @@
 // (placeArgs) lists the rows of the file it is given; the one a module that
 // starts mid-session runs (sessionPlaceArgs) finds the session's file by its
 // id under CLAUDE_CONFIG_DIR, else ~/.claude, lists its rows the same way, and
-// lists none, as a search that finds none, while the session has no file yet.
+// lists none, as a search that finds none, while the session has no file yet;
+// the subagents' transcripts beside it (apartArgs, sessionApartArgs) are read
+// as one, every row of each, and a session with none lists none.
 // Run with bun (to-human/tests/mods/run.sh); not a kit test, as it starts
 // processes.
 import { spawnSync } from 'node:child_process'
@@ -13,7 +15,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { errorsIn, placeArgs, placesIn, sessionPlaceArgs, unrequestedIn } from '../../hooks/mods/to-human'
+import { apartArgs, errorsIn, placeArgs, placesIn, sessionApartArgs, sessionPlaceArgs, unrequestedIn } from '../../hooks/mods/to-human'
 
 const root = mkdtempSync(join(tmpdir(), 'to-human-places-'))
 const failures: string[] = []
@@ -25,6 +27,9 @@ try {
   }
   transcript('home/.claude', '{"uuid":"a","message":{"content":[{"type":"tool_use","id":"t1"}]}}\n{"uuid":"b"}\n{"uuid":"e","message":{"model":"<synthetic>"},"error":"server_error","isApiErrorMessage":true}\n{"type":"assistant","uuid":"h","message":{"id":"msg_hook_1","content":[{"type":"text","text":"Message sent to the human.","citations":null}]},"isApiErrorMessage":false,"answeredWithoutRequest":true}\n')
   transcript('config', '{"uuid":"c"}\n')
+  mkdirSync(join(root, 'home/.claude/projects/-work/0b6f/subagents'), { recursive: true })
+  writeFileSync(join(root, 'home/.claude/projects/-work/0b6f/subagents/agent-1.jsonl'), '{"uuid":"s1","message":{"content":[{"type":"tool_use","id":"st1"}]}}\n')
+  writeFileSync(join(root, 'home/.claude/projects/-work/0b6f/subagents/agent-2.jsonl'), '{"uuid":"s2"}\n')
   mkdirSync(join(root, 'empty'))
   // The search takes rg wherever PATH finds it, so with rg's directory first
   // it runs rg; with the system's directories alone, grep (where they hold no
@@ -50,7 +55,20 @@ try {
     check('CLAUDE_CONFIG_DIR', session, { HOME: join(root, 'home'), CLAUDE_CONFIG_DIR: join(root, 'config') }, ['c'], 0)
     check('no transcript yet', session, { HOME: join(root, 'empty') }, [], 1)
     check('a resumed transcript', placeArgs(join(root, 'home/.claude/projects/-work/0b6f.jsonl')), {}, ['a', 't1', 'b', 'e', 'h'], 0, ['e'], ['h'])
-    checks += 4
+    // The subagents' transcripts beside it, read as one: every row and call of each.
+    const sorted = (argv: string[], env: Record<string, string>) => {
+      const [shell, ...args] = argv
+      const found = spawnSync(shell!, args, { env: { PATH, ...env }, encoding: 'utf8' })
+      return `${found.status} ${JSON.stringify(placesIn(found.stdout).sort())}`
+    }
+    const apart = (name: string, argv: string[], env: Record<string, string>, ids: string[], code: number) => {
+      const got = sorted(argv, env)
+      if (got !== `${code} ${JSON.stringify(ids)}`) failures.push(`${tool}, ${name}: ${got}, wanted ${code} ${JSON.stringify(ids)}`)
+    }
+    apart("a session's subagents", sessionApartArgs('0b6f'), { HOME: join(root, 'home') }, ['s1', 's2', 'st1'], 0)
+    apart('no subagents yet', sessionApartArgs('0b6f'), { HOME: join(root, 'home'), CLAUDE_CONFIG_DIR: join(root, 'config') }, [], 1)
+    apart("a resumed session's subagents", apartArgs(join(root, 'home/.claude/projects/-work/0b6f.jsonl')), {}, ['s1', 's2', 'st1'], 0)
+    checks += 7
   }
 } finally {
   rmSync(root, { recursive: true, force: true })
