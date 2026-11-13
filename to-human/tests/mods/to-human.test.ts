@@ -1448,7 +1448,26 @@ describe('rows nothing keeps', () => {
     expect(dump.engine).toBe('2.1.322')
     expect(dump.plugin).toBe('9.9.9')
     expect(dump.order).toContainEqual({ id: 'group:toolu_b1', kind: 'record', place: 'placed' })
-    expect(dump.apart).toContainEqual({ id: 'q1', hasDrawn: true, isUnkept: true })
+    expect(dump.apart).toContainEqual({ id: 'q1', hasDrawn: true, isUnkept: true, drewAs: `UserMessage: ${QUEUED.slice(0, 60)}` })
+  })
+
+  test('/to-human-dump says what each row set apart drew as, and nothing for one that never drew', async ($, on) => {
+    live(on)
+    const writes: { path: string; text: string }[] = []
+    on('fs.write', (_, e) => (writes.push(e as { path: string; text: string }), { value: undefined }))
+    await turnStart($)
+    const long = 'An agent note long enough that the dump keeps only its first sixty characters of it.'
+    await kept($, 'g1', [text(long)], 'agent-1')
+    await message($, 'g1', long)
+    await kept($, 'g2', [bashUse('toolu_g2')], 'agent-1')
+    await call($, 'toolu_g2', 'Bash', {})
+    await kept($, 'g3', [text('never drawn')], 'agent-1')
+    await $.command.run({ command: 'to-human-dump', args: '' } as never)
+
+    const dump = JSON.parse(writes[0]!.text) as { apart: { id: string; hasDrawn: boolean; drewAs?: string }[] }
+    expect(dump.apart).toContainEqual({ id: 'g1', hasDrawn: true, isUnkept: false, drewAs: `AssistantMessage: ${long.slice(0, 60)}` })
+    expect(dump.apart).toContainEqual({ id: 'toolu_g2', hasDrawn: true, isUnkept: false, drewAs: 'ToolUse: Bash' })
+    expect(dump.apart).toContainEqual({ id: 'g3', hasDrawn: false, isUnkept: false })
   })
 })
 

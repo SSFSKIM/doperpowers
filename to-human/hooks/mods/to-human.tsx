@@ -679,6 +679,8 @@ export type View = {
   unrequested: Set<string>
   /** The drawn rows that are not the main conversation's, by their ids, each with whether it has drawn so: no run holds them (`setApart`, `judgeUnkept`). */
   apart: Map<string, boolean>
+  /** What each of those that drew drew as (`noteApart`), by its key. */
+  drewAs: Map<string, string>
   /** Of those, the ones no loop was seen to keep (`judgeUnkept`): a preview of a queued prompt, an older subagent's row. */
   unkept: Set<string>
   /** The module's start-up read (`started`) while one runs; it settles once it finished or was cut short. */
@@ -713,6 +715,7 @@ export const newView = (isFolding: () => boolean): View => {
     errors: new Set(),
     unrequested: new Set(),
     apart: new Map(),
+    drewAs: new Map(),
     unkept: new Set(),
     start: { promise, settle },
     isStarted: false,
@@ -1040,13 +1043,19 @@ export function judgeUnkept(view: View, ids: readonly string[] = view.order): bo
   return unkept.length > 0
 }
 
-/** Whether a row is another loop's (`setApart`, `judgeUnkept`), noting that it drew so: it stands in no run. */
-function drawsApart(view: View, id: string): boolean {
+/** Notes what a row set apart drew as, for `/to-human-dump`: its component, and its text's start or its tool's name. */
+function noteApart(view: View, id: string, component: string, what: string) {
+  view.drewAs.set(keyOf(id), `${component}: ${what.slice(0, 60)}`)
+}
+
+/** Whether a row is another loop's (`setApart`, `judgeUnkept`), noting that it drew so, and as what: it stands in no run. */
+function drawsApart(view: View, id: string, component: string, what: string): boolean {
   const key = keyOf(id)
   if (!view.apart.has(key)) {
     return false
   }
   view.apart.set(key, true)
+  noteApart(view, id, component, what)
   return true
 }
 
@@ -1479,7 +1488,7 @@ async function dumpView($: EngineInterface, view: View, state: { isFolding: bool
     appended: view.appended,
     unfolded: [...view.unfolded],
     order: view.order.map((id) => ({ id, kind: view.rowOf.get(id), place: placeKind(id) })),
-    apart: [...view.apart].map(([id, hasDrawn]) => ({ id, hasDrawn, isUnkept: view.unkept.has(id) })),
+    apart: [...view.apart].map(([id, hasDrawn]) => ({ id, hasDrawn, isUnkept: view.unkept.has(id), drewAs: view.drewAs.get(id) })),
   }
   await $.fs.write(path, `${JSON.stringify(dump, null, 1)}\n`)
   return path
@@ -1534,6 +1543,7 @@ export function registerToHuman(on: On) {
       view.errors.clear()
       view.unrequested.clear()
       view.apart.clear()
+      view.drewAs.clear()
       view.unkept.clear()
       view.heldBy.clear()
       unfolded.clear()
@@ -1639,7 +1649,8 @@ export function registerToHuman(on: On) {
     // preview draws nothing, as the delivery does; the person's own shows,
     // and so does a loop's own instructions from whoever dispatched it
     // (`coordinator`), which the main conversation's queue never holds.
-    if (drawsApart(view, e.requestId) || judgeUnkept(view, [e.requestId])) {
+    if (drawsApart(view, e.requestId, 'UserMessage', e.props.text) || judgeUnkept(view, [e.requestId])) {
+      noteApart(view, e.requestId, 'UserMessage', e.props.text)
       if (view.unkept.has(keyOf(e.requestId)) && isFolding() && kind === 'record' && e.props.origin?.kind !== 'coordinator') {
         const { Box } = $.ui.resolve(e)
         return <Box />
@@ -1689,7 +1700,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    if (drawsApart(view, e.requestId)) return next(e)
+    if (drawsApart(view, e.requestId, 'AssistantMessage', e.props.text)) return next(e)
     if (isMadeUp(e.requestId, e.props.text) || (view.unrequested.has(keyOf(e.requestId)) && e.props.text.trim() === FINAL_ANSWER)) {
       const { Box } = $.ui.resolve(e)
       return <Box />
@@ -1772,7 +1783,7 @@ export function registerToHuman(on: On) {
     await started($, view, next.signal, markSeen)
     // A call stands apart with the group it is drawn in: a group is set apart by its first call alone.
     const held = groupOf.get(e.requestId)
-    if (drawsApart(view, e.props.tool_use_id) || (held !== undefined && drawsApart(view, held))) return next(e)
+    if (drawsApart(view, e.props.tool_use_id, 'ToolUse', e.props.tool) || (held !== undefined && drawsApart(view, held, 'ToolUse', e.props.tool))) return next(e)
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
     }
@@ -1829,7 +1840,7 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = `${GROUP}${e.props.calls[0]?.tool_use_id ?? e.requestId}`
-    if (drawsApart(view, id)) return next(e)
+    if (drawsApart(view, id, 'ToolGroup', e.props.calls[0]?.tool ?? '')) return next(e)
     view.requestIds.set(id, e.requestId)
     if (e.props.isExpanded) {
       expanded.add(id)
@@ -1877,7 +1888,7 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = groupOf.get(e.props.tool_use_id) ?? e.props.tool_use_id
-    if (drawsApart(view, e.props.tool_use_id) || drawsApart(view, id) || expanded.has(id)) {
+    if (drawsApart(view, e.props.tool_use_id, 'ToolProgress', e.props.hint) || drawsApart(view, id, 'ToolProgress', e.props.hint) || expanded.has(id)) {
       return next(e)
     }
     if (!pills.has(id)) {
@@ -1909,7 +1920,7 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    if (drawsApart(view, e.requestId)) return next(e)
+    if (drawsApart(view, e.requestId, 'ToolResult', e.props.tool)) return next(e)
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
     }
