@@ -667,6 +667,8 @@ export type View = {
   appended: number
   /** The `requestId` the engine draws a row under, where the view knows it by another id (a group, by its first call's). */
   requestIds: Map<string, string>
+  /** The id each drawn row a later drawing took over stood under, to the id that took it (`adopt`). */
+  heldBy: Map<string, string>
   /** The run a press just folded, by its first row, which the press then brings into view if its top is out of the window. */
   folded?: string
   /** Where each row stood in the window when it last drew, as its `onScreen` said; only the fullscreen transcript says. */
@@ -706,6 +708,7 @@ export const newView = (isFolding: () => boolean): View => {
     guess: new Map(),
     appended: 0,
     requestIds: new Map(),
+    heldBy: new Map(),
     shown: new Map(),
     errors: new Set(),
     unrequested: new Set(),
@@ -745,33 +748,57 @@ function placeOf(view: View, id: string): number {
 }
 
 /**
- * The index `id` takes in `order`: after every drawn row placed before it,
- * and of those placed with it (the blocks of one kept row), every one of a
- * block up to its own.
+ * The index `id` takes in `order`: after every drawn row placed at or before
+ * it, but before any block of its own kept row with a larger index. Rows of
+ * one place stand as they drew, except the blocks of one kept row, which
+ * stand in block order among themselves: rows of other kept rows share a
+ * place only while it is a guess, where the order they drew in is all there is.
  */
 function slotOf(view: View, id: string): number {
-  const [at, block] = [placeOf(view, id), blockOf(id)]
+  const at = placeOf(view, id)
   let low = 0
   let high = view.order.length
   while (low < high) {
     const middle = (low + high) >> 1
-    const row = view.order[middle] as string
-    const there = placeOf(view, row)
-    if (there < at || (there === at && blockOf(row) <= block)) {
+    if (placeOf(view, view.order[middle] as string) <= at) {
       low = middle + 1
     } else {
       high = middle
     }
   }
-  return low
+  const [key, block] = [keyOf(id), blockOf(id)]
+  let slot = low
+  for (let i = low - 1; i >= 0 && placeOf(view, view.order[i] as string) === at; i -= 1) {
+    const row = view.order[i] as string
+    if (keyOf(row) === key && blockOf(row) > block) {
+      slot = i
+    }
+  }
+  return slot
 }
 
-/** Sorts the drawn rows by their places, then their blocks, now that more are known; whether any moved. */
+/** Sorts the drawn rows by their places as `slotOf` places one, now that more are known; whether any moved. */
 export function reorder(view: View): boolean {
   const sorted = view.order
-    .map((id, i) => ({ id, i, at: placeOf(view, id), block: blockOf(id) }))
-    .sort((a, b) => (a.at !== b.at ? (a.at < b.at ? -1 : 1) : a.block - b.block || a.i - b.i))
+    .map((id, i) => ({ id, i, at: placeOf(view, id) }))
+    .sort((a, b) => (a.at === b.at ? a.i - b.i : a.at < b.at ? -1 : 1))
     .map(({ id }) => id)
+  // Within each stretch of one place, each kept row's blocks in block order across the slots they hold.
+  for (let start = 0; start < sorted.length; ) {
+    const at = placeOf(view, sorted[start] as string)
+    let end = start
+    while (end < sorted.length && placeOf(view, sorted[end] as string) === at) end += 1
+    const slotsOf = new Map<string, number[]>()
+    for (let i = start; i < end; i += 1) {
+      const key = keyOf(sorted[i] as string)
+      slotsOf.set(key, [...(slotsOf.get(key) ?? []), i])
+    }
+    for (const slots of slotsOf.values()) {
+      const rows = slots.map((i) => sorted[i] as string).sort((a, b) => blockOf(a) - blockOf(b))
+      slots.forEach((i, n) => (sorted[i] = rows[n] as string))
+    }
+    start = end
+  }
   if (sorted.every((id, i) => id === view.order[i])) {
     return false
   }
@@ -1030,7 +1057,8 @@ function drawsApart(view: View, id: string): boolean {
  * the ids, the ctrl+o view does not), so switching views can change a row's
  * form, and the stale entry, standing first in its run, took the run's button
  * with it. Its slot, its kind, its run's unfolding and where it stood in the
- * window go to the new id.
+ * window go to the new id, and a control drawn before under the old one acts
+ * on the new (`holderOf`).
  */
 function adopt(view: View, requestId: string) {
   const key = rowKey(requestId)
@@ -1043,6 +1071,8 @@ function adopt(view: View, requestId: string) {
     return
   }
   view.order[view.order.indexOf(old)] = requestId
+  view.heldBy.set(old, requestId)
+  view.heldBy.delete(requestId)
   view.rowOf.set(requestId, view.rowOf.get(old) as RowKind)
   view.rowOf.delete(old)
   if (view.unfolded.delete(old)) {
@@ -1091,8 +1121,21 @@ function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
   }
 }
 
+/**
+ * The id a drawn row stands under now, for an id a control or a stored value
+ * took when it was drawn: the row may since draw under the other form of its
+ * id (`adopt`), and a drawing cached before still holds the old one.
+ */
+function holderOf(view: View, id: string): string {
+  for (let held = view.heldBy.get(id); held !== undefined; held = view.heldBy.get(id)) {
+    id = held
+  }
+  return id
+}
+
 /** Unfolds the run or message `id` stands for, or folds it, noting the fold for the press's hook. */
-function toggle(view: View, id: string) {
+function toggle(view: View, drawn: string) {
+  const id = holderOf(view, drawn)
   if (view.unfolded.delete(id)) {
     view.folded = id
   } else {
@@ -1492,6 +1535,7 @@ export function registerToHuman(on: On) {
       view.unrequested.clear()
       view.apart.clear()
       view.unkept.clear()
+      view.heldBy.clear()
       unfolded.clear()
       // A cleared conversation keeps no row yet; a resumed one's are listed by its file.
       view.isWhole = e.source === 'clear'
@@ -1625,7 +1669,8 @@ export function registerToHuman(on: On) {
     if (!isFolding()) {
       return next(e)
     }
-    const prior = view.place.has(keyOf(e.requestId)) ? view.order[slotOf(view, e.requestId) - 1] : before.get(e.requestId)
+    const drawn = before.get(e.requestId)
+    const prior = view.place.has(keyOf(e.requestId)) ? view.order[slotOf(view, e.requestId) - 1] : drawn === undefined ? undefined : holderOf(view, drawn)
     const isShown =
       prior !== undefined && inRun(view.rowOf.get(prior)) && unfolded.has(runStart(view.order, view.rowOf, prior))
     if (isShown) {

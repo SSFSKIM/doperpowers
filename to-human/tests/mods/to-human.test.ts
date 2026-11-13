@@ -1397,6 +1397,41 @@ describe('rows nothing keeps', () => {
     expect(await derived.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 
+  test("rows of other kept rows at one guessed place stand as they drew, whatever their blocks", async ($, on) => {
+    // No list of the transcript: every row drawn before an append is guessed at one place.
+    live(on)
+    on('session.messages', () => ({ value: [{ role: 'assistant', text: '<message>Earlier.</message>', toolUses: [] }] }))
+    // A whole response's second block, then another response's message, then a third's note.
+    const before = await message($, drawnId(1, 1), 'Before report.')
+    const report = await message($, drawnId(2), '<message>Report.</message>')
+    const after = await message($, drawnId(3), 'After report.')
+
+    expect(await before.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await report.find({ type: 'Markdown', text: 'Report.' })).toBeDefined()
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test("a run's fold drawn before its first row changed the form of its id folds the run", async ($, on) => {
+    live(on)
+    await derivedTurn($, on)
+    await askAgain($)
+    await kept($, rowId(31), [text('Working.')])
+    const own = await message($, rowId(31), 'Working.')
+    const end = await group($, 'grouped-b9', ['toolu_b9'])
+    await kept($, rowId(32), [bashUse('toolu_b9')])
+    await own.press({ key: 'to-human-toggle' })
+    expect(await end.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    // The window draws the run's end first, then its first row under the other form of its id.
+    const derived = await message($, drawnId(31), 'Working.')
+    expect(await derived.find({ type: 'Text', text: 'Working.' })).toBeDefined()
+    await end.press({ key: 'to-human-toggle' })
+
+    // Folded, the run's button reads its live call's line.
+    expect(await derived.find({ type: 'Text', text: 'Working.' })).toBeUndefined()
+    expect(await derived.find({ type: 'Button', text: '› Bash' })).toBeDefined()
+    expect(await end.find({ type: 'Button' })).toBeUndefined()
+  })
+
   test("/to-human-dump writes the view's order with each row's kind and place", async ($, on) => {
     live(on)
     const writes: { path: string; text: string }[] = []
