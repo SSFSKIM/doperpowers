@@ -897,6 +897,39 @@ describe('registerFolds: summaries', () => {
     expect(h.held[1]!.request.prompt).toBe('<stretch>\nCALL Bash — Wait for the build\n$ true\n\nRESULT interrupted\n</stretch>')
   })
 
+  test("a result joining a closed run summarized while two of its calls ran makes it live again: the next turn's end asks with it", async () => {
+    const h = trackerHooks()
+    await asking(h)
+    // Two calls beside a message: the run closes with both still running.
+    await h.append(response('a1',
+      use('toolu_1', 'Bash', { command: 'make', description: 'Build it' }),
+      use('toolu_2', 'Bash', { command: 'npm test', description: 'Test it' }),
+      use('toolu_m', MESSAGE_TOOL, { text: 'Building and testing.' })))
+    await h.turnEnd()
+    await drain(h.settle)
+    h.held[0]!.answer(answered('Started the build and the tests'))
+    await drain(h.settle)
+    expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_1', last: 'toolu_2', summary: 'Started the build and the tests' }] })
+    // One result comes; the other call still runs.
+    await h.append(result('u1', 'toolu_1', 'Bash', 'built'))
+    await drain(h.settle)
+    expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_1', last: 'toolu_2', summary: 'Started the build and the tests', isLive: true }] })
+    await h.turnEnd()
+    await drain(h.settle)
+    expect(h.held).toHaveLength(2)
+    expect(h.held[1]!.request.prompt).toBe('<stretch>\nCALL Bash — Build it\n$ make\n\nCALL Bash — Test it\n$ npm test\n\nRESULT built\n</stretch>')
+    // The last result joins before that reply comes back: the reply is for an earlier generation.
+    await h.append(result('u2', 'toolu_2', 'Bash', '12 pass'))
+    await drain(h.settle)
+    expect(h.held).toHaveLength(3)
+    h.held[1]!.answer(answered('Built it'))
+    await drain(h.settle)
+    expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_1', last: 'toolu_2', summary: 'Started the build and the tests', isLive: true }] })
+    h.held[2]!.answer(answered('Built it and ran the tests: 12 pass'))
+    await drain(h.settle)
+    expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_1', last: 'toolu_2', summary: 'Built it and ran the tests: 12 pass' }] })
+  })
+
   test("a subagent's turn end asks nothing", async () => {
     const h = trackerHooks()
     await asking(h)

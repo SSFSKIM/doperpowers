@@ -388,8 +388,9 @@ export function follow(tracker: Tracker, steps: readonly Step[], isAsking = fals
       tracker.runOfCall.delete(step.call)
       run.running.delete(step.call)
       join(run, `RESULT ${step.isError ? '(error) ' : ''}${clipEnds(step.text, RESULT_HEAD, RESULT_TAIL)}`)
-      if (run === tracker.open) run.isLive = true
-      else if (run.running.size === 0) due(run, isAsking, asks)
+      // Live again, open or closed: a closed run is asked for when its last result is kept or at the next turn's end.
+      run.isLive = true
+      if (run !== tracker.open && run.running.size === 0) due(run, isAsking, asks)
     } else if (step.kind === 'read') {
       const run = tracker.open
       if (run === null) continue
