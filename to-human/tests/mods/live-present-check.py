@@ -624,9 +624,10 @@ def main(live):
     # 4: the check off, a reload, another browser, state.json; then gone from the file after the next update.
     note_id = ids[0] if ids else "u2-1"
     ok_check, out_check = live.pw("""async page => {
-  await page.click('aside.note.is-open .check');
+  const id = %s;
+  await page.click(`aside.note.is-open[id="${id}"] .check`);
   await page.waitForTimeout(800);
-  const open = () => page.evaluate(() => document.querySelectorAll('aside.note.is-open, mark.is-open').length);
+  const open = () => page.evaluate((id) => document.querySelectorAll(`aside.note.is-open[id="${id}"], mark.is-open[data-note="${id}"]`).length, id);
   if (await open()) throw new Error('the note still shows after its check');
   await page.reload();
   await page.waitForTimeout(1500);
@@ -635,10 +636,10 @@ def main(live):
   const other = await ctx.newPage();
   await other.goto(page.url());
   await other.waitForTimeout(1500);
-  const there = await other.evaluate(() => document.querySelectorAll('aside.note.is-open').length);
+  const there = await other.evaluate((id) => document.querySelectorAll(`aside.note.is-open[id="${id}"]`).length, id);
   await ctx.close();
   if (there) throw new Error('the note shows in another browser');
-}""")
+}""" % json.dumps(note_id))
     checked = live.state().get("checked", [])
 
     # 8 (and 4's last part): a call made while the fork writes is BUSY; this update drops the checked note.
@@ -707,6 +708,11 @@ def main(live):
               "once with its brief set to the empty string. Step 3: send the human the message `turn seven done` with "
               "final true." % (PRESENT, PRESENT))
     wait_for("turn seven's end", 400, lambda: live.turn_ends() > ends, during=live.watch)
+    for _ in range(120):
+        if any(not fork and live.results_of(rows, PRESENT) and all(r[1] for r in live.results_of(rows, PRESENT))
+               for _, rows, fork in live.agents()):
+            break
+        time.sleep(1)
     subs = [rows for _, rows, fork in live.agents() if not fork and live.results_of(rows, PRESENT)]
     sub_results = [r for rows in subs for r in live.results_of(rows, PRESENT)]
     empty = [r for r in live.results_of(live.rows(), PRESENT) if (r[0] or {}).get("brief", None) == ""]
