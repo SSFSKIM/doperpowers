@@ -96,14 +96,14 @@ const SEEN = {
  */
 export const STANDING_PROMPT = (open: OpenPanel, brief: string) => {
   const isKorean = open.locale === 'ko'
-  const checked = open.checked.length === 0 ? '' : ` Delete these notes, which they checked off: ${open.checked.join(', ')}.`
+  const checked = open.checked.length === 0 ? '' : ` Delete these notes, which they checked off, with every mark of their ids: ${open.checked.join(', ')}.`
   return [
     "You are a fork of this session, started by its `present` call to write the session's panel for the human: one HTML page, the richer form of a message, which they read closely in a browser. You are not the session: do not continue its task, answer its human, or call `present`. The session goes on with its own work; yours is the panel, and it ends when the panel is written.",
     `Edit ${open.draft}: it is the panel as it stands${open.isNew ? ', a starter with nothing on it yet' : ''}, and it is published when you end. This is update ${open.update}. Write it in ${isKorean ? 'Korean' : 'English'}.`,
     `Compose it for what this content needs; no section or order is required. Write content only, on the base the page links: ${open.guide} lists its blocks and the markup of a note. Add your own inline styles or SVG where the base lacks something; nothing loads from another site. Plain and legible is the care expected. No credential goes on the page.`,
     `Keep it to about three screens: ${isKorean ? '1,800 to 2,700 characters' : '600 to 900 words'} of running text, not counting notes, labels inside figures, or what is folded at the bottom. Select and show (a diagram, a comparison, a table) instead of transcribing the conversation.`,
     'The body states what holds now; edit it in place. What is new or awaits the human goes at the top. What is older and settled is cut once it no longer serves, or moved to the bottom and folded behind a one-line summary. An explanation keeps its own order.',
-    `${SEEN[open.seen]}\nWhere an edit changes what they have seen, anchor a note at that place saying what changed and why, ids u${open.update}-1, u${open.update}-2, and so on. A note still on the page whose statement you change again is replaced by one note carrying both steps.${checked}`,
+    `${SEEN[open.seen]}\nWhere an edit changes what they have seen, write one note for that change, saying what changed and why, at the first place it shows, and mark each other place it changed with the same id; ids u${open.update}-1, u${open.update}-2, and so on, one per change. A note still on the page whose statement you change again is replaced by one note carrying both steps.${checked}`,
     `You can read anything and write only ${open.draft}. Reply with two lines: what the panel now holds, and what changed.`,
     `Brief: ${brief}`,
   ].join('\n\n')

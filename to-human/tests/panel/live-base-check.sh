@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The panel's base in a browser (playwright-cli, headless Chromium): a hand-written panel served by a real server
 # in a throwaway configuration directory on a free port. It checks the notes' placement at 1280 and 600 wide, the
-# count and the jump, a check surviving a reload and another browser, a look reported only from a visible tab,
+# count and the jump, a check surviving a reload and another browser, one note marked at several places, a look reported only from a visible tab,
 # one reload on a publish keeping the scroll, the Korean words, and what a page may do (an inline script, an
 # external image, a refresh meta and a dns-prefetch link: none runs, shows, moves the page or reaches another
 # host; every request is intercepted, so none leaves the machine).
@@ -476,5 +476,78 @@ async page => {
 JS
 [ "$(state "${open_end:0:8}" seen)" = null ] || fail "a look was reported from a page with no PANEL"
 ok "a page left in an open comment at its end draws its notes, and neither polls, reloads nor reports a look"
+
+# ------------------------------------------------------------------ one note, several marks
+# One change marked at each place it changed, its note written once at the first: one note at the first mark,
+# every mark highlighted, counted once; one check clears the note and every mark, and holds on a reload; the
+# next open-panel keeps the check while any mark of the id remains.
+many=0000adad-1111-2222-3333-444444444444
+om="$(open_panel "$many")"
+python3 - "$(field "$om" draft)" <<'PY'
+import sys
+filler = "".join("<p>Filler paragraph %d, long enough to scroll.</p>\n" % i for i in range(1, 13))
+body = f"""<h1>The cache</h1>
+<p>Osprey costs <mark data-note="u1-1">about 120 dollars a month</mark>.</p>
+<aside class="note" id="u1-1" data-label="Osprey's cost changed">Was: about 90 dollars a month.</aside>
+{filler}
+<p>The gap is <mark data-note="u1-1">80 dollars a month</mark>.</p>
+<ul><li>Osprey is <mark data-note="u1-1">three times</mark> Kestrel's cost.</li></ul>
+<p>Kestrel keeps <mark data-note="u1-2">one bucket</mark>.</p>
+<aside class="note" id="u1-2">Was: two buckets.</aside>
+{filler}
+"""
+open(sys.argv[1], "w").write('<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Marks</title>\n'
+    '<link rel="stylesheet" href="/base/panel.css">\n<script src="/base/panel.js" defer></script>\n'
+    '</head>\n<body>\n' + body + '</body>\n</html>\n')
+PY
+publish "$many" >/dev/null
+step many-marks "$(field "$om" address)" <<'JS'
+async page => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('__PANEL__');
+  await page.waitForSelector('#u1-1.is-open');
+  const state = () => page.evaluate(() => {
+    const marks = [...document.querySelectorAll('mark[data-note="u1-1"]')];
+    const note = document.getElementById('u1-1');
+    return {
+      asides: document.querySelectorAll('aside.note[id="u1-1"]').length,
+      shown: getComputedStyle(note).display !== 'none',
+      dy: note.getBoundingClientRect().top - marks[0].getBoundingClientRect().top,
+      lit: marks.map((m) => m.classList.contains('is-open')),
+      bar: document.querySelector('.panel-notebar')?.textContent || '',
+    };
+  });
+  const bad = [];
+  let r = await state();
+  if (r.asides !== 1 || !r.shown) bad.push(`the note draws ${r.asides} times, shown ${r.shown}`);
+  if (Math.abs(r.dy) > 12) bad.push(`the note stands ${r.dy}px from its first mark`);
+  if (r.lit.length !== 3 || r.lit.some((x) => !x)) bad.push(`marks highlighted ${JSON.stringify(r.lit)}`);
+  if (!/^2 notes on what changed/.test(r.bar)) bad.push(`the count reads ${r.bar}`);
+  await page.click('#u1-1 .check');
+  await page.waitForTimeout(500);
+  r = await state();
+  if (r.shown || r.lit.some((x) => x)) bad.push(`after its check: shown ${r.shown}, marks ${JSON.stringify(r.lit)}`);
+  if (!/^1 note on what changed/.test(r.bar)) bad.push(`after its check the count reads ${r.bar}`);
+  await page.reload();
+  await page.waitForSelector('#u1-2.is-open');
+  r = await state();
+  if (r.shown || r.lit.some((x) => x)) bad.push(`after a reload: shown ${r.shown}, marks ${JSON.stringify(r.lit)}`);
+  if (bad.length) throw new Error(bad.join('; '));
+}
+JS
+[ "$(state "${many:0:8}" checked)" = '["u1-1"]' ] || fail "state.json does not list the check ($(state "${many:0:8}" checked))"
+ok "one note marked at three places: drawn once at its first mark, all three highlighted, counted once; one check clears them all and holds on a reload"
+
+om="$(open_panel "$many")"
+[ "$(field "$om" checked)" = '["u1-1"]' ] || fail "the next update was not told to delete the checked note ($(field "$om" checked))"
+printf '%s' '<!doctype html><html lang="en"><head><title>Marks</title><link rel="stylesheet" href="/base/panel.css"><script src="/base/panel.js" defer></script></head><body><p>The gap is <mark data-note="u1-1">80 dollars a month</mark>.</p></body></html>' \
+  > "$(field "$om" draft)"
+publish "$many" >/dev/null
+[ "$(field "$(open_panel "$many")" checked)" = '["u1-1"]' ] || fail "a check was dropped while one of its marks remained"
+printf '%s' '<!doctype html><html lang="en"><head><title>Marks</title><link rel="stylesheet" href="/base/panel.css"><script src="/base/panel.js" defer></script></head><body><p>The gap is 80 dollars a month.</p></body></html>' \
+  > "$panels/${many:0:8}/draft.html"
+publish "$many" >/dev/null
+[ "$(field "$(open_panel "$many")" checked)" = '[]' ] || fail "a check outlived every mark of its id"
+ok "open-panel keeps a check while any mark of its id remains, and drops it once none does"
 
 echo "all base checks passed"

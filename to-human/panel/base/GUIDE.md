@@ -26,9 +26,20 @@ cell that holds it:
 <aside class="note" id="u3-1" data-label="Changed by your answer">Was: the MacBook only. You asked for the hosts.</aside>
 ```
 
-The id is `u<update>-<k>`. `data-label` is optional: a few words on what made the change. The script places the
+The id is `u<update>-<k>`, one per change. `data-label` is optional: a few words on what made the change. The script places the
 note beside its mark in the margin, or under it on a narrow window, and adds its check button; a note the human
 checked off never draws.
+
+One change is one note, however many places it touched: write its `<aside>` once, at the first place it shows,
+and mark every other place it changed (a figure repeated in a table, a total derived from it) with a `<mark>` of
+the same id. The script draws the note at its first mark, highlights every mark, counts it once, and one check
+clears them all. Deleting a checked note deletes its `<aside>` and every `<mark>` of its id.
+
+```html
+<p>Osprey costs <mark data-note="u3-1">about 120 dollars a month</mark>.</p>
+<aside class="note" id="u3-1" data-label="Osprey's cost changed">Was: about 90. The vendor's new price.</aside>
+<p>The gap is <mark data-note="u3-1">80 dollars a month</mark>.</p>
+```
 
 ## Blocks
 

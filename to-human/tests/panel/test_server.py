@@ -331,6 +331,21 @@ class CommandLine(Case):
         state = json.loads(Path(self.e.panel("state.json")).read_text())
         self.assertEqual(state["checked"], ["u2-1"])
 
+    def test_a_checked_note_is_held_while_any_of_its_marks_or_its_aside_remains(self):
+        # One note for one change, marked at each place it changed.
+        marked = NOTE + '\n<p>It costs <mark data-note="u2-1">120</mark>, <mark data-note="u2-1">80 more</mark>.</p>'
+        self.e.open()
+        self.e.write_draft(marked)
+        self.e.publish()
+        self.assertEqual(self.e.request("POST", "/%s/check" % SHORT, {"note": "u2-1"})[0], 204)
+        self.assertEqual(self.e.open()["checked"], ["u2-1"])
+        self.e.write_draft('<p>It costs <mark data-note="u2-1">120</mark>.</p>')    # the aside gone, one mark left
+        self.e.publish()
+        self.assertEqual(self.e.open()["checked"], ["u2-1"])
+        self.e.write_draft("<p>It costs 120.</p>")                                   # every mark gone too
+        self.e.publish()
+        self.assertEqual(self.e.open()["checked"], [])
+
     @unittest.skipIf(os.geteuid() == 0, "root writes through any mode")
     def test_an_unwritable_configuration_directory_is_one_line(self):
         os.chmod(self.e.config, 0o500)

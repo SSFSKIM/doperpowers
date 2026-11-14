@@ -52,6 +52,8 @@ MAX_BODY = 64 * 1024
 SHORT_ID = re.compile(r"[0-9a-f]{8}")
 NOTE_ID = re.compile(r"u\d+-\d+")
 NOTE_ID_ATTR = re.compile(r"""\bid\s*=\s*["']?(u\d+-\d+)(?=["'\s>/])""")
+# A mark of a note's change: one note may mark several places (`<mark data-note="u2-1">`).
+NOTE_MARK_ATTR = re.compile(r"""\bdata-note\s*=\s*["']?(u\d+-\d+)(?=["'\s>/])""")
 PAGE_PATH = re.compile(r"/([0-9a-f]{8})/(written|seen|check)?")
 BASE_FILE = re.compile(r"/base/([A-Za-z0-9][A-Za-z0-9._-]*)")
 TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -312,7 +314,9 @@ class Panels:
                 held = set()
             else:
                 copy_text(p["page"], p["draft"])
-                held = set(NOTE_ID_ATTR.findall(read_text(p["page"])))
+                # A note is held while its aside or any of its marks remains: the fork deletes them all.
+                page = read_text(p["page"])
+                held = set(NOTE_ID_ATTR.findall(page)) | set(NOTE_MARK_ATTR.findall(page))
             state["checked"] = [c for c in state["checked"] if c in held]
             update = (meta.get("updates") if isinstance(meta.get("updates"), int) else 0) + 1
             write_json(p["meta"], {"session": session, "updates": update, "locale": locale,

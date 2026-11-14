@@ -282,8 +282,10 @@ describe('the present tool: its contract', () => {
     expect(prompt).toContain(`on the base the page links: ${OPEN.guide} lists its blocks and the markup of a note.`)
     expect(prompt).toContain('Keep it to about three screens: 600 to 900 words of running text')
     expect(prompt).toContain('The human has looked at the panel since its last update: they have seen what it holds.\nWhere an edit changes')
-    expect(prompt).toContain('ids u3-1, u3-2, and so on.')
-    expect(prompt).toContain('replaced by one note carrying both steps. Delete these notes, which they checked off: u2-1.')
+    expect(prompt).toContain(
+      'Where an edit changes what they have seen, write one note for that change, saying what changed and why, at the first place it shows, and mark each other place it changed with the same id; ids u3-1, u3-2, and so on, one per change. A note still on the page whose statement you change again is replaced by one note carrying both steps.',
+    )
+    expect(prompt).toContain('replaced by one note carrying both steps. Delete these notes, which they checked off, with every mark of their ids: u2-1.')
     expect(prompt).toContain(`You can read anything and write only ${DRAFT}. Reply with two lines: what the panel now holds, and what changed.`)
     expect(prompt.endsWith('\n\nBrief: Lay out options A and B.')).toBe(true)
   })
