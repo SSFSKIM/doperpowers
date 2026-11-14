@@ -181,5 +181,29 @@ class RunOnce(unittest.TestCase):
         self.assertEqual((got['message'], got['present'], got['undecided'], len(sent)), (True, False, False, 1))
 
 
+class Turn(unittest.TestCase):
+    def test_a_spent_plan_skips_the_turn_and_is_no_run(self):
+        calls = []
+
+        def spent(client, req, max_steps):
+            calls.append(1)
+            raise RuntimeError("Error code: 429 - This account is out of plan usage until 2026-11-14T15:00:00Z.")
+
+        saved = ev.run_once, ev.wire_replay.rebuild, ev.apply_arm
+        ev.run_once, ev.wire_replay.rebuild, ev.apply_arm = spent, (lambda path, rid: ({'model': 'm', 'tools': []}, 0)), (lambda *a: (1, 1))
+        try:
+            out = ev.run_turn(None, ev.TURNS[0], 'rule', 's', 'l', 3, False)
+        finally:
+            ev.run_once, ev.wire_replay.rebuild, ev.apply_arm = saved
+        self.assertEqual((len(calls), len(out), 'skipped' in out[0], 'rep' in out[0]), (1, 1, True, False))
+        self.assertEqual(ev.tally(out), {})
+
+    def test_the_tally_counts_where_each_run_reached_the_human(self):
+        runs = [dict(turn='w1', arm='a', **{'class': 'warranted'}, rep=i, present=p, undecided=u, reached_at=at)
+                for i, (p, u, at) in enumerate([(True, False, 1), (False, False, 2), (False, True, None)])]
+        c = ev.tally(runs)[('a', 'warranted')]
+        self.assertEqual((c['runs'], c['present'], c['reached_at']), (3, 1, {1: 1, 2: 1, 'never': 1}))
+
+
 if __name__ == '__main__':
     unittest.main()

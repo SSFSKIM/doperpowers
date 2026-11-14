@@ -68,6 +68,7 @@ STYLE_HEAD = '# Output Style: doperpowers:to-human\n'
 STYLE_END = 'remain focused and relevant.'  # the style's last sentence, in every version
 CLAUDE_HEAD = 'Contents of %s/.claude/CLAUDE.md' % Path.home()
 REPORT_TOOLS = (MESSAGE_TOOL, PRESENT_TOOL, 'mcp__sminos__AskUserQuestion', 'AskUserQuestion')
+OUT_OF_PLAN = 'out of plan usage'
 NOT_RUN = 'Not run: this step is a replay of the session, and its commands are not executed here. Go on from what the conversation already shows.'
 
 # (id, class, kind, transcript under the projects directory, request id, model and effort as sent, why it is in its class)
@@ -254,10 +255,12 @@ def run_once(client, req, max_steps):
                                {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': b['id'], 'content': NOT_RUN, 'is_error': True} for b in calls]}]
     calls = [b for st in steps for b in st['blocks'] if b['type'] == 'tool_use']
     last = [b['name'] for b in steps[-1]['blocks'] if b['type'] == 'tool_use']
+    undecided = bool(last) and not any(n in REPORT_TOOLS for n in last)
     return {'steps': steps,
+            'reached_at': None if undecided else len(steps),
             'present': any(b['name'] == PRESENT_TOOL for b in calls),
             'message': any(b['name'] == MESSAGE_TOOL for b in calls),
-            'undecided': bool(last) and not any(n in REPORT_TOOLS for n in last),
+            'undecided': undecided,
             'others': [b['name'] for b in calls if b['name'] not in REPORT_TOOLS]}
 
 
@@ -280,6 +283,11 @@ def run_turn(client, turn, arm, style, claude_line, reps, dry, max_steps=4):
         try:
             got = run_once(client, req, max_steps)
         except Exception as e:
+            if OUT_OF_PLAN in str(e):
+                # The account's plan is spent for this model: not a run, and
+                # no further request for the turn until it is renewed.
+                out.append(dict(head, skipped=repr(e)))
+                break
             got = {'error': repr(e)}
         out.append(dict(head, rep=rep, secs=round(time.time() - t0, 1), **got))
     del req
@@ -287,18 +295,21 @@ def run_turn(client, turn, arm, style, claude_line, reps, dry, max_steps=4):
 
 
 def tally(results):
-    """Per arm and class: runs, runs that call present, errors."""
+    """Per arm and class: runs, runs that call present, the step each run
+    reached the human at (`never` for none), errors."""
     t = {}
     for x in results:
         if 'rep' not in x:
             continue
-        c = t.setdefault((x['arm'], x['class']), {'runs': 0, 'present': 0, 'undecided': 0, 'errors': 0, 'by_turn': {}})
+        c = t.setdefault((x['arm'], x['class']), {'runs': 0, 'present': 0, 'undecided': 0, 'errors': 0, 'reached_at': {}, 'by_turn': {}})
         if 'error' in x:
             c['errors'] += 1
             continue
         c['runs'] += 1
         c['present'] += x['present']
         c['undecided'] += x['undecided']
+        at = x['reached_at'] or 'never'
+        c['reached_at'][at] = c['reached_at'].get(at, 0) + 1
         c['by_turn'][x['turn']] = c['by_turn'].get(x['turn'], 0) + x['present']
     return t
 
@@ -321,10 +332,15 @@ if __name__ == '__main__':
     want = args.turns.split(',')
     turns = [t for t in TURNS if t[0] in want]
     client = None if args.dry_run else gateway_client()
-    results, lock = [], threading.Lock()
+    # An existing --out is kept and added to: a turn and arm with runs already
+    # in it is not run again (a turn skipped for a spent plan is).
+    results = json.loads(Path(args.out).read_text()) if Path(args.out).exists() and not args.dry_run else []
+    results = [x for x in results if 'rep' in x and 'error' not in x]
+    done = {(x['turn'], x['arm']) for x in results}
+    lock = threading.Lock()
     with cf.ThreadPoolExecutor(args.workers) as pool:
         futs = {pool.submit(run_turn, client, t, a, arms[a][0], arms[a][1], args.reps, args.dry_run, args.max_steps): (t[0], a)
-                for a in arms for t in turns}
+                for a in arms for t in turns if (t[0], a) not in done}
         for f in cf.as_completed(futs):
             tid, a = futs[f]
             try:
@@ -335,7 +351,7 @@ if __name__ == '__main__':
                 results += got
                 Path(args.out).write_text(json.dumps(results, indent=1, ensure_ascii=False))
             for x in got:
-                print(x['turn'], x['arm'], x.get('rep', '-'), 'PRESENT' if x.get('present') else '', x.get('error', ''),
+                print(x['turn'], x['arm'], x.get('rep', '-'), 'PRESENT' if x.get('present') else '', x.get('error', ''), 'SKIPPED' if 'skipped' in x else '',
                       x.get('bytes', ''), x.get('model', ''), x.get('effort', ''), flush=True)
     for (a, cls), c in sorted(tally(results).items()):
-        print(a, cls, '%d of %d call present, %d undecided' % (c['present'], c['runs'], c['undecided']), ('%d errors' % c['errors']) if c['errors'] else '', c['by_turn'])
+        print(a, cls, '%d of %d call present; reached the human at step %s' % (c['present'], c['runs'], c['reached_at']), ('%d errors' % c['errors']) if c['errors'] else '', c['by_turn'])
