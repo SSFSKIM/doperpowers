@@ -431,7 +431,7 @@ for again at publish, by which time it has.
 
 | Request | Answer |
 |---|---|
-| `GET /<short id>/` | The page, with a small inline script the server inserts before `</head>` carrying the page's publish time and the checked notes, so a checked note never draws. Before a panel's first publish: a page that says the panel is being written, which reloads when it is. |
+| `GET /<short id>/` | The page, with a small inline script the server appends to the page's source carrying the page's publish time and the checked notes, so a checked note never draws. Before a panel's first publish: a page that says the panel is being written, which reloads when it is. |
 | `GET /<short id>/written` | `{ "written": <ms> \| null }`; the script asks every 2 seconds while the tab is visible and reloads when it differs from the page's own. |
 | `POST /<short id>/seen` with `{ "written": <ms> }` | Records that the publication of that time was looked at, when it is the current one or newer than the one recorded; 204. The script sends the publish time of the page it is showing, when the page is drawn in a visible tab and when a hidden tab that reloaded becomes visible. |
 | `POST /<short id>/check` with `{ "note": "<id>" }` | Adds the id to `checked` when it matches `u<digits>-<digits>` whole and is not there; 204. Anything else is 400. |
@@ -752,9 +752,18 @@ Decisions that are this milestone's alone:
   write under one lock in the process.
 - The inserted script is
   `<script nonce="…">window.PANEL={"written":<ms>,"checked":[...]}</script>`,
-  put in by one string replacement before `</head>` (appended when the page
-  has no head); the server parses no HTML. The base script hides checked
-  notes before the body draws.
+  appended to the end of the page's source; the server parses no HTML.
+  The end of a well-formed page stands outside every comment, tag and
+  raw-text element, which no textual match inside the page does (a head
+  comment that mentions `</head>` took the first insertion, by
+  `</head>`, into the comment). The base script is linked `defer`, so it
+  runs after the appended script, and notes are hidden until it opens
+  them, so a checked note never draws. A page left open at its end (an
+  unterminated comment or raw-text element) leaves the script inert: the
+  base script then draws the notes with no checked list, reports no look
+  and does not poll, until the next update replaces the page; a draft
+  tag left open does not take the nonce (CSP3's nonceable check refuses
+  an element with `<script` in an attribute).
 - Detaching: the server is started through a double fork with `os.setsid`,
   its output to `<configuration directory>/to-human/panels/server.log`. A
   process started so from a mod outlived a reload of the module, the
@@ -1244,6 +1253,17 @@ configuration directory, with a probe plugin whose tool spawns a fork
   most forks will inherit it.
   Date/Author: 2026-11-13, the designing session, relayed to the executing
   session.
+
+- Decision: the server's script is appended to the end of the page, not
+  put before the first `</head>`; no guard string precedes it; a page
+  without `window.PANEL` is left static.
+  Rationale: M1's review. A textual `</head>` can stand inside a comment;
+  a guard that closed open states (`<!--"'>-->`) then broke the comment of
+  a well-formed page (R5), and a fallback that took the server's latest
+  publication time for the page shown could mark an unseen publication
+  seen and bring checked notes back (R6, R7). The end of a well-formed page
+  is the one position no authored state can hold open.
+  Date/Author: 2026-11-13, the executing session, on M1's review.
 
 ## Outcomes & Retrospective
 
