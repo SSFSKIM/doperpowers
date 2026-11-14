@@ -330,10 +330,15 @@ async function realOf($: EngineInterface, path: unknown): Promise<string | undef
   return (await $.fs.stat(path, { resolve: true }).catch(() => undefined))?.realPath
 }
 
-/** Whether `path` is the draft of the run whose fork makes the call. */
-async function isDraft($: EngineInterface, path: unknown): Promise<boolean> {
-  const draft = run?.draft
-  if (draft === undefined) return false
+/**
+ * Whether `path` is the open run's draft and `agentId` that run's fork, still
+ * writing: a former fork's late call is held like any other of its calls,
+ * since its run's draft is the open run's file and the open fork's end
+ * publishes it.
+ */
+async function isOwnDraft($: EngineInterface, agentId: string | undefined, path: unknown): Promise<boolean> {
+  if (run === null || run.agentId !== agentId || ended.has(agentId)) return false
+  const draft = run.draft
   let real = drafts.get(draft)
   if (real === undefined) {
     real = await realOf($, draft)
@@ -530,7 +535,7 @@ export function registerPresent(on: On): void {
     }
     if (!(await isPanelFork($, e.agentId))) return next(e)
     if (READ_TOOLS.has(e.tool) || (e.tool === 'Bash' && e.isReadOnly === true)) return { decision: 'allow' }
-    if ((e.tool === 'Write' || e.tool === 'Edit') && (await isDraft($, (e.input as { file_path?: unknown } | null)?.file_path))) {
+    if ((e.tool === 'Write' || e.tool === 'Edit') && (await isOwnDraft($, e.agentId, (e.input as { file_path?: unknown } | null)?.file_path))) {
       return { decision: 'allow' }
     }
     return refusedCheck()

@@ -1001,6 +1001,23 @@ describe("the guard over the fork's calls", () => {
     await expect(h.call('Bash', {}, undefined, failingCore)).rejects.toThrow('the tool broke')
   })
 
+  test("a former fork's Write or Edit of the open run's draft is denied; the open run's fork is allowed", async () => {
+    let n = 0
+    const h = harness({ agents: () => [], spawn: () => ({ model: 'claude-haiku', agentId: `fork-${n++}` }) })
+    await h.present('x', { id: 'toolu_p1' })
+    await h.ended({ agentId: 'fork-0' })
+    await h.present('y', { id: 'toolu_p2' })
+    // The new run's draft is the same file: a late call of the old fork must not write what the new fork's end publishes.
+    for (const [tool, input] of [['Write', { file_path: DRAFT, content: 'x' }], ['Edit', { file_path: DRAFT, old_string: 'a', new_string: 'b' }]] as const) {
+      expect(await h.check(tool, input, { agentId: 'fork-0', core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+      expect(await h.check(tool, input, { agentId: 'fork-1' })).toEqual({ decision: 'allow' })
+    }
+    // So after a reload, from the kept record and ids.
+    forgetPresent()
+    expect(await h.check('Write', { file_path: DRAFT }, { agentId: 'fork-0', core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+    expect(await h.check('Write', { file_path: DRAFT }, { agentId: 'fork-1' })).toEqual({ decision: 'allow' })
+  })
+
   test('a fork still refused after its run closed: its writes go nowhere', async () => {
     const h = await running()
     await h.ended()
