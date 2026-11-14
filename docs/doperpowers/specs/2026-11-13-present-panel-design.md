@@ -51,7 +51,7 @@ of a page, with older material pruned or moved to the bottom.
 - [x] (2026-11-14 03:05Z) Trials reported (Claude Code 2.1.325, haiku); spec written (e657e818).
 - [x] (2026-11-14 04:10Z) Design review and execution-section review absorbed (Decision Log).
 - [x] (2026-11-14 04:45Z) Second review round absorbed (four findings, all taken; Decision Log).
-- [ ] M1 — the panel server and the base.
+- [x] (2026-11-14 04:35Z) M1 — the panel server and the base (ebc15016..47bce689; reviewed clean after three fix rounds; acceptance 11, 12, 13 live).
 - [ ] M2 — the tool and the fork.
 - [ ] M3 — the rule, its evaluation, and the documents.
 - [ ] Whole-branch review, retrospective, merge; the owner's two files.
