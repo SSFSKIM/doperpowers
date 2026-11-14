@@ -82,7 +82,9 @@ const harnesses: { failures: string[]; failsClosed: boolean }[] = []
  * `server` answers each command line, `spawn` the engine's spawn (FORK by
  * default), `agents` the agent list (a throw is a list that cannot be read),
  * `links` where a path lands (a path not listed lands on itself; null leads
- * nowhere), `unreadable` the `$.state` keys whose read fails.
+ * nowhere), `unreadable` the `$.state` keys whose read fails, `unwritable`
+ * those whose write fails, `stalled` those whose write waits until
+ * `release()`.
  *
  * A continuation is replay-safe, as the engine's is: a `.catch` that calls
  * `next` after its hook had called it gets the settled result again, and
@@ -98,6 +100,8 @@ function harness({
   agents = () => [{ id: FORK, description: FORK_DESCRIPTION, type: 'fork', status: 'running', spawnedBy: 'to-human' }],
   links = {},
   unreadable = new Set<string>(),
+  unwritable = new Set<string>(),
+  stalled = new Set<string>(),
   failsClosed = false,
 }: {
   env?: Record<string, string>
@@ -106,6 +110,8 @@ function harness({
   agents?: () => Record<string, unknown>[] | Promise<Record<string, unknown>[]>
   links?: Record<string, string | null>
   unreadable?: Set<string>
+  unwritable?: Set<string>
+  stalled?: Set<string>
   failsClosed?: boolean
 } = {}) {
   forgetPresent()
@@ -125,6 +131,13 @@ function harness({
   const failures: string[] = []
   const logs: string[] = []
   harnesses.push({ failures, failsClosed })
+  const waiting: (() => void)[] = []
+  /** Lets every stalled write go, and stalls none after. */
+  const release = async () => {
+    stalled.clear()
+    waiting.splice(0).forEach((go) => go())
+    await settle()
+  }
   const matches = (r: Registration, event: string, e: Event) =>
     r.event === event && Object.entries(r.matcher).every(([k, v]) => (v instanceof RegExp ? v.test(String(e[k])) : e[k] === v))
 
@@ -165,7 +178,12 @@ function harness({
         if (unreadable.has(ref.key)) throw new Error(`state.get ${ref.key}: the store is not answering`)
         return { value: state.get(ref.key), version: 0 }
       },
-      set: async (ref: { key: string }, value: unknown) => (state.set(ref.key, value), { isSet: true, version: 1 }),
+      set: async (ref: { key: string }, value: unknown) => {
+        if (stalled.has(ref.key)) await new Promise<void>((resolve) => waiting.push(resolve))
+        if (unwritable.has(ref.key)) throw new Error(`state.set ${ref.key}: the store is not answering`)
+        state.set(ref.key, value)
+        return { isSet: true, version: 1 }
+      },
     },
     process: {
       run: async (argv: readonly string[]) => {
@@ -233,7 +251,7 @@ function harness({
     await run('session.start', { cwd: '/w', surface: null, isInteractive }, () => ({ cwd: '/w' }))
     await settle()
   }
-  return { present, call, check, ended, prompt, start, classic, modeChanged, state, commands, spawned, notified, sleeps, failures, logs }
+  return { present, call, check, ended, prompt, start, classic, modeChanged, release, state, commands, spawned, notified, sleeps, failures, logs }
 }
 
 describe('the present tool: its contract', () => {
@@ -748,8 +766,43 @@ describe('the present tool: a module that starts over mid-run', () => {
     for (const key of ['present', 'presented', 'presentNotice', 'presentForks']) unreadable.add(key)
     expect(await h.check('Write', { file_path: '/w/README.md', content: 'x' }, { core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
     expect(await h.call('Agent', { prompt: 'p' }, FORK)).toEqual({ deny: GUARD_REFUSAL })
-    // An agent the list does not name as a panel fork passes.
+  })
+
+  test('with the kept ids unreadable, an agent the list names as no panel fork passes', async () => {
+    const h = harness({
+      unreadable: new Set(['presentForks']),
+      agents: () => [{ id: 'other', description: 'tests', type: 'general-purpose', status: 'running' }],
+    })
     expect(await h.check('Write', { file_path: '/w/x' }, { agentId: 'other' })).toEqual({ decision: 'ask' })
+    expect(await h.call('Bash', {}, 'other')).toEqual({ result: 'ran' })
+  })
+
+  test("a former panel fork's call, after a reload with the kept ids unreadable and the list empty, is refused at the call and at the check", async () => {
+    const unreadable = new Set<string>()
+    const h = harness({ unreadable, agents: () => [], failsClosed: true })
+    await h.present('x')
+    await h.ended()
+    forgetPresent()
+    unreadable.add('presentForks')
+    expect(await h.call('Write', { file_path: '/w/README.md', content: 'x' }, FORK)).toEqual({ deny: GUARD_REFUSAL })
+    expect(await h.check('Write', { file_path: '/w/README.md', content: 'x' }, { core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+    // Read back at the next call: then the kept ids say who it is.
+    unreadable.delete('presentForks')
+    expect(await h.check('Write', { file_path: '/w/README.md', content: 'x' }, { core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+    expect(await h.check('Write', { file_path: '/w/x' }, { agentId: 'other', core: 'allow' })).toEqual({ decision: 'allow' })
+  })
+
+  test('every fork id is kept: with 201 runs behind it, the oldest fork is still held after a reload', async () => {
+    let n = 0
+    const h = harness({ agents: () => [], spawn: () => ({ model: 'claude-haiku', agentId: `fork-${n++}` }) })
+    for (let i = 0; i < 201; i++) {
+      await h.present('x', { id: `toolu_${i}` })
+      await h.ended({ agentId: `fork-${i}` })
+    }
+    expect((h.state.get('presentForks') as string[]).length).toBe(201)
+    forgetPresent()
+    expect(await h.check('Write', { file_path: '/w/x' }, { agentId: 'fork-0', core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+    expect(await h.call('Agent', {}, 'fork-0')).toEqual({ deny: GUARD_REFUSAL })
   })
 
   test("with the kept ids and the list both unreadable, a subagent's call is refused: who it is cannot be told", async () => {
@@ -769,19 +822,54 @@ describe('the present tool: a module that starts over mid-run', () => {
 
   test('kept ids that could not be read are read again, and no write in between loses one', async () => {
     const unreadable = new Set<string>()
-    const h = harness({ unreadable, agents: () => [] })
+    const h = harness({ unreadable, agents: () => [], failsClosed: true })
     await h.present('x')
     await h.ended()
     forgetPresent()
     unreadable.add('presentForks')
-    // An agent the list does not name is no live panel fork: it passes while the ids are unread.
-    expect(await h.check('Write', { file_path: '/w/x' }, { agentId: 'other', core: 'allow' })).toEqual({ decision: 'allow' })
+    // An agent the list does not name may be a closed panel fork: refused while the ids are unread.
+    expect(await h.check('Write', { file_path: '/w/x' }, { agentId: 'other', core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
     // A notice taken meanwhile writes the record, and leaves the ids as they were.
     await h.call('Bash')
     expect(h.state.get('presentForks')).toEqual([FORK])
     unreadable.delete('presentForks')
     expect(await h.check('Write', { file_path: '/w/x' }, { core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
     expect(await h.check('Write', { file_path: '/w/x' }, { agentId: 'other', core: 'allow' })).toEqual({ decision: 'allow' })
+  })
+
+  test('a write queued before the record was read back does not store its stale snapshot over the record', async () => {
+    const open = { agentId: FORK, toolUseId: 'toolu_p0', session: SESSION, dir: ROOT, draft: DRAFT, address: ADDRESS, update: 2, startedAt: NOW, phase: 'writing' }
+    const unreadable = new Set(['present'])
+    const stalled = new Set(['presentNotice'])
+    const h = harness({ unreadable, stalled })
+    h.state.set('present', open)
+    h.state.set('presentForks', [FORK])
+    h.state.set('presentNotice', [FAILED(ADDRESS, 'an earlier run')])
+    // The record cannot be read; a prompt dropped beneath takes the notice and gives it back: two writes, the first stalled.
+    expect((await h.prompt('one', true)).context).toEqual([FAILED(ADDRESS, 'an earlier run')])
+    // The record reads back at a later call, which finds its fork running.
+    unreadable.delete('present')
+    expect(await h.present('x', { id: 'toolu_p1' })).toEqual({ deny: BUSY(ADDRESS) })
+    await h.release()
+    expect(h.state.get('present')).toEqual(open)
+    // A module after this one still finds the run open.
+    forgetPresent()
+    expect(await h.present('x', { id: 'toolu_p2' })).toEqual({ deny: BUSY(ADDRESS) })
+    expect(h.spawned).toEqual([])
+  })
+
+  test('a publishing phase that cannot be kept publishes nothing: not written, and the next call is not BUSY', async () => {
+    const unwritable = new Set<string>()
+    const h = harness({ unwritable })
+    await h.present('x')
+    unwritable.add('present')
+    await h.ended()
+    expect(h.commands.some((argv) => argv[2] === 'publish')).toBe(false)
+    const why = 'its record could not be kept'
+    expect(h.state.get('presented')).toEqual({ toolu_p1: { state: 'failed', address: ADDRESS, why } })
+    expect(h.notified).toEqual([`The panel was not written (${why})`])
+    unwritable.delete('present')
+    expect(await h.present('again', { id: 'toolu_p2' })).toEqual({ result: STARTED(ADDRESS), context: [FAILED(ADDRESS, why)] })
   })
 
   test('a notice not yet delivered is delivered by the module after', async () => {
@@ -1011,6 +1099,6 @@ describe('the harness', () => {
   test('no hook failed in any flow above but where the test meant the guard to refuse what it could not place', () => {
     expect(harnesses.length).toBeGreaterThan(0)
     expect(harnesses.filter((h) => !h.failsClosed).flatMap((h) => h.failures)).toEqual([])
-    expect(harnesses.filter((h) => h.failsClosed).flatMap((h) => h.failures).every((f) => f.includes('neither the panel'))).toBe(true)
+    expect(harnesses.filter((h) => h.failsClosed).flatMap((h) => h.failures).every((f) => f.includes('Unresolved'))).toBe(true)
   })
 })

@@ -148,8 +148,6 @@ const RECORD = { plugin: 'to-human', key: 'present' } as const
 const PRESENTED = { plugin: 'to-human', key: 'presented' } as const
 const NOTICE = { plugin: 'to-human', key: 'presentNotice' } as const
 const FORKS = { plugin: 'to-human', key: 'presentForks' } as const
-/** The guarded forks' ids kept for a reload: the newest, well past any one session's runs. */
-const KEPT_FORKS = 200
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -236,22 +234,38 @@ function restore($: EngineInterface): Promise<void> {
   return restoring
 }
 
-/** Writes the module's memory to `$.state`, each key read back, after any write before it. */
-function keep($: EngineInterface): Promise<unknown> {
+/**
+ * Writes the module's memory to `$.state` after any write before it: each
+ * key as it stood at the call, and only if it had been read back by then (a
+ * snapshot taken before a key was read back holds less than the store).
+ * Resolves whether the record was written.
+ */
+function keep($: EngineInterface): Promise<boolean> {
+  const ready = { ...loaded }
   const record = run
   const rows = { ...presented }
   const told = [...notices]
-  writes = writes
-    .then(() =>
-      Promise.all([
-        loaded.record && $.state.set(RECORD, record),
-        loaded.rows && $.state.set(PRESENTED, rows),
-        loaded.notices && $.state.set(NOTICE, told),
-        loaded.forks && $.state.set(FORKS, [...forks].slice(-KEPT_FORKS)),
-      ]),
-    )
-    .catch((error: unknown) => $.ui.log(`to-human: the panel's record is not kept for a reload (${message(error)})`, { to: 'debug' }))
-  return writes
+  const ids = [...forks]
+  const set = async (isReady: boolean, key: keyof typeof loaded, write: () => Promise<{ isSet: boolean }>) => {
+    if (!isReady) return false
+    try {
+      return (await write()).isSet
+    } catch (error) {
+      $.ui.log(`to-human: the panel's ${key} is not kept for a reload (${message(error)})`, { to: 'debug' })
+      return false
+    }
+  }
+  const kept = writes.then(async () => {
+    const [isRecordKept] = await Promise.all([
+      set(ready.record, 'record', () => $.state.set(RECORD, record)),
+      set(ready.rows, 'rows', () => $.state.set(PRESENTED, rows)),
+      set(ready.notices, 'notices', () => $.state.set(NOTICE, told)),
+      set(ready.forks, 'forks', () => $.state.set(FORKS, ids)),
+    ])
+    return isRecordKept
+  })
+  writes = kept
+  return kept
 }
 
 /** The panel server's command line, `server.py <verb> ...`. */
@@ -271,14 +285,18 @@ async function command<T>($: EngineInterface, rest: readonly string[]): Promise<
 }
 
 /** Raised when who an agent is cannot be told: the guard's `.catch` refuses its call. */
-class Unresolved extends Error {}
+class Unresolved extends Error {
+  override name = 'Unresolved'
+}
 
 /**
  * Whether a loop is a panel fork's: the guard holds its every call. The ids
- * this module spawned or read back say so; past them, the list names each
- * fork this plugin spawned as the panel's from its spawn on, so an agent it
- * names otherwise, or not at all (a workflow's, the engine's own forks), is
- * none. Throws Unresolved when neither the kept ids nor the list can be read.
+ * this module spawned or read back say so, every one it ever spawned; past
+ * them, the list names a fork this plugin spawned as the panel's, and an
+ * agent it names otherwise is none. An agent it does not name is none once
+ * the ids are read back (a workflow's agent, the engine's own forks), but
+ * may be a panel fork whose run closed while they are not, so then, as when
+ * the list cannot be read either, it throws Unresolved and is refused.
  */
 async function isPanelFork($: EngineInterface, agentId: string | undefined): Promise<boolean> {
   if (agentId === undefined) return false
@@ -294,7 +312,10 @@ async function isPanelFork($: EngineInterface, agentId: string | undefined): Pro
     throw new Unresolved(`neither the panel's forks nor the agent list could be read (${message(error)})`)
   }
   const listed = agents.find((a) => a.id === agentId)
-  if (listed === undefined) return false
+  if (listed === undefined) {
+    if (loaded.forks) return false
+    throw new Unresolved(`the panel's forks could not be read, and the agent list does not name ${agentId}`)
+  }
   if (listed.type === 'fork' && listed.spawnedBy === $.plugin.name && listed.description === FORK_DESCRIPTION) {
     forks.add(agentId)
     return true
@@ -384,6 +405,9 @@ async function close($: EngineInterface, open: PresentRun, row: PresentedRow, no
   await keep($)
 }
 
+/** Why a run is closed whose fork ended well but whose publishing phase could not be kept. */
+const UNKEPT = 'its record could not be kept'
+
 const WHY: Record<Exclude<TurnCompleteInput['reason'], 'answer'>, string> = {
   aborted: 'its fork was interrupted',
   error: 'an API error ended its fork',
@@ -403,7 +427,10 @@ async function finish($: EngineInterface, open: PresentRun, e: TurnCompleteInput
   }
   const publishing: PresentRun = { ...open, phase: 'publishing' }
   if (run?.agentId === open.agentId) run = publishing
-  await keep($)
+  // Never publish without the phase kept: a module that started over would read the run as unheard.
+  if (!(await keep($))) {
+    return close($, publishing, { state: 'failed', address: open.address, why: UNKEPT }, FAILED(open.address, UNKEPT))
+  }
   return publishRun($, publishing, { said: e.answer.trim().slice(0, SAID_MAX), isAgain: false })
 }
 
