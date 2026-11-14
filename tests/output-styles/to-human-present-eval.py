@@ -235,6 +235,8 @@ def send(client, req):
     betas = params.pop('betas', [])
     named = {k: params.pop(k) for k in ('model', 'max_tokens', 'messages', 'system', 'tools', 'thinking') if k in params}
     for attempt in range(4):
+        if SPENT.is_set():
+            raise PlanSpent('a plan ran out in this process before this attempt')
         try:
             with client.beta.messages.stream(betas=betas, extra_body=params, **named) as s:
                 msg = s.get_final_message()

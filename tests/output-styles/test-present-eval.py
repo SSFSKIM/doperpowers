@@ -223,6 +223,34 @@ class RunOnce(unittest.TestCase):
             ev.SPENT.clear()
         self.assertEqual(len(sent), 1)
 
+    def test_a_plan_spent_during_a_retry_wait_stops_the_retry(self):
+        attempts = []
+
+        class Stream:
+            def __enter__(self):
+                attempts.append(1)
+                ev.SPENT.set()  # another worker's request was refused meanwhile
+                raise ConnectionError('dropped')
+
+            def __exit__(self, *a):
+                return False
+
+        class Client:
+            class beta:
+                class messages:
+                    @staticmethod
+                    def stream(**kw):
+                        return Stream()
+
+        sleep, ev.time.sleep = ev.time.sleep, (lambda s: None)
+        try:
+            with self.assertRaises(ev.PlanSpent):
+                ev.send(Client(), {'model': 'm', 'messages': []})
+        finally:
+            ev.time.sleep = sleep
+            ev.SPENT.clear()
+        self.assertEqual(len(attempts), 1)
+
     def test_a_message_ends_the_run(self):
         got, sent = self.run_with([[{'id': 't1', 'name': ev.MESSAGE_TOOL, 'input': {'text': 'x'}}], []])
         self.assertEqual((got['message'], got['present'], got['undecided'], len(sent)), (True, False, False, 1))

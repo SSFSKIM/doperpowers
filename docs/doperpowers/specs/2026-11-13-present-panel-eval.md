@@ -12,9 +12,12 @@ leave routine reports as text? The harness is
 that a decision gets a panel only when the ask dialog cannot carry it,
 puts designs on the panel in 9 of 9 runs and the decision the dialog cannot
 carry in 2 of 3. It keeps every one of the 36 text-side runs as text. It
-never puts a revision on the panel (0 of 9). These counts are on
-byte-exact rebuilds: the five turns whose replayed request had lacked text
-the session read were run again. The bar is met on the text side and
+never puts a revision on the panel (0 of 9). Every request behind these
+counts carried the whole of what the session had read: the five turns
+whose replayed request had lacked text the session read were run again on
+their byte-exact rebuilds. Four turns (w7, r2, r6, r8) keep runs whose
+request held one message's results in another order than was sent, the
+same blocks otherwise ("What the rebuild substituted"). The bar is met on the text side and
 missed on the warranted side, 11 of 21 against 15, on revisions alone.
 
 ## Method
@@ -398,12 +401,13 @@ response, the page beside it, as the rule asks. So did w7's third run.
 | r3, 2 | "The log append was refused twice with 'commands are not executed here'" |
 | r3, 3 | "the shell refused both attempts with 'this step is a replay of the session, and its commands are not executed here'" |
 | r4, 1 | "My last command, a read of the row 10 and row 15 scripts at the final build, did not run" |
+| r1, 2 | "I tried to install 0.7.3 into the plugin cache, but the command didn't run here, so I can't confirm it's installed" |
 | w7, 1 (borderline, `present`) | the brief's open questions include "A planned second spike on this did not run", the spike being the call answered as not run |
 
-Ten clear cases and one borderline, over the counted runs. Among the
+Eleven clear cases and one borderline, over the counted runs. Among the
 replaced runs, w8's third (ran on an approximate rebuild) was clear as
 well. Without the clear cases the counts are 9 of 15 warranted (designs 7
-of 7, w3 2 of 3, revisions 0 of 5) and 0 of 32 on the text side: the same
+of 7, w3 2 of 3, revisions 0 of 5) and 0 of 31 on the text side: the same
 verdict.
 
 ### What it cost
@@ -485,8 +489,11 @@ How each kind of substitution bears on the counts:
   structured so the human sees which parts need their judgment, and to get
   approval first. It names no channel (it predates the panel), so it
   neither asks for a page nor bars one. These two turns are 6 of the second
-  round's 11 `present` runs and 5 of the first round's 8. How the skill's
-  presence would move them is not measured.
+  round's 11 `present` runs and 5 of the first round's 8. For the second
+  wording the effect was measured: w5 and w6 were run again with the body
+  in place and came out the same, 3 of 3 each (below). The first wording's
+  runs of these turns were never run again, so for it the effect is not
+  measured.
 
 The rebuild now matches all ten messages: a tool-result message is tried in
 each order of its results, with and without the meta rows that follow a
