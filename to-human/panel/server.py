@@ -12,11 +12,15 @@ only writer of a panel's records. Its command line is the mod's whole interface 
 
 Panels live in <configuration directory>/to-human/panels/<short id>/ (panel.html, draft.html, meta.json,
 state.json); server.json (0600) beside them holds the running server's port, pid, version and the token every
-control request carries. The server listens on 127.0.0.1:$PANEL_PORT (4777) alone; with PANEL_REACH=tailnet it has
-`tailscale serve` pass an HTTPS port of the machine's tailnet name to it. Design and contracts:
-docs/doperpowers/specs/2026-11-13-present-panel-design.md. Python's standard library only.
+control request carries, and server.lock the lock the running server holds for its life, so one server serves a
+directory whatever port another was given. The server listens on 127.0.0.1:$PANEL_PORT (4777) alone; with
+PANEL_REACH=tailnet it has `tailscale serve` pass an HTTPS port of the machine's tailnet name to it. Design and
+contracts: docs/doperpowers/specs/2026-11-13-present-panel-design.md. Python's standard library only.
 """
 
+import contextlib
+import errno
+import fcntl
 import hmac
 import html
 import http.client
@@ -46,6 +50,7 @@ TOOL_TIMEOUT = 5          # each tailscale command
 REFRESH_EVERY = 30        # the tailnet identity and mapping are looked at no more often than this
 REACH_WAIT = 2            # open-panel waits this long for a refresh it needs (the first, or one it asked for)
 START_WAIT = 2            # a server started by the command line answers within this
+SETTLE_WAIT = 3           # a server told to shut down lets its requests in flight answer for this long
 MAX_AGE = 30 * 86400      # a panel whose page and draft are both older is removed when a server starts
 MAX_BODY = 64 * 1024
 
@@ -343,11 +348,15 @@ class Panels:
                 current = starter_text(meta.get("locale") or "en").encode("utf-8", "surrogateescape")
             state = self.state(short)
             replaced = state["written"]
-            published = data != current
+            # A page the draft matches with no publish recorded is one an earlier publish replaced and did not live
+            # to record: it is published now.
+            published = data != current or (replaced is None and os.path.exists(p["page"]))
             if published:
-                write_atomic(p["page"], data)
+                # The time first: a publish cut between the two leaves a page older than its record, which the next
+                # publish replaces, never a new page under the old time, which no tab would reload for.
                 state["written"] = max(now_ms(), (replaced or 0) + 1)
                 write_json(p["state"], state)
+                write_atomic(p["page"], data)
             at_open, seen = meta.get("seenAtOpen"), state["seen"]
             meanwhile = (published and replaced is not None and seen is not None and seen >= replaced
                          and not (isinstance(at_open, int) and at_open >= replaced))
@@ -583,6 +592,10 @@ class Handler(BaseHTTPRequestHandler):
         return origin in own
 
     def dispatch(self):
+        with self.server.answering():
+            return self.answer()
+
+    def answer(self):
         self.nonce = secrets.token_urlsafe(16)
         admitted = self.admit()
         if admitted is None:
@@ -737,7 +750,25 @@ class Server(ThreadingHTTPServer):
         self.token = secrets.token_urlsafe(32)
         self.panels = Panels(root)
         self.reach = Reach(port, wants_tailnet(os.environ.get("PANEL_REACH")))
+        self.busy = 0                                   # requests being answered
+        self.idle = threading.Condition()
         super().__init__(("127.0.0.1", port), Handler)
+
+    @contextlib.contextmanager
+    def answering(self):
+        with self.idle:
+            self.busy += 1
+        try:
+            yield
+        finally:
+            with self.idle:
+                self.busy -= 1
+                self.idle.notify_all()
+
+    def settle(self, timeout):
+        """Wait, at most `timeout`, for the requests being answered to be answered."""
+        with self.idle:
+            self.idle.wait_for(lambda: self.busy == 0, timeout)
 
     def server_bind(self):
         # HTTPServer.server_bind looks up the host's fully qualified name, a resolver query the server needs not.
@@ -745,12 +776,31 @@ class Server(ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
+def hold_directory(root):
+    """The panels directory's lock, held for the server's life (released when its descriptor closes): one server
+    serves a directory, whatever port each was given, since each holds its own Panels.lock and writes its own
+    server.json."""
+    fd = os.open(os.path.join(root, "server.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        os.close(fd)
+        if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+            raise
+        record = read_json(os.path.join(root, "server.json"), {})
+        raise Refused("another panel server serves %s%s" % (
+            root, " (on port %s)" % record["port"] if isinstance(record.get("port"), int) else ""))
+    return fd
+
+
 def serve():
     port, root = panel_port(), panels_root()
     os.makedirs(root, mode=0o700, exist_ok=True)
+    held = hold_directory(root)
     try:
         httpd = Server(port, root)
     except OSError as e:
+        os.close(held)
         raise Refused("the panel server cannot listen on 127.0.0.1:%d (%s)" % (port, e))
     record = os.path.join(root, "server.json")
     write_json(record, {"pid": os.getpid(), "port": port, "version": httpd.version, "token": httpd.token}, 0o600)
@@ -761,12 +811,19 @@ def serve():
     try:
         httpd.serve_forever(poll_interval=0.25)
     finally:
-        httpd.server_close()
+        # No request is taken any more. Those in flight answer, and then no record transaction is left: one that
+        # outlasted the wait holds Panels.lock until it is done, and none starts after it, the process ending with
+        # the lock held. Then the directory, and only then the port, so a server started once the port is free
+        # finds the directory free too.
+        httpd.settle(SETTLE_WAIT)
+        httpd.panels.lock.acquire()
         if read_json(record, {}).get("token") == httpd.token:
             try:
                 os.unlink(record)
             except OSError:
                 pass
+        os.close(held)
+        httpd.server_close()
 
 
 # ------------------------------------------------------------------ the command line, a client of the server
@@ -850,23 +907,33 @@ def ensure_server():
     replaced as needed."""
     port, root = panel_port(), panels_root()
     own = plugin_version()
+    def serves_root(info):
+        return isinstance(info, dict) and info.get("server") == SERVER_NAME and \
+            os.path.realpath(str(info.get("root"))) == os.path.realpath(root)
+
     for attempt in range(2):
         status, info = call(port, "GET", "/control/health", token_of(root), timeout=2)
         if status is None:
+            # One server serves a directory (its lock): one on another port would refuse to start here.
+            other = read_json(os.path.join(root, "server.json"), {}).get("port")
+            if isinstance(other, int) and other != port:
+                o_status, o_info = call(other, "GET", "/control/health", token_of(root), timeout=2)
+                if o_status == 200 and serves_root(o_info):
+                    raise Refused("this configuration directory's panels are served by its panel server on port %d, "
+                                  "and one server serves a directory: PANEL_PORT names %d, not %d"
+                                  % (other, other, port))
             start_detached()
             if wait_up(port, root):
                 return port, token_of(root)
             continue                    # another command may have started one in the same moment: ask again
-        same_dir = isinstance(info, dict) and info.get("server") == SERVER_NAME and \
-            os.path.realpath(str(info.get("root"))) == os.path.realpath(root)
-        if status != 200 or not same_dir:
+        if status != 200 or not serves_root(info):
             raise Refused("port %d on this machine answers, but not as this configuration directory's panel server "
                           "(another program, or the panel server of another CLAUDE_CONFIG_DIR): PANEL_PORT names "
                           "another" % port)
         if version_key(info.get("version")) >= version_key(own):
             return port, token_of(root)
         call(port, "POST", "/control/shutdown", token_of(root), {})
-        wait_free(port)
+        wait_free(port, SETTLE_WAIT + START_WAIT)       # it answers its requests in flight before it lets go
         start_detached()
         if wait_up(port, root):
             return port, token_of(root)

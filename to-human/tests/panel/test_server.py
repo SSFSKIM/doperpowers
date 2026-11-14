@@ -440,6 +440,31 @@ class CommandLine(Case):
         self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.e.dir, "other-config", "to-human", "panels", SHORT)))
 
+    def test_a_second_server_over_the_directory_refuses(self):
+        self.e.open()
+        token = self.e.server_json()["token"]
+        other = dict(self.e.env, PANEL_PORT=str(free_port()))
+        r = self.e.cli("serve", env=other, timeout=10)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+        self.assertIn(self.e.panels, r.stderr)
+        self.assertEqual(self.e.server_json()["token"], token)                     # the first keeps its token
+        status, _, body = self.e.control("GET", "/control/health")
+        self.assertEqual(status, 200)
+
+    def test_a_command_on_another_port_names_the_port_the_directory_is_served_on(self):
+        self.e.open()
+        token = self.e.server_json()["token"]
+        port = free_port()
+        r = self.e.cli("open-panel", "--session", SID, env=dict(self.e.env, PANEL_PORT=str(port)), timeout=20)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+        self.assertIn("port %d" % self.e.port, r.stderr)
+        self.assertIn(str(port), r.stderr)
+        self.assertEqual(self.e.server_json()["token"], token)
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+
     def test_old_panels_are_removed_when_a_server_starts(self):
         old_sid = "0d0d0d0d-0000-0000-0000-000000000000"
         self.e.open()
@@ -887,6 +912,115 @@ class OneWriter(unittest.TestCase):
             S.copy_text = real_copy
         state = json.loads(Path(e.panel("state.json")).read_text())
         self.assertEqual(state["checked"], ["u1-1"])
+
+
+PAUSING_SERVER = r'''
+import importlib.util, os, sys, time
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("panel_server", sys.argv[1])
+S = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(S)
+real = S.write_atomic
+stub = os.environ["STUB_DIR"]
+
+def write_atomic(path, data, mode=None):
+    """The first record a publish writes, then a pause while the test asks for shutdown, once armed."""
+    real(path, data, mode)
+    armed = os.path.join(stub, "pause-armed")
+    if os.path.basename(path) in ("panel.html", "state.json") and os.path.exists(armed):
+        os.unlink(armed)
+        open(os.path.join(stub, "paused"), "w").close()
+        time.sleep(1.5)
+
+S.write_atomic = write_atomic
+sys.exit(S.main(["serve"]))
+'''
+
+
+class Shutdown(unittest.TestCase):
+    """A shutdown (the version replacement) lets a publish in flight finish, its answer included."""
+
+    def test_a_publish_paused_between_its_writes_finishes_before_the_server_exits(self):
+        e = Env()
+        self.addCleanup(e.close)
+        script = os.path.join(e.dir, "pausing_server.py")
+        with open(script, "w") as f:
+            f.write(PAUSING_SERVER)
+        server = subprocess.Popen([sys.executable, script, str(SERVER_PY)], env=e.env, stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: server.poll() is None and (server.kill(), server.wait()))
+        end = time.time() + 5
+        while not os.path.exists(os.path.join(e.panels, "server.json")) and time.time() < end:
+            time.sleep(0.05)
+        e.open()
+        self.assertEqual(e.server_json()["pid"], server.pid)                     # the command used this server
+        e.write_draft("<h1>Whole</h1>")
+        e.stub_file("pause-armed", "")
+        publish = subprocess.Popen([sys.executable, str(SERVER_PY), "publish", "--session", SID], env=e.env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        end = time.time() + 5
+        while not os.path.exists(os.path.join(e.stub, "paused")) and time.time() < end:
+            time.sleep(0.02)
+        self.assertTrue(os.path.exists(os.path.join(e.stub, "paused")), "the publish never reached its pause")
+        status, _, _ = e.control("POST", "/control/shutdown", {})
+        self.assertEqual(status, 204)
+        server.wait(timeout=10)
+        out, err = publish.communicate(timeout=10)
+        state = json.loads(Path(e.panel("state.json")).read_text())
+        self.assertIsInstance(state["written"], int)
+        self.assertIn("<h1>Whole</h1>", Path(e.panel("panel.html")).read_text())
+        self.assertEqual(publish.returncode, 0, err)
+        self.assertTrue(json.loads(out)["published"])
+        self.assertEqual(json.loads(out)["written"], state["written"])
+
+
+class PublishRecovers(unittest.TestCase):
+    """A publish cut short (a crash between its writes) leaves a state the next publish repairs."""
+
+    def setUp(self):
+        e = Env()
+        self.addCleanup(e.close)
+        self.e = e
+        self.S = load_server()
+        backup = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(backup)))
+        os.environ.update(CLAUDE_CONFIG_DIR=e.config, PANEL_PORT=str(e.port))
+        self.panels = self.S.Panels(self.S.panels_root())
+
+    def test_a_page_the_draft_matches_whose_publish_was_never_recorded_is_published(self):
+        self.panels.open_panel(SID, "en")
+        self.e.write_draft("<h1>Cut</h1>")
+        shutil.copyfile(self.e.panel("draft.html"), self.e.panel("panel.html"))   # the page replaced, written not
+        out = self.panels.publish(SID)
+        self.assertTrue(out["published"])
+        self.assertIsInstance(out["written"], int)
+        self.assertEqual(json.loads(Path(self.e.panel("state.json")).read_text())["written"], out["written"])
+
+    def test_a_publish_that_died_after_its_first_write_is_published_by_the_next(self):
+        self.panels.open_panel(SID, "en")
+        self.e.write_draft("<h1>One</h1>")
+        first = self.panels.publish(SID)["written"]
+        self.panels.open_panel(SID, "en")
+        self.e.write_draft("<h1>Two</h1>")
+        real, writes = self.S.write_atomic, []
+
+        def dies_after_the_first(path, data, mode=None):
+            if writes:
+                raise OSError("the process died here")
+            writes.append(path)
+            real(path, data, mode)
+
+        self.S.write_atomic = dies_after_the_first
+        try:
+            with self.assertRaises(OSError):
+                self.panels.publish(SID)
+        finally:
+            self.S.write_atomic = real
+        time.sleep(0.002)
+        out = self.panels.publish(SID)
+        self.assertTrue(out["published"])
+        self.assertGreater(out["written"], first)
+        self.assertIn("<h1>Two</h1>", Path(self.e.panel("panel.html")).read_text())
 
 
 def tearDownModule():
