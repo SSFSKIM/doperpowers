@@ -61,6 +61,10 @@ def answer(name, default=None):
 if args == ["status", "--json"]:
     answer("status.json")
 if args == ["serve", "status", "--json"]:
+    if os.path.exists(os.path.join(d, "serve-status-fails")):
+        sys.stderr.write("stub: serve status failed\n"); sys.exit(1)
+    if os.path.exists(os.path.join(d, "serve-status-stalls")):
+        time.sleep(30)
     answer("serve.json", "{}")
 if args[:2] == ["serve", "--bg"]:
     if os.path.exists(os.path.join(d, "needs-sudo")) and os.environ.get("STUB_SUDO") != "1":
@@ -231,6 +235,7 @@ def page(body, lang="en"):
             '</head>\n<body>\n%s\n</body>\n</html>\n' % (lang, body))
 
 
+S_GUARD = "<!--\"'>-->"      # what the server puts before its script: see server.py's GUARD
 NOTE = '<p>The plan <mark data-note="u2-1">is B now</mark>.</p>\n<aside class="note" id="u2-1">Was A.</aside>'
 
 
@@ -326,6 +331,18 @@ class CommandLine(Case):
         self.assertEqual(self.e.open()["checked"], ["u2-1"])
         state = json.loads(Path(self.e.panel("state.json")).read_text())
         self.assertEqual(state["checked"], ["u2-1"])
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes through any mode")
+    def test_an_unwritable_configuration_directory_is_one_line(self):
+        os.chmod(self.e.config, 0o500)
+        self.addCleanup(os.chmod, self.e.config, 0o700)
+        for args in (("open-panel", "--session", SID), ("serve",)):
+            r = self.e.cli(*args)
+            self.assertEqual(r.returncode, 1, args)
+            self.assertEqual(r.stdout, "")
+            self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+            self.assertIn(self.e.config, r.stderr)
 
     def test_server_json_is_private(self):
         self.e.open()
@@ -489,7 +506,7 @@ class Requests(Case):
         self.assertEqual(status, 200)
         self.assertTrue(h["content-type"].startswith("text/html"))
         nonce = re.search(r"'nonce-([^']+)'", h["content-security-policy"]).group(1)
-        inserted = '<script nonce="%s">window.PANEL={"written":%d,"checked":["u2-1"]}</script>' % (nonce, written)
+        inserted = S_GUARD + '<script nonce="%s">window.PANEL={"written":%d,"checked":["u2-1"]}</script>' % (nonce, written)
         self.assertEqual(body.decode(), page(NOTE).replace("</head>", inserted + "</head>"))
         self.assertNotEqual(nonce, re.search(r"'nonce-([^']+)'",
                                              self.get_page()[1]["content-security-policy"]).group(1))
@@ -499,13 +516,13 @@ class Requests(Case):
             f.write("<p>bare</p>")
         self.e.publish()
         body = self.get_page()[2].decode()
-        self.assertTrue(body.startswith("<p>bare</p><script nonce="))
+        self.assertTrue(body.startswith("<p>bare</p>" + S_GUARD + "<script nonce="))
         self.assertTrue(body.endswith("</script>"))
 
     def test_the_inserted_json_escapes_lt(self):
         S = load_server()
         out = S.insert_script("<head></head>", 5, ["</script><script>alert(1)//"], "n")
-        self.assertEqual(out, '<head><script nonce="n">window.PANEL={"written":5,"checked":'
+        self.assertEqual(out, '<head>' + S_GUARD + '<script nonce="n">window.PANEL={"written":5,"checked":'
                               '["\\u003c/script>\\u003cscript>alert(1)//"]}</script></head>')
 
     def test_every_response_holds_the_policy(self):
@@ -592,6 +609,35 @@ class Requests(Case):
         self.assertEqual(p["removed"], ["meta http-equiv", "link", "base"])
         self.assertEqual(Path(self.e.panel("panel.html")).read_text(), page("\n\n\n<p>kept</p>"))
         self.assertIn(b"<p>kept</p>", self.get_page()[2])
+
+    def served_after_publishing(self, source):
+        with open(self.e.panel("draft.html"), "w") as f:
+            f.write(source)
+        self.e.publish()
+        status, h, body = self.get_page()
+        self.assertEqual(status, 200)
+        return body.decode(), re.search(r"'nonce-([^']+)'", h["content-security-policy"]).group(1)
+
+    def test_a_draft_ending_inside_a_meta_serves_no_meta(self):
+        # Left open at the end, the meta would take the inserted script's quotes and `>` as its own.
+        served, _ = self.served_after_publishing(
+            '<p>x</p><meta content="0;url=https://invalid.example/" http-equiv="refresh')
+        self.assertNotIn("http-equiv", served.lower())
+        self.assertNotIn("<meta", served.lower())
+
+    def test_a_tag_left_open_cannot_take_the_inserted_scripts_nonce(self):
+        # A draft's script tag left open before </head> (or at the end) would read the inserted script's
+        # `nonce="…"` as its own attribute, and an external script with the nonce runs.
+        for source in ('<html><head><script src="https://evil.example/x.js" a=</head><body><p>x</p></body></html>',
+                       '<p>x</p><script src="https://evil.example/x.js" a=',
+                       "<p>x</p><script src=https://evil.example/x.js a='",
+                       '<p>x</p><script src=https://evil.example/x.js a="'):
+            served, nonce = self.served_after_publishing(source)
+            self.assertEqual(served.count('nonce="%s"' % nonce), 1, source)
+            at = served.index('<script nonce="%s">' % nonce)
+            # Whatever state the draft left the parser in (a tag, a quoted value, a comment), the guard before
+            # the script closes it, and is a comment when there is nothing to close.
+            self.assertEqual(served[at - len(S_GUARD):at], S_GUARD, source)
 
     def test_unknown_paths_and_methods(self):
         for method, path in (("GET", "/"), ("GET", "/nope"), ("PUT", "/%s/" % SHORT), ("GET", "/%s/check" % SHORT),
@@ -723,6 +769,34 @@ class Reach(unittest.TestCase):
         e.stub_file("serve.json", json.dumps({"Web": {"%s:%d" % (DNS, e.port): {
             "Handlers": {"/": {"Proxy": "http://127.0.0.1:9"}}}}}))
         self.assertEqual(e.open()["reach"], "local")
+        self.assertEqual(self.serve_calls(e), [])
+
+    def test_a_port_forwarded_as_tcp_is_left_alone(self):
+        e = self.env(reach="tailnet")
+        e.stub_file("serve.json", json.dumps({"TCP": {str(e.port): {"TCPForward": "127.0.0.1:22"}}}))
+        self.assertEqual(e.open()["reach"], "local")
+        self.assertEqual(self.serve_calls(e), [])
+
+    def test_a_failed_mapping_lookup_configures_nothing(self):
+        # Not knowing whether the port is mapped is not knowing it is free: someone else's mapping may stand.
+        e = self.env(reach="tailnet")
+        e.stub_file("serve-status-fails", "")
+        self.assertEqual(e.open()["reach"], "local")
+        self.assertEqual(self.serve_calls(e), [])
+
+    def test_a_malformed_mapping_lookup_configures_nothing(self):
+        e = self.env(reach="tailnet")
+        for garbled in ("not json{", "[]", '{"Web": []}'):
+            e.stub_file("serve.json", garbled)
+            self.assertEqual(e.open(env=dict(e.env, PANEL_REACH="tailnet"))["reach"], "local", garbled)
+            e.stop()
+        self.assertEqual(self.serve_calls(e), [])
+
+    def test_a_mapping_lookup_that_times_out_configures_nothing(self):
+        e = self.env(reach="tailnet")
+        e.stub_file("serve-status-stalls", "")
+        self.assertEqual(e.open()["reach"], "local")
+        time.sleep(6)                                       # past the lookup's 5 s limit
         self.assertEqual(self.serve_calls(e), [])
 
     def test_refused_until_run_under_sudo_n(self):

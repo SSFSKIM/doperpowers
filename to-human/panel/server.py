@@ -162,16 +162,17 @@ SPACE = "\t\n\f\r "
 
 
 def _tag_end(text, i):
-    """Where the start tag whose name ends at `i` ends, and its attributes, as a browser's tokenizer reads them:
-    quotes count only around a value, the first `>` outside one ends it; a tag left open runs to the end."""
+    """Where the start tag whose name ends at `i` ends, its attributes, and whether it is closed, as a browser's
+    tokenizer reads them: quotes count only around a value, the first `>` outside one ends it; a tag left open
+    runs to the end, its open attribute counted with what it holds so far."""
     n, attrs = len(text), {}
     while True:
         while i < n and text[i] in SPACE + "/":
             i += 1
         if i >= n:
-            return n, attrs
+            return n, attrs, False
         if text[i] == ">":
-            return i + 1, attrs
+            return i + 1, attrs, True
         j = i + 1                                   # a name may start with `=`, and holds quotes as letters
         while j < n and text[j] not in SPACE + "/>=":
             j += 1
@@ -186,7 +187,8 @@ def _tag_end(text, i):
             if i < n and text[i] in "\"'":
                 k = text.find(text[i], i + 1)
                 if k < 0:
-                    return n, attrs
+                    attrs.setdefault(name, html.unescape(text[i + 1:]))
+                    return n, attrs, False
                 value, i = text[i + 1:k], k + 1
             else:
                 j = i
@@ -211,7 +213,9 @@ def cut(text):
     A tag is found wherever a browser could find one: every `<meta`, `<link` or `<base` in the source is read as a
     start tag, inside a comment or a script as much as in the body, since a reading that skips what it takes for
     a comment (html.parser takes `<!-->` for an open one; a browser closes it at once) would leave a live tag in
-    place. Cutting repeats until nothing is left to cut, so the pieces around a cut cannot join into a new tag."""
+    place. A tag the draft leaves open is cut whatever it holds so far: what follows the draft when it is served
+    (the server's script) would close it, and give it attributes of its own. Cutting repeats until nothing is
+    left to cut, so the pieces around a cut cannot join into a new tag."""
     removed = []
     while True:
         out, pos, changed = [], 0, False
@@ -219,8 +223,8 @@ def cut(text):
             if m.start() < pos:
                 continue
             kind = m.group(1).lower()
-            end, attrs = _tag_end(text, m.end())
-            if _kept(kind, attrs):
+            end, attrs, closed = _tag_end(text, m.end())
+            if closed and _kept(kind, attrs):
                 continue
             out.append(text[pos:m.start()])
             pos, changed = end, True
@@ -233,11 +237,18 @@ def cut(text):
         text = "".join(out)
 
 
+# Put before the server's script. In the body or the head it is an empty comment; where the draft left the parser
+# inside a start tag (its quoted or unquoted value, an attribute's name) or a comment, its `"`, `'` and `>` close
+# that first, so the script's `nonce="…"` can never be read as an attribute of the draft's own tag (a script
+# tag left open there would run its src with the nonce). Inside a raw-text element the script is only text.
+GUARD = "<!--\"'>-->"
+
+
 def insert_script(text, written, checked, nonce):
-    """The page with the server's own script before `</head>` (appended when it has none): its publish time and
-    the notes checked off, as JSON with `<` escaped."""
+    """The page with the server's own script before `</head>` (appended when it has none), after GUARD: its
+    publish time and the notes checked off, as JSON with `<` escaped."""
     data = json.dumps({"written": written, "checked": checked}, separators=(",", ":")).replace("<", "\\u003c")
-    tag = '<script nonce="%s">window.PANEL=%s</script>' % (nonce, data)
+    tag = GUARD + '<script nonce="%s">window.PANEL=%s</script>' % (nonce, data)
     m = re.search(r"</head\s*>", text, re.I)
     return text[:m.start()] + tag + text[m.start():] if m else text + tag
 
@@ -448,7 +459,7 @@ class Reach:
     def _refresh(self):
         try:
             identity, running = self._status()
-            mapped = "no"
+            mapped = "unknown"
             if running:
                 mapped = self._mapping()
                 if mapped == "no" and self.want:
@@ -484,19 +495,30 @@ class Reach:
         return identity, st.get("BackendState") == "Running"
 
     def _mapping(self):
-        """"yes" when the port's HTTPS goes to this server, "other" when it goes elsewhere (left alone), "no"."""
+        """What the daemon's serve config holds for the port: "yes", its HTTPS goes to this server; "other", the
+        port is someone else's (left alone); "no", the lookup answered and shows nothing on the port; "unknown",
+        the lookup failed, timed out or answered something that is not a serve config. Only "no" lets the server
+        configure: not knowing whether the port is taken is not knowing it is free."""
         code, out = run_tool(["tailscale", "serve", "status", "--json"])
         if code != 0:
-            return "no"
+            return "unknown"
         try:
-            web = (json.loads(out) or {}).get("Web") or {}
-        except (ValueError, AttributeError):
-            return "no"
+            status = json.loads(out)
+        except ValueError:
+            return "unknown"
+        if not isinstance(status, dict):
+            return "unknown"
+        web, tcp = status.get("Web"), status.get("TCP")      # absent (or null) when nothing is served
+        web, tcp = {} if web is None else web, {} if tcp is None else tcp
+        if not isinstance(web, dict) or not isinstance(tcp, dict):
+            return "unknown"
         for host, conf in web.items():
             if host.rsplit(":", 1)[-1] == str(self.port):
-                proxy = (((conf or {}).get("Handlers") or {}).get("/") or {}).get("Proxy")
+                handlers = conf.get("Handlers") if isinstance(conf, dict) else None
+                handler = handlers.get("/") if isinstance(handlers, dict) else None
+                proxy = handler.get("Proxy") if isinstance(handler, dict) else None
                 return "yes" if proxy == "http://127.0.0.1:%d" % self.port else "other"
-        return "no"
+        return "other" if str(self.port) in tcp else "no"
 
     def view(self):
         """(origin, reach): the tailnet origin when the server is exposed there, else the local one."""
@@ -897,6 +919,9 @@ def main(argv):
                 out = control("publish", {"session": opts["session"]})
     except Refused as e:
         sys.stderr.write("server.py %s: %s\n" % (verb, e))
+        return 1
+    except OSError as e:             # the panels directory (or its log) cannot be made or written
+        sys.stderr.write("server.py %s: the panels directory %s cannot be written (%s)\n" % (verb, panels_root(), e))
         return 1
     print(json.dumps(out, ensure_ascii=False))
     return 0

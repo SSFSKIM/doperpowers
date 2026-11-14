@@ -84,6 +84,16 @@ class Cut(unittest.TestCase):
     def test_a_tag_left_open_is_cut_to_the_end(self):
         self.assertEqual(S.cut('<p>a</p><base href="https://x/'), ("<p>a</p>", ["base"]))
 
+    def test_an_attribute_left_open_at_the_end_still_names_its_tag(self):
+        # The open value's attribute counts: what follows the draft (the server's script) closes it in a browser.
+        for tail in ('<meta content="0;url=https://invalid.example/" http-equiv="refresh',
+                     "<meta content='0;url=https://invalid.example/' http-equiv='refresh",
+                     '<meta content="0;url=https://invalid.example/" http-equiv=',
+                     '<meta content="0;url=https://invalid.example/" http-equiv',
+                     '<meta http-equiv="refresh" content="0;url=https://invalid.example/'):
+            self.assertEqual(S.cut("<p>a</p>" + tail), ("<p>a</p>", ["meta http-equiv"]), tail)
+        self.assertEqual(S.cut('<link href="/base/panel.css" rel="stylesheet'), ("", ["link"]))
+
     def test_names_that_only_begin_alike_are_other_tags(self):
         page = "<metadata>x</metadata><linked>y</linked><basefont>"
         self.assertEqual(S.cut(page), (page, []))
