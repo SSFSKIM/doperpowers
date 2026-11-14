@@ -596,7 +596,8 @@ def main(live):
   await page.waitForFunction(() => window.__marker === undefined && document.readyState === 'complete', null, { timeout: 8000 });
   await page.waitForSelector('aside.note.is-open', { timeout: 5000 });
   const bar = await page.evaluate(() => document.querySelector('.panel-notebar')?.textContent || '');
-  const marks = await page.evaluate(() => document.querySelectorAll('mark[data-note].is-open').length);
+  // One note per change: the open marks, however many, all name one id.
+  const marks = await page.evaluate(() => new Set([...document.querySelectorAll('mark[data-note].is-open')].map((m) => m.dataset.note)).size);
   await page.evaluate(() => { window.__marker = 'after'; });
   await page.waitForTimeout(5000);
   const m = await page.evaluate(() => window.__marker);
