@@ -1,8 +1,9 @@
 // The panel's base script. It draws each open note beside its anchor in the margin (under the anchor's block on a
 // narrow window) with a check button, counts the open notes at the top with a jump to the next, reports a check
 // and a look to the server, and reloads the page, keeping its scroll, when the server has published it anew.
-// The server inserts window.PANEL = {written, checked} before </head>; this file is linked `defer`, so it runs
-// once the document is parsed. Its words are English or Korean, by the page's lang.
+// The server appends window.PANEL = {written, checked} to the end of the page's source; this file is linked
+// `defer`, so it runs once the document is parsed, after that script. Its words are English or Korean, by the
+// page's lang.
 (() => {
   'use strict';
 

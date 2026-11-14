@@ -66,22 +66,28 @@ const ESCAPES: Record<string, string> = { n: '\n', t: '\t', r: '\r', b: '\b', f:
  * while it streams as JSON text, the `text` field read so far (an escape cut
  * in two left out). Undefined when no text has arrived; never the raw JSON.
  */
-export function readMessage(input: unknown): { text: string; isWhole: boolean } | undefined {
+export const readMessage = (input: unknown) => readField(input, 'text')
+
+/**
+ * A string field of a tool call's input (`readMessage`'s reading, for any
+ * field): whole once the input is, else what of it has streamed so far.
+ */
+export function readField(input: unknown, field: string): { text: string; isWhole: boolean } | undefined {
   if (typeof input === 'string') {
     try {
-      return readMessage(JSON.parse(input))
+      return readField(JSON.parse(input), field)
     } catch {
-      return partialText(input)
+      return partialField(input, field)
     }
   }
-  if (typeof input === 'object' && input !== null && typeof (input as { text?: unknown }).text === 'string') {
-    return { text: (input as { text: string }).text, isWhole: true }
+  if (typeof input === 'object' && input !== null && typeof (input as Record<string, unknown>)[field] === 'string') {
+    return { text: (input as Record<string, string>)[field]!, isWhole: true }
   }
   return undefined
 }
 
-function partialText(json: string): { text: string; isWhole: boolean } | undefined {
-  const start = /"text"\s*:\s*"/.exec(json)
+function partialField(json: string, field: string): { text: string; isWhole: boolean } | undefined {
+  const start = new RegExp(`"${field}"\\s*:\\s*"`).exec(json)
   if (start === null) return undefined
   let text = ''
   for (let at = start.index + start[0].length; at < json.length; at++) {
