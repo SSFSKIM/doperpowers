@@ -1206,6 +1206,28 @@ configuration directory, with a probe plugin whose tool spawns a fork
   opening did not change haiku's behaviour and was reverted.
   Evidence: `~/.local/share/present-panel/m2/`, runs main-3 to main-6,
   stay-opus, stay-fable.
+- Observation (M2): owner models stay on the panel. With the parent
+  mid-task and steps of its own pending (the condition under which haiku
+  re-enacted them), opus 5 of 5 forks stayed on the panel and wrote the
+  page, fable (`claude-fable-5-2`) 5 of 5, on top of one earlier run each.
+  On the acceptance runs: fable held 3 (after the one-note rewording: one
+  note with 6 marks, counted once), 4, 5 (0 notes on an unseen page after a
+  `curl`) and 8; opus held 4 and 8, and 3 partly before the rewording (5
+  notes for one change, one per place); haiku failed 3, 4, 5 and 8 through
+  its forks (no note on a seen page, three on an unseen one, a wandering
+  fork that wrote nothing), which this version records as the limit beside
+  its wandering. With `BUSY` reworded, haiku's retry loop fell from 5 calls
+  and 3 to 4 forks a turn to 3 calls and 1 fork; the reworded
+  `GUARD_REFUSAL` did not bring haiku forks back to the draft (1 of 5).
+  Evidence: task-2-report's fix-stay-opus.log, fix-stay-fable.log,
+  fix-main.log, fix-unseen.log and the fable reruns under
+  `~/.local/share/present-panel/m2/`; the fable edit fork
+  `/tmp/thpresent.b8dyjnl5/…/agent-a988894c8032c5bd6.jsonl`.
+- Observation (M2): a model's own `Agent` call shaped like the panel's
+  spawn (`fork`, `description` `panel`) does not match the guard's allow:
+  its origin is the engine's, and it takes the ordinary path (in `auto`,
+  no prompt), unheld by the guard, which holds only forks it spawned.
+  Evidence: fix-lookalike.log, one allow line, for the `present` spawn.
 - Observation (M2): `BUSY`'s first wording, "Call present again once you
   are told it is written", led haiku to call `present` four more times in
   the same turn.
