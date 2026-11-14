@@ -142,7 +142,10 @@ next prompt; so if a decision is due, it asks now, pointing at the panel.
 The rule for when to call it is one sentence, in the `to-human` output style
 and in the human's own `CLAUDE.md` (`RULE`, in Interfaces): what the human
 must read closely and plain text carries poorly goes on the panel; routine
-reports stay text. The rule is deliberately narrow. Each call costs a fork's
+reports stay text, and so does a decision the ask dialog carries. A decision
+gets a panel only when the dialog cannot carry it: its options compared on
+several measures, or resting on evidence the human must see to choose (the
+human's ruling, 2026-11-14). The rule is deliberately narrow. Each call costs a fork's
 requests over the session's whole context (cache reads while the session's
 cache is warm, trial 6), so a panel has to earn its call; and the human
 ruled that most sessions should never need one.
@@ -668,8 +671,9 @@ the server alone.
 14. A subagent's call of the tool is refused with a sentence that tells it
     to put the content in its report; an empty brief is refused; a headless
     session and a MAWS session are not offered the tool.
-15. The rule's replay (M3) meets its bar: of 30 runs over the routine turns
-    at most 3 call the tool, and of 30 over the warranted turns at least 21.
+15. The rule's replay (M3) meets its bar: of the 36 runs over the turns
+    that stay text (routine, and decisions the dialog carries) at most 3 call
+    the tool, and of the 21 over the warranted turns at least 15.
 
 ## Execution
 
@@ -942,7 +946,7 @@ session's to edit after the merge, not the executor's.
 
 The replay: from the owner's transcripts
 (`~/.claude/projects/*/*.jsonl`), take 10 turns whose content warrants a
-panel by the rule's own terms (a decision put to the human with options, a
+panel by the rule's own terms (a decision the ask dialog cannot carry, a
 design presented for approval, a third or later revision of the same
 findings in one session) and 10 routine ones (a merge, a green run, a
 problem met and resolved, a short answer). Replay each context up to the
@@ -1073,13 +1077,20 @@ In `to-human/hooks/mods/present.tsx`:
 
 `RULE`, the sentence for the style and the human's `CLAUDE.md`:
 
-> Where `mcp__to-human__present` is among your tools: what I must read
-> closely and plain text carries poorly (a decision with its options, an
-> architecture, findings that keep being revised through a large or complex
-> piece of work) goes on the session's panel with it. Routine reports stay
-> text.
+> Where `mcp__to-human__present` is among your tools: what the human must
+> read closely and plain text carries poorly goes on the session's panel
+> with it: a design or an architecture put to them for approval; a decision
+> the ask dialog cannot carry, its options compared on several measures or
+> resting on evidence they must see to choose, laid out on the panel beside
+> the question; and findings you are about to correct or restate for a
+> third time or more in this session, where the panel states what holds
+> now. Routine reports stay text, and so does a decision the dialog
+> carries.
 
-(In the style, "the human" for "I".)
+(The style's copy; the `CLAUDE.md` copy is the same in the first person.
+"Beside the question", not "before you ask": the page takes minutes and the
+session is not woken when it is written, so the rule does not order the
+two.)
 
 `STANDING_PROMPT`, with its slots filled from `OpenPanel` and the brief:
 
@@ -1450,6 +1461,31 @@ configuration directory, with a probe plugin whose tool spawns a fork
   its limit stated: `NOT_RUN` tells the model it is in a replay.
   Date/Author: 2026-11-14, the executing session, on M3, with the designing
   session.
+
+- Decision: a decision gets a panel only when the ask dialog cannot carry
+  it: its options compared on several measures, or resting on evidence the
+  human must see to choose; the dialog alone for the rest. This replaces "a
+  decision put to the human with options" in the rule, M3's replay classes
+  and acceptance 15. The rule is reworded to it, with revisions named as
+  findings about to be corrected or restated for a third time or more.
+  Rationale: the human's ruling, through the ask dialog, over "every
+  decision with options" and "never for a decision", after the first round
+  put 11 of 12 decision runs in the dialog with no page; the spec's class
+  was the designing session's wording and broader than the human's "only
+  when it's really distinctly effective".
+  Date/Author: 2026-11-14, the human.
+- Decision: the replay's labels after that ruling: w3 stays warranted; w1
+  and w4 move to the text side as decisions the dialog carries (a `present`
+  call there counts against the rule); w2 is borderline, run and shown
+  apart, counted in neither class. Warranted is then 7 turns (21 runs), the
+  text side 12 (36 runs), and acceptance 15's bar keeps its proportions:
+  at least 15 of 21 warranted (the first bar, 21 of 30, was 70%), at most
+  3 of 36 on the text side (the first, 3 of 30). One rewording round; if
+  it misses only on revisions, acceptance 15 is recorded as not met for
+  revisions and the rule ships as worded.
+  Rationale: the human's ruling applied to the turns' evidence; the bar
+  set by the designing session in the human's place, and reported to them.
+  Date/Author: 2026-11-14, the designing session.
 
 ## Outcomes & Retrospective
 
