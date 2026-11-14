@@ -53,7 +53,7 @@ of a page, with older material pruned or moved to the bottom.
 - [x] (2026-11-14 04:45Z) Second review round absorbed (four findings, all taken; Decision Log).
 - [x] (2026-11-14 04:35Z) M1 — the panel server and the base (ebc15016..47bce689; reviewed clean after three fix rounds; acceptance 11, 12, 13 live).
 - [x] (2026-11-14 07:27Z) M2 — the tool and the fork (7b75c023..3670dfe0; reviewed clean after three fix waves; acceptance 1 to 10 and 14 live, 3, 4, 5 and 8 on fable).
-- [ ] M3 — the rule, its evaluation, and the documents.
+- [x] (2026-11-14 10:12Z) M3 — the rule, its evaluation, and the documents (392d9a2f..360860e1; reviewed clean; acceptance 15 met for designs, w3 and the text side, not met for revisions).
 - [ ] Whole-branch review, retrospective, merge; the owner's two files.
 
 ## Terms
@@ -557,6 +557,18 @@ rename, when the draft differs from the page, set `written`, and answer
 `Published`. `ensure` does nothing more when the panels directory holds no
 panel, so the mod can call it at every session's start without starting a
 server nobody needs.
+
+One server serves a panels directory: it holds an exclusive lock on
+`<panels>/server.lock` for its life, so a second over the same directory on
+another port refuses, and a command whose port does not answer while
+`server.json` names another port that serves the directory says so in one
+line. A shutdown (a version replacement) lets the requests in flight answer,
+up to 3 seconds, then takes the panels' lock for good, removes
+`server.json`, releases the directory and only then frees the port, so no
+publish is cut and a replacement finds the directory free. Publishing
+records `written` before it replaces the page, and a page equal to its
+draft with `written` unset counts as published, so a crash between the two
+writes leaves a page that still reloads.
 
 The server outlives the session that started it. After a restart of the
 machine nothing serves until a session starts: the mod runs
@@ -1486,6 +1498,18 @@ configuration directory, with a probe plugin whose tool spawns a fork
   Rationale: the human's ruling applied to the turns' evidence; the bar
   set by the designing session in the human's place, and reported to them.
   Date/Author: 2026-11-14, the designing session.
+
+- Decision: the draft's write is allowed only to the open run's fork, and
+  only until its end is heard; one server per panels directory by a
+  directory lock; a shutdown that lets in-flight requests finish and
+  releases the directory before the port; `written` recorded before the
+  page is replaced.
+  Rationale: the whole-branch review. A former panel fork could write the
+  next run's draft, which that run's end then published; two servers on
+  different ports over one directory each held their own lock and the
+  second took `server.json`'s token; a version replacement mid-publish left
+  a new page with `written` unset, so open tabs never reloaded.
+  Date/Author: 2026-11-14, the executing session, on the branch review.
 
 ## Outcomes & Retrospective
 
