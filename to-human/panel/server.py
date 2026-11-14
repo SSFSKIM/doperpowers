@@ -666,8 +666,7 @@ class Handler(BaseHTTPRequestHandler):
     def control(self, verb):
         srv = self.server
         if self.command == "GET" and verb == "health":
-            return self.json(200, {"server": SERVER_NAME, "version": srv.version, "root": srv.panels.root,
-                                   "pid": os.getpid()})
+            return self.json(200, {"server": SERVER_NAME, "version": srv.version, "root": srv.panels.root})
         if self.command != "POST" or verb not in ("open-panel", "publish", "reach", "shutdown"):
             return self.reply(404)
         body = self.body()

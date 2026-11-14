@@ -18,7 +18,8 @@ or with your own inline styles and SVG where they lack something. None is requir
 ## A note
 
 Where an update changes something the human has seen, mark the changed phrase and write the note after the
-block that holds it (an `<aside>` inside a `<p>` ends the paragraph):
+block that holds it (an `<aside>` inside a `<p>` ends the paragraph), or at the end of the list item or table
+cell that holds it:
 
 ```html
 <p>The server runs <mark data-note="u3-1">on every machine</mark>.</p>

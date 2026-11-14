@@ -6,9 +6,11 @@ rest of the source byte for byte.
 Run: python3 -m unittest discover -s to-human/tests/panel
 """
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
+sys.dont_write_bytecode = True      # loading server.py must leave no __pycache__ in the plugin
 SERVER_PY = Path(__file__).resolve().parents[2] / "panel" / "server.py"
 
 

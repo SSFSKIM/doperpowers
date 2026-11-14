@@ -25,6 +25,7 @@ import time
 import unittest
 from pathlib import Path
 
+sys.dont_write_bytecode = True      # loading server.py must leave no __pycache__ in the plugin
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parents[1]
 PANEL = PLUGIN / "panel"
