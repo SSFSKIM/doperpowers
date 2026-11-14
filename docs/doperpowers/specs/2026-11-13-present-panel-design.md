@@ -54,7 +54,8 @@ of a page, with older material pruned or moved to the bottom.
 - [x] (2026-11-14 04:35Z) M1 — the panel server and the base (ebc15016..47bce689; reviewed clean after three fix rounds; acceptance 11, 12, 13 live).
 - [x] (2026-11-14 07:27Z) M2 — the tool and the fork (7b75c023..3670dfe0; reviewed clean after three fix waves; acceptance 1 to 10 and 14 live, 3, 4, 5 and 8 on fable).
 - [x] (2026-11-14 10:12Z) M3 — the rule, its evaluation, and the documents (392d9a2f..360860e1; reviewed clean; acceptance 15 met for designs, w3 and the text side, not met for revisions).
-- [ ] Whole-branch review, retrospective, merge; the owner's two files.
+- [x] (2026-11-14 10:37Z) Whole-branch review (`doperpowers:reviewer-high`) clean after two fix rounds (68e35c89..ea7303d3); retrospective written.
+- [ ] Merge; the owner's two files (`~/.claude/CLAUDE.md`'s rule line, `~/.claude/settings.json`'s `PANEL_REACH`), the designing session's after the merge.
 
 ## Terms
 
@@ -1513,4 +1514,60 @@ configuration directory, with a probe plugin whose tool spawns a fork
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**What shipped.** The panel works end to end: `mcp__to-human__present`
+returns `STARTED` in under a second; a fork of the session writes the page in
+a draft under a guard that holds it to the draft; the server publishes,
+serves it under the base with its notes, checks and one reload a
+publication, and reaches the MacBook from a devcloud host over `tailscale
+serve`; the human is shown the address in the call's row and a notification,
+and the session reads `FINISHED` or `FAILED` as hook context without being
+woken. Acceptance 1 to 14 hold, live: 3, 4, 5 and 8 on fable (the owner's
+default), the rest on haiku and fable, 12 and 13 on `dc-c53-g1a-980a`.
+to-human 0.11.0, doperpowers 7.222.0.
+
+**Acceptance 15, the rule.** Met for designs put to the human (9 of 9),
+for a decision the dialog cannot carry (2 of 3), and on the text side (0 of
+36: routine turns and decisions the dialog carries); not met for revisions
+(0 of 9). Overall 11 of 21 against a bar of 15. The rule ships as worded,
+under the designing session's terms set before the round; the revision gap
+is a ticket (a prompt-time note from the plugin when a session's messages to
+its human pile up without a panel). A model judges the message it is about
+to send, and a third revision looks like any one correction: only the
+session's history shows the shape, which a sentence in a style read at the
+head of a window does not bring into view.
+
+**What the design did not foresee.**
+- The engine checks a plugin's own `$.agent.spawn` as an `Agent` call, so in
+  `auto`, now the engine's default, the `present` call waited on a dialog;
+  the guard allows its own spawn by the engine-set origin.
+- Haiku forks wander (16 of 26 re-enacted the session's steps) and get notes
+  wrong in both directions; opus and fable forks stayed on the panel in
+  every run (12 of 12). The version declares haiku its limit.
+- Asked to change one figure, owner-model forks wrote a note per place it
+  appeared (5 and 6); one note per change, marked at each place, is now the
+  prompt's rule, and the base already drew it.
+- The guard's state across a reload took most of the review effort: three
+  waves on M2 and one on the branch, each a fail-open path a reload or a
+  failed `$.state` read opened (closed forks, a stale queued write, a
+  publish without its kept phase, a resumed fork writing a recovered
+  draft). The lesson for a guard whose memory a reload can lose: persist
+  ownership apart from the run, and fail closed until it has been read back.
+- Inserting the server's script by a textual `</head>` match could land in a
+  comment; appending it to the page's end is the one position a well-formed
+  page cannot hold open.
+- The first decision class ("a decision with its options") was broader than
+  the human's ruling; the replay showed models put such decisions in the ask
+  dialog, and the human ruled that a decision gets a panel only when the
+  dialog cannot carry it.
+- The replay needed three changes of method: one response per run measured
+  the models' checks, not their reports; runs now go on past a call answered
+  as not run, which tells the model it is in a replay (11 clear contaminated
+  runs, none changing a verdict); and the first rebuild dropped a Skill
+  call's loaded text in five turns, re-run on the exact rebuild with no
+  count moved.
+
+**Cost.** Each milestone's task review ran to clean (M1 three fix rounds,
+M2 three, M3 one); the branch review found five P2s and then one more,
+fixed in two rounds. The replay spent, by the gateway's log, about 290
+requests and some 46M cache-read tokens over its rounds; one spent fable
+plan paused it for an hour.
