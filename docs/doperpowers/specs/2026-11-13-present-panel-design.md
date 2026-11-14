@@ -52,7 +52,7 @@ of a page, with older material pruned or moved to the bottom.
 - [x] (2026-11-14 04:10Z) Design review and execution-section review absorbed (Decision Log).
 - [x] (2026-11-14 04:45Z) Second review round absorbed (four findings, all taken; Decision Log).
 - [x] (2026-11-14 04:35Z) M1 — the panel server and the base (ebc15016..47bce689; reviewed clean after three fix rounds; acceptance 11, 12, 13 live).
-- [ ] M2 — the tool and the fork.
+- [x] (2026-11-14 07:27Z) M2 — the tool and the fork (7b75c023..3670dfe0; reviewed clean after three fix waves; acceptance 1 to 10 and 14 live, 3, 4, 5 and 8 on fable).
 - [ ] M3 — the rule, its evaluation, and the documents.
 - [ ] Whole-branch review, retrospective, merge; the owner's two files.
 
