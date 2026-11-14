@@ -25,6 +25,12 @@ port 4777.
     stay    whether the fork stays on the panel on the owner's models
             (--model opus, --model claude-fable-5-2): a task half done when
             the call is made, with steps after it the fork must not take.
+    unseen  5: two calls in a new session, one after the other's end, the
+            page never opened in a browser (a curl in between), leave a page
+            with no note.
+    lookalike  a model's own Agent call shaped like the spawn (subagent_type
+            fork, description panel) is not the guard's to allow: only the
+            plugin's spawn logs the allow; then one present call for contrast.
 
 It spends model calls (main: about 12 turns and 6 forks), so no suite runs
 it. With --keep the directory stays (minus the env file): frames, pages,
@@ -34,6 +40,8 @@ transcripts, notifications and the debug log.
     to-human/tests/mods/live-present-check.py guard --permission-mode acceptEdits [--locale ko]
     to-human/tests/mods/live-present-check.py plan
     to-human/tests/mods/live-present-check.py stay --model opus
+    to-human/tests/mods/live-present-check.py unseen
+    to-human/tests/mods/live-present-check.py lookalike
 """
 
 import argparse
@@ -638,8 +646,8 @@ def main(live):
     forks_before = live.fork_count()
     live.send("Do exactly these steps. Step 1: call %s once with brief exactly `PANEL-THREE: add a line at the top "
               "of the panel reading Status: reviewed.` Step 2: as soon as it returns, call %s again with brief exactly "
-              "`PANEL-THREE-AGAIN: nothing`, and whatever it returns, do not call %s a third time. Step 3: send the "
-              "human the message `turn three done` with final true." % (PRESENT, PRESENT, PRESENT))
+              "`PANEL-THREE-AGAIN: nothing`. Step 3: send the human the message `turn three done` with final true."
+              % (PRESENT, PRESENT))
     calls_before = len(live.results_of(live.rows(), PRESENT))
     wait_for("turn three's end", 300, lambda: live.turn_ends() > ends, during=live.watch)
     live.wait_fork_end(forks_before + 1)
@@ -837,12 +845,69 @@ def stay(live):
     total, first = live.usage(rows)
     live.fact("fork billed tokens", total)
     live.fact("fork first request", first)
+    live.fact("transcripts", {"session": next(iter(glob.glob(os.path.join(live.cfg, "projects", "*", live.session + ".jsonl"))), None),
+                              "fork": next(iter(glob.glob(os.path.join(live.cfg, "projects", "*", "*", "subagents", "agent-%s.jsonl" % live.forks()[0][0]))), None)})
     live.fact("fork model", sorted({r.get("message", {}).get("model") for r in rows if r.get("type") == "assistant"} - {"<synthetic>", None}))
+
+
+def unseen(live):
+    live.setup()
+    live.start()
+    ends = live.turn_ends()
+    live.send("%s Call %s once with brief exactly `UNSEEN-ONE: lay out the two build-cache options, Kestrel and Osprey, "
+              "and my recommendation.` Then send the human the message `one done` with final true." % (DESIGN, PRESENT))
+    wait_for("turn one's end", 240, lambda: live.turn_ends() > ends, during=live.watch)
+    live.wait_fork_end(1)
+    first = live.keep_page("unseen-1")
+    # A fetch of the address, as curl makes one: no look (only the page's own script reports one).
+    address = "http://127.0.0.1:%d/%s/" % (live.port, live.short)
+    fetched = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", address], capture_output=True, text=True).stdout
+    seen = live.state().get("seen")
+    ends = live.turn_ends()
+    live.send("Call %s once with brief exactly `UNSEEN-TWO: Osprey's cost changed from 90 to 120 dollars a month; change "
+              "that on the panel.` Then send the human the message `two done` with final true." % PRESENT)
+    wait_for("turn two's end", 240, lambda: live.turn_ends() > ends, during=live.watch)
+    live.wait_fork_end(2)
+    time.sleep(5)
+    second = live.keep_page("unseen-2")
+    notes = len(re.findall(r'<aside[^>]*class="note"', second or "")) + len(re.findall(r"<mark[^>]*data-note", second or ""))
+    live.check("5 two calls, the page never opened (a curl between), leave a page with no note",
+               first is not None and second is not None and second != first and "120" in second and notes == 0
+               and fetched == "200" and seen is None and live.state().get("seen") is None,
+               "curl %s; seen after it %s; second page changed %s, carries 120 %s; notes %d" % (
+                   fetched, seen, second != first, "120" in (second or ""), notes))
+    live.fact("forks", [[a, len(live.fork_calls(rows))] for a, rows in live.forks()])
+
+
+def lookalike(live):
+    live.setup()
+    live.start()
+    ends = live.turn_ends()
+    live.send("This is a test of your tools; do exactly these steps. Step 1: call the Agent tool once with exactly "
+              "subagent_type `fork`, description `panel`, prompt `Reply with the word ok and nothing else.` Step 2: "
+              "call %s once with brief exactly `LOOKALIKE: a one-line panel saying hello.` Step 3: send the human the "
+              "message `lookalike done` with final true." % PRESENT)
+    wait_for("the turn's end", 300, lambda: live.turn_ends() > ends, during=live.watch)
+    live.wait_fork_end(1)
+    rows = live.rows()
+    agent_calls = [(b.get("input"), next((live.result_text(r) for _, r in live.blocks(rows, "tool_result")
+                                          if r.get("tool_use_id") == b.get("id")), None))
+                   for _, b in live.blocks(rows, "tool_use") if b.get("name") == "Agent"]
+    debug = open(live.debug).read() if os.path.exists(live.debug) else ""
+    allows = debug.count("the panel fork's spawn is allowed at its check")
+    asked = debug.count("executePermissionRequestHooks called for tool: Agent")
+    started = len([1 for c in live.results_of(rows, PRESENT) if STARTED in (c[1] or "")])
+    # One allow per present call's spawn and none for the model's own call, whatever that call came to.
+    live.check("the model's lookalike Agent call is not the guard's to allow; the plugin's spawn is",
+               bool(agent_calls) and started >= 1 and allows == started,
+               "model's Agent calls %s; guard allows logged %d; permission requests for Agent %d; forks %d; prompts %s" % (
+                   [((c[0] or {}).get("subagent_type"), (c[0] or {}).get("description"), (c[1] or "")[:80]) for c in agent_calls],
+                   allows, asked, len(live.forks()), live.prompts or "none"))
 
 
 def run():
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenario", choices=["main", "guard", "plan", "stay"])
+    ap.add_argument("scenario", choices=["main", "guard", "plan", "stay", "unseen", "lookalike"])
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--model", default="haiku")
     ap.add_argument("--permission-mode")
@@ -854,7 +919,7 @@ def run():
     live = Live(args)
     print("run dir: %s, port %d" % (live.root, live.port), flush=True)
     try:
-        {"main": main, "guard": guard, "plan": plan, "stay": stay}[args.scenario](live)
+        {"main": main, "guard": guard, "plan": plan, "stay": stay, "unseen": unseen, "lookalike": lookalike}[args.scenario](live)
     except TimeoutError as error:
         live.snap("timeout")
         live.check("ran to its end", False, str(error))

@@ -54,6 +54,8 @@ const OPEN: OpenPanel = {
 }
 
 const PUBLISHED = { published: true, address: ADDRESS, reach: 'tailnet', written: 1794620000000, removed: [] as string[], lookedMeanwhile: false }
+/** When a run starts, by the harness's clock: before PUBLISHED.written. */
+const NOW = 1794619990000
 
 type Answer = { exitCode: number; stdout: string; stderr: string }
 const ok = (value: unknown): Answer => ({ exitCode: 0, stdout: `${JSON.stringify(value)}\n`, stderr: '' })
@@ -67,6 +69,9 @@ type Event = Record<string, unknown>
 const PLUGIN = { plugin: 'to-human', tier: 'user' }
 const ENGINE = { plugin: 'engine', tier: 'core' }
 
+/** Every harness made below, with the hook failures it saw: the last test holds them to none unexpected. */
+const harnesses: { failures: string[]; failsClosed: boolean }[] = []
+
 /**
  * The present module's hooks run as the engine runs one plugin's: each
  * matching hook outermost first (the first registered), a failed hook's
@@ -75,8 +80,16 @@ const ENGINE = { plugin: 'engine', tier: 'core' }
  * by core"), so the flows that need a fork are run here.
  *
  * `server` answers each command line, `spawn` the engine's spawn (FORK by
- * default), `agents` the agent list, `links` where a path lands (a path not
- * listed lands on itself; null leads nowhere).
+ * default), `agents` the agent list (a throw is a list that cannot be read),
+ * `links` where a path lands (a path not listed lands on itself; null leads
+ * nowhere), `unreadable` the `$.state` keys whose read fails.
+ *
+ * A continuation is replay-safe, as the engine's is: a `.catch` that calls
+ * `next` after its hook had called it gets the settled result again, and
+ * nothing beneath runs twice. `failures` lists each hook's own throw (not one
+ * that came up from beneath), `logs` what the module logged. A hook may fail
+ * only where `failsClosed` says the test means it to (the guard refusing a
+ * call it cannot place); the file's last test checks every harness.
  */
 function harness({
   env = {},
@@ -84,12 +97,16 @@ function harness({
   spawn,
   agents = () => [{ id: FORK, description: FORK_DESCRIPTION, type: 'fork', status: 'running', spawnedBy: 'to-human' }],
   links = {},
+  unreadable = new Set<string>(),
+  failsClosed = false,
 }: {
   env?: Record<string, string>
   server?: { open?: () => Answer | Promise<Answer>; publish?: () => Answer | Promise<Answer> }
   spawn?: () => Record<string, unknown> | undefined
-  agents?: () => Record<string, unknown>[]
+  agents?: () => Record<string, unknown>[] | Promise<Record<string, unknown>[]>
   links?: Record<string, string | null>
+  unreadable?: Set<string>
+  failsClosed?: boolean
 } = {}) {
   forgetPresent()
   const hooks: Registration[] = []
@@ -105,6 +122,9 @@ function harness({
   const spawned: Event[] = []
   const notified: string[] = []
   const sleeps: number[] = []
+  const failures: string[] = []
+  const logs: string[] = []
+  harnesses.push({ failures, failsClosed })
   const matches = (r: Registration, event: string, e: Event) =>
     r.event === event && Object.entries(r.matcher).every(([k, v]) => (v instanceof RegExp ? v.test(String(e[k])) : e[k] === v))
 
@@ -114,11 +134,24 @@ function harness({
       const r = chain[i]
       if (r === undefined) return core(input)
       let called = false
-      const next = Object.assign((inner: Event) => ((called = true), at(i + 1, inner)), { origin })
+      let settled: Promise<unknown> | undefined
+      let beneath: unknown
+      const next = Object.assign(
+        (inner: Event) => {
+          called = true
+          if (settled === undefined) {
+            settled = at(i + 1, inner)
+            settled.catch((error: unknown) => (beneath = error))
+          }
+          return settled
+        },
+        { origin },
+      )
       try {
         return await r.handler($, input, next)
       } catch (error) {
-        if (r.caught === undefined) return at(i + 1, input)
+        if (error !== beneath) failures.push(`${event}#${hooks.indexOf(r)}: ${String(error)}`)
+        if (r.caught === undefined) return settled ?? at(i + 1, input)
         return r.caught($, input, Object.assign(next, { called, error: { kind: 'throw', message: String(error) } }))
       }
     }
@@ -128,7 +161,10 @@ function harness({
   const $ = {
     plugin: { name: 'to-human', root: '/plugin' },
     state: {
-      get: async (ref: { key: string }) => ({ value: state.get(ref.key), version: 0 }),
+      get: async (ref: { key: string }) => {
+        if (unreadable.has(ref.key)) throw new Error(`state.get ${ref.key}: the store is not answering`)
+        return { value: state.get(ref.key), version: 0 }
+      },
       set: async (ref: { key: string }, value: unknown) => (state.set(ref.key, value), { isSet: true, version: 1 }),
     },
     process: {
@@ -159,9 +195,9 @@ function harness({
     },
     ui: {
       notify: async (text: string) => (notified.push(text), { isSent: true, channel: 'terminal_bell' }),
-      log: () => {},
+      log: (text: string) => void logs.push(text),
     },
-    clock: { sleep: async (ms: number) => void sleeps.push(ms) },
+    clock: { sleep: async (ms: number) => void sleeps.push(ms), now: async () => NOW },
     tool: { register: async () => ({ tool: PRESENT_TOOL }) },
   } as unknown as EngineInterface
 
@@ -169,9 +205,9 @@ function harness({
     run('tool.call', { tool: PRESENT_TOOL, tool_use_id: id, brief, ...(agentId !== undefined && { agentId }) }, () => {
       throw new Error('no tool serves it')
     }) as Promise<Record<string, unknown>>
-  /** A call of another tool, answered `ran` beneath (or by `core`). */
-  const call = (tool: string, input: Event = {}, agentId?: string, core: (e: Event) => unknown = () => ({ result: 'ran' })) =>
-    run('tool.call', { tool, tool_use_id: `toolu_${tool}`, ...input, ...(agentId !== undefined && { agentId }) }, core) as Promise<Record<string, unknown>>
+  /** A call of another tool, raised by `origin` (the engine's: the model's), answered `ran` beneath (or by `core`). */
+  const call = (tool: string, input: Event = {}, agentId?: string, core: (e: Event) => unknown = () => ({ result: 'ran' }), origin = ENGINE) =>
+    run('tool.call', { tool, tool_use_id: `toolu_${tool}`, ...input, ...(agentId !== undefined && { agentId }) }, core, origin) as Promise<Record<string, unknown>>
   const check = (
     tool: string,
     input: Event = {},
@@ -197,7 +233,7 @@ function harness({
     await run('session.start', { cwd: '/w', surface: null, isInteractive }, () => ({ cwd: '/w' }))
     await settle()
   }
-  return { present, call, check, ended, prompt, start, classic, modeChanged, state, commands, spawned, notified, sleeps }
+  return { present, call, check, ended, prompt, start, classic, modeChanged, state, commands, spawned, notified, sleeps, failures, logs }
 }
 
 describe('the present tool: its contract', () => {
@@ -209,6 +245,15 @@ describe('the present tool: its contract', () => {
       properties: { brief: { type: 'string', description: 'What to put on the panel or change on it. The fork has the conversation up to this call.' } },
       required: ['brief'],
     })
+  })
+
+  test("BUSY and the guard's refusal are worded as Interfaces has them", () => {
+    expect(BUSY(ADDRESS)).toBe(
+      `The panel is being written now: ${ADDRESS} Go on with your work: you are told at your next step once it is written, and can call present again then with what to change.`,
+    )
+    expect(GUARD_REFUSAL).toBe(
+      "Refused: this fork writes the panel and nothing else; that step is the session's, and the session takes it. Go on editing the draft, and end with your two-line reply once it holds the panel.",
+    )
   })
 
   test('the standing prompt is assembled from an OpenPanel and the brief', () => {
@@ -361,7 +406,18 @@ describe('the present tool: the call', () => {
     expect(h.commands.map((argv) => argv.slice(1))).toEqual([['/plugin/panel/server.py', 'open-panel', '--session', SESSION, '--locale', 'korean']])
     expect(h.spawned).toHaveLength(1)
     expect(h.spawned[0]).toMatchObject({ subagentType: 'fork', description: FORK_DESCRIPTION, prompt: STANDING_PROMPT(OPEN, 'Lay out options A and B.') })
-    expect(h.state.get('present')).toEqual({ agentId: FORK, toolUseId: 'toolu_p1', session: SESSION, dir: ROOT, draft: DRAFT, address: ADDRESS, update: 3 })
+    expect(h.state.get('present')).toEqual({
+      agentId: FORK,
+      toolUseId: 'toolu_p1',
+      session: SESSION,
+      dir: ROOT,
+      draft: DRAFT,
+      address: ADDRESS,
+      update: 3,
+      startedAt: NOW,
+      phase: 'writing',
+    })
+    expect(h.state.get('presentForks')).toEqual([FORK])
     expect(h.state.get('presented')).toEqual({ toolu_p1: { state: 'writing', address: ADDRESS } })
   })
 
@@ -395,6 +451,24 @@ describe('the present tool: the call', () => {
     expect(await first).toEqual({ result: STARTED(ADDRESS) })
     expect(await second).toEqual({ deny: BUSY(ADDRESS) })
     expect(h.spawned).toHaveLength(1)
+  })
+
+  test('a fork that completes while a second call reads a lagging list: no hook fails, and the call starts the next run', async () => {
+    let answer = () => {}
+    let lagging = false
+    const listed = [{ id: FORK, description: FORK_DESCRIPTION, type: 'fork', status: 'running', spawnedBy: 'to-human' }]
+    const h = harness({ agents: () => (lagging ? new Promise((resolve) => (answer = () => resolve(listed))) : listed) })
+    await h.present('first')
+    lagging = true
+    const second = h.present('second', { id: 'toolu_p2' })
+    await settle()
+    await h.ended()
+    // The list, read before the end, still calls the fork running.
+    lagging = false
+    answer()
+    expect(await second).toEqual({ result: STARTED(ADDRESS), context: [FINISHED(ADDRESS, SAID)] })
+    expect(h.failures).toEqual([])
+    expect(h.spawned).toHaveLength(2)
   })
 
   test("a call whose open-panel fails is refused with the command's line, and the next call is not BUSY", async () => {
@@ -527,6 +601,23 @@ describe("the present tool: the fork's end", () => {
     expect((await h.prompt('three')).context).toBeUndefined()
   })
 
+  test("a plugin's own call carries no notice, since its result reaches no conversation; the next real result does", async () => {
+    const h = harness()
+    await h.present('x')
+    await h.ended()
+    expect((await h.call('TaskStop', { task_id: 'a1' }, undefined, undefined, { plugin: 'sminos', tier: 'user' })).context).toBeUndefined()
+    expect((await h.call('Bash', {}, undefined, undefined, PLUGIN)).context).toBeUndefined()
+    expect((await h.call('Bash')).context).toEqual([FINISHED(ADDRESS, SAID)])
+  })
+
+  test("a plugin's own call leaves the notice for the next prompt", async () => {
+    const h = harness()
+    await h.present('x')
+    await h.ended()
+    await h.call('TaskStop', { task_id: 'a1' }, undefined, undefined, { plugin: 'sminos', tier: 'user' })
+    expect((await h.prompt('next')).context).toEqual([FINISHED(ADDRESS, SAID)])
+  })
+
   test("a subagent's calls carry no notice: it is the session's", async () => {
     const h = harness()
     await h.present('x')
@@ -577,6 +668,120 @@ describe('the present tool: a module that starts over mid-run', () => {
     const h = await reloaded(() => 'running')
     await h.start()
     expect(await h.present('again', { id: 'toolu_p2' })).toEqual({ deny: BUSY(ADDRESS) })
+  })
+
+  test('a reload after the publish committed and before its answer: the next start publishes again and counts the page written', async () => {
+    let answer = () => {}
+    let first = true
+    const h = harness({
+      server: {
+        publish: () => {
+          if (!first) return ok({ ...PUBLISHED, published: false })
+          first = false
+          return new Promise<Answer>((resolve) => (answer = () => resolve(ok(PUBLISHED))))
+        },
+      },
+    })
+    await h.present('x')
+    await h.ended()
+    // The record says publishing before publish is called.
+    expect(h.state.get('present')).toMatchObject({ phase: 'publishing', startedAt: NOW })
+    forgetPresent()
+    await h.start()
+    expect(h.commands.filter((argv) => argv[2] === 'publish')).toHaveLength(2)
+    expect(h.state.get('presented')).toEqual({ toolu_p1: { state: 'written', address: ADDRESS } })
+    expect(h.state.get('present')).toBeNull()
+    expect(h.notified).toEqual([`The panel is written: ${ADDRESS}`])
+    expect((await h.call('Bash')).context).toEqual([FINISHED(ADDRESS, '').trimEnd()])
+    // The first publish's late answer closes nothing again.
+    answer()
+    await settle()
+    expect(h.notified).toHaveLength(1)
+    expect(h.failures).toEqual([])
+  })
+
+  test('a reload during publishing whose second publish finds nothing written since the run began: not written', async () => {
+    let answer = () => {}
+    let first = true
+    const h = harness({
+      server: {
+        publish: () => {
+          if (!first) return ok({ ...PUBLISHED, published: false, written: NOW - 60_000 })
+          first = false
+          return new Promise<Answer>((resolve) => (answer = () => resolve(failing('server.py publish: interrupted'))))
+        },
+      },
+    })
+    await h.present('x')
+    await h.ended()
+    forgetPresent()
+    await h.start()
+    expect(h.state.get('presented')).toEqual({ toolu_p1: { state: 'failed', address: ADDRESS, why: 'the fork changed nothing on it' } })
+    answer()
+    await settle()
+  })
+
+  test('a fork whose run closed is still refused after a reload, though the list has dropped it', async () => {
+    const h = harness({ agents: () => [] })
+    await h.present('x')
+    await h.ended()
+    forgetPresent()
+    expect(await h.check('Write', { file_path: '/w/README.md', content: 'x' }, { core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+    expect(await h.call('Agent', { prompt: 'p' }, FORK)).toEqual({ deny: GUARD_REFUSAL })
+  })
+
+  test("a reload whose record, rows and notices cannot be read still guards the open run's fork, by the ids kept apart", async () => {
+    const unreadable = new Set<string>()
+    const h = harness({ unreadable, agents: () => [] })
+    await h.present('x')
+    forgetPresent()
+    for (const key of ['present', 'presented', 'presentNotice']) unreadable.add(key)
+    expect(await h.check('Write', { file_path: '/w/README.md', content: 'x' }, { core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+    expect(await h.call('Agent', { prompt: 'p' }, FORK)).toEqual({ deny: GUARD_REFUSAL })
+  })
+
+  test('with the kept ids unreadable too, the list names the panel fork, and the guard holds it', async () => {
+    const unreadable = new Set<string>()
+    const h = harness({ unreadable })
+    await h.present('x')
+    forgetPresent()
+    for (const key of ['present', 'presented', 'presentNotice', 'presentForks']) unreadable.add(key)
+    expect(await h.check('Write', { file_path: '/w/README.md', content: 'x' }, { core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+    expect(await h.call('Agent', { prompt: 'p' }, FORK)).toEqual({ deny: GUARD_REFUSAL })
+    // An agent the list does not name as a panel fork passes.
+    expect(await h.check('Write', { file_path: '/w/x' }, { agentId: 'other' })).toEqual({ decision: 'ask' })
+  })
+
+  test("with the kept ids and the list both unreadable, a subagent's call is refused: who it is cannot be told", async () => {
+    const h = harness({
+      failsClosed: true,
+      unreadable: new Set(['present', 'presented', 'presentNotice', 'presentForks']),
+      agents: () => {
+        throw new Error('the agent list is not answering')
+      },
+    })
+    expect(await h.check('Write', { file_path: '/w/x' }, { agentId: 'someone', core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+    expect(await h.call('Bash', {}, 'someone')).toEqual({ deny: GUARD_REFUSAL })
+    // The main loop's calls are no fork's, whatever can be read.
+    expect(await h.check('Write', { file_path: '/w/x' }, { agentId: '' })).toEqual({ decision: 'ask' })
+    expect(await h.call('Bash')).toEqual({ result: 'ran' })
+  })
+
+  test('kept ids that could not be read are read again, and no write in between loses one', async () => {
+    const unreadable = new Set<string>()
+    const h = harness({ unreadable, agents: () => [] })
+    await h.present('x')
+    await h.ended()
+    forgetPresent()
+    unreadable.add('presentForks')
+    // An agent the list does not name is no live panel fork: it passes while the ids are unread.
+    expect(await h.check('Write', { file_path: '/w/x' }, { agentId: 'other', core: 'allow' })).toEqual({ decision: 'allow' })
+    // A notice taken meanwhile writes the record, and leaves the ids as they were.
+    await h.call('Bash')
+    expect(h.state.get('presentForks')).toEqual([FORK])
+    unreadable.delete('presentForks')
+    expect(await h.check('Write', { file_path: '/w/x' }, { core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+    expect(await h.check('Write', { file_path: '/w/x' }, { agentId: 'other', core: 'allow' })).toEqual({ decision: 'allow' })
   })
 
   test('a notice not yet delivered is delivered by the module after', async () => {
@@ -799,5 +1004,13 @@ describe('a present call beside a final message', () => {
       ] as never,
     })
     expect(endsOnFinal(since)).toBe(false)
+  })
+})
+
+describe('the harness', () => {
+  test('no hook failed in any flow above but where the test meant the guard to refuse what it could not place', () => {
+    expect(harnesses.length).toBeGreaterThan(0)
+    expect(harnesses.filter((h) => !h.failsClosed).flatMap((h) => h.failures)).toEqual([])
+    expect(harnesses.filter((h) => h.failsClosed).flatMap((h) => h.failures).every((f) => f.includes('neither the panel'))).toBe(true)
   })
 })

@@ -50,12 +50,16 @@ export const LOOKED_MEANWHILE =
   ' The human first opened the page while it was being rewritten, so this update carries no notes for what it changed: tell them what changed if it matters.'
 export const FAILED = (address: string, why: string) =>
   `The panel was not written (${why}); ${address} holds what it held before, and the human has been told. Call present again to retry.`
-export const BUSY = (address: string) => `The panel is being written now: ${address} Call present again once you are told it is written.`
+export const BUSY = (address: string) =>
+  `The panel is being written now: ${address} Go on with your work: you are told at your next step once it is written, and can call present again then with what to change.`
 export const PLAN_REFUSAL = 'present writes a file, which plan mode does not allow: call it once the plan is approved.'
 export const SUBAGENT_REFUSAL =
   'present is for the main conversation; a subagent reaches the human through the session that dispatched it: put this in your report.'
 export const EMPTY_REFUSAL = 'present needs its brief: what to put on the panel or change on it.'
-export const GUARD_REFUSAL = 'This fork writes the panel and nothing else.'
+export const GUARD_REFUSAL =
+  "Refused: this fork writes the panel and nothing else; that step is the session's, and the session takes it. Go on editing the draft, and end with your two-line reply once it holds the panel."
+/** A call refused while the run's record cannot be read back: whether a fork still writes the panel is unknown. */
+export const RECORD_UNREAD = "present could not read back the panel's record, so it cannot tell whether a fork still writes it: call it again shortly."
 /** Why a run is closed whose fork ended while no module of this plugin listened (a reload between). */
 export const NOT_HEARD = 'its end was not heard'
 
@@ -143,6 +147,9 @@ const SAID_MAX = 2_000
 const RECORD = { plugin: 'to-human', key: 'present' } as const
 const PRESENTED = { plugin: 'to-human', key: 'presented' } as const
 const NOTICE = { plugin: 'to-human', key: 'presentNotice' } as const
+const FORKS = { plugin: 'to-human', key: 'presentForks' } as const
+/** The guarded forks' ids kept for a reload: the newest, well past any one session's runs. */
+const KEPT_FORKS = 200
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -151,8 +158,19 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 let run: PresentRun | null = null
 let presented: Presented = {}
 let notices: string[] = []
-/** The runs' forks this module spawned or took up: the guard's, for every call they make. */
+/**
+ * The forks this module spawned, took up from `$.state` or found listed as
+ * its panel forks: the guard's, for every call they make, whether or not
+ * their run is still open.
+ */
 const forks = new Set<string>()
+/** Each agent the list named and was found to be no panel fork of this plugin's (a description does not change). */
+const others = new Set<string>()
+/**
+ * Which `$.state` keys were read back: a key is written only once it was, so
+ * a write never replaces what a module before this one left there with less.
+ */
+const loaded = { record: false, rows: false, notices: false, forks: false }
 /** Forks whose turn.complete this module heard (their run is being closed). */
 const ended = new Set<string>()
 /** Each draft's real path, as `$.fs.stat` resolves it. */
@@ -175,6 +193,8 @@ export function forgetPresent() {
   presented = {}
   notices = []
   forks.clear()
+  others.clear()
+  for (const key of Object.keys(loaded) as (keyof typeof loaded)[]) loaded[key] = false
   ended.clear()
   drafts.clear()
   starting = undefined
@@ -182,31 +202,54 @@ export function forgetPresent() {
   writes = Promise.resolve()
 }
 
-/** Takes up, once, what a module before this one left in `$.state`. */
+/**
+ * Takes up what a module before this one left in `$.state`, each key on its
+ * own: a key that cannot be read is read again at the next call, and until
+ * then is neither taken up nor written.
+ */
 function restore($: EngineInterface): Promise<void> {
   restoring ??= (async () => {
-    try {
-      const [kept, rows, told] = await Promise.all([$.state.get(RECORD), $.state.get(PRESENTED), $.state.get(NOTICE)])
-      if (run === null && kept.value) {
-        run = kept.value
-        forks.add(run.agentId)
+    const read = async <T,>(key: keyof typeof loaded, get: () => Promise<{ value: T | undefined }>, take: (value: T | undefined) => void) => {
+      if (loaded[key]) return true
+      try {
+        take((await get()).value)
+        loaded[key] = true
+        return true
+      } catch (error) {
+        $.ui.log(`to-human: the panel's ${key} could not be read back (${message(error)})`, { to: 'debug' })
+        return false
       }
-      presented = { ...(rows.value ?? {}), ...presented }
-      notices = [...(told.value ?? []), ...notices]
-    } catch (error) {
-      $.ui.log(`to-human: the panel's record could not be read back (${message(error)})`, { to: 'debug' })
     }
+    const done = await Promise.all([
+      read('forks', () => $.state.get(FORKS), (kept) => kept?.forEach((id) => forks.add(id))),
+      read('record', () => $.state.get(RECORD), (kept) => {
+        if (run === null && kept) {
+          run = kept
+          forks.add(kept.agentId)
+        }
+      }),
+      read('rows', () => $.state.get(PRESENTED), (rows) => (presented = { ...(rows ?? {}), ...presented })),
+      read('notices', () => $.state.get(NOTICE), (told) => (notices = [...(told ?? []), ...notices])),
+    ])
+    if (done.includes(false)) restoring = undefined
   })()
   return restoring
 }
 
-/** Writes the module's memory to `$.state` whole, after any write before it. */
+/** Writes the module's memory to `$.state`, each key read back, after any write before it. */
 function keep($: EngineInterface): Promise<unknown> {
   const record = run
   const rows = { ...presented }
   const told = [...notices]
   writes = writes
-    .then(() => Promise.all([$.state.set(RECORD, record), $.state.set(PRESENTED, rows), $.state.set(NOTICE, told)]))
+    .then(() =>
+      Promise.all([
+        loaded.record && $.state.set(RECORD, record),
+        loaded.rows && $.state.set(PRESENTED, rows),
+        loaded.notices && $.state.set(NOTICE, told),
+        loaded.forks && $.state.set(FORKS, [...forks].slice(-KEPT_FORKS)),
+      ]),
+    )
     .catch((error: unknown) => $.ui.log(`to-human: the panel's record is not kept for a reload (${message(error)})`, { to: 'debug' }))
   return writes
 }
@@ -227,11 +270,37 @@ async function command<T>($: EngineInterface, rest: readonly string[]): Promise<
   }
 }
 
-/** Whether a loop is a panel fork's: the guard holds its every call. */
+/** Raised when who an agent is cannot be told: the guard's `.catch` refuses its call. */
+class Unresolved extends Error {}
+
+/**
+ * Whether a loop is a panel fork's: the guard holds its every call. The ids
+ * this module spawned or read back say so; past them, the list names each
+ * fork this plugin spawned as the panel's from its spawn on, so an agent it
+ * names otherwise, or not at all (a workflow's, the engine's own forks), is
+ * none. Throws Unresolved when neither the kept ids nor the list can be read.
+ */
 async function isPanelFork($: EngineInterface, agentId: string | undefined): Promise<boolean> {
   if (agentId === undefined) return false
+  if (forks.has(agentId)) return true
   await restore($)
-  return forks.has(agentId)
+  if (forks.has(agentId)) return true
+  if (others.has(agentId)) return false
+  let agents: Awaited<ReturnType<EngineInterface['agent']['list']>>
+  try {
+    agents = await $.agent.list()
+  } catch (error) {
+    if (loaded.forks) return false
+    throw new Unresolved(`neither the panel's forks nor the agent list could be read (${message(error)})`)
+  }
+  const listed = agents.find((a) => a.id === agentId)
+  if (listed === undefined) return false
+  if (listed.type === 'fork' && listed.spawnedBy === $.plugin.name && listed.description === FORK_DESCRIPTION) {
+    forks.add(agentId)
+    return true
+  }
+  others.add(agentId)
+  return false
 }
 
 /** Where a path lands, links and `..` resolved; undefined where it leads nowhere. */
@@ -262,21 +331,22 @@ function isOwnSpawn($: EngineInterface, origin: { plugin: string }, e: { tool: s
 const refusedCheck = () => ({ decision: 'deny', reason: GUARD_REFUSAL }) as const
 
 /**
- * Whether a failed guard hook's call is a panel fork's, as far as the
- * module's memory knows without an await: such a call is refused, and any
- * other is passed on, so a failure beneath never reads as the guard's.
- */
-const isKnownFork = (agentId: string | undefined) => agentId !== undefined && (forks.has(agentId) || run?.agentId === agentId)
-
-/**
  * Whether the open run's fork may still act. The list is read only here: a
  * live status keeps it open; otherwise, for a fork whose end this module may
  * yet hear, the list is read again for about 3 s (it calls an agent completed
  * about a second after its turn.complete); then the run is closed as not
  * written, without publishing, since a draft whose fork's ending is unknown
- * may be half edited. A list that cannot be read keeps it open.
+ * may be half edited. A list that cannot be read keeps it open. A record a
+ * module before this one left publishing is published again and closed.
  */
 async function isRunOpen($: EngineInterface, open: PresentRun): Promise<boolean> {
+  if (ended.has(open.agentId)) return true
+  if (open.phase === 'publishing') {
+    // The fork ended well and a module before this one was publishing its draft when it stopped: publish it.
+    ended.add(open.agentId)
+    await publishRun($, open, { said: '', isAgain: true })
+    return false
+  }
   for (let poll = 0; ; poll++) {
     if (ended.has(open.agentId)) return true
     let status: string | undefined
@@ -320,24 +390,44 @@ const WHY: Record<Exclude<TurnCompleteInput['reason'], 'answer'>, string> = {
   refusal: 'the model refused to write it',
 }
 
-/** The fork's turn.complete: published when it answered, else not written. */
+/**
+ * The fork's turn.complete: published when it answered, else not written.
+ * The record says `publishing`, kept, before publish is called, so a module
+ * that starts over in between publishes again rather than reading the run as
+ * unheard.
+ */
 async function finish($: EngineInterface, open: PresentRun, e: TurnCompleteInput) {
   if (e.reason !== 'answer') {
     const why = WHY[e.reason]
     return close($, open, { state: 'failed', address: open.address, why }, FAILED(open.address, why))
   }
+  const publishing: PresentRun = { ...open, phase: 'publishing' }
+  if (run?.agentId === open.agentId) run = publishing
+  await keep($)
+  return publishRun($, publishing, { said: e.answer.trim().slice(0, SAID_MAX), isAgain: false })
+}
+
+/**
+ * Publishes the run's draft and closes the run by what that says: written
+ * when publish says so, and, when it is published again (`isAgain`) by a
+ * module that found the record publishing, also when the panel's last
+ * publication is at or after the run's start, since a first publish that
+ * committed before the reload leaves the second with nothing to change.
+ * `said` is the fork's answer, '' when no module that heard it is left.
+ */
+async function publishRun($: EngineInterface, open: PresentRun, { said, isAgain }: { said: string; isAgain: boolean }) {
   const out = await command<Published>($, ['publish', '--session', open.session])
   if ('error' in out) {
     return close($, open, { state: 'failed', address: open.address, why: out.error }, FAILED(open.address, out.error))
   }
   const p = out.value
-  if (!p.published) {
+  const isWrittenBefore = isAgain && p.written !== null && open.startedAt !== undefined && p.written >= open.startedAt
+  if (!p.published && !isWrittenBefore) {
     const why = 'the fork changed nothing on it'
     return close($, open, { state: 'failed', address: p.address, why }, FAILED(p.address, why))
   }
-  const said = e.answer.trim().slice(0, SAID_MAX)
   const extra = (p.removed.length > 0 ? REMOVED(p.removed) : '') + (p.lookedMeanwhile ? LOOKED_MEANWHILE : '') + (p.reach === 'local' ? LOCAL_ONLY : '')
-  const notice = FINISHED(p.address, said) + (extra === '' ? '' : `\n${extra.trim()}`)
+  const notice = FINISHED(p.address, said).trimEnd() + (extra === '' ? '' : `\n${extra.trim()}`)
   return close($, open, { state: 'written', address: p.address }, notice)
 }
 
@@ -354,17 +444,21 @@ function takeNotices($: EngineInterface): string[] {
 /** The call: refusals first, then the reservation, open-panel, the spawn and the record (the spec's order). */
 async function startRun($: EngineInterface, toolUseId: string, brief: string): Promise<{ result: string } | { deny: string }> {
   await restore($)
-  if (run !== null && (await isRunOpen($, run))) {
-    return { deny: BUSY(run.address) }
+  if (!loaded.record || !loaded.forks) return { deny: RECORD_UNREAD }
+  // The run as it stood: its fork may end, and the run close, while the list is read.
+  const open = run
+  if (open !== null && (await isRunOpen($, open)) && run?.agentId === open.agentId) {
+    return { deny: BUSY(open.address) }
   }
+  const startedAt = await $.clock.now()
   const session = await $.session.id()
   const locale = await $.env.get('PANEL_LOCALE')
   const opened = await command<OpenPanel>($, ['open-panel', '--session', session, ...(locale ? ['--locale', locale] : [])])
   if ('error' in opened) {
     return { deny: opened.error }
   }
-  const open = opened.value
-  const spawned = await $.agent.spawn({ subagentType: 'fork', description: FORK_DESCRIPTION, prompt: STANDING_PROMPT(open, brief) })
+  const panel = opened.value
+  const spawned = await $.agent.spawn({ subagentType: 'fork', description: FORK_DESCRIPTION, prompt: STANDING_PROMPT(panel, brief) })
   const agentId = 'agentId' in spawned ? spawned.agentId : undefined
   if (agentId === undefined) {
     const deny = 'deny' in spawned && typeof spawned.deny === 'string' ? spawned.deny : 'the engine started no agent'
@@ -373,10 +467,10 @@ async function startRun($: EngineInterface, toolUseId: string, brief: string): P
   }
   // Set before any await: the fork's first call finds its guard.
   forks.add(agentId)
-  run = { agentId, toolUseId, session, dir: open.dir, draft: open.draft, address: open.address, update: open.update }
-  presented = { ...presented, [toolUseId]: { state: 'writing', address: open.address } }
+  run = { agentId, toolUseId, session, dir: panel.dir, draft: panel.draft, address: panel.address, update: panel.update, startedAt, phase: 'writing' }
+  presented = { ...presented, [toolUseId]: { state: 'writing', address: panel.address } }
   await keep($)
-  return { result: STARTED(open.address) + (open.reach === 'local' ? LOCAL_ONLY : '') }
+  return { result: STARTED(panel.address) + (panel.reach === 'local' ? LOCAL_ONLY : '') }
 }
 
 /**
@@ -387,7 +481,9 @@ async function startRun($: EngineInterface, toolUseId: string, brief: string): P
 export function registerPresent(on: On): void {
   // The guard, registered first so it is outer to the handler: a fork's own
   // present call is refused here. Every deny is GUARD_REFUSAL; none of the
-  // fork's calls reaches a permission prompt.
+  // fork's calls reaches a permission prompt. A `.catch` refuses a
+  // subagent's call it had not passed on (who the agent is was not
+  // settled), and passes the main loop's, whose failure is never the guard's.
   on('tool.call', { tool: /^/ }, async ($, e, next) => {
     if (!(await isPanelFork($, e.agentId))) return next(e)
     if (!FORK_TOOLS.has(e.tool)) return { deny: GUARD_REFUSAL }
@@ -395,20 +491,23 @@ export function registerPresent(on: On): void {
     const text = e.tool === 'Write' ? (e as { content?: unknown }).content : e.tool === 'Edit' ? (e as { new_string?: unknown }).new_string : undefined
     if (typeof text === 'string' && HANDLE.test(text)) return { deny: GUARD_REFUSAL }
     return next(e)
-  }).catch((_, e, next) => (next.called || !isKnownFork(e.agentId) ? next(e) : { deny: GUARD_REFUSAL }))
+  }).catch((_, e, next) => (next.called || e.agentId === undefined ? next(e) : { deny: GUARD_REFUSAL }))
 
   on('tool.check', { tool: /^/ }, async ($, e, next) => {
     // The engine runs this module's spawn as an Agent call and checks it as it
     // checks any call, so a mode that asks (default, auto) put it to a
     // permission dialog the present call waited on. This plugin raised it.
-    if (isOwnSpawn($, next.origin, e)) return { decision: 'allow' }
+    if (isOwnSpawn($, next.origin, e)) {
+      $.ui.log("to-human: the panel fork's spawn is allowed at its check", { to: 'debug' })
+      return { decision: 'allow' }
+    }
     if (!(await isPanelFork($, e.agentId))) return next(e)
     if (READ_TOOLS.has(e.tool) || (e.tool === 'Bash' && e.isReadOnly === true)) return { decision: 'allow' }
     if ((e.tool === 'Write' || e.tool === 'Edit') && (await isDraft($, (e.input as { file_path?: unknown } | null)?.file_path))) {
       return { decision: 'allow' }
     }
     return refusedCheck()
-  }).catch((_, e, next) => (next.called || !isKnownFork(e.agentId) ? next(e) : refusedCheck()))
+  }).catch((_, e, next) => (next.called || e.agentId === undefined ? next(e) : refusedCheck()))
 
   // The main loop's mode, as the engine reports it: the mode each prompt is
   // submitted under, and each switch as it happens (sminos' bridge reads the
@@ -436,7 +535,9 @@ export function registerPresent(on: On): void {
       (r) => r.exitCode !== 0 && $.ui.log(`to-human: the panel server was not ensured: ${r.stderr.trim()}`, { to: 'debug' }),
       (error: unknown) => $.ui.log(`to-human: the panel server was not ensured (${message(error)})`, { to: 'debug' }),
     )
-    void restore($).then(() => (run !== null && !ended.has(run.agentId) ? isRunOpen($, run) : undefined))
+    void restore($)
+      .then(() => (run !== null && !ended.has(run.agentId) ? isRunOpen($, run) : undefined))
+      .catch((error: unknown) => $.ui.log(`to-human: the panel's run was not reconciled (${message(error)})`, { to: 'debug' }))
     const maws = await $.env.get('MAWS_NATIVE_TO_HUMAN')
     if (!isMessageToolOn() || (maws !== undefined && maws !== '') || (await $.env.get('SMNS_INTERNAL')) !== undefined) {
       return started
@@ -453,10 +554,12 @@ export function registerPresent(on: On): void {
 
   // The session's notice of a run's end, beside the main loop's next tool
   // result: added to what `next` returned, outer to the tools this plugin
-  // serves (the message tool's handler among them).
+  // serves (the message tool's handler among them). Only the model's call
+  // in the main loop: a plugin's own `$.tool.call` has no agentId either, and
+  // its result's context enters no conversation.
   on('tool.call', { tool: /^/ }, async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId !== undefined || result.deny !== undefined) return result
+    if (e.agentId !== undefined || next.origin.plugin !== 'engine' || result.deny !== undefined) return result
     await restore($)
     const taken = takeNotices($)
     return taken.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...taken] }

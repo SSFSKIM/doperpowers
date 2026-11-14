@@ -43,7 +43,10 @@ export type OpenFoldLast = string | null
  * key `present`: the open run of the present tool (hooks/mods/present.tsx),
  * or null when none is open: its fork, the call that started it, and the
  * panel it writes. Kept so a module that starts over mid-run still guards the
- * fork and still hears its end.
+ * fork and still hears its end. `startedAt` is when the call started it (ms
+ * since the epoch, the server's `written` clock); `phase` is `publishing`
+ * from the fork's good end until the run closes, so a module that starts over
+ * then publishes again.
  */
 export type PresentRun = {
   agentId: string
@@ -53,6 +56,8 @@ export type PresentRun = {
   draft: string
   address: string
   update: number
+  startedAt: number
+  phase: 'writing' | 'publishing'
 }
 /** One present call's state, as its row in the report reads it. */
 export type PresentedRow =
@@ -62,6 +67,8 @@ export type PresentedRow =
 export type Presented = Record<string, PresentedRow>
 /** key `presentNotice`: what the session is still to be told of runs that ended (FINISHED, FAILED). */
 export type PresentNotice = string[]
+/** key `presentForks`: the ids of the forks the present tool spawned, open run or not, which its guard holds. */
+export type PresentForks = string[]
 
 declare module 'claude-code' {
   interface PluginState {
@@ -72,6 +79,7 @@ declare module 'claude-code' {
       present: PresentRun | null
       presented: Presented
       presentNotice: PresentNotice
+      presentForks: PresentForks
     }
   }
 }
