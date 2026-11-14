@@ -104,6 +104,35 @@ class Rebuild(unittest.TestCase):
         self.assertEqual(req['messages'][1]['content'][1]['input'], {'command': 'ls'})
         self.assertEqual(req['messages'][2], self.expected[2])
 
+    def test_results_sent_in_another_order_than_the_calls_are_matched(self):
+        # Parallel calls' results go on the wire as they arrived, not in the
+        # calls' order.
+        flipped = {'role': 'user', 'content': self.expected[2]['content'][::-1]}
+        rows = [request('B', 'A', 1, [self.expected[1], flipped, self.expected[3]]) if r.get('id') == 'B' else r for r in self.rows]
+        rows = [request('C', 'B', 4, [self.expected[4], self.expected[5]]) if r.get('id') == 'C' else r for r in rows]
+        req, approx = wire_replay.rebuild(transcript(rows), 'C')
+        self.assertEqual((approx, req['messages'][2]), (0, flipped))
+
+    def test_a_skill_result_carries_the_skill_body_that_follows_it(self):
+        # The engine sends a Skill call's result and the skill's body (a meta
+        # row of its own in the transcript) as one message.
+        prompt = {'role': 'user', 'content': [{'type': 'text', 'text': 'Design it.'}]}
+        call = {'type': 'tool_use', 'id': 'toolu_9', 'name': 'Skill', 'input': {'skill': 'brainstorming'}}
+        result = [{'type': 'tool_result', 'tool_use_id': 'toolu_9', 'content': 'Launching skill: brainstorming'}]
+        body = [{'type': 'text', 'text': 'Base directory for this skill: /s\n\n# Brainstorming'}]
+        sent = {'role': 'user', 'content': result + body}
+        rows = [
+            {'type': 'api-request-shape', 'shapeHash': '5' * 64, 'shape': SHAPE},
+            user('Design it.'),
+            request('A', None, 0, [prompt]),
+            assistant('A', 'msg_1', 0, call),
+            user(result),
+            dict(user(body), isMeta=True),
+            request('B', 'A', 1, [{'role': 'assistant', 'content': [call]}, sent]),
+        ]
+        req, approx = wire_replay.rebuild(transcript(rows), 'B')
+        self.assertEqual((approx, req['messages'][2]), (0, sent))
+
     def test_a_kept_prefix_needs_nothing_past_it(self):
         # D keeps C's first message only (as after a rewind): the style's blob,
         # past that prefix, is not needed, so its absence is no error.
@@ -176,6 +205,24 @@ class RunOnce(unittest.TestCase):
         got, sent = self.run_with([[{'id': 't%d' % i, 'name': 'Read', 'input': {}}] for i in range(2)], max_steps=2)
         self.assertEqual((got['present'], got['undecided'], len(sent)), (False, True, 2))
 
+    def test_a_plan_spent_by_another_worker_stops_the_run_before_its_next_request(self):
+        sent = []
+
+        def fake_send(client, req):
+            sent.append(1)
+            ev.SPENT.set()  # another worker's request was refused meanwhile
+            b = {'type': 'tool_use', 'id': 't1', 'name': 'Bash', 'input': {}}
+            return {'stop': 'tool_use', 'blocks': [b], 'raw': [b], 'usage': {}}
+
+        real, ev.send = ev.send, fake_send
+        try:
+            with self.assertRaises(ev.PlanSpent):
+                ev.run_once(None, {'messages': []}, 4)
+        finally:
+            ev.send = real
+            ev.SPENT.clear()
+        self.assertEqual(len(sent), 1)
+
     def test_a_message_ends_the_run(self):
         got, sent = self.run_with([[{'id': 't1', 'name': ev.MESSAGE_TOOL, 'input': {'text': 'x'}}], []])
         self.assertEqual((got['message'], got['present'], got['undecided'], len(sent)), (True, False, False, 1))
@@ -192,13 +239,38 @@ class Turn(unittest.TestCase):
         saved = ev.run_once, ev.wire_replay.rebuild, ev.apply_arm
         ev.run_once, ev.wire_replay.rebuild, ev.apply_arm = spent, (lambda path, rid: ({'model': 'm', 'tools': []}, 0)), (lambda *a: (1, 1))
         try:
-            out = ev.run_turn(None, ev.TURNS[0], 'rule', 's', 'l', 3, False)
+            out = ev.run_turn(None, ev.TURNS[0], 'rule', 's', 'l', [0, 1, 2], False)
         finally:
             ev.run_once, ev.wire_replay.rebuild, ev.apply_arm = saved
         self.assertTrue(ev.SPENT.is_set())
         ev.SPENT.clear()
         self.assertEqual((len(calls), len(out), 'skipped' in out[0], 'rep' in out[0]), (1, 1, True, False))
         self.assertEqual(ev.tally(out), {})
+
+    def test_after_a_spent_plan_a_resume_runs_only_the_repetitions_not_yet_run(self):
+        ran = []
+
+        def once(client, req, max_steps):
+            ran.append(1)
+            if len(ran) == 2:
+                raise RuntimeError('Error code: 429 - This account is out of plan usage until 2026-11-14T15:00:00Z.')
+            return {'steps': [{}], 'reached_at': 1, 'present': False, 'message': True, 'undecided': False, 'others': []}
+
+        turn = ev.TURNS[0]
+        saved = ev.run_once, ev.wire_replay.rebuild, ev.apply_arm
+        ev.run_once, ev.wire_replay.rebuild, ev.apply_arm = once, (lambda path, rid: ({'model': 'm', 'tools': []}, 0)), (lambda *a: (1, 1))
+        try:
+            first = ev.run_turn(None, turn, 'rule', 's', 'l', [0, 1, 2], False)
+            self.assertTrue(ev.SPENT.is_set())
+            ev.SPENT.clear()  # the plan is renewed; a new process resumes
+            todo = ev.pending(first, [turn], ['rule'], 3)
+            self.assertEqual(todo, {(turn[0], 'rule'): [1, 2]})
+            second = ev.run_turn(None, turn, 'rule', 's', 'l', todo[(turn[0], 'rule')], False)
+        finally:
+            ev.run_once, ev.wire_replay.rebuild, ev.apply_arm = saved
+            ev.SPENT.clear()
+        self.assertEqual([x['rep'] for x in first + second if 'rep' in x], [0, 1, 2])
+        self.assertEqual(ev.pending(first + second, [turn], ['rule'], 3), {})
 
     def test_the_tally_counts_where_each_run_reached_the_human(self):
         runs = [dict(turn='w1', arm='a', **{'class': 'warranted'}, rep=i, present=p, undecided=u, reached_at=at)

@@ -5,7 +5,8 @@ model calls, so nothing runs it automatically.
 
 Each turn is a real point in the owner's transcripts where a session wrote
 to its human (a response that called the message tool). The request that
-produced that response is rebuilt exactly as it was sent (`wire_replay.py`:
+produced that response is rebuilt as it was sent (`wire_replay.py`, exact
+where `approx` is 0:
 system, tools, messages, model, effort, thinking), then changed in three
 places: the output style in it is replaced by the arm's style; the arm's
 CLAUDE.md line is put at the end of the Reporting section of every copy of
@@ -27,13 +28,17 @@ command tool anyway (3 of 3 runs, the name taken from the conversation), so
 the replay keeps every tool and answers such a call instead. A run still
 checking at its last step reached no one and is counted apart (`undecided`).
 
-Ten turns warrant a panel by the rule's own terms (a decision put to the
-human with its options, a design presented for approval, a third or later
-revision of the same findings in one session) and ten are routine (a merge,
-a green run, a problem met and resolved, a short answer); `TURNS` gives each
-with why it is in its class. The bar (the design's acceptance 15): of 30
-runs over the routine turns at most 3 call the tool, and of 30 over the
-warranted turns at least 21.
+The turns are in three classes; `TURNS` gives each with why it is in its
+class. Seven warrant a panel by the rule's own terms (a decision the ask
+dialog cannot carry, a design presented for approval, a third or later
+revision of the same findings in one session); twelve stay text (ten
+routine: a merge, a green run, a problem met and resolved, a short answer;
+and two decisions the dialog carries); one, w2, is borderline, run and
+counted in neither. The classes follow the human's ruling after the first
+round (a decision gets a panel only when the dialog cannot carry it), which
+moved w1 and w4 from warranted to the text side. The bar (the design's
+acceptance 15): of the 36 runs over the text side at most 3 call the tool,
+and of the 21 over the warranted turns at least 15.
 
   python3 tests/output-styles/to-human-present-eval.py NAME=STYLE.md[:CLAUDE_LINE.md] [...] \\
       [--reps 3] [--turns w1,r1,...] [--workers 3] [--max-steps 4] [--out results.json] [--dry-run]
@@ -70,23 +75,27 @@ CLAUDE_HEAD = 'Contents of %s/.claude/CLAUDE.md' % Path.home()
 REPORT_TOOLS = (MESSAGE_TOOL, PRESENT_TOOL, 'mcp__sminos__AskUserQuestion', 'AskUserQuestion')
 OUT_OF_PLAN = 'out of plan usage'
 SPENT = threading.Event()  # a plan ran out: no further request from this process
+
+
+class PlanSpent(Exception):
+    """The account's plan ran out, in this run or another worker's."""
 NOT_RUN = 'Not run: this step is a replay of the session, and its commands are not executed here. Go on from what the conversation already shows.'
 
 # (id, class, kind, transcript under the projects directory, request id, model and effort as sent, why it is in its class)
 TURNS = [
-    ('w1', 'warranted', 'decision',
+    ('w1', 'text', 'decision the dialog carries',
      '-Users-new/72609148-ea13-4521-8605-3804943c1a3d.jsonl',
      '30a8aea2-d2c7-45de-ade0-8082fc105cbf', 'claude-opus-5-5 xhigh',
      'asks what to do with the 49 unmerged worktrees left (35 GB), in two kinds with counts and sizes, after a cleanup that went wider than approved (Korean)'),
-    ('w2', 'warranted', 'decision',
+    ('w2', 'borderline', 'decision',
      '-Users-new-Developer-GitHub-manim-master/4d4a4036-3e9d-46d6-8f80-9360dd736074.jsonl',
      'e58256f5-0435-423b-bdff-0b9a67d0be4d', 'claude-fable-5-2 xhigh',
      "recommends a full-length test over its own earlier default of a front part, with a table of the two options' cost, time and viewing; the choice goes to the ask dialog (Korean)"),
-    ('w3', 'warranted', 'decision',
+    ('w3', 'warranted', 'decision the dialog cannot carry',
      '-Users-new-Developer-GitHub-manim-master/c27e9d9d-4bfe-417e-8d10-3ca911d7e917.jsonl',
      '9870653f-abe3-499b-bac7-5fc85c3d19fb', 'claude-opus-5-5 xhigh',
      'all three memory designs fail the leak gate (a table of three measures by three designs); recommends a redesign and asks which way to go'),
-    ('w4', 'warranted', 'decision',
+    ('w4', 'text', 'decision the dialog carries',
      '-Users-new/639ca648-158e-4536-9007-59a2047aad20.jsonl',
      '658c5d05-fc61-4bf1-88ff-e658d24c2092', 'claude-opus-5-5 xhigh',
      'explains ticket #124 (redaction inside installed code) and puts build or defer to the human, with a recommendation'),
@@ -114,43 +123,43 @@ TURNS = [
      '-Users-new-Developer-GitHub-manim-master/49104986-bac9-48df-85c0-177eaf04e318.jsonl',
      '1f9e95ee-d7ff-4fdb-9e00-9bfac1f422eb', 'claude-opus-5-5 xhigh',
      "the third message on the whole-video judge's scene limit: the limit it reported, and had a fix designed around, was wrong"),
-    ('r1', 'routine', 'merge',
+    ('r1', 'text', 'merge',
      '-Users-new-Developer-GitHub-doperpowers/7a79acf5-d9c4-4341-9b0b-d40e3a1cb541.jsonl',
      'ef1d507e-ab04-4bdb-90dd-4cfb9b9e7b5e', 'claude-opus-5-5 high',
      "a PR merged after two CI fixes; installing the update is the human's"),
-    ('r2', 'routine', 'merge',
+    ('r2', 'text', 'merge',
      '-Users-new-Developer-GitHub-doperpowers/1cdcc7bc-7406-453e-8f01-f2ef6cfa3ccf.jsonl',
      '0fd66995-dea5-4dcf-ba1b-499d794fd9fc', 'claude-opus-5-5 xhigh',
      'both PRs of the work are merged and installed; the open items are listed'),
-    ('r3', 'routine', 'merge',
+    ('r3', 'text', 'merge',
      '-Users-new-Developer-GitHub-MAWS/10d85d03-71e5-4bbb-a515-872248b21ba3.jsonl',
      'd645693c-0b43-4c75-86a2-81645dc38a8f', 'claude-fable-5-2 high',
      'one landing of a wave is on master; what is next in line'),
-    ('r4', 'routine', 'green run',
+    ('r4', 'text', 'green run',
      '-Users-new-Developer-GitHub-doperpowers/b4948247-1ac3-46d2-8dcf-80894fd939d9.jsonl',
      '7b11205d-888e-44d2-a658-23c8298d730e', 'claude-fable-5-2 xhigh',
      'test rows passed on the final build and the VM is staged; nothing is needed'),
-    ('r5', 'routine', 'merge',
+    ('r5', 'text', 'merge',
      '-Users-new-Developer-GitHub-manim-master/49104986-bac9-48df-85c0-177eaf04e318.jsonl',
      'f34918d7-9a2d-4923-890e-b95c6e361580', 'claude-opus-5-5 xhigh',
      'the first part of a milestone is merged; what comes next'),
-    ('r6', 'routine', 'problem resolved',
+    ('r6', 'text', 'problem resolved',
      '-Users-new-Developer-GitHub-doperpowers/9ea1d75c-a885-452a-91d6-086a7f246d29.jsonl',
      'f7a0f0cc-c3b7-4044-b24e-f9ca429c4a1b', 'claude-fable-5-2 xhigh',
      'two stale entries in the view were one leftover wait loop; stopped, nothing lost'),
-    ('r7', 'routine', 'problem resolved',
+    ('r7', 'text', 'problem resolved',
      '-Users-new-Developer-GitHub-manim-master/904e094e-a4c3-4f49-856c-9ddebc2b51e3.jsonl',
      '12b8e0dd-3f0e-4fe2-811f-a4bac7b35e7c', 'claude-opus-5-5 high',
      'a video is unlisted as asked, the live site checked, and how it comes back'),
-    ('r8', 'routine', 'short answer',
+    ('r8', 'text', 'short answer',
      '-Users-new-Developer-GitHub-doperpowers/aad801e3-82e6-4324-baab-b9fed08f42e7.jsonl',
      '578e1b6e-8e64-4813-a068-0e97b228d714', 'claude-fable-5-2 high',
      'two models removed from the routing guide as asked; one value left to the human (Korean)'),
-    ('r9', 'routine', 'short answer',
+    ('r9', 'text', 'short answer',
      '-Users-new-Developer-GitHub-doperpowers/d1d2d6b0-e450-4f43-83a8-203f21f682be.jsonl',
      'abfe84a7-0fe4-4fdd-9ede-58ee2f04510e', 'claude-opus-5-5 xhigh',
      'one sentence: the names stay as chosen and nothing changed'),
-    ('r10', 'routine', 'short answer',
+    ('r10', 'text', 'short answer',
      '-Users-new-Developer-GitHub-doperpowers/40776d16-8e78-44a7-b361-b27546a885f6.jsonl',
      '85e43254-a837-4b17-91e7-0df9fb990b37', 'claude-opus-5-5 xhigh',
      'confirms that nothing behavioral changed; one documentation commit'),
@@ -256,6 +265,8 @@ def run_once(client, req, max_steps):
     any other call answered as not run."""
     steps, messages = [], list(req['messages'])
     for _ in range(max_steps):
+        if SPENT.is_set():
+            raise PlanSpent('a plan ran out in this process before this request')
         got = send(client, dict(req, messages=messages))
         raw = got.pop('raw')
         steps.append(got)
@@ -276,6 +287,9 @@ def run_once(client, req, max_steps):
 
 
 def run_turn(client, turn, arm, style, claude_line, reps, dry, max_steps=4):
+    """The turn's runs for the repetition numbers in `reps`. A plan that runs
+    out stops them: the repetition it reached is recorded as skipped, with
+    no `rep`, so it counts as no run and a resume runs it again."""
     tid, cls, _kind, rel, rid, _sent, _why = turn
     path = PROJECTS / rel
     req, approx = wire_replay.rebuild(path, rid)
@@ -289,24 +303,34 @@ def run_turn(client, turn, arm, style, claude_line, reps, dry, max_steps=4):
     if dry:
         return [head]
     out = []
-    for rep in range(reps):
-        if SPENT.is_set():
-            out.append(dict(head, skipped='a plan ran out earlier in this process'))
-            break
+    for rep in reps:
         t0 = time.time()
         try:
             got = run_once(client, req, max_steps)
         except Exception as e:
-            if OUT_OF_PLAN in str(e):
+            if isinstance(e, PlanSpent) or OUT_OF_PLAN in str(e):
                 # The account's plan is spent: not a run, and no further
                 # request from this process; it exits 3.
                 SPENT.set()
-                out.append(dict(head, skipped=repr(e)))
+                out.append(dict(head, skipped=repr(e), at_rep=rep))
                 break
             got = {'error': repr(e)}
         out.append(dict(head, rep=rep, secs=round(time.time() - t0, 1), **got))
     del req
     return out
+
+
+def pending(results, turns, arms, reps):
+    """The repetitions still to run, by turn and arm: those with no
+    completed run in `results` (a skipped or failed one is run again)."""
+    done = {(x['turn'], x['arm'], x['rep']) for x in results if 'rep' in x and 'error' not in x}
+    todo = {}
+    for a in arms:
+        for t in turns:
+            left = [r for r in range(reps) if (t[0], a, r) not in done]
+            if left:
+                todo[(t[0], a)] = left
+    return todo
 
 
 def tally(results):
@@ -350,15 +374,16 @@ if __name__ == '__main__':
     want = args.turns.split(',')
     turns = [t for t in TURNS if t[0] in want]
     client = None if args.dry_run else gateway_client().with_options(max_retries=0)
-    # An existing --out is kept and added to: a turn and arm with runs already
-    # in it is not run again (a turn skipped for a spent plan is).
+    # An existing --out is kept and added to: only the repetitions with no
+    # completed run in it are run (one skipped for a spent plan is).
     results = json.loads(Path(args.out).read_text()) if Path(args.out).exists() and not args.dry_run else []
     results = [x for x in results if 'rep' in x and 'error' not in x]
-    done = {(x['turn'], x['arm']) for x in results}
+    todo = pending(results, turns, arms, args.reps)
+    by_id = {t[0]: t for t in turns}
     lock = threading.Lock()
     with cf.ThreadPoolExecutor(args.workers) as pool:
-        futs = {pool.submit(run_turn, client, t, a, arms[a][0], arms[a][1], args.reps, args.dry_run, args.max_steps): (t[0], a)
-                for a in arms for t in turns if (t[0], a) not in done}
+        futs = {pool.submit(run_turn, client, by_id[tid], a, arms[a][0], arms[a][1], reps, args.dry_run, args.max_steps): (tid, a)
+                for (tid, a), reps in todo.items()}
         for f in cf.as_completed(futs):
             tid, a = futs[f]
             try:

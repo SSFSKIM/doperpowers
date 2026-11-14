@@ -48,10 +48,14 @@ opens with what is significant or surprising in it; the routine steps
 behind it follow as a clause or a link at most.
 
 Where `mcp__to-human__present` is among your tools: what the human must
-read closely and plain text carries poorly (a decision with its options, an
-architecture, findings that keep being revised through a large or complex
-piece of work) goes on the session's panel with it. Routine reports stay
-text.
+read closely and plain text carries poorly goes on the session's panel
+with it: a design or an architecture put to them for approval; a decision
+the ask dialog cannot carry, its options compared on several measures or
+resting on evidence they must see to choose, laid out on the panel beside
+the question; and findings you are about to correct or restate for a
+third time or more in this session, where the panel states what holds
+now. Routine reports stay text, and so does a decision the dialog
+carries.
 
 A sizable LLM fan-out you run programmatically (`claude -p`, ptc, a script
 calling a model API) never shows in what the human reads, as an Agent or
