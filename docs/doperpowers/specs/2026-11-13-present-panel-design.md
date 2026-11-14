@@ -852,7 +852,24 @@ Decisions that are this milestone's alone:
   `.catch` that denies: `tool.call` refuses by name every tool but `Read`,
   `Grep`, `Glob`, `Bash`, `Write` and `Edit`, and refuses a `Write` or
   `Edit` that holds a secret's handle; `tool.check` answers each of those
-  six (the rules are in Interfaces) and never leaves one to core.
+  six (the rules are in Interfaces) and never leaves one to core. The
+  engine runs a plugin's `$.agent.spawn` as an `Agent` call and checks it
+  like any call (in `auto` and `plan` it asked, and the `present` call
+  waited on a dialog), so the guard's `tool.check` also allows this
+  plugin's own spawn: origin this plugin, no `agentId`, `subagent_type`
+  `fork`, `description` `panel`. A `.catch` denies only a call of a fork
+  the module spawned, so a failure beneath a main-loop call is not
+  reported as the guard's. The guard holds every fork the module spawned
+  in its process, not only the open run's, so a fork whose run closed
+  unheard stays held.
+- The mode: neither a call's input nor `$.config.list()` carries it, so
+  the module reads it from `classic.UserPromptSubmit`'s `permission_mode`
+  and `telemetry.log`'s `permission_mode_changed` (`attributes.to_mode`),
+  main loop only, as sminos' bridge does; before any prompt it is taken as
+  not plan.
+- `server.py ensure` runs at the start of every interactive session, not
+  only where the tool registers, so any session brings an old address back
+  (acceptance 10) and replaces an older server.
 - The call's row: the view draws a `present` call as one line that stays in
   the report, as an agent's spawn does: the brief's first line, then the
   run's state read from `$.state` by the call's id: `writing…`, the address
@@ -1030,11 +1047,11 @@ In `to-human/hooks/mods/present.tsx`:
     export const REMOVED = (what: string[]) => ` Publishing cut from the page what a panel may not hold: ${what.join(', ')}.`  // appended to FINISHED when Published.removed is not empty
     export const LOOKED_MEANWHILE = ' The human first opened the page while it was being rewritten, so this update carries no notes for what it changed: tell them what changed if it matters.'  // appended when Published.lookedMeanwhile
     export const FAILED = (address: string, why: string) => `The panel was not written (${why}); ${address} holds what it held before, and the human has been told. Call present again to retry.`
-    export const BUSY = (address: string) => `The panel is being written now: ${address} Call present again once you are told it is written.`
+    export const BUSY = (address: string) => `The panel is being written now: ${address} Go on with your work: you are told at your next step once it is written, and can call present again then with what to change.`
     export const PLAN_REFUSAL = 'present writes a file, which plan mode does not allow: call it once the plan is approved.'
     export const SUBAGENT_REFUSAL = 'present is for the main conversation; a subagent reaches the human through the session that dispatched it: put this in your report.'
     export const EMPTY_REFUSAL = 'present needs its brief: what to put on the panel or change on it.'
-    export const GUARD_REFUSAL = 'This fork writes the panel and nothing else.'
+    export const GUARD_REFUSAL = "Refused: this fork writes the panel and nothing else; that step is the session's, and the session takes it. Go on editing the draft, and end with your two-line reply once it holds the panel."
     export function registerPresent(on: On): void
 
 `$.state`, published by the module for the view (`to-human/types/to-human.d.ts`):
@@ -1159,6 +1176,44 @@ configuration directory, with a probe plugin whose tool spawns a fork
   applied.
   Evidence: the human's server ruling, sent to the first fork mid-run, is in
   version 1 of the page as settled.
+- Observation (M2): a plugin's `$.agent.spawn` is run as an `Agent` tool
+  call and goes through the permission check; in `auto` (the engine's
+  default mode now) and `plan` it asked, in `default` and `acceptEdits` it
+  did not.
+  Evidence: debug log `$.tool.call (to-human): Agent (prompt, description,
+  run_in_background, subagent_type)`, `tool.check nested in to-human#31`,
+  `executePermissionRequestHooks called for tool: Agent`.
+- Observation (M2): haiku forks often re-enact the session's last steps
+  before or instead of the panel: across four haiku main runs 16 of 26
+  forks made a call off the panel (`present`, the message tool, the
+  session's commands), about 8 of 26 ended without writing; the guard
+  refused every call and nothing outside the draft changed. One opus and
+  one fable fork made no call off the panel, and wrote pages of 488 and
+  661 running words (haiku 572). A rewording of the standing prompt's
+  opening did not change haiku's behaviour and was reverted.
+  Evidence: `~/.local/share/present-panel/m2/`, runs main-3 to main-6,
+  stay-opus, stay-fable.
+- Observation (M2): `BUSY`'s first wording, "Call present again once you
+  are told it is written", led haiku to call `present` four more times in
+  the same turn.
+  Evidence: main-4.
+- Observation (M2): a fork's billed requests. haiku, a first panel: 4
+  requests, cache write 13,137, read 90,814, output 4,807; an Edit of an
+  existing draft: 6 requests, write 10,664, read 162,880, output 5,283.
+  opus: 3 requests, write 5,890, read 66,290, output 3,207. fable: 3
+  requests, write 7,044, read 71,276, output 3,743. A fork started after
+  the session sat idle 6 minutes, past the cache's lifetime, still read
+  from the cache (first request read 35,254, wrote 1,312): the session's
+  own request that makes the call rewrites the cache first.
+  Evidence: the forks' transcripts in main-3, main-4, stay-opus,
+  stay-fable; the spawn row, a synthetic `Agent` call with zero usage, is
+  not a request.
+- Observation (M2): `/clear` starts a new session id, so a panel after it
+  is a new panel at a new address; `--resume` keeps the id. Hook context
+  reaches the session at its next prompt (an attachment after the prompt)
+  and mid-turn (after a tool result). A fork's `Edit` of an existing draft
+  works.
+  Evidence: main-4 (`3334f4eb…`, rows 66 and 97), main-3.
 - Observation: `tailscale serve` forwards the client's `Host` unchanged and
   adds `X-Forwarded-For` and `X-Forwarded-Host` to every proxied request; a
   `Tailscale-User-Login` a tagged device sends is stripped and none added.
@@ -1264,6 +1319,27 @@ configuration directory, with a probe plugin whose tool spawns a fork
   seen and bring checked notes back (R6, R7). The end of a well-formed page
   is the one position no authored state can hold open.
   Date/Author: 2026-11-13, the executing session, on M1's review.
+
+- Decision: the guard allows this plugin's own fork spawn at `tool.check`;
+  the mode is read from the prompt hook and the mode-change event;
+  `ensure` runs in every interactive session; the guard holds every fork
+  the module spawned; a second call arriving during the reservation waits
+  on it and then reads `BUSY`. Each stands where M2's decisions are stated.
+  Rationale: M2's executor, from the live runs; the engine checks a
+  plugin's spawn as an `Agent` call, which the spec had assumed could be
+  denied but never ask.
+  Date/Author: 2026-11-13, the executing session, on M2.
+- Decision: haiku's wandering forks are accepted as a limit of that model
+  for this version, not designed around; `BUSY` and `GUARD_REFUSAL` are
+  reworded to the two observed failures (a retry loop on `BUSY`; a fork
+  stopping or carrying on after a bare refusal), and one more haiku main
+  run checks them.
+  Rationale: a fork inherits the session's model; the owner runs fable
+  and opus, whose forks stayed on the panel; the guard made every wander
+  harmless, so the cost on haiku is a `FAILED` and a second call. The
+  standing prompt's own rewording did not help haiku and stays reverted;
+  the two refusal texts are where the failures showed.
+  Date/Author: 2026-11-13, the executing session, on M2.
 
 ## Outcomes & Retrospective
 
