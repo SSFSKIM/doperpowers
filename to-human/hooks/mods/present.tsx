@@ -337,7 +337,8 @@ async function realOf($: EngineInterface, path: unknown): Promise<string | undef
  * publishes it.
  */
 async function isOwnDraft($: EngineInterface, agentId: string | undefined, path: unknown): Promise<boolean> {
-  if (run === null || run.agentId !== agentId || ended.has(agentId)) return false
+  // `ended` is this module's; a record kept as publishing says the same across a reload.
+  if (run === null || run.agentId !== agentId || run.phase !== 'writing' || ended.has(agentId)) return false
   const draft = run.draft
   let real = drafts.get(draft)
   if (real === undefined) {

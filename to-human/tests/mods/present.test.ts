@@ -1018,6 +1018,14 @@ describe("the guard over the fork's calls", () => {
     expect(await h.check('Write', { file_path: DRAFT }, { agentId: 'fork-1' })).toEqual({ decision: 'allow' })
   })
 
+  test("after a reload, a run kept as publishing holds its fork's draft write: the fork has ended", async () => {
+    const h = harness()
+    h.state.set('present', { agentId: FORK, toolUseId: 'toolu_p1', session: SESSION, dir: ROOT, draft: DRAFT, address: ADDRESS, update: 2, startedAt: NOW, phase: 'publishing' })
+    h.state.set('presentForks', [FORK])
+    expect(await h.check('Write', { file_path: DRAFT, content: 'x' }, { core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+    expect(await h.check('Edit', { file_path: DRAFT, old_string: 'a', new_string: 'b' }, { core: 'allow' })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
+  })
+
   test('a fork still refused after its run closed: its writes go nowhere', async () => {
     const h = await running()
     await h.ended()
