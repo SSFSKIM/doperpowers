@@ -12,9 +12,10 @@ leave routine reports as text? The harness is
 that a decision gets a panel only when the ask dialog cannot carry it,
 puts designs on the panel in 9 of 9 runs and the decision the dialog cannot
 carry in 2 of 3. It keeps every one of the 36 text-side runs as text. It
-never puts a revision on the panel (0 of 9). The bar is met on the text
-side and missed on the warranted side, 11 of 21 against 15, on revisions
-alone.
+never puts a revision on the panel (0 of 9). These counts are on
+byte-exact rebuilds: the five turns whose replayed request had lacked text
+the session read were run again. The bar is met on the text side and
+missed on the warranted side, 11 of 21 against 15, on revisions alone.
 
 ## Method
 
@@ -319,12 +320,20 @@ three runs per turn on the turn's own model and effort, 60 runs in all, no
 control. The opus turns ran at 09:09Z, the fable turns at 09:23Z. No request
 was refused.
 
+Five of the turns (w4, w5, w6, w8, r10) had run on a rebuild that lacked
+text the session had read: a Skill call's loaded body (under "What the
+rebuild substituted"). Each was run again three times, at 09:41Z, on its
+byte-exact rebuild. Those 15 runs replace the turns' first 15 in every
+count below, and the replaced runs are shown beside them, marked "ran on an
+approximate rebuild". The four turns whose rebuild differed only in form
+keep their runs.
+
 ### Per class
 
 | Class | Runs | Call `present` | Reached the human at step 1 / 2 / 3 / 4 | Never | Bar |
 |---|---|---|---|---|---|
-| warranted | 21 | **11** | 0 / 11 / 10 / 0 | 0 | at least 15: **not met** |
-| text side | 36 | **0** | 22 / 11 / 3 / 0 | 0 | at most 3: **met** |
+| warranted | 21 | **11** | 1 / 11 / 9 / 0 | 0 | at least 15: **not met** |
+| text side | 36 | **0** | 23 / 10 / 3 / 0 | 0 | at most 3: **met** |
 | w2, borderline | 3 | 0 | 0 / 3 / 0 / 0 | 0 | counted in neither |
 
 ### By kind
@@ -338,8 +347,10 @@ was refused.
 | decision the dialog carries | w1, w4 | 0 of 6 | 0 of 6 |
 | borderline decision | w2 | 0 of 3 | 0 of 3 |
 
-The warranted side misses only on revisions: designs and the one decision
-the dialog cannot carry call `present` in 11 of 12 runs.
+The re-runs left every kind's count where it was: w5 and w6 still 3 of 3
+each, w8 still 0 of 3, w4 and r10 still 0. The warranted side misses only
+on revisions: designs and the one decision the dialog cannot carry call
+`present` in 11 of 12 runs.
 
 ### Per turn
 
@@ -347,28 +358,28 @@ Shown as in the first round's table: P `present`, a an ask dialog, m the
 message tool, t text with no call, each with the step it reached the human
 at.
 
-| Turn | Kind | Runs |
-|---|---|---|
-| w1 | decision the dialog carries | a2 a2 a2 |
-| w2 | borderline (fable) | a2 a2 a2 |
-| w3 | decision the dialog cannot carry | a2 **P2 P2** |
-| w4 | decision the dialog carries | a2 a2 a1 |
-| w5 | design | **P3 P2 P2** |
-| w6 | design | **P2 P2 P2** |
-| w7 | design | **P2 P3 P2** |
-| w8 | revision (fable) | a3 a3 m3 |
-| w9 | revision | m3 m3 a2 |
-| w10 | revision | m3 m3 m3 |
-| r1 | merge | m1 m2 m2 |
-| r2 | merge | m1 m1 m1 |
-| r3 | merge (fable) | t3 t3 t3 |
-| r4 | green run (fable) | t2 m1 m2 |
-| r5 | merge | m1 m1 m1 |
-| r6 | problem resolved (fable) | m1 m1 m1 |
-| r7 | problem resolved | m2 m1 m2 |
-| r8 | short answer (fable) | m1 m1 m1 |
-| r9 | short answer | m1 m1 m1 |
-| r10 | short answer | m1 m1 m1 |
+| Turn | Kind | Runs | Ran on an approximate rebuild (replaced) |
+|---|---|---|---|
+| w1 | decision the dialog carries | a2 a2 a2 | |
+| w2 | borderline (fable) | a2 a2 a2 | |
+| w3 | decision the dialog cannot carry | a2 **P2 P2** | |
+| w4 | decision the dialog carries | a2 a1 a1 | a2 a2 a1 |
+| w5 | design | **P2 P2 P2** | P3 P2 P2 |
+| w6 | design | **P2 P1 P2** | P2 P2 P2 |
+| w7 | design | **P2 P3 P2** | |
+| w8 | revision (fable) | m3 m3 m3 | a3 a3 m3 |
+| w9 | revision | m3 m3 a2 | |
+| w10 | revision | m3 m3 m3 | |
+| r1 | merge | m1 m2 m2 | |
+| r2 | merge | m1 m1 m1 | |
+| r3 | merge (fable) | t3 t3 t3 | |
+| r4 | green run (fable) | t2 m1 m2 | |
+| r5 | merge | m1 m1 m1 | |
+| r6 | problem resolved (fable) | m1 m1 m1 | |
+| r7 | problem resolved | m2 m1 m2 | |
+| r8 | short answer (fable) | m1 m1 m1 | |
+| r9 | short answer | m1 m1 m1 | |
+| r10 | short answer | m1 m1 m1 | m1 m1 m1 |
 
 Both of w3's `present` runs put the question in the ask dialog in the same
 response, the page beside it, as the rule asks. So did w7's third run.
@@ -377,7 +388,11 @@ response, the page beside it, as the rule asks. So did w7's third run.
 
 | Turn, run | What the report says |
 |---|---|
-| w8, 3 | "partway through this turn, shell commands stopped executing (the tool answered 'Not run: this step is a replay of the session')" |
+| w5, 2 (`present`) | the brief: "measured first thing in M2 — the measurement couldn't run in this session" |
+| w6, 3 (`present`) | the brief: "Read the code in M1. That read couldn't run during design." |
+| w8, 1 | "The shell tool stopped executing commands partway through this turn ('Not run: this step is a replay of the session', twice)" |
+| w8, 2 | "the last two shell commands of this turn came back 'not run', so I could not finish them or edit anything" |
+| w8, 3 | "the tool that runs my commands stopped executing them (it answers 'not run: this step is a replay of the session')" |
 | w9, 1 | "이번에 제가 직접 읽어 보려 했지만 명령이 실행되지 않아서 확인하지 못했습니다" (I tried to read it myself, but the command did not run, so I could not check) |
 | r3, 1 | "the shell refused the command twice, so that entry is still owed to the log" |
 | r3, 2 | "The log append was refused twice with 'commands are not executed here'" |
@@ -385,15 +400,21 @@ response, the page beside it, as the rule asks. So did w7's third run.
 | r4, 1 | "My last command, a read of the row 10 and row 15 scripts at the final build, did not run" |
 | w7, 1 (borderline, `present`) | the brief's open questions include "A planned second spike on this did not run", the spike being the call answered as not run |
 
-Six clear cases and one borderline. Without the clear cases the counts are
-11 of 19 warranted and 0 of 32 on the text side: the same verdict.
+Ten clear cases and one borderline, over the counted runs. Among the
+replaced runs, w8's third (ran on an approximate rebuild) was clear as
+well. Without the clear cases the counts are 9 of 15 warranted (designs 7
+of 7, w3 2 of 3, revisions 0 of 5) and 0 of 32 on the text side: the same
+verdict.
 
 ### What it cost
 
 From the gateway's request log (`Anthropic/Python` rows, 09:09Z to 09:31Z):
 opus 76 requests (cache read 9,563,843, cache write 1,962,543, output
 209,501); fable 35 requests (cache read 5,432,897, cache write 877,458,
-output 111,587). No request was refused.
+output 111,587). The re-runs (09:41Z to 09:54Z): opus 18 requests (cache
+read 2,346,471, cache write 671,368, output 71,148); fable 9 requests
+(cache read 1,331,072, cache write 153,352, output 40,210). No request was
+refused.
 
 ## Reading the second round
 
@@ -406,12 +427,17 @@ output 111,587). No request was refused.
   restate for a third time or more in this session", but the models
   correcting or restating findings in w8, w9 and w10 sent a message or an
   ask instead. Seeing the shape the rule names takes the session's
-  history, and the models did not act on it from there. That is the whole of the
-  warranted miss: 11 of 12 without revisions, 11 of 21 with them.
-- **The bar** is met on the text side (0 of 36) and not on the warranted
-  side (11 of 21 against 15). By the Decision Log entry of 2026-11-14, a
-  miss on revisions alone is recorded as acceptance 15 not met for
-  revisions, and the rule ships as worded.
+  history, and the models did not act on it from there. That is the whole
+  of the warranted miss: 11 of 12 without revisions, 11 of 21 with them.
+  All three revision turns now ran on their byte-exact requests (w9 and w10
+  always had, w8 since its re-run), so the 0 is not an artifact of a
+  missing piece of history.
+- **Acceptance 15, from the corrected counts.** The text side is met (0 of
+  36 against at most 3). Designs are met (9 of 9). The decision the dialog
+  cannot carry is met (2 of 3). Revisions are not met (0 of 9). Taken
+  together the warranted side is 11 of 21 against 15. By the Decision Log
+  entry of 2026-11-14, a miss on revisions alone is recorded as acceptance
+  15 not met for revisions, and the rule ships as worded.
 
 ## What the rebuild substituted
 
@@ -441,10 +467,11 @@ The runs these turns account for are:
   and 10 of the rule's 18;
 - the first round run on past a call: 27 of the rule's 60 runs and 9 of the
   control's 20;
-- the second round: 27 of 60.
+- the second round as first run: 27 of 60.
 
 Among the runs that call `present`, the affected ones are 7 of 8 in the
-first round (w5, w6, w7) and 9 of 11 in the second (all but w3's).
+first round (w5, w6, w7) and 9 of 11 in the second as first run (all but
+w3's).
 
 How each kind of substitution bears on the counts:
 
@@ -465,5 +492,29 @@ The rebuild now matches all ten messages: a tool-result message is tried in
 each order of its results, with and without the meta rows that follow a
 result (the skill body), against the digest sent, and `approx` is 0 for all
 20 turns (tested in `test-present-eval.py`). The rounds above ran before
-that change. A re-run of w5 and w6 (6 runs) would show whether the skill
-body moves the design count; w4, w8 and r10 would add 9.
+that change.
+
+Comparing each turn's request as it ran with its byte-exact rebuild
+(`system`, `tools`, every parameter and every message) shows:
+
+- **Eleven turns are identical:** w1, w2, w3, w9, w10, r1, r3, r4, r5, r7
+  and r9.
+- **Four differ only in form**, one message holding the same blocks in
+  another order: w7, r2, r6 and r8. They keep their runs.
+- **Five differ in text the model reads.** In each, one block is missing
+  from the request that ran: the skill's body after a Skill result.
+
+  | Turn | Missing skill body | Size |
+  |---|---|---|
+  | w4 | `claude-api` | 130,304 characters |
+  | w5 | `doperpowers:brainstorming` | 14,589 characters |
+  | w6 | `doperpowers:brainstorming` | 14,846 characters |
+  | w8 | `devcloud:vm` | 8,240 characters (plus one reordered message) |
+  | r10 | `claude-api` | 125,960 characters |
+
+  These five were run again in the second round, as above. With the body in
+  place the counts are the same: w5 and w6 3 of 3 each, w8 0 of 3, w4 and
+  r10 0 of 3.
+
+The first round's runs of those five turns stand as they ran, on the
+approximate rebuild.
