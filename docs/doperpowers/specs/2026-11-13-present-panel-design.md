@@ -315,7 +315,7 @@ machines, a git allow-list):
 |---|---|---|
 | `panel.html` | the server, at publish | The page as served. |
 | `draft.html` | the server at `open-panel`; then the fork | The page being edited. |
-| `meta.json` | the server | `{ "session": "<full id>", "updates": <n>, "locale": "en" \| "ko" }` |
+| `meta.json` | the server | `{ "session": "<full id>", "updates": <n>, "locale": "en" \| "ko", "seenAtOpen": "never" \| "current" \| "stale" }`: `seenAtOpen` is the `seen` the last `open-panel` answered, kept so `lookedMeanwhile` survives a server replaced between `open-panel` and `publish` |
 | `state.json` | the server | `{ "seen": <ms> \| null, "written": <ms> \| null, "checked": ["<note id>", ...] }`: `written` is the page's publish time, `seen` the publish time of the newest publication the human looked at |
 
 The server is the only writer of everything but the draft, inside one
@@ -395,14 +395,18 @@ restarts. `tailscale serve` does it instead, as it does for the session
 manager's page: with `PANEL_REACH=tailnet` in the session's environment the
 server runs `tailscale serve --bg --https=<port> http://127.0.0.1:<port>`
 when Tailscale is running and `tailscale serve status --json` shows no such
-mapping, and, where that is refused for want of the right to configure the
-daemon, the same under `sudo -n` (a devcloud host joins the tailnet with
+mapping, and, where that fails, the same under `sudo -n` (a devcloud host
+joins the tailnet with
 `tailscale up --advertise-tags=tag:devcloud` and names no operator, so its
 session user has the right only through sudo; `-n` fails at once where sudo
 would ask for a password). The mapping is the Tailscale daemon's and
 outlasts the server and a restart of the machine;
-`tailscale serve --https=<port> off` removes it. Where it cannot be made the
-address is the localhost one and `OpenPanel`'s `reach` is `"local"`, which
+`tailscale serve --https=<port> off` removes it. Once any command has asked
+a server for the tailnet, it keeps the mapping for the rest of its life, and
+an ask to a server that has not yet tried starts a refresh at once. A port
+whose HTTPS the daemon already maps to another target is left alone: that is
+someone else's mapping, and the reach is local. Where the mapping cannot be
+made the address is the localhost one and `OpenPanel`'s `reach` is `"local"`, which
 the tool passes on, so the session can say the panel opens only on that
 machine.
 
@@ -507,13 +511,21 @@ The policy governs what a page loads, not where it goes: a
 reader, and whatever the address carries, to another site as the page opens
 (the second review reproduced it under this policy), and a
 `<link rel="dns-prefetch">` or `preconnect` names another host with no load
-at all. So publishing is also a boundary. The server scans the draft's
-start tags with the standard library's `html.parser` and cuts from the
-source, by position, every `<meta>` that has `http-equiv`, every `<link>`
-but a stylesheet whose `href` is under `/base/`, and every `<base>`; what it
-cut is in `Published.removed`, and the session reads it in `FINISHED`. It
-cuts and does not refuse, because the fork has ended by then and the rest of
-the page is good. A link the human clicks is their own act and stays.
+at all. So publishing is also a boundary. The server finds every `<meta`,
+`<link` and `<base` in the draft's source, wherever it stands, ends each tag
+by the HTML tokenizer's attribute rules (quotes count only around a value; a
+tag left open runs to the end of the source), and cuts by position every
+`<meta>` that has `http-equiv`, every `<link>` but one whose `rel` is
+`stylesheet` and whose `href` is under `/base/`, and every `<base>`,
+repeating until nothing is left to cut so that the text around a cut cannot
+join into a new tag. It does not use `html.parser`, which reads `<!-->` as
+the start of a comment that runs to the next `-->` where a browser closes the
+comment at once, so `<!--><meta http-equiv=refresh …><!-- -->` would pass it
+with the `meta` live; a match inside a comment, a script or an attribute
+value is cut too, which nothing on a panel needs. What it cut is in
+`Published.removed`, and the session reads it in `FINISHED`. It cuts and
+does not refuse, because the fork has ended by then and the rest of the page
+is good. A link the human clicks is their own act and stays.
 
 **The command line** is the mod's whole interface to the server, so the mod
 holds no logic about processes, ports or files:
@@ -854,8 +866,10 @@ Decisions that are this milestone's alone:
 - The live check also records, for the Surprises section: the billed tokens
   summed over a fork's requests (the trials' figures are the notification's
   `subagent_tokens`, not that sum); a fork started after the session sat
-  idle past its cache's lifetime; and one run with the session on the model
-  the owner runs (not haiku), to see whether its fork stays on the panel.
+  idle past its cache's lifetime; and two runs on the models the owner
+  runs, not haiku, one with the session on opus and one on fable
+  (`claude-fable-5-2`, the owner's default since 2026-11-13, so the model
+  most forks inherit), to see whether each fork stays on the panel.
   It notes which session id a `/clear` and a resume keep, since the panel
   follows the id.
 
@@ -979,7 +993,9 @@ The control requests behind them, local and with the token:
 `GET /control/health` → `{ "server": "to-human-panel", "version": "<plugin
 version>", "root": "<panels directory>" }`; `POST /control/open-panel` with
 `{ "session", "locale", "reach" }` → `OpenPanel`; `POST /control/publish`
-with `{ "session" }` → `Published`; `POST /control/shutdown`.
+with `{ "session" }` → `Published`; `POST /control/reach` with `{ "reach" }`
+→ `{ "address", "reach" }`, by which `ensure` passes the session's
+`PANEL_REACH` on; `POST /control/shutdown`.
 
 Environment: `PANEL_PORT` (default 4777), `PANEL_LOCALE` (`en`, `ko`),
 `PANEL_REACH` (`tailnet`; anything else is local), `CLAUDE_CONFIG_DIR`.
@@ -1135,10 +1151,24 @@ configuration directory, with a probe plugin whose tool spawns a fork
   Evidence: the human's server ruling, sent to the first fork mid-run, is in
   version 1 of the page as settled.
 - Observation: `tailscale serve` forwards the client's `Host` unchanged and
-  adds `X-Forwarded-For` and `X-Forwarded-Host` to every proxied request.
+  adds `X-Forwarded-For` and `X-Forwarded-Host` to every proxied request; a
+  `Tailscale-User-Login` a tagged device sends is stripped and none added.
   Evidence: Tailscale's `ipn/ipnlocal/serve.go`, `r.Out.Host = r.In.Host`
-  and `addProxyForwardedHeaders` (read in source by the design review, not
-  yet run live; acceptance 13 runs it).
+  and `addProxyForwardedHeaders`; run live in M1 (acceptance 13): from the
+  tagged `dc-c53-g1a-980a` against the MacBook's mapping, the page with the
+  honest `Host`, with `Host: 127.0.0.1:<port>`, with a forged login, and
+  `/control/health` with a made-up token or the local `Host`, all 403.
+- Observation (M1): the standard library's `html.parser` reads `<!-->` as
+  an open comment that runs to the next `-->`; a browser closes it at once.
+  Evidence: `html.parser` reported `comment '><meta http-equiv=refresh …'`
+  for `<!--><meta http-equiv=refresh …><!-- -->`; the base's browser check
+  publishes that draft and sees no navigation.
+- Observation (M1): on a devcloud host (tailscale 1.104.6) the session user
+  cannot configure serve; `sudo -n` can, so that path is the one that runs
+  there, both to map and to remove a mapping.
+  Evidence: `tailscale serve --https=4793 off` → `Access denied: serve
+  config denied`; `sudo -n tailscale serve …` → rc 0; acceptance 12 passed
+  with the server making the mapping itself.
 
 ## Decision Log
 
@@ -1192,6 +1222,28 @@ configuration directory, with a probe plugin whose tool spawns a fork
   server and the guard are read again, with their code, at each milestone's
   review and by the branch's.
   Date/Author: 2026-11-13, the designing session, on the reviews.
+
+- Decision: publishing finds the tags it cuts by its own scan of the
+  source, not with `html.parser`; `meta.json` keeps `seenAtOpen`; a control
+  request `POST /control/reach` carries `ensure`'s reach; a tailnet ask
+  keeps the mapping for the server's life and forces a refresh; a port the
+  daemon maps elsewhere is left alone with the reach local. Each now stands
+  in the section that states the interface.
+  Rationale: M1's executor. `html.parser` and a browser disagree on `<!-->`
+  (Surprises), so a parser-based cut let a refresh `meta` through; the scan
+  over-cuts inside comments and scripts, which a panel never needs, and
+  repeats to a fixed point so a cut cannot assemble a new tag. `seenAtOpen`
+  lets `lookedMeanwhile` survive a version replacement mid-update; the four
+  control requests had no place for `ensure`'s reach; a mapping to another
+  target is someone else's, by the design's own "bad neighbour" reasoning.
+  The designing session read the scan and accepted all five.
+  Date/Author: 2026-11-13, the executing session, on M1.
+- Decision: M2's live check runs the owner's-model fork check twice, on opus
+  and on fable, and records both.
+  Rationale: the owner's default model became Fable 5.2 on 2026-11-13, so
+  most forks will inherit it.
+  Date/Author: 2026-11-13, the designing session, relayed to the executing
+  session.
 
 ## Outcomes & Retrospective
 
