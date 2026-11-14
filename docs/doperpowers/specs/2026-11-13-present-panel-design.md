@@ -1568,6 +1568,6 @@ head of a window does not bring into view.
 
 **Cost.** Each milestone's task review ran to clean (M1 three fix rounds,
 M2 three, M3 one); the branch review found five P2s and then one more,
-fixed in two rounds. The replay spent, by the gateway's log, about 290
-requests and some 46M cache-read tokens over its rounds; one spent fable
+fixed in two rounds. The replay spent, by the gateway's log, more than 360
+requests and more than 46M cache-read tokens over its rounds (the eval report has the measured figures); one spent fable
 plan paused it for an hour.
