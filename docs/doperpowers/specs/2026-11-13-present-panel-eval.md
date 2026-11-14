@@ -221,3 +221,32 @@ from the cache.
   counts point at are the decision with an ask dialog (the page beside
   the dialog) and the revision across turns (the session's own history
   as the signal).
+
+### The decision turns' runs
+
+What each run of a decision turn sent the human at the step it reached
+them: the ask dialog (every one was a single question; the number is its
+options), the message beside it, and whether it called `present`.
+
+| Turn | Run | Ask dialog | Message beside it | `present` |
+|---|---|---|---|---|
+| w1 | rule 1 | 1 question, 3 options | none | no |
+| w1 | rule 2 | 1 question, 3 options | none | no |
+| w1 | rule 3 | 1 question, 3 options | none | no |
+| w1 | control | 1 question, 3 options | none | no |
+| w2 | rule 1 | 1 question, 3 options | none | no |
+| w2 | rule 2 | 1 question, 2 options | yes, 1,672 characters: headings, a list, bold; no table | no |
+| w2 | rule 3 | 1 question, 3 options | yes, 1,105 characters: headings, a list, bold; no table | no |
+| w2 | control | 1 question, 3 options | none | no |
+| w3 | rule 1 | 1 question, 3 options | none | **yes**, beside the dialog |
+| w3 | rule 2 | 1 question, 3 options | yes, 2,799 characters: a table, a list, bold | no |
+| w3 | rule 3 | 1 question, 3 options | none | no |
+| w3 | control | 1 question, 3 options | yes, 2,689 characters: a list, bold; no table | no |
+| w4 | rule 1 | 1 question, 4 options | yes, 2,071 characters: a table, a list, bold | no |
+| w4 | rule 2 | 1 question, 4 options | yes, 2,724 characters: a list, bold; no table | no |
+| w4 | rule 3 | 1 question, 4 options | yes, 2,249 characters: a list, bold; no table | no |
+| w4 | control | 1 question, 3 options | yes, 2,438 characters: a list, bold; no table | no |
+
+Where there is no message, the dialog carries the whole report: its
+question runs 94 to 283 characters, and each option has a description of
+28 to 307 characters.
