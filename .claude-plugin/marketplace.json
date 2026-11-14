@@ -9,7 +9,7 @@
     {
       "name": "doperpowers",
       "description": "A development methodology for Claude Code: a design you approve, one living spec, test-first builds by fresh subagents, and review by another model family.",
-      "version": "7.220.0",
+      "version": "7.221.0",
       "source": "./",
       "author": {
         "name": "SSFSKIM",
@@ -44,7 +44,7 @@
     {
       "name": "to-human",
       "description": "Read a session as a report, not a transcript: under the to-human output style the session sends you messages through its message tool (mcp__to-human__message), the terminal folds its working record (tool calls, scratch notes, other sessions' messages) behind buttons, and each message raises a notification",
-      "version": "0.9.0",
+      "version": "0.10.0",
       "source": "./to-human",
       "author": {
         "name": "SSFSKIM",

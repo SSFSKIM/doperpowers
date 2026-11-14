@@ -157,6 +157,12 @@ const forks = new Set<string>()
 const ended = new Set<string>()
 /** Each draft's real path, as `$.fs.stat` resolves it. */
 const drafts = new Map<string, string>()
+/**
+ * The main loop's permission mode as the engine last reported it (a prompt's,
+ * or a switch's); undefined until one is reported. The engine has no getter
+ * for it, and a tool call's input does not carry it.
+ */
+let mode: string | undefined
 /** The reservation: set before the handler's first await, cleared once its call is answered. */
 let starting: Promise<void> | undefined
 let restoring: Promise<void> | undefined
@@ -164,6 +170,7 @@ let writes: Promise<unknown> = Promise.resolve()
 
 /** Forgets the module's memory, as a module that starts over does; for tests, which share this module. */
 export function forgetPresent() {
+  mode = undefined
   run = null
   presented = {}
   notices = []
@@ -244,6 +251,12 @@ async function isDraft($: EngineInterface, path: unknown): Promise<boolean> {
     drafts.set(draft, real)
   }
   return (await realOf($, path)) === real
+}
+
+/** Whether a call is the Agent call the engine makes of this module's spawn of a panel fork. */
+function isOwnSpawn($: EngineInterface, origin: { plugin: string }, e: { tool: string; input: unknown; agentId?: string }): boolean {
+  const input = e.input as { description?: unknown; subagent_type?: unknown } | null
+  return origin.plugin === $.plugin.name && e.tool === 'Agent' && e.agentId === undefined && input?.subagent_type === 'fork' && input.description === FORK_DESCRIPTION
 }
 
 const refusedCheck = () => ({ decision: 'deny', reason: GUARD_REFUSAL }) as const
@@ -356,7 +369,7 @@ async function startRun($: EngineInterface, toolUseId: string, brief: string): P
   if (agentId === undefined) {
     const deny = 'deny' in spawned && typeof spawned.deny === 'string' ? spawned.deny : 'the engine started no agent'
     // Past an interrupt the engine spawns nothing until the session takes input (bridge-ask.tsx).
-    return { deny: deny === PLAN_REFUSAL ? PLAN_REFUSAL : `The panel's fork was not started: ${deny}` }
+    return { deny: `The panel's fork was not started: ${deny}` }
   }
   // Set before any await: the fork's first call finds its guard.
   forks.add(agentId)
@@ -385,6 +398,10 @@ export function registerPresent(on: On): void {
   }).catch((_, e, next) => (next.called || !isKnownFork(e.agentId) ? next(e) : { deny: GUARD_REFUSAL }))
 
   on('tool.check', { tool: /^/ }, async ($, e, next) => {
+    // The engine runs this module's spawn as an Agent call and checks it as it
+    // checks any call, so a mode that asks (default, auto) put it to a
+    // permission dialog the present call waited on. This plugin raised it.
+    if (isOwnSpawn($, next.origin, e)) return { decision: 'allow' }
     if (!(await isPanelFork($, e.agentId))) return next(e)
     if (READ_TOOLS.has(e.tool) || (e.tool === 'Bash' && e.isReadOnly === true)) return { decision: 'allow' }
     if ((e.tool === 'Write' || e.tool === 'Edit') && (await isDraft($, (e.input as { file_path?: unknown } | null)?.file_path))) {
@@ -393,14 +410,22 @@ export function registerPresent(on: On): void {
     return refusedCheck()
   }).catch((_, e, next) => (next.called || !isKnownFork(e.agentId) ? next(e) : refusedCheck()))
 
-  // Plan mode: the engine's word on the spawn is the parent's mode, which the
-  // fork inherits; there a hook cannot open the write, so no fork starts.
-  on('agent.spawn', { subagentType: 'fork' }, async ($, e, next) => {
-    if (next.origin.plugin === $.plugin.name && e.description === FORK_DESCRIPTION && e.permissionMode === 'plan') {
-      return { deny: PLAN_REFUSAL }
+  // The main loop's mode, as the engine reports it: the mode each prompt is
+  // submitted under, and each switch as it happens (sminos' bridge reads the
+  // same two). Observed only.
+  on('classic.UserPromptSubmit', { hook_event_name: 'UserPromptSubmit' }, (_, e, next) => {
+    if (e.agent_id === undefined && typeof e.permission_mode === 'string') {
+      mode = e.permission_mode
     }
     return next(e)
-  })
+  }).catch((_, e, next) => next(e))
+
+  on('telemetry.log', { to: 'collector' }, (_, e, next) => {
+    if (e.to === 'collector' && e.event === 'permission_mode_changed' && e.attributes.agent_id === undefined && typeof e.attributes.to_mode === 'string') {
+      mode = e.attributes.to_mode
+    }
+    return next(e)
+  }).catch((_, e, next) => next(e))
 
   // After the hooks beneath: the message tool's registration is known by then.
   on('session.start', { cwd: /^/ }, async ($, e, next) => {
@@ -441,6 +466,9 @@ export function registerPresent(on: On): void {
     if (e.agentId !== undefined) return { deny: SUBAGENT_REFUSAL }
     const brief = (e as { brief?: unknown }).brief
     if (typeof brief !== 'string' || brief.trim() === '') return { deny: EMPTY_REFUSAL }
+    // In plan mode the engine puts the spawn's Agent call to a permission dialog, on which the call would wait;
+    // and a fork inherits the mode, where no hook can open its write.
+    if (mode === 'plan') return { deny: PLAN_REFUSAL }
     // One fork at a time: a call that comes while another is starting waits for it, then is answered as it left things.
     while (starting !== undefined) await starting
     let release = () => {}

@@ -1,6 +1,6 @@
 {
   "name": "doperpowers",
-  "version": "7.220.0",
+  "version": "7.221.0",
   "description": "A development methodology for coding agents: a design you approve, one living spec that carries its plan of work as milestones, test-first builds by fresh subagents, and independent review.",
   "author": {
     "name": "SSFSKIM",

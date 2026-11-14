@@ -76,8 +76,7 @@ const ENGINE = { plugin: 'engine', tier: 'core' }
  *
  * `server` answers each command line, `spawn` the engine's spawn (FORK by
  * default), `agents` the agent list, `links` where a path lands (a path not
- * listed lands on itself; null leads nowhere), `mode` the session's
- * permission mode as the engine stamps it on a spawn.
+ * listed lands on itself; null leads nowhere).
  */
 function harness({
   env = {},
@@ -85,14 +84,12 @@ function harness({
   spawn,
   agents = () => [{ id: FORK, description: FORK_DESCRIPTION, type: 'fork', status: 'running', spawnedBy: 'to-human' }],
   links = {},
-  mode = 'default',
 }: {
   env?: Record<string, string>
   server?: { open?: () => Answer | Promise<Answer>; publish?: () => Answer | Promise<Answer> }
   spawn?: () => Record<string, unknown> | undefined
   agents?: () => Record<string, unknown>[]
   links?: Record<string, string | null>
-  mode?: string
 } = {}) {
   forgetPresent()
   const hooks: Registration[] = []
@@ -145,7 +142,7 @@ function harness({
     agent: {
       // Every hook but the calling one (the handler's, which is no agent.spawn hook), under this plugin's origin.
       spawn: (input: Event) =>
-        run('agent.spawn', { ...input, fork: true, background: true, permissionMode: mode, parentModel: 'claude-haiku' }, (e) => {
+        run('agent.spawn', { ...input, fork: true, background: true, permissionMode: 'default', parentModel: 'claude-haiku' }, (e) => {
           spawned.push(e)
           return spawn?.() ?? { model: 'claude-haiku', agentId: FORK }
         }, PLUGIN),
@@ -175,8 +172,11 @@ function harness({
   /** A call of another tool, answered `ran` beneath (or by `core`). */
   const call = (tool: string, input: Event = {}, agentId?: string, core: (e: Event) => unknown = () => ({ result: 'ran' })) =>
     run('tool.call', { tool, tool_use_id: `toolu_${tool}`, ...input, ...(agentId !== undefined && { agentId }) }, core) as Promise<Record<string, unknown>>
-  const check = (tool: string, input: Event = {}, { agentId = FORK, isReadOnly = false, core = 'ask' }: { agentId?: string; isReadOnly?: boolean; core?: string } = {}) =>
-    run('tool.check', { tool, input, tool_use_id: `toolu_${tool}`, ...(agentId !== '' && { agentId }), ...(isReadOnly && { isReadOnly: true }) }, () => ({ decision: core }))
+  const check = (
+    tool: string,
+    input: Event = {},
+    { agentId = FORK, isReadOnly = false, core = 'ask', origin = ENGINE }: { agentId?: string; isReadOnly?: boolean; core?: string; origin?: typeof ENGINE } = {},
+  ) => run('tool.check', { tool, input, tool_use_id: `toolu_${tool}`, ...(agentId !== '' && { agentId }), ...(isReadOnly && { isReadOnly: true }) }, () => ({ decision: core }), origin)
   /** The fork's end, as every hook hears an agent's turn.complete; then its close settles. */
   const ended = async (fields: Event = {}) => {
     await run('turn.complete', { turnId: 'tf', answer: SAID, durationMs: 9, isAborted: false, reason: 'answer', agentId: FORK, ...fields }, () => ({ text: '' }))
@@ -188,11 +188,16 @@ function harness({
     const result = await run('prompt.submit', { text, origin: { kind: 'composer' } }, (e) => ((reached = e), drop ? { drop: 'screened' } : { text: e.text }))
     return { result, context: reached?.context }
   }
+  /** A classic event as the engine raises it. */
+  const classic = (e: Event) => run(`classic.${String(e.hook_event_name)}`, e, () => ({}))
+  /** The engine's record of a switch of mode, naming the loop it happened in (none: the main loop's). */
+  const modeChanged = (to: string, agentId?: string) =>
+    run('telemetry.log', { to: 'collector', event: 'permission_mode_changed', attributes: { to_mode: to, ...(agentId !== undefined && { agent_id: agentId }) } }, () => ({ value: undefined }))
   const start = async (isInteractive = true) => {
     await run('session.start', { cwd: '/w', surface: null, isInteractive }, () => ({ cwd: '/w' }))
     await settle()
   }
-  return { present, call, check, ended, prompt, start, state, commands, spawned, notified, sleeps }
+  return { present, call, check, ended, prompt, start, classic, modeChanged, state, commands, spawned, notified, sleeps }
 }
 
 describe('the present tool: its contract', () => {
@@ -411,25 +416,24 @@ describe('the present tool: the call', () => {
     expect(await h.present('x', { id: 'toolu_p2' })).toEqual({ result: STARTED(ADDRESS) })
   })
 
-  test('in plan mode the spawn is refused before any fork starts, with PLAN_REFUSAL', async () => {
-    const h = harness({ mode: 'plan' })
+  test('in plan mode, as the prompt reported it, the call is refused before anything runs; a switch out opens it again', async () => {
+    const h = harness()
+    await h.classic({ hook_event_name: 'UserPromptSubmit', prompt: 'p', permission_mode: 'plan' })
     expect(await h.present('x')).toEqual({ deny: PLAN_REFUSAL })
+    expect(h.commands).toEqual([])
     expect(h.spawned).toEqual([])
-    expect(h.state.get('present') ?? null).toBeNull()
+    await h.modeChanged('default')
+    expect(await h.present('x', { id: 'toolu_p2' })).toEqual({ result: STARTED(ADDRESS) })
   })
 
-  test("in plan mode a fork the model starts itself (the Agent tool's) is not the tool's to refuse", async () => {
-    forgetPresent()
-    const hooks: Registration[] = []
-    registerPresent(((event: string, ...rest: unknown[]) => {
-      hooks.push({ event, matcher: rest.length > 1 ? (rest[0] as Event) : {}, handler: rest[rest.length - 1] as Handler })
-      return { catch: () => {} }
-    }) as unknown as On)
-    const spawnHook = hooks.find((r) => r.event === 'agent.spawn')!
-    const $ = { plugin: { name: 'to-human' } }
-    const e = { subagentType: 'fork', description: FORK_DESCRIPTION, prompt: 'p', permissionMode: 'plan', fork: true }
-    const passed = await spawnHook.handler($, e, Object.assign(async () => ({ model: 'm', agentId: 'a1' }), { origin: ENGINE }))
-    expect(passed).toEqual({ model: 'm', agentId: 'a1' })
+  test("a switch into plan mode refuses the next call; a subagent's own mode is not the session's", async () => {
+    const h = harness()
+    await h.modeChanged('plan', 'agent-1')
+    await h.classic({ hook_event_name: 'UserPromptSubmit', prompt: 'p', permission_mode: 'plan', agent_id: 'agent-1' })
+    expect(await h.present('x')).toEqual({ result: STARTED(ADDRESS) })
+    await h.ended()
+    await h.modeChanged('plan')
+    expect(await h.present('x', { id: 'toolu_p2' })).toEqual({ deny: PLAN_REFUSAL })
   })
 })
 
@@ -680,6 +684,18 @@ describe("the guard over the fork's calls", () => {
     expect(await h.check('Write', { file_path: '/w/x' }, { agentId: 'other' })).toEqual({ decision: 'ask' })
     expect(await h.call('Agent', {}, 'other')).toEqual({ result: 'ran' })
     expect(await h.call('Agent')).toEqual({ result: 'ran' })
+  })
+
+  test("the engine's check of this plugin's own spawn is allowed; the same call from anyone else is the engine's to judge", async () => {
+    const h = harness()
+    const spawn = { prompt: 'p', description: FORK_DESCRIPTION, run_in_background: true, subagent_type: 'fork' }
+    const own = { agentId: '', origin: { plugin: 'to-human', tier: 'user' } }
+    expect(await h.check('Agent', spawn, own)).toEqual({ decision: 'allow' })
+    expect(await h.check('Agent', spawn, { agentId: '' })).toEqual({ decision: 'ask' })
+    expect(await h.check('Agent', spawn, { ...own, origin: { plugin: 'sminos', tier: 'user' } })).toEqual({ decision: 'ask' })
+    expect(await h.check('Agent', { ...spawn, description: 'other' }, own)).toEqual({ decision: 'ask' })
+    expect(await h.check('Agent', { ...spawn, subagent_type: 'general-purpose' }, own)).toEqual({ decision: 'ask' })
+    expect(await h.check('Bash', { command: 'ls' }, own)).toEqual({ decision: 'ask' })
   })
 
   test("a failure beneath a main-loop call is not read as the guard's", async () => {
