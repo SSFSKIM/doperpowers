@@ -196,8 +196,9 @@ human's ruling or a lesson of the prototype runs:
   one-line summary. An explanation keeps its own order: the human's rule is
   about what they meet first, and an account of how something works, sorted
   by date, is harder to follow than one sorted by its logic.
-- Where an edit changes what the human has seen, a note at that place. A
-  note still unchecked whose statement changes again is replaced by one note
+- Where an edit changes what the human has seen, one note for that change,
+  at the first place it shows, with each other place it changed marked
+  under the same id. A note still unchecked whose statement changes again is replaced by one note
   carrying both steps. Notes the human checked are deleted from the file.
 - Plain and legible is the design care expected. The prototype's fork loaded
   the `designer` skill, whose workflow is out of proportion for a panel.
@@ -1093,7 +1094,7 @@ In `to-human/hooks/mods/present.tsx`:
     The body states what holds now; edit it in place. What is new or awaits the human goes at the top. What is older and settled is cut once it no longer serves, or moved to the bottom and folded behind a one-line summary. An explanation keeps its own order.
 
     {seen}
-    Where an edit changes what they have seen, anchor a note at that place saying what changed and why, ids u{update}-1, u{update}-2, and so on. A note still on the page whose statement you change again is replaced by one note carrying both steps.{checked}
+    Where an edit changes what they have seen, write one note for that change, saying what changed and why, at the first place it shows, and mark each other place it changed with the same id; ids u{update}-1, u{update}-2, and so on, one per change. A note still on the page whose statement you change again is replaced by one note carrying both steps.{checked}
 
     You can read anything and write only {draft}. Reply with two lines: what the panel now holds, and what changed.
 
@@ -1104,7 +1105,7 @@ panel: it owes them no notes.`; `current`: `The human has looked at the
 panel since its last update: they have seen what it holds.`; `stale`: `The
 human has not looked at the panel since its last update: what that update
 wrote, they have not seen.` `{checked}` is empty, or ` Delete these notes,
-which they checked off: u2-1, u2-3.`
+which they checked off, with every mark of their ids: u2-1, u2-3.`
 
 The guard, on every call of the fork a run's record names:
 
@@ -1365,6 +1366,29 @@ configuration directory, with a probe plugin whose tool spawns a fork
   `FAILED` for a written page; an internal call of another plugin took the
   notice and dropped it.
   Date/Author: 2026-11-13, the executing session, on M2's review.
+
+- Decision: one note per change, at its first place, with every place it
+  changed marked under the note's id; acceptance 3 stays as written. A note
+  per changed place was considered and rejected.
+  Rationale: asked to change one figure, the fable fork anchored 6 notes
+  and the opus fork 5, one wherever the figure or one derived from it
+  appeared, reading "a note at that place" per place. The human asked of
+  notes that they stay compact and go with one check each; six checks for
+  one thing to know is the accumulation they ruled out. The base already
+  draws a note at its first anchor and highlights every mark of its id.
+  Date/Author: 2026-11-13, the designing session, on M2's owner-model runs.
+- Decision: acceptance 3, 4, 5 and 8 are judged on owner-model runs (fable
+  and opus); haiku's result is recorded beside its wandering forks as the
+  same limit of this version. The server's enforcement of acceptance 5
+  (recording at publish that an update owes no notes, `window.PANEL`
+  carrying those update numbers, the base drawing none of their notes) was
+  considered and not taken.
+  Rationale: fable held acceptance 5 (0 notes on an unseen page); the
+  failure it would prevent is a few notes on a page read for the first
+  time, dismissed with a click, shown only on a model the version already
+  declares unreliable, which does not justify reopening M1's reviewed
+  interface. A later version can take it up if an owner model misses.
+  Date/Author: 2026-11-13, the designing session, on M2's runs.
 
 ## Outcomes & Retrospective
 
