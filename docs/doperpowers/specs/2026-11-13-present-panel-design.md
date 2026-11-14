@@ -14,18 +14,19 @@ to learn what holds now.
 After this change a session has one more way to reach its human: its
 **panel**, one HTML page per session, read in a browser. The session calls
 one small tool, `mcp__to-human__present`, with a brief, and keeps working. A
-forked copy of the session writes or edits the page in the background, and
-the session is told when it is ready, so it can send the message that links
-it. The page is edited in place and always states what holds now; where an
-edit changes something the human has already seen, a small note sits at that
-place, in the manner of a comment in Google Docs, and disappears for good
-once the human checks it off.
+forked copy of the session writes or edits the page in the background. When
+the page is written the human is shown its address in their report and
+notified, without the session spending a turn on it. The page always states
+what holds now; where an update changes something the human has already
+seen, a small note sits at that place, in the manner of a comment in Google
+Docs, and disappears for good once the human checks it off.
 
 To see it working: in a to-human session in a terminal, have the session
-present something (a design with two options, say). A link of the form
-`https://s.tail112c3f.ts.net:4777/b4d10f41/` arrives in a message a few
-minutes later; it opens the page, from the machine the session runs on or
-from any other device of the human's on their tailnet. Have the session change one of the options: the open page
+present something (a design with two options, say). The row of that call in
+the report reads `writing…`, and a few minutes later carries a link of the
+form `https://s.tail112c3f.ts.net:4777/b4d10f41/`, which opens the page from
+the machine the session runs on or from any other device of the human's on
+their tailnet. Have the session change one of the options: the open page
 reloads by itself, the changed place carries a note, and a click on the
 note's check button removes it.
 
@@ -47,34 +48,36 @@ of a page, with older material pruned or moved to the bottom.
 ## Progress
 
 - [x] (2026-11-14 01:30Z) Design approved from the prototype; engine trials dispatched.
-- [x] (2026-11-14 03:05Z) Trials reported (Claude Code 2.1.325, haiku); spec written.
-- [ ] Spec review and execution-section review absorbed.
+- [x] (2026-11-14 03:05Z) Trials reported (Claude Code 2.1.325, haiku); spec written (e657e818).
+- [x] (2026-11-14 04:10Z) Design review and execution-section review absorbed (Decision Log).
+- [ ] Second review round on the revised spec.
 - [ ] M1 — the panel server and the base.
 - [ ] M2 — the tool and the fork.
 - [ ] M3 — the rule, its evaluation, and the documents.
-- [ ] Whole-branch review, retrospective, merge.
+- [ ] Whole-branch review, retrospective, merge; the owner's two files.
 
 ## Terms
 
 - **Panel**: one HTML page a session keeps for its human, at most one per
   session, stored on the machine the session runs on.
 - **Fork**: a subagent of type `fork`: a copy of the session that starts
-  with the session's whole conversation and runs on the session's model. A
-  plugin starts one with `$.agent.spawn({ subagentType: 'fork', ... })`; the
-  sminos bridge's `manager query` is the existing example
-  (`sminos/hooks/mods/bridge-ask.tsx`).
+  with the session's whole conversation and runs on the session's model and
+  in its permission mode. A plugin starts one with
+  `$.agent.spawn({ subagentType: 'fork', ... })`; the sminos bridge's
+  `manager query` is the existing example (`sminos/hooks/mods/bridge-ask.tsx`).
 - **Brief**: the one input of the tool: what to put on the panel or change
   on it.
 - **Standing prompt**: the fixed text the tool puts before the brief in the
   fork's prompt (`STANDING_PROMPT`, in Interfaces).
+- **Draft**: the file a fork edits, `draft.html` in the panel's directory.
+  It becomes the page only when the fork has ended well (**published**).
 - **Note**: a short text anchored at a place on the page, saying what
   changed there and why. The human removes it with its check button.
 - **Base**: the stylesheet, the script and the optional blocks the plugin
   ships and the server serves, which every panel links. It fixes how a panel
   looks and behaves, and nothing about what it holds or in what order.
-- **Panel server**: one process per machine that serves every panel on it,
-  the base, and the two things a page reports back (it was opened, a note
-  was checked).
+- **Panel server**: one process per machine that serves every panel on it
+  and the base, and is the only writer of a panel's records.
 - **Short id**: the first 8 characters of a session's id, as sminos shows a
   session (`[b4d10f41]`); a panel's place in the server's addresses.
 - **Address**: a panel's URL, `<origin>/<short id>/`, where the origin is
@@ -84,30 +87,42 @@ of a page, with older material pruned or moved to the bottom.
   their machines has a name (`s.tail112c3f.ts.net` is the MacBook).
   `tailscale serve` has the machine's Tailscale daemon accept HTTPS on a
   port of that name, from the tailnet's devices only, and pass each request
-  to a local port, adding the header `Tailscale-User-Login` with the login
-  of the requesting device's user (none for a tagged device, which has no
-  user). The session manager's page is served this way
-  (`sminos/skills/manager/scripts/manager_serve.py`).
+  to a local port. It adds the headers `X-Forwarded-For` and
+  `X-Forwarded-Host` to every request it passes, and `Tailscale-User-Login`
+  with the login of the requesting device's user (none for a tagged device,
+  which has no user; a copy a client sends is replaced). It passes the
+  client's `Host` header on unchanged. The session manager's page is served
+  this way (`sminos/skills/manager/scripts/manager_serve.py`).
 - **Configuration directory**: `CLAUDE_CONFIG_DIR`, else `~/.claude`.
+- **Report**: what the human reads of a session under the to-human style:
+  its messages and the few rows the view keeps in sight, with the rest
+  folded (`to-human/hooks/mods/to-human.tsx`).
 
 ## What the human sees
 
-A message says something is on the panel and links it. The page opens in the
-browser. It is about three screens long. At its top is what is new or what
-awaits the human; older, settled material is gone, or sits at the bottom
-folded behind a one-line summary. No two panels need look alike in
-structure: one is a comparison of options under a "needs you" block, another
-a diagram with a table of findings. They share type, spacing, colours and
-the behaviour of notes.
+The session says it is putting something on the panel, and the row of its
+`present` call stays in the report: the brief's first line and `writing…`.
+When the page is written, that row carries the page's address as a link and
+a notification is raised; when it could not be written, the row says so and
+why. Nothing here waits on the session: the address reaches the human from
+the tool, not from a message the session has to remember to send.
 
-When the session updates the panel, the open page reloads by itself. Each
-place whose statement changed since the human last saw it carries a
-highlighted phrase and, beside it in the margin (under it on a narrow
-window), a note: what changed and why. The top of the page counts the notes
-still open and jumps to the next. A click on a note's check button removes
-the note and its highlight; it stays gone on reload and in every browser,
-and the next update deletes it from the page's file. A page the human never
-opened gets no notes: there is nothing they could have read differently.
+The page opens in the browser. It is about three screens long. At its top is
+what is new or what awaits the human; older, settled material is gone, or
+sits at the bottom folded behind a one-line summary. No two panels need look
+alike in structure: one is a comparison of options under a "needs you"
+block, another a diagram with a table of findings. They share type, spacing,
+colours and the behaviour of notes.
+
+When the session updates the panel, the open page reloads by itself, once,
+when the update is whole. Each place whose statement changed since the human
+last saw it carries a highlighted phrase and, beside it in the margin (under
+it on a narrow window), a note: what changed and why. The top of the page
+counts the notes still open and jumps to the next. A click on a note's check
+button removes the note and its highlight; it stays gone on reload and in
+every browser, and the next update deletes it from the page's file. A page
+the human never looked at gets no notes: there is nothing they could have
+read differently.
 
 The panel is read-only apart from the check buttons. A decision it lays out
 is asked through the ask dialog (`mcp__sminos__AskUserQuestion`), whose
@@ -119,19 +134,18 @@ and the base's own words (the count, the check button's label) are Korean.
 ## What the session does
 
 The session calls `mcp__to-human__present` with `{ brief }`. The call
-returns at once with the panel's address. Minutes later the session is told
-the panel is written, with the address and the fork's two lines on what the
-page now holds and what changed; it then sends the human the message that
-links the page, and asks if a decision is due.
+returns within seconds with the panel's address and says what happens next
+(`STARTED`): the human is shown the address when the page is written; the
+session is not woken for it and learns the outcome at its next step or its
+next prompt; so if a decision is due, it asks now, pointing at the panel.
 
 The rule for when to call it is one sentence, in the `to-human` output style
 and in the human's own `CLAUDE.md` (`RULE`, in Interfaces): what the human
-must read closely and plain text carries poorly goes on the panel, and a
-message points to it; routine reports stay text. The rule is deliberately
-narrow. Each call costs requests over the session's whole context (the
-prototype's two runs: 147k and 154k tokens in the fork, at a parent context
-near 100k), so a panel has to earn its call; and the human ruled that most
-sessions should never need one.
+must read closely and plain text carries poorly goes on the panel; routine
+reports stay text. The rule is deliberately narrow. Each call costs a fork's
+requests over the session's whole context (cache reads while the session's
+cache is warm, trial 6), so a panel has to earn its call; and the human
+ruled that most sessions should never need one.
 
 ## The design
 
@@ -161,18 +175,21 @@ the brief stays short.
 
 The tool's handler prepares the panel (below), then spawns the fork with the
 standing prompt and the brief. The standing prompt says what the panel is
-for and gives the fork the facts it cannot derive: the file to write, the
-address, the language, the update's number, whether the human has opened the
-page since its last update, which notes they checked off, the markup of a
-note, and where the base's blocks are listed. Its rules are few, and each is
-the human's ruling or a lesson of the prototype runs:
+for and gives the fork the facts it cannot derive: the file to edit, the
+language, the update's number, whether the human has looked at the page
+since its last update, which notes they checked off, the markup of a note,
+and where the base's blocks are listed. Its rules are few, and each is the
+human's ruling or a lesson of the prototype runs:
 
 - Compose for the content; no section or order is required. Write content
   only, on the base.
 - About three screens. The first prototype draft, told "a few scrolls", came
   out a third too long; a number prevents the overshoot. Without a browser
-  the fork cannot measure a rendered height, so the prompt gives the measure
-  it can check: 600 to 900 words with its figures.
+  the fork cannot measure a rendered height, so the prompt gives a measure it
+  can count: 600 to 900 words of the page's running text in English, or
+  1,800 to 2,700 characters in Korean, not counting notes, the labels inside
+  figures, or material folded at the bottom. (The approved page: about 860
+  such words.)
 - The body states what holds now, edited in place.
 - What is new or awaits the human is at the top; what is older and settled
   is cut once it no longer serves, or moved to the bottom, folded behind a
@@ -184,21 +201,34 @@ the human's ruling or a lesson of the prototype runs:
   carrying both steps. Notes the human checked are deleted from the file.
 - Plain and legible is the design care expected. The prototype's fork loaded
   the `designer` skill, whose workflow is out of proportion for a panel.
+- No credential on the page.
 
-The fork is held to reading, plus `Write` and `Edit` inside its panel's
-directory (the guard, in Interfaces). The hold is needed, not a precaution.
-A fork starts in the middle of the session's turn with the session's task
-in its context, and goes on with it when nothing stops it: in the trials 4
-of 6 forks (haiku) did the session's remaining work, re-running its
-commands and calling the tool again, and a sentence in the prompt telling
-them not to did not stop them; only a tool policy did (trial 3). The
-standing prompt opens by saying the fork is not the session and does not
-continue its task, as the sminos bridge's fork frame does (`ASK_FRAME`), and
-the guard makes that true of everything but its words. The guard also keeps
-every fork call from a permission prompt: with no hook deciding, the write
-of a panel asks in the `default` and `acceptEdits` modes, because the
-configuration directory is a protected location, and the fork blocks on a
-dialog in the main session's pane (trial 2).
+**The draft.** The fork does not edit the page the server serves. It edits
+`draft.html`, which `open-panel` makes as a copy of the published page (or
+of the starter, for a new panel), and when the fork ends well the server
+publishes the draft over the page in one rename. A fork takes minutes and
+edits in many steps; edited live, an open tab would reload into each
+half-written state, and a fork that died midway (an API error, an
+interrupt, the session's exit) would leave a broken page with nothing to
+restore it from, since no version is kept. With a draft the page changes
+once per update, a failed fork leaves it as it was, and "written" has one
+meaning. "Edited in place" is the human's ruling about the content, which
+this keeps: the draft starts as the page.
+
+**The guard.** The fork is held to reading, plus `Write` and `Edit` of its
+draft (the guard, in Interfaces). The hold is needed, not a precaution. A
+fork starts in the middle of the session's turn with the session's task in
+its context, and goes on with it when nothing stops it: in the trials 4 of 6
+forks (haiku) did the session's remaining work, re-running its commands and
+calling the tool again, and a sentence in the prompt telling them not to did
+not stop them; only a tool policy did (trial 3). The standing prompt opens
+by saying the fork is not the session and does not continue its task, as the
+sminos bridge's fork frame does (`ASK_FRAME`), and the guard makes that true
+of everything but its words. The guard also keeps every fork call from a
+permission prompt: with no hook deciding, a write under the configuration
+directory asks in the `default` and `acceptEdits` modes, because the
+directory is a protected location, and the fork blocks on a dialog in the
+main session's pane (trial 2).
 
 The guard is the plugin's own. A plugin's hooks run on the calls of a fork
 it spawned, all but the one registration whose frame made the spawn (the
@@ -207,55 +237,89 @@ tool's handler), so the guard is registered apart from the handler; its
 deny stands, with no prompt, in the `default`, `acceptEdits` and `auto`
 modes (trial 2). It holds as long as no plugin outside to-human overrides
 its answer; to-human is the outermost plugin by the owner's
-`prependPlugins`.
+`prependPlugins`. In plan mode a hook can only tighten a call that is not a
+read (the engine's declaration of `ToolCheckResult.decision`), and a fork
+inherits the session's mode, so there the write cannot be opened: the tool
+refuses the call in plan mode, before any fork is spawned.
 
-One fork per session at a time. A call that arrives while a fork runs is
-held, and when that fork ends the tool starts one more fork with every
-brief held meanwhile; the session is told once, after the last. The other
-way, delivering the brief to the running fork as a message
-(`$.session.send`), is what the prototype's first run did by hand, and it
-works while the fork still has a step to take. But a message that arrives
-as the fork writes its last reply is not read: the engine then resumes the
-fork for another turn, sends the main session a task notification nobody
-asked for, and wakes it (trial 4). A second run costs minutes on the rare
-occasion two calls overlap; it has no such window, and its fork starts from
-the conversation as it then stands.
+The guard also refuses a write whose text holds a secret's handle
+(`[secret:…]`, `[redacted:…]`). The devcloud plugin's secrets guard, seated
+inside to-human, restores a handle to the secret's bytes in a `Write` or an
+`Edit`, and a panel is served to other devices.
 
-When the last fork ends, the session is told (`FINISHED`): the address and
-the fork's last text. The engine sends no notification for a fork a plugin
-started, neither into a running turn nor to an idle session (trial 1), so
-the plugin tells the session itself: the fork's own `turn.complete` reaches
-the plugin's hook with the fork's agent id and its final text, and the
-plugin submits the notice as its prompt (`$.prompt.submit`), which the
-engine runs as a turn once the session is idle, behind anything the human
-queued, as it runs the compact mod's offer (`hooks/mods/compact.tsx`). A
-fork that ended without changing `panel.html` is told as a failure
-(`FAILED`), so the session does not link a page that is not there.
+**One fork at a time.** A call made while this session's fork is writing is
+refused (`BUSY`): the session calls again once it has been told the panel is
+written. Two other ways were considered. Delivering the brief to the running
+fork as a message (`$.session.send`) works while the fork still has a step
+to take, as the prototype's first run did by hand; but a message that lands
+as the fork writes its last reply is not read, and the engine then resumes
+the fork for another turn, sends the main session a task notification
+nobody asked for, and wakes it (trial 4). Holding the brief for a second
+fork started at the first one's end needs the held briefs to survive a
+reload of the plugin, a second place that spawns (from a `turn.complete`
+hook, where a denied spawn would lose the brief silently), and a
+reservation across both. Overlap is rare, the refusal costs the session one
+more call, and that call is made from the tool's handler, the one spawn path
+the trials exercised.
+
+**The end.** The engine sends no notification for a fork a plugin started,
+neither into a running turn nor to an idle session (trial 1). The fork's own
+`turn.complete` reaches the plugin's hook with the fork's agent id, its
+final text and the reason it ended. The plugin then:
+
+1. publishes the draft, when the reason is `answer`; the page is **written**
+   if the server published a draft that differed from the page, and **not
+   written** otherwise (the fork ended `aborted`, `refusal` or `error`, or
+   changed nothing), with that as the reason;
+2. shows the human: the call's row in the report turns from `writing…` to
+   the address, or to `not written` and why, and a notification is raised
+   where the session notifies (`notify.tsx`'s `isNotifying`);
+3. tells the session, without waking it: `FINISHED` or `FAILED` rides as
+   hook context beside the main loop's next tool result when a turn is
+   running, else beside its next prompt, the way the sminos ask delivers an
+   answer mid-turn and the reminder rides a prompt
+   (`sminos/hooks/mods/ask.tsx`, `to-human/hooks/mods/reminder.tsx`).
+
+The human's sketch had the session notified when the page is done, and the
+first version of this design woke the session with a prompt so it could send
+the link. Three facts moved it. A prompt a plugin submits runs only once the
+session is idle, so a session still working would not send the link for the
+rest of its turn. A turn that a plugin's prompt opens is the kind the
+transcript audit found ending on unsent prose in 75% of cases
+(`to-human/CLAUDE.md`, on `reminder.tsx`), so the link would often not be
+sent at all. And a prompt to-human submits is not drawn by to-human's own
+view (the engine runs none of a plugin's render hooks on a row that plugin
+submitted), so it could not be folded. Showing the human directly needs no
+turn, costs no request over the whole context, and cannot be forgotten; the
+session still learns the outcome before it next acts.
 
 ### The panel's files
 
 Each panel is a directory under the configuration directory,
-`to-human/panels/<short id>/`, beside the plugin's `dumps/` and `folds/`:
+`to-human/panels/<short id>/`, beside the plugin's `dumps/` and `folds/`
+(the directory is outside what the owner's `~/.claude` syncs between
+machines, a git allow-list):
 
 | File | Writer | What it holds |
 |---|---|---|
-| `panel.html` | the fork | The page: content, and the two lines that link the base. |
-| `meta.json` | the server's `open-panel` command | `{ "session": "<full id>", "updates": <n>, "locale": "en" \| "ko" }` |
-| `state.json` | the server | `{ "opened": <ms> \| null, "checked": ["<note id>", ...] }` |
+| `panel.html` | the server, at publish | The page as served. |
+| `draft.html` | the server at `open-panel`; then the fork | The page being edited. |
+| `meta.json` | the server | `{ "session": "<full id>", "updates": <n>, "locale": "en" \| "ko" }` |
+| `state.json` | the server | `{ "seen": <ms> \| null, "written": <ms> \| null, "checked": ["<note id>", ...] }` |
 
-The directory is named by the short id because the address is. Two sessions
-whose ids share 8 characters would share a panel, so `open-panel` compares
-`meta.json`'s `session` with the caller's and, on a mismatch, uses the first
-12 characters instead (and so on by 4).
+The server is the only writer of everything but the draft, inside one
+process and under one lock, so a check the human makes while `open-panel`
+runs cannot be lost between two writers. The command line (`open-panel`,
+`publish`) is a client of the running server and writes nothing itself.
 
-The server never writes `panel.html`, and the fork never writes the other
-two: with one writer per file there is no lock. The human's check reaches
-disk in `state.json` at once; the server hides the note in what it serves
-from then on; the fork deletes the note's markup at its next edit, so the
-file itself stays compact.
+A short id that another session's panel holds (`meta.json` names a
+different session) is refused by `open-panel` with a sentence. Two ids share
+8 characters about once in four billion pairs; a longer directory name for
+the second would give one session an address unlike every other's for an
+event that will not happen.
 
-A panel untouched for 30 days is removed when a server starts, as the fold
-summaries' files are.
+A panel whose `panel.html` and `draft.html` are both older than 30 days is
+removed when a server starts, as the fold summaries' files are.
 
 ### The base
 
@@ -268,14 +332,20 @@ summaries' files are.
 - `panel.js`: draws each note at the height of its anchor in the margin, or
   under the anchor's block on a narrow window; gives it a check button; shows
   the count of open notes at the top with a jump to the next; reports a check
-  to the server; reloads the page when the file changes, keeping the scroll
-  position. Its words come in English and Korean, chosen by the page's `lang`.
-- `starter.html`: a page with the two base links, a title and an empty body,
-  which `open-panel` copies to a new panel so a fork edits a page instead of
-  writing one from nothing.
-- `README.md`: the note markup and the optional blocks, each with a three-line
+  and a look to the server; reloads the page when it is published anew,
+  keeping the scroll position. Its words come in English and Korean, chosen
+  by the page's `lang`.
+- `starter.html`: a page with the two base links, a title and an empty body:
+  a new panel's first draft, so a fork edits a page instead of writing one
+  from nothing.
+- `GUIDE.md`: the note markup and the optional blocks, each with a three-line
   example, for the fork to read on a first write. Blocks: a "needs you" block,
   a callout, an option comparison, a diagram frame, a quoted wording block.
+  (Not `README.md`: `.version-bump.json` counts `*/README.md` as unshipped,
+  and this file is behaviour the fork runs on.)
+
+A change to the base stays compatible with a page written up to 30 days
+earlier: classes and the note markup are added to, never renamed.
 
 A note's markup is the base's, fixed, so every fork writes the same one and
 the script can rely on it:
@@ -301,82 +371,146 @@ it, already needs it on every machine; a server in TypeScript would need
 `bun` or `node` at run time, which only the tests need today.
 
 It listens on `127.0.0.1` alone, on a fixed port, 4777 (`PANEL_PORT` names
-another), so an address in an old message still opens after the server
+another), so an address in an old report still opens after the server
 restarts.
 
-The human reads at the MacBook, and sessions also run on the Mac mini and
-the devcloud hosts, whose localhost the MacBook cannot open. The human
-ruled that every machine's panels are reachable over Tailscale. The server
-does not listen on the tailnet itself: the Mac's application firewall is on
-and would stop or prompt for a listener of Python's, and a listener bound
-to the Tailscale address has to follow that address as Tailscale restarts.
-`tailscale serve` does it instead, as it does for the session manager's
-page: `ensure` and `open-panel` run
-`tailscale serve --bg --https=<port> http://127.0.0.1:<port>` when Tailscale
-is running and `tailscale serve status --json` shows no such mapping, and,
-where that is refused for want of the right to configure the daemon, the
-same under `sudo -n` (a devcloud host joins the tailnet with
+**Reach.** The human reads at the MacBook, and sessions also run on the Mac
+mini and the devcloud hosts, whose localhost the MacBook cannot open. The
+human ruled that every machine's panels are reachable over Tailscale. The
+server does not listen on the tailnet itself: the Mac's application firewall
+is on and would stop or prompt for a listener of Python's, and a listener
+bound to the Tailscale address has to follow that address as Tailscale
+restarts. `tailscale serve` does it instead, as it does for the session
+manager's page: with `PANEL_REACH=tailnet` in the session's environment the
+server runs `tailscale serve --bg --https=<port> http://127.0.0.1:<port>`
+when Tailscale is running and `tailscale serve status --json` shows no such
+mapping, and, where that is refused for want of the right to configure the
+daemon, the same under `sudo -n` (a devcloud host joins the tailnet with
 `tailscale up --advertise-tags=tag:devcloud` and names no operator, so its
 session user has the right only through sudo; `-n` fails at once where sudo
 would ask for a password). The mapping is the Tailscale daemon's and
-outlasts the server and a restart of the machine. Where it cannot be made (no Tailscale, or no right to run
-`serve`, as on a Linux host whose user is not the daemon's operator) the
+outlasts the server and a restart of the machine;
+`tailscale serve --https=<port> off` removes it. Where it cannot be made the
 address is the localhost one and `OpenPanel`'s `reach` is `"local"`, which
 the tool passes on, so the session can say the panel opens only on that
-machine. The manager's `serve --install` leaves this command to the owner;
-here the human's ruling is the instruction, and a tool that needed a manual
-step on each host before its first use would not be used on them.
+machine.
+
+Exposure is asked for by the environment variable, not made by default: the
+plugin is published, and a tool that reconfigured a stranger's Tailscale
+daemon under sudo, unasked, would be a bad neighbour. The owner sets
+`PANEL_REACH=tailnet` once in `~/.claude/settings.json` under `env`, which
+their machines share. The manager's `serve --install` goes further and
+leaves the command itself to the owner; here a manual step on each host
+before its first use would mean the tool is not used on them.
+
+`tailscale` is never run on a request's path. The server holds the
+machine's tailnet identity (its name, its user's login, whether it is
+tagged) and whether the mapping stands, refreshed by a background thread
+when the server starts and when `open-panel` or `ensure` asks, at most every
+30 seconds, each `tailscale` command limited to 5 seconds. `open-panel`
+waits at most 2 seconds for the first refresh after a cold start and reports
+`"local"` when it has not settled; the address the human is shown is asked
+for again at publish, by which time it has.
+
+**Requests.**
 
 | Request | Answer |
 |---|---|
-| `GET /health` | `{ "server": "to-human-panel", "version": "<plugin version>" }`; local requests only |
+| `GET /<short id>/` | The page, with a small inline script the server inserts before `</head>` carrying the page's publish time and the checked notes, so a checked note never draws. Before a panel's first publish: a page that says the panel is being written, which reloads when it is. |
+| `GET /<short id>/written` | `{ "written": <ms> \| null }`; the script asks every 2 seconds while the tab is visible and reloads when it differs from the page's own. |
+| `POST /<short id>/seen` | Sets `seen` to now; 204. The script sends it when the page is drawn in a visible tab, and when a hidden tab that reloaded becomes visible. |
+| `POST /<short id>/check` with `{ "note": "<id>" }` | Adds the id to `checked` when it matches `u<digits>-<digits>` whole and is not there; 204. Anything else is 400. |
 | `GET /base/<file>` | A base file. |
-| `GET /<short id>/` | `panel.html`, with the notes in `state.json`'s `checked` removed from view and the page's write time, by a small inline script the server inserts before `</head>`; sets `opened` in `state.json` to now. |
-| `GET /<short id>/written` | `{ "written": <ms> }`, the file's modification time; the script asks every 2 seconds while the tab is visible and reloads when it differs from the page's own. |
-| `POST /<short id>/check` with `{ "note": "<id>" }` | Adds the id to `checked`; 204. |
-| `GET /<short id>/<file>` | A file the fork put beside the page (an image). No path leaves the directory. |
-| `POST /shutdown` | The server exits (a newer plugin version replacing it). |
+| `GET`, `POST /control/…` | The command line's requests (below). |
+| anything else | 404. |
 
-A page's contents are the session's work and can be confidential. Every
-request is checked before anything is read:
+A look is a `POST` the page's script sends, not the `GET` of the page: a
+`curl` of the address by the session, a tab the browser restores in the
+background, and a prefetch all get the page without anyone reading it, and
+would each have the next update owe notes to a human who saw nothing.
 
-- By its `Host`. `127.0.0.1:<port>` or `localhost:<port>` is a local
-  request: any process of this user, which could read the files anyway. The
-  machine's tailnet name (with the port) is a request `tailscale serve`
-  passed on: it must carry exactly one `Tailscale-User-Login` header, not
-  empty, and equal to this machine's own user's login when the machine has
-  one (a devcloud host is a tagged device and has none; there any user's
-  login passes, since the tailnet is one person's, and a tagged device, which
-  sends no login, is refused). Any other `Host` is refused, which defeats DNS
-  rebinding from a page in the browser. `tailscale serve` replaces a copy of
-  the header a client sends (checked live for the manager's page).
+**Who may ask.** A page's contents are the session's work and can be
+confidential. Every request is checked before anything is read:
+
+- A request that carries `X-Forwarded-For` or `X-Forwarded-Host` came
+  through `tailscale serve`, whatever its `Host` says: it must carry exactly
+  one `Tailscale-User-Login`, not empty, and equal to this machine's own
+  user's login when the machine has one. The test is the forwarding headers
+  and not the `Host` because `tailscale serve` chooses its handler by the TLS
+  name and passes the client's `Host` through unchanged
+  (`ipn/ipnlocal/serve.go`: `r.Out.Host = r.In.Host`), so a tailnet client
+  can send `Host: 127.0.0.1:4777`; the forwarding headers it cannot leave
+  out, since the proxy adds them.
+- A request without them is local, and its `Host` must be
+  `127.0.0.1:<port>` or `localhost:<port>`, which defeats DNS rebinding from
+  a page in the browser. A local process of this user could read the files
+  anyway.
 - A `POST` whose `Content-Type` is not `application/json`, or whose `Origin`
   is present and not one of the server's own, is refused, which defeats a
-  form or a script on another site. `POST /shutdown` is local only.
+  form or a script on another site.
+- `/control/…` is local only and needs the header `X-Panel-Token` equal to
+  the token in `server.json` (mode 0600, in the panels directory, written
+  when the server starts).
 
 A refusal is 403 with no body.
 
-Its command line is the mod's whole interface to it, so the mod holds no
-logic about processes, ports or files:
+What this admits is stated here so it is a decision and not an accident:
+any process on any untagged device that carries the owner's login reads
+every panel of a machine with a user (the Macs), as it reads the manager's
+page today; on a tagged machine (a devcloud host), which has no user to
+compare with, any user's login passes, and a tagged device is refused. The
+address travels in reports and project logs, so the short id is no secret.
+The owner's tailnet is one person's; narrowing it further is the tailnet
+ACL's work, not the server's.
+
+**What a page may do.** A panel is HTML a model wrote from a context that
+can hold fetched web content, and every panel on a machine shares one
+origin, so a script that reached one page could read the others and send
+them out. Every response carries:
+
+    Content-Security-Policy: default-src 'none'; script-src <origin>/base/ 'nonce-<per response>'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+    X-Content-Type-Options: nosniff
+    Referrer-Policy: no-referrer
+    Cache-Control: no-store
+
+so only the base's script and the server's own inserted one run, and nothing
+loads from or reports to another site. Inline styles and inline SVG stay
+open, which is what a fork composes with. The inserted script carries the
+response's nonce and its JSON with `<` escaped. The server serves no file of
+a panel's directory but the page, and the guard lets the fork write none but
+the draft.
+
+**The command line** is the mod's whole interface to the server, so the mod
+holds no logic about processes, ports or files:
 
     python3 <plugin root>/panel/server.py open-panel --session <id> [--locale en|ko]
+    python3 <plugin root>/panel/server.py publish --session <id>
+    python3 <plugin root>/panel/server.py ensure
 
-makes sure a server answers `GET /health` and is exposed on the tailnet as
-above (starting one detached from the
-session, in its own process session, when none does; replacing one whose
-version is lower than its own through `POST /shutdown`; leaving a newer one
-alone, so two sessions on different plugin versions do not take turns
-killing each other's server), creates the panel's directory and its starter
-page when they are missing, increments `updates`, drops from `checked` the
-ids `panel.html` no longer holds, and prints one JSON line (`OpenPanel`, in
-Interfaces). A port another program holds is an error the tool passes to the
-session as its refusal.
+Each first makes sure a server of its own answers `GET /control/health`
+with the token: starting one detached from the session, in its own process
+session, when none does (and asking again once if the port turned out to be
+taken, since another session's command may have started one in the same
+moment); replacing one whose version is lower than its own through
+`POST /control/shutdown`; leaving a newer one alone, so two sessions on
+different plugin versions do not take turns killing each other's server. A
+port that answers but not with this configuration directory's token (another
+program, or a panel server of another configuration directory) is an error
+the tool passes to the session as its refusal.
+
+`open-panel` then has the server create the panel's directory when it is
+missing, copy the page (or the starter) to the draft, increment `updates`,
+drop from `checked` the ids the page no longer holds, and answer `OpenPanel`
+(in Interfaces). `publish` has it copy the draft over the page in one
+rename, when the draft differs from the page, set `written`, and answer
+`Published`. `ensure` does nothing more when the panels directory holds no
+panel, so the mod can call it at every session's start without starting a
+server nobody needs.
 
 The server outlives the session that started it. After a restart of the
 machine nothing serves until a session starts: the mod runs
-`server.py ensure` at each interactive session's start when the panels
-directory holds a panel, so an old link opens again as soon as any session
-runs.
+`server.py ensure` at each interactive session's start, not awaited, so an
+old link opens again as soon as any session runs.
 
 ### Language
 
@@ -395,16 +529,20 @@ Where the message tool is registered, in an interactive session, outside
 MAWS (which has its own artifact viewer and whose sessions are headless) and
 outside a sminos internal fork. The main conversation only: a subagent's
 call is refused as its message call is, since the panel is the session's
-word to its human.
+word to its human, and the registered agents' definitions withhold the tool
+as they withhold the message tool (`disallowedTools`, the root `CLAUDE.md`'s
+rule for the mods' session-only tools).
 
 ### The rule
 
-`RULE` goes in two places: `output-styles/to-human.md`, in the paragraph
-that says what to report, conditioned on the tool being among the session's;
-and the human's `~/.claude/CLAUDE.md` under Reporting. It is authored agent
-behaviour, so M3 measures it before it ships: a replay of real turns from
-the owner's transcripts, some where a panel is warranted and some routine,
-with the tool offered and the rule in place.
+`RULE` goes in two places: `output-styles/to-human.md`, in the part that
+says what to report; and the human's `~/.claude/CLAUDE.md` under Reporting.
+Both copies open with the condition that the tool is among the reader's
+tools, since subagents and headless sessions read the second and have no
+such tool. It is authored agent behaviour, so M3 measures it before it
+ships: a replay of real turns from the owner's transcripts, some where a
+panel is warranted and some routine, with the tool offered and both copies
+in place.
 
 ### What this version leaves out
 
@@ -413,56 +551,75 @@ with the tool offered and the rule in place.
 - MAWS. Its artifact viewer is the natural surface there; a later ticket.
 - Kept versions and a change log. The human ruled that the notes are the log.
 - A subagent's panel.
+- A guard while the plugin's own module reloads. The engine keeps an
+  unchanged module as loaded across `/reload-plugins`, so the guard is absent
+  only for the moments an update of to-human itself lands while a fork runs;
+  the fork's calls then fall to the session's own permission mode. Closing
+  that needs a guard in a second plugin that knows the draft's path
+  (doperpowers' `fork-guard.tsx` is read-only by design); it is a ticket,
+  with the reload mod's hold on a reload while a fork writes as the likelier
+  fix.
 
 ## Acceptance
 
 Each is a behaviour to observe on a machine with the branch's plugins
 loaded (`claude --plugin-dir` for to-human, sminos and doperpowers), in an
-interactive session under the `doperpowers:to-human` style.
+interactive session under the `doperpowers:to-human` style, unless it names
+the server alone.
 
 1. The session, asked to present a design with two options, calls
    `mcp__to-human__present`; the call returns in under 5 seconds with the
-   panel's address (`https://<this machine's tailnet name>:4777/<short id>/`
-   on a machine with Tailscale), and the session goes on working.
-2. Within minutes the session is told the panel is written, and sends a
-   message linking it. The address serves a page with the two options,
-   styled by the base, with no note on it.
-3. With the page open, the session is asked to change one option and
-   presents again. The page reloads by itself within 5 seconds of the write,
-   the changed place carries a highlighted phrase and a note, and the top of
-   the page counts one open note.
+   panel's address, and the session goes on working. The call's row in the
+   report reads the brief's first line and `writing…`.
+2. Within minutes the row carries the address as a link and a notification
+   is raised, with no turn of the session in between. The address serves a
+   page with the two options, styled by the base, with no note on it. At the
+   session's next tool call or prompt, it reads `FINISHED`.
+3. With the page open and visible, the session is asked to change one option
+   and presents again. The page does not change while the fork works; it
+   reloads once, within 5 seconds of the publish; the changed place carries
+   a highlighted phrase and a note, and the top of the page counts one open
+   note.
 4. A click on the note's check button removes the note and the highlight. A
    reload, and the same address in another browser, show no note.
    `state.json` lists its id. After the next update, `panel.html` no longer
    holds its markup.
-5. In a new session, two calls in a row with the page never opened leave a
-   page with no note.
+5. In a new session, two calls, one after the other's end, with the page
+   never opened in a browser (a `curl` of the address in between does not
+   count as a look), leave a page with no note.
 6. With `PANEL_LOCALE=ko` in the environment, a new session's panel is in
    Korean, its `<html lang>` is `ko`, and the count of notes reads in Korean.
 7. A brief that asks the fork to edit a file of the repository changes no
-   file outside the panel's directory and raises no permission prompt, in the
-   `default` permission mode; the session is told what the fork did instead.
-8. A second call made while the fork runs returns saying its brief is
-   applied in a second pass; one notice of a written panel follows, after
-   that pass, and the page reflects both briefs.
-9. After the session exits, the address still serves the page. After
-   `curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:4777/shutdown`,
-   starting any interactive session brings the address back.
-10. `curl -H 'Host: evil.example' http://127.0.0.1:4777/health` is refused
-    with 403; so is a `POST /<short id>/check` with
-    `Content-Type: text/plain`, and a request with the tailnet `Host` and no
-    `Tailscale-User-Login`.
-13. A panel written by a session on another machine of the tailnet (a
-    devcloud host or the Mac mini) opens in the MacBook's browser at that
-    machine's `https://<tailnet name>:4777/<short id>/`, and a check made
-    there is in that machine's `state.json`. From a tagged device
-    (`curl` on a devcloud host against the MacBook's address) the same
-    request is refused with 403.
-11. A subagent's call of the tool is refused with a sentence that tells it
+   file but the draft and raises no permission prompt, in the `default`,
+   `acceptEdits`, `auto`, `bypassPermissions` and `dontAsk` modes. In plan
+   mode the call is refused with `PLAN_REFUSAL` and no fork starts.
+8. A second call made while the fork runs is refused with `BUSY`; the first
+   fork's page is published as if the call had not been made.
+9. A fork that ends without changing its draft, and a fork interrupted
+   midway, leave the page as it was; the row reads `not written` and why,
+   and the session reads `FAILED`.
+10. After the session exits, the address still serves the page. After the
+    server is stopped (`server.py`'s own `POST /control/shutdown`), starting
+    any interactive session brings the address back.
+11. The server alone, local requests:
+    `curl -H 'Host: evil.example' http://127.0.0.1:4777/<short id>/` is 403;
+    a `POST /<short id>/check` with `Content-Type: text/plain` is 403; a
+    `GET /control/health` without the token is 403; a check of a note id
+    that is not `u<digits>-<digits>` is 400; a response's headers hold the
+    policy above.
+12. With `PANEL_REACH=tailnet`, a panel written by a session on a devcloud
+    host opens in the MacBook's browser at that host's
+    `https://<tailnet name>:4777/<short id>/`, and a check made there is in
+    that host's `state.json`.
+13. From a tagged device (`curl` on a devcloud host against the MacBook's
+    tailnet address) the page is 403, with the honest `Host` and with
+    `-H 'Host: 127.0.0.1:4777'`, and so is `/control/health` with a made-up
+    token.
+14. A subagent's call of the tool is refused with a sentence that tells it
     to put the content in its report; an empty brief is refused; a headless
     session and a MAWS session are not offered the tool.
-12. The rule's replay (M3) meets its bar: of the routine turns at most 1 in
-    10 calls the tool, and of the warranted turns at least 7 in 10.
+15. The rule's replay (M3) meets its bar: of 30 runs over the routine turns
+    at most 3 call the tool, and of 30 over the warranted turns at least 21.
 
 ## Execution
 
@@ -474,13 +631,26 @@ interactive session under the `doperpowers:to-human` style.
 - `to-human/hooks/mods/register.tsx`: where a module of the plugin is
   registered.
 - `to-human/hooks/mods/to-human.tsx`: the report view, which decides what a
-  row draws as and what folds into the working record.
+  row draws as and what folds into the working record; `folds.tsx` publishes
+  to `$.state` what the view reads back, the pattern for the call's row.
 - `hooks/mods/fork-guard.tsx` and `sminos/hooks/mods/bridge-ask.tsx`: a fork
-  a plugin starts, how its end is learned, and a guard that holds it to
-  reading.
+  a plugin starts, how its end is learned, a guard that holds it to reading
+  (its `tool.call` and `tool.check` hooks, each registration's denying
+  `.catch`), the reservation taken before the first await
+  (`isAskStarting`), the record of an open fork kept in `$.state` across a
+  reload, and the grace given a list that lags an end (`isForkRunning`).
+- `sminos/hooks/mods/ask.tsx`: context added to a tool result mid-turn and
+  to a prompt (`context` on the `tool.call` and `prompt.submit` results).
+- `sminos/skills/manager/scripts/manager_serve.py` and
+  `sminos/tests/test_manager_serve.py`: a `ThreadingHTTPServer` on localhost
+  behind `tailscale serve`, its response headers (`common_headers`), its
+  reading of the tailnet identity (`tailnet_self`), and tests with a stub
+  `tailscale` on the path.
 - `to-human/tests/mods/`: the kit tests (`*.test.ts`, run by
   `claude plugin test`) and the live checks (`live-*-check.py`, an isolated
   session in a tmux pane, run by hand since they spend model calls).
+- `tests/output-styles/to-human-*-eval.py`: the hand-run evaluations of the
+  style, the pattern for M3's replay.
 - `~/.local/share/present-panel/prototype/panel.html`: the approved form.
   The base's look starts from this page's styles and its notes script; the
   page is not in the repository, so M1 reads it there.
@@ -495,8 +665,8 @@ interactive session under the `doperpowers:to-human` style.
 
 - The plugin's version moves with each milestone that changes a shipped file
   (`scripts/bump-version.sh --plugin to-human`; doperpowers too when
-  `output-styles/to-human.md` changes); `scripts/bump-version.sh --since
-  origin/main` checks it.
+  `output-styles/to-human.md` or `agents/` changes);
+  `scripts/bump-version.sh --since origin/main` checks it.
 - The message tool's name, input and result are a contract MAWS builds on;
   nothing here changes them, or the style's `maws-to-human-contract` number.
 - The server uses the Python standard library only.
@@ -504,145 +674,168 @@ interactive session under the `doperpowers:to-human` style.
   tool's row in the same change that ships it.
 - Gates run on GitHub Actions (`ci-gate` from the worktree), not on this
   machine; one focused test file while iterating is fine.
+- A live check or a trial runs in an isolated configuration directory with
+  its own `PANEL_PORT`, never against the owner's `~/.claude` or port 4777.
 
 ### M1 — the panel server and the base
 
 At its end a hand-written panel can be served, read, annotated and checked
 off with no session involved: `server.py open-panel` creates a panel and
-prints its address, the address serves the starter page under the base, a
-page edited by hand to hold notes shows them placed at their anchors with
-the count, a check persists, an edit of the file reloads the open page, and
-a Korean page reads right.
+prints its address, a draft edited by hand and published is served under
+the base, notes show placed at their anchors with the count, a check
+persists, a publish reloads the open page once, a Korean page reads right,
+and the page opens from another machine of the tailnet.
 
 It touches `to-human/panel/` (new: `server.py`, `base/`), the tests for it
 under `to-human/tests/panel/`, and `.github/ci-kit.yml` (the `to-human-mods`
 gate runs the new tests too).
 
-It exposes `OpenPanel`, the server's requests and the note markup; it
-consumes nothing.
+It exposes `OpenPanel`, `Published`, the server's requests and the note
+markup; it consumes nothing.
 
 Decisions that are this milestone's alone:
 
 - The server is a `ThreadingHTTPServer`; `state.json` and `meta.json` are
-  written whole through a temporary file and a rename, under one lock in the
-  process.
-- Hiding checked notes is the inserted script's work, run before the body
-  draws, so a checked note never flashes: the server inserts
-  `<script>window.PANEL={written:<ms>,checked:[...]}</script>` by one string
-  replacement before `</head>` (appending it when the page has no head) and
-  parses no HTML.
-- `opened` is set by `GET /<short id>/` alone, never by `/written`: a tab
-  left open in the background is not the human reading an update. The reload
-  the script makes after a write is a `GET /<short id>/` and counts, but only
-  while the tab is visible, which is when the script asks.
-- Detaching: `open-panel` and `ensure` start the server through a double
-  fork with `os.setsid`, its output to
-  `<configuration directory>/to-human/panels/server.log`. A process started
-  so from a mod outlived a reload of the module, the session's exit and a
-  hangup of its terminal; one left in the engine's process group survived a
-  hangup only under `nohup` (trial 5).
-- `tailscale` is run only by `ensure` and `open-panel`, never by the
-  serving process, with a 15-second limit; the machine's tailnet name, its
-  user's login and whether it is tagged come from `tailscale status --json`
-  (`manager_serve.py`'s `tailnet_self` is the pattern), read when the server
-  starts and written beside the log as `server.json` for the checks.
+  written whole through a temporary file and a rename, every read-modify-
+  write under one lock in the process.
+- The inserted script is
+  `<script nonce="…">window.PANEL={"written":<ms>,"checked":[...]}</script>`,
+  put in by one string replacement before `</head>` (appended when the page
+  has no head); the server parses no HTML. The base script hides checked
+  notes before the body draws.
+- Detaching: the server is started through a double fork with `os.setsid`,
+  its output to `<configuration directory>/to-human/panels/server.log`. A
+  process started so from a mod outlived a reload of the module, the
+  session's exit and a hangup of its terminal; one left in the engine's
+  process group survived a hangup only under `nohup` (trial 5).
+- The command line's own budget: `open-panel` answers within 4 seconds of a
+  cold start (2 to start the server, 2 for the first reach), so the tool
+  keeps acceptance 1's 5.
 - Tests are Python `unittest` against a server on a free port and a
-  temporary panels directory, with a stub `tailscale` on the path (as
-  `sminos/tests/test_manager_serve.py` has): each request of the table, the
-  refusals of acceptance 10, both reaches, the short-id clash, the version
-  rule of `open-panel`, the 30-day removal. The base's script is tested in a browser through
-  `playwright-cli` by a check script run by hand (`tests/panel/live-base-check.sh`):
-  placement at 1280 and 600 wide, the count, a check surviving a reload, the
-  reload on a write keeping the scroll position, the Korean words.
+  temporary panels directory, with a stub `tailscale` on the path: each
+  request of the table; the refusals of acceptance 11 and, with forwarding
+  headers set by the test, of 13; both reaches, a stub that stalls (the
+  command still answers in its budget, `"local"`), and a stub that refuses
+  until run under `sudo -n`; a check made between `open-panel`'s read and
+  its write surviving; two `open-panel` commands started together on a cold
+  port; the version rule; another configuration directory's server on the
+  port; the short-id refusal; the 30-day removal; publish of an unchanged
+  draft answering `published: false`. The base's script is tested in a
+  browser through `playwright-cli` by a check script run by hand
+  (`to-human/tests/panel/live-base-check.sh`): placement at 1280 and 600
+  wide, the count, a check surviving a reload, one reload on a publish
+  keeping the scroll position, a look reported only from a visible tab, the
+  Korean words, and no script but the base's running under the policy (a
+  page with an inline `<script>` and an external image shows neither).
 
 It does not touch the mods, the style, or any document but the tests' own.
 
-It proves acceptance 4 (the server's half), 9 (the server's half), 10 and
-13. For 13 the second machine is a devcloud host that is online on the
-tailnet (`tailscale status` lists them; the `devcloud:vm` skill reaches
-one): copy `to-human/panel/` there, run `open-panel`, and open the address
-it prints from this Mac. If neither `tailscale serve` nor its `sudo -n` form
-is permitted on the host, that is a finding, not a failure of the
-milestone: the host's panels are `"local"`, the item is recorded as not met
-for devcloud hosts in Surprises & Discoveries with the command's output,
-and the residue is a ticket for devcloud's boot program to name the session
-user as the daemon's operator.
+It proves acceptance 4 (the server's half), 10 (the server's half), 11, 12
+and 13. For 12 and 13 the second machine is a devcloud host that is online
+on the tailnet (`tailscale status` lists them; the `devcloud:vm` skill
+reaches one): copy `to-human/panel/` there, run `open-panel` with
+`PANEL_REACH=tailnet` and its own configuration directory, publish a
+hand-written draft, and open the address it prints from this Mac. These two
+items block the milestone. If neither `tailscale serve` nor its `sudo -n`
+form is permitted on the host, the executor stops and returns `BLOCKED`
+with the commands' output: whether devcloud's boot program then names the
+session user as the daemon's operator inside this work, or devcloud hosts
+are left out of this version, is the spec author's call with the human.
 
 ### M2 — the tool and the fork
 
-At its end a session presents: acceptance 1 to 9 and 11 hold in a live
-session. That includes the server's revival: at each interactive session's
-start the module runs `server.py ensure` when the panels directory holds a
-panel, not awaited by the hook, so an old address opens again without a
-`present` call (acceptance 9).
+At its end a session presents: acceptance 1 to 10 and 14 hold in a live
+session.
 
 It touches `to-human/hooks/mods/present.tsx` (new), `register.tsx`,
-`to-human.tsx` (how the call draws), `to-human/types/`, the kit tests and a
-live check under `to-human/tests/mods/`, and, if trial 2 puts the guard
-outside the plugin, `hooks/mods/fork-guard.tsx`.
+`to-human.tsx` (the call's row), `to-human/types/to-human.d.ts` (the
+`$.state` entries), `agents/*.md` and their Codex ports as
+`tests/codex/test-native-agents.py` requires (each definition's
+`disallowedTools` gains `mcp__to-human__present`), the kit tests and a live
+check under `to-human/tests/mods/`.
 
-It consumes `OpenPanel` and the note markup; it exposes the tool's contract
-(`PRESENT_TOOL`, `DESCRIPTION`, `INPUT_SCHEMA`, the results and refusals,
-`STANDING_PROMPT`, `FINISHED`, `FAILED`).
+It consumes `OpenPanel`, `Published` and the note markup; it exposes the
+tool's contract (`PRESENT_TOOL`, `DESCRIPTION`, `INPUT_SCHEMA`, the results
+and refusals, `STANDING_PROMPT`, `FINISHED`, `FAILED`).
 
 Decisions that are this milestone's alone:
 
-- The handler's order: refuse a subagent's call and an empty brief; if this
-  session's fork is running, hold the brief and return `HELD`; else run
-  `open-panel` (`$.process.run`), spawn the fork, remember its agent id, and
-  return `STARTED`. At the fork's `turn.complete`: with briefs held, run
-  `open-panel` again and spawn the next fork with all of them, in order,
-  under one `Brief:`; with none, submit `FINISHED` or `FAILED`.
-- Whether a fork is running is read from `$.agent.list()` (type `fork`,
-  `spawnedBy` this plugin, a live status), not from the module's memory, so
-  a reload of the plugin mid-run neither loses the fork nor starts a second
-  (the bridge's `isForkRunning` is the pattern).
-- The fork is known to the guard by the agent id its spawn returned, and
-  after a reload of the module by `$.agent.list()` (`type: 'fork'`,
-  `spawnedBy` this plugin). The list is no record of an end: an entry turns
-  `completed` about a second after `turn.complete`, carries no text, and is
-  gone about 30 seconds later (trial 1); the end and the text come from
-  `turn.complete` alone. A fork whose end the module missed across a reload
-  is therefore found gone from the list at the next call, and the session is
-  not told of it; the next call starts a fork as usual.
-- A row a plugin submits is not drawn by that plugin's own render hooks
-  (`to-human/CLAUDE.md`: the reason to-human is a plugin of its own), so the
-  view does not fold the `FINISHED` prompt as it folds another plugin's.
-  This milestone looks at how the notice draws in the report and keeps the
-  engine's drawing if it is one clean line that does not break a fold's
-  bounds; otherwise the notice is submitted so that it folds. Either way a
-  kit test pins the run rules around it.
-- `$.prompt.submit` and a fork's `Edit` of an existing panel were not tried
-  in the trials (`Write` was); the live check covers both.
-- In the report view the call draws as one line that stays in the report,
-  as an agent's spawn does: the brief's first line and the address. The
-  notice that the panel is written folds into the working record, as other
-  finish notifications do; the session's own message is what the human reads.
+- The handler, in order: refuse a subagent's call, an empty brief, plan
+  mode, and a call while a run is open (`BUSY`); take the reservation (a
+  module variable set before the first await, released in a `finally` when
+  no fork was spawned); run `open-panel` (`$.process.run`); spawn the fork;
+  record the run; return `STARTED`. A spawn the engine denies (`deny` in its
+  answer; past an interrupt the engine spawns nothing until the session
+  takes input, `bridge-ask.tsx`) returns that as the call's refusal.
+- The run's record, `{ agentId, toolUseId, session, dir, draft, address,
+  update }`, is kept in the module and in `$.state`, so a module that starts
+  over mid-run (a plugin update) still guards the fork and still hears its
+  end. A record whose agent `$.agent.list()` no longer lists, after the
+  grace `isForkRunning` gives a lagging list, is a fork whose end was not
+  heard: it is closed as not written (`its end was not heard`), without
+  publishing, since a draft whose fork's ending is unknown may be half
+  edited. The list is no record of an end (an entry turns `completed` about
+  a second after `turn.complete`, carries no text, and is gone about 30
+  seconds later, trial 1); it is read only to reconcile a record after a
+  reload.
+- At the fork's `turn.complete` (the hook matched on the recorded agent id):
+  the steps of "The end" above, in that order, then the record is cleared.
+- The guard's two hooks, registered apart from the handler and each with a
+  `.catch` that denies: `tool.call` refuses by name every tool but `Read`,
+  `Grep`, `Glob`, `Bash`, `Write` and `Edit`; `tool.check` answers each of
+  those six (the rules are in Interfaces) and never leaves one to core.
+- The call's row: the view draws a `present` call as one line that stays in
+  the report, as an agent's spawn does: the brief's first line, then the
+  run's state read from `$.state` by the call's id: `writing…`, the address
+  as a link, or `not written` and why. A row with no state (a resumed
+  session) reads the address out of the call's result. The session's reading
+  of `FINISHED` is hook context and draws nothing.
 - A `present` call beside a final message keeps the turn's next request, as
   any other tool's call does (`message.tsx`'s `endsOnFinal` already treats
   it so; a test pins it).
 - The standing prompt is authored agent behaviour. Its wording in Interfaces
   is the starting text; the live check's pages are its test, and a change to
   it is recorded in the Decision Log with the page that prompted it.
+- Untried in the trials, so the live check covers each first: a fork's
+  `Edit` of an existing draft; hook context reaching the session mid-turn
+  and at its next prompt; the engine's report of plan mode at a tool's call
+  (if the call's input does not carry the mode, `$.config.list()` or the
+  session surface that does is the executor's to find; if none does, the
+  executor reports it and plan mode is left to the guard's deny and
+  `FAILED`).
+- The live check also records, for the Surprises section: the billed tokens
+  summed over a fork's requests (the trials' figures are the notification's
+  `subagent_tokens`, not that sum); a fork started after the session sat
+  idle past its cache's lifetime; and one run with the session on the model
+  the owner runs (not haiku), to see whether its fork stays on the panel.
+  It notes which session id a `/clear` and a resume keep, since the panel
+  follows the id.
 
 It does not touch the style, the human's `CLAUDE.md`, or the server.
 
-It proves acceptance 1 to 9 and 11, by a live check
+It proves acceptance 1 to 10 and 14, by a live check
 (`to-human/tests/mods/live-present-check.py`, haiku, an isolated
 configuration directory and its own `PANEL_PORT`) for what a session does,
-and by kit tests for the handler's refusals, the registration rule, the
-prompt's assembly from an `OpenPanel` and the view's row.
+and by kit tests for the handler's refusals, the reservation (a second call
+arriving while `open-panel` runs is `BUSY`), the registration rule, the
+prompt's assembly from an `OpenPanel`, the guard's answers (each allowed
+name, a path outside the draft, a path that reaches the draft through `..`
+or a symbolic link elsewhere, a write holding a secret's handle, the fork's
+own `present` call), a record surviving a reload, and the view's row in
+each state.
 
 ### M3 — the rule, its evaluation, and the documents
 
 At its end the rule is in the style, measured, and the feature is
-documented and released: acceptance 12 holds and every earlier item is run
+documented and released: acceptance 15 holds and every earlier item is run
 once more as written.
 
-It touches `output-styles/to-human.md`, `~/.claude/CLAUDE.md` (the owner's
-file, outside the repository: the one line under Reporting, which the human
-asked for), `to-human/CLAUDE.md`, `docs/whats-inside.md`,
-`to-human/.claude-plugin/plugin.json` (the description), and the versions.
+It touches `output-styles/to-human.md`, `to-human/CLAUDE.md`,
+`docs/whats-inside.md`, `to-human/.claude-plugin/plugin.json` (the
+description), and the versions. The owner's files (`~/.claude/CLAUDE.md`:
+the rule line; `~/.claude/settings.json`: `PANEL_REACH` and, if they want
+it, `PANEL_LOCALE`) are outside the repository and are the designing
+session's to edit after the merge, not the executor's.
 
 The replay: from the owner's transcripts
 (`~/.claude/projects/*/*.jsonl`), take 10 turns whose content warrants a
@@ -650,22 +843,26 @@ panel by the rule's own terms (a decision put to the human with options, a
 design presented for approval, a third or later revision of the same
 findings in one session) and 10 routine ones (a merge, a green run, a
 problem met and resolved, a short answer). Replay each context up to the
-point the session wrote to its human, on the model that session ran on, with
-the tool offered (its call answered `STARTED`, no fork spawned) and the rule
-in the style, and count the calls. The bar is acceptance 12. The turns
-chosen, with why each is in its class, are listed in the evaluation's report
+point the session wrote to its human, three times, on the model that
+session ran on, with the tool offered (its call answered `STARTED`, no fork
+spawned) and the rule in both the style and the `CLAUDE.md` the replay
+carries, and count the runs that call the tool. The bar is acceptance 15.
+The harness follows `tests/output-styles/to-human-*-eval.py` and lives
+beside them. The turns chosen, with why each is in its class, are listed in
+the evaluation's report
 (`docs/doperpowers/specs/2026-11-13-present-panel-eval.md`) so the human can
 dispute a label. A miss is met by rewording the rule, with each wording's
 counts kept in the report; `doperpowers:writing-skills` governs the edit.
 
-Before the replay launches, the session running this milestone tells the
-human which models, at which efforts, how many runs and for what, as the
-output style requires of any programmatic fan-out.
+Before the replay launches, the session running this milestone reports up
+its dispatch chain which models, at which efforts, how many runs and for
+what, so the main session can tell the human, as the output style requires
+of any programmatic fan-out.
 
 It does not touch the server or the mod except to fix what the acceptance
 run finds.
 
-It proves acceptance 12, and runs 1 to 11 as written.
+It proves acceptance 15, and runs 1 to 14 as written.
 
 ### Concrete Steps
 
@@ -679,20 +876,24 @@ In the worktree `/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/prese
     scripts/bump-version.sh --since origin/main                  # the version rule
     ci-gate                                                      # every gate, on the committed HEAD
 
-By hand, M1:
+By hand, M1 (an isolated directory and port):
 
+    export CLAUDE_CONFIG_DIR=$(mktemp -d) PANEL_PORT=4791
     python3 to-human/panel/server.py open-panel --session 00000000-aaaa-bbbb-cccc-000000000000
-    {"address": "https://s.tail112c3f.ts.net:4777/00000000/", "reach": "tailnet", "dir": ".../to-human/panels/00000000", "path": ".../panel.html", "update": 1, "isNew": true, "opened": null, "written": ..., "checked": [], "locale": "en", "base": ".../to-human/panel/base/README.md"}
-    curl -s http://127.0.0.1:4777/health
-    {"server": "to-human-panel", "version": "0.9.0"}
+    {"address": "http://127.0.0.1:4791/00000000/", "reach": "local", "dir": ".../to-human/panels/00000000", "draft": ".../draft.html", "guide": ".../to-human/panel/base/GUIDE.md", "update": 1, "isNew": true, "locale": "en", "seen": "never", "checked": []}
+    python3 to-human/panel/server.py publish --session 00000000-aaaa-bbbb-cccc-000000000000
+    {"published": false, "address": "http://127.0.0.1:4791/00000000/", "reach": "local", "written": null}
+
+(`published` is false there because the draft is still the starter.)
 
 ### Interfaces and Dependencies
 
 The server's command line, `to-human/panel/server.py`:
 
     server.py serve                      # run in the foreground (tests, debugging)
-    server.py ensure                     # make sure a server answers and is exposed; print {"address": "<origin>/", "reach": "tailnet" | "local"}
+    server.py ensure                     # make sure a server answers, when a panel exists; print {"address": "<origin>/", "reach": ...} or {}
     server.py open-panel --session <id> [--locale en|ko]
+    server.py publish --session <id>
 
 `open-panel` prints one JSON line, `OpenPanel`:
 
@@ -700,21 +901,31 @@ The server's command line, `to-human/panel/server.py`:
       "address": "https://s.tail112c3f.ts.net:4777/b4d10f41/",
       "reach":   "tailnet",         // or "local": http://127.0.0.1:<port>/..., this machine only
       "dir":     "<configuration directory>/to-human/panels/b4d10f41",
-      "path":    "<dir>/panel.html",
-      "base":    "<plugin root>/panel/base/README.md",
+      "draft":   "<dir>/draft.html",
+      "guide":   "<plugin root>/panel/base/GUIDE.md",
       "update":  3,
-      "isNew":   false,
+      "isNew":   false,             // true: the draft is the starter
       "locale":  "en",
-      "opened":  1794620000000,     // ms, or null: never opened
-      "written": 1794619000000,     // ms: panel.html's modification time
-      "checked": ["u2-1"]           // notes checked off and still in the file
+      "seen":    "current",         // "never": no look yet; "current": a look since the last publish; "stale": none since
+      "checked": ["u2-1"]           // notes checked off and still in the page
     }
 
-and exits non-zero with one line on stderr when it cannot (the port held by
-another program, the directory not writable).
+`publish` prints `Published`:
+
+    { "published": true, "address": "...", "reach": "tailnet", "written": 1794620000000 }
+
+Each exits non-zero with one line on stderr when it cannot (the port held
+by another program or another configuration directory's server, the short
+id held by another session, the directory not writable).
+
+The control requests behind them, local and with the token:
+`GET /control/health` → `{ "server": "to-human-panel", "version": "<plugin
+version>", "root": "<panels directory>" }`; `POST /control/open-panel` with
+`{ "session", "locale", "reach" }` → `OpenPanel`; `POST /control/publish`
+with `{ "session" }` → `Published`; `POST /control/shutdown`.
 
 Environment: `PANEL_PORT` (default 4777), `PANEL_LOCALE` (`en`, `ko`),
-`CLAUDE_CONFIG_DIR`.
+`PANEL_REACH` (`tailnet`; anything else is local), `CLAUDE_CONFIG_DIR`.
 
 In `to-human/hooks/mods/present.tsx`:
 
@@ -730,60 +941,69 @@ In `to-human/hooks/mods/present.tsx`:
       },
       required: ['brief'],
     }
-    export const STARTED = (address: string) => `Writing the panel in the background: ${address} You are told when it is written.`
+    export const STARTED = (address: string) =>
+      `Writing the panel in the background: ${address} The human is shown the address in their report when it is written. You are not woken for it: you learn the outcome at your next step or prompt, so if a decision is due, ask now and point at the panel.`
     export const LOCAL_ONLY = ' This address opens only on the machine this session runs on: its panel server is not exposed on the tailnet.'  // appended to STARTED and FINISHED when reach is "local"
-    export const HELD = (address: string) => `The panel is being written now: ${address} This brief is applied in a second pass when that ends, and you are told once, after it.`
-    export const FINISHED = (address: string, said: string) => `The panel is written: ${address}\n${said}`
-    export const FAILED = (address: string, why: string) => `The panel was not written (${why}): ${address} holds what it held before.`
+    export const FINISHED = (address: string, said: string) => `The panel is written and the human has been shown its address: ${address}\n${said}`
+    export const FAILED = (address: string, why: string) => `The panel was not written (${why}); ${address} holds what it held before, and the human has been told. Call present again to retry.`
+    export const BUSY = (address: string) => `The panel is being written now: ${address} Call present again once you are told it is written.`
+    export const PLAN_REFUSAL = 'present writes a file, which plan mode does not allow: call it once the plan is approved.'
     export const SUBAGENT_REFUSAL = 'present is for the main conversation; a subagent reaches the human through the session that dispatched it: put this in your report.'
     export const EMPTY_REFUSAL = 'present needs its brief: what to put on the panel or change on it.'
+    export const GUARD_REFUSAL = 'This fork writes the panel and nothing else.'
     export function registerPresent(on: On): void
+
+`$.state`, published by the module for the view (`to-human/types/to-human.d.ts`):
+`present`: the open run's record, or absent; `presented`: by the call's id,
+`{ state: 'writing' | 'written' | 'failed', address: string, why?: string }`.
 
 `RULE`, the sentence for the style and the human's `CLAUDE.md`:
 
-> What I must read closely and plain text carries poorly (a decision with
-> its options, an architecture, findings that keep being revised through a
-> large or complex piece of work) goes on the session's panel with
-> `mcp__to-human__present`, and a message points to it. Routine reports stay
+> Where `mcp__to-human__present` is among your tools: what I must read
+> closely and plain text carries poorly (a decision with its options, an
+> architecture, findings that keep being revised through a large or complex
+> piece of work) goes on the session's panel with it. Routine reports stay
 > text.
 
-(In the style, "the human" for "I", and opened by "Where
-`mcp__to-human__present` is among your tools,".)
+(In the style, "the human" for "I".)
 
 `STANDING_PROMPT`, with its slots filled from `OpenPanel` and the brief:
 
     You are a fork of this session, started by its `present` call to write the session's panel for the human: one HTML page, the richer form of a message, which they read closely in a browser. You are not the session: do not continue its task, answer its human, or call `present`. The session goes on with its own work; yours is the panel, and it ends when the panel is written.
 
-    The panel is {path}, served at {address}. This is update {update}. Write it in {English|Korean}.
+    Edit {draft}: it is the panel as it stands{, a starter with nothing on it yet}, and it is published when you end. This is update {update}. Write it in {English|Korean}.
 
-    Compose it for what this content needs; no section or order is required. Write content only, on the base the page links: {base} lists its blocks and the markup of a note. Add your own styles or SVG where the base lacks something. Plain and legible is the care expected.
+    Compose it for what this content needs; no section or order is required. Write content only, on the base the page links: {guide} lists its blocks and the markup of a note. Add your own inline styles or SVG where the base lacks something; nothing loads from another site. Plain and legible is the care expected. No credential goes on the page.
 
-    Keep it to about three screens, 600 to 900 words with its figures: select and show (a diagram, a comparison, a table) instead of transcribing the conversation.
+    Keep it to about three screens: {600 to 900 words|1,800 to 2,700 characters} of running text, not counting notes, labels inside figures, or what is folded at the bottom. Select and show (a diagram, a comparison, a table) instead of transcribing the conversation.
 
     The body states what holds now; edit it in place. What is new or awaits the human goes at the top. What is older and settled is cut once it no longer serves, or moved to the bottom and folded behind a one-line summary. An explanation keeps its own order.
 
     {seen}
     Where an edit changes what they have seen, anchor a note at that place saying what changed and why, ids u{update}-1, u{update}-2, and so on. A note still on the page whose statement you change again is replaced by one note carrying both steps.{checked}
 
-    You can read anything and write only inside {dir}. Reply with two lines: what the panel now holds, and what changed.
+    You can read anything and write only {draft}. Reply with two lines: what the panel now holds, and what changed.
 
     Brief: {brief}
 
-`{seen}` is one of: `The human has not opened the panel: it owes them no
-notes.` (`opened` null); `The human opened the panel after its last update:
-they have seen what it holds.` (`opened` later than `written`); `The human
-has not opened the panel since its last update: what that update wrote, they
-have not seen.` (otherwise). `{checked}` is empty, or ` Delete these notes,
+`{seen}` by `OpenPanel.seen`: `never`: `The human has not looked at the
+panel: it owes them no notes.`; `current`: `The human has looked at the
+panel since its last update: they have seen what it holds.`; `stale`: `The
+human has not looked at the panel since its last update: what that update
+wrote, they have not seen.` `{checked}` is empty, or ` Delete these notes,
 which they checked off: u2-1, u2-3.`
 
-The guard, on every call of a fork this plugin spawned: `Read`, `Grep`,
-`Glob`, and a `Bash` input the engine holds read-only are allowed; `Write`
-and `Edit` are allowed when their `file_path`, with symbolic links and `..`
-resolved, is inside `{dir}`; every other call, the fork's own call of
-`mcp__to-human__present` among them, is refused with `This fork writes the
-panel and nothing else.` Each answer is given at `tool.check` as allow or
-deny, never left to core, so no call of the fork reaches a permission
-prompt (`hooks/mods/fork-guard.tsx` is the pattern for both hooks).
+The guard, on every call of the fork a run's record names:
+
+| Call | Answer |
+|---|---|
+| `Read`, `Grep`, `Glob` | allow |
+| `Bash` | allow when the engine holds the input read-only (`isReadOnly` at `tool.check`), else deny |
+| `Write`, `Edit` | allow when `file_path`, with symbolic links and `..` resolved (`$.fs.stat(path, { resolve: true })`), is the record's `draft`, and neither `content` nor `new_string` holds `[secret:` or `[redacted:`; else deny |
+| any other tool | deny at `tool.call`, by name |
+
+Every deny is `GUARD_REFUSAL`. No call of the fork reaches a permission
+prompt.
 
 ## Surprises & Discoveries
 
@@ -846,14 +1066,20 @@ configuration directory, with a probe plugin whose tool spawns a fork
   bytes, and a third of a fork's run is checking the page.
   Evidence: `panel.v1.html`, 21,545 bytes, 6,663 in `<style>` and 1,857 in
   `<script>`; the forks' own reports of both runs.
-- Observation: a first write took 8.4 minutes and an edit 4.7, at 147k and
-  154k tokens in the fork.
+- Observation: a first write took 8.4 minutes and an edit 4.7; the
+  notifications report 147k and 154k `subagent_tokens`, which is not the
+  billed sum over the forks' requests.
   Evidence: the two runs' task notifications (`duration_ms` 504,839 and
   278,567).
 - Observation: a correction sent to a running fork reached it and was
   applied.
   Evidence: the human's server ruling, sent to the first fork mid-run, is in
   version 1 of the page as settled.
+- Observation: `tailscale serve` forwards the client's `Host` unchanged and
+  adds `X-Forwarded-For` and `X-Forwarded-Host` to every proxied request.
+  Evidence: Tailscale's `ipn/ipnlocal/serve.go`, `r.Out.Host = r.In.Host`
+  and `addProxyForwardedHeaders` (read in source by the design review, not
+  yet run live; acceptance 13 runs it).
 
 ## Decision Log
 
@@ -867,22 +1093,38 @@ configuration directory, with a probe plugin whose tool spawns a fork
   frontier rung reads the branch; the design is new but was settled on a
   working prototype in front of the human, so no panel is needed.
   Date/Author: 2026-11-13, the designing session.
-
-- Decision: a call made while a fork runs is held for a second fork, not
-  delivered to the running one.
-  Rationale: the design the human read on the prototype panel had the brief
-  sent to the running fork. Trial 4 showed a message that lands as the fork
-  ends resumes it and wakes the main session with a notification of the
-  engine's own; a second run has no such case. Rejected then: steering with
-  a hold on the notice while a sent brief is unread, which needs the plugin
-  to track each brief's delivery row and to suppress the engine's
-  notification, a prompt whose drop leaves a system notice no view can hide.
-  Date/Author: 2026-11-13, the designing session, on the trials' report.
 - Decision: the input's description no longer tells the session to restate
   what the turn just concluded.
   Rationale: that lesson came from a fork started with the `Agent` tool; a
   plugin's fork inherits the calling response up to the call (trial 3).
   Date/Author: 2026-11-13, the designing session, on the trials' report.
+- Decision: a call made while a fork runs is refused (`BUSY`). The prototype
+  panel the human read had the brief delivered to the running fork; the
+  spec's first writing (e657e818) held it for a second fork.
+  Rationale: trial 4 ruled out delivery (a late message resumes the fork and
+  wakes the session); the design review showed the held pass needs state
+  that survives a reload, a second spawn site and a reservation across both,
+  for a rare overlap. Both are described where the decision is made.
+  Date/Author: 2026-11-13, the designing session, on the reviews.
+- Decision: the human is shown the written panel by the call's row and a
+  notification, and the session is told by hook context without being woken.
+  The human's sketch, and e657e818, had the session woken to send the link.
+  Rationale: in "The end". The human's intent was that the main session is
+  interrupted least and that they learn when the page is ready; both hold.
+  Date/Author: 2026-11-13, the designing session, on the design review.
+- Decision: the fork edits a draft that the server publishes at its end;
+  the server is the only writer of a panel's records and the command line is
+  its client; a look is a `POST` from the page's script; requests are told
+  local from proxied by the forwarding headers; a content policy on every
+  response; control requests carry a token; the guard refuses a secret's
+  handle; plan mode refused; exposure on the tailnet asked for by
+  `PANEL_REACH`; the base's guide named `GUIDE.md`; a clashing short id
+  refused; acceptance 12 and 13 block M1; the replay runs each turn three
+  times with both copies of the rule; the registered agents withhold the
+  tool.
+  Rationale: findings of the two reviews of e657e818, each taken; the reason
+  for each is in the section that now states it.
+  Date/Author: 2026-11-13, the designing session, on the reviews.
 
 ## Outcomes & Retrospective
 
