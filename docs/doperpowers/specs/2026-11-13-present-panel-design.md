@@ -836,9 +836,21 @@ Decisions that are this milestone's alone:
   answer; past an interrupt the engine spawns nothing until the session
   takes input, `bridge-ask.tsx`) returns that as the call's refusal.
 - The run's record, `{ agentId, toolUseId, session, dir, draft, address,
-  update }`, is kept in the module and in `$.state`, so a module that starts
-  over mid-run (a plugin update) still guards the fork and still hears its
-  end. A record whose agent `$.agent.list()` no longer lists, after the
+  update, startedAt, phase }`, is kept in the module and in `$.state`, so a
+  module that starts over mid-run (a plugin update) still guards the fork
+  and still hears its end. `phase` is `writing` until the fork's end is
+  heard with reason `answer`, and is set to `publishing`, and kept, before
+  `publish` is called: a module that starts over and finds a record in
+  `publishing` calls `publish` again (the fork ended well, so publishing its
+  draft is what was due) and counts the page written when `Published`
+  says `published`, or its `written` is at or after `startedAt`, since a
+  first `publish` that committed before the reload leaves the second with
+  nothing to change. The ids of every fork the module spawned are kept in
+  `$.state` beside the record and outlive it, so a fork whose run has
+  closed stays held after a reload; while the module has not yet read them
+  back, the guard denies the calls of any fork whose description is the
+  panel's (`$.agent.list()`), and refuses rather than passes when it cannot
+  tell. A record in `writing` whose agent `$.agent.list()` no longer lists, after the
   grace `isForkRunning` gives a lagging list, is a fork whose end was not
   heard: it is closed as not written (`its end was not heard`), without
   publishing, since a draft whose fork's ending is unknown may be half
@@ -1340,6 +1352,19 @@ configuration directory, with a probe plugin whose tool spawns a fork
   standing prompt's own rewording did not help haiku and stays reverted;
   the two refusal texts are where the failures showed.
   Date/Author: 2026-11-13, the executing session, on M2.
+
+- Decision: the run's record gains `startedAt` and `phase`; the guarded
+  forks' ids persist apart from the record; the guard fails closed while
+  it cannot establish who a fork is; a notice rides only a result that
+  reaches the main conversation (by the dispatch's origin as well as the
+  loop, since a plugin's own `$.tool.call` has no `agentId` and its
+  result's context enters nothing).
+  Rationale: M2's review. A reload after a run closed left that fork
+  unguarded, and a failed restore left an open run's fork unguarded; a
+  reload between a committed publish and the record's close reported
+  `FAILED` for a written page; an internal call of another plugin took the
+  notice and dropped it.
+  Date/Author: 2026-11-13, the executing session, on M2's review.
 
 ## Outcomes & Retrospective
 
