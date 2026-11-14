@@ -69,6 +69,7 @@ STYLE_END = 'remain focused and relevant.'  # the style's last sentence, in ever
 CLAUDE_HEAD = 'Contents of %s/.claude/CLAUDE.md' % Path.home()
 REPORT_TOOLS = (MESSAGE_TOOL, PRESENT_TOOL, 'mcp__sminos__AskUserQuestion', 'AskUserQuestion')
 OUT_OF_PLAN = 'out of plan usage'
+SPENT = threading.Event()  # a plan ran out: no further request from this process
 NOT_RUN = 'Not run: this step is a replay of the session, and its commands are not executed here. Go on from what the conversation already shows.'
 
 # (id, class, kind, transcript under the projects directory, request id, model and effort as sent, why it is in its class)
@@ -224,8 +225,18 @@ def send(client, req):
     params = dict(req)
     betas = params.pop('betas', [])
     named = {k: params.pop(k) for k in ('model', 'max_tokens', 'messages', 'system', 'tools', 'thinking') if k in params}
-    with client.beta.messages.stream(betas=betas, extra_body=params, **named) as s:
-        msg = s.get_final_message()
+    for attempt in range(4):
+        try:
+            with client.beta.messages.stream(betas=betas, extra_body=params, **named) as s:
+                msg = s.get_final_message()
+            break
+        except Exception as e:
+            # A server error or a dropped connection is tried again; a 429 is
+            # not (a spent plan stays spent, and its retries reach the account).
+            status = getattr(e, 'status_code', None)
+            if attempt == 3 or status == 429 or (status is not None and status < 500):
+                raise
+            time.sleep(10 * (attempt + 1))
     raw = [b.model_dump(exclude_none=True) for b in msg.content]
     blocks = []
     for b in msg.content:
@@ -279,13 +290,17 @@ def run_turn(client, turn, arm, style, claude_line, reps, dry, max_steps=4):
         return [head]
     out = []
     for rep in range(reps):
+        if SPENT.is_set():
+            out.append(dict(head, skipped='a plan ran out earlier in this process'))
+            break
         t0 = time.time()
         try:
             got = run_once(client, req, max_steps)
         except Exception as e:
             if OUT_OF_PLAN in str(e):
-                # The account's plan is spent for this model: not a run, and
-                # no further request for the turn until it is renewed.
+                # The account's plan is spent: not a run, and no further
+                # request from this process; it exits 3.
+                SPENT.set()
                 out.append(dict(head, skipped=repr(e)))
                 break
             got = {'error': repr(e)}
@@ -308,7 +323,10 @@ def tally(results):
         c['runs'] += 1
         c['present'] += x['present']
         c['undecided'] += x['undecided']
-        at = x['reached_at'] or 'never'
+        # Runs from before the field existed: a decided run reached the human
+        # at its last step.
+        at = x['reached_at'] if 'reached_at' in x else None if x['undecided'] else len(x['steps'])
+        at = at or 'never'
         c['reached_at'][at] = c['reached_at'].get(at, 0) + 1
         c['by_turn'][x['turn']] = c['by_turn'].get(x['turn'], 0) + x['present']
     return t
@@ -331,7 +349,7 @@ if __name__ == '__main__':
         arms[name] = (style_body(style), Path(line).read_text() if line else '')
     want = args.turns.split(',')
     turns = [t for t in TURNS if t[0] in want]
-    client = None if args.dry_run else gateway_client()
+    client = None if args.dry_run else gateway_client().with_options(max_retries=0)
     # An existing --out is kept and added to: a turn and arm with runs already
     # in it is not run again (a turn skipped for a spent plan is).
     results = json.loads(Path(args.out).read_text()) if Path(args.out).exists() and not args.dry_run else []
@@ -355,3 +373,6 @@ if __name__ == '__main__':
                       x.get('bytes', ''), x.get('model', ''), x.get('effort', ''), flush=True)
     for (a, cls), c in sorted(tally(results).items()):
         print(a, cls, '%d of %d call present; reached the human at step %s' % (c['present'], c['runs'], c['reached_at']), ('%d errors' % c['errors']) if c['errors'] else '', c['by_turn'])
+    if SPENT.is_set():
+        print('stopped: a plan ran out (out of plan usage); the turns marked SKIPPED were not run')
+        sys.exit(3)

@@ -195,6 +195,8 @@ class Turn(unittest.TestCase):
             out = ev.run_turn(None, ev.TURNS[0], 'rule', 's', 'l', 3, False)
         finally:
             ev.run_once, ev.wire_replay.rebuild, ev.apply_arm = saved
+        self.assertTrue(ev.SPENT.is_set())
+        ev.SPENT.clear()
         self.assertEqual((len(calls), len(out), 'skipped' in out[0], 'rep' in out[0]), (1, 1, True, False))
         self.assertEqual(ev.tally(out), {})
 
@@ -203,6 +205,11 @@ class Turn(unittest.TestCase):
                 for i, (p, u, at) in enumerate([(True, False, 1), (False, False, 2), (False, True, None)])]
         c = ev.tally(runs)[('a', 'warranted')]
         self.assertEqual((c['runs'], c['present'], c['reached_at']), (3, 1, {1: 1, 2: 1, 'never': 1}))
+
+    def test_a_run_from_before_reached_at_counts_at_its_last_step(self):
+        runs = [dict(turn='w1', arm='a', **{'class': 'warranted'}, rep=i, present=False, undecided=u, steps=[{}] * n)
+                for i, (u, n) in enumerate([(False, 2), (True, 4)])]
+        self.assertEqual(ev.tally(runs)[('a', 'warranted')]['reached_at'], {2: 1, 'never': 1})
 
 
 if __name__ == '__main__':
