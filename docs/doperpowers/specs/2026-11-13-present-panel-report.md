@@ -60,7 +60,7 @@ The commands are the spec's Concrete Steps. Each result below is from the run th
 - **Kit tests:** `bash to-human/tests/mods/run.sh` gives 374 pass, 0 fail on ea7303d3.
 - **Eval logic:** `python3 tests/output-styles/test-present-eval.py` gives 17 of 17 on 360860e1.
 - **Versions:** `scripts/bump-version.sh --since origin/main` reports to-human 0.8.2 to 0.11.0 and doperpowers 7.220.0 to 7.222.0.
-- **CI:** `ci-gate` is GREEN on ea7303d3, 20 gates (https://github.com/SSFSKIM/doperpowers/actions/runs/43584543954). The final head's run is in the pull request.
+- **CI:** `ci-gate` is GREEN on ea7303d3, 20 gates (https://github.com/SSFSKIM/doperpowers/actions/runs/43584543954). On 931ae2dd, the head the pull request opened at: GREEN, 20 of 20 (https://github.com/SSFSKIM/doperpowers/actions/runs/43586228608).
 - **Acceptance 1 to 10 and 14, live:** `python3 to-human/tests/mods/live-present-check.py` on haiku (M2) and on fable (M3's re-run: `main`, `unseen`, `guard` in five modes, one of them Korean, and `plan`), every item passing on fable. Acceptance 3, 4, 5 and 8 are judged on fable, by the designing session's ruling, with haiku recorded as the version's limit.
 - **Acceptance 11:** the server suite's refusal tests and the browser check.
 - **Acceptance 12 and 13, live:** run on devcloud host `dc-c53-g1a-980a` in M1 and again in M3. A panel written on the host opens in the MacBook's browser, and a check made there reaches the host's `state.json`. From the tagged host, every probe of the Mac's panel is 403 with no body: the honest Host, the local Host, a forged login, and a made-up token. Every `tailscale serve` mapping made was removed on both machines.
@@ -83,4 +83,8 @@ All of these were cleared with the designing session before they launched.
 
 ## Left behind
 
-These are in the pull request's Residue and Unresolved Review Findings sections.
+In the pull request ([#503](https://github.com/SSFSKIM/doperpowers/pull/503)):
+- **Residue**: the rule's miss on revisions (the prompt-time note ticket); an old server serving a deleted base until a session starts; no guard while to-human's own module reloads; the panel in MAWS.
+- **Unresolved Review Findings**: five minors, each with where it is and why it was left.
+
+The branch is not merged. After the merge, the designing session edits the owner's `~/.claude/CLAUDE.md` (the rule line) and `~/.claude/settings.json` (`PANEL_REACH`), and stops the prototype's server on port 4777.
