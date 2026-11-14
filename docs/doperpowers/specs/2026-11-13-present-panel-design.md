@@ -1228,6 +1228,29 @@ configuration directory, with a probe plugin whose tool spawns a fork
   its origin is the engine's, and it takes the ordinary path (in `auto`,
   no prompt), unheld by the guard, which holds only forks it spawned.
   Evidence: fix-lookalike.log, one allow line, for the `present` spawn.
+- Observation (M3): a transcript records every request the session sent
+  (`api-request`, `api-request-shape`, `api-request-blob`, delta-encoded),
+  so a past turn can be replayed exactly: the request it sent, on its model
+  and effort (`tests/output-styles/wire_replay.py`).
+  Evidence: the replay harness rebuilds each of the 20 turns from them.
+- Observation (M3): at a reporting point the models usually check
+  something first: the original requests sent again unchanged made a
+  command call in 3 of 5 runs, so a one-response replay measures the check,
+  not the report; and a `tool_reference` to a tool no longer offered is a
+  400, so the tool list of a session that used ToolSearch cannot be
+  narrowed.
+  Evidence: replay-plan.md, the 13 diagnostic runs and the three 400s.
+- Observation (M3): under the rule as first written, designs put to the
+  human went to the panel (7 of 9 runs) and routine turns never did (0 of
+  30), but a decision with options went to the ask dialog with no page
+  beside it (11 of 12), and a third revision delivered in one message
+  never reached the panel (0 of 9). Offered with its description alone,
+  the tool was never called (0 of 20). Fable sessions, told a command was
+  not run, mostly tell the human so.
+  Evidence: `docs/doperpowers/specs/2026-11-13-present-panel-eval.md`.
+- Observation (M3): the Anthropic SDK's default `max_retries` turned one
+  spent-plan 429 into about 70 requests against the account.
+  Evidence: the gateway's request log, 08:30Z.
 - Observation (M2): `BUSY`'s first wording, "Call present again once you
   are told it is written", led haiku to call `present` four more times in
   the same turn.
@@ -1411,6 +1434,22 @@ configuration directory, with a probe plugin whose tool spawns a fork
   declares unreliable, which does not justify reopening M1's reviewed
   interface. A later version can take it up if an owner model misses.
   Date/Author: 2026-11-13, the designing session, on M2's runs.
+
+- Decision: the replay sends each turn's recorded request, with the arm's
+  style and the arm's line in the request's own copy of the owner's
+  `CLAUDE.md`, and `present` offered; a call that reaches no one is
+  answered `NOT_RUN` and the run goes on, up to 4 responses, until it
+  reaches the human; the control (the style without the rule, `present`
+  offered) runs once per turn; no request is retried on a 429, and a spent
+  plan stops the run. The eval report gives each arm's runs by the step at
+  which they reached the human and lists the runs that tell the human about
+  the replay as contaminated.
+  Rationale: one response per run left 28 of 30 warranted runs at a check,
+  short of the choice the rule governs; narrowing the tools drew 400s and
+  did not stop the checks. The designing session accepted the method with
+  its limit stated: `NOT_RUN` tells the model it is in a replay.
+  Date/Author: 2026-11-14, the executing session, on M3, with the designing
+  session.
 
 ## Outcomes & Retrospective
 
