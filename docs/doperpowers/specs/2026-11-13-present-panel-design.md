@@ -50,7 +50,7 @@ of a page, with older material pruned or moved to the bottom.
 - [x] (2026-11-14 01:30Z) Design approved from the prototype; engine trials dispatched.
 - [x] (2026-11-14 03:05Z) Trials reported (Claude Code 2.1.325, haiku); spec written (e657e818).
 - [x] (2026-11-14 04:10Z) Design review and execution-section review absorbed (Decision Log).
-- [ ] Second review round on the revised spec.
+- [x] (2026-11-14 04:45Z) Second review round absorbed (four findings, all taken; Decision Log).
 - [ ] M1 — the panel server and the base.
 - [ ] M2 — the tool and the fork.
 - [ ] M3 — the rule, its evaluation, and the documents.
@@ -243,9 +243,13 @@ inherits the session's mode, so there the write cannot be opened: the tool
 refuses the call in plan mode, before any fork is spawned.
 
 The guard also refuses a write whose text holds a secret's handle
-(`[secret:…]`, `[redacted:…]`). The devcloud plugin's secrets guard, seated
-inside to-human, restores a handle to the secret's bytes in a `Write` or an
-`Edit`, and a panel is served to other devices.
+(`[secret:…]`, `[redacted:…]`), and refuses it at `tool.call`, before the
+call is passed on. The devcloud plugin's secrets guard, seated inside
+to-human, restores a handle to the secret's bytes in a `Write` or an `Edit`
+in its own `tool.call` hook before it calls `next`
+(`devcloud/hooks/mods/secrets.tsx`), so by the permission check the handle
+is gone and the secret is in its place; only the outermost `tool.call` hook
+sees what the fork wrote. A panel is served to other devices.
 
 **One fork at a time.** A call made while this session's fork is writing is
 refused (`BUSY`): the session calls again once it has been told the panel is
@@ -278,7 +282,14 @@ final text and the reason it ended. The plugin then:
    hook context beside the main loop's next tool result when a turn is
    running, else beside its next prompt, the way the sminos ask delivers an
    answer mid-turn and the reminder rides a prompt
-   (`sminos/hooks/mods/ask.tsx`, `to-human/hooks/mods/reminder.tsx`).
+   (`sminos/hooks/mods/ask.tsx`, `to-human/hooks/mods/reminder.tsx`). The
+   two attach from opposite sides of `next`: on a tool call the context is
+   added to the result `next` returned; on a prompt it is added to the input
+   passed to `next`, since a prompt has already entered the conversation by
+   the time `next` resolves and context added to its result attaches to
+   nothing (the engine's declaration of `PromptSubmitResult`). A prompt
+   dropped beneath gives the notice back for the next one, as the reminder's
+   does.
 
 The human's sketch had the session notified when the page is done, and the
 first version of this design woke the session with a prompt so it could send
@@ -305,7 +316,7 @@ machines, a git allow-list):
 | `panel.html` | the server, at publish | The page as served. |
 | `draft.html` | the server at `open-panel`; then the fork | The page being edited. |
 | `meta.json` | the server | `{ "session": "<full id>", "updates": <n>, "locale": "en" \| "ko" }` |
-| `state.json` | the server | `{ "seen": <ms> \| null, "written": <ms> \| null, "checked": ["<note id>", ...] }` |
+| `state.json` | the server | `{ "seen": <ms> \| null, "written": <ms> \| null, "checked": ["<note id>", ...] }`: `written` is the page's publish time, `seen` the publish time of the newest publication the human looked at |
 
 The server is the only writer of everything but the draft, inside one
 process and under one lock, so a check the human makes while `open-panel`
@@ -418,7 +429,7 @@ for again at publish, by which time it has.
 |---|---|
 | `GET /<short id>/` | The page, with a small inline script the server inserts before `</head>` carrying the page's publish time and the checked notes, so a checked note never draws. Before a panel's first publish: a page that says the panel is being written, which reloads when it is. |
 | `GET /<short id>/written` | `{ "written": <ms> \| null }`; the script asks every 2 seconds while the tab is visible and reloads when it differs from the page's own. |
-| `POST /<short id>/seen` | Sets `seen` to now; 204. The script sends it when the page is drawn in a visible tab, and when a hidden tab that reloaded becomes visible. |
+| `POST /<short id>/seen` with `{ "written": <ms> }` | Records that the publication of that time was looked at, when it is the current one or newer than the one recorded; 204. The script sends the publish time of the page it is showing, when the page is drawn in a visible tab and when a hidden tab that reloaded becomes visible. |
 | `POST /<short id>/check` with `{ "note": "<id>" }` | Adds the id to `checked` when it matches `u<digits>-<digits>` whole and is not there; 204. Anything else is 400. |
 | `GET /base/<file>` | A base file. |
 | `GET`, `POST /control/…` | The command line's requests (below). |
@@ -427,7 +438,18 @@ for again at publish, by which time it has.
 A look is a `POST` the page's script sends, not the `GET` of the page: a
 `curl` of the address by the session, a tab the browser restores in the
 background, and a prefetch all get the page without anyone reading it, and
-would each have the next update owe notes to a human who saw nothing.
+would each have the next update owe notes to a human who saw nothing. It
+names the publication it saw, so a report that arrives late from a page
+since replaced does not mark the new one looked at.
+
+The fork is told what the human has seen when it starts, and writes for
+minutes while the old page stays readable. A human who first opens that page
+in those minutes gets an update with no notes for it. The server knows: at
+publish it compares the look it holds with the one `open-panel` answered,
+and says so (`Published.lookedMeanwhile`), which the session reads in
+`FINISHED` and can make good in a message. Re-running the fork for it would
+cost minutes for a case that needs the human to open, for the first time, a
+page already being rewritten.
 
 **Who may ask.** A page's contents are the session's work and can be
 confidential. Every request is checked before anything is read:
@@ -473,12 +495,25 @@ them out. Every response carries:
     Referrer-Policy: no-referrer
     Cache-Control: no-store
 
-so only the base's script and the server's own inserted one run, and nothing
-loads from or reports to another site. Inline styles and inline SVG stay
-open, which is what a fork composes with. The inserted script carries the
+so only the base's script and the server's own inserted one run, and no
+resource loads from another site. Inline styles and inline SVG stay open,
+which is what a fork composes with. The inserted script carries the
 response's nonce and its JSON with `<` escaped. The server serves no file of
 a panel's directory but the page, and the guard lets the fork write none but
 the draft.
+
+The policy governs what a page loads, not where it goes: a
+`<meta http-equiv="refresh" content="0;url=https://elsewhere/?…">` sends the
+reader, and whatever the address carries, to another site as the page opens
+(the second review reproduced it under this policy), and a
+`<link rel="dns-prefetch">` or `preconnect` names another host with no load
+at all. So publishing is also a boundary. The server scans the draft's
+start tags with the standard library's `html.parser` and cuts from the
+source, by position, every `<meta>` that has `http-equiv`, every `<link>`
+but a stylesheet whose `href` is under `/base/`, and every `<base>`; what it
+cut is in `Published.removed`, and the session reads it in `FINISHED`. It
+cuts and does not refuse, because the fork has ended by then and the rest of
+the page is good. A link the human clicks is their own act and stays.
 
 **The command line** is the mod's whole interface to the server, so the mod
 holds no logic about processes, ports or files:
@@ -606,7 +641,9 @@ the server alone.
     a `POST /<short id>/check` with `Content-Type: text/plain` is 403; a
     `GET /control/health` without the token is 403; a check of a note id
     that is not `u<digits>-<digits>` is 400; a response's headers hold the
-    policy above.
+    policy above; a draft holding
+    `<meta http-equiv="refresh" content="0;url=https://example.com/">` is
+    published without it, and the page stays at its address when opened.
 12. With `PANEL_REACH=tailnet`, a panel written by a session on a devcloud
     host opens in the MacBook's browser at that host's
     `https://<tailnet name>:4777/<short id>/`, and a check made there is in
@@ -639,8 +676,11 @@ the server alone.
   `.catch`), the reservation taken before the first await
   (`isAskStarting`), the record of an open fork kept in `$.state` across a
   reload, and the grace given a list that lags an end (`isForkRunning`).
-- `sminos/hooks/mods/ask.tsx`: context added to a tool result mid-turn and
-  to a prompt (`context` on the `tool.call` and `prompt.submit` results).
+- `sminos/hooks/mods/ask.tsx`: context added to a tool result mid-turn
+  (`context` on the `tool.call` hook's result) and to a prompt (`context` on
+  the input the `prompt.submit` hook passes to `next`);
+  `to-human/hooks/mods/reminder.tsx`: a prompt's context given back when the
+  prompt is dropped beneath.
 - `sminos/skills/manager/scripts/manager_serve.py` and
   `sminos/tests/test_manager_serve.py`: a `ThreadingHTTPServer` on localhost
   behind `tailscale serve`, its response headers (`common_headers`), its
@@ -720,13 +760,20 @@ Decisions that are this milestone's alone:
   its write surviving; two `open-panel` commands started together on a cold
   port; the version rule; another configuration directory's server on the
   port; the short-id refusal; the 30-day removal; publish of an unchanged
-  draft answering `published: false`. The base's script is tested in a
+  draft answering `published: false`; publish cutting a refresh `meta`, a
+  `dns-prefetch` link and a `base` and leaving the base's stylesheet link
+  and the rest of the source byte for byte; a look that names an older
+  publication leaving the newer one unseen; a first look between
+  `open-panel` and `publish` answering `lookedMeanwhile`. The base's script is tested in a
   browser through `playwright-cli` by a check script run by hand
   (`to-human/tests/panel/live-base-check.sh`): placement at 1280 and 600
   wide, the count, a check surviving a reload, one reload on a publish
   keeping the scroll position, a look reported only from a visible tab, the
-  Korean words, and no script but the base's running under the policy (a
-  page with an inline `<script>` and an external image shows neither).
+  Korean words, and what a page may do: published from a draft with an
+  inline `<script>`, an external image, a refresh `meta` and a
+  `dns-prefetch` link, the page runs no such script, shows no such image,
+  stays at its address, and makes no request to another host (the check
+  intercepts every request, so none leaves the machine).
 
 It does not touch the mods, the style, or any document but the tests' own.
 
@@ -782,8 +829,9 @@ Decisions that are this milestone's alone:
   the steps of "The end" above, in that order, then the record is cleared.
 - The guard's two hooks, registered apart from the handler and each with a
   `.catch` that denies: `tool.call` refuses by name every tool but `Read`,
-  `Grep`, `Glob`, `Bash`, `Write` and `Edit`; `tool.check` answers each of
-  those six (the rules are in Interfaces) and never leaves one to core.
+  `Grep`, `Glob`, `Bash`, `Write` and `Edit`, and refuses a `Write` or
+  `Edit` that holds a secret's handle; `tool.check` answers each of those
+  six (the rules are in Interfaces) and never leaves one to core.
 - The call's row: the view draws a `present` call as one line that stays in
   the report, as an agent's spawn does: the brief's first line, then the
   run's state read from `$.state` by the call's id: `writing…`, the address
@@ -820,9 +868,11 @@ and by kit tests for the handler's refusals, the reservation (a second call
 arriving while `open-panel` runs is `BUSY`), the registration rule, the
 prompt's assembly from an `OpenPanel`, the guard's answers (each allowed
 name, a path outside the draft, a path that reaches the draft through `..`
-or a symbolic link elsewhere, a write holding a secret's handle, the fork's
-own `present` call), a record surviving a reload, and the view's row in
-each state.
+or a symbolic link elsewhere, the fork's own `present` call), the handle's
+refusal with a hook beneath that rewrites the input before the permission
+check, as devcloud's does (the refusal has to come before it), a record
+surviving a reload, a notice put back when the prompt that carried it is
+dropped beneath, and the view's row in each state.
 
 ### M3 — the rule, its evaluation, and the documents
 
@@ -906,13 +956,20 @@ The server's command line, `to-human/panel/server.py`:
       "update":  3,
       "isNew":   false,             // true: the draft is the starter
       "locale":  "en",
-      "seen":    "current",         // "never": no look yet; "current": a look since the last publish; "stale": none since
+      "seen":    "current",         // "never": no look yet; "current": the current publication was looked at; "stale": only an earlier one
       "checked": ["u2-1"]           // notes checked off and still in the page
     }
 
 `publish` prints `Published`:
 
-    { "published": true, "address": "...", "reach": "tailnet", "written": 1794620000000 }
+    {
+      "published": true,
+      "address":   "...",
+      "reach":     "tailnet",
+      "written":   1794620000000,
+      "removed":   [],              // what publishing cut: "meta http-equiv", "link", "base"
+      "lookedMeanwhile": false      // true: the human first looked at the page this update replaced after open-panel answered
+    }
 
 Each exits non-zero with one line on stderr when it cannot (the port held
 by another program or another configuration directory's server, the short
@@ -945,6 +1002,8 @@ In `to-human/hooks/mods/present.tsx`:
       `Writing the panel in the background: ${address} The human is shown the address in their report when it is written. You are not woken for it: you learn the outcome at your next step or prompt, so if a decision is due, ask now and point at the panel.`
     export const LOCAL_ONLY = ' This address opens only on the machine this session runs on: its panel server is not exposed on the tailnet.'  // appended to STARTED and FINISHED when reach is "local"
     export const FINISHED = (address: string, said: string) => `The panel is written and the human has been shown its address: ${address}\n${said}`
+    export const REMOVED = (what: string[]) => ` Publishing cut from the page what a panel may not hold: ${what.join(', ')}.`  // appended to FINISHED when Published.removed is not empty
+    export const LOOKED_MEANWHILE = ' The human first opened the page while it was being rewritten, so this update carries no notes for what it changed: tell them what changed if it matters.'  // appended when Published.lookedMeanwhile
     export const FAILED = (address: string, why: string) => `The panel was not written (${why}); ${address} holds what it held before, and the human has been told. Call present again to retry.`
     export const BUSY = (address: string) => `The panel is being written now: ${address} Call present again once you are told it is written.`
     export const PLAN_REFUSAL = 'present writes a file, which plan mode does not allow: call it once the plan is approved.'
@@ -999,7 +1058,7 @@ The guard, on every call of the fork a run's record names:
 |---|---|
 | `Read`, `Grep`, `Glob` | allow |
 | `Bash` | allow when the engine holds the input read-only (`isReadOnly` at `tool.check`), else deny |
-| `Write`, `Edit` | allow when `file_path`, with symbolic links and `..` resolved (`$.fs.stat(path, { resolve: true })`), is the record's `draft`, and neither `content` nor `new_string` holds `[secret:` or `[redacted:`; else deny |
+| `Write`, `Edit` | deny at `tool.call` when `content` or `new_string` holds `[secret:` or `[redacted:` (the input as the fork wrote it, before any hook beneath restores a handle); at `tool.check`, allow when `file_path`, with symbolic links and `..` resolved (`$.fs.stat(path, { resolve: true })`), is the record's `draft`, else deny |
 | any other tool | deny at `tool.call`, by name |
 
 Every deny is `GUARD_REFUSAL`. No call of the fork reaches a permission
@@ -1116,14 +1175,22 @@ configuration directory, with a probe plugin whose tool spawns a fork
   the server is the only writer of a panel's records and the command line is
   its client; a look is a `POST` from the page's script; requests are told
   local from proxied by the forwarding headers; a content policy on every
-  response; control requests carry a token; the guard refuses a secret's
-  handle; plan mode refused; exposure on the tailnet asked for by
+  response, and publishing cuts what navigates or names another host by
+  itself; control requests carry a token; the guard refuses a secret's
+  handle at `tool.call`, before devcloud's hook restores it; a look names
+  the publication it saw, and a first look during a rewrite is reported;
+  hook context is added to a tool call's result and to a prompt's input;
+  plan mode refused; exposure on the tailnet asked for by
   `PANEL_REACH`; the base's guide named `GUIDE.md`; a clashing short id
   refused; acceptance 12 and 13 block M1; the replay runs each turn three
   times with both copies of the rule; the registered agents withhold the
   tool.
-  Rationale: findings of the two reviews of e657e818, each taken; the reason
-  for each is in the section that now states it.
+  Rationale: findings of the two reviews of e657e818 and of the second
+  round on 288dc26e, each taken; the reason for each is in the section that
+  now states it. Review of the document stops here: the second round's
+  findings were local to mechanisms the first round introduced, and the
+  server and the guard are read again, with their code, at each milestone's
+  review and by the branch's.
   Date/Author: 2026-11-13, the designing session, on the reviews.
 
 ## Outcomes & Retrospective
