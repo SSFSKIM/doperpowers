@@ -237,18 +237,12 @@ def cut(text):
         text = "".join(out)
 
 
-# Put before the server's script. In the body or the head it is an empty comment; where the draft left the parser
-# inside a start tag (its quoted or unquoted value, an attribute's name) or a comment, its `"`, `'` and `>` close
-# that first, so the script's `nonce="…"` can never be read as an attribute of the draft's own tag (a script
-# tag left open there would run its src with the nonce). Inside a raw-text element the script is only text.
-GUARD = "<!--\"'>-->"
-
-
 def insert_script(text, written, checked, nonce):
-    """The page with the server's own script before `</head>` (appended when it has none), after GUARD: its
-    publish time and the notes checked off, as JSON with `<` escaped."""
+    """The page with the server's own script before the first `</head>` (appended when it has none): its publish
+    time and the notes checked off, as JSON with `<` escaped. No guard precedes it: a draft tag left open that
+    swallows it cannot carry its nonce, since CSP3 denies a nonce to an element with `<script` in an attribute."""
     data = json.dumps({"written": written, "checked": checked}, separators=(",", ":")).replace("<", "\\u003c")
-    tag = GUARD + '<script nonce="%s">window.PANEL=%s</script>' % (nonce, data)
+    tag = '<script nonce="%s">window.PANEL=%s</script>' % (nonce, data)
     m = re.search(r"</head\s*>", text, re.I)
     return text[:m.start()] + tag + text[m.start():] if m else text + tag
 

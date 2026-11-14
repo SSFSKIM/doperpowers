@@ -235,7 +235,6 @@ def page(body, lang="en"):
             '</head>\n<body>\n%s\n</body>\n</html>\n' % (lang, body))
 
 
-S_GUARD = "<!--\"'>-->"      # what the server puts before its script: see server.py's GUARD
 NOTE = '<p>The plan <mark data-note="u2-1">is B now</mark>.</p>\n<aside class="note" id="u2-1">Was A.</aside>'
 
 
@@ -506,7 +505,7 @@ class Requests(Case):
         self.assertEqual(status, 200)
         self.assertTrue(h["content-type"].startswith("text/html"))
         nonce = re.search(r"'nonce-([^']+)'", h["content-security-policy"]).group(1)
-        inserted = S_GUARD + '<script nonce="%s">window.PANEL={"written":%d,"checked":["u2-1"]}</script>' % (nonce, written)
+        inserted = '<script nonce="%s">window.PANEL={"written":%d,"checked":["u2-1"]}</script>' % (nonce, written)
         self.assertEqual(body.decode(), page(NOTE).replace("</head>", inserted + "</head>"))
         self.assertNotEqual(nonce, re.search(r"'nonce-([^']+)'",
                                              self.get_page()[1]["content-security-policy"]).group(1))
@@ -516,13 +515,13 @@ class Requests(Case):
             f.write("<p>bare</p>")
         self.e.publish()
         body = self.get_page()[2].decode()
-        self.assertTrue(body.startswith("<p>bare</p>" + S_GUARD + "<script nonce="))
+        self.assertTrue(body.startswith("<p>bare</p><script nonce="))
         self.assertTrue(body.endswith("</script>"))
 
     def test_the_inserted_json_escapes_lt(self):
         S = load_server()
         out = S.insert_script("<head></head>", 5, ["</script><script>alert(1)//"], "n")
-        self.assertEqual(out, '<head>' + S_GUARD + '<script nonce="n">window.PANEL={"written":5,"checked":'
+        self.assertEqual(out, '<head><script nonce="n">window.PANEL={"written":5,"checked":'
                               '["\\u003c/script>\\u003cscript>alert(1)//"]}</script></head>')
 
     def test_every_response_holds_the_policy(self):
@@ -625,19 +624,18 @@ class Requests(Case):
         self.assertNotIn("http-equiv", served.lower())
         self.assertNotIn("<meta", served.lower())
 
-    def test_a_tag_left_open_cannot_take_the_inserted_scripts_nonce(self):
-        # A draft's script tag left open before </head> (or at the end) would read the inserted script's
-        # `nonce="…"` as its own attribute, and an external script with the nonce runs.
-        for source in ('<html><head><script src="https://evil.example/x.js" a=</head><body><p>x</p></body></html>',
-                       '<p>x</p><script src="https://evil.example/x.js" a=',
-                       "<p>x</p><script src=https://evil.example/x.js a='",
-                       '<p>x</p><script src=https://evil.example/x.js a="'):
-            served, nonce = self.served_after_publishing(source)
-            self.assertEqual(served.count('nonce="%s"' % nonce), 1, source)
-            at = served.index('<script nonce="%s">' % nonce)
-            # Whatever state the draft left the parser in (a tag, a quoted value, a comment), the guard before
-            # the script closes it, and is a comment when there is nothing to close.
-            self.assertEqual(served[at - len(S_GUARD):at], S_GUARD, source)
+    def test_a_head_comment_naming_head_stays_a_comment(self):
+        # The script goes before the first textual </head>, here inside a comment, where it is only comment
+        # text: the comment, the title and the body are as they were, and nothing new reaches the body.
+        source = ('<!doctype html><head><!-- Keep </head> as an example; not body text. --><title>Plan</title>'
+                  '</head><body><h1>Plan</h1><p>Expected body.</p></body>')
+        served, nonce = self.served_after_publishing(source)
+        tag = '<script nonce="%s">' % nonce
+        self.assertEqual(re.sub(re.escape(tag) + r".*?</script>", "", served), source)
+        comment = served[served.index("<!--"):served.index("-->") + 3]
+        self.assertIn(tag, comment)
+        self.assertTrue(comment.endswith("not body text. -->"))
+        self.assertTrue(served.endswith("</head><body><h1>Plan</h1><p>Expected body.</p></body>"))
 
     def test_unknown_paths_and_methods(self):
         for method, path in (("GET", "/"), ("GET", "/nope"), ("PUT", "/%s/" % SHORT), ("GET", "/%s/check" % SHORT),

@@ -409,6 +409,37 @@ left_open 0000eeee-1111-2222-3333-444444444444 \
   '<html><head><link rel="stylesheet" href="/base/panel.css"><script src="https://evil.example/x.js" a=</head><body><p>An open script tag.</p></body></html>'
 left_open 0000ffff-1111-2222-3333-444444444444 \
   '<p>An open script tag at the end.</p><script src="https://evil.example/y.js" a="'
-ok "a tag the draft leaves open takes neither the server script's quotes nor its nonce"
+ok "a tag the draft leaves open takes neither the server script's quotes nor its nonce (CSP3: not nonceable)"
+
+# A head comment that names </head>: the server's script lands inside the comment and does not run, so
+# panel.js has no window.PANEL. The page must still read as written, draw its notes, report the look, and not
+# reload over and over.
+commented=0000abab-1111-2222-3333-444444444444
+oc="$(open_panel "$commented")"
+printf '%s' '<!doctype html><html lang="en"><head><!-- Keep </head> as an example; not body text. --><title>Plan</title><link rel="stylesheet" href="/base/panel.css"><script src="/base/panel.js" defer></script></head><body><h1>Plan</h1><p>The plan <mark data-note="u1-1">is B</mark>.</p><aside class="note" id="u1-1">Was A.</aside></body></html>' \
+  > "$(field "$oc" draft)"
+written_c="$(field "$(publish "$commented")" written)"
+step commented-script "$(field "$oc" address)" <<'JS'
+async page => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('__PANEL__');
+  await page.waitForSelector('#u1-1.is-open', { timeout: 5000 });
+  const r = await page.evaluate(() => ({ panel: typeof window.PANEL, title: document.title,
+    first: document.body.firstElementChild && document.body.firstElementChild.tagName,
+    body: document.body.textContent, bar: document.querySelector('.panel-notebar')?.textContent }));
+  await page.evaluate(() => { window.__marker = 'still'; });
+  await page.waitForTimeout(5000);
+  const m = await page.evaluate(() => window.__marker);
+  const bad = [];
+  if (r.panel !== 'undefined') bad.push('the server script ran inside the comment');
+  if (r.title !== 'Plan') bad.push(`the title is ${r.title}`);
+  if (r.body.includes('not body text')) bad.push('the comment shows in the body');
+  if (!/^1 note on what changed/.test(r.bar || '')) bad.push(`the count reads ${r.bar}`);
+  if (m !== 'still') bad.push('the page reloaded with no new publication');
+  if (bad.length) throw new Error(bad.join('; '));
+}
+JS
+[ "$(state "${commented:0:8}" seen)" = "$written_c" ] || fail "the look was not reported ($(state "${commented:0:8}" seen))"
+ok "a head comment naming </head> stays a comment; without window.PANEL the notes draw, the look is reported, no reload"
 
 echo "all base checks passed"
