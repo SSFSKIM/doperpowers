@@ -315,7 +315,7 @@ machines, a git allow-list):
 |---|---|---|
 | `panel.html` | the server, at publish | The page as served. |
 | `draft.html` | the server at `open-panel`; then the fork | The page being edited. |
-| `meta.json` | the server | `{ "session": "<full id>", "updates": <n>, "locale": "en" \| "ko", "seenAtOpen": "never" \| "current" \| "stale" }`: `seenAtOpen` is the `seen` the last `open-panel` answered, kept so `lookedMeanwhile` survives a server replaced between `open-panel` and `publish` |
+| `meta.json` | the server | `{ "session": "<full id>", "updates": <n>, "locale": "en" \| "ko", "seenAtOpen": <ms> \| null }`: `seenAtOpen` is `state.json`'s `seen` as the last `open-panel` read it, kept so `lookedMeanwhile` survives a server replaced between `open-panel` and `publish` |
 | `state.json` | the server | `{ "seen": <ms> \| null, "written": <ms> \| null, "checked": ["<note id>", ...] }`: `written` is the page's publish time, `seen` the publish time of the newest publication the human looked at |
 
 The server is the only writer of everything but the draft, inside one
