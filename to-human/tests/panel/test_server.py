@@ -506,7 +506,7 @@ class Requests(Case):
         self.assertTrue(h["content-type"].startswith("text/html"))
         nonce = re.search(r"'nonce-([^']+)'", h["content-security-policy"]).group(1)
         inserted = '<script nonce="%s">window.PANEL={"written":%d,"checked":["u2-1"]}</script>' % (nonce, written)
-        self.assertEqual(body.decode(), page(NOTE).replace("</head>", inserted + "</head>"))
+        self.assertEqual(body.decode(), page(NOTE) + inserted)                  # at the very end of the source
         self.assertNotEqual(nonce, re.search(r"'nonce-([^']+)'",
                                              self.get_page()[1]["content-security-policy"]).group(1))
 
@@ -521,8 +521,8 @@ class Requests(Case):
     def test_the_inserted_json_escapes_lt(self):
         S = load_server()
         out = S.insert_script("<head></head>", 5, ["</script><script>alert(1)//"], "n")
-        self.assertEqual(out, '<head><script nonce="n">window.PANEL={"written":5,"checked":'
-                              '["\\u003c/script>\\u003cscript>alert(1)//"]}</script></head>')
+        self.assertEqual(out, '<head></head><script nonce="n">window.PANEL={"written":5,"checked":'
+                              '["\\u003c/script>\\u003cscript>alert(1)//"]}</script>')
 
     def test_every_response_holds_the_policy(self):
         self.e.write_draft("<p>x</p>")
@@ -624,18 +624,19 @@ class Requests(Case):
         self.assertNotIn("http-equiv", served.lower())
         self.assertNotIn("<meta", served.lower())
 
-    def test_a_head_comment_naming_head_stays_a_comment(self):
-        # The script goes before the first textual </head>, here inside a comment, where it is only comment
-        # text: the comment, the title and the body are as they were, and nothing new reaches the body.
+    def test_a_head_comment_naming_head_leaves_the_script_live(self):
+        # A textual </head> can stand inside a comment; the end of a well-formed page stands outside every one.
         source = ('<!doctype html><head><!-- Keep </head> as an example; not body text. --><title>Plan</title>'
                   '</head><body><h1>Plan</h1><p>Expected body.</p></body>')
         served, nonce = self.served_after_publishing(source)
-        tag = '<script nonce="%s">' % nonce
-        self.assertEqual(re.sub(re.escape(tag) + r".*?</script>", "", served), source)
-        comment = served[served.index("<!--"):served.index("-->") + 3]
-        self.assertIn(tag, comment)
-        self.assertTrue(comment.endswith("not body text. -->"))
-        self.assertTrue(served.endswith("</head><body><h1>Plan</h1><p>Expected body.</p></body>"))
+        self.assertTrue(served.startswith(source))
+        self.assertRegex(served[len(source):], r'^<script nonce="%s">window\.PANEL=\{[^<]*\}</script>$' % nonce)
+
+    def test_a_page_ending_in_html_gets_the_script_after_it(self):
+        source = page("<h1>Plan</h1>")
+        served, nonce = self.served_after_publishing(source)
+        self.assertTrue(served.startswith(source))
+        self.assertTrue(served.endswith("</html>\n" + served[served.index('<script nonce="%s">' % nonce):]))
 
     def test_unknown_paths_and_methods(self):
         for method, path in (("GET", "/"), ("GET", "/nope"), ("PUT", "/%s/" % SHORT), ("GET", "/%s/check" % SHORT),

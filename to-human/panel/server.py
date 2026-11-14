@@ -238,13 +238,14 @@ def cut(text):
 
 
 def insert_script(text, written, checked, nonce):
-    """The page with the server's own script before the first `</head>` (appended when it has none): its publish
-    time and the notes checked off, as JSON with `<` escaped. No guard precedes it: a draft tag left open that
-    swallows it cannot carry its nonce, since CSP3 denies a nonce to an element with `<script` in an attribute."""
+    """The page with the server's own script appended at the very end of its source: its publish time and the
+    notes checked off, as JSON with `<` escaped. The end of a well-formed page stands outside every comment, tag
+    and raw-text element, where a textual `</head>` may not (a head comment can name it); panel.js is linked
+    `defer`, so it runs after this script, and a `</html>` before it only moves it into the body. No guard
+    precedes it: a draft tag left open that swallows it cannot carry its nonce, since CSP3 denies a nonce to an
+    element with `<script` in an attribute."""
     data = json.dumps({"written": written, "checked": checked}, separators=(",", ":")).replace("<", "\\u003c")
-    tag = '<script nonce="%s">window.PANEL=%s</script>' % (nonce, data)
-    m = re.search(r"</head\s*>", text, re.I)
-    return text[:m.start()] + tag + text[m.start():] if m else text + tag
+    return text + '<script nonce="%s">window.PANEL=%s</script>' % (nonce, data)
 
 
 def waiting_page(locale):

@@ -24,11 +24,11 @@
   const POLL_MS = 2000;
   const NOTE_ID = /^u\d+-\d+$/;
 
-  // The server's script is missing when a page's head comment names </head>: the script lands inside the
-  // comment. Then the first answer of /written stands for the page shown (known: whether its time is known),
-  // and checked notes draw until the next publication.
+  // The server's script is inert only on a page left open at its end (an unterminated comment, <script>,
+  // <style> or <textarea>). Without it the page's publish time is unknown, so the notes draw with no checked
+  // list, and no look is reported and nothing polls, until the next update replaces the page.
+  const known = Boolean(window.PANEL);
   const panel = window.PANEL || { written: null, checked: [] };
-  let known = Boolean(window.PANEL);
   const short = location.pathname.split('/')[1] || '';
   const lang = (document.documentElement.lang || 'en').toLowerCase().split('-')[0];
   const words = WORDS[lang] || WORDS.en;
@@ -263,15 +263,11 @@
   const poll = () => {
     clearTimeout(timer);
     timer = null;
-    if (reloading || document.visibilityState !== 'visible') return;
+    if (!known || reloading || document.visibilityState !== 'visible') return;
     fetch(`/${short}/written`, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
-        if (j && !known) {
-          known = true;
-          panel.written = j.written;
-          look();
-        } else if (j && j.written != null && j.written !== panel.written) {
+        if (j && j.written != null && j.written !== panel.written) {
           reloading = true;
           location.reload();
         }
@@ -313,5 +309,5 @@
       poll();
     }
   });
-  timer = setTimeout(poll, known ? POLL_MS : 0);
+  if (known) timer = setTimeout(poll, POLL_MS);
 })();

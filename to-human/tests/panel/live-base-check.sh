@@ -411,35 +411,70 @@ left_open 0000ffff-1111-2222-3333-444444444444 \
   '<p>An open script tag at the end.</p><script src="https://evil.example/y.js" a="'
 ok "a tag the draft leaves open takes neither the server script's quotes nor its nonce (CSP3: not nonceable)"
 
-# A head comment that names </head>: the server's script lands inside the comment and does not run, so
-# panel.js has no window.PANEL. The page must still read as written, draw its notes, report the look, and not
-# reload over and over.
+# A head comment that names </head>: the server's script goes at the page's end, outside the comment, so it
+# runs; the check holds after a reload and in another browser, and the look is reported.
 commented=0000abab-1111-2222-3333-444444444444
 oc="$(open_panel "$commented")"
-printf '%s' '<!doctype html><html lang="en"><head><!-- Keep </head> as an example; not body text. --><title>Plan</title><link rel="stylesheet" href="/base/panel.css"><script src="/base/panel.js" defer></script></head><body><h1>Plan</h1><p>The plan <mark data-note="u1-1">is B</mark>.</p><aside class="note" id="u1-1">Was A.</aside></body></html>' \
+printf '%s' '<!doctype html><html lang="en"><head><!-- Keep </head> as an example; not body text. --><title>Plan</title><link rel="stylesheet" href="/base/panel.css"><script src="/base/panel.js" defer></script></head><body><h1>Plan</h1><p>The plan <mark data-note="u1-1">is B</mark>.</p><aside class="note" id="u1-1">Was A.</aside><p>Two <mark data-note="u1-2">notes</mark>.</p><aside class="note" id="u1-2">Was one.</aside></body></html>' \
   > "$(field "$oc" draft)"
 written_c="$(field "$(publish "$commented")" written)"
-step commented-script "$(field "$oc" address)" <<'JS'
+step commented-head "$(field "$oc" address)" <<'JS'
 async page => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('__PANEL__');
   await page.waitForSelector('#u1-1.is-open', { timeout: 5000 });
   const r = await page.evaluate(() => ({ panel: typeof window.PANEL, title: document.title,
-    first: document.body.firstElementChild && document.body.firstElementChild.tagName,
     body: document.body.textContent, bar: document.querySelector('.panel-notebar')?.textContent }));
-  await page.evaluate(() => { window.__marker = 'still'; });
-  await page.waitForTimeout(5000);
-  const m = await page.evaluate(() => window.__marker);
   const bad = [];
-  if (r.panel !== 'undefined') bad.push('the server script ran inside the comment');
+  if (r.panel !== 'object') bad.push('the server script did not run');
   if (r.title !== 'Plan') bad.push(`the title is ${r.title}`);
   if (r.body.includes('not body text')) bad.push('the comment shows in the body');
-  if (!/^1 note on what changed/.test(r.bar || '')) bad.push(`the count reads ${r.bar}`);
-  if (m !== 'still') bad.push('the page reloaded with no new publication');
+  if (!/^2 notes on what changed/.test(r.bar || '')) bad.push(`the count reads ${r.bar}`);
+  await page.click('#u1-1 .check');
+  await page.waitForTimeout(500);
+  const gone = (p) => p.evaluate(() => getComputedStyle(document.getElementById('u1-1')).display === 'none'
+    && getComputedStyle(document.getElementById('u1-2')).display !== 'none');
+  await page.reload();
+  await page.waitForSelector('#u1-2.is-open');
+  if (!(await gone(page))) bad.push('after a reload the checked note shows');
+  const ctx = await page.context().browser().newContext();
+  const p = await ctx.newPage();
+  await p.goto('__PANEL__');
+  await p.waitForSelector('#u1-2.is-open');
+  if (!(await gone(p))) bad.push('in another browser the checked note shows');
+  await ctx.close();
   if (bad.length) throw new Error(bad.join('; '));
 }
 JS
 [ "$(state "${commented:0:8}" seen)" = "$written_c" ] || fail "the look was not reported ($(state "${commented:0:8}" seen))"
-ok "a head comment naming </head> stays a comment; without window.PANEL the notes draw, the look is reported, no reload"
+[ "$(state "${commented:0:8}" checked)" = '["u1-1"]' ] || fail "the check was not kept ($(state "${commented:0:8}" checked))"
+ok "a head comment naming </head> stays a comment and the script runs: the check holds on reload and in another browser"
+
+# A page left in an open comment at its end: the server's script is comment text. The notes draw; the page
+# neither polls, nor reloads, nor reports a look.
+open_end=0000acac-1111-2222-3333-444444444444
+oe="$(open_panel "$open_end")"
+printf '%s' '<!doctype html><html lang="en"><head><title>Open</title><link rel="stylesheet" href="/base/panel.css"><script src="/base/panel.js" defer></script></head><body><p>The plan <mark data-note="u1-1">is B</mark>.</p><aside class="note" id="u1-1">Was A.</aside><!-- left open' \
+  > "$(field "$oe" draft)"
+publish "$open_end" >/dev/null
+step open-comment-end "$(field "$oe" address)" <<'JS'
+async page => {
+  const asked = [];
+  page.on('request', (q) => { if (/\/(written|seen)$/.test(new URL(q.url()).pathname)) asked.push(q.url()); });
+  await page.goto('__PANEL__');
+  await page.waitForSelector('#u1-1.is-open', { timeout: 5000 });
+  const panel = await page.evaluate(() => typeof window.PANEL);
+  await page.evaluate(() => { window.__marker = 'still'; });
+  await page.waitForTimeout(5000);
+  const m = await page.evaluate(() => window.__marker);
+  const bad = [];
+  if (panel !== 'undefined') bad.push('the server script ran inside the open comment');
+  if (m !== 'still') bad.push('the page reloaded');
+  if (asked.length) bad.push(`it asked ${asked.join(', ')}`);
+  if (bad.length) throw new Error(bad.join('; '));
+}
+JS
+[ "$(state "${open_end:0:8}" seen)" = null ] || fail "a look was reported from a page with no PANEL"
+ok "a page left in an open comment at its end draws its notes, and neither polls, reloads nor reports a look"
 
 echo "all base checks passed"
