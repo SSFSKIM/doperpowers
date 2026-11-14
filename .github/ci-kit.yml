@@ -120,7 +120,8 @@ gates:
     timeout: 15
     paths: ["devcloud/**", ".github/**"]
 
-  # The to-human plugin's mods (the report view), installed as the mods gate is.
+  # The to-human plugin's mods (the report view), installed as the mods gate is, and its panel server
+  # (Python's standard library, stub tailscale; the base's browser check is run by hand).
   - name: to-human-mods
     run: |
       for i in 1 2 3; do
@@ -128,6 +129,7 @@ gates:
         [ "$i" = 3 ] && exit 1; sleep 10
       done
       bash to-human/tests/mods/run.sh
+      python3 -m unittest discover -s to-human/tests/panel
     timeout: 15
     paths: ["to-human/**", ".github/**"]
 
