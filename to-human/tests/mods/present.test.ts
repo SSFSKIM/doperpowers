@@ -10,6 +10,7 @@ import {
   FAILED,
   FINISHED,
   FORK_DESCRIPTION,
+  FORK_EFFORT,
   GUARD_REFUSAL,
   INPUT_SCHEMA,
   LOCAL_ONLY,
@@ -251,7 +252,26 @@ function harness({
     await run('session.start', { cwd: '/w', surface: null, isInteractive }, () => ({ cwd: '/w' }))
     await settle()
   }
-  return { present, call, check, ended, prompt, start, classic, modeChanged, release, state, commands, spawned, notified, sleeps, failures, logs }
+  /** One request of a loop through the turn.step hooks, sent at `effort` (null: none): the effort it went out at beneath. */
+  const step = async (agentId: string | undefined, effort: string | null = 'high') => {
+    const e: Event = { turnId: 't1', index: 1, model: 'claude-opus-5-5', messageCount: 3, ...(agentId !== undefined && { agentId }), ...(effort !== null && { effort }) }
+    const chain = hooks.filter((r) => matches(r, 'turn.step', e))
+    let sent: Event | undefined
+    const at = (i: number, input: Event): AsyncGenerator<unknown, unknown> => {
+      const r = chain[i]
+      if (r === undefined) {
+        return (async function* () {
+          sent = input
+          return { turnId: 't1', index: 1 }
+        })()
+      }
+      return r.handler($, input, Object.assign((inner: Event) => at(i + 1, inner), { origin: ENGINE })) as AsyncGenerator<unknown, unknown>
+    }
+    const stream = at(0, e)
+    for (let read = await stream.next(); read.done !== true; read = await stream.next());
+    return sent?.effort
+  }
+  return { present, call, check, ended, prompt, start, classic, modeChanged, release, state, commands, spawned, notified, sleeps, failures, logs, step }
 }
 
 describe('the present tool: its contract', () => {
@@ -1031,6 +1051,30 @@ describe("the guard over the fork's calls", () => {
     await h.ended()
     expect(await h.check('Write', { file_path: DRAFT })).toEqual({ decision: 'deny', reason: GUARD_REFUSAL })
     expect(await h.call('Agent', {}, FORK)).toEqual({ deny: GUARD_REFUSAL })
+  })
+})
+
+describe("the fork's effort", () => {
+  test('every request of the panel fork goes out at FORK_EFFORT, whatever the session runs at', async () => {
+    const h = harness()
+    await h.present('x')
+    expect(FORK_EFFORT).toBe('medium')
+    expect(await h.step(FORK, 'high')).toBe(FORK_EFFORT)
+    expect(await h.step(FORK, 'max')).toBe(FORK_EFFORT)
+    expect(await h.step(FORK, 'low')).toBe(FORK_EFFORT)
+  })
+
+  test("the main loop and another subagent keep their own effort; a model without effort is sent none", async () => {
+    const h = harness({ agents: () => [{ id: FORK, description: FORK_DESCRIPTION, type: 'fork', status: 'running', spawnedBy: 'to-human' }, { id: 'a-other', description: 'review', type: 'general-purpose', status: 'running' }] })
+    await h.present('x')
+    expect(await h.step(undefined, 'xhigh')).toBe('xhigh')
+    expect(await h.step('a-other', 'xhigh')).toBe('xhigh')
+    expect(await h.step(FORK, null)).toBeUndefined()
+  })
+
+  test("a loop that cannot be placed goes out at its own effort", async () => {
+    const h = harness({ agents: () => Promise.reject(new Error('no list')), failsClosed: true })
+    expect(await h.step('a-unknown', 'high')).toBe('high')
   })
 })
 

@@ -66,6 +66,15 @@ export const NOT_HEARD = 'its end was not heard'
 /** What the fork is described as in the agent strip, `/tasks` and `$.agent.list()`. */
 export const FORK_DESCRIPTION = 'panel'
 
+/**
+ * The effort every request of the fork goes out at, whatever the session's:
+ * it composes a page from a conversation it already holds. The prompt cache
+ * does not key on effort (a request at medium read the whole cache one at
+ * high had written, claude-opus-5-5 and claude-fable-5-2, 2026-11-15), so the
+ * fork still starts on a cache read of the session's.
+ */
+export const FORK_EFFORT = 'medium'
+
 /** What `server.py open-panel` prints. */
 export type OpenPanel = {
   address: string
@@ -584,6 +593,16 @@ export function registerPresent(on: On): void {
   })
 
   on('tool.describe', { tool: PRESENT_TOOL }, async (_, e, next) => ({ ...(await next(e)), isDeferred: false }))
+
+  // The fork's requests at FORK_EFFORT. A rewrite lasts one step, so each of
+  // its steps is rewritten; a model that takes no effort (`effort` absent) is
+  // sent none, and a loop that cannot be placed goes out as it came: effort
+  // is the fork's cost, not the guard's hold.
+  on('turn.step', { turnId: /^/ }, async function* ($, e, next) {
+    if (e.agentId === undefined || e.effort === undefined) return yield* next(e)
+    const isFork = await isPanelFork($, e.agentId).catch(() => false)
+    return yield* next(isFork ? { ...e, effort: FORK_EFFORT } : e)
+  })
 
   // The session's notice of a run's end, beside the main loop's next tool
   // result: added to what `next` returned, outer to the tools this plugin

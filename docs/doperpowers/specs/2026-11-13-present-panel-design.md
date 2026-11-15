@@ -1512,6 +1512,19 @@ configuration directory, with a probe plugin whose tool spawns a fork
   a new page with `written` unset, so open tabs never reloaded.
   Date/Author: 2026-11-14, the executing session, on the branch review.
 
+- Decision: the fork's requests go out at medium effort (`FORK_EFFORT`),
+  whatever the session's, by a `turn.step` rewrite of each of its steps.
+  Rationale: the owner's request after the build; the fork composes a page
+  from a conversation it already holds, and the session's own effort (high or
+  xhigh) spends thinking the page does not need. It costs no cache: a request
+  at medium read the whole prefix a request at high had cached (opus-5-5 and
+  fable-5-2), and the fork's first request read and wrote the same amounts
+  with the session at medium and at xhigh. The engine's own remark that a
+  whole-request level change rewrites the conversation's cache did not hold
+  on the API here. Alternative: an effort option on `$.agent.spawn`, which
+  the engine does not offer for a fork.
+  Date/Author: 2026-11-15, the designing session, at the owner's request.
+
 ## Outcomes & Retrospective
 
 **What shipped.** The panel works end to end: `mcp__to-human__present`

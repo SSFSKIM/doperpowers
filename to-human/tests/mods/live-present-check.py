@@ -199,6 +199,8 @@ class Live:
         dirs = " ".join("--plugin-dir %s" % shlex.quote(d) for d in self.dirs)
         mode = mode or self.args.permission_mode
         flags = " --permission-mode %s" % shlex.quote(mode) if mode else ""
+        if self.args.effort:
+            flags += " --effort %s" % shlex.quote(self.args.effort)
         who = "--resume %s" % self.session if resume else "--session-id %s" % self.session
         inner = "set -e; . %s; cd %s; exec claude %s --model %s %s --debug-file %s%s" % (
             shlex.quote(self.envfile), shlex.quote(self.work), dirs, shlex.quote(model or self.args.model), who,
@@ -300,8 +302,9 @@ class Live:
         return out
 
     def usage(self, rows):
-        """Billed tokens summed over a fork's requests (each response once), and its first request's."""
-        seen, total, first = set(), {}, None
+        """Billed tokens summed over a fork's requests (each response once), the efforts they went out at, and its
+        first request's tokens."""
+        seen, total, first, efforts = set(), {}, None, set()
         for r in rows:
             msg = r.get("message", {})
             keys = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
@@ -310,12 +313,15 @@ class Live:
             if r.get("type") != "assistant" or msg.get("id") in seen or not any(u.get(k) for k in keys):
                 continue
             seen.add(msg.get("id"))
+            if r.get("effort"):
+                efforts.add(r["effort"])
             if first is None:
                 first = {k: u.get(k, 0) for k in keys}
                 first["cache_creation"] = u.get("cache_creation")
             for k in keys:
                 total[k] = total.get(k, 0) + (u.get(k) or 0)
         total["requests"] = len(seen)
+        total["efforts"] = sorted(efforts)
         return total, first
 
     def fork_calls(self, rows):
@@ -805,6 +811,10 @@ def guard(live):
     live.fact("fork calls", calls)
     total, first = live.usage(live.forks()[0][1])
     live.fact("fork billed tokens", total)
+    live.fact("fork's first request", first)
+    if live.args.effort:
+        live.check("the fork's requests go out at medium effort, the session at %s" % live.args.effort,
+                   total["efforts"] == ["medium"], "efforts %s" % total["efforts"])
     if live.args.locale:
         lang = re.search(r'<html[^>]*lang="([^"]+)"', page or "")
         live.check("6 a Korean panel: lang ko, Korean prose",
@@ -917,6 +927,7 @@ def run():
     ap.add_argument("scenario", choices=["main", "guard", "plan", "stay", "unseen", "lookalike"])
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--model", default="haiku")
+    ap.add_argument("--effort", help="the session's effort; the fork's requests go out at FORK_EFFORT whatever it is")
     ap.add_argument("--permission-mode")
     ap.add_argument("--locale")
     ap.add_argument("--skip-idle", action="store_true")
