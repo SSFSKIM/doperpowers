@@ -27,8 +27,9 @@ It prints PASS or FAIL for each item, in each launch:
 5. no notification was raised: a MAWS session's notification surface is MAWS.
 In the launches at 9 a second turn runs one command and then sends a final
 message, which closes a run of working record, and the check prints:
-6. at 9: the run's summary is asked for and kept within the call's limit:
-   the session's folds file (`to-human/folds/<session id>.json` in the config
+6. at 9: the run's summary is asked for (the probe sees the call, which makes
+   item 8's absence of one evidence) and kept within the call's limit: the
+   session's folds file (`to-human/folds/<session id>.json` in the config
    dir) holds a run whose first row is the command's call, with a summary;
 7. at 9: that file is kept as the contract a client reads, at `shape: 2`;
 8. at 9 with TO_HUMAN_FOLD_SUMMARIES=off: the command ran (a run was due its
@@ -278,7 +279,8 @@ class Maws(final.Final):
         runs = (kept or {}).get("runs") or []
         mine = [run for run in runs if isinstance(run, list) and len(run) == 3 and run[0] in calls]
         self.check("6 the run closed by the message reads a summary within the call's limit, kept in the folds file",
-                   bool(calls) and bool(mine) and bool(mine[0][2].strip()),
+                   # The probe's sighting of the call is the positive control for check 8's absence of one.
+                   bool(calls) and bool(asked()) and bool(mine) and bool(mine[0][2].strip()),
                    "the command's call %s; summary calls seen %s; its runs in the file: %s" % (calls, asked(), mine))
         self.check("7 the folds file is kept at shape 2", (kept or {}).get("shape") == 2, "the file: %s" % kept)
 
