@@ -1138,6 +1138,57 @@ function adopt(view: View, requestId: string) {
 }
 
 /**
+ * Makes each call a group now holds that stands in the order as a row of its
+ * own one row with the group: a client asks a lone call as `ToolUse`, under
+ * the call's id, and its run as `ToolGroup` from the second call on, no
+ * longer mounting the lone row, which would otherwise head the run and keep
+ * its button. The group takes the earliest such row's slot (unless it already
+ * stands in the order) with what that row carried: its run's unfolding, where
+ * it stood in the window, the end its label was read to, and the controls
+ * drawn under it (`holderOf`); the others leave the order. A call the person
+ * reads (a message, a spawn, a question) keeps its own row. Whether any row
+ * joined.
+ */
+export function joinGroup(view: View, id: string, calls: readonly string[]): boolean {
+  const keys = new Set(calls.map(keyOf))
+  const own = view.order.filter((row) => !row.startsWith(GROUP) && keys.has(keyOf(row)) && view.rowOf.get(row) === 'record')
+  if (own.length === 0) {
+    return false
+  }
+  let isPlaced = view.order.includes(id)
+  for (const row of own) {
+    const at = view.order.indexOf(row)
+    if (isPlaced) {
+      view.order.splice(at, 1)
+    } else {
+      view.order[at] = id
+      view.rowOf.set(id, 'record')
+      isPlaced = true
+    }
+    view.rowOf.delete(row)
+    view.heldBy.set(row, id)
+    view.requestIds.delete(row)
+    if (view.unfolded.delete(row)) {
+      view.unfolded.add(id)
+    }
+    const shown = view.shown.get(row)
+    if (shown !== undefined && !view.shown.has(id)) {
+      view.shown.set(id, shown)
+    }
+    view.shown.delete(row)
+    const end = view.endOf.get(row)
+    if (end !== undefined && !view.endOf.has(id)) {
+      view.endOf.set(id, end)
+    }
+    view.endOf.delete(row)
+    if (view.folded === row) {
+      view.folded = id
+    }
+  }
+  return true
+}
+
+/**
  * Notes a row as it draws: its place among the rows drawn so far, and what it
  * is. A row that lands beside another, or turns into a kind that ends or joins
  * its run, can change what that neighbour draws (whether it opens its run and
@@ -1940,7 +1991,10 @@ export function registerToHuman(on: On) {
   // the order late would land after rows that drew since, or stay in it
   // with no row to draw once the group collapses again. The last call
   // draws the run's end in the group's place, and when a call joins the
-  // group the row that drew it is asked for again.
+  // group the row that drew it is asked for again. A call that drew as a row
+  // of its own before a group held it (a client's lone call) is one row with
+  // the group from then on (`joinGroup`), and is asked again, to draw as the
+  // group's.
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
     if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
@@ -1953,6 +2007,7 @@ export function registerToHuman(on: On) {
       expanded.delete(id)
     }
     note(view, id, e.props)
+    const isJoined = joinGroup(view, id, e.props.calls.flatMap((call) => (call.tool_use_id ? [call.tool_use_id] : [])))
     see($, view, id, 'record')
     // A group can let a call go: a resume's first frame groups every call of
     // a turn, a message's included, then draws the message as a row of its
@@ -1973,6 +2028,9 @@ export function registerToHuman(on: On) {
           spawns.add(call.tool_use_id)
         }
       }
+    }
+    if (isJoined && isFolding()) {
+      $.ui.invalidate('ui.render')
     }
     if (last !== undefined && lastOf.get(id) !== last) {
       const moved = lastOf.has(id)
