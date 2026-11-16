@@ -3,7 +3,7 @@ import type { EngineInterface, On, SessionAppendInput } from 'claude-code'
 import type { FoldRun, Folds, OpenFold, OpenFoldLast, StoredFolds } from '../../types/to-human'
 import { MESSAGE_TOOL, isMadeUp } from './message'
 import type { PromptRowProps, View } from './to-human'
-import { isApiError, isMawsDrawing, isRead, isSpawn, keyOf, parse, promptRow } from './to-human'
+import { isApiError, isMawsDrawing, isRead, isSpawn, parse, placeAt, promptRow } from './to-human'
 
 /**
  * The run tracker: what a fold's button says before it is opened. The view
@@ -526,26 +526,43 @@ export function takeUp(tracker: Tracker, folds: Folds | undefined, open: OpenFol
 const labelFor = (run: FoldRun) => (run.isLive === true ? run.line ?? run.summary : run.summary)
 
 /**
- * The text a fold's button reads for the run `rowId` stands in, or undefined
- * for `working record`: the open run's, if the row's place is at or after the
- * open run's first row's, else the closed run whose first and last rows'
- * places hold it. A row whose place, or whose run's bound's place, the view
- * does not know reads nothing (a place the view only guessed, for a row drawn
- * before it was kept, is not one). A group is known by its first call's id.
- * By place, so whichever row of a run draws its button finds the label.
+ * The text a fold's button reads for the stretch `rowId` draws the line of
+ * (its first row; `lastId` its last, `runEnd`), or undefined for `working
+ * record`, by the rows' places (`placeAt`):
+ * 1. a row with no place reads nothing (a place the view only guessed, for a
+ *    row drawn before it was kept, is not one);
+ * 2. the open run's, if the row's place is at or after the open run's first
+ *    row's;
+ * 3. else the newest closed run whose first and last rows' places hold it;
+ * 4. else, of the open run and the closed runs with both bounds placed, the
+ *    one whose first row is placed nearest after the row and at or before
+ *    the stretch's last row: a stretch that a row the tracker never follows
+ *    opens (a thought, a notice a client's host made) reads the run that
+ *    begins inside it.
+ * A group is known by its first call's id. By place, so whichever row of a
+ * run draws its button finds the label. The rule is the one
+ * `tests/mods/fold-label-cases.json` holds, which a client that draws the
+ * same lines from the session's file answers alike.
  */
-export function labelOf(folds: Folds | undefined, open: OpenFold | undefined, view: View, rowId: string): string | undefined {
-  const at = view.place.get(keyOf(rowId))
+export function labelOf(folds: Folds | undefined, open: OpenFold | undefined, view: View, rowId: string, lastId = rowId): string | undefined {
+  const at = placeAt(view, rowId)
   if (at === undefined) return undefined
-  const from = open === null || open === undefined ? undefined : view.place.get(keyOf(open.first))
+  const from = open === null || open === undefined ? undefined : placeAt(view, open.first)
   if (open && from !== undefined && at >= from) return labelFor(open)
   const runs = folds?.runs ?? []
-  for (let i = runs.length - 1; i >= 0; i -= 1) {
-    const run = runs[i]!
-    const [first, last] = [view.place.get(keyOf(run.first)), run.last === undefined ? undefined : view.place.get(keyOf(run.last))]
-    if (first !== undefined && last !== undefined && first <= at && at <= last) return labelFor(run)
+  const placed = runs.flatMap((run) => {
+    const [first, last] = [placeAt(view, run.first), run.last === undefined ? undefined : placeAt(view, run.last)]
+    return first !== undefined && last !== undefined ? [{ run, first, last }] : []
+  })
+  for (let i = placed.length - 1; i >= 0; i -= 1) {
+    const { run, first, last } = placed[i]!
+    if (first <= at && at <= last) return labelFor(run)
   }
-  return undefined
+  const end = placeAt(view, lastId)
+  if (end === undefined) return undefined
+  const inside = [...(open && from !== undefined ? [{ run: open, first: from }] : []), ...placed].filter(({ first }) => first > at && first <= end)
+  const nearest = inside.reduce<(typeof inside)[number] | undefined>((best, next) => (best === undefined || next.first < best.first ? next : best), undefined)
+  return nearest === undefined ? undefined : labelFor(nearest.run)
 }
 
 const FOLDS = { plugin: 'to-human', key: 'folds' } as const

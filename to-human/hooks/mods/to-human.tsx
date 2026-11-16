@@ -1213,11 +1213,11 @@ function toggle(view: View, drawn: string) {
 const FOLDS_KEPT = { plugin: 'to-human', key: 'folds' } as const
 const OPEN_KEPT = { plugin: 'to-human', key: 'fold' } as const
 
-/** What the button of the run `id` stands in reads: its live line or summary, else `working record`. */
+/** What the button the row `id` draws for its run reads: the live line or summary of the run its stretch holds (`labelOf`), else `working record`. */
 async function foldLabel($: EngineInterface, view: View, id: string): Promise<string> {
   try {
     const [folds, open] = await Promise.all([$.state.get(FOLDS_KEPT), $.state.get(OPEN_KEPT)])
-    return labelOf(folds.value, open.value, view, id) ?? 'working record'
+    return labelOf(folds.value, open.value, view, id, runEnd(view.order, view.rowOf, id)) ?? 'working record'
   } catch {
     return 'working record'
   }

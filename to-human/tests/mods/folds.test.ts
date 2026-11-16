@@ -395,7 +395,8 @@ describe("labelOf: a line's row takes the run that begins inside its stretch", (
   })
 
   test('an ask anchored at a row takes its place from the row: it reads the run it stands in, or begins', () => {
-    expect(labelOf(folds, open, view, 'toolu_2~n1', 'toolu_3')).toBe('Read the config')
+    const across: Folds = { shape: 1, runs: [{ first: 'toolu_2', last: 'toolu_3', summary: 'Read and reloaded the config' }] }
+    expect(labelOf(across, open, view, 'toolu_2~n1', 'toolu_3')).toBe('Read and reloaded the config')
     expect(labelOf(folds, open, view, 'p0~n1', 'toolu_3')).toBe('Read the config')
     expect(labelOf(folds, open, view, 'unplaced~n1', 'toolu_3')).toBeUndefined()
   })
