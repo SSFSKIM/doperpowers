@@ -1447,12 +1447,29 @@ function spanRows<E extends RenderInput>($: EngineInterface, e: E, spans: readon
   )
 }
 
-// MAWS draws this channel itself when it advertises native support; the
-// terminal keeps this view. Every hook awaits the same read for this worker.
-let maws: Promise<boolean> | undefined
-const native = async ($: EngineInterface, e: object) =>
-  (await (maws ??= $.env.get('MAWS_NATIVE_TO_HUMAN').then((value) => value !== undefined && value !== ''))) &&
-  (!('surface' in e) || e.surface !== 'terminal')
+/**
+ * The MAWS contract version from which the client reads this view's drawing
+ * on its own surface. The plugin's `maws-surface.json` declares it to the
+ * client, which reads that file without running the plugin
+ * (`{ "toHumanView": { "drawsFrom": 9 } }`); the two must agree.
+ */
+export const MAWS_DRAWS_FROM = 9
+
+/**
+ * Whether MAWS draws this channel itself, by what it advertises in
+ * `MAWS_NATIVE_TO_HUMAN`: a non-empty value that is not a number of
+ * `MAWS_DRAWS_FROM` or more (8 and below, or no number). Unset or empty is no
+ * MAWS, and from 9 the client reads this view's drawing. The view steps aside
+ * off the terminal where this holds, and the run tracker asks for no summary.
+ */
+export const isMawsDrawing = (value: string | undefined) => value !== undefined && value !== '' && !(Number(value) >= MAWS_DRAWS_FROM)
+
+/** The setting as one registration of the view read it: every hook awaits the same read. */
+type Setting = { maws?: Promise<boolean> }
+
+/** Whether the view steps aside for this event: MAWS draws (`isMawsDrawing`) and the surface is not the terminal, which keeps the view. */
+const native = async ($: EngineInterface, e: object, setting: Setting) =>
+  (await (setting.maws ??= $.env.get('MAWS_NATIVE_TO_HUMAN').then(isMawsDrawing))) && (!('surface' in e) || e.surface !== 'terminal')
 
 /** The slash command that writes the view's state to a file (`dumpView`). */
 export const DUMP_COMMAND = 'to-human-dump'
@@ -1515,6 +1532,9 @@ export function registerToHuman(on: On) {
   const markSeen = () => {
     hasSeenMark = true
   }
+
+  // What MAWS advertises, read once for this registration (`native`).
+  const setting: Setting = {}
 
   // Each load of the module raises this, the first and every reload: the
   // start-up read (`started`) runs here, where no redraw of a row cuts it
@@ -1613,7 +1633,7 @@ export function registerToHuman(on: On) {
 
   // `/to-human-dump`: the view's state as it stands, to a file, for a wrong fold seen live.
   on('command.run', { command: DUMP_COMMAND }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     try {
       const path = await dumpView($, view, { isFolding: isFolding(), isFullTranscript })
       $.ui.toast(`to-human: the view's state is in ${path}`)
@@ -1640,7 +1660,7 @@ export function registerToHuman(on: On) {
   // after it are two, as the person reads them. Agent messages and background
   // deliveries are working record, and stand in the run they fall in.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     const kind = promptRow(e.props, spawns)
     // A prompt row is kept before it draws (the person's own only now and
@@ -1672,7 +1692,7 @@ export function registerToHuman(on: On) {
   // drawn last when it first drew.
   const before = new Map<string, string | undefined>()
   on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     if (!before.has(e.requestId)) {
       before.set(e.requestId, view.order[view.order.length - 1])
@@ -1698,7 +1718,7 @@ export function registerToHuman(on: On) {
   // from the file) and by its exact text, so a model that writes the same
   // sentence is drawn as ever.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     if (drawsApart(view, e.requestId, 'AssistantMessage', e.props.text)) return next(e)
     if (isMadeUp(e.requestId, e.props.text) || (view.unrequested.has(keyOf(e.requestId)) && e.props.text.trim() === FINAL_ANSWER)) {
@@ -1779,7 +1799,7 @@ export function registerToHuman(on: On) {
   // the pill, which draws it beneath itself: drawn by the row, the end would
   // stand between the row and its pill.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     // A call stands apart with the group it is drawn in: a group is set apart by its first call alone.
     const held = groupOf.get(e.requestId)
@@ -1837,7 +1857,7 @@ export function registerToHuman(on: On) {
   // draws the run's end in the group's place, and when a call joins the
   // group the row that drew it is asked for again.
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = `${GROUP}${e.props.calls[0]?.tool_use_id ?? e.requestId}`
     if (drawsApart(view, id, 'ToolGroup', e.props.calls[0]?.tool ?? '')) return next(e)
@@ -1885,7 +1905,7 @@ export function registerToHuman(on: On) {
   // to draw again without it. An expanded group's last call draws its end.
   const pills = new Set<string>()
   on('ui.render', { component: 'ToolProgress' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = groupOf.get(e.props.tool_use_id) ?? e.props.tool_use_id
     if (drawsApart(view, e.props.tool_use_id, 'ToolProgress', e.props.hint) || drawsApart(view, id, 'ToolProgress', e.props.hint) || expanded.has(id)) {
@@ -1918,7 +1938,7 @@ export function registerToHuman(on: On) {
   // the run's button and this one draws nothing; unfolded, it is the last
   // of the two, and carries the run's end.
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     if (drawsApart(view, e.requestId, 'ToolResult', e.props.tool)) return next(e)
     if (isUnsent(e.props)) {
@@ -1939,7 +1959,7 @@ export function registerToHuman(on: On) {
   // what the hooks beneath draw there (the ask's open questions), which this
   // plugin's hooks sit outside of.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     if (!hasSeenMark || e.props.hasSurvey) {
       return next(e)
@@ -1979,7 +1999,7 @@ export function registerToHuman(on: On) {
   // window is left where it is: any reveal, even one that moves nothing, stops
   // the transcript following new output at its bottom.
   on('ui.press', { element: TOGGLE }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     view.folded = undefined
     const result = await next(e)
     $.ui.invalidate('ui.render')
@@ -1995,7 +2015,7 @@ export function registerToHuman(on: On) {
   })
 
   on('ui.press', { element: MODE }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     const result = await next(e)
     $.ui.invalidate('ui.render')
     return result
