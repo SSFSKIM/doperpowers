@@ -1563,6 +1563,24 @@ describe("the fold's button and its summary", () => {
     expect(asks).toHaveLength(1)
   })
 
+  test("a thought's fold drawn before its run's rows reads the run's summary once they draw", async ($, on) => {
+    await interactive($, on, () => answered('Listed the files'))
+    await keep($, sent('a0', 'toolu_m0'), result('u0', 'toolu_m0', MESSAGE_TOOL, 'sent'))
+    await sentRow($, 'toolu_m0')
+    // A response that thinks, then calls: the tracker follows the call, not the thought.
+    await keep($, response('a1', { type: 'thinking', thinking: 'Which files?' }, use('toolu_1', 'Bash', { command: 'ls', description: 'List the files' })), result('u1', 'toolu_1'))
+    await keep($, sent('a2', 'toolu_m'), result('u2', 'toolu_m', MESSAGE_TOOL, 'sent'))
+    await sentRow($, 'toolu_m')
+    const thought = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'a1', props: { text: 'Which files?', isFirstOfReply: true, isSummary: true } } as never)
+    await until(async () => (await button(thought)) !== undefined)
+    // Alone, the stretch ends at the thought: no run begins inside it yet.
+    expect(await button(thought)).toBe('› working record')
+    // The call's row draws: the stretch now holds the run, and the thought's fold reads its summary unasked.
+    await bashRow($, 'toolu_1', 'List the files')
+    await until(async () => (await button(thought)) === '› Listed the files')
+    expect(await button(thought)).toBe('› Listed the files')
+  })
+
   test("a turn that ends without a message leaves a fold that reads its summary (acceptance 3)", async ($, on) => {
     await interactive($, on, () => answered('Listed the files'))
     await keep($, sent('a0', 'toolu_m0'), result('u0', 'toolu_m0', MESSAGE_TOOL, 'sent'))
