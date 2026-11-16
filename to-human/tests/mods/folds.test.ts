@@ -368,6 +368,39 @@ describe('labelOf: the run a row stands in, by place', () => {
   })
 })
 
+describe("labelOf: a line's row takes the run that begins inside its stretch", () => {
+  // t1 opens a stretch with a thought the tracker never follows: p0 | t1 toolu_2 toolu_3 | m4 | t5 | m6 | toolu_7 (open)
+  const view = newView(() => true)
+  ;['p0', 't1', 'toolu_2', 'toolu_3', 'm4', 't5', 'm6', 'toolu_7'].forEach((id, i) => view.place.set(id, i))
+  const folds: Folds = { shape: 1, runs: [{ first: 'toolu_2', last: 'toolu_2', summary: 'Read the config' }, { first: 'toolu_3', last: 'toolu_3', summary: 'Reloaded it' }] }
+  const open: OpenFold = { first: 'toolu_7', line: 'Run the tests', isLive: true }
+
+  test('a row before its run\'s first tracked row reads the run that begins nearest within its stretch', () => {
+    expect(labelOf(folds, open, view, 't1', 'toolu_3')).toBe('Read the config')
+  })
+
+  test('a run that begins past the stretch\'s last row is not its', () => {
+    expect(labelOf(folds, open, view, 't1', 't1')).toBeUndefined()
+    expect(labelOf(folds, null, view, 't5', 't5')).toBeUndefined()
+  })
+
+  test('the open run counts where it begins inside the stretch', () => {
+    view.place.set('t6b', 6.5)
+    expect(labelOf(folds, open, view, 't6b', 'toolu_7')).toBe('Run the tests')
+  })
+
+  test('a closed run with a bound unplaced is no candidate, and a stretch\'s last row with no place takes none', () => {
+    expect(labelOf({ shape: 1, runs: [{ first: 'toolu_2', last: 'gone', summary: 'x' }] }, null, view, 't1', 'toolu_3')).toBeUndefined()
+    expect(labelOf(folds, null, view, 't1', 'unplaced')).toBeUndefined()
+  })
+
+  test('an ask anchored at a row takes its place from the row: it reads the run it stands in, or begins', () => {
+    expect(labelOf(folds, open, view, 'toolu_2~n1', 'toolu_3')).toBe('Read the config')
+    expect(labelOf(folds, open, view, 'p0~n1', 'toolu_3')).toBe('Read the config')
+    expect(labelOf(folds, open, view, 'unplaced~n1', 'toolu_3')).toBeUndefined()
+  })
+})
+
 /** A model call the hand-made engine holds until the test answers it. */
 type Held = { request: Record<string, unknown>; answer: (reply: unknown) => void; fail: (error: Error) => void }
 const answered = (text: string) => ({ isAnswered: true, text, usage: { input_tokens: 1, output_tokens: 1 } })
