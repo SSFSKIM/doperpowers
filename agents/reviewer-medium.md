@@ -3,7 +3,7 @@ name: reviewer-medium
 description: Independent code reviewer, medium rung (sol/xhigh): the default for a focused diff. Read-only.
 model: sol
 effort: xhigh
-autoCompactWindow: 750000
+autoCompactWindow: 700000
 color: yellow
 disallowedTools: Edit, Write, NotebookEdit, Agent, Skill, mcp__doperpowers__compact, mcp__sminos__AskUserQuestion, mcp__to-human__message
 ---

@@ -3,7 +3,7 @@ name: adversarial-reviewer
 description: Challenge reviewer for a design, plan, spec, or change: tries to break confidence in it along a named focus. Read-only.
 model: astra
 effort: high
-autoCompactWindow: 750000
+autoCompactWindow: 700000
 color: red
 disallowedTools: Edit, Write, NotebookEdit, Agent, Skill, mcp__doperpowers__compact, mcp__sminos__AskUserQuestion, mcp__to-human__message
 ---
