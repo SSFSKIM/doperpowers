@@ -1034,6 +1034,55 @@ describe('registerFolds: summaries', () => {
     expect(h.held).toEqual([])
   })
 
+  // Where a run's summary is asked for: a session someone reads the view of
+  // (a terminal, or a client that advertises 9 or more and reads the view's
+  // drawing), and not where TO_HUMAN_FOLD_SUMMARIES is off or a sminos
+  // internal fork runs.
+  const table: [string, boolean, Record<string, string>, boolean][] = [
+    ['interactive, the advertisement unset', true, {}, true],
+    ['interactive, the advertisement empty', true, { MAWS_NATIVE_TO_HUMAN: '' }, true],
+    ['interactive, at 9', true, { MAWS_NATIVE_TO_HUMAN: '9' }, true],
+    ['headless, at 9', false, { MAWS_NATIVE_TO_HUMAN: '9' }, true],
+    ['headless, at 10', false, { MAWS_NATIVE_TO_HUMAN: '10' }, true],
+    ['interactive, at 8', true, { MAWS_NATIVE_TO_HUMAN: '8' }, false],
+    ['headless, at 8', false, { MAWS_NATIVE_TO_HUMAN: '8' }, false],
+    ['interactive, at 1', true, { MAWS_NATIVE_TO_HUMAN: '1' }, false],
+    ['headless, at no number', false, { MAWS_NATIVE_TO_HUMAN: 'native' }, false],
+    ['interactive, at no number', true, { MAWS_NATIVE_TO_HUMAN: 'native' }, false],
+    ['headless, the advertisement unset', false, {}, false],
+    ['headless, the advertisement empty', false, { MAWS_NATIVE_TO_HUMAN: '' }, false],
+    ['interactive, summaries off', true, { TO_HUMAN_FOLD_SUMMARIES: 'off' }, false],
+    ['headless at 9, summaries off', false, { MAWS_NATIVE_TO_HUMAN: '9', TO_HUMAN_FOLD_SUMMARIES: 'off' }, false],
+    ['headless at 9, in a sminos internal fork', false, { MAWS_NATIVE_TO_HUMAN: '9', SMNS_INTERNAL: '1' }, false],
+    ...(['OFF', '0', '', 'no'] as const).flatMap((value): [string, boolean, Record<string, string>, boolean][] => [
+      [`interactive, summaries "${value}" (not off)`, true, { TO_HUMAN_FOLD_SUMMARIES: value }, true],
+      [`headless at 9, summaries "${value}" (not off)`, false, { MAWS_NATIVE_TO_HUMAN: '9', TO_HUMAN_FOLD_SUMMARIES: value }, true],
+    ]),
+  ]
+  for (const [name, isInteractive, env, asks] of table) {
+    test(`${name}: a due run's summary is ${asks ? '' : 'not '}asked for`, async () => {
+      const h = trackerHooks(new Map(), { env: { HOME: '/home/u', ...env } })
+      await h.start(isInteractive)
+      await h.append(sent('a0', 'toolu_m0'))
+      await h.append(bash('a1', 'toolu_1', 'List the files'))
+      await h.append(result('u1', 'toolu_1'))
+      await h.append(sent('a2', 'toolu_m2'))
+      await drain(h.settle)
+      expect(h.held).toHaveLength(asks ? 1 : 0)
+      // Asked, the run stays live on its last call's line until the reply; not asked, it settles at once.
+      const run = asks ? { first: 'toolu_1', last: 'toolu_1', line: 'List the files', isLive: true } : { first: 'toolu_1', last: 'toolu_1' }
+      expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [run] })
+    })
+  }
+
+  test('summaries off stops the asking and nothing else: a stored summary is still read', async () => {
+    const files = new Map([[FILE, JSON.stringify({ shape: 1, runs: [['toolu_9', 'a9', 'From the file']] })]])
+    const h = trackerHooks(new Map(), { files, env: { HOME: '/home/u', TO_HUMAN_FOLD_SUMMARIES: 'off' } })
+    await h.start()
+    await drain(h.settle)
+    expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_9', last: 'a9', summary: 'From the file' }] })
+  })
+
   test('MAWS_NATIVE_TO_HUMAN set empty is no MAWS', async () => {
     const h = trackerHooks(new Map(), { env: { HOME: '/home/u', MAWS_NATIVE_TO_HUMAN: '' } })
     await asking(h)
