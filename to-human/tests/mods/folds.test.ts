@@ -1626,3 +1626,111 @@ describe("the fold's button and its summary", () => {
     expect(asks).toHaveLength(1)
   })
 })
+
+// A client asks a lone call as `ToolUse` under the call's id and, from the
+// run's second call on, the run as `ToolGroup` (`group:<first call>`), no
+// longer mounting the lone row; the terminal draws a group from its first
+// call, a group of one, under a new request id as it forms.
+describe('a call that joins a group', () => {
+  type Ask = { surface: 'desktop' | 'terminal'; env: Record<string, string>; isInteractive: boolean }
+  const session = async ($: Engine, on: On, { surface, env, isInteractive }: Ask) => {
+    mock.env(on, env)
+    mock.store(on)
+    engineDrawing(on)
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    on('turn.complete', () => ({ text: '' }))
+    on('session.id', () => ({ value: 's1' }))
+    on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    const asks: unknown[] = []
+    on('model.complete', (_, e) => (asks.push(e), { value: answered('Took the three steps') as never }))
+    await $.session.start({ cwd: '/w', surface, isInteractive })
+    await keep($, sent('a0', 'toolu_m0'), result('u0', 'toolu_m0', MESSAGE_TOOL, 'sent'))
+    await $.ui.mount({
+      plugin: PLUGIN, surface, component: 'ToolUse', requestId: 'toolu_m0',
+      props: { tool_use_id: 'toolu_m0', tool: MESSAGE_TOOL, input: { text: 'Update.' }, isRunning: false, isErrored: false, isInterrupted: false, output: 'sent' },
+    } as never)
+    return asks
+  }
+  const lone = ($: Engine, surface: Ask['surface'], id: string, description: string) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface, component: 'ToolUse', requestId: id,
+      props: { tool_use_id: id, tool: 'Bash', input: { command: 'true', description }, isRunning: true, isErrored: false, isInterrupted: false },
+    } as never)
+  const groupProps = (ids: string[]) => ({ calls: ids.map((id) => ({ tool_use_id: id, tool: 'Bash', input: { command: 'true' } })), isExpanded: false, isActive: true, isCallsOnly: true })
+  const group = ($: Engine, surface: Ask['surface'], requestId: string, ids: string[]) =>
+    $.ui.mount({ plugin: PLUGIN, surface, component: 'ToolGroup', requestId, props: groupProps(ids) } as never)
+  const until = async (isDone: () => Promise<boolean>) => {
+    for (let i = 0; i < 200 && !(await isDone()); i++) await Promise.resolve()
+  }
+  const closing = async ($: Engine, surface: Ask['surface']) => {
+    await keep($, result('u3', 'toolu_3'), sent('a4', 'toolu_m4'), result('u4', 'toolu_m4', MESSAGE_TOOL, 'sent'))
+    await $.ui.mount({
+      plugin: PLUGIN, surface, component: 'ToolUse', requestId: 'toolu_m4',
+      props: { tool_use_id: 'toolu_m4', tool: MESSAGE_TOOL, input: { text: 'Done.' }, isRunning: false, isErrored: false, isInterrupted: false, output: 'sent' },
+    } as never)
+  }
+
+  for (const [name, ask] of [
+    ['at 9', { surface: 'desktop', env: { MAWS_NATIVE_TO_HUMAN: '9' }, isInteractive: false }],
+    ['with no advertisement', { surface: 'desktop', env: {}, isInteractive: true }],
+  ] as const) {
+    test(`${name}, a client's lone call then its group: one instance answers the line at each step, the live call, then the summary`, async ($, on) => {
+      const asks = await session($, on, ask)
+      await keep($, call('a1', 'toolu_1', 'Step one'))
+      const first = await lone($, ask.surface, 'toolu_1', 'Step one')
+      expect(await button(first)).toBe('› Step one')
+
+      // The second call: the client asks the group, the lone row still mounted for a moment.
+      await keep($, result('u1', 'toolu_1'), call('a2', 'toolu_2', 'Step two'))
+      const run = await group($, ask.surface, 'group:toolu_1', ['toolu_1', 'toolu_2'])
+      expect(await button(run)).toBe('› Step two')
+      expect(await button(first)).toBeUndefined()
+      await first.unmount()
+
+      // The third call: the tracker's write reaches the group without its own redraw.
+      await keep($, result('u2', 'toolu_2'), call('a3', 'toolu_3', 'Step three'))
+      expect(await button(run)).toBe('› Step three')
+      await run.redraw(groupProps(['toolu_1', 'toolu_2', 'toolu_3']) as never)
+      expect(await button(run)).toBe('› Step three')
+
+      // The closing message: the summary settles on the group's line.
+      await closing($, ask.surface)
+      await until(async () => (await button(run)) === '› Took the three steps')
+      expect(await button(run)).toBe('› Took the three steps')
+      expect(asks).toHaveLength(1)
+    })
+
+    test(`${name}, a press on the lone call's button carries to the group: its run stays unfolded`, async ($, on) => {
+      await session($, on, ask)
+      await keep($, call('a1', 'toolu_1', 'Step one'))
+      const first = await lone($, ask.surface, 'toolu_1', 'Step one')
+      await first.press({ key: 'to-human-toggle' })
+      await keep($, result('u1', 'toolu_1'), call('a2', 'toolu_2', 'Step two'))
+      const run = await group($, ask.surface, 'group:toolu_1', ['toolu_1', 'toolu_2'])
+      expect(await run.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+      expect(await run.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    })
+  }
+
+  test("the terminal's group, drawn from its first call under a new request id as it forms, draws as it did", async ($, on) => {
+    await session($, on, { surface: 'terminal', env: {}, isInteractive: true })
+    await keep($, call('a1', 'toolu_1', 'Step one'))
+    const one = await group($, 'terminal', 'grouped-1', ['toolu_1'])
+    expect(await button(one)).toBe('› Step one')
+    await keep($, result('u1', 'toolu_1'), call('a2', 'toolu_2', 'Step two'))
+    await one.unmount()
+    const two = await group($, 'terminal', 'grouped-2', ['toolu_1', 'toolu_2'])
+    expect(await button(two)).toBe('› Step two')
+    await keep($, result('u2', 'toolu_2'), call('a3', 'toolu_3', 'Step three'))
+    await two.unmount()
+    const three = await group($, 'terminal', 'grouped-3', ['toolu_1', 'toolu_2', 'toolu_3'])
+    expect(await button(three)).toBe('› Step three')
+    expect((await three.drawn()) as unknown).toMatchObject({ type: 'Box', props: { marginTop: 1 } })
+    await closing($, 'terminal')
+    await until(async () => (await button(three)) === '› Took the three steps')
+    expect(await button(three)).toBe('› Took the three steps')
+    // A press unfolds it as the engine draws a group, and ends the run beneath it.
+    await three.press({ key: 'to-human-toggle' })
+    expect(await three.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+  })
+})
