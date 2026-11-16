@@ -31,8 +31,9 @@ message, which closes a run of working record, and the check prints:
    the session's folds file (`to-human/folds/<session id>.json` in the config
    dir) holds a run whose first row is the command's call, with a summary;
 7. at 9: that file is kept as the contract a client reads, at `shape: 2`;
-8. at 9 with TO_HUMAN_FOLD_SUMMARIES=off: none is asked for, so no folds
-   file is written in that time.
+8. at 9 with TO_HUMAN_FOLD_SUMMARIES=off: the command ran (a run was due its
+   summary) and none was asked for in that time: the probe saw no summary
+   call, whatever such a call would have come to, and no folds file.
 It also prints, for MAWS's live normalizer, every stdout frame from the
 call's to the `result` (its type, subtype, the content's blocks, and the
 keys at its top level), whether the made-up response came out as an
@@ -82,15 +83,23 @@ SUMMARY_WAIT = 45
 ENGINE_FLAGS = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                 "--permission-prompt-tool", "stdio", "--include-partial-messages", "--forward-subagent-text",
                 "--replay-user-messages", "--include-hook-events", "--setting-sources", "user,project,local"]
-# What the probe adds: the prompts the engine submits.
+# What the probe adds: the prompts the engine submits, and each model call a plugin makes (a fold's summary
+# among them, known by its system prompt), seen from outside to-human whatever the call came to.
 PROBE_PROMPTS = r"""
   on('prompt.submit', { text: /^/ }, async ($, e, next) => {
     lines.push(JSON.stringify({ ev: 'prompt', text: e.text.slice(0, 60), context: e.context?.length ?? 0 }))
     await $.fs.write(OUT, lines.join('\n') + '\n')
     return next(e)
   })
+  on('model.complete', { model: /^/ }, async ($, e, next) => {
+    lines.push(JSON.stringify({ ev: 'model', model: e.model, system: (e.system ?? '').slice(0, 40) }))
+    await $.fs.write(OUT, lines.join('\n') + '\n')
+    return next(e)
+  })
 }
 """
+# The opening of the summary call's system prompt (folds.tsx, LABEL_SYSTEM).
+LABEL_OPENING = "You label folded stretches"
 
 
 class Maws(final.Final):
@@ -253,11 +262,13 @@ class Maws(final.Final):
         """At 9: a run of working record closed by a message, and what the tracker keeps of it."""
         self.turn(STRETCH, 1)
         calls = [b.get("id") for _, b in self.blocks(self.rows(), "tool_use") if b.get("name") == "Bash"]
+        asked = lambda: [r for r in self.probe() if r["ev"] == "model" and r["system"].startswith(LABEL_OPENING)]
         if self.summaries_off:
             time.sleep(SUMMARY_WAIT)
             kept = self.folds()
-            self.check("8 with TO_HUMAN_FOLD_SUMMARIES=off no summary is asked for: no folds file", kept is None,
-                       "the command's call %s; the folds file: %s" % (calls, kept))
+            self.check("8 with TO_HUMAN_FOLD_SUMMARIES=off no summary is asked for, though a run was due one",
+                       bool(calls) and not asked() and kept is None,
+                       "the command's call %s; summary calls seen %s; the folds file: %s" % (calls, asked(), kept))
             return
         try:
             kept = base.wait_for("the folds file's summary", SUMMARY_WAIT, lambda: (lambda k: k if k and any(
@@ -267,7 +278,8 @@ class Maws(final.Final):
         runs = (kept or {}).get("runs") or []
         mine = [run for run in runs if isinstance(run, list) and len(run) == 3 and run[0] in calls]
         self.check("6 the run closed by the message reads a summary within the call's limit, kept in the folds file",
-                   bool(mine) and bool(mine[0][2].strip()), "the command's call %s; its runs in the file: %s" % (calls, mine))
+                   bool(calls) and bool(mine) and bool(mine[0][2].strip()),
+                   "the command's call %s; summary calls seen %s; its runs in the file: %s" % (calls, asked(), mine))
         self.check("7 the folds file is kept at shape 2", (kept or {}).get("shape") == 2, "the file: %s" % kept)
 
 

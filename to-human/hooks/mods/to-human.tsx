@@ -697,6 +697,13 @@ export type View = {
   deadline?: Timer
   /** Whether the view folds now: a mark has been seen and the whole transcript is not asked for. */
   isFolding: () => boolean
+  /**
+   * The folded runs whose button read its label from the run beginning
+   * inside its stretch (`labelOf`'s last clause), by their first rows, each
+   * with the stretch's last row it was read to: a row that moves that end
+   * asks for the button again (`see`).
+   */
+  endOf: Map<string, string>
 }
 
 export const newView = (isFolding: () => boolean): View => {
@@ -722,6 +729,7 @@ export const newView = (isFolding: () => boolean): View => {
     isWhole: false,
     isPastWait: false,
     isFolding,
+    endOf: new Map(),
   }
 }
 
@@ -1157,7 +1165,10 @@ function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
   }
   rowOf.set(requestId, kind)
   const isAmong = known === undefined && at < order.length - 1 && view.unfolded.size > 0
-  if (view.isFolding() && (isAmong || neighbours.some((id, i) => shapeOf(view, id) !== shapes[i]))) {
+  const start = inRun(kind) ? runStart(order, rowOf, requestId) : undefined
+  const read = start === undefined ? undefined : view.endOf.get(start)
+  const isEndMoved = read !== undefined && read !== runEnd(order, rowOf, start as string)
+  if (view.isFolding() && (isAmong || isEndMoved || neighbours.some((id, i) => shapeOf(view, id) !== shapes[i]))) {
     $.ui.invalidate('ui.render')
   }
 }
@@ -1217,7 +1228,11 @@ const OPEN_KEPT = { plugin: 'to-human', key: 'fold' } as const
 async function foldLabel($: EngineInterface, view: View, id: string): Promise<string> {
   try {
     const [folds, open] = await Promise.all([$.state.get(FOLDS_KEPT), $.state.get(OPEN_KEPT)])
-    return labelOf(folds.value, open.value, view, id, runEnd(view.order, view.rowOf, id)) ?? 'working record'
+    const end = runEnd(view.order, view.rowOf, id)
+    // No run holds the row: what it reads rests on where its stretch ends, which a row drawn later can move.
+    if (labelOf(folds.value, open.value, view, id) === undefined) view.endOf.set(id, end)
+    else view.endOf.delete(id)
+    return labelOf(folds.value, open.value, view, id, end) ?? 'working record'
   } catch {
     return 'working record'
   }
@@ -1619,6 +1634,7 @@ export function registerToHuman(on: On) {
       view.drewAs.clear()
       view.unkept.clear()
       view.heldBy.clear()
+      view.endOf.clear()
       unfolded.clear()
       // A cleared conversation keeps no row yet; a resumed one's are listed by its file.
       view.isWhole = e.source === 'clear'
