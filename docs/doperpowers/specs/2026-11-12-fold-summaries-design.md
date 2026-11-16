@@ -254,6 +254,15 @@ of calls is one row the view knows as `group:<its first call's id>`: the
 lookup takes the call's id, as the view's `keyOf` does. The label is the run's
 live line or summary by the table in "What the person sees".
 
+Amended 2026-11-15 (to-human 0.9.0): where no run holds the row that draws the
+button, the row takes the run whose first row is placed nearest after it and
+at or before its stretch's last row (`runEnd`), of the open run and the closed
+runs with both bounds placed; so a stretch a thought opens, which the tracker
+never follows, reads its summary. Places are read through `placeAt`, which
+gives a client's ask under `<anchor>~<tag>` its anchor's place. The cases of
+the rule are `to-human/tests/mods/fold-label-cases.json`, which a client that
+draws the same lines from the session's file copies byte for byte.
+
 Finding the run by place is why whichever row happens to draw the button finds
 the label (in fullscreen the earliest *drawn* row of a run is not always its
 first), and why summaries read back after a resume still attach: the view
@@ -391,6 +400,18 @@ view resets on the same event) the tracker drops what it published and
 publishes the file of the session it now is. A write that fails is logged to
 the debug log; the summary stays in `$.state`.
 
+Amended 2026-11-15 (to-human 0.9.0): the file is a contract a client reads
+(MAWS draws a session's stored summaries from it), no longer written whole and
+in place. The mod writes the file by atomic replacement (a temporary file in
+the same directory, `<session id>.json.<token>.tmp`, then one `mv -f` over the
+file, since `$.fs` has no rename), and before it writes it reads the file
+again and keeps every stored run its own tracker does not hold, where the file
+had it (its own runs win where both hold one, by the run's first id), so two
+processes on one session id keep each other's summaries. Such a file says
+`shape: 2` (`StoredFolds` in `to-human/types/to-human.d.ts`); a shape 1 file is
+still read and is written back as 2. The 30-day removal takes a leftover
+temporary too.
+
 A file per session is how the appeal mod keeps its log
 (`hooks/mods/appeal.tsx`: `~/.claude/appeals/<session id>.jsonl`). The
 engine's plugin store (`$.store`) was the first choice and lost: it is one
@@ -415,6 +436,15 @@ when all of these hold:
   a headless session's terminal;
 - `MAWS_NATIVE_TO_HUMAN` is unset or empty: MAWS draws its own report;
 - `SMNS_INTERNAL` is unset: a sminos internal fork has no reader.
+
+Amended 2026-11-15 (to-human 0.9.0): the second and third conditions are now
+one: the session is interactive, or `MAWS_NATIVE_TO_HUMAN` is a number of 9 or
+more (that client reads the view's drawing on its own surface, headless as
+every MAWS launch is), and it is not a non-empty value below 9 or no number,
+where MAWS draws its own report (`isMawsDrawing`, the view's gate). A fourth:
+`TO_HUMAN_FOLD_SUMMARIES` is not exactly `off`, which a person sets in the
+engine's settings env and MAWS in a launch's; it stops the asking and nothing
+else, a stored summary still being read.
 
 ## Evidence
 
@@ -680,6 +710,7 @@ In `to-human/hooks/mods/folds.tsx`:
 
     /** The text a fold's button reads for the run `rowId` stands in, or undefined for `working record`. */
     export function labelOf(folds: Folds | undefined, open: OpenFold | undefined, view: View, rowId: string): string | undefined
+    // Amended 2026-11-15 (to-human 0.9.0): a fifth parameter, `lastId = rowId`, the stretch's last row ("What the view reads").
 
     /** One tool call as one line (the live line's table). */
     export function lineOf(tool: string, input: unknown): string
@@ -967,6 +998,20 @@ dependency.
   the turn's end if one never comes.
   Date/Author: 2026-11-13, from `doperpowers:reviewer-medium`, fixed by M2's
   executor (7c47dfd1).
+
+- Decision: MAWS's surface (2026-11-15, to-human 0.9.0). The view draws on a
+  client's surface where it advertises 9 or more, and declares that number in
+  `to-human/maws-surface.json`; the tracker asks for summaries there, headless
+  included, and under `TO_HUMAN_FOLD_SUMMARIES=off` asks for none; the
+  session's file becomes a contract a client reads (shape 2, replaced in one
+  step, merged before each write); and a fold's line takes the run that
+  begins inside its stretch when none holds its row. Amended in place under
+  "What the view reads", "Storage", "Where it runs" and the interfaces.
+  Rationale: MAWS from its contract version 9 reads this view on its own
+  surface and reads the summaries a session made from its file, so one maker
+  serves both, and the file has to be a coherent snapshot for a reader that is
+  not the process that wrote it.
+  Date/Author: 2026-11-15, the branch `to-human-maws-surface`.
 
 ## Outcomes & Retrospective
 
