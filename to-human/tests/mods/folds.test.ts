@@ -1712,6 +1712,19 @@ describe('a call that joins a group', () => {
     })
   }
 
+  test('a call a group took up and then let go draws standalone again, its button its own run\'s', async ($, on) => {
+    await session($, on, { surface: 'desktop', env: {}, isInteractive: true })
+    await lone($, 'desktop', 'b1', 'Step one')
+    await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AssistantMessage', requestId: 'm1', props: { text: '<message>Between.</message>', isFirstOfReply: true } })
+    const second = await lone($, 'desktop', 'b2', 'Step two')
+    const run = await group($, 'desktop', 'group:b1', ['b1', 'b2'])
+    await run.redraw({ ...groupProps(['b1']), isExpanded: true } as never)
+    await second.redraw()
+    expect(await second.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    await second.press({ key: 'to-human-toggle' })
+    expect(await second.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+  })
+
   test("the terminal's group, drawn from its first call under a new request id as it forms, draws as it did", async ($, on) => {
     await session($, on, { surface: 'terminal', env: {}, isInteractive: true })
     await keep($, call('a1', 'toolu_1', 'Step one'))
