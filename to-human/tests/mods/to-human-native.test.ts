@@ -1,12 +1,19 @@
-import { describe, expect, test, tier } from 'claude-code/testing'
+import { describe, expect, mock, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
+import * as view from '../../hooks/mods/to-human'
 import { registerToHuman } from '../../hooks/mods/to-human'
 
 tier('user')
 
 describe('MAWS native to-human', () => {
-  test('every hook passes through unchanged off-terminal, while the terminal still draws the report', async () => {
+  test('the view steps aside for a non-empty value that is not a number of 9 or more, and draws for unset, empty and 9 on', () => {
+    expect(view.MAWS_DRAWS_FROM).toBe(9)
+    for (const value of ['1', '8', '8.9', '-1', 'native', 'nine', 'NaN']) expect(view.isMawsDrawing(value)).toBe(true)
+    for (const value of [undefined, '', '9', '10', '9.5', '1e3']) expect(view.isMawsDrawing(value)).toBe(false)
+  })
+
+  for (const value of ['1', '8', 'native']) test(`at '${value}' every hook passes through unchanged off-terminal, while the terminal still draws the report`, async () => {
     // Capture the registered handlers, as compact.test.ts does, so an event
     // without a surface and next(e)'s identity can be checked too.
     type Event = Record<string, unknown>
@@ -24,7 +31,7 @@ describe('MAWS native to-human', () => {
     const calls: string[] = []
     const envReads: string[] = []
     const engine = {
-      env: { get: async (name: string) => { envReads.push(name); return '1' } },
+      env: { get: async (name: string) => { envReads.push(name); return value } },
       // The module's start-up read: a session with no mark sent and no transcript yet.
       session: { messages: async () => [], id: async () => 's1' },
       process: { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) },
@@ -97,4 +104,34 @@ describe('MAWS native to-human', () => {
     ])
     expect(envReads).toEqual(['MAWS_NATIVE_TO_HUMAN'])
   })
+
+  // From 9 the client reads the view's drawing: the mod draws on every surface, as it does in a terminal.
+  const PLUGIN = 'to-human'
+  const band = { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} }
+  for (const value of ['9', '10']) {
+    for (const surface of ['desktop', 'vscode', 'mobile'] as const) {
+      test(`at '${value}' on ${surface} the view draws: the report, a folded record, the band after a mark, and both presses act`, async ($, on) => {
+        mock.env(on, { MAWS_NATIVE_TO_HUMAN: value })
+        mock.store(on)
+        on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
+        const message = (requestId: string, text: string) =>
+          $.ui.mount({ plugin: PLUGIN, surface, component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+        const marked = await message('m1', '<message>One.</message>')
+        expect(await marked.find({ type: 'Markdown', text: 'One.' })).toBeDefined()
+        expect(await marked.find({ type: 'Text', text: '<message>One.</message>' })).toBeUndefined()
+        const record = await message('r1', 'Working.')
+        expect(await record.find({ type: 'Button', text: 'working record' })).toBeDefined()
+        expect(await record.find({ type: 'Text', text: 'Working.' })).toBeUndefined()
+        const above = await $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: band })
+        expect(await above.find({ type: 'Button', text: 'full transcript' })).toBeDefined()
+
+        await record.press({ key: 'to-human-toggle' })
+        expect(await record.find({ type: 'Text', text: 'Working.' })).toBeDefined()
+        expect(await record.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+        await above.press({ key: 'to-human-mode' })
+        expect(await above.find({ type: 'Button', text: 'report only' })).toBeDefined()
+        expect(await marked.find({ type: 'Text', text: '<message>One.</message>' })).toBeDefined()
+      })
+    }
+  }
 })
