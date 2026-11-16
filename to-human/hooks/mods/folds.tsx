@@ -1,6 +1,6 @@
 import type { EngineInterface, On, SessionAppendInput } from 'claude-code'
 
-import type { FoldRun, Folds, OpenFold, OpenFoldLast } from '../../types/to-human'
+import type { FoldRun, Folds, OpenFold, OpenFoldLast, StoredFolds } from '../../types/to-human'
 import { MESSAGE_TOOL, isMadeUp } from './message'
 import type { PromptRowProps, View } from './to-human'
 import { isApiError, isMawsDrawing, isRead, isSpawn, keyOf, parse, promptRow } from './to-human'
@@ -435,18 +435,42 @@ export const published = (tracker: Tracker): { folds: Folds; fold: OpenFold; fol
   foldLast: tracker.open?.last ?? null,
 })
 
-/** The session's file: each run with a summary by its first row, the last row it holds and the summary. */
-export type StoredFolds = { shape: 1; runs: [string, string, string][] }
+/** The shape of a session's file kept as a contract (`StoredFolds`): replaced in one step, merged before each write. */
+export const FOLDS_SHAPE = 2
 
-/** What the session's file keeps: every run with a summary, the open run's bounded by the last row its summary covered. */
+/** What this tracker keeps of its session's file: every run with a summary, the open run's bounded by the last row its summary covered. */
 export function stored(tracker: Tracker): StoredFolds {
-  const runs = tracker.closed.flatMap((run): [string, string, string][] => (run.summary === undefined ? [] : [[run.first, run.last, run.summary]]))
+  const runs = tracker.closed.flatMap((run): StoredFolds['runs'] => (run.summary === undefined ? [] : [[run.first, run.last, run.summary]]))
   const open = tracker.open
   if (open?.summary !== undefined) runs.push([open.first, open.covered ?? open.last, open.summary])
-  return { shape: 1, runs }
+  return { shape: FOLDS_SHAPE, runs }
 }
 
-/** A session's file read back as closed runs, or undefined when it is not one. */
+/**
+ * This tracker's runs (`own`) with every run of the file as it stands
+ * (`theirs`, another process's on the same session among them) whose first
+ * row the tracker's runs do not hold, each where the file had it: before the
+ * first of the tracker's runs the file holds after it, the tracker's runs in
+ * their own order. Where both hold a run, the tracker's wins.
+ */
+export function merged(own: StoredFolds['runs'], theirs: readonly FoldRun[]): StoredFolds['runs'] {
+  const at = new Map(own.map((run, i) => [run[0], i]))
+  const runs: StoredFolds['runs'] = []
+  let next = 0
+  for (const run of theirs) {
+    const i = at.get(run.first)
+    if (i === undefined) {
+      if (run.last !== undefined && run.summary !== undefined) runs.push([run.first, run.last, run.summary])
+    } else if (i >= next) {
+      runs.push(...own.slice(next, i + 1))
+      next = i + 1
+    }
+  }
+  runs.push(...own.slice(next))
+  return runs
+}
+
+/** A session's file read back as closed runs, shape 1 (a release before the file was a contract) or 2, or undefined when it is not one. */
 export function storedRuns(text: string): FoldRun[] | undefined {
   let value: unknown
   try {
@@ -455,7 +479,7 @@ export function storedRuns(text: string): FoldRun[] | undefined {
     return undefined
   }
   const { shape, runs } = (typeof value === 'object' && value !== null ? value : {}) as { shape?: unknown; runs?: unknown }
-  if (shape !== 1 || !Array.isArray(runs)) return undefined
+  if ((shape !== 1 && shape !== FOLDS_SHAPE) || !Array.isArray(runs)) return undefined
   return runs.flatMap((run: unknown) =>
     Array.isArray(run) && run.length === 3 && run.every((part) => typeof part === 'string') ? [{ first: run[0] as string, last: run[1] as string, summary: run[2] as string }] : [],
   )
@@ -562,6 +586,8 @@ type Following = {
   file: Promise<string | undefined>
   /** The writes of the session's file, one after another. */
   fileWrites: Promise<void>
+  /** Names this registration's temporary for the file, apart from another process's on the same session. */
+  token: string
 }
 
 /**
@@ -640,11 +666,18 @@ async function readStored($: EngineInterface, path: string | undefined): Promise
   }
 }
 
-/** Removes the sessions' files older than 30 days (`$.fs` has no delete). */
+/**
+ * The suffix of a temporary the session's file is written to before it is
+ * moved over the file (`keepFile`): the file's name, a token of this
+ * registration's (two processes on one session write their own), `.tmp`.
+ */
+const TEMPORARY = '.json.*.tmp'
+
+/** Removes the sessions' files older than 30 days, and any temporary a write that died left (`$.fs` has no delete). */
 async function prune($: EngineInterface, dir: string | undefined) {
   if (dir === undefined) return
   try {
-    if (await $.fs.exists(dir)) await $.process.run(['find', dir, '-type', 'f', '-name', '*.json', '-mtime', '+30', '-delete'])
+    if (await $.fs.exists(dir)) await $.process.run(['find', dir, '-type', 'f', '(', '-name', '*.json', '-o', '-name', `*${TEMPORARY}`, ')', '-mtime', '+30', '-delete'])
   } catch (error) {
     $.ui.log(`to-human: the old folds files could not be removed (${String(error)})`, { to: 'debug' })
   }
@@ -671,14 +704,25 @@ function publish($: EngineInterface, following: Following) {
     .catch((error: unknown) => $.ui.log(`to-human: the folds could not be published (${String(error)})`, { to: 'debug' }))
 }
 
-/** Writes the session's file whole, from memory, after any write of it before. */
+/**
+ * Keeps the session's file, after any write of it before, as the contract
+ * says (`StoredFolds`): the file read again and every run of it the tracker
+ * does not hold kept (`merged`), the whole written to a temporary beside it
+ * and moved over it in one step (`$.fs` has no rename), so a reader finds
+ * the file as one write left it, never a part of one.
+ */
 function keepFile($: EngineInterface, following: Following) {
-  const text = `${JSON.stringify(stored(following.tracker))}\n`
+  const own = stored(following.tracker).runs
   const file = following.file
   following.fileWrites = following.fileWrites
     .then(async () => {
       const path = await file
-      if (path !== undefined) await $.fs.write(path, text)
+      if (path === undefined) return
+      const theirs = (await readStored($, path)) ?? []
+      const temporary = `${path}.${following.token}.tmp`
+      await $.fs.write(temporary, `${JSON.stringify({ shape: FOLDS_SHAPE, runs: merged(own, theirs) } satisfies StoredFolds)}\n`)
+      const moved = await $.process.run(['mv', '-f', temporary, path])
+      if (moved.exitCode !== 0) throw new Error(`the move over it failed (${moved.stderr.trim() || `exit ${moved.exitCode}`})`)
     })
     .catch((error: unknown) => $.ui.log(`to-human: the folds could not be kept in the session's file (${String(error)})`, { to: 'debug' }))
 }
@@ -824,6 +868,7 @@ export function registerFolds(on: On, view: View, isOn: () => boolean) {
     isInteractive: false,
     file: Promise.resolve(undefined),
     fileWrites: Promise.resolve(),
+    token: Math.random().toString(36).slice(2, 10) || 'tmp',
   }
 
   // Each load of the module raises this, the first and every reload.
