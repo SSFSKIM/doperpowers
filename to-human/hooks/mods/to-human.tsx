@@ -745,9 +745,41 @@ function hasDrawn(view: View, id: string): boolean {
   return view.rowOf.has(id) || view.rowOf.has(GROUP + id) || view.order.some((row) => keyOf(row) === key)
 }
 
+/**
+ * A client asks a row the transcript holds no record of (a turn's closing
+ * line, a notice the client's host made) under `<anchor>~<tag>`, its anchor
+ * the nearest row before it that the file holds: the row the ask stands
+ * right after. Undefined for any other id.
+ */
+export function anchorOf(id: string): string | undefined {
+  const at = id.indexOf('~')
+  return at > 0 ? id.slice(0, at) : undefined
+}
+
+/**
+ * How far past its anchor's place an anchored ask stands: before whatever
+ * followed the anchor, the next row of the file (a step of 1) or the next
+ * call of a row appended live (a step of 1/1000, `placeAll`).
+ */
+const PAST_ANCHOR = 1 / 2000
+
+/**
+ * A row's place, where it is known: its own (`View.place`), or for an
+ * anchored ask (`anchorOf`) its anchor's and a little past it. A place only
+ * guessed is none.
+ */
+export function placeAt(view: View, id: string): number | undefined {
+  const anchor = anchorOf(id)
+  if (anchor === undefined) return view.place.get(keyOf(id))
+  const at = view.place.get(keyOf(anchor))
+  return at === undefined ? undefined : at + PAST_ANCHOR
+}
+
+/** Whether a drawn row is an ask anchored at the row `id`, whose place follows that row's. */
+const isAnchoredAt = (view: View, id: string) => view.order.some((row) => anchorOf(row) !== undefined && keyOf(anchorOf(row) as string) === keyOf(id))
+
 function placeOf(view: View, id: string): number {
-  const key = keyOf(id)
-  return view.place.get(key) ?? view.guess.get(key) ?? Infinity
+  return placeAt(view, id) ?? view.guess.get(keyOf(id)) ?? Infinity
 }
 
 /**
@@ -1031,7 +1063,7 @@ export function judgeUnkept(view: View, ids: readonly string[] = view.order): bo
   if (!view.isWhole) {
     return false
   }
-  const unkept = ids.filter((id) => !view.place.has(keyOf(id)) && !view.apart.has(keyOf(id)))
+  const unkept = ids.filter((id) => placeAt(view, id) === undefined && !view.apart.has(keyOf(id)))
   for (const id of unkept) {
     const key = keyOf(id)
     view.apart.set(key, true)
@@ -1114,7 +1146,7 @@ function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
     return
   }
   const key = keyOf(requestId)
-  if (known === undefined && !view.place.has(key) && !view.guess.has(key)) {
+  if (known === undefined && placeAt(view, requestId) === undefined && !view.guess.has(key)) {
     view.guess.set(key, LIVE + view.appended + 0.5)
   }
   const at = known === undefined ? slotOf(view, requestId) : order.indexOf(requestId)
@@ -1140,6 +1172,27 @@ function holderOf(view: View, id: string): string {
     id = held
   }
   return id
+}
+
+/**
+ * Whether a turn's line that takes the slot `at` in the drawn rows' order
+ * stands beside an unfolded run of its turn: the run it stands in (that of
+ * the row before it), or one that begins at or after it and before the next
+ * row of the person's.
+ */
+function isTurnOpen(view: View, at: number): boolean {
+  const { order, rowOf, unfolded } = view
+  const prior = order[at - 1]
+  if (prior !== undefined && inRun(rowOf.get(prior)) && unfolded.has(runStart(order, rowOf, prior))) {
+    return true
+  }
+  for (let i = at; i < order.length && rowOf.get(order[i] as string) !== 'user'; i += 1) {
+    const id = order[i] as string
+    if (inRun(rowOf.get(id)) && runStart(order, rowOf, id) === id && unfolded.has(id)) {
+      return true
+    }
+  }
+  return false
 }
 
 /** Unfolds the run or message `id` stands for, or folds it, noting the fold for the press's hook. */
@@ -1492,7 +1545,7 @@ async function dumpView($: EngineInterface, view: View, state: { isFolding: bool
   const plugin = (JSON.parse(manifest) as { version?: string }).version
   const at = new Date().toISOString()
   const path = `${configured ?? `${home}/.claude`}/to-human/dumps/${at.replace(/[:.]/g, '-')}-${sessionId.slice(0, 8)}.json`
-  const placeKind = (id: string) => (view.place.has(keyOf(id)) ? 'placed' : view.guess.has(keyOf(id)) ? 'guessed' : 'none')
+  const placeKind = (id: string) => (placeAt(view, id) !== undefined ? 'placed' : view.guess.has(keyOf(id)) ? 'guessed' : 'none')
   const dump = {
     at,
     engine: engine?.version,
@@ -1609,7 +1662,7 @@ export function registerToHuman(on: On) {
         if (isError) {
           view.errors.add(keyOf(stored.uuid))
         }
-        const moved = ids.some((id) => hasDrawn(view, id)) && reorder(view)
+        const moved = ids.some((id) => hasDrawn(view, id) || isAnchoredAt(view, id)) && reorder(view)
         const isJudged = STEP_DOORS.has(e.door) && judgeUnkept(view)
         if ((moved || isRevoked || isJudged || (isError && hasDrawn(view, stored.uuid))) && isFolding()) {
           $.ui.invalidate('ui.render')
@@ -1690,10 +1743,22 @@ export function registerToHuman(on: On) {
   // full transcript shows it as the engine does. The row before it is the
   // drawn row placed last before it, or, while its place is unknown, the row
   // drawn last when it first drew.
+  //
+  // A client that draws its turns asks for their lines under `<anchor>~turn`
+  // (`anchorOf`), a line the transcript holds no record of, placed right
+  // after its anchor: the line stands for its turn, shown while a run of
+  // that turn is unfolded (`isTurnOpen`), the run it stands in included.
   const before = new Map<string, string | undefined>()
   on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
     if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
+    if (e.requestId.endsWith('~turn') && anchorOf(e.requestId) !== undefined) {
+      if (!isFolding() || isTurnOpen(view, slotOf(view, e.requestId))) {
+        return next(e)
+      }
+      const { Box } = $.ui.resolve(e)
+      return <Box />
+    }
     if (!before.has(e.requestId)) {
       before.set(e.requestId, view.order[view.order.length - 1])
     }

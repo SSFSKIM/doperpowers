@@ -212,7 +212,9 @@ describe('MAWS native to-human', () => {
 
   test("a turn's line under <anchor>~turn shows while a record of its turn is open, and only of its turn", async ($, on) => {
     resumed(on)
-    // A run of the next turn, opened, leaves this turn's line hidden.
+    // A run of the next turn, opened, leaves this turn's line hidden: the
+    // person's prompt that opens that turn is known by its drawing.
+    await notice($, LATER, { kind: 'composer' })
     const later = await note($, 'r4', 'Later.')
     await later.press({ key: 'to-human-toggle' })
     const line = await turnLine($, `${PROMPT}~turn`)
