@@ -2016,6 +2016,10 @@ export function registerToHuman(on: On) {
     for (const call of membersOf.get(id) ?? []) {
       if (!held.has(call) && groupOf.get(call) === id) {
         groupOf.delete(call)
+        // A call the group took up (`joinGroup`) is its own row again: its controls act on it.
+        if (view.heldBy.get(call) === id) {
+          view.heldBy.delete(call)
+        }
       }
     }
     membersOf.set(id, held)
