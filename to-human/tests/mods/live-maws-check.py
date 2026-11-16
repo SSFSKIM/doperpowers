@@ -6,13 +6,16 @@ permission requests over stdio (`--permission-prompt-tool stdio`), the flags
 of MAWS's `ENGINE_FLAGS` (src/engine-host/launch.ts), with
 `MAWS_NATIVE_TO_HUMAN` naming its contract version. From version 8 on MAWS
 offers no message tool of its own (MAWS's Decision Log 92), and its sessions
-send through this plugin's. This check launches one so, with
-`MAWS_NATIVE_TO_HUMAN=8`, the `doperpowers:to-human` style and the `default`
-permission mode, and one turn asks the model to send a message with
-`final: true` and do nothing else. A probe plugin, outermost, records each
-step (whether a request was made) and each prompt the engine submits.
+send through this plugin's; from 9 on MAWS reads this plugin's view on its
+own surface (the plugin's maws-surface.json declares the number). This check
+launches one so, with the `doperpowers:to-human` style and the `default`
+permission mode, three times: with `MAWS_NATIVE_TO_HUMAN=8`, with 9, and with
+9 and `TO_HUMAN_FOLD_SUMMARIES=off` in the settings env. In each, one turn
+asks the model to send a message with `final: true` and do nothing else. A
+probe plugin, outermost, records each step (whether a request was made) and
+each prompt the engine submits.
 
-It prints PASS or FAIL for each item:
+It prints PASS or FAIL for each item, in each launch:
 1. the tool is registered: the stream's `system` init frame lists it;
 2. its call raised no permission request: no `can_use_tool` control request
    on stdout (one that comes is answered allow, so the run goes on, and
@@ -22,6 +25,14 @@ It prints PASS or FAIL for each item:
 4. the transcript keeps the made-up response as the turn's last assistant
    row, with the engine's `answeredWithoutRequest` flag and no request id;
 5. no notification was raised: a MAWS session's notification surface is MAWS.
+In the launches at 9 a second turn runs one command and then sends a final
+message, which closes a run of working record, and the check prints:
+6. at 9: the run's summary is asked for and kept within the call's limit:
+   the session's folds file (`to-human/folds/<session id>.json` in the config
+   dir) holds a run whose first row is the command's call, with a summary;
+7. at 9: that file is kept as the contract a client reads, at `shape: 2`;
+8. at 9 with TO_HUMAN_FOLD_SUMMARIES=off: none is asked for, so no folds
+   file is written in that time.
 It also prints, for MAWS's live normalizer, every stdout frame from the
 call's to the `result` (its type, subtype, the content's blocks, and the
 keys at its top level), whether the made-up response came out as an
@@ -29,7 +40,8 @@ keys at its top level), whether the made-up response came out as an
 and whether the engine submitted the turn's prompt through `prompt.submit`,
 the event the reminder rides.
 
-It spends model calls (one or two, haiku unless --model says otherwise), so
+It spends model calls (about eight across the three launches, the summary's
+among them, haiku unless --model says otherwise), so
 no suite runs it: run it by hand with the model gateway's keys in the
 environment. It is built on live-message-check.py's isolated config and
 live-final-check.py's probe (a temporary HOME, SMINOS_HOME and project,
@@ -60,6 +72,12 @@ FINAL_ANSWER = final.FINAL_ANSWER
 TEXT = "Closing delta: the MAWS-launched turn is done."
 PROMPT = ("This is a test of your tools. Call the tool %s once, with its text exactly `%s` and final set to true. "
           "Call nothing else and write nothing else." % (MESSAGE_TOOL, TEXT))
+STRETCH_TEXT = "The command ran."
+STRETCH = ("This is a test of your tools. First run the Bash command `echo stretch-check` once. Then call the tool %s "
+           "once, with its text exactly `%s` and final set to true. Call nothing else and write nothing else."
+           % (MESSAGE_TOOL, STRETCH_TEXT))
+# The summary call's own limit (folds.tsx, timeoutMs), and a margin for the file's write.
+SUMMARY_WAIT = 45
 # MAWS's ENGINE_FLAGS, in its order (MAWS src/engine-host/launch.ts).
 ENGINE_FLAGS = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                 "--permission-prompt-tool", "stdio", "--include-partial-messages", "--forward-subagent-text",
@@ -76,8 +94,24 @@ PROBE_PROMPTS = r"""
 
 
 class Maws(final.Final):
+    def __init__(self, keep, model, advertise, summaries_off=False):
+        super().__init__(keep, model, None)
+        self.advertise, self.summaries_off = advertise, summaries_off
+        self.label = "%s%s" % (advertise, ", summaries off" if summaries_off else "")
+
+    def check(self, name, ok, detail):
+        super().check("[%s] %s" % (self.label, name), ok, detail)
+
     def setup(self):
         super().setup()
+        if self.summaries_off:
+            # The settings env, where MAWS writes it into a launch it decides while its switch is off.
+            path = os.path.join(self.cfg, "settings.json")
+            with open(path) as f:
+                settings = json.load(f)
+            settings.setdefault("env", {})["TO_HUMAN_FOLD_SUMMARIES"] = "off"
+            with open(path, "w") as f:
+                json.dump(settings, f)
         probe = os.path.join(self.root, "probe", "hooks", "mods", "probe.tsx")
         with open(probe) as f:
             source = f.read().rstrip()
@@ -89,7 +123,7 @@ class Maws(final.Final):
     def start(self):
         env = dict(self.env)
         env.update({k: os.environ[k] for k in base.GATEWAY_KEYS})
-        env["MAWS_NATIVE_TO_HUMAN"] = "8"
+        env["MAWS_NATIVE_TO_HUMAN"] = self.advertise
         args = ["claude"] + ENGINE_FLAGS + ["--permission-mode", "default", "--model", self.model,
                                             "--session-id", self.session, "--debug-file", self.debug]
         for d in self.dirs:
@@ -126,17 +160,34 @@ class Maws(final.Final):
         except (OSError, subprocess.TimeoutExpired):
             proc.kill()
 
+    def turn(self, prompt, n):
+        """Sends one prompt and waits for the n-th result frame."""
+        self.write({"type": "user", "message": {"role": "user", "content": prompt},
+                    "parent_tool_use_id": None, "session_id": self.session})
+        return base.wait_for("turn %d's result frame" % (n + 1), 180,
+                             lambda: ([f for f in self.frames if f.get("type") == "result"][n:] or [None])[0])
+
+    def folds(self):
+        path = os.path.join(self.cfg, "to-human", "folds", self.session + ".json")
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except ValueError:
+            return {"unreadable": True}
+
     def run(self):
         self.setup()
         self.start()
-        self.write({"type": "user", "message": {"role": "user", "content": PROMPT},
-                    "parent_tool_use_id": None, "session_id": self.session})
-        result = base.wait_for("the turn's result frame", 180,
-                               lambda: next((f for f in self.frames if f.get("type") == "result"), None))
+        result = self.turn(PROMPT, 0)
         time.sleep(2)
         rows = self.rows()
         steps = [r for r in self.probe() if r["ev"] == "step" and r["agentId"] is None]
         prompts = [r for r in self.probe() if r["ev"] == "prompt"]
+        frames = list(self.frames)
+        if self.advertise == "9":
+            self.summary()
         self.stop()
         with open(os.path.join(self.root, "frames.jsonl"), "w") as f:
             f.writelines(json.dumps(fr) + "\n" for fr in self.frames)
@@ -173,12 +224,12 @@ class Maws(final.Final):
         self.check("5 no notification was raised", notes == "", "notifications: %r" % notes[:200])
 
         # For MAWS's normalizer: the frames from the call's on.
-        at = next((i for i, f in enumerate(self.frames) if f.get("type") == "assistant" and any(
+        at = next((i for i, f in enumerate(frames) if f.get("type") == "assistant" and any(
             isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == MESSAGE_TOOL
             for b in (f.get("message") or {}).get("content") or [])), None)
         print("frames from the call's assistant frame to the result (stream_event frames counted, not listed):")
         streamed = 0
-        for f in self.frames[at:] if at is not None else []:
+        for f in frames[at:] if at is not None else []:
             if f.get("type") == "stream_event":
                 streamed += 1
                 continue
@@ -191,12 +242,33 @@ class Maws(final.Final):
                                                       (f.get("message") or {}).get("stop_reason"))
                 if f.get("type") == "assistant" else ""))
         print("  (%d stream_event frames in that span)" % streamed)
-        madeup = [f for f in self.frames if f.get("type") == "assistant" and any(
+        madeup = [f for f in frames if f.get("type") == "assistant" and any(
             isinstance(b, dict) and b.get("text") == FINAL_ANSWER for b in (f.get("message") or {}).get("content") or [])]
         print("the made-up response as an assistant frame: %s; answeredWithoutRequest on it: %s" % (
             bool(madeup), [f.get("answeredWithoutRequest") for f in madeup]))
         print("prompts the engine submitted through prompt.submit: %s" % prompts)
         return all(ok for _, ok in self.results)
+
+    def summary(self):
+        """At 9: a run of working record closed by a message, and what the tracker keeps of it."""
+        self.turn(STRETCH, 1)
+        calls = [b.get("id") for _, b in self.blocks(self.rows(), "tool_use") if b.get("name") == "Bash"]
+        if self.summaries_off:
+            time.sleep(SUMMARY_WAIT)
+            kept = self.folds()
+            self.check("8 with TO_HUMAN_FOLD_SUMMARIES=off no summary is asked for: no folds file", kept is None,
+                       "the command's call %s; the folds file: %s" % (calls, kept))
+            return
+        try:
+            kept = base.wait_for("the folds file's summary", SUMMARY_WAIT, lambda: (lambda k: k if k and any(
+                isinstance(run, list) and run and run[0] in calls for run in k.get("runs") or []) else None)(self.folds()))
+        except TimeoutError:
+            kept = self.folds()
+        runs = (kept or {}).get("runs") or []
+        mine = [run for run in runs if isinstance(run, list) and len(run) == 3 and run[0] in calls]
+        self.check("6 the run closed by the message reads a summary within the call's limit, kept in the folds file",
+                   bool(mine) and bool(mine[0][2].strip()), "the command's call %s; its runs in the file: %s" % (calls, mine))
+        self.check("7 the folds file is kept at shape 2", (kept or {}).get("shape") == 2, "the file: %s" % kept)
 
 
 def main():
@@ -206,11 +278,13 @@ def main():
     args = ap.parse_args()
     for sig in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, lambda *_: sys.exit(1))
-    live = Maws(args.keep, args.model, None)
-    try:
-        ok = live.run()
-    finally:
-        live.cleanup()
+    ok = True
+    for advertise, summaries_off in (("8", False), ("9", False), ("9", True)):
+        live = Maws(args.keep, args.model, advertise, summaries_off)
+        try:
+            ok = live.run() and ok
+        finally:
+            live.cleanup()
     sys.exit(0 if ok else 1)
 
 
