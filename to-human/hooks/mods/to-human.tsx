@@ -1189,7 +1189,11 @@ function holderOf(view: View, id: string): string {
  * Whether a turn's line that takes the slot `at` in the drawn rows' order
  * stands beside an unfolded run of its turn: the run it stands in (that of
  * the row before it), or one that begins at or after it and before the next
- * row of the person's.
+ * row of the person's. The turn is read forward from the line, so the
+ * contract with a client is that the line stands at the head of its turn's
+ * work: its anchor is the row that opens the turn (the prompt, or the last
+ * row before the turn's first). A line anchored after its turn's rows reads
+ * the rows that follow it, which are the next turn's.
  */
 function isTurnOpen(view: View, at: number): boolean {
   const { order, rowOf, unfolded } = view
