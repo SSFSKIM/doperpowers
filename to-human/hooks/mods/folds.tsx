@@ -3,7 +3,7 @@ import type { EngineInterface, On, SessionAppendInput } from 'claude-code'
 import type { FoldRun, Folds, OpenFold, OpenFoldLast } from '../../types/to-human'
 import { MESSAGE_TOOL, isMadeUp } from './message'
 import type { PromptRowProps, View } from './to-human'
-import { isApiError, isRead, isSpawn, keyOf, parse, promptRow } from './to-human'
+import { isApiError, isMawsDrawing, isRead, isSpawn, keyOf, parse, promptRow } from './to-human'
 
 /**
  * The run tracker: what a fold's button says before it is opened. The view
@@ -528,8 +528,15 @@ const FOLDS = { plugin: 'to-human', key: 'folds' } as const
 const OPEN = { plugin: 'to-human', key: 'fold' } as const
 const OPEN_LAST = { plugin: 'to-human', key: 'foldLast' } as const
 
-/** What a session reads once: the summaries' model, whether it is one nobody reads the report of here, and the files' folder. */
-type Settings = { model: string; isQuiet: boolean; dir?: string }
+/**
+ * What a session reads once: the summaries' model, whether summaries are
+ * asked for in it at all (`isQuiet` where not), whether a client reads the
+ * view's drawing of it (it advertises 9 or more), and the files' folder.
+ */
+type Settings = { model: string; isQuiet: boolean; isClientRead: boolean; dir?: string }
+
+/** The value of `TO_HUMAN_FOLD_SUMMARIES` that turns the asking off: exactly this, anything else leaving summaries on. */
+export const SUMMARIES_OFF = 'off'
 
 /** What one registration of the tracker keeps between its hooks. */
 type Following = {
@@ -560,11 +567,16 @@ type Following = {
 /**
  * Whether a run due its summary is asked for: a to-human reader (a mark the
  * view drew, or one the tracker followed, so the message that closes a
- * session's first run counts for that run though it has not drawn yet), at
- * this terminal, not MAWS's or a sminos internal fork's.
+ * session's first run counts for that run though it has not drawn yet) who
+ * reads the view, at this terminal or through a client that advertises 9 or
+ * more; not where MAWS draws its own view, in a sminos internal fork, or
+ * with summaries off (`isQuiet`).
  */
 const isAsking = (following: Following) =>
-  (following.isOn() || following.hasKeptMark) && following.isInteractive && following.settings !== undefined && !following.settings.isQuiet
+  (following.isOn() || following.hasKeptMark) &&
+  following.settings !== undefined &&
+  (following.isInteractive || following.settings.isClientRead) &&
+  !following.settings.isQuiet
 
 /** A kept response that is a mark, as the view reads a drawn one: a message-tool call, or text with a marked span. */
 const isMark = (row: KeptRow) =>
@@ -579,17 +591,19 @@ const isMark = (row: KeptRow) =>
 function readSettings($: EngineInterface, following: Following): Promise<Settings | undefined> {
   following.reading ??= (async () => {
     try {
-      const [model, maws, internal, configured, home] = await Promise.all([
+      const [model, maws, internal, summaries, configured, home] = await Promise.all([
         $.env.get('TO_HUMAN_FOLD_MODEL'),
         $.env.get('MAWS_NATIVE_TO_HUMAN'),
         $.env.get('SMNS_INTERNAL'),
+        $.env.get('TO_HUMAN_FOLD_SUMMARIES'),
         $.env.get('CLAUDE_CONFIG_DIR'),
         $.env.get('HOME'),
       ])
       const config = configured || (home ? `${home}/.claude` : undefined)
       following.settings = {
         model: model || 'haiku',
-        isQuiet: (maws !== undefined && maws !== '') || internal !== undefined,
+        isQuiet: isMawsDrawing(maws) || internal !== undefined || summaries === SUMMARIES_OFF,
+        isClientRead: maws !== undefined && maws !== '' && !isMawsDrawing(maws),
         ...(config !== undefined && { dir: `${config}/to-human/folds` }),
       }
       return following.settings
