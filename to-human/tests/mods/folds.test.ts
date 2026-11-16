@@ -1662,6 +1662,32 @@ describe('a call that joins a group', () => {
   const until = async (isDone: () => Promise<boolean>) => {
     for (let i = 0; i < 200 && !(await isDone()); i++) await Promise.resolve()
   }
+  /** A session opened again: a new module whose only knowledge of the turns before is the transcript it searches, which lists `ids`. */
+  const reopened = async ($: Engine, on: On, { surface, env, isInteractive }: Ask, ids: string[]) => {
+    mock.env(on, env)
+    mock.store(on)
+    engineDrawing(on)
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    on('session.id', () => ({ value: 's1' }))
+    on('session.messages', () => ({ value: [{ role: 'assistant', text: '<message>Update.</message>', toolUses: [] }] }))
+    on('model.complete', () => ({ value: answered('Took the three steps') as never }))
+    const list = ids.map((id) => (id.startsWith('toolu_') ? `"type":"tool_use","id":"${id}"` : `"uuid":"${id}"`)).join('\n')
+    on('process.run', async (_, e) => {
+      const script = e.argv[2] ?? ''
+      const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+      if (script.startsWith('mktemp')) return answer('/tmp/to-human-places.test\n')
+      if (script.startsWith('tail -c')) return answer(list.slice(Number(e.argv[5]) - 1))
+      return answer('')
+    })
+    on('classic.SessionStart', () => ({}))
+    await $.session.start({ cwd: '/w', surface, isInteractive })
+    await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl', session_id: 's1' } as never)
+    await $.ui.mount({
+      plugin: PLUGIN, surface, component: 'ToolUse', requestId: 'toolu_m0',
+      props: { tool_use_id: 'toolu_m0', tool: MESSAGE_TOOL, input: { text: 'Update.' }, isRunning: false, isErrored: false, isInterrupted: false, output: 'sent' },
+    } as never)
+  }
+  const ended = ($: Engine) => $.turn.complete({ turnId: 't1', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
   const closing = async ($: Engine, surface: Ask['surface']) => {
     await keep($, result('u3', 'toolu_3'), sent('a4', 'toolu_m4'), result('u4', 'toolu_m4', MESSAGE_TOOL, 'sent'))
     await $.ui.mount({
@@ -1709,6 +1735,73 @@ describe('a call that joins a group', () => {
       const run = await group($, ask.surface, 'group:toolu_1', ['toolu_1', 'toolu_2'])
       expect(await run.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
       expect(await run.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    })
+
+    // A client asks a call alone in its stretch as a group of one, under
+    // `group:<call>`, from the call's first moment, and asks exactly that
+    // once the turn has ended and in a session opened again: the group's
+    // row is the stretch's record line, and the line opens the stretch.
+    test(`${name}, a client's group of one draws the stretch's line while the turn runs, and still opens it once the turn has ended`, async ($, on) => {
+      await session($, on, ask)
+      await keep($, call('a1', 'toolu_1', 'Step one'))
+      const run = await group($, ask.surface, 'group:toolu_1', ['toolu_1'])
+      expect(await button(run)).toBe('› Step one')
+
+      await keep($, result('u1', 'toolu_1'))
+      await ended($)
+      await run.redraw({ ...groupProps(['toolu_1']), isActive: false } as never)
+      // The turn's end has the run summarized: the line reads the summary (every summary the session's model answers reads so).
+      await until(async () => (await button(run)) === '› Took the three steps')
+      expect(await button(run)).toBe('› Took the three steps')
+
+      // Asked anew under the same id, as a row the client mounts again.
+      await run.unmount()
+      const again = await $.ui.mount({ plugin: PLUGIN, surface: ask.surface, component: 'ToolGroup', requestId: 'group:toolu_1', props: { ...groupProps(['toolu_1']), isActive: false } } as never)
+      expect(await button(again)).toBe('› Took the three steps')
+      await again.press({ key: 'to-human-toggle' })
+      expect(await again.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+      expect(await again.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    })
+
+    test(`${name}, a session opened again with no earlier state: a group of one of an ended turn draws the stretch's line, and it opens`, async ($, on) => {
+      await reopened($, on, ask, ['a0', 'toolu_m0', 'u0', 'a1', 'toolu_1', 'u1'])
+      const run = await $.ui.mount({ plugin: PLUGIN, surface: ask.surface, component: 'ToolGroup', requestId: 'group:toolu_1', props: { ...groupProps(['toolu_1']), isActive: false } } as never)
+      // No run of the tracker's holds the call (it kept no row of this module's): the line reads the default.
+      expect(await button(run)).toBe('› working record')
+      await run.press({ key: 'to-human-toggle' })
+      expect(await run.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+      expect(await run.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    })
+
+    test(`${name}, a second call joins a client's group of one under the same id: the line moves to it, then to the summary`, async ($, on) => {
+      const asks = await session($, on, ask)
+      await keep($, call('a1', 'toolu_1', 'Step one'))
+      const run = await group($, ask.surface, 'group:toolu_1', ['toolu_1'])
+      expect(await button(run)).toBe('› Step one')
+      await keep($, result('u1', 'toolu_1'), call('a2', 'toolu_2', 'Step two'))
+      await run.redraw(groupProps(['toolu_1', 'toolu_2']) as never)
+      expect(await button(run)).toBe('› Step two')
+      await keep($, result('u2', 'toolu_2'))
+      await ended($)
+      await until(async () => (await button(run)) === '› Took the three steps')
+      expect(await button(run)).toBe('› Took the three steps')
+      expect(asks).toHaveLength(1)
+    })
+
+    // For the record: the sequence the client no longer sends. Asked as
+    // `ToolUse` after its group of one, the call is a member of the group
+    // (`groupOf`), which draws the run's line: the call's row draws nothing
+    // folded and never opens, so a client that asked both would lose the
+    // line wherever it drew the call's row in the group's place.
+    test(`${name}, a group of one, then the same call asked as ToolUse (no longer sent by the client): the call answers as its group's member, with nothing that opens`, async ($, on) => {
+      await session($, on, ask)
+      await keep($, call('a1', 'toolu_1', 'Step one'))
+      const run = await group($, ask.surface, 'group:toolu_1', ['toolu_1'])
+      const alone = await lone($, ask.surface, 'toolu_1', 'Step one')
+      expect(await button(alone)).toBeUndefined()
+      expect(await alone.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+      expect((await alone.drawn()) as unknown).toMatchObject({ type: 'Box' })
+      expect(await button(run)).toBe('› Step one')
     })
   }
 
