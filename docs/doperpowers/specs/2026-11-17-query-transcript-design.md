@@ -189,3 +189,16 @@ Where building departed from the text above, with the evidence:
   same transcript twice; ids resolve by the file's real path.
 - **Quote stamps carry the row's uuid** (its first 8 characters in text), the
   handle `--until` takes for a cut at that row.
+- **A segment includes the rows its compaction kept.** A boundary's
+  `compactMetadata.preservedMessages` / `preservedSegment` name rows from
+  before it (the last reply and its turn's closing rows; 2 to 3 rows on each of
+  the 83 boundaries of the CI-opt session) that the resume puts back after the
+  summary. The copy and the quote check start with them, then the boundary.
+  This is the spike's 39-token gap between a copy from the boundary and one
+  from the file's start.
+- **`--until T` ends with the last row stamped at or before T in file order**,
+  as written above, without assuming stamps rise in file order (they do not
+  everywhere); the segment is the one whose compaction came last at or before T.
+- **The quote check tolerates typographic quote marks only.** `*` and backticks
+  are code as often as markup (`2 ** 3`, ``echo `id` ``), so a quote that drops
+  them is reported not found.

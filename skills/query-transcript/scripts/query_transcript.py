@@ -16,6 +16,7 @@ Design: docs/doperpowers/specs/2026-11-17-query-transcript-design.md.
 import argparse
 import concurrent.futures
 import datetime
+import functools
 import glob
 import json
 import os
@@ -237,7 +238,6 @@ def _read(path, off):
 
 def stretch_lines(path, start, end):
     """The complete lines between two offsets, with each one's offset."""
-    out = []
     with open(path, "rb") as fh:
         fh.seek(start)
         off = start
@@ -245,20 +245,59 @@ def stretch_lines(path, start, end):
             raw = fh.readline()
             if not raw.endswith(b"\n"):
                 break
-            out.append((off, raw))
+            yield off, raw
             off += len(raw)
-    return out
+
+
+@functools.lru_cache(maxsize=None)
+def preserved(path, seg):
+    """The rows from before segment `seg`'s boundary that its compaction kept
+    (`compactMetadata.preservedMessages` and `preservedSegment`): the resume
+    puts them back after the summary, so the session held them in this segment."""
+    if seg.n == 0:
+        return []
+    meta = (_load(_read(path, seg.start)) or {}).get("compactMetadata") or {}
+    kept = meta.get("preservedMessages")
+    if isinstance(kept, str):
+        kept = _load(kept)
+    wanted = set()
+    for d in (kept, meta.get("preservedSegment")):
+        if isinstance(d, dict):
+            for v in d.values():
+                for u in (v if isinstance(v, list) else [v]):
+                    if isinstance(u, str) and re.fullmatch(r"[0-9a-f-]{36}", u):
+                        wanted.add(u)
+    if not wanted:
+        return []
+    needle = re.compile(rb'"uuid":"(' + b"|".join(u.encode() for u in sorted(wanted)) + rb')"')
+    rows = {}
+    for _, raw in stretch_lines(path, 0, seg.start):
+        if needle.search(raw):
+            u = (_load(raw) or {}).get("uuid")
+            if u in wanted and u not in rows:
+                rows[u] = raw
+    return list(rows.values())
+
+
+def segment_rows(path, seg, end):
+    """What segment `seg` held up to `end`, row by row: the rows its compaction
+    kept, then the stretch from its boundary (or the file's start)."""
+    yield from preserved(path, seg)
+    for _, raw in stretch_lines(path, seg.start, end):
+        yield raw
 
 
 def cut_at_time(path, seg, t):
-    """The end offset of segment `seg` cut at time `t`: the start of its first
-    row stamped after `t`, past its first row."""
-    for i, (off, raw) in enumerate(stretch_lines(path, seg.start, seg.end)):
-        if i and b'"timestamp"' in raw:
+    """The end offset of segment `seg` cut at time `t`: the end of its last row
+    stamped at or before `t` (a transcript's stamps are not in file order
+    everywhere), or None when it has none."""
+    end = None
+    for off, raw in stretch_lines(path, seg.start, seg.end):
+        if b'"timestamp"' in raw:
             ts = parse_time((_load(raw) or {}).get("timestamp"))
-            if ts and ts > t:
-                return off
-    return seg.end
+            if ts and ts <= t:
+                end = off + len(raw)
+    return end
 
 
 # ------------------------------------------------------------------ the copy and the fork
@@ -267,14 +306,14 @@ def cut_at_time(path, seg, t):
 SESSION_FIELD = re.compile(rb'"sessionId":"[^"]*"')
 
 
-def write_copy(path, start, end, dest, new_id, sidechain):
+def write_copy(rows, dest, new_id, sidechain):
     """The stretch as a transcript of session `new_id`: the session id in every
     row replaced and, for a subagent's transcript, the sidechain flag cleared.
     The engine's cost rows are left out: a resume adds the session's running
     cost from them to the fork's, and the fork's own is what is reported."""
     field = b'"sessionId":"' + new_id.encode() + b'"'
     with open(dest, "wb") as out:
-        for _, raw in stretch_lines(path, start, end):
+        for raw in rows:
             if raw.startswith(b'{"type":"cost-state"'):
                 continue
             raw = SESSION_FIELD.sub(field, raw)
@@ -317,7 +356,7 @@ LIVE_LOCK = threading.Lock()
 STOPPING = threading.Event()
 
 
-def ask(transcript, start, end, prompt, timeout):
+def ask(transcript, seg, end, prompt, timeout):
     """Copy the stretch, ask the fork, and remove the copy and anything the fork
     wrote whatever the outcome. The fork's result object, or ForkFailed."""
     folder = project_folder(work_dir())
@@ -326,7 +365,7 @@ def ask(transcript, start, end, prompt, timeout):
     env = {**os.environ, "SMNS_INTERNAL": "1", "DISABLE_PROMPT_CACHING": "1"}
     obj = None
     try:
-        write_copy(transcript.path, start, end, copy, copy_id, transcript.sidechain)
+        write_copy(segment_rows(transcript.path, seg, end), copy, copy_id, transcript.sidechain)
         try:
             proc = subprocess.Popen(fork_command(copy_id, fork_id, prompt), cwd=work_dir(), env=env,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -393,7 +432,9 @@ CONVERSATION_HEADS = tuple(b'{"type":"%s"' % t.encode() for t in CONVERSATION)
 SKIPPED_KEYS = {"signature"}
 ELLIPSIS = re.compile(r"\s*(?:\[\s*(?:\.\.\.|…)\s*\]|\.\.\.+|…)\s*")
 OUTER = "\"'`“”‘’"
-LOOSE = str.maketrans({"“": '"', "”": '"', "„": '"', "‘": "'", "’": "'", "*": None, "`": None})
+# Typographic quote marks only: markdown's `*` and backticks are code in a command
+# or an expression (`2 ** 3`, `echo \`id\``), so a quote that drops them is not the record.
+LOOSE = str.maketrans({"“": '"', "”": '"', "„": '"', "‘": "'", "’": "'"})
 
 
 def _norm(s):
@@ -459,9 +500,9 @@ class Record:
     whitespace collapsed, with its time, kind and uuid. The engine's request
     log rows, which repeat these without a time, are left out."""
 
-    def __init__(self, path, start, end):
+    def __init__(self, rows):
         self.rows = []
-        for _, raw in stretch_lines(path, start, end):
+        for raw in rows:
             if raw.startswith(b'{"type":"') and not raw.startswith(CONVERSATION_HEADS):
                 continue
             o = _load(raw)
@@ -546,7 +587,7 @@ def run_segment(transcript, seg, end, until, query, timeout):
     prompt = FRAME + "\nThe question:\n\n" + query
     t0 = time.time()
     try:
-        obj = ask(transcript, seg.start, end, prompt, timeout)
+        obj = ask(transcript, seg, end, prompt, timeout)
     except ForkFailed as e:
         res["error"] = str(e)
         res["seconds"] = round(time.time() - t0)
@@ -562,7 +603,7 @@ def run_segment(transcript, seg, end, until, query, timeout):
         "seconds": round(time.time() - t0),
     }
     res["answer"] = answer
-    res["quotes"] = check_quotes(answer, Record(transcript.path, seg.start, end))
+    res["quotes"] = check_quotes(answer, Record(segment_rows(transcript.path, seg, end)))
     return res
 
 
@@ -668,15 +709,15 @@ def pick(t, a):
         return [(s, s.end, None)]
     when = parse_time(a.until)
     if when is not None:
-        starts = [parse_time(s.start_ts) for s in t.segments]
-        held = [s for s, st in zip(t.segments, starts) if st is not None and st <= when]
-        if not held:
-            raise UsageError("--until %s is before the session starts (%s)" % (a.until, show_time(starts[0])))
-        s = held[-1]
+        # The segment whose compaction came last at or before it; segment 0 before any.
+        s = ([x for x in t.segments[1:] if (parse_time(x.start_ts) or when) <= when] or t.segments[:1])[-1]
         if a.segment is not None and a.segment != s.n:
             raise UsageError("--until %s is in segment %d (%s → %s), not %d"
                              % (a.until, s.n, show_time(s.start_ts), show_time(s.end_ts), a.segment))
-        return [(s, cut_at_time(t.path, s, when), show_time(when))]
+        end = cut_at_time(t.path, s, when)
+        if end is None:
+            raise UsageError("--until %s is before the session's first row" % a.until)
+        return [(s, end, show_time(when))]
     rows = t.uuid_rows
     if not rows:
         raise UsageError("--until %s is neither a time nor a row's uuid in this transcript" % a.until)

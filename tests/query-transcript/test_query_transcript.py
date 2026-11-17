@@ -43,10 +43,10 @@ def tool_result(uuid, ts, text):
     return user(uuid, ts, [{"type": "tool_result", "tool_use_id": "toolu_1", "content": text}])
 
 
-def boundary(uuid, ts, pre):
+def boundary(uuid, ts, pre, **meta):
     return {"parentUuid": None, "isSidechain": False, "type": "system", "subtype": "compact_boundary",
             "content": "Conversation compacted", "uuid": uuid, "timestamp": ts, "sessionId": SID,
-            "compactMetadata": {"trigger": "auto", "preTokens": pre}}
+            "compactMetadata": {"trigger": "auto", "preTokens": pre, **meta}}
 
 
 def rows():
@@ -68,7 +68,15 @@ def rows():
          "attachment": {"type": "queued_command", "prompt": "<task-notification><task-id>abc123</task-id>"
                         "</task-notification>", "origin": {"kind": "task-notification"}}},
         {"type": "cost-state", "sessionId": SID, "totalCostUSD": 198.87},
-        boundary("bbbb0001-0000-4000-8000-000000000001", "2026-11-01T10:05:00.000Z", 1234),
+        boundary("bbbb0001-0000-4000-8000-000000000001", "2026-11-01T10:05:00.000Z", 1234,
+                 preservedSegment={"headUuid": "aaaa0002-0000-4000-8000-000000000002",
+                                   "anchorUuid": "bbbb0002-0000-4000-8000-000000000002",
+                                   "tailUuid": "aaaa0003-0000-4000-8000-000000000003"},
+                 preservedMessages=json.dumps({"anchorUuid": "bbbb0002-0000-4000-8000-000000000002",
+                                               "uuids": ["aaaa0002-0000-4000-8000-000000000002",
+                                                         "aaaa0003-0000-4000-8000-000000000003"],
+                                               "allUuids": ["aaaa0002-0000-4000-8000-000000000002",
+                                                            "aaaa0003-0000-4000-8000-000000000003"]})),
         user("bbbb0002-0000-4000-8000-000000000002", "2026-11-01T10:05:01.000Z",
              "Summary: the build was fixed by adding the token.", isCompactSummary=True),
         assistant("bbbb0003-0000-4000-8000-000000000003", "2026-11-01T10:06:00.000Z",
@@ -176,6 +184,13 @@ class Segments(Case):
         # The session's running cost stays out: a resume would add it to the fork's.
         self.assertNotIn("cost-state", self.calls()[0]["copy"])
 
+    def test_a_segment_holds_the_rows_its_compaction_kept(self):
+        self.run_cli(SID, "q", "--segment", "1")
+        got = [x.get("uuid") for x in self.copy_rows(self.calls()[0])]
+        self.assertEqual(got[:3], ["aaaa0002-0000-4000-8000-000000000002", "aaaa0003-0000-4000-8000-000000000003",
+                                   "bbbb0001-0000-4000-8000-000000000001"])
+        self.assertEqual(got.count("aaaa0003-0000-4000-8000-000000000003"), 1)
+
     def test_segment_out_of_range_is_a_usage_error(self):
         r = self.run_cli(SID, "q", "--segment", "3")
         self.assertEqual(r.returncode, 2)
@@ -187,7 +202,7 @@ class Until(Case):
         r = self.run_cli(SID, "q", "--until", "2026-11-01T10:06:30Z")
         self.assertEqual(r.returncode, 0, r.stderr)
         got = self.copy_rows(self.calls()[0])
-        self.assertEqual([x["uuid"] for x in got], ["bbbb0001-0000-4000-8000-000000000001",
+        self.assertEqual([x["uuid"] for x in got[2:]], ["bbbb0001-0000-4000-8000-000000000001",
                                                    "bbbb0002-0000-4000-8000-000000000002",
                                                    "bbbb0003-0000-4000-8000-000000000003"])
         self.assertIn("segment 1 · 2026-11-01T10:05:00Z → 2026-11-01T11:00:00Z · until 2026-11-01T10:06:30Z",
@@ -197,6 +212,20 @@ class Until(Case):
         self.run_cli(SID, "q", "--until", "2026-11-01 10:00:05")
         got = self.copy_rows(self.calls()[0])
         self.assertEqual(got[-1]["uuid"], "aaaa0002-0000-4000-8000-000000000002")
+
+    def test_by_time_does_not_assume_stamps_in_file_order(self):
+        rs = rows()
+        late = assistant("aaaa0009-0000-4000-8000-000000000009", "2026-11-01T10:00:30.000Z", "late stamp")
+        early = user("aaaa0008-0000-4000-8000-000000000008", "2026-11-01T09:59:00.000Z", "early stamp")
+        rs[4:4] = [late, early]   # after the tool result: a later stamp, then an earlier one
+        self.path.write_text(dump(rs))
+        # The last row at or before the cut ends the context, rows stamped later before it included.
+        self.run_cli(SID, "q", "--until", "2026-11-01T10:00:20Z")
+        self.assertEqual(self.copy_rows(self.calls()[0])[-1]["uuid"], "aaaa0004-0000-4000-8000-000000000004")
+        # A time before the first stamped row but at or after a later row's is still in the session.
+        r = self.run_cli(SID, "q", "--until", "2026-11-01T09:59:30Z")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.copy_rows(self.calls()[1])[-1]["uuid"], "aaaa0008-0000-4000-8000-000000000008")
 
     def test_by_uuid_prefix_ends_with_that_row(self):
         r = self.run_cli(SID, "q", "--until", "aaaa0003")
@@ -368,14 +397,19 @@ class Quotes(Case):
         self.assertEqual([q["found"] for q in qs], [False, False])
 
     def test_kinds_quote_marks_and_markdown(self):
-        qs = self.check('> "I will look at the CI config first, then ci.yml."\n\n'
+        qs = self.check('> “I will look at the **CI config** first, then `ci.yml`.”\n\n'
                         "> <task-id>abc123</task-id>\n\n"
+                        "> I will look at the CI config first, then ci.yml.\n\n"
                         "```\n> not a quote\n```\n")
-        self.assertEqual(len(qs), 2)
+        self.assertEqual(len(qs), 3)
         self.assertEqual((qs[0]["found"], qs[0]["kind"]), (True, "session"))
         self.assertEqual((qs[1]["found"], qs[1]["kind"]), (True, "notice"))
-        qs = self.check("> Summary: the build was fixed\n", segment="1")
+        # Asterisks and backticks are code as often as markup: a quote without them is not the record.
+        self.assertFalse(qs[2]["found"])
+        qs = self.check("> Summary: the build was fixed\n\n> exit 1: missing token GH_TOKEN\n", segment="1")
         self.assertEqual((qs[0]["found"], qs[0]["kind"]), (True, "summary"))
+        # A row the compaction kept is in the segment's record too.
+        self.assertEqual((qs[1]["found"], qs[1]["time"]), (True, "2026-11-01T10:00:10Z"))
 
     def test_text_output_stamps_quotes(self):
         self.answer("> ship it\n\n> never said\n")
