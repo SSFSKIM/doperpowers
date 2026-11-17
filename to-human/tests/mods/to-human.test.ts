@@ -911,11 +911,16 @@ describe('rows', () => {
       children: [String((e.props as { text?: string }).text ?? e.component)],
     }))
 
+    // Nothing keeps these rows, so they stand in the order they first drew:
+    // each is mounted once the row above it has drawn. Mounts raised at once
+    // reach the hooks in no order the test sets: from 2.1.326 the host enters
+    // them hook by hook, in the order the plugin registered its hooks, which
+    // put the notification's row ahead of every message's.
     const message = (requestId: string, text: string) =>
       $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
-    const marked1 = message('m1', '<message>One.</message>')
-    const record1 = message('u1', 'Working.')
-    const notification = $.ui.mount({
+    await message('m1', '<message>One.</message>')
+    const first = await message('u1', 'Working.')
+    const note = await $.ui.mount({
       plugin: PLUGIN,
       surface: 'terminal',
       component: 'UserMessage',
@@ -927,9 +932,8 @@ describe('rows', () => {
         task: { id: 'a1', toolUseId: 'toolu_1' },
       },
     })
-    const marked2 = message('m2', '<message>Two.</message>')
-    const record2 = message('u2', 'More.')
-    const [, first, note, , second] = await Promise.all([marked1, record1, notification, marked2, record2])
+    await message('m2', '<message>Two.</message>')
+    const second = await message('u2', 'More.')
 
     // The first unmarked message opens the run the notification stands in; the
     // second opens the run after the second mark. The notification draws no
