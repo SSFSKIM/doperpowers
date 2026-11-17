@@ -106,12 +106,12 @@ assert_contains "$first" "project alpha" "the first line names its project: the 
 assert_contains "$first" "machine alpha" "and its machine"
 assert_contains "$OUT" "$STRAY" "it names the launch directory"
 assert_contains "$OUT" "no .smns" "and why the machine's project holds it: no .smns claims the directory"
-assert_equals "$(grep -cF "$SCRIPTS/sminos" <<<"$OUT")" "1" "the CLI's absolute path is named once"
-named="$(grep -A2 -F "not on PATH; run it as" <<<"$OUT")"
+assert_equals "$(grep -cF "$SCRIPTS/sminos" <<<"$OUT")" "0" "no path is named: the plugin's bin/ puts sminos on PATH"
+named="$(grep -A1 -F "run sminos in Bash:" <<<"$OUT")"
 assert_equals "$named" "${named%%$'\n'*}
-  $SCRIPTS/sminos
   sminos list            peer sessions in your project; --here sessions on this machine, --org every connected host and project" \
-  "on its own line after the frame line, and the verb lines name it sminos"
+  "the frame line says to run sminos, and the verb lines name it so"
+assert_contains "$OUT" "  sminos say - <<'EOF'   the text on stdin, as written" "it names the stdin form for text a shell would change"
 assert_contains "$OUT" "  sminos list --subagents   your subagents (--done N: finished ones, resumed by SendMessage to the agentId); these two replace ListAgents: use them instead" \
   "it names the subagent view, and says the two replace ListAgents"
 for verb in "list" "--here" "--org" "list --subagents" "--done N" "replace ListAgents" "who <commit|PR>" 'say "..."' "wakes no one" "@<short>" "@<project>/<alias>" \

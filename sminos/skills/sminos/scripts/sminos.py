@@ -151,6 +151,15 @@ member too, seat-less, from the first call that reads its project.
                    # read or write a seat record's fields under the record lock (the board pipeline's
                    ticket, role, run_id...); never a credential
 
+A verb's prose given as `-` is read from standard input (say's <text>, send's and
+resume's <msg>, spawn's and fill's <task>, steer's <text>, compact's [instructions]):
+inside double quotes the shell runs a backtick span and expands a `$` before sminos
+sees the text, where a heredoc with a quoted delimiter passes it as written:
+
+    sminos say - <<'EOF'
+    @parser `parse()` now rejects "" in `name`
+    EOF
+
 A member's name is its alias: a seat's alias (a seat sminos spawns runs under
 it as its harness name), or a seat-less session's harness name. Aliases are
 display names and can collide; `alias#short` (the session's first eight hex
@@ -9602,8 +9611,9 @@ NAME_DROP = ("Cc", "Cf", "Cs", "Zl", "Zp")
 def reply_line(session, project=""):
     """The body's closing line for a peer's frame: how to answer the session
     that sent it, as a command a model that knows nothing of sminos can run
-    (the CLI is not on PATH, so it is named by this install's path, which the
-    recipient shares: delivery is always on its own machine). The tag names
+    (named by this install's path, which the recipient shares: delivery is
+    always on its own machine; the plugin's bin/ may not be on its PATH, as
+    in a session started before the plugin had one, or an SDK session). The tag names
     the sender by its short in its own project (`@<project id>/<short>`: the
     event's `from_project` when it spoke into another project's log, else the log's
     own), so a reply reaches it from any project and on any machine; the
@@ -10696,15 +10706,15 @@ def _import_chat(path, host_id, host, project, by_id, lock_until):
 
 def render_preamble(project, alias, by=""):
     """The spawn preamble every spawn renders (§6), with {{PROJECT}},
-    {{ALIAS}}, {{BY}} (the spawner, or "the operator"), and {{SMINOS_CLI}}
-    filled."""
+    {{ALIAS}} and {{BY}} (the spawner, or "the operator") filled. It names
+    the CLI `sminos`, which the plugin's bin/ puts on the seat's PATH."""
     try:
         with open(PREAMBLE_PATH) as f:
             t = f.read()
     except OSError:
         die("preamble template missing: %s" % PREAMBLE_PATH, 1)
     return (t.replace("{{PROJECT}}", project).replace("{{ALIAS}}", alias)
-             .replace("{{BY}}", by or "the operator").replace("{{SMINOS_CLI}}", LAUNCHER))
+             .replace("{{BY}}", by or "the operator"))
 
 
 def compose_task(task, brief, preamble):
@@ -12989,9 +12999,9 @@ def guide_text(session, launch, source="", title=""):
         held_alias(*own_alias(_own_events(project, session), session), peer, session,
                    shadowing(project, session))[0]
     who = "%s [%s]" % (alias, session[:8]) if alias and alias != session[:8] else "[%s]" % session[:8]
-    # The CLI is off PATH: its installed path is given once, and the verb lines
-    # name it `sminos` (an eval round showed no session typed the bare name).
-    path, cli = os.path.join(SCRIPT_DIR, "sminos"), "sminos"
+    # The plugin's bin/ puts the CLI on the session's PATH, so the verb lines
+    # name it `sminos`, as the session runs it.
+    cli = "sminos"
     if home is not None and home.id != project.id and not override_of(session) and locations_unknown():
         where = ("where you were last a member: this machine's endpoint has not sent its stored folder statements "
                  "yet, so your launch directory, %s, is not resolved again until it does" % launch)
@@ -13014,8 +13024,7 @@ def guide_text(session, launch, source="", title=""):
         "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project.%s"
         % (who, project.name, enrollment()["machine"], where, fork),
         "Other Claude sessions work in this org, on every enrolled machine and in every repository. "
-        "To find one or tell it something, use sminos. It is not on PATH; run it as",
-        "  %s" % path,
+        "To find one or tell it something, run sminos in Bash:",
         "  %s list            peer sessions in your project; --here sessions on this machine, --org every connected"
         " host and project" % cli,
         "  %s list --subagents   your subagents (--done N: finished ones, resumed by SendMessage to the agentId);"
@@ -13027,6 +13036,8 @@ def guide_text(session, launch, source="", title=""):
         " a bare @alias reaches only your project" % cli,
         '  %s say --org|--project P|--machine M|--here "..."   wakes every live session list shows with the'
         " same flags (they combine) but you" % cli,
+        "  %s say - <<'EOF'   the text on stdin, as written: for text with backticks, quotes, $ or several lines"
+        " (the shell runs a backtick inside double quotes)" % cli,
     ] + join + [
         '  %s charge "<line>" what you are in charge of, shown beside you in every list' % cli,
     ])
@@ -13949,6 +13960,31 @@ def build_parser():
     return p
 
 
+# The prose a session composes, by verb: given as `-`, it is read from
+# standard input, so a heredoc with a quoted delimiter (`<<'EOF'`) carries any
+# text verbatim, where a double-quoted argument has the shell run its backticks
+# and expand its `$` before sminos sees it.
+STDIN_BODIES = {"say": "text", "send": "msg", "spawn": "task", "steer": "text", "resume": "msg", "fill": "task",
+                "compact": "instructions"}
+
+
+def stdin_body(a):
+    """Reads the verb's prose from standard input when it was given as `-`:
+    the text whole, less the line ending a heredoc or an echo adds. Refused
+    from a terminal (nothing is piped) and when stdin holds no text."""
+    field = STDIN_BODIES.get(a.cmd)
+    if field is None or getattr(a, field, None) != "-":
+        return
+    if sys.stdin is None or sys.stdin.isatty():
+        die("%s -: the text is read from standard input; pipe it, or give it as a heredoc:\n"
+            "  sminos %s ... - <<'EOF'\n  <text>\n  EOF" % (a.cmd, a.cmd))
+    text = sys.stdin.buffer.read().decode("utf-8", "replace")
+    text = text[:-2] if text.endswith("\r\n") else text[:-1] if text.endswith("\n") else text
+    if not text.strip():
+        die("%s -: no text on standard input" % a.cmd)
+    setattr(a, field, text)
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help", "help"):
@@ -13998,6 +14034,7 @@ def main(argv=None):
         if a.cmd == "project":
             die("usage: sminos project init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]")
         die("unknown command: %s (try: sminos help)" % argv[0])
+    stdin_body(a)
     migrate()
     HINTS["on"] = a.cmd in READING_VERBS
     try:

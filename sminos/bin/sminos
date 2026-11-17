@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# sminos on a session's PATH: the engine puts every plugin's bin/ there, so a
+# session, a --bg seat, `claude -p` and a subagent alike run `sminos <verb>`.
+# It runs the CLI beside the skill, found from this file's real path (a
+# symlink to it works too). The daemon's service and the board pipeline keep
+# naming skills/sminos/scripts/ directly.
+exec python3 "$(dirname "$(readlink -f "$0")")/../skills/sminos/scripts/sminos.py" "$@"

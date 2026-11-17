@@ -7,10 +7,8 @@ description: Use when working alongside other Claude sessions, in this project o
 
 ## Overview
 
-Sminos is one CLI, the sminos plugin's `skills/sminos/scripts/sminos`
-(`sminos/skills/sminos/scripts/sminos` in the doperpowers repository), not
-on PATH; on a machine enrolled at the desk hub a session's start prints its
-absolute path with who you are. `sminos help` describes every verb.
+Sminos is one CLI, `sminos`, on your Bash's PATH (the sminos plugin's
+`bin/`). `sminos help` describes every verb.
 
 Its unit is the **project**: a repository, by a committed `.smns` or, on
 an enrolled machine, by its remote (`origin`, or its only one), so every
@@ -61,6 +59,18 @@ retired), `vacant` (a seat with no session), `retired`.
     sminos say "@all main is being rebased, stop pushing"    # your project's live members
     sminos say --machine mini "the mini reboots in 10 min"   # every live session on the mini, any project
     sminos say --org "reviews go to their own pins again"    # every live session in the org
+
+Inside double quotes the shell runs each backtick span as a command and
+expands each `$` before sminos sees the text: a body that quotes code
+arrives changed, and the code ran on your machine. Text that holds
+backticks, quotes, `$` or more than a line goes on stdin: `-` in its
+place, from a heredoc whose delimiter is quoted, which passes it as
+written. `send`, `steer`, `spawn` (and `resume`, `fill`, `compact`) take
+`-` the same way. A call with a live backtick is refused before it runs.
+
+    sminos say - <<'EOF'
+    @parser `parse()` now rejects "" in `name`; $SCHEMA_DIR is unchanged
+    EOF
 
 Only the tags that open a message address anyone; an `@` later in the
 text is text.
@@ -140,8 +150,8 @@ along the way is no reason to move. A seat stays where it was spawned.
 
 ## Driving another session
 
-    sminos send <member> "…" [--wait]       # a direct message (a tagged say to one member)
-    sminos steer <member> "…"               # into its running turn, read at its next model request
+    sminos send <member> "…" [--wait]       # a direct message (a tagged say to one member); "…" or - (stdin)
+    sminos steer <member> "…"               # into its running turn, read at its next model request; "…" or -
     sminos interrupt <member>               # stop its running turn, as Esc does
     sminos watch <member> [--json]          # its live stream: the conversation as it streams, subagents labelled
     sminos stop <member> <task>             # stop one of its background shells or monitors
@@ -172,8 +182,10 @@ verbs act on this machine's processes, so run them on its machine.
 
 ## Spawning siblings
 
-    sminos spawn <alias> "<task>" [--brief B] [--role R] [--cwd DIR] [--worktree NAME]
-                [--model M] [--settings FILE] [--effort E] [--wait]
+    sminos spawn <alias> - [--brief B] [--role R] [--cwd DIR] [--worktree NAME]
+                [--model M] [--settings FILE] [--effort E] [--wait] <<'EOF'
+    <the task, as written>
+    EOF
 
 The session starts detached (`claude --bg`, permission mode `auto`) in
 your project, or `--cwd`'s; `--brief` becomes its in-charge line.

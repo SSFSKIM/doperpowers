@@ -9,7 +9,7 @@
     {
       "name": "doperpowers",
       "description": "A development methodology for Claude Code: a design you approve, one living spec, test-first builds by fresh subagents, and review by another model family.",
-      "version": "7.220.0",
+      "version": "7.220.1",
       "source": "./",
       "author": {
         "name": "SSFSKIM",
@@ -55,7 +55,7 @@
     {
       "name": "sminos",
       "description": "Your Claude Code sessions as a team: every session in a project sees the others, messages them and you, spawns and steers background sessions, and spans machines. The sminos CLI and daemon, the bridge that makes a session watchable and steerable from outside it, the async question tool, and the Sminos-Session line on every commit and PR",
-      "version": "1.47.0",
+      "version": "1.48.0",
       "source": "./sminos",
       "author": {
         "name": "SSFSKIM",
