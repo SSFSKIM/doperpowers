@@ -29,6 +29,7 @@ Everything the `doperpowers`, `sminos` and `to-human` plugins install, by what i
 | [`review-code`](../skills/review-code/SKILL.md) | Independent review of a committed branch by another model family, routed by effort: one reviewer (low, medium, high) or a multi-lens panel with one binding verifier (xhigh, max) |
 | [`codex-companion`](../skills/codex-companion/SKILL.md) | *Manual* (`/codex-companion`). Hands a review, a diagnosis or an implementation to OpenAI's Codex |
 | [`present`](../skills/present/SKILL.md) | *Manual* (`/present`). An HTML explainer that leaves you understanding something end to end: work an agent shipped, a design, a spec, someone else's code |
+| [`query-transcript`](../skills/query-transcript/SKILL.md) | A question put to a past session: the `query-transcript` command hands one segment of its transcript (the stretch between two compactions, or up to a chosen moment) to a haiku, which answers as an investigator of the record with quotes the command checks and stamps with their times |
 
 **Keep the work going**
 

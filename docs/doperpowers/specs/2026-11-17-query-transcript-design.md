@@ -169,3 +169,23 @@ transcript the caller names.
   $2 a sample on a 500k context. `--until` is its foundation. Whether a same-model
   replay keeps the conversation's thinking blocks is unmeasured.
 - Sessions on another machine.
+
+## As built (2026-11-17)
+
+Where building departed from the text above, with the evidence:
+
+- **No `nothing relevant` reply.** Offered to the segments of a multi-segment
+  run, haiku gave it to every segment at once (8 output tokens, no thinking, in
+  4 to 9 s), the segment holding the answer included; reworded and moved after
+  the question, the same. Asked that segment alone, it answered with five
+  checked quotes. Every segment now gets the single-segment prompt, and a
+  segment without the answer says so in a sentence or two (a two-segment
+  `--all`: 680 output tokens for the empty one).
+- **The copy leaves out `cost-state` rows.** A resume adds their running total
+  to the fork's `total_cost_usd`: a $0.13 call reported $199.01.
+- **The last segment's tokens** come from the last assistant row with a nonzero
+  usage: engine-made replies (a hook's) carry zeros.
+- **A project folder that is a symlink to another** (a moved checkout) names the
+  same transcript twice; ids resolve by the file's real path.
+- **Quote stamps carry the row's uuid** (its first 8 characters in text), the
+  handle `--until` takes for a cut at that row.
