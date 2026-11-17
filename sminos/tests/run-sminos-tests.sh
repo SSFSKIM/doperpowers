@@ -2476,7 +2476,7 @@ assert_rc 0 "$RC" "a member spawns a sibling"
 C="$(seat_id_of c)"
 assert_equals "$(field "$C" parent)" "" "a sibling records no parent"
 assert_equals "$(field "$C" group)" work "its group derives from its cwd, not from its spawner"
-assert_contains "$(field "$C" task)" "$SMINOS chat -n 30" "its preamble begins with the chat instruction"
+assert_contains "$(field "$C" task)" "    sminos chat -n 30" "its preamble begins with the chat instruction"
 assert_contains "$(field "$C" task)" 'a. Every session working in this project is a member' "and names the member that spawned it"
 # A member's own messages are never its unread: a's note is not counted in the
 # frame a receives for the report of the seat it spawned.
