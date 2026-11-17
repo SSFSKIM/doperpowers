@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
-import { liveBacktick, refusal, registerBackticks } from '../../hooks/mods/backticks'
+import { STEPS_FLOOR, liveBacktick, refusal, registerBackticks } from '../../hooks/mods/backticks'
 
 tier('user')
 
@@ -34,6 +34,9 @@ const REFUSED: [string, string, string][] = [
   ['a multi-line body', `sminos say "line one\nline ${B}two${B}"`, 'two'],
   ['a second call after a clean one', `sminos list; sminos say "${B}w${B}"`, 'w'],
   ['a backtick in a ${...} default', `sminos say "\${X:-${B}id${B}}"`, 'id'],
+  ['a call after a heredoc whose delimiter is a literal $WORD', `sminos say - <<$END\nfine\n$END\nsminos say "${B}w${B}"`, 'w'],
+  ['a call after a heredoc whose terminator is joined at a backslash-newline', `sminos say - <<EOF\nfine\nE\\\nOF\nsminos say "${B}j${B}"`, 'j'],
+  ['an unquoted body with a backslash-newline before its terminator', `sminos say - <<EOF\nsee ${B}k${B}\\\nEOF\nEOF`, 'k'],
 ]
 
 /** Commands the guard lets run. */
@@ -62,6 +65,16 @@ const ALLOWED: [string, string][] = [
   ['a word that only ends in sminos', `ls ./notsminos ${B}x${B}`],
   ['sminos in a quoted heredoc of another command', `cat <<'EOF'\nsminos say "${B}x${B}"\nEOF`],
   ['a heredoc of another command in the list', `sminos list; cat <<EOF\n${B}x${B}\nEOF`],
+  ['a $\'…\' heredoc delimiter: the body is literal', `sminos say - <<$'EOF'\nsee ${B}x${B}\nEOF`],
+  ['a command after a heredoc whose delimiter is a literal $WORD', `sminos say - <<$END\nfine\n$END\nprintf '%s' "${B}x${B}"`],
+  ['a command after a heredoc whose terminator is joined at a backslash-newline', `sminos say - <<EOF\nfine\nE\\\nOF\nprintf '%s' "${B}x${B}"`],
+  ['a quoted body: a backslash-newline joins nothing', `sminos say - <<'EOF'\nsee ${B}x${B}\\\nEOF\nEOF`],
+  ['$\'…\' inside double quotes is a literal $', `sminos say "$'"; printf '%s\\n' '${B}x${B}'`],
+  ['$"…" inside double quotes is a literal $', `sminos say "a$"; printf '%s' '${B}x${B}'`],
+  ['not modelled, so not judged: a case inside $( )', `sminos say "$(case x in x) printf '%s' '${B}printf BAD${B}';; esac)"`],
+  ['not modelled, so not judged: a $"…" heredoc delimiter', `sminos say - <<$"EOF"\nsee ${B}x${B}\nEOF`],
+  ['not judged: a $( that never closes', `sminos say "$(echo ${B}x${B}"`],
+  ['not judged: a $( in a heredoc body that never closes there', `sminos say - <<EOF\nsee $(\nEOF\nsminos say "${B}x${B}"`],
   ['a call with no arguments', 'sminos'],
   ['an empty command', ''],
 ]
@@ -77,6 +90,30 @@ describe('liveBacktick: the shell lexed', () => {
       expect(liveBacktick(command)).toBeUndefined()
     })
   }
+})
+
+describe('the work bound', () => {
+  test('a short malformed input that once made the lexer re-parse is given up quickly, and the call runs', () => {
+    const command = 'sminos <<E\n$(\nE\n'.repeat(15)
+    const started = performance.now()
+    expect(liveBacktick(command)).toBeUndefined()
+    expect(performance.now() - started).toBeLessThan(250)
+  })
+
+  test('a spent bound gives up, and the call runs', () => {
+    const command = `sminos say "${B}x${B}"`
+    expect(liveBacktick(command)).toBe('x')
+    expect(liveBacktick(command, 3)).toBeUndefined()
+  })
+
+  test('nested heredocs and substitutions stay within the bound', () => {
+    let command = `sminos say "${B}x${B}"`
+    for (let n = 0; n < 40; n++) command = `sminos say - <<E${n}\n$(cat <<F${n}\n${command}\nF${n}\n)\nE${n}\n`
+    const started = performance.now()
+    liveBacktick(command)
+    expect(performance.now() - started).toBeLessThan(250)
+    expect(STEPS_FLOOR).toBeGreaterThan(0)
+  })
 })
 
 describe('refusal', () => {
