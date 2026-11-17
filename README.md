@@ -79,7 +79,7 @@ flowchart LR
 - **Questions that don't block.** A session asks you through an async question tool and keeps working until you answer.
 - **Catch up in one read.** The `manager` skill follows the sessions you name and tells you what they need from you and what you missed.
 
-`to-human` comes with it: a session writes you a report, message by message, and the terminal folds its working record (tool calls, scratch notes) behind a button, so you read what the session says to you instead of its transcript.
+`to-human` comes with it: a session writes you a report, message by message, and the terminal folds its working record (tool calls, scratch notes) behind a button, so you read what the session says to you instead of its transcript. What you must read closely, a decision with its options or a design, can go on the session's panel instead: a page in your browser that a copy of the session writes in the background, where a change to what you have read carries a note you check off.
 
 ## Install
 

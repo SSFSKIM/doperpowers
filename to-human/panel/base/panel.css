@@ -1,0 +1,298 @@
+/* The panel's base stylesheet: type, spacing, colours (light and dark), tables, details, the optional blocks
+   GUIDE.md lists, and the notes panel.js draws. It fixes how a panel looks, not what it holds or in what order.
+   Pages up to 30 days old link it: classes are added to, never renamed. */
+
+:root {
+  color-scheme: light dark;
+  --ground: #fcfcfc;
+  --surface: #f4f5f6;
+  --ink: #16181d;
+  --ink-soft: #565c68;
+  --rule: #e1e3e7;
+  --rule-strong: #b9bdc6;
+  --ask: #b3300e;           /* "needs you", and nothing else */
+  --ask-wash: #fdf1ec;
+  --note-wash: #fff3bd;
+  --note-hot: #ffe680;
+  --note-edge: #8a6a00;
+  --note-card: #fffae3;
+  --serif: ui-serif, "New York", "Iowan Old Style", Georgia, serif;
+  --sans: -apple-system, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --measure: 46rem;
+  --note-w: 15.5rem;
+  --gap: 2rem;
+  --pad: 2rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #15171b;
+    --surface: #1f2228;
+    --ink: #e6e8ec;
+    --ink-soft: #a3a9b4;
+    --rule: #2d3139;
+    --rule-strong: #4b515c;
+    --ask: #ff8a66;
+    --ask-wash: #2b1b15;
+    --note-wash: #4d3f05;
+    --note-hot: #6b5806;
+    --note-edge: #e2bd4f;
+    --note-card: #27210f;
+  }
+}
+:lang(ko) {
+  --serif: "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", -apple-system, system-ui, sans-serif;
+  --sans: "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", -apple-system, system-ui, sans-serif;
+}
+:lang(ko) body { word-break: keep-all; overflow-wrap: break-word; }
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; background: var(--ground); }
+
+/* The body is the page's one column; on a wide window with notes open, panel.js sets html.panel-wide and the
+   notes stand in the right padding. */
+body {
+  box-sizing: content-box;
+  position: relative;
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 2.25rem var(--pad) 3rem;
+  background: var(--ground);
+  color: var(--ink);
+  font: 15.5px/1.55 var(--sans);
+}
+html.panel-wide body { padding-right: calc(var(--pad) + var(--gap) + var(--note-w)); }
+
+h1 { font: 600 1.9rem/1.2 var(--serif); letter-spacing: -0.01em; margin: 0 0 0.4rem; }
+h2 {
+  font: 600 1.2rem/1.3 var(--serif);
+  margin: 1.4rem 0 0.45rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--rule);
+}
+h3 { font: 600 0.95rem/1.35 var(--sans); margin: 1rem 0 0.35rem; }
+p { margin: 0 0 0.7rem; }
+ul, ol { margin: 0 0 0.7rem; padding-left: 1.15rem; }
+li { margin-bottom: 0.35rem; }
+a { color: inherit; text-underline-offset: 0.15em; }
+a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+code, kbd, .mono { font: 0.88em/1.4 var(--mono); }
+code { background: var(--surface); padding: 0.08em 0.32em; border-radius: 3px; }
+pre {
+  font: 0.83rem/1.5 var(--mono);
+  background: var(--surface);
+  border-radius: 4px;
+  padding: 0.65rem 0.8rem;
+  margin: 0 0 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+pre code { background: none; padding: 0; }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 1.4rem 0; }
+.meta { color: var(--ink-soft); font-size: 0.86rem; margin: 0 0 0.9rem; }
+.lead { font-size: 1.04rem; }
+.soft { color: var(--ink-soft); }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.92rem; margin: 0.2rem 0 0.9rem; }
+th, td { text-align: left; vertical-align: top; padding: 0.42rem 0.7rem 0.42rem 0; border-bottom: 1px solid var(--rule); }
+th { font: 600 0.8rem/1.3 var(--sans); color: var(--ink-soft); border-bottom-color: var(--rule-strong); }
+td:last-child, th:last-child { padding-right: 0; }
+td.k, th[scope="row"] { font-weight: 600; }
+
+details { margin: 0 0 0.8rem; }
+summary { font: 600 0.92rem/1.4 var(--sans); cursor: pointer; margin-bottom: 0.4rem; }
+details > :not(summary):last-child { margin-bottom: 0.3rem; }
+
+footer { margin-top: 2rem; padding-top: 0.9rem; border-top: 1px solid var(--rule); color: var(--ink-soft); font-size: 0.84rem; }
+
+/* ---- blocks (GUIDE.md) ---- */
+
+/* needs you: what awaits the human */
+.ask {
+  border: 1px solid var(--rule-strong);
+  border-left: 4px solid var(--ask);
+  background: var(--ask-wash);
+  border-radius: 4px;
+  padding: 1rem 1.15rem 0.6rem;
+  margin: 1.4rem 0 1rem;
+}
+.ask > .label {
+  font: 700 0.78rem/1 var(--sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ask);
+  margin: 0 0 0.5rem;
+}
+:lang(ko) .ask > .label { letter-spacing: 0; }
+.ask h2 { border: 0; padding: 0; margin: 0 0 0.45rem; }
+
+/* callout: one point set apart */
+.callout {
+  border-left: 3px solid var(--rule-strong);
+  background: var(--surface);
+  border-radius: 0 4px 4px 0;
+  padding: 0.7rem 0.95rem 0.1rem;
+  margin: 0 0 0.9rem;
+}
+
+/* option comparison: side by side where there is room */
+.options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr));
+  gap: 0.8rem;
+  margin: 0.3rem 0 1rem;
+}
+.option {
+  border: 1px solid var(--rule-strong);
+  border-radius: 6px;
+  padding: 0.8rem 0.95rem 0.3rem;
+  min-width: 0;
+}
+.option.pick { border: 2px solid var(--ink); }
+.option > h3 { margin-top: 0; }
+.option > .tag {
+  display: inline-block;
+  font: 700 0.72rem/1 var(--sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.25rem 0.5rem;
+  margin: 0 0 0.5rem;
+}
+:lang(ko) .option > .tag { letter-spacing: 0; }
+.option ul { padding-left: 1rem; }
+
+/* diagram frame: an inline SVG, wide ones scroll rather than shrink */
+figure { margin: 0.2rem 0 1rem; }
+figure.diagram {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.6rem;
+}
+figure.diagram svg { display: block; width: 100%; height: auto; }
+figure.diagram svg[data-min] { min-width: 620px; }
+figcaption { color: var(--ink-soft); font-size: 0.84rem; margin-top: 0.4rem; }
+svg text { font: 12.5px var(--sans); fill: var(--ink); }
+svg .soft { fill: var(--ink-soft); }
+svg .lane { font-weight: 600; fill: var(--ink-soft); }
+svg .box { fill: var(--ground); stroke: var(--ink); stroke-width: 1.2; }
+svg .bg { fill: var(--surface); stroke: var(--rule-strong); stroke-width: 1; }
+svg .line { stroke: var(--ink); stroke-width: 1.2; fill: none; }
+svg .dash { stroke: var(--rule-strong); stroke-width: 1.2; stroke-dasharray: 4 4; fill: none; }
+svg .accent { stroke: var(--ask); fill: none; stroke-width: 1.6; }
+svg .fill-accent { fill: var(--ask); }
+
+/* quoted wording: text as it would be written, with its heading */
+.wording { border: 1px solid var(--rule); border-radius: 4px; margin: 0 0 0.8rem; }
+.wording > h3, .wording > summary {
+  font: 600 0.8rem/1.3 var(--sans);
+  color: var(--ink-soft);
+  background: var(--surface);
+  padding: 0.45rem 0.8rem;
+  margin: 0;
+  border-radius: 4px 4px 0 0;
+  border-bottom: 1px solid var(--rule);
+}
+details.wording:not([open]) > summary { border-bottom: 0; border-radius: 4px; }
+.wording > pre { margin: 0; background: none; border-radius: 0 0 4px 4px; }
+
+/* older, settled material at the bottom, folded behind a one-line summary */
+details.older { border-top: 1px solid var(--rule); padding-top: 0.8rem; margin-top: 1.6rem; }
+details.older > summary { color: var(--ink-soft); }
+
+/* ---- notes (panel.js draws them) ---- */
+
+mark { background: none; color: inherit; }
+mark.is-open {
+  background: var(--note-wash);
+  box-shadow: 0 1px 0 var(--note-edge);
+  padding: 0.05em 0.1em;
+  border-radius: 2px;
+}
+mark.is-hot { background: var(--note-hot); }
+@media (prefers-reduced-motion: no-preference) { mark { transition: background-color 120ms ease; } }
+
+/* A note draws only once panel.js has placed it and found it open, so a checked one never shows. */
+aside.note { display: none; }
+aside.note.is-open {
+  display: block;
+  position: relative;
+  background: var(--note-card);
+  border: 1px solid var(--note-edge);
+  border-radius: 6px;
+  padding: 0.6rem 2.7rem 0.55rem 0.7rem;
+  font-size: 0.83rem;
+  line-height: 1.45;
+  margin: 0.3rem 0 0.8rem;
+}
+.panel-margin { position: absolute; top: 0; right: var(--pad); width: var(--note-w); }
+.panel-margin > aside.note.is-open { position: absolute; left: 0; right: 0; margin: 0; }
+aside.note.is-hot { box-shadow: 0 0 0 2px var(--note-edge); }
+aside.note > .what {
+  font: 700 0.72rem/1.2 var(--sans);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--note-edge);
+  margin: 0 0 0.3rem;
+}
+:lang(ko) aside.note > .what { letter-spacing: 0; }
+aside.note p { margin: 0 0 0.45rem; }
+aside.note p:last-child { margin-bottom: 0.1rem; }
+aside.note > .check {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.45rem;
+  width: 1.75rem;
+  height: 1.75rem;
+  display: grid;
+  place-items: center;
+  font: 700 0.95rem/1 var(--sans);
+  color: var(--ink);
+  background: var(--ground);
+  border: 1px solid var(--ink-soft);
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+}
+aside.note > .check:hover { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+
+/* the count of open notes, at the top, with a jump to the next */
+.panel-notebar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: -2.25rem calc(-1 * var(--pad)) 1rem;
+  padding: 0.45rem var(--pad);
+  background: var(--note-card);
+  border-bottom: 1px solid var(--note-edge);
+  font-size: 0.86rem;
+}
+html.panel-wide .panel-notebar { margin-right: calc(-1 * (var(--pad) + var(--gap) + var(--note-w))); }
+.panel-notebar > button {
+  font: 600 0.82rem/1 var(--sans);
+  color: var(--ink);
+  background: var(--ground);
+  border: 1px solid var(--note-edge);
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+}
+
+.panel-waiting { color: var(--ink-soft); margin-top: 3rem; text-align: center; }
+
+@media (max-width: 40rem) {
+  :root { --pad: 1.1rem; }
+  body { padding-top: 1.5rem; padding-bottom: 2.5rem; }
+  .panel-notebar { margin-top: -1.5rem; }
+  h1 { font-size: 1.6rem; }
+}
+@media print {
+  .panel-notebar, aside.note > .check { display: none; }
+}

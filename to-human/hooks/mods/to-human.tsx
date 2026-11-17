@@ -3,6 +3,7 @@ import type { ApiContentBlock, EngineInterface, On, PromptOrigin, RenderElement,
 import { registerEdits } from './edits'
 import { labelOf, registerFolds } from './folds'
 import { FINAL_ANSWER, MESSAGE_TOOL, blockOf, isMadeUp, readMessage, rowKey } from './message'
+import { PRESENT_TOOL, briefLine, rowOf } from './present'
 
 /**
  * The ask mod's tool, the model's one way to ask the human in an interactive
@@ -598,11 +599,12 @@ function control<E extends RenderInput>(
 export const isSpawn = (tool: string) => tool === 'Agent' || tool === 'Workflow'
 
 /**
- * Questions (the built-in's and the ask mod's), agent spawns and the message
- * tool's messages stay in the report; other messaging (an agent's
- * `SendMessage`) is working record.
+ * Questions (the built-in's and the ask mod's), agent spawns, the message
+ * tool's messages and the present tool's panels stay in the report; other
+ * messaging (an agent's `SendMessage`) is working record.
  */
-export const isRead = (tool: string) => tool === 'AskUserQuestion' || ASK_TOOLS.includes(tool) || isSpawn(tool) || tool === MESSAGE_TOOL
+export const isRead = (tool: string) =>
+  tool === 'AskUserQuestion' || ASK_TOOLS.includes(tool) || isSpawn(tool) || tool === MESSAGE_TOOL || tool === PRESENT_TOOL
 
 /**
  * Whether an appended row is an API error: one the engine writes in place of
@@ -619,9 +621,9 @@ export function isApiError(origin: SessionAppendInput['origin'], message: { cont
   return text !== '' && text !== 'No response requested.'
 }
 
-/** A message tool call that sent nothing: refused, errored, or cut by an abort. */
+/** A message or present call that reached the human with nothing: refused, errored, or cut by an abort. */
 const isUnsent = (props: { tool: string; isErrored: boolean; isInterrupted?: boolean }) =>
-  props.tool === MESSAGE_TOOL && (props.isErrored || props.isInterrupted === true)
+  (props.tool === MESSAGE_TOOL || props.tool === PRESENT_TOOL) && (props.isErrored || props.isInterrupted === true)
 
 /** A row's `onScreen`: the units of it the window shows, `null` while it is out of the window. */
 type Shown = { first: number; last: number; of: number } | null
@@ -1447,6 +1449,44 @@ function spanRows<E extends RenderInput>($: EngineInterface, e: E, spans: readon
   )
 }
 
+const PRESENTED = { plugin: 'to-human', key: 'presented' } as const
+
+/**
+ * A present call's row: one line that stays in the report, as an agent's
+ * spawn does: the brief's first line, then the run's state as the present
+ * mod publishes it (`writing…`, the address as a link, or `not written` and
+ * why), or, with no state (a resumed session), the address its result
+ * carries. A state written later draws the row again.
+ */
+async function presentRow<E extends RenderInput & { props: { tool_use_id: string; input: unknown; output?: unknown } }>($: EngineInterface, e: E): Promise<RenderElement> {
+  const { Box, Text, Link } = $.ui.resolve(e)
+  let presented
+  try {
+    presented = (await $.state.get(PRESENTED)).value
+  } catch {
+    presented = undefined
+  }
+  const row = rowOf(presented, e.props.tool_use_id, e.props.output)
+  const state =
+    row === undefined ? null : row.state === 'writing' ? (
+      <Text dimColor>writing…</Text>
+    ) : row.state === 'failed' ? (
+      <Text dimColor>not written: {row.why}</Text>
+    ) : (
+      <Link href={row.address} />
+    )
+  return (
+    <Box marginTop={1}>
+      <Text color={STYLE.message.color} bold>
+        ● panel
+      </Text>
+      <Text>  {briefLine(e.props.input)}</Text>
+      {state === null ? null : <Text dimColor> · </Text>}
+      {state}
+    </Box>
+  )
+}
+
 // MAWS draws this channel itself when it advertises native support; the
 // terminal keeps this view. Every hook awaits the same read for this worker.
 let maws: Promise<boolean> | undefined
@@ -1808,6 +1848,12 @@ export function registerToHuman(on: On) {
       }
       return spanRows($, e, [{ kind: 'message', text, isOpen: message?.isWhole !== true }], '● ')
     }
+    // A panel drawn as its one line, in either view; the ctrl+o transcript keeps the engine's row.
+    if (read && e.props.tool === PRESENT_TOOL && groupOf.get(e.requestId) === undefined) {
+      note(view, e.requestId, e.props)
+      see($, view, e.requestId, 'marked')
+      return e.props.isExpanded === true ? next(e) : presentRow($, e)
+    }
     if (isSpawn(e.props.tool)) {
       spawns.add(e.props.tool_use_id)
     }
@@ -1926,8 +1972,8 @@ export function registerToHuman(on: On) {
     }
     const read = isRead(e.props.tool) && !unsent.has(e.props.tool_use_id)
     see($, view, e.requestId, read ? 'marked' : 'record')
-    if (read && e.props.tool === MESSAGE_TOOL) {
-      // The call's row is the message, in either view; "sent" is for the model.
+    if (read && (e.props.tool === MESSAGE_TOOL || (e.props.tool === PRESENT_TOOL && e.props.isExpanded !== true))) {
+      // The call's row is the message, or the panel's line, in either view; the result is for the model.
       const { Box } = $.ui.resolve(e)
       return <Box />
     }

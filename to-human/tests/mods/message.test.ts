@@ -54,7 +54,8 @@ describe('the message tool', () => {
     const { registered } = engine(on)
     await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
 
-    expect(registered).toEqual([{ plugin: 'to-human', name: 'message', description: DESCRIPTION, inputSchema: INPUT_SCHEMA, tool: MESSAGE_TOOL }])
+    // The present tool registers beside it (present.test.ts).
+    expect(registered.filter((r) => r.name === 'message')).toEqual([{ plugin: 'to-human', name: 'message', description: DESCRIPTION, inputSchema: INPUT_SCHEMA, tool: MESSAGE_TOOL }])
     expect(MESSAGE_TOOL).toBe('mcp__to-human__message')
     expect(TO_HUMAN_STYLE).toBe('doperpowers:to-human')
     expect(DESCRIPTION).toBe('Send the human a message.')
@@ -107,7 +108,7 @@ describe('the message tool', () => {
       const { registered } = engine(on, { env: { MAWS_NATIVE_TO_HUMAN: advertised } })
       await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
 
-      expect(registered.map((r) => r.tool)).toEqual([MESSAGE_TOOL])
+      expect(registered.map((r) => r.tool).filter((tool) => tool !== 'mcp__to-human__present')).toEqual([MESSAGE_TOOL])
     })
   }
 

@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 
 import { registerMessage } from './message'
 import { registerNotify } from './notify'
+import { registerPresent } from './present'
 import { registerReminder } from './reminder'
 import { registerToHuman } from './to-human'
 
@@ -23,6 +24,7 @@ import { registerToHuman } from './to-human'
 export function register(on: On) {
   registerToHuman(on)
   registerNotify(on)
+  registerPresent(on)
   registerMessage(on)
   registerReminder(on)
 }
