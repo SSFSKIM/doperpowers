@@ -1246,7 +1246,8 @@ configuration directory, with a probe plugin whose tool spawns a fork
   Evidence: task-2-report's fix-stay-opus.log, fix-stay-fable.log,
   fix-main.log, fix-unseen.log and the fable reruns under
   `~/.local/share/present-panel/m2/`; the fable edit fork
-  `/tmp/thpresent.b8dyjnl5/…/agent-a988894c8032c5bd6.jsonl`.
+  `~/.local/share/present-panel/m2/evidence/agent-a988894c8032c5bd6.jsonl`
+  (run `thpresent.b8dyjnl5`).
 - Observation (M2): a model's own `Agent` call shaped like the panel's
   spawn (`fork`, `description` `panel`) does not match the guard's allow:
   its origin is the engine's, and it takes the ordinary path (in `auto`,

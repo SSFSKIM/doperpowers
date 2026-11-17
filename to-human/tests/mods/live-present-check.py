@@ -467,6 +467,8 @@ class Live:
         if self.args.keep:
             for path in self.transcripts() + glob.glob(os.path.join(self.cfg, "projects", "*", "*", "subagents", "*")):
                 shutil.copy(path, os.path.join(self.root, "transcript-" + os.path.basename(path)))
+            # The engine the isolated home installs for itself (~330 MB a run) is no evidence.
+            shutil.rmtree(os.path.join(self.home, ".local", "share", "claude"), ignore_errors=True)
             print("kept: %s" % self.root)
         else:
             shutil.rmtree(self.root, ignore_errors=True)
