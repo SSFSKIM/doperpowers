@@ -32,7 +32,6 @@ MODEL = "haiku"
 PRICE_PER_MTOK = 0.50          # the plan's ceiling, dollars per million tokens of segment
 STALE_SECONDS = 24 * 3600      # a copy older than this in the work folder is a crashed run's
 QUOTE_SHOWN = 110              # characters of a quote shown beside its stamp
-NOTHING = "nothing relevant"
 
 FRAME = """\
 You are not the model that worked in the conversation above, and that model's \
@@ -58,13 +57,6 @@ interrupted, or background work (tasks, agents, shells) that failed, was killed 
 or stopped when "the previous session ended", were added by this replay of the \
 record. The session never saw them: do not report them as part of its history.
 """
-
-FRAME_SEVERAL = """\
-- This record is one stretch of a longer session; the question goes to every \
-stretch. If this stretch holds nothing relevant to it, reply with exactly: \
-nothing relevant
-"""
-
 
 class UsageError(Exception):
     """A usage error: exit 2."""
@@ -169,7 +161,7 @@ class Transcript:
         boundaries = []          # (offset, timestamp, preTokens)
         self.uuid_rows = {}      # uuid -> (offset, end offset), the rows uuid_prefix names
         first_ts = None
-        last_usage = None        # offset of the last assistant row with a usage
+        usage_rows = []          # offsets of the last assistant rows that may carry a usage
         timed = []               # offsets of the last rows that carry a timestamp
         needle = b'"uuid":"' + uuid_prefix.encode() if uuid_prefix else None
         off = 0
@@ -191,7 +183,9 @@ class Transcript:
                     if len(timed) > 64:
                         del timed[:32]
                 if b'"type":"assistant"' in raw and b'"usage"' in raw:
-                    last_usage = off
+                    usage_rows.append(off)
+                    if len(usage_rows) > 64:
+                        del usage_rows[:32]
                 if needle and needle in raw:
                     o = _load(raw) or {}
                     u = o.get("uuid")
@@ -204,12 +198,18 @@ class Transcript:
             last_ts = (_load(_read(path, o)) or {}).get("timestamp")
             if last_ts:
                 break
-        last_tokens = None
-        if last_usage is not None and (not boundaries or last_usage > boundaries[-1][0]):
-            u = ((_load(_read(path, last_usage)) or {}).get("message") or {}).get("usage") or {}
-            last_tokens = sum(int(u.get(k) or 0) for k in
-                              ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
-                               "output_tokens")) or None
+        last_tokens = None       # from the last real usage: an engine-made reply carries zeros
+        for o in reversed(usage_rows):
+            if boundaries and o < boundaries[-1][0]:
+                break
+            row = _load(_read(path, o)) or {}
+            u = (row.get("message") or {}).get("usage") if row.get("type") == "assistant" else None
+            if isinstance(u, dict):
+                last_tokens = sum(int(u.get(k) or 0) for k in
+                                  ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
+                                   "output_tokens")) or None
+                if last_tokens:
+                    break
         self.segments = []
         for k in range(len(boundaries) + 1):
             start = boundaries[k - 1][0] if k else 0
@@ -269,10 +269,14 @@ SESSION_FIELD = re.compile(rb'"sessionId":"[^"]*"')
 
 def write_copy(path, start, end, dest, new_id, sidechain):
     """The stretch as a transcript of session `new_id`: the session id in every
-    row replaced and, for a subagent's transcript, the sidechain flag cleared."""
+    row replaced and, for a subagent's transcript, the sidechain flag cleared.
+    The engine's cost rows are left out: a resume adds the session's running
+    cost from them to the fork's, and the fork's own is what is reported."""
     field = b'"sessionId":"' + new_id.encode() + b'"'
     with open(dest, "wb") as out:
         for _, raw in stretch_lines(path, start, end):
+            if raw.startswith(b'{"type":"cost-state"'):
+                continue
             raw = SESSION_FIELD.sub(field, raw)
             if sidechain:
                 raw = raw.replace(b'"isSidechain":true', b'"isSidechain":false')
@@ -531,12 +535,15 @@ def check_quotes(answer, record):
 # ------------------------------------------------------------------ one segment
 
 
-def run_segment(transcript, seg, end, until, query, several, timeout):
+def run_segment(transcript, seg, end, until, query, timeout):
     """Ask one segment; its result as a dict (answer, quotes, usage, or error)."""
     res = seg.as_json()
     if until is not None:
         res["until"] = until
-    prompt = FRAME + (FRAME_SEVERAL if several else "") + "\nThe question:\n\n" + query
+    # Every segment gets the same prompt, a single segment's: offered a "nothing
+    # relevant" reply for the segments without the answer, haiku gave it to every
+    # segment, at once and without thinking, the one holding the answer included.
+    prompt = FRAME + "\nThe question:\n\n" + query
     t0 = time.time()
     try:
         obj = ask(transcript, seg.start, end, prompt, timeout)
@@ -555,8 +562,7 @@ def run_segment(transcript, seg, end, until, query, several, timeout):
         "seconds": round(time.time() - t0),
     }
     res["answer"] = answer
-    res["nothing_relevant"] = several and answer.strip(" .\n`*\"").lower() == NOTHING
-    res["quotes"] = [] if res["nothing_relevant"] else check_quotes(answer, Record(transcript.path, seg.start, end))
+    res["quotes"] = check_quotes(answer, Record(transcript.path, seg.start, end))
     return res
 
 
@@ -580,8 +586,6 @@ def _usage_line(u):
 def render(r):
     if r.get("error"):
         return "== %s · FAILED: %s\n" % (_range(r), r["error"])
-    if r.get("nothing_relevant"):
-        return "== %s · nothing relevant · %s\n" % (_range(r), _usage_line(r["usage"]))
     lines = ["== " + _range(r), "", r["answer"], ""]
     if r["quotes"]:
         lines.append("Quotes checked against the record:")
@@ -634,7 +638,7 @@ def parse_args(argv):
     p.add_argument("--jobs", type=int, default=6, metavar="N", help="segments asked at once (default 6)")
     p.add_argument("--timeout", type=int, default=600, metavar="S", help="seconds per segment (default 600)")
     p.add_argument("--json", action="store_true", help="print one JSON object instead of text")
-    a = p.parse_args(argv)
+    a = p.parse_intermixed_args(argv)
     if not a.list and not a.query:
         p.error("a query is required (or --list)")
     if a.until and (a.segments or a.all):
@@ -703,8 +707,7 @@ def main(argv=None):
     except UsageError as e:
         print("query-transcript: %s" % e, file=sys.stderr)
         return 2
-    several = len(chosen) > 1
-    if several:
+    if len(chosen) > 1:
         tokens = sum(s.tokens or 0 for s, _, _ in chosen)
         print("query-transcript: %d segments, %s tokens, at most $%.2f at $%.2f per million; %d at a time"
               % (len(chosen), format(tokens, ","), tokens * PRICE_PER_MTOK / 1e6, PRICE_PER_MTOK,
@@ -716,7 +719,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, _interrupt)
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(a.jobs, len(chosen))) as pool:
-        futures = [pool.submit(run_segment, t, s, end, until, a.query, several, a.timeout)
+        futures = [pool.submit(run_segment, t, s, end, until, a.query, a.timeout)
                    for s, end, until in chosen]
         try:
             for f in futures:

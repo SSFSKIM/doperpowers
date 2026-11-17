@@ -3,8 +3,7 @@
 argv, cwd and environment, keeps a copy of the transcript it was asked to
 resume, writes the transcript a careless engine might (so cleanup is seen to
 run), and answers. Directives in the resumed copy steer it: @@fail exits 1,
-@@error reports is_error, @@sleep hangs, @@nothing answers "nothing relevant",
-@@empty answers nothing. Otherwise it answers with $STATE/answer.txt."""
+@@error reports is_error, @@sleep hangs, @@empty answers nothing. Otherwise it answers with $STATE/answer.txt."""
 import json
 import os
 import re
@@ -38,8 +37,6 @@ result = {"type": "result", "subtype": "success", "is_error": False, "session_id
                     "output_tokens": 50}}
 if b"@@error" in copy:
     result.update(is_error=True, subtype="error_during_execution", result="Prompt is too long")
-elif b"@@nothing" in copy:
-    result["result"] = "Nothing relevant."
 elif b"@@empty" in copy:
     result["result"] = ""
 else:

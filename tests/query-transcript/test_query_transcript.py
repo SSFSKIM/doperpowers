@@ -67,6 +67,7 @@ def rows():
          "timestamp": "2026-11-01T10:00:20.000Z", "sessionId": SID,
          "attachment": {"type": "queued_command", "prompt": "<task-notification><task-id>abc123</task-id>"
                         "</task-notification>", "origin": {"kind": "task-notification"}}},
+        {"type": "cost-state", "sessionId": SID, "totalCostUSD": 198.87},
         boundary("bbbb0001-0000-4000-8000-000000000001", "2026-11-01T10:05:00.000Z", 1234),
         user("bbbb0002-0000-4000-8000-000000000002", "2026-11-01T10:05:01.000Z",
              "Summary: the build was fixed by adding the token.", isCompactSummary=True),
@@ -80,6 +81,9 @@ def rows():
         assistant("cccc0003-0000-4000-8000-000000000003", "2026-11-01T11:01:00.000Z", "Merged.",
                   {"input_tokens": 10, "cache_creation_input_tokens": 20, "cache_read_input_tokens": 300,
                    "output_tokens": 5}),
+        assistant("cccc0005-0000-4000-8000-000000000005", "2026-11-01T11:01:30.000Z", "A hook's reply.",
+                  {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                   "output_tokens": 0}),
         {"type": "system", "subtype": "turn_duration", "uuid": "cccc0004-0000-4000-8000-000000000004",
          "timestamp": "2026-11-01T11:02:00.000Z", "sessionId": SID, "isSidechain": False},
     ]
@@ -140,7 +144,8 @@ class Segments(Case):
         lines = r.stdout.splitlines()
         self.assertRegex(lines[1], r"^0\s+2026-11-01T10:00:00Z\s+2026-11-01T10:05:00Z\s+1,234$")
         self.assertRegex(lines[2], r"^1\s+2026-11-01T10:05:00Z\s+2026-11-01T11:00:00Z\s+5,678$")
-        # The last segment: tokens from its last usage row; it ends at its last complete row.
+        # The last segment: tokens from its last real usage (not an engine-made reply's zeros);
+        # it ends at its last complete row.
         self.assertRegex(lines[3], r"^2\s+2026-11-01T11:00:00Z\s+2026-11-01T11:02:00Z\s+335$")
         self.assertIn("3 segments", lines[4])
         self.assertEqual(self.calls(), [])
@@ -168,6 +173,8 @@ class Segments(Case):
         self.assertEqual(got[0]["type"], "mode")
         self.assertEqual(got[-1]["uuid"], "aaaa0004-0000-4000-8000-000000000004")
         self.assertEqual(len(got), 6)
+        # The session's running cost stays out: a resume would add it to the fork's.
+        self.assertNotIn("cost-state", self.calls()[0]["copy"])
 
     def test_segment_out_of_range_is_a_usage_error(self):
         r = self.run_cli(SID, "q", "--segment", "3")
@@ -268,7 +275,6 @@ class TheFork(Case):
         self.assertTrue(a[-1].startswith("You are not the model that worked"))
         self.assertTrue(a[-1].endswith("Why did it add the token?"))
         self.assertIn("previous session ended", a[-1])
-        self.assertNotIn("nothing relevant", a[-1])
         self.assertEqual(call["env"], {"SMNS_INTERNAL": "1", "DISABLE_PROMPT_CACHING": "1"})
         self.assertEqual(os.path.realpath(call["cwd"]),
                          os.path.realpath(self.home / ".cache" / "query-transcript" / "work"))
@@ -277,7 +283,7 @@ class TheFork(Case):
         self.assertTrue(all(x["sessionId"] == copy_id for x in got if "sessionId" in x))
         self.assertNotIn(SID, call["copy"])
         # Nothing else in a row changes: the original, with the id swapped back, is the copy.
-        original = self.path.read_text().splitlines(keepends=True)[:6]
+        original = self.path.read_text().splitlines(keepends=True)[:6]  # less the cost row
         self.assertEqual(call["copy"].replace(copy_id, SID), "".join(original))
 
     def test_a_subagent_transcript_has_its_sidechain_flag_cleared(self):
@@ -382,10 +388,9 @@ class Quotes(Case):
 
 
 class Several(Case):
-    def test_order_collapse_and_a_failed_segment(self):
+    def test_order_and_a_failed_segment(self):
         rs = rows()
-        rs[8]["message"]["content"][1]["text"] += " @@nothing"
-        rs[12]["message"]["content"][1]["text"] += " @@fail"
+        rs[13]["message"]["content"][1]["text"] += " @@fail"
         self.path.write_text(dump(rs))
         self.answer("Answer with no quotes.")
         r = self.run_cli(SID, "q", "--all", "--jobs", "3")
@@ -393,12 +398,13 @@ class Several(Case):
         heads = [line for line in r.stdout.splitlines() if line.startswith("== ")]
         self.assertEqual(len(heads), 3)
         self.assertTrue(heads[0].startswith("== segment 0 · 2026-11-01T10:00:00Z → 2026-11-01T10:05:00Z"))
-        self.assertRegex(heads[1], r"^== segment 1 · .* · nothing relevant · via haiku · ")
+        self.assertEqual(heads[1], "== segment 1 · 2026-11-01T10:05:00Z → 2026-11-01T11:00:00Z")
         self.assertRegex(heads[2], r"^== segment 2 · .* · FAILED: claude failed \(exit 1\)")
-        self.assertIn("Answer with no quotes.", r.stdout)
+        self.assertEqual(r.stdout.count("Answer with no quotes."), 2)
+        self.assertLess(r.stdout.index(heads[0]), r.stdout.index(heads[1]))
         self.assertIn("3 segments, 7,247 tokens, at most $0.00", r.stderr)
-        prompts = [c["args"][-1] for c in self.calls()]
-        self.assertTrue(all("reply with exactly: nothing relevant" in p for p in prompts))
+        # Each segment gets a single segment's prompt.
+        self.assertEqual(len({c["args"][-1] for c in self.calls()}), 1)
 
     def test_segments_range_and_json(self):
         self.answer("> ship it\n")
@@ -424,6 +430,11 @@ class Several(Case):
 class Usage(Case):
     def test_a_query_is_required(self):
         self.assertEqual(self.run_cli(SID).returncode, 2)
+
+    def test_options_go_before_or_after_the_query(self):
+        self.assertEqual(self.run_cli(SID, "--segment", "0", "q").returncode, 0)
+        self.assertEqual(self.run_cli("--segment", "1", SID, "q").returncode, 0)
+        self.assertEqual([c["args"][-1].endswith("q") for c in self.calls()], [True, True])
 
     def test_segment_flags_exclude_each_other(self):
         self.assertEqual(self.run_cli(SID, "q", "--segment", "0", "--all").returncode, 2)
