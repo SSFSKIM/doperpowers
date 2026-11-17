@@ -2,6 +2,7 @@ import type { On } from 'claude-code'
 
 import { registerAddress } from './address'
 import { registerAsk, registerAskBand } from './ask'
+import { registerBackticks } from './backticks'
 import { registerBridge } from './bridge'
 import { registerName } from './name'
 
@@ -19,6 +20,8 @@ export function register(on: On) {
   // First: the bridge's hooks are the module's outermost, so it reports what
   // the session showed and recorded, after the ask and the address had their say.
   registerBridge(on)
+  // Inside the bridge, so the bridge reports a refused call as the session saw it.
+  registerBackticks(on)
   registerAskBand(on)
   registerAsk(on)
   registerAddress(on)

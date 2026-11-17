@@ -14,8 +14,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Physical path: the CLI renders its own location resolved (spawn preamble
-# {{SMINOS_CLI}}), so a root kept through a symlink (/tmp on macOS) would
+# Physical path: the CLI renders its own location resolved (a peer frame's
+# reply line), so a root kept through a symlink (/tmp on macOS) would
 # mismatch it.
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 SMINOS="$PLUGIN_ROOT/skills/sminos/scripts/sminos"
@@ -484,6 +484,9 @@ run_suites() {
   if python3 "$SCRIPT_DIR/test_reply.py"; then
     pass "a seat's reply is the last thing it said, a final message through the tool included (test_reply.py)"
   else fail "a seat's reply is the last thing it said, a final message through the tool included (test_reply.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_stdin_bodies.py"; then
+    pass "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"
+  else fail "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"; fi
 }
 summary() {
   echo
@@ -710,19 +713,21 @@ assert_equals "$(field "$R_UUID" cwd)" "$WORK" "cwd recorded from the harness ro
 assert_contains "$(field "$R_UUID" task)" 'You are "researcher", a member of the project "work", spawned by' "every spawn renders the preamble, naming its project"
 assert_contains "$(field "$R_UUID" task)" 'the operator. Every session working in this project is a member' "and its spawner: the operator's spawn says so"
 assert_not_contains "$(field "$R_UUID" task)" '{{' "and leaves no placeholder"
-assert_contains "$(field "$R_UUID" task)" "$SMINOS chat -n 30" "spawned seat reads family chat before acting"
-assert_equals "$(field "$R_UUID" task | grep -m1 '^    .*/sminos \(chat\|say\|status\|spawn\) ')" "    $SMINOS chat -n 30" "reading chat is the first sminos instruction"
-assert_contains "$(field "$R_UUID" task)" "$SMINOS say \"merged #12\"" "preamble teaches an untagged record"
-assert_contains "$(field "$R_UUID" task)" "$SMINOS say \"@<alias> your change renames a column I read\"" "preamble teaches a message addressed to one member"
-assert_contains "$(field "$R_UUID" task)" "$SMINOS say \"@all main is being rebased, stop pushing\"" "preamble teaches @all"
+assert_contains "$(field "$R_UUID" task)" "    sminos chat -n 30" "spawned seat reads family chat before acting, by the name its PATH holds"
+assert_not_contains "$(field "$R_UUID" task)" "$PLUGIN_ROOT" "the preamble names no installed path"
+assert_equals "$(field "$R_UUID" task | grep -m1 '^    sminos \(chat\|say\|status\|spawn\) ')" "    sminos chat -n 30" "reading chat is the first sminos instruction"
+assert_contains "$(field "$R_UUID" task)" "sminos say \"merged #12\"" "preamble teaches an untagged record"
+assert_contains "$(field "$R_UUID" task)" "sminos say \"@<alias> your change renames a column I read\"" "preamble teaches a message addressed to one member"
+assert_contains "$(field "$R_UUID" task)" "sminos say \"@all main is being rebased, stop pushing\"" "preamble teaches @all"
+assert_contains "$(field "$R_UUID" task)" "    sminos say - <<'EOF'" "preamble teaches text with code on stdin, from a quoted heredoc"
 assert_contains "$(field "$R_UUID" task)" 'keep it for what every member must act on' "and what @all is for"
 assert_contains "$(field "$R_UUID" task)" 'only the tags that open a message' "member preamble teaches that only leading tags address"
 assert_contains "$(field "$R_UUID" task)" '@<project>/<alias>' "preamble names another project's member"
 assert_contains "$(field "$R_UUID" task)" 'mcp__to-human__message where you have it (final: true when it ends your' "preamble sends the human a message through the tool, not a say"
 assert_contains "$(field "$R_UUID" task)" 'else in a <message>…</message> ending your reply' "and a <message> only where the tool is missing"
-assert_contains "$(field "$R_UUID" task)" "$SMINOS charge \"" "preamble teaches the in-charge line"
-assert_contains "$(field "$R_UUID" task)" "$SMINOS status researcher \"what you are doing now\"" "and the status line, under the seat's own alias"
-assert_contains "$(field "$R_UUID" task)" "$SMINOS spawn <alias> \"<task>\" --brief \"<its standing line>\" [--worktree <name>]" "preamble teaches spawning a sibling with its line"
+assert_contains "$(field "$R_UUID" task)" "sminos charge \"" "preamble teaches the in-charge line"
+assert_contains "$(field "$R_UUID" task)" "sminos status researcher \"what you are doing now\"" "and the status line, under the seat's own alias"
+assert_contains "$(field "$R_UUID" task)" "sminos spawn <alias> - --brief \"<its standing line>\" [--worktree <name>] <<'EOF'" "preamble teaches spawning a sibling with its line, its task on stdin"
 assert_not_contains "$(field "$R_UUID" task)" 'ListAgents' "preamble no longer routes outside a family: the project is the reach"
 assert_not_contains "$(field "$R_UUID" task)" '--team' "nor teaches a team chat"
 assert_not_contains "$(field "$R_UUID" task)" 'sminos topology' "spawned seat does not read removed topology view"
@@ -734,6 +739,11 @@ assert_contains "$(cat "$SMINOS_HOME/$R_UUID.reply.txt")" "ANSWER:" "recorded re
 assert_contains "$(grep 'bg-env:You are "' "$STUB_STATE/log/calls.log" | tail -1)" "path=set" "PATH survives the plain-route launch"
 assert_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--permission-mode auto -n researcher" "launch uses auto permission mode and the alias as display name"
 
+run "$SMINOS" spawn stdinworker - <<'TASK'
+STDIN-TASK-1: read `notes.md` and keep "$WORK" as written
+TASK
+assert_rc 0 "$RC" "spawn reads its task from stdin given -"
+assert_contains "$(field "$(banner_uuid "$OUT")" task)" 'STDIN-TASK-1: read `notes.md` and keep "$WORK" as written' "the task reaches the seat verbatim"
 run "$SMINOS" spawn plainworker "NOGROUP-1"
 assert_rc 0 "$RC" "a second spawn"
 P_UUID="$(banner_uuid "$OUT")"
@@ -2923,6 +2933,22 @@ assert_contains "$(inbox c)" "rebase in progress" "@all reaches a busy member"
 assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "--resume $SD" "@all resumes no stopped member"
 assert_equals "$(inbox a)" "" "@all is never delivered to its sender"
 assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" '"wake": true' "@all is recorded with wake"
+# A body from stdin (`-`): a quoted heredoc carries backticks, `$`, quotes and lines verbatim.
+run "$SMINOS" say - <<'BODY'
+@b the fix is in `parse()`; $HOME stays "as is", it's 'kept'
+second line
+BODY
+assert_rc 0 "$RC" "a say reads its text from stdin given -"
+assert_contains "$OUT" "b: sent" "and delivers it as a tag in it says"
+assert_equals "$(python3 -c 'import json, sys; print(json.loads(open(sys.argv[1]).read().splitlines()[-1])["text"])' "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" \
+  "@b the fix is in \`parse()\`; \$HOME stays \"as is\", it's 'kept'
+second line" "the log keeps the text verbatim, less the heredoc's last newline"
+assert_contains "$(inbox b)" 'the fix is in `parse()`' "the frame carries it as written"
+run "$SMINOS" send b - <<'BODY'
+see `make check` for $PATH
+BODY
+assert_rc 0 "$RC" "a send reads its message from stdin given -"
+assert_contains "$(inbox b)" 'see `make check` for $PATH' "and delivers it verbatim"
 assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" "\"alias\": \"b\"" "its audience is the live members at submission"
 assert_not_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" "\"alias\": \"d\"" "a stopped member is not in its audience"
 assert_not_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$SA.jsonl")" "\"alias\": \"a\"" "nor is its sender"
