@@ -4,11 +4,12 @@ The project family as a Claude Code plugin: every session working in a
 project is a member that sees the others, messages them and its human, hands
 work between them, and spans machines through a git mirror or a desk hub
 (reached through the machine's MAWS endpoint).
-The plugin carries the `sminos` CLI and skill, the shell hooks that join a
+The plugin carries the `sminos` CLI (on every session's PATH, from its `bin/`) and skill, the shell hooks that join a
 session to its project and record what it sent its human, and the function
 hooks (mods) that make a session reachable from outside it: the bridge, the
-async question tool `mcp__sminos__AskUserQuestion`, and the session's
-`Sminos-Session` address in commits and PRs. It stands alone: nothing of
+async question tool `mcp__sminos__AskUserQuestion`, the session's
+`Sminos-Session` address in commits and PRs, and the guard that keeps the
+shell from running a backtick in a message's text. It stands alone: nothing of
 doperpowers' is needed for it to run.
 
 ## Install
@@ -39,8 +40,8 @@ The mods load only where `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set.
 - [`skills/sminos/references/setup.md`](skills/sminos/references/setup.md) —
   a machine's one-time work: a project and its mirror, its place at the desk
   hub, the daemon, the policy.
-- [`hooks/mods/README.md`](hooks/mods/README.md) — the bridge, the ask and the
-  address, and the contract other plugins read
+- [`hooks/mods/README.md`](hooks/mods/README.md) — the bridge, the ask, the
+  address, the name and the backtick guard, and the contract other plugins read
   ([`types/sminos.d.ts`](types/sminos.d.ts)).
 - `tests/run-sminos-tests.sh` (the CLI and shell hooks) and
   `tests/mods/run.sh` (the mods).

@@ -176,7 +176,7 @@ PLAN-EXECUTION from that pin: the same plan, one lane over.
 Before dispatching, set your own status line once, so the fleet view says
 what this seat is doing:
 `{{SMINOS_CLI}} status <your alias>
-"building: <plan path>"` (the CLI is not on PATH; your seat is named
+"building: <plan path>"` (your seat is named
 `<n>-<slug>` and `sminos list` shows it). Progress itself lives in the SDE
 ledger or the spec's `Progress` section, and `sminos attach` shows the
 live session.
@@ -230,7 +230,7 @@ together:
     {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<one-line>" --pr <PR URL> --branch <branch>
     {{SMINOS_CLI}} status <your alias> "reviewing: <PR URL>"
 
-(the sminos CLI is not on PATH; `sminos list` shows your seat's name.)
+(`sminos list` shows your seat's name.)
 Your turn ends while the agent works, so the fleet view shows this seat
 `idle` for the length of the review: the status line is the whole
 difference between an idle seat whose review is running and one that died

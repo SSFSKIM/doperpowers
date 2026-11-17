@@ -1,7 +1,7 @@
 # mods
 
 Function hooks of the sminos plugin: one module (`register.tsx`, named by
-`hooks/hooks.json` under `modules`) that registers the bridge, the ask,
+`hooks/hooks.json` under `modules`) that registers the bridge, the backtick guard, the ask,
 the address and the name, in that order. The engine loads it only where
 `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set and ignores it elsewhere; the
 shell hooks beside this folder (`smns-record.sh`, `smns-guide.sh`) run
@@ -520,6 +520,32 @@ the command, a dialog up, a main turn running or started, a session ended
 leaves the file for the next idle tick. A command the engine refuses goes
 to the debug log.
 `sminos/tests/mods/live-name-check.py` pins the engine facts it rests on.
+
+## backtick guard (`backticks.tsx`)
+
+A Bash call that would hand `sminos` a live backtick is refused before it
+runs (`tool.call` on Bash, `{ deny }`). Inside double quotes, or bare, the
+shell runs the text between backticks as a command on this machine and puts
+its output, or nothing, in its place: a message quoting code arrives changed,
+and the code ran. The reason names the span the shell would have run and the
+form that carries any text verbatim, `-` with a quoted heredoc
+(`sminos say - <<'EOF'`).
+
+The command is lexed as a shell reads it: quotes, escapes, comments, `$(…)`,
+`${…}`, heredocs and their delimiters, here-strings, lists and pipelines. Live
+is a backtick in a word after the sminos word of its simple command, or in
+the body of an unquoted-delimiter heredoc or a here-string on that command or
+on one piped into it. Single quotes, `$'…'`, an escaped backtick, a quoted
+delimiter's body and a comment are not live, and the inside of `$(…)` is
+opaque, since sessions interpolate on purpose. A sminos call is a word whose
+last path part is `sminos` or `sminos.py`, as the command or followed by one
+of the CLI's verbs, so a call reached through another command
+(`devcloud vm ssh box -- sminos say "…"`) counts, and a mention inside
+another command's string or heredoc does not. A command without the text
+`sminos` is not lexed. The guard has no `.catch`: one that throws is skipped
+and the call runs. Registered right after the bridge, inside it, so the
+bridge reports the refusal as the session saw it (a denied call's trace
+gives the bridge's place rule no verdict). Tests `tests/mods/backticks.test.ts`.
 
 ## Developing
 

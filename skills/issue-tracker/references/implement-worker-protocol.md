@@ -308,7 +308,7 @@ together:
     {{BOARD_SCRIPTS}}/board-transition.sh {{ISSUE_NUMBER}} in-review "<one-line>" --pr <URL> --branch <branch>
     {{SMINOS_CLI}} status <your alias> "reviewing: <PR URL>"
 
-(the sminos CLI is not on PATH; `sminos list` shows your seat's name.)
+(`sminos list` shows your seat's name.)
 Your turn ends while the agent works, so the fleet view shows this seat
 `idle` for the length of the review: the status line is the whole
 difference between an idle seat whose review is running and one that died

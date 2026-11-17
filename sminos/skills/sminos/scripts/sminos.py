@@ -151,6 +151,15 @@ member too, seat-less, from the first call that reads its project.
                    # read or write a seat record's fields under the record lock (the board pipeline's
                    ticket, role, run_id...); never a credential
 
+A verb's prose given as `-` is read from standard input (say's <text>, send's and
+resume's <msg>, spawn's and fill's <task>, steer's <text>, compact's [instructions]):
+inside double quotes the shell runs a backtick span and expands a `$` before sminos
+sees the text, where a heredoc with a quoted delimiter passes it as written:
+
+    sminos say - <<'EOF'
+    @parser `parse()` now rejects "" in `name`
+    EOF
+
 A member's name is its alias: a seat's alias (a seat sminos spawns runs under
 it as its harness name), or a seat-less session's harness name. Aliases are
 display names and can collide; `alias#short` (the session's first eight hex
@@ -9602,8 +9611,9 @@ NAME_DROP = ("Cc", "Cf", "Cs", "Zl", "Zp")
 def reply_line(session, project=""):
     """The body's closing line for a peer's frame: how to answer the session
     that sent it, as a command a model that knows nothing of sminos can run
-    (the CLI is not on PATH, so it is named by this install's path, which the
-    recipient shares: delivery is always on its own machine). The tag names
+    (named by this install's path, which the recipient shares: delivery is
+    always on its own machine; the plugin's bin/ may not be on its PATH, as
+    in a session started before the plugin had one, or an SDK session). The tag names
     the sender by its short in its own project (`@<project id>/<short>`: the
     event's `from_project` when it spoke into another project's log, else the log's
     own), so a reply reaches it from any project and on any machine; the
