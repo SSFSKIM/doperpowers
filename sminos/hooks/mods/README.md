@@ -544,11 +544,15 @@ of the CLI's verbs, so a call reached through another command
 another command's string or heredoc does not. A heredoc's delimiter takes
 quote removal alone (`$END` is literal, `$'EOF'` quoted), and an unquoted
 body's lines are joined at a backslash-newline before its terminator is
-looked for, as both shells do. A command without the text `sminos` is not
-lexed. Where the lexer meets syntax it does not model (a `case` inside
-`$(…)`, a `$"…"` delimiter, which bash and zsh read apart, a substitution
-that never closes) or spends its work bound (32 steps a character, at least
-4,096), it gives up and the call runs: a miss leaves the shell's behaviour as
+looked for, as both shells do; a sminos call in a substitution inside an
+unquoted heredoc body (another command's included) is judged like any
+other. A refusal is only ever over a backtick, so a command holding no
+backtick, or no `sminos`, is not lexed at all: almost every sminos call.
+Where the lexer meets syntax it does not model (a `case` inside `$(…)`, a
+`$"…"` delimiter, which bash and zsh read apart, a delimiter holding a
+backtick or a `$(`, a substitution that never closes) or spends its work
+bound (32 steps a character, at least 4,096, each primitive charged for
+the characters it reads), it gives up and the call runs: a miss leaves the shell's behaviour as
 it was, a wrong refusal stops a session's work. The guard has no `.catch`:
 one that throws is skipped and the call runs too. Registered right after the bridge, inside it, so the
 bridge reports the refusal as the session saw it (a denied call's trace

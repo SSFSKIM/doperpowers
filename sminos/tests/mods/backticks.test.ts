@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
-import { STEPS_FLOOR, liveBacktick, refusal, registerBackticks } from '../../hooks/mods/backticks'
+import { STEPS_FLOOR, liveBacktick, mayRefuse, refusal, registerBackticks } from '../../hooks/mods/backticks'
 
 tier('user')
 
@@ -36,6 +36,8 @@ const REFUSED: [string, string, string][] = [
   ['a backtick in a ${...} default', `sminos say "\${X:-${B}id${B}}"`, 'id'],
   ['a call after a heredoc whose delimiter is a literal $WORD', `sminos say - <<$END\nfine\n$END\nsminos say "${B}w${B}"`, 'w'],
   ['a call after a heredoc whose terminator is joined at a backslash-newline', `sminos say - <<EOF\nfine\nE\\\nOF\nsminos say "${B}j${B}"`, 'j'],
+  ['a call in a substitution in another command\'s unquoted heredoc', `cat <<EOF\nnote $(sminos say "${B}printf BAD${B}")\nEOF`, 'printf BAD'],
+  ['a call after a heredoc whose double-quoted delimiter holds a backslash-newline', `sminos say - <<"E\\\nOF"\nfine\nEOF\nsminos say "${B}printf BAD${B}"`, 'printf BAD'],
   ['an unquoted body with a backslash-newline before its terminator', `sminos say - <<EOF\nsee ${B}k${B}\\\nEOF\nEOF`, 'k'],
 ]
 
@@ -72,6 +74,7 @@ const ALLOWED: [string, string][] = [
   ['$\'…\' inside double quotes is a literal $', `sminos say "$'"; printf '%s\\n' '${B}x${B}'`],
   ['$"…" inside double quotes is a literal $', `sminos say "a$"; printf '%s' '${B}x${B}'`],
   ['not modelled, so not judged: a case inside $( )', `sminos say "$(case x in x) printf '%s' '${B}printf BAD${B}';; esac)"`],
+  ['not modelled, so not judged: a heredoc delimiter in backticks', `sminos say - <<${B}printf EOF${B}''\nfine\n${B}printf EOF${B}`],
   ['not modelled, so not judged: a $"…" heredoc delimiter', `sminos say - <<$"EOF"\nsee ${B}x${B}\nEOF`],
   ['not judged: a $( that never closes', `sminos say "$(echo ${B}x${B}"`],
   ['not judged: a $( in a heredoc body that never closes there', `sminos say - <<EOF\nsee $(\nEOF\nsminos say "${B}x${B}"`],
@@ -94,7 +97,7 @@ describe('liveBacktick: the shell lexed', () => {
 
 describe('the work bound', () => {
   test('a short malformed input that once made the lexer re-parse is given up quickly, and the call runs', () => {
-    const command = 'sminos <<E\n$(\nE\n'.repeat(15)
+    const command = `${'sminos <<E\n$(\nE\n'.repeat(15)}echo '${B}'`
     const started = performance.now()
     expect(liveBacktick(command)).toBeUndefined()
     expect(performance.now() - started).toBeLessThan(250)
@@ -113,6 +116,41 @@ describe('the work bound', () => {
     liveBacktick(command)
     expect(performance.now() - started).toBeLessThan(250)
     expect(STEPS_FLOOR).toBeGreaterThan(0)
+  })
+})
+
+describe('linear work', () => {
+  const quick = (command: string) => {
+    const started = performance.now()
+    const span = liveBacktick(command)
+    expect(performance.now() - started).toBeLessThan(250)
+    return span
+  }
+
+  test('a long run of backslashes in a heredoc line is counted within the bound', () => {
+    const run = '\\'.repeat(60_000)
+    expect(quick(`sminos say - <<'EOF'\n${run}x\nEOF\nsminos say "${B}y${B}"`)).toBe('y')
+    expect(quick(`sminos say - <<EOF\n${run}x\nEOF\nsminos say "${B}y${B}"`)).toBe('y')
+  })
+
+  test('many lines joined at backslash-newlines are read in linear work', () => {
+    expect(quick(`sminos say - <<EOF\n${'a\\\n'.repeat(20_000)}EOF\nsminos say "${B}y${B}"`)).toBe('y')
+  })
+
+  test('many pipelines and heredocs are judged in linear work', () => {
+    expect(quick(`${'sminos list | sminos list <<E\nx\nE\n'.repeat(5_000)}sminos say "${B}y${B}"`)).toBe('y')
+  })
+})
+
+describe('a command with no backtick', () => {
+  test('is never lexed: there is nothing a refusal could be over', () => {
+    expect(mayRefuse('sminos say "@peer merged #12"')).toBe(false)
+    expect(mayRefuse(`echo ${B}date${B}`)).toBe(false)
+    expect(mayRefuse(`sminos say "${B}date${B}"`)).toBe(true)
+    // The inputs that once kept the lexer from ending: no backtick, so not lexed at all.
+    const started = performance.now()
+    expect(liveBacktick('sminos <<E\n$(\nE\n'.repeat(100_000))).toBeUndefined()
+    expect(performance.now() - started).toBeLessThan(100)
   })
 })
 

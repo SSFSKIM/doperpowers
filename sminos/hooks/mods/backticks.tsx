@@ -59,17 +59,24 @@ export const STEPS_FLOOR = 4096
 class Lexer {
   i = 0
   readonly commands: Simple[] = []
-  private pipes = 0
   private pipe = 0
-  /** Shared with every lexer this one starts (a heredoc body's), so the bound is the whole command's. */
+  /**
+   * `shared` is every lexer's this one starts (a heredoc body's): the steps
+   * left of the whole command's bound, and the pipeline numbers handed out,
+   * so a body's commands never share a pipeline with the command's.
+   */
   constructor(
     private readonly src: string,
-    private readonly budget: { left: number },
+    private readonly shared: { left: number; pipes: number },
   ) {}
 
-  /** One step of work; past the bound, give up. */
-  private tick() {
-    if (--this.budget.left < 0) throw new GiveUp()
+  /**
+   * `n` steps of work, one for each character a primitive reads; past the
+   * bound, give up. Nothing reads more than linearly between two ticks.
+   */
+  private tick(n = 1) {
+    this.shared.left -= n
+    if (this.shared.left < 0) throw new GiveUp()
   }
 
   private simple(): Simple {
@@ -84,14 +91,14 @@ class Lexer {
    */
   script(nested: boolean): boolean {
     const saved = this.pipe
-    this.pipe = ++this.pipes
+    this.pipe = ++this.shared.pipes
     const src = this.src
     const heredocs: { simple: Simple; delimiter: string; quoted: boolean; strip: boolean }[] = []
     let cur = this.simple()
     let depth = 0
     let closed = false
     const after = (newPipeline: boolean) => {
-      if (newPipeline) this.pipe = ++this.pipes
+      if (newPipeline) this.pipe = ++this.shared.pipes
       cur = this.simple()
     }
     while (this.i < src.length) {
@@ -107,7 +114,10 @@ class Lexer {
         for (const h of heredocs.splice(0)) h.simple.bodies.push(this.heredoc(h.delimiter, h.quoted, h.strip))
         after(true)
       } else if (c === '#') {
-        while (this.i < src.length && src[this.i] !== '\n') this.i++
+        while (this.i < src.length && src[this.i] !== '\n') {
+          this.tick()
+          this.i++
+        }
       } else if (c === ';') {
         this.i++
         after(true)
@@ -145,7 +155,10 @@ class Lexer {
         heredocs.push({ simple: cur, ...this.delimiter(), strip })
       } else if (c === '<' || c === '>' || c === '&') {
         this.i += 1
-        while (this.i < src.length && '<>&|'.includes(src[this.i]!) && src[this.i + 1] !== '(') this.i++
+        while (this.i < src.length && '<>&|'.includes(src[this.i]!) && src[this.i + 1] !== '(') {
+          this.tick()
+          this.i++
+        }
         this.blanks()
         if (this.i < src.length && !ENDS_WORD.has(src[this.i]!)) cur.words.push({ ...this.word(), redirect: true })
       } else {
@@ -166,7 +179,8 @@ class Lexer {
    * A heredoc's delimiter word: quote removal alone, never an expansion
    * (`$END` is those four characters), and whether any part was quoted, which
    * makes the body literal. `$'…'` is quoted and its text the delimiter in
-   * both shells; `$"…"` they read apart, so it is not modelled.
+   * both shells; `$"…"` they read apart, and a backtick or a `$(`/`${` in
+   * it is not modelled either: each gives up.
    */
   private delimiter(): { delimiter: string; quoted: boolean } {
     const src = this.src
@@ -186,14 +200,21 @@ class Lexer {
         quoted = true
         if (c === '$') this.i++
         text += this.single()
-      } else if (c === '$' && d === '"') {
+      } else if (c === '`' || (c === '$' && (d === '"' || d === '(' || d === '{'))) {
         throw new GiveUp()
       } else if (c === '"') {
         quoted = true
         this.i++
         while (this.i < src.length && src[this.i] !== '"') {
           this.tick()
-          if (src[this.i] === '\\' && '$`"\\\n'.includes(src[this.i + 1] ?? '')) this.i++
+          const e = src[this.i]!
+          const f = src[this.i + 1]
+          if (e === '`' || (e === '$' && (f === '(' || f === '{'))) throw new GiveUp()
+          if (e === '\\' && f === '\n') {
+            this.i += 2
+            continue
+          }
+          if (e === '\\' && f !== undefined && '$`"\\'.includes(f)) this.i++
           text += src[this.i] ?? ''
           this.i++
         }
@@ -207,7 +228,10 @@ class Lexer {
   }
 
   private blanks() {
-    while (this.i < this.src.length && BLANK.has(this.src[this.i]!)) this.i++
+    while (this.i < this.src.length && BLANK.has(this.src[this.i]!)) {
+      this.tick()
+      this.i++
+    }
   }
 
   /**
@@ -261,7 +285,9 @@ class Lexer {
 
   private single(): string {
     const end = this.src.indexOf("'", this.i + 1)
-    const text = this.src.slice(this.i + 1, end < 0 ? undefined : end)
+    const stop = end < 0 ? this.src.length : end
+    this.tick(stop - this.i + 1)
+    const text = this.src.slice(this.i + 1, stop)
     this.i = end < 0 ? this.src.length : end + 1
     return text
   }
@@ -371,7 +397,8 @@ class Lexer {
    * A heredoc's body from `i` to its delimiter line, consumed: the first
    * live span in it, unless its delimiter was quoted. An unquoted body's
    * lines are joined at a backslash-newline before the delimiter is looked
-   * for, as both shells join them.
+   * for, as both shells join them. The commands in the body's substitutions
+   * join this lexer's, lexed within the body alone.
    */
   private heredoc(delimiter: string, quoted: boolean, strip: boolean): string | undefined {
     const src = this.src
@@ -379,42 +406,60 @@ class Lexer {
     let end = src.length
     while (this.i < src.length) {
       const at = this.i
-      let line = ''
+      const parts: string[] = []
       for (;;) {
-        this.tick()
         const nl = src.indexOf('\n', this.i)
-        line += src.slice(this.i, nl < 0 ? undefined : nl)
+        const stop = nl < 0 ? src.length : nl
+        this.tick(2 * (stop - this.i) + 1)
+        // The line's trailing backslashes, counted back from its end: an odd run joins the next line.
+        let k = stop
+        while (k > this.i && src[k - 1] === '\\') k--
+        const joins = !quoted && nl >= 0 && (stop - k) % 2 === 1
+        parts.push(src.slice(this.i, joins ? stop - 1 : stop))
         this.i = nl < 0 ? src.length : nl + 1
-        const trailing = line.length - line.replace(/\\+$/, '').length
-        if (quoted || nl < 0 || trailing % 2 === 0) break
-        line = line.slice(0, -1)
+        if (!joins) break
       }
-      if ((strip ? line.replace(/^\t+/, '') : line) === delimiter) {
+      let line = parts.join('')
+      if (strip) {
+        let t = 0
+        while (t < line.length && line[t] === '\t') t++
+        line = line.slice(t)
+      }
+      this.tick(line.length + 1)
+      if (line === delimiter) {
         end = at
         break
       }
     }
     if (quoted) return undefined
-    // The body as a double-quoted string reads it, but for its quotes, which
-    // are text here; a `$(` in it is lexed within the body alone.
-    const body = new Lexer(src.slice(start, end), this.budget)
-    return body.bodyLive()
+    this.tick(end - start + 1)
+    const body = new Lexer(src.slice(start, end), this.shared)
+    const live = body.bodyLive()
+    for (const command of body.commands) this.commands.push(command)
+    return live
   }
 
-  /** The first live span in this lexer's text, read as an unquoted heredoc's body. */
+  /**
+   * The first live span in this lexer's text, read as an unquoted heredoc's
+   * body: as a double-quoted string reads, but for its quotes, which are text
+   * here. Read whole, so every substitution in it is lexed.
+   */
   private bodyLive(): string | undefined {
     const src = this.src
+    let live: string | undefined
     while (this.i < src.length) {
       this.tick()
       const c = src[this.i]!
       if (c === '\\') this.i += 2
-      else if (c === '`') return this.backtick()
-      else if (c === '$' && src[this.i + 1] === '(') {
+      else if (c === '`') {
+        const span = this.backtick()
+        live ??= span
+      } else if (c === '$' && src[this.i + 1] === '(') {
         this.i += 2
         this.substitution()
       } else this.i++
     }
-    return undefined
+    return live
   }
 }
 
@@ -429,27 +474,38 @@ const isSminos = (w: Word) => {
  * shell, or undefined when there is none.
  */
 export function liveBacktick(command: string, steps = STEPS_FLOOR + STEPS_PER_CHAR * command.length): string | undefined {
-  // A call names sminos in a word, so a command without the name is no call: most are never lexed.
-  if (!command.includes('sminos')) return undefined
-  const lexer = new Lexer(command, { left: steps })
+  if (!mayRefuse(command)) return undefined
+  const lexer = new Lexer(command, { left: steps, pipes: 0 })
   try {
     lexer.script(false)
   } catch (error) {
     if (error instanceof GiveUp) return undefined
     throw error
   }
-  const commands = lexer.commands
-  for (const [k, s] of commands.entries()) {
+  // The first live body span among the commands read so far in each pipeline: what feeds a later one.
+  const fed = new Map<number, string>()
+  for (const s of lexer.commands) {
     const args = s.words.filter((w) => !w.redirect)
     const head = args.findIndex((w) => !NAME_ASSIGNMENT.test(w.text))
     const at = args.findIndex((w, j) => isSminos(w) && (j === head || (args[j + 1]?.pure === true && VERBS.has(args[j + 1]!.text))))
-    if (at < 0) continue
-    const own = s.words.slice(s.words.indexOf(args[at]!) + 1)
-    const fed = commands.slice(0, k).filter((u) => u.pipe === s.pipe)
-    const live = [...own.map((w) => w.live), ...s.bodies, ...fed.flatMap((u) => u.bodies)].find((span) => span !== undefined)
-    if (live !== undefined) return live
+    const body = s.bodies.find((span) => span !== undefined)
+    if (at >= 0) {
+      const own = s.words.slice(s.words.indexOf(args[at]!) + 1)
+      const live = own.find((w) => w.live !== undefined)?.live ?? body ?? fed.get(s.pipe)
+      if (live !== undefined) return live
+    }
+    if (body !== undefined && !fed.has(s.pipe)) fed.set(s.pipe, body)
   }
   return undefined
+}
+
+/**
+ * Whether the guard has anything to look for: a refusal is over a backtick
+ * in a sminos call, so a command holding no backtick, or no `sminos`, is
+ * never lexed, which is almost every sminos call.
+ */
+export function mayRefuse(command: string): boolean {
+  return command.includes('`') && command.includes('sminos')
 }
 
 /** What a refused call reads: what the shell would have done, and the form that carries the text as written. */
