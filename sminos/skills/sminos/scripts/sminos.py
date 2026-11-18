@@ -3800,8 +3800,13 @@ def records_module():
     return sibling_module("sminos_records")
 
 
+_THREADS = []   # sminos_threads, once imported: the reducer is asked for every membership read
+
+
 def threads_module():
-    return sibling_module("sminos_threads")
+    if not _THREADS:
+        _THREADS.append(sibling_module("sminos_threads"))
+    return _THREADS[0]
 
 
 def audience_module():
@@ -3958,10 +3963,10 @@ def _lineage_scan(events):
         sid = e.get("session")
         if not isinstance(sid, str) or e["kind"] not in MEMBERSHIP or writer_session(e["writer"]) != sid:
             continue
-        if passed_by(e, joined.get(sid)):
-            continue
         if e["kind"] == "joined":
             joined[sid] = e
+        elif passed_by(e, joined.get(sid)):
+            continue
         membership[sid] = e["kind"]
         if e["kind"] == "retired" and e.get("reason") == "continued" and UUID_RE.fullmatch(str(e.get("to") or "")):
             conts[e["to"]] = sid
@@ -4285,7 +4290,7 @@ def join_seat(seat, by=""):
                            seat["seat_id"], by, "seat", session=seat["current"])
     if project is not None:
         threads = threads_module()
-        threads.finish(seat["seat_id"])   # an entry left open is finished before anything else is done to the record
+        threads.finish(seat["seat_id"], project=project)   # an open entry is finished before the record changes
         thread = threads.ensure(seat["current"], seat=reload_seat(seat["seat_id"]) or seat, project=project)
         fresh = reload_seat(seat["seat_id"]) or seat
         if thread is not None and isinstance(fresh.get("ended"), dict):
@@ -4304,12 +4309,12 @@ def thread_transition(project, thread_id, op, events, required=False, **begin):
     entry whose events could not all be appended raises LogWriteFailed: the
     record's change stands, and the next reconciliation finishes the entry."""
     threads = threads_module()
-    threads.finish(thread_id)
+    threads.finish(thread_id, project=project)
     entry = threads.begin(thread_id, op, project, events, **begin)
     if entry is None:
         return []
     appended = []
-    if not threads.finish(thread_id, appended) and required:
+    if not threads.finish(thread_id, appended, project) and required:
         raise LogWriteFailed("the %s of %s is recorded, but not all of it is in %s's log yet; the next reading verb "
                              "finishes it" % (op, thread_id[:8], project.name))
     return appended
@@ -4373,7 +4378,7 @@ def _local_sessions(project, all_seats):
     return local
 
 
-def _reconcile(project, events, local, by_session):
+def _reconcile(project, events, local, by_session, all_seats=None):
     """Append joined for this machine's sessions the log does not hold as
     members: a live session whose latest membership is absent or retired (a
     live process is evidence of activation), and a seat with no membership
@@ -4407,13 +4412,14 @@ def _reconcile(project, events, local, by_session):
     latest, joined, effect = log_memo(events, "memberships", _memberships)
     threads = threads_module()
     out, busy = [], set()
+    human = threads.human_threads()
     # A transition whose process died is finished first, and nothing else is
     # done to its record in this pass (Interfaces §6, the replay).
-    for t in threads.open_entries(project):
+    for t in threads.open_entries(project, human, seats() if all_seats is None else all_seats):
         busy.update(str(e.get("session") or "") for e in t["pending"].get("events") or [])
         busy.add(t["current"])
-        threads.finish(t["thread"], out)
-    out += older_writes(project, threads.human_threads(), effect, joined, busy)
+        threads.finish(t["thread"], out, project)
+    out += older_writes(project, human, effect, joined, busy)
     for sid, e in joined.items():
         if latest[sid] != "joined" or sid in local or sid in busy or not is_self(str(e.get("machine") or ""), sid):
             continue
@@ -4504,8 +4510,8 @@ def older_writes(project, live, effect, joined, busy):
     holding = {t["current"]: t for t in live if t["current"]}
     out = []
     for sid, e in effect.items():
-        if e["kind"] != "retired" or e.get("reason") not in ("retire", "ended") or threads.stamped(e) \
-                or sid in busy or sid not in holding:
+        if sid not in holding or e["kind"] != "retired" or e.get("reason") not in ("retire", "ended") \
+                or threads.stamped(e) or sid in busy:
             continue
         t = holding[sid]
         j = joined.get(sid) or {}
@@ -4514,7 +4520,7 @@ def older_writes(project, live, effect, joined, busy):
         if e["reason"] == "ended" and session_running(sid):
             continue
         ended = {"at": str(e.get("ts") or now()), "reason": e["reason"], "by": str(e.get("by") or ""),
-                 "pid": e.get("pid") if e.get("pid") not in ("",) else None}
+                 "pid": e.get("pid") or None}
         out += thread_transition(project, t["thread"], "end", [], fields={"ended": ended},
                                  guard=lambda r, sid=sid: r["current"] == sid and not threads.record_ended(r),
                                  settle=sid, last="aside")
@@ -4563,7 +4569,7 @@ def _memberships(events):
     latest, joined, effect = {}, {}, {}
     for e in events:
         if e["kind"] in MEMBERSHIP and e.get("session") and writer_session(e["writer"]) == e["session"]:
-            if passed_by(e, joined.get(e["session"])):
+            if e["kind"] == "retired" and passed_by(e, joined.get(e["session"])):
                 continue
             latest[e["session"]] = e["kind"]
             effect[e["session"]] = e
@@ -5126,7 +5132,7 @@ def _projection(events):
                 r["unlisted"] = max(r["unlisted"], rev)
             continue
         if kind in MEMBERSHIP or kind in ("renamed", "state", "titled"):
-            if not own or passed_by(e, r["joined"]):
+            if not own or (kind == "retired" and passed_by(e, r["joined"])):
                 continue
             if kind in ("joined", "state"):
                 r["policyRev"] = max(r["policyRev"], rev)
@@ -5375,7 +5381,7 @@ def view_of(project, all_seats=None, titles=True):
     by_session = seats_by_session(project, all_seats)
     local = _local_sessions(project, all_seats)
     sig, events = _store_whole(project, "log", shared=True)
-    appended = _reconcile(project, events, local, by_session)
+    appended = _reconcile(project, events, local, by_session, all_seats)
     if appended:   # a hand-off may have moved a seat to the session it continues in
         all_seats = seats()
         by_session = seats_by_session(project, all_seats)
@@ -5435,7 +5441,7 @@ def reconcile(project):
     _VIEWS.pop(project.id, None)
     all_seats = seats()
     return len(_reconcile(project, log_read(project), _local_sessions(project, all_seats),
-                          seats_by_session(project, all_seats)))
+                          seats_by_session(project, all_seats), all_seats))
 
 
 def _owed(events, session, record):
@@ -12526,7 +12532,7 @@ def end_seat(s, purge):
     project = seat_project(s)
     threads = threads_module()
     if s["current"] and project is not None and not guessed(project):
-        threads.finish(s["seat_id"])
+        threads.finish(s["seat_id"], project=project)
         threads.ensure(s["current"], seat=reload_seat(s["seat_id"]) or s, project=project)
         if not isinstance((reload_seat(s["seat_id"]) or {}).get("ended"), dict):
             at = now()

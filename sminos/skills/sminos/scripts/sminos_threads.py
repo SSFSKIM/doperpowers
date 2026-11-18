@@ -235,9 +235,13 @@ def human_threads():
     return _human_threads()
 
 
-def open_threads():
-    """This machine's records with an open entry (an entry is never set aside)."""
-    return [_of_seat(s) for s in sminos.seats() if s.get("pending")] + [t for t in _human_threads() if t.get("pending")]
+def open_threads(human=None, seats=None):
+    """This machine's records with an open entry (an entry is never set
+    aside); `human` and `seats`, the live records and seats as the caller
+    read them."""
+    human = _human_threads() if human is None else human
+    seats = sminos.seats() if seats is None else seats
+    return [_of_seat(s) for s in seats if s.get("pending")] + [t for t in human if t.get("pending")]
 
 
 def all_threads(ended=False):
@@ -613,19 +617,22 @@ def _owe(project, entry, event, appended):
     return bool(got) or _holds(project, session, kind, entry["id"])
 
 
-def finish(thread_id, appended=None):
+def finish(thread_id, appended=None, project=None):
     """Carries out the record's open entry from where it stands, and clears
     it (§6, steps 2 to 4): each event the log does not hold yet; then, in
     one write, the entry removed and an end's record set aside or deleted
     as its `last` says, an absorption's other record deleted first. True
     when the record has no open entry left. `appended`, a list, gains the
-    events appended."""
+    events appended. `project`: the caller's, when it is the entry's (a
+    project need not be registered here to be resolved); else the entry's
+    is looked up."""
     appended = [] if appended is None else appended
     t = get(thread_id)
     entry = (t or {}).get("pending")
     if not entry:
         return True
-    project = sminos.known_project(str(entry.get("project") or ""))
+    if project is None or project.id != entry.get("project"):
+        project = sminos.known_project(str(entry.get("project") or ""))
     if project is None:
         return False
     for event in entry.get("events") or []:
@@ -650,10 +657,10 @@ def finish(thread_id, appended=None):
     return not (get(thread_id) or {}).get("pending")
 
 
-def open_entries(project):
+def open_entries(project, human=None, seats=None):
     """The records of this machine whose open entry's events go to the
     project's log."""
-    return [t for t in open_threads() if (t.get("pending") or {}).get("project") == project.id]
+    return [t for t in open_threads(human, seats) if (t.get("pending") or {}).get("project") == project.id]
 
 
 # ------------------------------------------------------------ a launch's options
