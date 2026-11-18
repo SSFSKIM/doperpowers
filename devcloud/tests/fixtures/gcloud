@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """The stand-in `gcloud` for the gce provider's tests: state in the JSON file $FAKE_GCLOUD_STATE
 (instances, images, machine_types {zone: [...]}, custom_types {name: {...}}, activated, next_id,
-calls, fail). Every invocation's argv is appended to `calls`, with the CLOUDSDK_* environment it
+calls, fail, unreachable). Every invocation's argv is appended to `calls`, with the CLOUDSDK_* environment it
 saw. It exits 99 unless CLOUDSDK_CONFIG names a directory other than the person's default
 (~/.config/gcloud), so a provider that would use the person's own gcloud identity fails loudly.
 `fail["<group> <command>"] = {"code", "stderr"}` (e.g. "instances create") makes that command fail.
 Output is shaped like gcloud 580's JSON, reduced to the fields devcloud reads; flags are taken in
 the `--flag=value` form the provider uses, and `--quiet`, `--force` and `--no-standard-images` as
-booleans."""
+booleans.
+`unreachable` lists zones `instances list` cannot reach. gcloud 580's aggregated list then
+warns on stderr and returns the other zones with exit 0, unless the property
+compute/allow_partial_error is false (CLOUDSDK_COMPUTE_ALLOW_PARTIAL_ERROR), when it fails
+(api_lib/compute/lister.py, request_helper.py)."""
 import json
 import os
 import pathlib
@@ -146,7 +150,14 @@ elif group == "instances create":
     state["instances"].append(made)
     out([made])
 elif group == "instances list":
-    out([i for i in state["instances"] if keep(i, flag("--filter"))])
+    unreachable = state.get("unreachable", [])
+    problems = "".join(f" - Scope 'zones/{z}' is unreachable.\n" for z in unreachable)
+    if unreachable and os.environ.get("CLOUDSDK_COMPUTE_ALLOW_PARTIAL_ERROR", "").lower() not in (
+            "", "1", "true", "on", "yes", "y"):
+        die(1, "ERROR: (gcloud.compute.instances.list) Some requests did not succeed:\n" + problems)
+    if unreachable:
+        sys.stderr.write("WARNING: Some requests did not succeed.\n" + problems)
+    out([i for i in state["instances"] if keep(i, flag("--filter")) and i["zone"].rsplit("/", 1)[-1] not in unreachable])
 elif group == "instances describe":
     out(instance(rest[0], flag("--zone")))
 elif group == "instances update":

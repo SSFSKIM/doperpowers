@@ -720,7 +720,11 @@ an account whose list fails stops the `up` before anything is created.
 answer on stdout per operation (`info`, `types`, `create`, `list`, `get`,
 `set-labels`, `delete`, and with images `image-create`, `images`,
 `image-delete`); exit 3 is a refusal (`{"error", "kind"}`), any other
-non-zero exit a failure. The driver gives a provider its account's
+non-zero exit a failure. `list` answers every server carrying the `devcloud`
+label or fails: the cap count and `owned-by` take a server missing from it
+for one that does not exist, so a cloud answering in part (a zone it could
+not reach) is a failure, which is why `gce` runs gcloud with
+`compute/allow_partial_error` off. The driver gives a provider its account's
 credentials in its environment only and scrubs them from its stderr.
 `driver/providers/hetzner` ships here (it drives `hcloud` under a private,
 empty configuration), and so does `driver/providers/gce`: it drives `gcloud`

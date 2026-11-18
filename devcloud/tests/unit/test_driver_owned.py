@@ -2,7 +2,9 @@
 answer whose "none" can be trusted: every configured account listed in full,
 else unknown, naming what could not be asked."""
 import json
+import os
 import shutil
+import unittest
 
 import _path  # noqa: F401
 from driver import adopt, cli
@@ -146,6 +148,32 @@ class OwnedByTest(DriverBase):
         self.assertEqual((code, answer["answer"]), (0, "unknown"))
         [missing] = answer["unknown"]
         self.assertEqual((missing["account"], missing["provider"], missing["failed"]), ("adopted", None, "listing"))
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a directory whatever its mode")
+    def test_an_adoption_directory_that_cannot_be_read_is_unknown_not_empty(self):
+        adopt.save(self.ctx, adopt.Record(name="dc-own-0001", address="192.0.2.7", user="dev", lifetime="keep",
+                                          expires=None, projects=[], phase="booted", created=NOW,
+                                          creator="abcd1234"))
+        self.paths.adopted.chmod(0)
+        self.addCleanup(self.paths.adopted.chmod, 0o755)
+        code, answer = self.ask("@abcd1234")
+        self.assertEqual((code, answer["answer"]), (0, "unknown"))
+        [missing] = answer["unknown"]
+        self.assertEqual((missing["account"], missing["failed"]), ("adopted", "listing"))
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
+    def test_an_adoption_record_that_cannot_be_opened_is_unknown(self):
+        adopt.save(self.ctx, adopt.Record(name="dc-own-0001", address="192.0.2.7", user="dev", lifetime="keep",
+                                          expires=None, projects=[], phase="booted", created=NOW,
+                                          creator="abcd1234"))
+        adopt.path(self.ctx, "dc-own-0001").chmod(0)
+        code, answer = self.ask("@abcd1234")
+        self.assertEqual((code, answer["answer"]), (0, "unknown"))
+        self.assertEqual([m["account"] for m in answer["unknown"]], ["adopted"])
+
+    def test_no_adoption_directory_is_no_adopted_hosts(self):
+        self.assertFalse(self.paths.adopted.exists())
+        self.assertEqual(self.ask("@abcd1234")[1]["answer"], "none")
 
     def test_names_that_are_not_tags_or_short_ids_are_usage(self):
         for names in ([], ["abcd 1234"], ["@"], ["ABCD1234"], ["@x#notahex"], ["--json"]):
