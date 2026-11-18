@@ -54,10 +54,3 @@ saw. Do not build on it.
 - **A whole session**: `--all` or `--segments A-B` ask each segment separately
   (6 at a time, `--jobs`) and print the answers in order, each under its time
   range; a segment without the answer says so. Combining them is your job.
-
-## Cost
-
-About $0.50 per million tokens of segment, so roughly $0.10 to $0.30 a
-segment. A long session can be tens of segments: `--list` prints the total and
-what `--all` would cost at most, and a multi-segment run states its ceiling on
-stderr before any call. Start from the segment that matters.
