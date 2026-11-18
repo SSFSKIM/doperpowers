@@ -651,7 +651,8 @@ the profile lacks is exit 2 before anything runs.
 
 **Images.** `image build [--account A] [--arch x86|arm]` creates a builder (the smallest type
 of the account's default type's architecture, or of `--arch`,
-with the provider's least disk, labeled `devcloud=builder`, given the driver
+with the provider's least disk; when the cloud has none of it, the next one
+up to the size cap, each fallback named; labeled `devcloud=builder`, given the driver
 keys and nothing else), runs `setup.sh`, checks that it holds no descriptor,
 seed, credential file the guard knows or sminos enrollment
 (`driver/bake_check.py`), resets cloud-init, the machine id, the SSH host

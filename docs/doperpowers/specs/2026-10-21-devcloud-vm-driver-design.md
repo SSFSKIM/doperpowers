@@ -908,7 +908,8 @@ after `~/`, no `..`, not the home itself. The release never removes the home its
 `devcloud vm image build [--account A] [--arch x86|arm]`, for an account whose provider has `images`,
 creates a builder through `create` (label `devcloud=builder`, the smallest type of the account's
 default type's architecture, or of `--arch`, whose disk is the provider's minimum, so the image fits
-every type of that architecture), runs `setup.sh` from the plugin's own `devcloud/` over SSH,
+every type of that architecture; when the cloud answers `unavailable` for it, the next such type up
+to the size cap, each fallback named), runs `setup.sh` from the plugin's own `devcloud/` over SSH,
 checks the builder structurally — no `/etc/devcloud/boot.env`, an empty seed directory, none of the
 credential files the guard knows (parent check 6(b)), no `$SMINOS_HOME/daemon/` — cleans cloud-init's
 state and the machine id so each VM gets its own, powers it off, records the image through
@@ -2768,6 +2769,13 @@ commit 5168e433 on its branch, 2026-10-21):
     architecture, the daily build looks only for a current image of the default type's
     architecture, and `image ls` marks each architecture's current image. Without these, x86
     builds would delete an Arm image, and an Arm image would stop the x86 daily build.
+  - **The builder's fallback** (the coordinator's ruling, 2026-11-17, after the first live Arm
+    build was refused with `ZONE_RESOURCE_POOL_EXHAUSTED` for n4a-highcpu-2 in us-west1-a): when
+    the cloud answers `unavailable` for the builder's type, the bake tries the next type of the same
+    architecture and least disk, smallest first and up to the size cap's vCPU, naming each type
+    refused and the type tried next. Both architectures get it. A quota, limit or other refusal still
+    ends the bake at once. If every candidate is refused, the bake fails and names them all. It
+    never moves to another zone. A refusal now carries its kind (`errors.Refused`).
   - Rejected: a daily Arm build. An Arm image is built only on request, so an account whose
     default is x86 never pays for one it does not use.
   Date/Author: 2026-11-17, #187's executor, for cua #171 M5's arm64 acceptance run (Hetzner had had

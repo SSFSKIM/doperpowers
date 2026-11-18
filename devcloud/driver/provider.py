@@ -15,7 +15,7 @@ import subprocess
 from devcloudlib import redact
 
 from . import labels as label_rules
-from .errors import FAILED, REFUSED, UNUSABLE, USAGE, DriverError, NotOwned, Spent
+from .errors import FAILED, REFUSED, UNUSABLE, USAGE, DriverError, NotOwned, Refused, Spent
 from .profile import SHIPPED
 
 SHIPPED_DIR = pathlib.Path(__file__).resolve().parent / "providers"
@@ -174,7 +174,7 @@ class Client:
                 raise DriverError(FAILED, f"provider {self.name}: {op} refused without a valid refusal") from None
             self._show(shown)
             line = known.scrub(error.splitlines()[0] if error else "")
-            raise DriverError(REFUSED, f"provider {self.name} refused {op} ({kind}): {line}")
+            raise Refused(kind, f"provider {self.name} refused {op} ({kind}): {line}")
         self._show(shown)
         raise DriverError(FAILED, f"provider {self.name}: {op} failed (exit {proc.returncode})")
 

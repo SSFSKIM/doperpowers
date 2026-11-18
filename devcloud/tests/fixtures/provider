@@ -6,6 +6,7 @@ with a `behavior` object a test sets to make it misbehave:
 
   capabilities   info's list (default user_data, images)
   refuse         {op: kind}: exit 3 with {"error", "kind"}
+  refuse_type    {type: kind}: create of that type exits 3 with {"error", "kind"}
   fail           {op: exit code}: that exit, `stderr` (below) on stderr
   hang           [op]: sleep far past any timeout
   garbage        [op]: stdout that is not JSON
@@ -78,6 +79,9 @@ def handle(state, op, raw):
         return 0, "this is not json", err
     if op in behavior.get("refuse", {}):
         return 3, {"error": f"{op} refused by the stand-in", "kind": behavior["refuse"][op]}, err
+    if op == "create" and isinstance(request, dict) and request.get("type") in behavior.get("refuse_type", {}):
+        return 3, {"error": f"{request['type']} refused by the stand-in",
+                   "kind": behavior["refuse_type"][request["type"]]}, err
     if op == "create" and behavior.get("fail_after_create"):
         create(state, request, behavior)          # made, then the provider fails before it answers
         return 1, None, err

@@ -18,6 +18,15 @@ class DriverError(Exception):
         self.code = code
 
 
+class Refused(DriverError):
+    """The provider refused (exit 3), with the refusal's `kind`: limit,
+    quota, unavailable or other."""
+
+    def __init__(self, kind, message):
+        super().__init__(REFUSED, message)
+        self.kind = kind
+
+
 class NotOwned(DriverError):
     """The ownership gate refused a delete or a relabel: the target, read
     again right before, no longer carries what the decision was made on."""

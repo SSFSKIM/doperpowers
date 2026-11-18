@@ -341,6 +341,40 @@ class BuildTest(BuildBase):
         self.assertEqual(caught.exception.code, 3)
         self.assertNotIn("create", self.ops())
 
+    def test_an_unavailable_builder_type_falls_back_to_the_next_smallest_of_its_architecture(self):
+        """A capacity hole in the zone for the smallest type must not fail the bake: GCE had no
+        n4a-highcpu-2 in us-west1-a while c4a-highcpu-2 was there."""
+        self.arm_and_x86()
+        self.behave(refuse_type={"armsmall": "unavailable"})
+        self.assertEqual(images.build_command(self.ctx, "main", arch="arm"), 0)
+        self.assertEqual([c["type"] for c in self.calls("create")], ["armsmall", "armbig"])
+        self.assertEqual(self.state()["images"][0]["labels"]["devcloud-arch"], "arm")
+        said = self.err.getvalue() + self.out.getvalue()
+        self.assertIn("armsmall", said)
+        self.assertIn("trying armbig", said)
+
+    def test_the_fallback_keeps_to_the_architecture_and_names_every_refused_type(self):
+        self.arm_and_x86()
+        self.behave(refuse_type={"armsmall": "unavailable", "armbig": "unavailable"})
+        with self.assertRaises(DriverError) as caught:
+            images.build_command(self.ctx, "main", arch="arm")
+        self.assertEqual(caught.exception.code, 3)
+        self.assertIn("armsmall", str(caught.exception))
+        self.assertIn("armbig", str(caught.exception))
+        self.assertEqual([c["type"] for c in self.calls("create")], ["armsmall", "armbig"], "never an x86 type")
+        self.assertEqual(self.state()["images"], [])
+
+    def test_a_quota_or_limit_refusal_is_not_retried(self):
+        for kind in ("quota", "limit", "other"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                self.arm_and_x86()
+                self.behave(refuse_type={"armsmall": kind})
+                with self.assertRaises(DriverError) as caught:
+                    images.build_command(self.ctx, "main", arch="arm")
+                self.assertEqual(caught.exception.code, 3)
+                self.assertEqual([c["type"] for c in self.calls("create")], ["armsmall"])
+
     def test_a_provider_without_images_is_exit_3(self):
         self.behave(capabilities=["user_data"])
         code, message = self.failed("main")
