@@ -65,7 +65,6 @@ The unit closes when this scene runs on the owner's fleet, on released versions,
 - *Several sminos versions run on one machine and write one store.* The daemon runs the marketplace clone (`installed_cli` in `S/sminos_daemon.py`); a session's hooks run the copy of the plugin version the session loaded (`sminos/hooks/smns-record.sh` calls `$CLAUDE_PLUGIN_ROOT/skills/sminos/scripts/sminos`), for as long as the session lives.
 - *A continuation is already an event:* `retired` with reason `continued` and the successor's id in `to`.
 - *A resume launches inside a macOS protected folder today,* where a spawn or a fill from outside it is refused (`S/CLAUDE.md`).
-- *The latest permission mode of a session is held in its bridge's memory* and is not restored when the bridge restarts (`load_kept` in `S/sminos_bridge.py`); the bridge may know no mode at all.
 - *Nothing publishes a machine's load or whether it is on* (`cmd_machines`).
 
 **devcloud, at the same commit:** a VM's descriptor records its creator as a sminos tag (`@alias`, `@alias#short`, `@short` or `@project/alias`; `devcloud/boot/devcloudlib/descriptor.py`) and the creator's project. Idle and lease notices are sent **from the VM**, by its own `sminos say`, to that tag, then to the creator's project's live members, then into that project's log (`devcloud/boot/devcloudlib/notices.py`). devcloud's verbs are `up`, `adopt`, `ls`, `ssh`, `lease`, `down`, `image`, `reap` and `provider`; it runs on Macs only and exits 6 on a VM.
@@ -120,7 +119,7 @@ Decisions marked **[binding]** were settled with the whole picture in view, or a
 
 **Every lane A member is a thread** **[binding — the owner: "모든 세션이 seat형 스레드"; lane B is left out because MAWS keeps its own record of those sessions, and a second authority over their listing would conflict with it]**. A thread takes four things from today's seat: a durable identity, staying a member when its process ends, being woken by an addressed message, and ending only by a retire or the three-day rule. It does not take a seat's fixed alias or fixed project: a session its human opened is still named after what it is in charge of, and `sminos join` still moves it. A lane B session keeps every rule it has today: it is retired when its process ends, it is never woken by sminos, and it is not placed in a declared channel. *Alternative: keep seats and seat-less members and let a channel hold both.* It lost because the durability fault is exactly that difference: the fleet's standing responsibilities are sessions their human opened.
 
-**The record.** Every thread has a record on its own machine from its first join: a thread id, the session ids it has had, its alias, how it was opened (spawned, or by its human), its declared channel memberships (D3), what its process was launched with, and the permission mode and model it was last observed running under. The record of a thread its human opened is kept where no sminos released before threads reads a seat (D7's fence is what keeps older code from running; this keeps a copy the fence cannot reach from waking one by reading the store); whether it shares code with the seat record is T1's. The mode and model are written as they are observed while the process runs, and say "unknown" where they never were: the bridge's memory of them does not survive its restart, and the mode at a session's last prompt may not be its last mode.
+**The record.** Every thread has a record on its own machine from its first join: a thread id, the session ids it has had, its alias, how it was opened (spawned, or by its human), its declared channel memberships (D3), and what its process was launched with. The record of a thread its human opened is kept where no sminos released before threads reads a seat, so that older code on the machine goes on treating it as it treats such a session today (D7); whether it shares code with the seat record is T1's.
 
 **Naming a thread** **[binding — two other parts name a thread from another machine: a channel request (D3) and a VM's notice (D4)]**. A thread's machine publishes the thread id in the thread's own lifecycle events, in the field `thread`. Any machine that may read those events resolves a thread id, or any session id the thread has had, to the thread's current session. The id is the thread's first session id unless T1 finds a reason against it, so that a name recorded before threads existed (a VM's creator tag, a commit's `Sminos-Session` line) already names the thread (contract X2).
 
@@ -151,23 +150,21 @@ A thread's default is standing work under an in-charge line. Short use is allowe
 
 ### D2. The wake
 
-**A wake has four steps** **[binding — each closes a fault the experiment or the code showed; engine facts E1 to E7]**:
+**What the wake does not guard.** The owner, 2026-11-17: "세션의 모드는 사실 전부 auto 또는 bypasspermission이라고 가정해도 문제가 없다. permission 모드 문제 걱정은 사실 할 이유가 크지 않다" (every session's mode can be assumed to be `auto` or `bypassPermissions`; there is little reason to worry about the permission mode). So the wake carries a thread's mode and model as well as the engine lets it, and does not verify them afterwards, record them between runs, or refuse a thread for what its mode might be **[binding — the owner]**. Three reviews had added exactly that machinery (a recorded mode, a check after each wake, three refusals); it is removed, and the Decision Log says what went.
+
+**A wake has three steps** **[binding — each closes a fault the experiment showed; engine facts E1 to E5]**:
 
 1. **Refuse while any process holds the session** (E5's three signals). A wake onto a held session would start a copy (E3).
-2. **On a first background resume, pass flags; afterwards pass none.** The flags are the permission mode and the model in the thread's record (their last observed values, not the launch's, since both change within a session), the mode capped by the machine's policy ceiling as it stands at the wake, and from the launch the options the engine accepts on a first background resume. A later resume runs under what the engine saved (E2), which no flag can change without starting a copy. Where sminos cannot tell whether the session has run in the background before, it passes the flags: passing none on a true first wake resumes under the settings' default mode (E1), which on the owner's Macs is `auto`. If the engine then answers that it started a copy, stop the copy and repeat step 1: when no process holds the session, the copy was E2's, so wake once more with no flags and remember that this session has saved options; when a process does hold it, the copy was E3's, and the message is delivered to that process as to any live session.
-3. **Read the mode the wake actually runs under** from the transcript's new row, which carries it at submission. When it is looser than the limit (the stricter of the recorded mode and the machine's ceiling as it stands), or one that asks for approval, stop the process, leave the thread stopped, and publish that its wake came up in the wrong mode (X3), which holds until the thread next runs under its human. The message has reached the transcript by then and counts as delivered; this window is stated and not closed. The model is not enforced: a later wake runs with what the engine saved, and the opening line says which.
-4. **Open the wake with a line outside the envelope that carries a peer's words,** telling the thread that it was woken in the background by a message, that its human is not watching, under which mode and model it runs, and which of its launch options were not carried.
+2. **On a first background resume, pass flags; afterwards pass none.** The flags are the permission mode and the model of the session's last turn, read from its transcript at the wake (their last values, not the launch's, since both change within a session), the mode capped by the machine's policy ceiling, and from the launch the options the engine accepts on a first background resume. Without them a first wake comes back under the settings' defaults (E1): a session on another model would silently change model. A later resume runs under what the engine saved (E2). Where sminos cannot tell whether the session has run in the background before, it passes the flags. If the engine then answers that it started a copy, stop the copy and repeat step 1: when no process holds the session, the copy was E2's, so wake once more with no flags and remember that this session has saved options; when a process does hold it, the copy was E3's, and the message is delivered to that process as to any live session.
+3. **Open the wake with a line outside the envelope that carries a peer's words,** telling the thread that it was woken in the background by a message, that its human is not watching, under which mode and model it runs, and which of its launch options were not carried.
 
-**Not woken** **[binding — each is a case where a wake would be unsafe, impossible, or another party's to do]**. Each of these stays `stopped` with the message recorded for it:
+**Not woken** **[binding — each is a case where a wake is impossible, another party's to do, or already ruled on]**. Each of these stays `stopped` with the message recorded for it:
 
 - a session under another `CLAUDE_CONFIG_DIR` than the waking process's (`resume_session` refuses it today);
 - a thread whose directory is gone;
 - a thread its human opened whose directory is inside a macOS protected folder: the daemon's launch there would raise a system dialog charged to the daemon. A spawned thread is resumed there as today;
 - a thread on a machine whose policy admits nothing from outside (`read_only`);
-- a thread whose last known mode asks for approval (`plan`, `default`, `acceptEdits`). The owner's ruling: "깨우지 않는다" (it is not woken). Woken unattended, it would stop at its first tool call (E6) and wait for a person who is not there. *Alternative: wake it and let it wait.* It lost because nothing established that the owner would learn a background thread was waiting;
-- a thread that has run in the background before and whose recorded mode is looser than the machine's ceiling now allows: its saved mode cannot be lowered by a flag, so it waits for its human to reopen it;
-- a thread whose mode was never observed. It cannot be shown to be safe, so it is treated as one that asks, until it has run once under a version that records its mode;
-- a thread whose last wake came up in the wrong mode (step 3).
+- a thread whose last turn ran in a mode that asks for approval (`plan`, `default`, `acceptEdits`). The owner's earlier ruling: "깨우지 않는다" (it is not woken). The mode is read at the wake as step 2 reads it, so the rule costs nothing to keep; by the owner's later word the case is rare.
 
 A lane B session is not a thread and is never woken (D1).
 
@@ -257,11 +254,11 @@ The owner's machines update sminos at different times, and one machine runs seve
 - An older sminos sees a channel as a project and would let a session `join` it; MAWS's endpoint refuses that member (D6).
 - Each child's merge leaves both repositories releasable, and bumps its plugin's version in the same change (`scripts/bump-version.sh`).
 
-*On one machine.* A session started before an update keeps running the version it loaded, in its hooks and in any CLI path it was told, and a cached copy of an old version stays runnable by its path for as long as the cache keeps it. An older CLI applies the old rules to the shared store, and it has many ways to: it retires a stopped seat-less session `ended`, resumes any seat it finds stopped, gives a session a seat (`seat add --session`), retires without asking devcloud, and settles a delivery it only recorded. Rules that make sminos do less than before cannot hold against that one path at a time, so the machine is fenced **[binding — both review rounds reproduced these paths; a list of exceptions was tried and failed twice]**:
+*On one machine.* A session started before an update keeps running the version it loaded, in its hooks and in any CLI path it was told, and a cached copy of an old version stays runnable by its path. An older CLI applies the old rules to the shared store. Two rules keep that from undoing the new ones, and the rest is accepted:
 
-- **The daemon is the one writer of lifecycle whenever versions differ.** The store carries a rules version, which the daemon raises. A CLI changes who is a member, seated, retired, resumed or delivered to only when the store's rules version is its own. Otherwise it appends its own words (a message, its export of what it sent its human) and leaves the rest to the daemon; a verb that does nothing else (`retire`, `resume`, `fill`, `seat add`, `join`) refuses and names the `sminos` on PATH.
-- **The cutover.** Code from before this rule cannot be taught it. So the first rules that need the fence (T1's) come into force on a machine only when its installed sminos has the fence, and no live session there runs code from before it. At that moment the daemon removes every copy of the CLI in the engine's plugin cache that predates the fence, as the engine itself prunes old copies on an update, so that a stale path fails loudly instead of applying old rules. It then waits until no process started from such a copy is still running (one launched from a terminal or a script is no session, and code already loaded goes on running after its file is gone), and only then raises the rules version. Until then that machine keeps today's rules, and a command names the sessions it waits for. Later rules need no wait: every CLI left has the fence.
-- **A second line, for what the fence cannot reach.** A development checkout of an older sminos, run against the machine's real store, is outside it; this repository has such checkouts. Its commonest effect is the `ended` its reconcile writes on any reading verb. The events a thread's machine writes about a thread carry the field `thread`, the thread id (D1). Every reader that knows threads, MAWS's app included, ignores a `retired` with reason `ended` that carries no `thread`, for a session whose latest `joined` carries one. Every other `retired` is honoured (`moved`, `continued`, an explicit retire). An explicit verb run from such a checkout (a retire, a `seat add`, a resume) is not fenced, and is accepted as a developer's act.
+- **What older code can see.** The record of a thread its human opened is kept where older code reads no seat (D1). To code from before threads it is a seat-less session, which that code never resumes; code from T1 on holds it until the wake ships. A spawned thread that has ended is recorded in the form older code reads as a retired seat.
+- **What readers believe.** The lifecycle events a thread's machine writes about the thread carry the field `thread`, the thread id (D1). Every reader that knows threads, MAWS's app included, ignores a `retired` with reason `ended` that carries no `thread`, for a session whose latest `joined` carries one: only older code writes it, on any verb that reads the store. Every other `retired` is honoured whoever wrote it (`moved`, `continued`, an explicit retire).
+- **What degrades, and is accepted** **[the owner's word on permission modes, D2, is what makes these acceptable]**. A reader that does not know threads (an older session's `sminos list`, another machine not yet updated) shows a stopped thread as ended. An older CLI, run by its path, can still: resume a spawned thread under its own version's rules, which are today's; give a session its human opened a seat (`seat add --session`) and resume it, which brings it back under the settings' defaults; retire a thread without asking devcloud; and settle a message it only recorded, so that the thread reads it when reopened and is not woken for it. Each needs an old copy run on purpose or a session that has outlived several releases, and each ends when that session does. *Alternative: a fence* (the store carries a rules version, only the daemon changes lifecycle when versions differ, and each machine cuts over once its last older session has ended, removing the cached copies). Two review rounds asked for it, and it was drafted. It lost when the owner ruled the permission mode out as a worry: the one path with a consequence worth that machinery was an old copy bringing a manual session back in `auto`.
 
 ### Delegated unknowns
 
@@ -271,7 +268,6 @@ Each is assigned to the child that settles it.
 |---|---|
 | How the engine decides a session has saved options; what `claude rm` or the expiry of the engine's row does to them; which launch options a first background resume accepts beyond the mode and the model; first-wake flags on a session that was backgrounded once and then used in a terminal; what differs in a wake's environment from the terminal's | T2's spike milestone |
 | Whether a compaction gives a background session a new id. A friction entry says so; no code shows it. If it does, it is a third continuation case, keyed as `clear` is | T1, a live check before the continuation rule is built |
-| Whether a plugin reload moves a live session's hooks to the new version; what plays the daemon's part on a machine that runs none | FN |
 | How a thread whose reach is not the default says something in a channel: which stream it is written under, and how the channel's hub object learns that stream's policy | CH, with MAWS |
 | How long a pending request lives before it expires | CH |
 | How `--on new` derives the VM's label, project and branch and the new thread's directory | EN (leaning: from the spawner's repository and branch, as `devcloud vm up` reads them from the directory it runs in) |
@@ -280,42 +276,26 @@ Each is assigned to the child that settles it.
 
 ## Children
 
-### FN: The fence — plan
-
-- **Purpose:** make it possible to change who stays a member, who is retired and who is resumed on a machine where sessions started under older versions are still running: D7's rule that the daemon is the one writer of lifecycle whenever versions differ, and the cutover that brings the first fenced rules into force.
-- **Acceptance:**
-  1. Installed alone, it changes nothing a session or the owner can see: the store's rules version is today's, and every suite passes.
-  2. With the store's rules version raised past a CLI's own (a test raises it), that CLI changes no membership, seat, retirement or delivery record: `say` appends its message and reports that delivery is the daemon's; the record hook exports what the session sent its human; `retire`, `resume`, `fill`, `seat add` and `join` refuse and name the `sminos` on PATH. The daemon delivers the message.
-  3. Each session's CLI version is recorded at every hook run, and a command lists the live sessions that run code from before the fence, with what each is.
-  4. The cutover, exercised with a rules version one above today's: while a live session runs code from before the fence, or the installed plugin lacks it, the daemon does not raise the version and says what it waits for. When neither holds, it removes every cached copy of the CLI from before the fence, in whichever plugin's cache it sits, waits until no process started from one is running, and raises the version. A path into a removed copy then fails with the shell's "no such file". An old CLI paused just before a change to a seat record and released during the cutover has either finished before the version is raised or is waited for; it writes nothing after it.
-  5. A daemon older than the store's rules version stands down as a CLI does and says so.
-- **Edges:** blocked-by: —. blocks: T1 (its rules come into force through the cutover).
-- **Contracts:** X7 (owner).
-- **Design inheritance:** D7 "On one machine" (binding). Advisory: the paths that change lifecycle from a CLI are `_reconcile` and what it calls, `push_member` and `resume_session`, `_conclude` and the `delivered/` records, `cmd_retire`, `cmd_fill`, `cmd_seat_add`, `cmd_join` and the record hook's join on sight; copies of the CLI from before sminos was a plugin of its own sit in the doperpowers plugin's cache. Residue for its plan: what plays the daemon's part on a machine that runs none; whether a plugin reload moves a live session's hooks to the new version, which decides how long a cutover waits and whether the daemon can ask a session to reload.
-- **Required:** required for parent acceptance.
-- **Status:** not-dispatched (dispatchable once the owner has looked at this cut).
-
 ### T1: Threads: identity and lifecycle — plan
 
-- **Purpose:** make every lane A member a thread in everything but the wake: the record and the published id, `stopped` in place of `ended`, the three-day rule, self-retire, the return of an ended thread, continuation and refill, and the observation of mode and model that the wake will need. This is the half of the durability fault that needs no engine experiment, and it is what every later child reads.
-- **Acceptance,** on a machine where FN's cutover has brought these rules into force (before it, the machine behaves as today):
+- **Purpose:** make every lane A member a thread in everything but the wake: the record and the published id, `stopped` in place of `ended`, the three-day rule, self-retire, the return of an ended thread, and continuation and refill. This is the half of the durability fault that needs no engine experiment, and it is what every later child reads.
+- **Acceptance:**
   1. A session opened in a terminal, then exited, is listed `stopped` by `sminos list --stopped`, where today it is gone. Reopened with `claude --resume`, it is listed live under the same alias and in-charge line, and receives what was recorded for it meanwhile.
   2. A message addressed to it while stopped is recorded, and the sender's CLI says the thread is stopped and is not woken because its human opened it (the hold T2 lifts). `sminos resume`, `fill --resume` and `send --wait` aimed at it start no process either, and a fresh `fill` of it is refused. A spawned thread is woken exactly as today.
   3. After `/clear`, the new session id carries the thread: same thread id, alias, in-charge line, record owners and reach. A fork and an in-session `/resume` are other threads, and a fork's start guide says it is a copy with an identity of its own. A refill keeps the thread and takes its reach from the new launch.
   4. A thread stopped for more than three days (a clock a test can set) is ended by an event its machine writes: out of `sminos list` and `--stopped`, shown by `--all`, and a message addressed to it reports that it ended. Reopening it, or for a spawned thread `sminos fill`, returns it with its alias and in-charge line.
   5. `sminos retire` run by a session on itself ends its thread, and the end holds after its process exits against everything but its human reopening it.
   6. A thread that X9's query names as owning a VM, by the creator tags devcloud writes today, is neither ended by the three-day rule nor retired; the refusal names the VM. The same holds when the query answers unknown, and the refusal then names what could not be asked. On a machine where devcloud's driver does not run, threads end and retire without a question.
-  7. The thread's events carry its thread id, and a tag that names a former session id of a thread (`@alias#short`, `@short`) reaches its current session, from another machine too.
-  8. A thread's record holds its launch's options and the mode and model it was last observed under, current to within the bridge's heartbeat, and "unknown" where none was observed.
-  9. A stopped thread's open asynchronous questions are closed in its project log, and a member whose lane changes is told gone to the endpoint first.
-  10. A thread on a retired machine is listed as ended on every other machine.
-  11. A CLI with the fence but without these rules stands down from every change they govern (FN's acceptance 2, run against this child's rules version). An `ended` without `thread`, written for a stopped thread by an older sminos from a development checkout, changes nothing for a reader that knows threads, on that machine or another.
-  12. Parent acceptance line 8 for this child's surface: the sminos suites pass, with the tests that pinned `ended` for a seat-less session changed to pin `stopped`.
-- **Edges:** blocked-by: FN, DV (acceptance 6). blocks: T2, CH, EN.
-- **Contracts:** X1 (owner), X2 (owner), X3 (the first values), X6, X7, X9 (the consumer).
+  7. The thread's lifecycle events carry its thread id in `thread`, and a tag that names a former session id of a thread (`@alias#short`, `@short`) reaches its current session, from another machine too.
+  8. A stopped thread's open asynchronous questions are closed in its project log, and a member whose lane changes is told gone to the endpoint first.
+  9. A thread on a retired machine is listed as ended on every other machine.
+  10. The oldest sminos the fleet can still run from a plugin cache, run against a store these rules were applied to, resumes no thread its human opened by any path that reads the store; and the `ended` it writes for a stopped thread changes nothing for a reader that knows threads, on that machine or another (the vector cases shared with MAWS).
+  11. Parent acceptance line 8 for this child's surface: the sminos suites pass, with the tests that pinned `ended` for a seat-less session changed to pin `stopped`.
+- **Edges:** blocked-by: DV (acceptance 6). blocks: T2, CH, EN.
+- **Contracts:** X1 (owner), X2 (owner), X3 (the first values), X6, X7 (owner), X9 (the consumer).
 - **Design inheritance:** D1 whole and D7 (binding where marked). Advisory: the differences to remove are the rows of the Grounding Baseline's table; `retirement_holds` loses its reason once a retire is a record; the continuation event for `/clear` can take the shape hand-off's has (`retired`, reason `continued`, `to`), and a refill a reason of its own, since it carries no reach; devcloud's driver writes the creator as the session's short id (`session_creator` in `devcloud/driver/context.py`), which today's resolver already follows through continuations. Residue for its plan, with the answer this design leans to: whether a person at a terminal may retire a thread whose ownership answer is unknown (yes, with a flag only a terminal accepts, so that a dead provider account cannot hold a thread forever). If its plan trips the split signals, it is cut there; this design sees one unit, with one verification strategy.
 - **Required:** required for parent acceptance.
-- **Status:** not-dispatched (dispatchable once the owner has looked at this cut and FN and DV have landed; both are small and can run side by side).
+- **Status:** not-dispatched (the owner said go on 2026-11-17; dispatched once DV has landed, its plan written meanwhile).
 
 ### DV: devcloud: which VMs a thread owns — brief, in the devcloud plugin
 
@@ -325,26 +305,22 @@ Each is assigned to the child that settles it.
 - **Contracts:** X9 (owner).
 - **Design inheritance:** D4's paragraph on ownership (binding). Advisory: `Context.usable` and `Context.fleet` in `devcloud/driver/context.py` are where accounts and failed listings are skipped today, and `ops.ls` is the listing that exits 0 on what is left.
 - **Required:** required for parent acceptance.
-- **Status:** not-dispatched (dispatchable once the owner has looked at this cut).
+- **Status:** dispatched 2026-11-17, on the owner's go.
 
 ### T2: The wake — plan, opening with a spike
 
-- **Purpose:** let an addressed message wake any stopped thread, a session its human opened included, without starting a copy, loosening its permission mode, or leaving a process waiting on a person who is not there.
+- **Purpose:** let an addressed message wake any stopped thread, a session its human opened included, without starting a copy and without silently changing the model or mode it runs under.
 - **Acceptance:**
   - **G1 (required), the spike's findings** recorded in this document's Surprises & Discoveries, each Delegated unknown assigned to T2 answered, or shown unanswerable with what the wake does instead.
   - **G2 (required):**
-    1. Parent acceptance line 3: same session id, one process, a mode no looser than the recorded one and the machine's ceiling, and on a first wake the recorded model, the opening line, and a terminal `claude --resume` that attaches.
+    1. Parent acceptance line 3: same session id, one process, on a first wake the mode (capped by the machine's ceiling) and the model of the session's last turn, the opening line, and a terminal `claude --resume` that attaches.
     2. Parent acceptance line 4, and the same for each other case of D2's "Not woken": no process starts, the message is recorded, and the reason is in the thread's published state and in the sender's output, on the thread's machine and on another.
-    3. A thread stopped before its mode was ever recorded (one closed before T1's release, or whose mode changed after its last prompt with no observation) is not woken and says why, until it has run once under its human.
-    4. With a process holding the session, no wake is attempted and no copy exists afterwards. When a process takes the session between the check and the launch, the copy is stopped, the message is delivered to that process, and nothing is remembered about saved options.
-    5. When the engine starts a copy because the session already had saved options, the copy is stopped, the thread is woken once more without flags, and a second wake of that thread passes none.
-    6. A wake that comes up looser than recorded, or in a mode that asks for approval, is stopped within the turn; the thread stays `stopped`, publishes the reason, and a second message starts no process.
-    7. `sminos resume`, `fill --resume` and `send --wait` aimed at a thread its human opened run the same steps and exclusions as a message does; a spawned thread in a protected folder is resumed as today.
-    8. After the machine's ceiling is tightened between two wakes, a thread whose saved mode is above it is not woken and says why; a first wake is capped by the ceiling as it stands.
-    9. A message sent to a stopped thread by a CLI that has the fence but not the wake is woken for by the daemon: the sender's CLI settles no delivery it only recorded.
+    3. With a process holding the session, no wake is attempted and no copy exists afterwards. When a process takes the session between the check and the launch, the copy is stopped, the message is delivered to that process, and nothing is remembered about saved options.
+    4. When the engine starts a copy because the session already had saved options, the copy is stopped, the thread is woken once more without flags, and a second wake of that thread passes none.
+    5. `sminos resume`, `fill --resume` and `send --wait` aimed at a thread its human opened run the same steps and exclusions as a message does; a spawned thread in a protected folder is resumed as today.
 - **Edges:** blocked-by: T1. blocks: EN.G1 (a notice wakes a stopped thread that owns a VM).
-- **Contracts:** X1 (reads the mode, model and launch options), X3 (owner), X6, X7.
-- **Design inheritance:** D2 whole (binding). Engine facts E1 to E7. Advisory: `resume_session` is the path to extend, and its `copy_started` check already parses the engine's note of a copy; the transcript row that carries `permissionMode` at submission is the reading for step 3; the experiment ran one session at a time on a Mac at load 40, so timings there are upper bounds. A wake runs in the waking process's environment, not the terminal's (`resume_session`'s docstring): a gateway route or credentials the terminal process had are not carried, the session record's `inference` is not applied again, and the spike records what differs so that the opening line can say it.
+- **Contracts:** X1 (reads the launch's options), X3 (owner), X6, X7.
+- **Design inheritance:** D2 whole (binding). Engine facts E1 to E7. Advisory: `resume_session` is the path to extend, and its `copy_started` check already parses the engine's note of a copy; a transcript's user rows carry `permissionMode` at submission and its assistant rows the model; the experiment ran one session at a time on a Mac at load 40, so timings there are upper bounds. A wake runs in the waking process's environment, not the terminal's (`resume_session`'s docstring): a gateway route or credentials the terminal process had are not carried, the session record's `inference` is not applied again, and the spike records what differs so that the opening line can say it.
 - **Required:** required for parent acceptance.
 - **Status:** not-dispatched (blocked-by T1).
 
@@ -356,7 +332,7 @@ Each is assigned to the child that settles it.
 - **Contracts:** X4, X5 (owner of MAWS's half).
 - **Design inheritance:** D6 (binding). MAWS's own process decides how the change is built and reviewed there; this section is the contract it is built to, and MAWS's architect holds it.
 - **Required:** required for parent acceptance.
-- **Status:** not-dispatched (contract agreed 2026-11-17; built in MAWS once the owner has looked at this cut).
+- **Status:** MAWS's architect told to start, 2026-11-17, on the owner's go.
 
 ### CH: Channels — decomposing at dispatch
 
@@ -392,34 +368,32 @@ Each is assigned to the child that settles it.
 
 ## Cross-Child Contracts
 
-- **X1. The thread record.** Owner: T1, which fixes its names in its plan's Interfaces section before T2 starts. One record per thread on the thread's machine, read and written through one module. Fields the design requires: the thread id; the session ids the thread has had and its current one; the alias; how it was opened; the launch's options and the last observed permission mode and model (T1 writes these; T2 reads them); the declared channel memberships (CH writes these). A child adds a field only through that module. The record is local to the machine and is never what another machine reads: others see what the thread's machine wrote to the log.
+- **X1. The thread record.** Owner: T1, which fixes its names in its plan's Interfaces section before T2 starts. One record per thread on the thread's machine, read and written through one module. Fields the design requires: the thread id; the session ids the thread has had and its current one; the alias; how it was opened; the launch's options (T2 reads them); the declared channel memberships (CH writes these). A child adds a field only through that module. The record is local to the machine and is never what another machine reads: others see what the thread's machine wrote to the log.
 - **X2. Naming a thread from elsewhere.** A thread's lifecycle events carry its thread id in the field `thread`. A thread id, or any session id a thread has had, resolves to the thread's current session on any machine that may read the thread's events; a tag that names a former session reaches the current one. Session ids stay what addresses a message. Owner: T1. Consumers: CH (a request's target), EN and devcloud (a VM's creator tag).
-- **X3. Whether a thread's machine will wake it.** Published by the thread's machine in the thread's state in its project log: woken or not, and when not, one reason from a fixed list (opened by its human while the wake is not shipped, which T1 writes and T2 retires; another config dir; directory gone; a protected folder; the machine admits nothing from outside; a mode that asks for approval; a saved mode above the machine's ceiling; mode never observed; its last wake came up in the wrong mode; ended). A sender's CLI reads it at send time on any machine and reports it with the machine the message waits for. Owner: T2. T1 lands the three values it needs: woken (a spawned thread, as today), held (opened by its human), and ended.
+- **X3. Whether a thread's machine will wake it.** Published by the thread's machine in the thread's state in its project log: woken or not, and when not, one reason from a fixed list (opened by its human while the wake is not shipped, which T1 writes and T2 retires; another config dir; directory gone; a protected folder; the machine admits nothing from outside; a mode that asks for approval; ended). A sender's CLI reads it at send time on any machine and reports it with the machine the message waits for. Owner: T2. T1 lands the three values it needs: woken (a spawned thread, as today), held (opened by its human), and ended.
 - **X4. Which log holds what, who writes it, and what a reader honours.** A thread's lifecycle events and membership statements: its project log, under its own writer, by its own machine. A channel's log: requests, hand-added machines, the lead, and what is said in the channel; never a `message`, `question` or `answered`. No event about a thread is written by another machine's writer, except a request, which states what is asked and nothing about what is. A statement that answers a request names it by the channel's id, the writer and the seq. A request is honoured as D3's "who may ask" says; a hand-added machine from any member that has not ended; a lead only under a machine's human writer. The channel id is as D3 states, and one set of vectors for it is kept in MAWS and copied to sminos's suite. Owner: CH for the kinds' names and shapes; the placement and the rules bind every child now.
 - **X5. The wire.** RL10 stays at its version; the capability pair `channels` gates `member.channels`. Each side is inert until the other advertises it. The conversation fixture is one file, changed in MAWS and copied byte for byte. Owner: MW for MAWS, CH for sminos.
 - **X6. What sessions are taught stays true.** Each child changes the guide text, `sminos/skills/sminos/SKILL.md`, the spawn preamble and the nested `CLAUDE.md` files for what it changes, through doperpowers:writing-skills with a small evaluation. The rewrite into the words "thread" and "channel", and the manager's skill, are CH's. Until then a child uses today's words and adds only what became false.
-- **X7. Releases.** D7, for every child: a reader before its writer between machines; on one machine, the store's rules version, which only the daemon raises and below which no CLI changes lifecycle. A child whose rules change who is a member, seated, retired, resumed or delivered to takes a rules version and states what a CLI without it must leave alone. Owner: FN. The reader rule for a `retired` without `thread` binds sminos and MAWS's app alike, with shared vector cases.
+- **X7. Releases.** D7, for every child: a reader before its writer between machines; on one machine, the two rules of what older code can see and what readers believe, and the degradations it accepts. The reader rule for a `retired` without `thread` binds sminos and MAWS's app alike, with shared vector cases. Owner: T1, which lands `thread`.
 - **X8. A machine's notice.** An event written by a machine's own `say` under its human writer that carries the notice marker is a machine's notice. It is never the owner's post: the lead rule skips it, and so does anything else that reads what a person said. Owner: EN (devcloud writes the marker). Reader: CH.
 - **X9. Which VMs a thread owns.** devcloud answers, for a set of creator tags, with the VMs that name them, a complete none, or unknown with what could not be asked; never a none it cannot stand behind. sminos asks it, on a machine where the driver runs, with the tags of every session id the thread has had, before a retire and before the three-day end, and treats unknown as owning. Where the driver does not run, sminos does not ask and the answer is none. Owner: DV. Consumers: T1 (the two guards), EN (the handover, `channel show`).
 
 ## Ordering & Dependency Map
 
 ```
-FN ─┐
-    ├─▶ T1 ──▶ T2 ──▶ EN.G1 ──┐
-DV ─┘    │                    ├──▶ EN.G2
-         └──────▶ CH ─────────┘
-                  ▲
-MW ───────────────┘ (CH's cross-machine gates)      MAWS #761: independent
+DV ──▶ T1 ──▶ T2 ──▶ EN.G1 ──┐
+        │                    ├──▶ EN.G2
+        └──────▶ CH ─────────┘
+                 ▲
+MW ──────────────┘ (CH's cross-machine gates)      MAWS #761: independent
 ```
 
-FN and DV first, side by side, each small: T1's rules come into force through FN's cutover, and T1's two guards ask DV's question. FN is released ahead of T1 so that sessions start under it while T1 is built; a machine cuts over when its last session from before the fence has ended. T1 next: it is what every other child reads, and it needs nothing from the engine. T2 after it, so that the durability fault is whole before channels exist. CH and EN are cut when they near execution: their boundaries depend on what T1's record looks like, and a cut drawn now would be redrawn. MW can be built in MAWS at any time; it is inert until sminos advertises the capability. EN.G1 needs only T1 and T2 and could run beside CH. T1 and T2 change the same functions of `S/sminos.py` and run one after the other.
+DV first and small: T1's two guards ask it. T1 next: it is what every other child reads, and it needs nothing from the engine. T2 after it, so that the durability fault is whole before channels exist. CH and EN are cut when they near execution: their boundaries depend on what T1's record looks like, and a cut drawn now would be redrawn. MW can be built in MAWS at any time; it is inert until sminos advertises the capability. EN.G1 needs only T1 and T2 and could run beside CH. T1 and T2 change the same functions of `S/sminos.py` and run one after the other.
 
 ## Risks & Mitigations
 
-- **A wake under a looser mode than its human chose, or than the machine now allows.** Steps 2 and 3 of D2, the exclusions for a mode never observed and for a saved mode above the ceiling, and T2's gate G1 before any wake code ships. T1 ships with every path into `resume_session` held for a thread its human opened.
-- **An older sminos on the same machine applies the old rules.** D7's fence and FN's acceptance; the reader rule for what the fence cannot reach.
-- **A machine's cutover waits on a session that never ends.** The new rules do not start there until the owner restarts it; the command of FN's acceptance 3 names it. Nothing is lost meanwhile: the machine behaves as today.
+- **A woken thread's mode or model differs from what its human last ran.** The owner ruled the mode out as a worry (D2). What remains is carried, not guarded: a first wake passes the last turn's mode and model, and the opening line says what the thread runs under.
+- **An older sminos on the same machine applies the old rules.** D7: what older code can see, what readers believe, and the degradations it lists as accepted. T1's acceptance 10.
 - **devcloud cannot be asked for a long time** (a provider account that stopped working), and every thread on that Mac can neither end nor retire. The refusal names the account; T1's residue is a terminal-only way past it.
 - **A wrong continuation hands one thread's record owners and reach to another.** The rule is two cases, keyed on evidence the engine writes, and T1 pins a fork, an in-session `/resume` and a refill as not carrying reach.
 - **A long-quiet spawned thread now ends after three days,** where today it would be woken a week later. The sender is told it ended; `sminos fill` returns it. Watched after T1 (Delegated unknowns).
@@ -449,11 +423,10 @@ FN and DV first, side by side, each small: T1's rules come into force through FN
 | Child | Artifact | Status |
 |---|---|---|
 | (landed before this cut) CLI on PATH, stdin bodies, the backtick guard | PR #509, sminos 1.48.0; residue in `docs/doperpowers/TECH-DEBT.md` | landed 2026-11-17; PATH verified on an installed 1.48.0 in an interactive session, a `--bg` seat and a subagent (PR #510) |
-| FN | — | not-dispatched: waits for the owner's look at this cut |
-| DV | — | not-dispatched: waits for the owner's look at this cut |
-| T1 | — | not-dispatched: waits for the owner's look, then FN and DV |
+| DV | — | the owner said go, 2026-11-17 |
+| T1 | — | the owner said go, 2026-11-17; its plan is written while DV is built |
 | T2 | — | not-dispatched: blocked-by T1 |
-| MW | the contract of D6, agreed with MAWS's architect in the two projects' sminos chat on 2026-11-17 | not-dispatched: waits for the owner's look |
+| MW | the contract of D6, agreed with MAWS's architect in the two projects' sminos chat on 2026-11-17 | MAWS's architect told to start, 2026-11-17 |
 | CH | — | not-dispatched: blocked-by T1; cut at dispatch |
 | EN | — | not-dispatched: blocked-by T1, T2 |
 | (independent) the notification dedup key | MAWS #761 | filed 2026-11-17 |
@@ -507,6 +480,12 @@ FN and DV first, side by side, each small: T1's rules come into force through FN
   - MW's acceptance states `known` from MAWS's side only, and opens with the check for an existing version-8 id.
 
 - 2026-11-17 — **The fence** (the same reviewer's check of the second round's fixes: the other four were closed, this one was not). The structural answer above left three paths open in older code: an explicit retire that asks devcloud nothing, `seat add --session` followed by a resume, and a delivery settled without a wake. Two attempts at listing what older code may do had now failed, so D7 no longer lists: the daemon is the one writer of lifecycle whenever versions differ, the first fenced rules wait on each machine for its last session from before the fence, and the cutover removes the cached copies that cannot be taught. The fence is its own child (FN), released ahead of T1. A last check of it found one more case, a process from an old copy already running at the cutover, which the cutover now waits out before it raises the version; the review stopped there, each round having found less than the one before. The reader rule stays as a second line for a development checkout, and MAWS's app takes it too: its architect found that a stray `retired` makes a thread unaddressable from the project chat until it joins again. Alternative rejected: accepting the three paths as rare. The second is the unattended resume of a session in a looser mode than its human chose, which is the fault this design exists to close.
+
+- 2026-11-17 — **The owner's ruling on permission modes, after reading the cut, and the go.** "세션의 모드는 사실 전부 auto 또는 bypasspermission이라고 가정해도 문제가 없다. permission 모드 문제 걱정은 사실 할 이유가 크지 않다." What it removed:
+  - From the wake (D2, T2): the mode and model recorded between runs, the check of the mode after each wake and the stop that followed it, and three refusals (a mode never observed, a saved mode above the machine's ceiling, a last wake that came up wrong). The mode and model are read from the transcript at the wake and passed on a first background resume, so that a session on another model does not change model unnoticed. The refusal of a thread whose last mode asks for approval stays: it is the owner's earlier ruling and reads the same row.
+  - The fence (the child FN, the rules version, the per-machine cutover and its removal of cached copies). Its reason was an older copy bringing a manual session back in `auto`. D7 returns to its two rules and lists as accepted what an older copy can still do; the reviewers' findings on those paths stand as true and are no longer acted on.
+  - From T1: recording the mode and model, and waiting for a cutover. T1 comes into force when it is installed.
+  Kept from the same rounds: devcloud as the authority for a VM's owner with its own child and contract, the request's identity naming the channel, MAWS's reader rule, and everything in the first review round's entry. The owner then answered the question of whether to start with "착수한다": DV is dispatched, T1's plan is written while DV is built, and MAWS's architect is told to start MW.
 
 ## Outcomes & Retrospective
 
