@@ -5,27 +5,69 @@
 # commands (status, the jobs, the lifecycle) keep their root-only behavior.
 # Builtins only until Python is found.
 here="$(cd "${BASH_SOURCE[0]%/*}" && pwd -P)" || exit 1
-# `vm owned-by` is a program's question, and exit 6 is its "nothing here owns
-# a VM": a host, or a machine with no seed key, answers it before any Python is
-# looked for, so a caller whose PATH has none still hears that a non-driver is
-# one. The same refusals and wording as the driver's (driver/cli.py, and Paths
-# in driver/context.py for the seed's location). DEVCLOUD_HOST_MARKER is the
-# tests' seam; the driver itself checks only the fixed path.
-if [ "${1:-}" = vm ] && [ "${2:-}" = owned-by ]; then
-  if [ -e "${DEVCLOUD_HOST_MARKER:-/etc/devcloud/boot.env}" ]; then
-    echo "devcloud vm: this machine is a devcloud host; drive from a Mac" >&2
-    exit 6
-  fi
-  seed="${DEVCLOUD_SEED_FILE:-${HOME:+$HOME/.config/devcloud/seed.json}}"
-  if [ -n "$seed" ] && [ ! -e "$seed" ]; then
-    echo "devcloud vm: no seed key at $seed (\$DEVCLOUD_SEED_FILE, else ~/.config/devcloud/seed.json): this machine is not a driver" >&2
-    exit 6
-  fi
-fi
 for py in python3.14 python3.13 python3.12 python3.11 python3; do
   if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
     DEVCLOUD_BIN="$here/devcloud" exec "$py" "$here/../boot/devcloud" "$@"
   fi
 done
+
+# Confirmed absent, as pathlib's exists() reads a path: the nearest ancestor
+# that exists is a file (ENOTDIR) or a directory the caller can search
+# (ENOENT). Under one it cannot search, the driver fails, and so does this.
+absent() {
+  local p=$1 up
+  [ -e "$p" ] && return 1
+  while :; do
+    case $p in
+      */*) up=${p%/*}; up=${up:-/} ;;
+      *) up=. ;;
+    esac
+    if [ -e "$up" ]; then
+      [ ! -d "$up" ] || [ -x "$up" ]
+      return
+    fi
+    [ "$up" = "$p" ] && return 1
+    p=$up
+  done
+}
+
+# `vm owned-by` is a program's question, and exit 6 its "nothing here owns a
+# VM". Without a Python the driver cannot answer it, so the refusals it would
+# make are made here, in its order and wording, on confirmed evidence only:
+# a host (boot/devcloud, driver/cli.py), a copy without driver/ (boot/devcloud),
+# no seed key where Paths.from_env (driver/context.py) puts it. Anything else
+# is the failure below.
+if [ "${1:-}" = vm ] && [ "${2:-}" = owned-by ]; then
+  if [ -e /etc/devcloud/boot.env ]; then
+    echo "devcloud vm: this machine is a devcloud host; drive from a Mac" >&2
+    exit 6
+  fi
+  boot="$(cd "$here/../boot" && pwd -P)" || exit 1
+  if [ ! -d "${boot%/*}/driver" ]; then
+    echo "devcloud vm: this copy of devcloud has no driver (a host's); drive from a Mac" >&2
+    exit 6
+  fi
+  if [ -n "${DEVCLOUD_SEED_FILE:-}" ]; then
+    seed=$DEVCLOUD_SEED_FILE
+  else
+    if [ -n "${HOME:-}" ]; then home=$HOME
+    elif [ -n "${HOME+set}" ]; then home=/       # Path.home() of an empty HOME
+    else home=~                                  # unset: the account's home
+    fi
+    seed="${home%/}/.config/devcloud/seed.json"
+  fi
+  # pathlib drops a trailing / and /. (the same file to the driver)
+  while :; do
+    case $seed in
+      ?*/) seed=${seed%/} ;;
+      */.) seed=${seed%/.}; seed=${seed:-/} ;;
+      *) break ;;
+    esac
+  done
+  if absent "$seed"; then
+    echo "devcloud vm: no seed key at $seed (\$DEVCLOUD_SEED_FILE, else ~/.config/devcloud/seed.json): this machine is not a driver" >&2
+    exit 6
+  fi
+fi
 echo "devcloud: needs Python 3.11 or later on PATH (tried python3.14 down to python3)" >&2
 exit 1

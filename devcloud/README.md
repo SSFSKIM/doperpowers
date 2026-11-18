@@ -608,10 +608,12 @@ full) or `unknown` (naming each account that could not be used and each
 listing that failed). Unlike `ls` it never takes a partial fleet for the
 whole. The shape is in `driver/owned.py`. Exit 6 is its "nothing here owns
 a VM", so it is kept to the machines where the driver does not run: a host,
-a machine with no seed key (both answered by `bin/devcloud` before it looks
-for a Python, so a caller's `PATH` without one does not turn a non-driver
-into an unknown), and a copy of devcloud without `driver/`. A driver that is
-present and does not import fails with its traceback, exit 1.
+a copy of devcloud without `driver/`, and a machine with no seed key. A
+driver that is present and does not import fails with its traceback, exit 1.
+Where no Python 3.11+ is on `PATH`, `bin/devcloud` makes those three
+refusals itself, so a caller's `PATH` without one does not turn a non-driver
+into an unknown; it answers 6 only on confirmed evidence (a seed it cannot
+look up is not a missing one) and exit 1 otherwise.
 
 **What it needs.** The profile's `driver.toml` (beside the host profile in
 `~/.claude/devcloud/`, or `$DEVCLOUD_PROFILE`): the caps, the default

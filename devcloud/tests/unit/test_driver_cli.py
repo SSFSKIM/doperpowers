@@ -118,13 +118,14 @@ class EntryTest(unittest.TestCase):
 
 
 class OwnedByEntryTest(unittest.TestCase):
-    """`vm owned-by` through the real launcher, in an isolated HOME and PATH:
-    exit 6 (nothing here owns a VM) on a host or without a seed key whether or
-    not a Python 3.11+ is on PATH, and only there; a seed key with no Python,
-    or a driver present that does not import, is another exit."""
+    """`vm owned-by` through the real launcher, in an isolated HOME and PATH.
+    With a Python 3.11+ the driver decides; without one the launcher answers 6
+    only where the driver would (a host, a copy without driver/, a seed key
+    confirmed absent where Paths.from_env puts it), and 1 otherwise."""
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="devcloud-owned-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.home = self.tmp / "home"
         self.home.mkdir()
         self.no_python = self.tmp / "no-python"     # a PATH with nothing on it
@@ -132,41 +133,45 @@ class OwnedByEntryTest(unittest.TestCase):
         self.python = self.tmp / "python"           # a PATH with a Python 3.11+ alone
         self.python.mkdir()
         (self.python / "python3").symlink_to(sys.executable)
-        self.marker = self.tmp / "boot.env"
+        self.seed = self.home / ".config" / "devcloud" / "seed.json"
 
-    def run_launcher(self, path, root=_path.DEVCLOUD, **env):
-        env = {"PATH": str(path), "HOME": str(self.home), "DEVCLOUD_HOST_MARKER": str(self.marker), **env}
+    def run_launcher(self, path, root=_path.DEVCLOUD, home=True, **env):
+        env = {"PATH": str(path), **({"HOME": str(self.home)} if home else {}), **env}
         return subprocess.run(["/bin/bash", str(root / "bin" / "devcloud"), "vm", "owned-by", "@abcd1234"],
                               env=env, capture_output=True, text=True, timeout=60)
 
     def give_seed(self):
-        seed = self.home / ".config" / "devcloud" / "seed.json"
-        seed.parent.mkdir(parents=True)
-        seed.write_text("{}")
+        self.seed.parent.mkdir(parents=True)
+        self.seed.write_text("{}")
 
-    def copy(self, driver):
-        """The plugin's launcher and boot program, with the driver as `driver` makes it."""
+    def copy(self, driver=True, rebind=None):
+        """The plugin's launcher and boot program, with or without the driver,
+        and the launcher's fixed paths rebound as `rebind` maps them."""
         root = self.tmp / "devcloud"
         skip = shutil.ignore_patterns("__pycache__")
         for part in ("bin", "boot") + (("driver",) if driver else ()):
             shutil.copytree(_path.DEVCLOUD / part, root / part, ignore=skip, symlinks=True)
-        if driver:
-            driver(root / "driver")
+        launcher = root / "bin" / "devcloud"
+        text = launcher.read_text()
+        for fixed, there in (rebind or {}).items():
+            self.assertIn(fixed, text)
+            text = text.replace(fixed, there)
+        launcher.write_text(text)
         return root
 
-    def test_a_host_is_6_with_or_without_python(self):
-        self.marker.write_text("DEVCLOUD_NAME=x\n")
+    def test_a_host_without_python_is_6(self):
+        marker = self.tmp / "boot.env"
+        marker.write_text("DEVCLOUD_NAME=x\n")
         self.give_seed()
-        for path in (self.no_python, self.python):
-            done = self.run_launcher(path)
-            self.assertEqual(done.returncode, 6, (path, done.stderr))
-            self.assertIn("devcloud vm: this machine is a devcloud host; drive from a Mac", done.stderr)
+        done = self.run_launcher(self.no_python, root=self.copy(rebind={"/etc/devcloud/boot.env": str(marker)}))
+        self.assertEqual(done.returncode, 6, done.stderr)
+        self.assertIn("devcloud vm: this machine is a devcloud host; drive from a Mac", done.stderr)
 
     def test_no_seed_key_is_6_with_or_without_python(self):
         for path in (self.no_python, self.python):
             done = self.run_launcher(path)
             self.assertEqual(done.returncode, 6, (path, done.stderr))
-            self.assertIn(f"no seed key at {self.home}/.config/devcloud/seed.json", done.stderr)
+            self.assertIn(f"no seed key at {self.seed}", done.stderr)
             self.assertIn("this machine is not a driver", done.stderr)
         elsewhere = self.tmp / "elsewhere.json"
         self.give_seed()                            # the default exists, the one named does not
@@ -180,21 +185,50 @@ class OwnedByEntryTest(unittest.TestCase):
         self.assertEqual(done.returncode, 1, done.stderr)
         self.assertIn("Python 3.11", done.stderr)
 
-    def test_6_for_a_missing_driver_only(self):
+    def test_a_seed_named_with_a_trailing_slash_or_dot_is_the_same_file(self):
         self.give_seed()
-        done = self.run_launcher(self.python, root=self.copy(driver=None))
-        self.assertEqual(done.returncode, 6, done.stderr)
-        self.assertIn("has no driver", done.stderr)
+        for spelled in (f"{self.seed}/", f"{self.seed}/.", f"{self.seed}//./"):
+            done = self.run_launcher(self.no_python, DEVCLOUD_SEED_FILE=spelled)
+            self.assertEqual(done.returncode, 1, (spelled, done.stderr))
+            self.assertIn("Python 3.11", done.stderr)
 
-        def broken(driver):
-            cli_py = driver / "cli.py"
-            cli_py.write_text("import devcloud_missing_dependency\n" + cli_py.read_text())
-        shutil.rmtree(self.tmp / "devcloud")
-        done = self.run_launcher(self.python, root=self.copy(driver=broken))
+    @unittest.skipIf(os.geteuid() == 0, "root searches every directory")
+    def test_a_seed_that_cannot_be_looked_up_is_not_missing(self):
+        sealed = self.seed.parent
+        sealed.mkdir(parents=True)
+        sealed.chmod(0)
+        self.addCleanup(sealed.chmod, 0o755)
+        done = self.run_launcher(self.no_python)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("Python 3.11", done.stderr)
+
+    def test_without_home_the_seed_is_under_the_accounts_home(self):
+        from driver.context import Paths
+        account_seed = Paths.from_env({}).seed      # the driver's own reading
+        done = self.run_launcher(self.no_python, home=False)
+        if account_seed.exists():
+            self.assertEqual(done.returncode, 1, done.stderr)
+        else:
+            self.assertEqual(done.returncode, 6, done.stderr)
+            self.assertIn(f"no seed key at {account_seed}", done.stderr)
+
+    def test_6_for_a_missing_driver_with_or_without_python(self):
+        self.give_seed()
+        root = self.copy(driver=False)
+        for path in (self.no_python, self.python):
+            done = self.run_launcher(path, root=root)
+            self.assertEqual(done.returncode, 6, (path, done.stderr))
+            self.assertIn("has no driver", done.stderr)
+
+    def test_a_driver_that_does_not_import_is_not_6(self):
+        self.give_seed()
+        root = self.copy()
+        cli_py = root / "driver" / "cli.py"
+        cli_py.write_text("import devcloud_missing_dependency\n" + cli_py.read_text())
+        done = self.run_launcher(self.python, root=root)
         self.assertNotIn(done.returncode, (0, 6), done.stderr)
         self.assertIn("devcloud_missing_dependency", done.stderr)
         self.assertNotIn("has no driver", done.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()
