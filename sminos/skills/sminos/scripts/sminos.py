@@ -37,7 +37,8 @@ member too, seat-less, from the first call that reads its project.
                    as @all wakes; recorded in each project it reaches, copied into yours; no @tags beside it
     sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
     sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
-    sminos charge   [<member>] "<one line>"               # what the member is in charge of (a session: its own)
+    sminos charge   [<member>] "<one line>"               # what the member is in charge of (a session: its own),
+                   until the member's next compaction derives a line over it
     sminos join     <project> | --cwd                     # this session's project, declared: a session is in
                    its launch directory's project (a `cd` moves nothing) until it joins another; --cwd goes
                    back; alone: which project it is in, and why. Not for a seat
@@ -4997,8 +4998,9 @@ def logged_alias(sid, info):
 
 def charge_of(member, events, title=True, published=""):
     """(line, source, ts): what a member is in charge of, the first present of
-    (§5) the latest `set` in-charge line, the latest `derived` line, the name
-    the human gave it, and its title — read from its transcript on this
+    (§5) the latest of its `set` and `derived` in-charge lines — a set line
+    until a line derived after it (a compaction derives over a set line:
+    derive_refusal) —, the name the human gave it, and its title — read from its transcript on this
     machine, else the one its machine `published` (`titled`); ("", "", "")
     when none is. `ts` is the line's event's, "" for a line no event wrote (a
     name, a title). A set or derived line written empty is no line. `events`
@@ -5008,7 +5010,12 @@ def charge_of(member, events, title=True, published=""):
     member continues (`former`) is the member's."""
     sessions = (member.session,) + tuple(member.former)
     mine = [e for e in events if e["kind"] == "in-charge" and e.get("session") in sessions]
-    for source in ("set", "derived", "name", "title"):
+    lines = {}
+    for source in ("set", "derived"):
+        e = latest_across_writers([x for x in mine if x.get("source") == source])
+        lines[source] = (str(e.get("text") or "").strip(), str(e.get("ts") or "")) if e else ("", "")
+    order = ("derived", "set") if lines["derived"][0] and lines["derived"][1] > lines["set"][1] else ("set", "derived")
+    for source in order + ("name", "title"):
         ts = ""
         if source == "name":
             line = member.alias if member.name_source == "user" else ""
@@ -5018,8 +5025,7 @@ def charge_of(member, events, title=True, published=""):
             else:
                 line = published
         else:
-            e = latest_across_writers([x for x in mine if x.get("source") == source])
-            line, ts = (str(e.get("text") or "").strip(), str(e.get("ts") or "")) if e else ("", "")
+            line, ts = lines[source]
         if line:
             return line, source, ts
     return "", "", ""
@@ -8249,13 +8255,15 @@ def derive_refusal(project, m, compacted=False):
     its transcript was written since that line — the same conversation gives
     the same answer, and forking an idle session rebuilds its prompt cache.
     `compacted` (the compaction hook's derive) waives those two pacing rules
-    alone: a compaction is the evidence that much has happened
-    (docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md §2)."""
+    and a set line: a compaction is the evidence that much has happened,
+    since the line was set too, and the line it derives wins until the
+    member sets another (charge_of;
+    docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md §2, §4)."""
     if not m.session:
         return "it holds no session"
     if not m.local:
         return "it runs on %s" % m.machine
-    if m.charge_source == "set":
+    if m.charge_source == "set" and not compacted:
         return "its line is set"
     foreign = foreign_config(m.session)
     if foreign:
@@ -8537,6 +8545,9 @@ def cmd_derive(a):
         targets = derive_order(targets)
     else:
         targets = [(p, m, False) for p, m in targets]
+    if a.compacted:
+        for project, m, _ in targets:
+            clear_status(project, m)
     forked_refreshes = failed = 0
     for project, m, refresh in targets:
         spent = refresh and a.refreshes is not None and forked_refreshes >= a.refreshes
@@ -8546,6 +8557,22 @@ def cmd_derive(a):
         forked_refreshes += refresh and outcome in ("derived", "failed")
     if failed:
         sys.exit(1)
+
+
+def clear_status(project, m):
+    """A compaction clears a local member's `now:` status line: the line said
+    what it was doing at some step before the compaction, and nothing else
+    ever refreshes it. A seat's local `now` goes with it, as `status ""` does."""
+    if not m.local or not m.status:
+        return
+    try:
+        lifecycle(project, m.session, "status", text="")
+        if m.seat:
+            meta_set(m.seat["seat_id"], {"now": "", "updated": now()}, bump=False, create=False)
+    except (OSError, audience_module().StreamUnknown) as e:
+        warn("the status of %s was not cleared: %s" % (m.alias, e))
+    else:
+        print("%s now: (cleared at compaction)" % m.alias)
 
 
 def derive_order(targets):
@@ -8601,6 +8628,10 @@ def derive_member(project, m, held_off=False, refreshes_spent=None, compacted=Fa
                 pass
         if not held_off:
             print("%s: not derived — %s" % (m.alias, e))
+        else:
+            # Held off as a failed fork is: its side question, asked first, may
+            # fail every run (a member whose bridge has nothing to fork yet).
+            derive_failed_mark(m.session, True)
         return "refused"
     except DeriveFailed as e:
         tail = [x for x in (e.stderr or "").splitlines() if x.strip()][-5:]

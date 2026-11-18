@@ -5858,8 +5858,21 @@ assert_contains "$OUT" "hd: Owns the compacted stub." "derive --compacted derive
 assert_contains "$(tail -1 "$HPLOG/testhost.$HD.jsonl")" '"text": "Owns the compacted stub.", "source": "derived"' "and records the new line"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: not derived — derived" "the compaction's line restarts the six-hour spacing"
+# A set line yields to a compaction: the line derived after it wins until the
+# member sets another (2026-11-08-sminos-derive-on-compact-design.md §4).
+run "$SMINOS" derive ha
+assert_contains "$OUT" "ha: not derived — its line is set" "a plain derive leaves a set line alone"
+tx "$TA" tool h8000001 10
+CLAUDE_CODE_SESSION_ID="$HA" run "$SMINOS" status ha "drafting the parser"
+STUB_FORK_RESULT="Owns the parser rewrite." run "$SMINOS" derive ha --compacted
+assert_contains "$OUT" "ha: Owns the parser rewrite." "--compacted derives over a set line"
+assert_contains "$OUT" "ha now: (cleared at compaction)" "and clears its now: status"
+assert_equals "$(json_row ha charge)|$(json_row ha charge_source)" "Owns the parser rewrite.|derived" "the line derived after the set one wins"
+assert_equals "$(json_row ha status)" "" "the status is cleared in the log"
 run "$SMINOS" derive ha --compacted
-assert_contains "$OUT" "ha: not derived — its line is set" "--compacted leaves a set line alone"
+assert_not_contains "$OUT" "now: (cleared" "a status already clear writes nothing"
+CLAUDE_CODE_SESSION_ID="$HA" run "$SMINOS" charge "parser, again"
+assert_equals "$(json_row ha charge)|$(json_row ha charge_source)" "parser, again|set" "a line set after it wins again"
 HF=6f00000a-0000-4000-8000-00000000006f
 hp_peer hf "$HF" derived interactive
 tx "$TXD/$HF.jsonl" tool h9000001 9
