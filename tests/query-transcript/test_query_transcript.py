@@ -436,6 +436,16 @@ class Quotes(Case):
     def test_a_thinking_signature_is_not_the_record(self):
         self.assertEqual(self.check("> SIGNATURE-TEXT\n")[0]["found"], False)
 
+    def test_a_peer_message_the_engine_marks_meta_is_a_peer_message(self):
+        # The engine writes another session's message as a meta user row whose origin names the peer.
+        peer = user("cccc0001-0000-4000-8000-000000000001", "2026-11-01T10:01:00Z",
+                    'Another Claude session sent a message:\n<cross-session-message from-name="p">hi</cross-session-message>',
+                    isMeta=True, origin={"kind": "peer", "name": "p"})
+        self.assertEqual(qt.row_kind(peer), "peer message")
+        caveat = user("cccc0002-0000-4000-8000-000000000002", "2026-11-01T10:02:00Z",
+                      "<local-command-caveat>…</local-command-caveat>", isMeta=True)
+        self.assertEqual(qt.row_kind(caveat), "notice")
+
 
 class Several(Case):
     def test_order_and_a_failed_segment(self):

@@ -503,6 +503,9 @@ def row_kind(o):
     content = (o.get("message") or {}).get("content")
     if isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
         return "tool result"
+    origin = o.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") == "peer":
+        return "peer message"  # the engine marks another session's message meta
     if o.get("isMeta"):
         return "notice"
     if isinstance(content, list):
