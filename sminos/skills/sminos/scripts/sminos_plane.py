@@ -2731,7 +2731,8 @@ class Plane:
         Most of an idle machine's projects have not changed in ten seconds,
         and a read of each was most of an idle uplink's work once its upload
         pass stopped looking at the whole history (2026-10-28)."""
-        seats = tuple(_stat_key(p) for p in sminos.record_files())
+        # The seats and the thread store (sminos_threads): what a thread's record holds can move its row.
+        seats = (tuple(_stat_key(p) for p in sminos.record_files()), sminos.threads_module().store_key())
         internal = _stat_key(os.path.join(sminos.root(), "internal"))
         out = []
         for pid, project in projects.items():
@@ -2744,7 +2745,7 @@ class Plane:
         """What a read of the project's members draws on that can move while
         no session comes or goes: its log's files (a member joined, retired,
         renamed, published its state — the daemon's tick writes there what
-        it reconciles), the seats, its members' engine records (their state
+        it reconciles), the seats and thread records, its members' engine records (their state
         words, their names) and session records (RL10's member frames), and
         the internal forks. None when its log cannot be listed."""
         files = []

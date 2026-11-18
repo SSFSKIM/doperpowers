@@ -741,7 +741,7 @@ def rejoin_former(project, view=None):
             continue
 
         def guard(evs, mine=sminos.writer_id(m.session)):
-            last = next((e for e in reversed(evs) if e["kind"] in sminos.MEMBERSHIP), None)
+            last = sminos.threads_module().in_effect(evs)
             return last is not None and last["kind"] == "joined" and sminos.writer_base(last["writer"]) != mine
 
         got = sminos.lifecycle(project, m.session, "joined", guard=guard, required=False,

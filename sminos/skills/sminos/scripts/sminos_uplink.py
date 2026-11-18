@@ -692,11 +692,8 @@ def member_frame(pid, m, launch=None, visibility=False):
     they never ride a log event."""
     rec = m.record or {}
     origin = rec.get("origin") if isinstance(rec.get("origin"), dict) else dict(sminos.DEFAULT_ORIGIN)
-    controller = rec.get("controller") if isinstance(rec.get("controller"), dict) else None
-    lane = "B" if (controller or {}).get("lane") == "B" or (controller is None and origin.get("kind") == "maws") \
-        else "A"
-    frame = {"t": "member", "session": m.session, "alias": m.alias, "project": pid, "lane": lane,
-             "state": m.state}
+    frame = {"t": "member", "session": m.session, "alias": m.alias, "project": pid,
+             "lane": sminos.records_module().lane_of(m.record), "state": m.state}
     if m.title:
         frame["title"] = m.title
     frame["cwd"] = m.cwd
@@ -1843,7 +1840,16 @@ class Link:
                     current[sid] = frame
         if len(self.frames) > len(seen):
             self.frames = {sid: held for sid, held in self.frames.items() if sid in seen}   # those of rows gone
-        frames = [f for sid, f in current.items() if self.members_sent.get(sid) != f]
+        frames = []
+        for sid, f in current.items():
+            sent = self.members_sent.get(sid)
+            if sent == f:
+                continue
+            if sent is not None and sent.get("lane") != f.get("lane"):
+                # The endpoint withdraws the old listing before it takes the new one (D1: a thread MAWS
+                # reopens as lane B is not listed twice).
+                frames.append({"t": "member", "session": sid, "gone": True})
+            frames.append(f)
         frames += [{"t": "member", "session": sid, "gone": True} for sid in self.members_sent if sid not in current]
         batch, size, unsent = [], 0, set()
         for f in frames:

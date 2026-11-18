@@ -290,6 +290,19 @@ def establish(sid, prov, deadline=None):
         return rec, True
 
 
+def lane_of(rec):
+    """Whether a session is lane A or B by its record (`rec`, None for
+    none): B when its controller says so, or when no controller is set yet
+    and the engine host launched it (origin `maws`), else A. The one rule:
+    RL10's `member` frame states it (sminos_uplink.member_frame), and a
+    session is a thread exactly when it is lane A (sminos_threads.ensure)."""
+    rec = rec or {}
+    origin = rec.get("origin") if isinstance(rec.get("origin"), dict) else {}
+    controller = rec.get("controller") if isinstance(rec.get("controller"), dict) else None
+    return "B" if (controller or {}).get("lane") == "B" or (controller is None and origin.get("kind") == "maws") \
+        else "A"
+
+
 def set_controller(sid, lane, since=None):
     """The session's current controller, `{lane, since}`, on its existing
     record, its provenance untouched (the bridge's lane verdict, O12 M3).
