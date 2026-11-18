@@ -1,15 +1,18 @@
-# sminos threads, T1 — identity and lifecycle: execution (2026-11-17)
+# sminos threads, T1 — identity and lifecycle: execution (2026-11-17, revised 2026-11-18)
 
 > **Composite:** `docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md`,
 > child **T1** (Threads: identity and lifecycle — plan). **Parent pin:** `main`
-> `279bb44a`, that file's blob `681c00756223671eb498ccb2a63e1b2023e7e693`.
+> `ca9b6df4`, that file's blob `135fb0f47a9509938aa96dc2eea1c572d07845ed`,
+> with its holder's rulings of 2026-11-18 on this plan's review, which the
+> composite takes next and this document's Decision Log lists: where the two
+> differ, the rulings hold.
 > The child's section there is its spec, D1 and D7 its design, X1, X2, X3, X6,
 > X7 and X9 its contracts. This document carries the constraints and the
 > milestones and nothing of the design. Read before M1: the composite's
 > Purpose, Grounding Baseline (the sminos part and its table), Terms, D1, D7,
 > D2's "Not woken" and D4's paragraphs on ownership (what T2 and EN build on
 > what T1 leaves), the T1 section, the Cross-Child Contracts (X9 holds
-> devcloud's command as built), and its Decision Log's last two entries. The
+> devcloud's command as built), and its Decision Log's last entries. The
 > code map the composite cites
 > (`docs/doperpowers/research/2026-11-17-sminos-channels/code-map.md`, §1 and
 > §5) locates most of what changes; its line numbers have moved, its function
@@ -17,22 +20,22 @@
 
 After this child a session its human opened no longer leaves its project when
 its terminal closes. It stays, listed `stopped`, under its name and its
-in-charge line; a new session of the same name is told apart from it; what is
-sent to it waits and reaches it when its human opens it again. It ends only
-when it is retired or has been stopped for more than three days, and it comes
-back as itself when it is reopened. Nothing wakes such a session yet (T2
-does), and a sender is told so as it sends. A session sminos spawned is woken
-as today. How to see it working is T1's acceptance in the composite, run as
-Concrete Steps gives it.
+in-charge line; what is sent to it waits and reaches it when its human opens
+it again. It ends only when it is retired or has been stopped for more than
+three days, and it comes back as itself when it is reopened. Nothing wakes
+such a session yet (T2 does), and a sender is told so as it sends. A session
+sminos spawned is woken as today. How to see it working is T1's acceptance in
+the composite, run as Concrete Steps gives it.
 
 ## Progress
 
-- [x] (2026-11-17) The plan written against the code at `main` 279bb44a and the composite at the pin above.
+- [x] (2026-11-17) The plan written against the code at `main` 279bb44a.
+- [x] (2026-11-18) Revised for its adversarial review (fourteen findings, each checked in the code) and the composite holder's rulings, at the pin above.
 - [ ] M1 — Every member has a thread record, and its events say which thread
 - [ ] M2 — One thread across its session ids: hand-off, refill, and what is another thread
 - [ ] M3 — A closed session stays: stopped, held, and its sender told
 - [ ] M4 — A thread ends, and returns
-- [ ] M5 — A thread that owns a VM is neither retired nor ended
+- [ ] M5 — A thread that owns a VM is neither retired nor ended (after devcloud 0.17.2 is on `main`)
 - [ ] M6 — What sessions are told, an older sminos beside this one, the shared vectors, and the acceptance run
 
 ## Words this document adds
@@ -49,6 +52,12 @@ Added here, each used below without further explanation:
 - **Stamped**: carrying the field `thread` as a non-empty string. An event
   is stamped; a `joined` or a `retired` written by a sminos from before
   threads is unstamped.
+- **In effect**: a session's membership in effect is its latest own `joined`
+  or `retired` once the events the reader rule passes by are left out
+  (Interfaces §3). "A member" below means a session whose membership in
+  effect is a `joined`.
+- **Episode**: one stretch of a session's events under one thread id. A
+  session that leaves a thread and later runs again under another has two.
 - **Short id**: the first eight characters of a session id, what `@short`
   and `alias#short` carry and what devcloud keeps of a VM's creator.
 - **The hold**: what happens to a message addressed to a stopped
@@ -56,6 +65,8 @@ Added here, each used below without further explanation:
   starts no process.
 - **The thread sweep**: the daemon's pass over this machine's threads (M3,
   M4), run by `sminos daemon run` and by `sminos daemon tick`.
+- **The census**: the one question to devcloud that the thread sweep's
+  ending pass rests on, asked by a child process of the daemon (M5).
 - **The engine**: Claude Code, the `claude` CLI. Its **session record** is
   the file it keeps per running process under its config directory
   (`peer_records` reads them); sminos's own **session record** is
@@ -63,6 +74,10 @@ Added here, each used below without further explanation:
   the two could be confused the text says whose.
 - **The driver**: devcloud's VM driver, `devcloud vm …`, which runs on a
   Mac that holds a seed key and nowhere else.
+- **Cut over**: a machine whose sminos is enrolled at a MAWS endpoint
+  (`daemon/identity.json`). There a person's words, and where the endpoint
+  says so a peer's, are delivered only on the endpoint's verdict
+  (`WordsGate`, `ReachGate` in `sminos.py`).
 
 ## Constraints that bind every milestone
 
@@ -88,7 +103,11 @@ Added here, each used below without further explanation:
   `lineage_provenance`, `ensure_record` and `_member`'s owners read. *Same
   thread* (the `thread` field) carries the name, the alias and the
   in-charge line, and nothing of reach. A refill is in the second relation
-  only.
+  only, and so is whatever a witness other than the engine's hand-off
+  record shows (the session a `/clear` left, M3).
+- **A thread id names no session.** A human-opened thread's id is minted;
+  nothing an event carries in `thread` tells a reader of one audience the
+  id of a session written for another.
 - **Lane B keeps today's rules entirely** (D1). Whether a session is lane A
   is read by one function, the one the endpoint's `member` frame is built
   with, so a session is a thread exactly when sminos tells the endpoint it
@@ -97,14 +116,16 @@ Added here, each used below without further explanation:
   nothing else: a human-opened thread's record is in the thread store, and
   every reader that knows threads passes by an unstamped `retired` with
   reason `ended` for a session whose latest `joined` is stamped. What D7
-  lists as accepted is not defended; where older code leaves the log and a
-  record disagreeing, this code brings them back together (Interfaces §6,
-  the rows for older code) and defends nothing more.
-- **The record first, then the event,** for every transition that writes
-  both (Interfaces §6), as `_retire_one` orders a retire today: a membership
-  event is appended under its writer file's lock with a guard that reads the
-  record again, so no reconciliation can undo a transition between the two
-  writes.
+  lists as accepted is not defended. There is no store version and no
+  fence.
+- **The record is this machine's truth for its own threads.** Every
+  transition that writes a record and an event writes the record first
+  (Interfaces §6), as `_retire_one` orders a retire today, and the event is
+  appended under its writer file's lock with a guard that reads the record
+  again. A process can die between the two, so every reconciliation
+  finishes what a record says and the log does not show (Interfaces §6,
+  "Brought back together"): each rule there is idempotent, and no
+  transition has a step that only its own process can complete.
 - **What a session reads keeps today's words** (X6): the guide, the skill,
   the spawn preamble, `sminos help` and a verb's output say session, seat
   and member. "Thread" appears in code, in records and in the event field.
@@ -114,7 +135,7 @@ Added here, each used below without further explanation:
 - **`sminos/skills/sminos/scripts/sminos.py` is one file of some fourteen
   thousand lines,** and T2 changes the same functions after this child.
   New logic goes in `sminos_threads.py`; `sminos.py` gets calls at seams.
-  `origin/main` is merged before M1 and before the final push.
+  `origin/main` is merged before M1, before M5 and before the final push.
 - **Nothing new at the root of `$SMINOS_HOME`.** `record_files` reads every
   `*.json` there as a seat, in this code and in every older one. A new file
   goes in a directory of its own.
@@ -126,8 +147,8 @@ Added here, each used below without further explanation:
   read counts them among its inputs (`Plane.stale`, `inputs` in
   `sminos_plane.py`), and stopped threads now stay members for up to three
   days, so every per-member duty of the tick loops over more of them. No
-  per-tick duty reads an ended thread's record. The `sminos-idle` gate is
-  the check.
+  per-tick duty reads an ended thread's record, runs devcloud, or reads the
+  whole log for a thread that is held. The `sminos-idle` gate is the check.
 - **Tests are hermetic.** The suite's stub `claude`, its temporary `HOME`
   and `SMINOS_HOME` stay the only engine and store a test meets. No test
   reaches a real devcloud driver: the suite's shared setup points the
@@ -135,9 +156,11 @@ Added here, each used below without further explanation:
   public, so no hostname, account name, project id or local path enters a
   test, a comment or this document.
 - **The manager's command imports the CLI's modules**
-  (`sminos/skills/manager/scripts/`). Its tests pass after every milestone
-  and its skill is not touched; a sentence of its scripts' `CLAUDE.md` that
-  a milestone makes false is corrected in that milestone.
+  (`sminos/skills/manager/scripts/`). It reads `Member.former` as the
+  transcripts of one conversation, so that field keeps today's meaning. Its
+  tests pass after every milestone and its skill is not touched; a sentence
+  of its scripts' `CLAUDE.md` that a milestone makes false is corrected in
+  that milestone.
 - **One change, one version.** The child merges as one pull request that
   leaves the repository releasable beside an older sminos on another
   machine (D7), with sminos's version bumped in it
@@ -149,13 +172,14 @@ Added here, each used below without further explanation:
 
 T1 changes one state machine: a thread's record on its machine and the
 lifecycle events that machine writes about it. M1 gives every member the
-record and the stamp, under today's rules. M2 says which session ids are one
-thread and makes any of them reach the current one. M3 replaces "its process
-ended, so it left" with `stopped` and the hold. M4 adds the two ways a thread
-ends and the two ways it returns. M5 puts devcloud's answer in front of every
-path that ends one. M6 changes what sessions are told, checks an older sminos
-against the new store, pins the vectors shared with MAWS, and runs the
-acceptance.
+record and the stamp, under today's rules, with the rule that brings a
+record and the log back together. M2 says which session ids are one thread
+and makes any of them reach the current one. M3 replaces "its process ended,
+so it left" with `stopped` and the hold. M4 adds the two ways a thread ends
+and the two ways it returns. M5 puts devcloud's answer in front of every
+path that ends one. M6 changes what sessions are told, checks an older
+sminos against the new store, pins the vectors shared with MAWS, and runs
+the acceptance.
 
 Each milestone ends with the suites green for what it touched and with the
 nested `CLAUDE.md` beside the code it changed, and `sminos help`'s text
@@ -163,27 +187,34 @@ nested `CLAUDE.md` beside the code it changed, and `sminos help`'s text
 and their evaluation are M6's.
 
 **One unit.** The composite sees one unit with one verification strategy, and
-so does this plan: one state owner (the thread's machine), one store, one
-hermetic suite. Three parts are verified differently (M2's live check of the
-engine, M5's question to another program, M6's evaluation of text), and each
-is small and cannot land without the rest: M4 without M5 would end the
-owners of VMs, and M3 without M4 would keep every closed session forever. If
-the unit had to be cut, the seam is after M2: the record, the stamp and the
-naming change nothing a session sees and are what T2, CH and EN read, and
-M3 to M6 are the lifecycle.
+so does this plan after its review: one state owner (the thread's machine),
+one store, one hermetic suite, to which the review added one kind of test (a
+failure injected between a record's write and its event). Three parts are
+verified differently (M2's live check of the engine, M5's question to
+another program, M6's evaluation of text), and each is small and cannot land
+without the rest: M4 without M5 would end the owners of VMs, and M3 without
+M4 would keep every closed session forever. If the unit had to be cut, the
+seam is after M2: the record, the stamp and the naming change nothing a
+session sees and are what T2, CH and EN read, and M3 to M6 are the
+lifecycle. M3 is the largest milestone; if its diff is more than one review
+pass holds, it is cut after the hold: the verbs that start a process and the
+closing of questions can follow it, since until they land those verbs find
+no seat for a human-opened session and refuse.
 
 ### M1 — Every member has a thread record, and its events say which thread
 
 **What exists at its end.** Every lane A session of this machine that is a
 member has a thread record from its first join: a spawned one in its seat
-record, a human-opened one in the thread store. Members and seats that
-existed before are adopted the first time this code reconciles them. Every
-lifecycle event sminos writes for such a session is stamped, and
-`sminos list --json` shows each member's `thread`. A reader that knows
-threads still counts a member after an unstamped `ended`. The record and the
-log agree at every step, under today's rules: a human-opened session still
-leaves when its process ends, now by a stamped `ended` its record holds too,
-and comes back when it runs again.
+record, a human-opened one in the thread store under an id of its own.
+Members and seats that existed before are adopted the first time this code
+reconciles them, with every session id they have had. Every lifecycle event
+sminos writes for such a session is stamped, and `sminos list --json` shows
+each member's `thread`. A reader that knows threads still counts a member
+after an unstamped `ended`. The record and the log agree under today's
+rules, and come back to agreeing after a process dies between the two
+writes: a human-opened session still leaves when its process ends, now by a
+stamped `ended` its record holds too, and comes back when it runs again. A
+member whose lane changes is told gone to the endpoint before its new frame.
 
 **What it touches.** New: `sminos/skills/sminos/scripts/sminos_threads.py`;
 `sminos/tests/test_threads.py`, registered in `run_suites` of
@@ -191,22 +222,20 @@ and comes back when it runs again.
 `sminos/tests/vectors/maws/`, with `sync.sh` there taking the file's name.
 In `sminos.py`: `lifecycle` (the stamp, and the record's copy of the alias),
 `join_on_sight`, `joinable`, `join_seat`, `spawn_fresh` and `cmd_seat_add`
-(the record at first join), `_reconcile` (adoption, and the rows for older
-code), `cmd_retire`, `_retire_one` and `cmd_remove` (the record before the
-event, for a human-opened session too), the membership readers
-(`latest_membership`, `_memberships`, `_projection`, `_lineage_scan`,
-`retirement_holds`, `handed_to`), `_member`, `Member` and `member_json`
-(`thread`, `opened`), `cmd_record` and `record_session` (the launch's
-options). In `sminos_records.py`: `lane_of`, which `member_frame` in
-`sminos_uplink.py` then calls. The other membership readers found while
-planning: `closed_sessions` in `sminos_outcomes.py`, `rejoin_former`,
-`publish_titles` and `restate_withheld` in `sminos_daemon.py`,
-`sminos_visibility.py`'s snapshot. The executor finds the rest by what they
-read (`MEMBERSHIP`, a `retired` event's `kind`). `Plane.stale` and `inputs`
-in `sminos_plane.py`.
+(the record at first join), `_reconcile` (adoption, and bringing a record
+and the log together), `cmd_retire`, `_retire_one` and `cmd_remove` (the
+record before the event, for a human-opened session too), the readers of
+membership below, `_member`, `Member` and `member_json` (`thread`,
+`opened`), `cmd_record` and `record_session` (the launch's options, and a
+launch's child). In `sminos_records.py`: `lane_of`, which `member_frame` in
+`sminos_uplink.py` then calls, and `launch_of`. In `sminos_uplink.py`:
+`publish_members` (`gone` at a lane change). `Plane.stale` and `inputs` in
+`sminos_plane.py`.
 
 **Interfaces.** Exposes the thread record (X1, Interfaces §1), the stamp
-(§2), the reader rule (X7, §3) and `lane_of` (§8). Consumes nothing.
+(§2), the reader rule (X7, §3), the transition rules of §6 that are in force
+under today's lifecycle, and `lane_of` and `launch_of` (§8). Consumes
+nothing.
 
 **Decisions.**
 
@@ -223,65 +252,100 @@ in `sminos_plane.py`.
   *Alternative: one new store for every thread, beside the seat record.*
   It lost because a spawned thread would then have two records that can
   disagree on `current`.
-- *An ended human-opened record moves aside,* into `threads/ended/`.
-  Reason: D1 keeps an ended thread's record, every closed terminal session
-  becomes one, and nothing bounds their number, while the daemon reads the
-  live ones at every tick. No view lists from that directory; it is read
-  when a session of an ended thread runs again.
-- *The thread id.* A spawned thread's is its seat id, which is its first
-  session id for every seat `spawn` made and is already what its `joined`
-  events carry in `seat`. A human-opened thread's is its first session id;
-  for a member adopted from before threads, the oldest session id its
-  continuation chain holds in this machine's log (`lineage_of`), so that an
-  old `Sminos-Session` line or creator tag names the thread. Two
-  exceptions to D1's lean: a seat registered vacant (`seat add` with no
-  session) has an id before it has a session, and keeps it; and M2 mints
-  one for a former session that runs again. So a thread id is matched as
-  its own kind of name, never assumed to be a session's.
+- *The thread id* (the holder's ruling on the review, which changes D1's
+  lean). A spawned thread's is its seat id, which its `joined` events
+  already publish in `seat`. A human-opened thread's is a UUID minted when
+  its record is made, never a session id: the stamp rides every later
+  session's events, and under a refill or a change of reach those are
+  written for another audience than the first session's. Nothing needs the
+  id to be a session's: a name recorded before threads existed (a
+  `Sminos-Session` line, a VM's creator tag) names a session, and a session
+  id resolves to its thread (M2).
+- *An ended human-opened record moves aside,* into `threads/ended/`, once
+  its retirement is in the log (§6). Reason: D1 keeps an ended thread's
+  record, every closed terminal session becomes one, and nothing bounds
+  their number, while the daemon reads the live ones at every tick. No view
+  lists from that directory; it is read when a session of an ended thread
+  runs again.
 - *`opened` is fixed when the record is first made, and no verb changes
   it.* A record that begins as a seat (a `spawn`, a `seat add`) is
   `spawned`; one that begins on sight is `human`. Every seat that exists
   when this code first runs is `spawned`, so nothing that is resumed today
   stops being resumed.
+- *A spawn's child is never recorded `human`.* `spawn_fresh` starts the
+  engine before it writes the seat's record and learns the session's id
+  only by polling, and today the child's own first hook joins it as a
+  seat-less background session before its seat names it. So the first
+  record of a seat-less session is made under two conditions, and without
+  them nothing is made and nothing is joined until its seat holds it: by
+  the session's own hook only when no launch of its environment is bound to
+  it (`claim_launch` binds before anything else in the hook runs); by a
+  reconciliation only when no launch binding names the session and, for a
+  session the engine records as `bg`, no pending launch of this machine
+  younger than the spawner's own bound is still unbound. The binding
+  already exists for a day after a launch (`sweep_pending`). A background
+  job that continues another session is not delayed: it gets no record of
+  its own (M2). A spawn whose launcher died before it named the session
+  leaves what it leaves today, a record with `pending_short`, and its
+  session is listed among `list --here`'s live sessions that are no member.
 - *`seat add --session` aimed at a session that already is a human-opened
   thread is refused,* saying that its record already keeps it. Reason: D1
   says such a thread does not take a seat's fixed alias and project, a
   thread has one record, and the seat would be the way around D1's rule
   that no verb but the wake starts a process for it. For a session with no
   thread the verb does what it does today: the core suite makes most of
-  its seats this way, around invented sessions.
+  its seats this way, around invented sessions. Where an older CLI gave
+  such a session a seat anyway (D7), `thread_of` answers the human-opened
+  record: it wins.
 - *Adoption is lazy and writes one event.* The first reconciliation by
-  this code of a joined local member with no record makes the record and
-  joins it again, stamped, as `publish_owners` joins a member again
-  (`joined_again` gives the fields); the guard is "its latest `joined` is
-  unstamped", so it happens once. Without that `joined` the reader rule
-  would not cover a member that joined before the update. The same guard
-  stamps again a member an older copy joined since: a session started
-  before the update runs the older hooks for as long as it lives, and
-  their `refresh_joined` and `publish_owners` write an unstamped `joined`,
-  after which the older code's `ended` would be honoured.
-- *The record is this machine's truth for its own threads.* Reconciliation
-  brings the log to it, or it to the log, in the three cases older code
-  can make (Interfaces §6, rows 15 to 17), and in no other.
+  this code of a local lane A session whose membership in effect is an
+  unstamped `joined` makes the record and joins it again, stamped, as
+  `publish_owners` joins a member again (`joined_again` gives the fields).
+  Only a membership in effect qualifies: a session whose latest `joined` is
+  unstamped and that was since retired, moved, continued or replaced is
+  left as it is. The same rule stamps again a member an older copy joined
+  since: a session started before the update runs the older hooks for as
+  long as it lives, and their `refresh_joined` and `publish_owners` write
+  an unstamped `joined`, after which the older code's `ended` would be
+  honoured. A stamped `joined` followed only by an older copy's `ended`
+  needs nothing: the event is passed by.
+- *Adoption rebuilds `sessions` from what exists.* A human-opened member's:
+  its continuation chain in this machine's log (`lineage_of`), oldest
+  first, then itself. A seat's: the sessions its `history` holds, the
+  sessions whose `joined` in the project's log carries the seat's id in
+  `seat`, the hand-offs among them, then `current`. Reason: M5 asks
+  devcloud about `sessions`, and a VM made by an earlier occupant of a
+  refilled seat, or by an earlier session of a chain, names only that
+  session. Nothing of provenance is read or written here.
 - *A thread record is evidence of membership,* as a seat is: `joinable`
   answers yes for a session whose human-opened thread has not ended,
   whether or not a process runs it. The first join keeps today's test (the
   engine records it `interactive` or `bg`, no headless run unless marked).
-- *The reader rule lives in one predicate* (Interfaces §3) that every
-  reader of "is this session a member" goes through. A guard that decides
-  under a writer file's lock reads through it too, so an older CLI's
+- *The reader rule lives in one predicate* (Interfaces §3). The readers
+  that decide membership from lifecycle events go through it:
+  `latest_membership` and every guard built on it (so an older CLI's
   unstamped `ended` neither makes this code join the member again nor
-  stops a later event of its own.
+  stops a later event of its own), `_memberships`, `_projection`,
+  `_lineage_scan`, `recorded_project`, `moved_here`, `closed_sessions` in
+  `sminos_outcomes.py`, `rejoin_former`, `publish_titles` and
+  `restate_withheld` in `sminos_daemon.py`, `sminos_visibility.py`'s
+  snapshot, and `owed_in`. Three readers stay as they are, each for its
+  reason: `last_project` (it reads which project a session's latest
+  membership event names, and a `joined` and a retirement that is no move
+  name the same one); `hand_off`'s reread after its own append and
+  `handed_to` (each looks for one exact event, the `continued` naming the
+  successor, as the session's last, and an event passed by is never that
+  one). The executor finds any other by what it reads (`MEMBERSHIP`, a
+  `retired` event's `kind`) and puts it in one of the two lists.
 - *The rule's cases are MAWS's file,* `channel-rule.json`, whose `retired`
-  list this milestone's test runs through every such reader. MAWS's master
-  may not hold the file when M1 runs: then the copy is written from
-  Interfaces §B of MAWS's execution document for MW (the MAWS repository,
-  `docs/doperpowers/plans/2026-11-18-mw-sminos-channels.md`), byte for
-  byte, with no pin, and M6 sets the pin. One pin per vendored file
-  (`channel-rule.PIN.json` beside `PIN.json`, which `project_rule_parity.py`
-  reads as it is), so that vendoring this file does not move the project
-  rule's pin. The check fails on a copy whose hash is not its pin's and
-  says, without failing, that a copy has no pin yet.
+  list this milestone's test runs through every reader in the first list.
+  The copy is made by `sync.sh` from the commit of MAWS that holds the file
+  when M1 runs: its master's, else its branch `mw-channels`'s, never from
+  the text of a document. One pin per vendored file (`channel-rule.PIN.json`
+  beside `PIN.json`, which `project_rule_parity.py` reads as it is), so that
+  vendoring this file does not move the project rule's pin. The check fails
+  on a copy whose hash is not its pin's. M6 moves the pin to a commit of
+  MAWS's master.
 - *What `launch` holds* (X1's "the launch's options", which T2 reads): the
   launch directory, and the options of the engine process that last
   started the thread's current session, kept only for the option names in
@@ -300,6 +364,11 @@ in `sminos_plane.py`.
   ships would otherwise have nothing for T2's first wake to carry or to
   name as not carried. The mode and the model are not recorded apart (the
   composite's Decision Log); T2 reads them from the transcript.
+- *`gone` before a frame whose lane differs from the one last sent,* in
+  `publish_members`, so the endpoint withdraws the old listing before it
+  takes the new one. MAWS's endpoint will withdraw it on its own when a
+  `member` frame states the other lane (its child MW); sminos's `gone`
+  stays, and is harmless beside it.
 
 **What it does not touch.** Which sessions are one thread, and how a
 former id resolves (M2). `_reconcile`'s `ended` for a process that is gone,
@@ -310,32 +379,48 @@ a human-opened one is named and moved as today. The `channels` field
 beyond creating it empty and carrying it.
 
 **What it proves.** Acceptance 7's first half (the stamp); the reader half
-of acceptance 10; 11 for its surface. Its tests pin:
+of acceptance 10; the lane half of 8; 11 for its surface. Its tests pin:
 
-- a session that joins on sight has a record in the thread store and none
-  in the seat store; a spawned one has the thread keys in its seat record
-  and nothing in the thread store; a lane B session has neither and its
-  events are unstamped;
+- a session that joins on sight has a record in the thread store under an
+  id that is no session's, and none in the seat store; a spawned one has
+  the thread keys in its seat record and nothing in the thread store; a
+  lane B session has neither and its events are unstamped;
+- with the launcher paused before it learns the session's id: the child's
+  own hook, and a reconciliation from another process before that hook has
+  run, each make no record and write no `joined`; when the launcher goes
+  on there is one seat record, one `joined` stamped with the seat's id, and
+  nothing in the thread store;
 - a member and a seat from before threads are adopted at the first
   reconciliation, with one stamped `joined`, and no second one at the next;
   an unstamped `joined` written after it is stamped again, once;
-- the four `retired` cases of the vectors through every reader of
-  membership; and a guard under a writer file's lock reads through the
-  rule: after an unstamped `ended`, a later event of the session's own is
-  still appended;
+- a session whose latest `joined` is unstamped and that was then retired by
+  hand, or moved by `join`, is not joined again by adoption, in either
+  project;
+- an adopted, already refilled seat's `sessions` hold its earlier
+  occupants, and an adopted member's hold its continuation chain;
+- the `retired` cases of the vectors through every reader of the first
+  list; and a guard under a writer file's lock reads through the rule:
+  after an unstamped `ended`, a later event of the session's own is still
+  appended;
 - record and log agree after each of today's transitions: its process
   gone (ended, the record moved aside), run again (restored), retired by
   hand, moved by `join`;
-- rows 15 to 17 of Interfaces §6, each from a log an older copy wrote
-  (what rows 15 and 16 mean for a session with no process is M3's, once a
-  stop no longer ends a thread);
+- a failure injected between a record's write and its event, for an end
+  and for a return: the next reconciliation finishes it, a second one
+  writes nothing, and a second registry that holds only the log reads the
+  same membership as the first (Interfaces §6, rows A, B and D);
+- an older copy's unstamped `retire` of a thread ends its record, and its
+  unstamped `ended` after a stamped `joined` changes nothing (rows F, G);
 - `seat add --session` on a human-opened thread is refused, and on a
-  session with no thread makes the seat as today;
+  session with no thread makes the seat as today; a session with both a
+  human-opened record and a seat an older copy made answers as
+  human-opened;
 - a record write from the hook that cannot have its lock in time is
   skipped and made by the next reconciliation;
 - launch options: a path with a space is one value, an inline JSON value
   and an option outside the list are not recorded, and an unreadable
   argument list leaves `options` absent;
+- a lane change sends `gone` first;
 - the plane's idle read sees a member's row move when only its thread
   record changed.
 
@@ -349,20 +434,21 @@ shares the old session had. A refill (`sminos fill` without `--resume`, a
 takes its owners and reach from its own launch. A tag, a verb's target or
 `sminos who` that names the thread id or any session id the thread has had
 (`@short`, `@alias#short`, a full id) reaches its current session, on a
-machine that only reads the log too. A `/clear`, a fork and an in-session
-`/resume` each leave the new session id with a thread of its own and no
-link to the session it came from, and a fork's start guide says it is a
-copy with an identity of its own.
+machine that only reads the log too, and for a session id from before
+threads. A `/clear`, a fork and an in-session `/resume` each leave the new
+session id with a thread of its own and no link to the session it came from,
+and a fork's start guide says it is a copy with an identity of its own.
 
-**The milestone opens with a live check** (the composite's Delegated
-unknown, assigned to T1): *does a compaction give a session a new id, and
-if it does, what does the engine write that says so?* A friction entry
-reports a long-lived background session going on under a new id "from a
-compaction summary"; no code shows it. Run it on the engine version
-installed when the milestone runs, twice each for an interactive session
-and a `claude --bg` one (Concrete Steps): note the session id, compact, and
-observe the id after, whether the process is the same, what the
-`SessionStart` payload says, and whether the old transcript ends in a
+**The milestone opens with a live check** of two things the engine does,
+on the engine version installed when the milestone runs (Concrete Steps).
+
+*Does a compaction give a session a new id, and if it does, what does the
+engine write that says so?* (the composite's Delegated unknown, assigned to
+T1). A friction entry reports a long-lived background session going on
+under a new id "from a compaction summary"; no code shows it. Twice each
+for an interactive session and a `claude --bg` one: note the session id,
+compact, and observe the id after, whether the process is the same, what
+the `SessionStart` payload says, and whether the old transcript ends in a
 record naming the new session, as a hand-off's does. Promote: if a run
 shows a new id and the engine left a record of its own that names both
 sessions, compaction is a second continuation, read from that record as
@@ -372,25 +458,42 @@ record hook's `SessionStart` matcher in `sminos/hooks/hooks.json` gains
 nothing is built. If a run shows a new id and no such record, nothing is
 built either, the new session is another thread (the constraint on doubt),
 and the composite's holder is told, since a standing responsibility would
-then split at every compaction. Whichever it is, the verdict, with the
-engine version and what was observed, goes to Surprises & Discoveries and
-to the composite's holder. The friction entry also reports a finished
+then split at every compaction. The friction entry also reports a finished
 background job resumed under a new id with its history copied; that is the
 engine starting a copy, which stays another thread.
 
+*At a `/clear`, which session does the engine's record of the process name
+while the new session's `SessionStart` hooks run, and does the name carry
+over?* M3's alias rule rests on the first being the session that was left:
+the code says so for `/branch` and an in-session `/resume` (`_hook_engine`'s
+account of engine 2.1.303) and says nothing of `/clear`. Observe, in a
+throwaway hook, the hook's `CLAUDE_PID`, the `sessionId` and `name` that
+process's engine record holds at that moment, and the same a second after
+the hooks return. Promote: the record names the old id during the hooks;
+M3 builds on it as written. If it already names the new id, there is no
+witness at the hook: M3's alias rule is not built on a guess, the new
+session goes by its short id as M3 says for that case, and the composite's
+holder is told before M3 starts, since acceptance 3 asks for the alias.
+
+Whichever they are, both verdicts, with the engine version and what was
+observed, go to Surprises & Discoveries and to the composite's holder.
+
 **What it touches.** In `sminos.py`: `hand_off` and `follow_seat` (the
 record advances with the session, for a human-opened thread as for a
-seat), `spawn_fresh` and `cmd_seat_add` (a refill advances the thread),
-`_projection`, `lineage` and `_member` (what `former` holds),
-`match_members`, `find_target`, `_resolve_tag`, `who_matches` and
-`who_lines` (a former id, and the thread id, as names), `guide_text` (the
-fork line). `sminos/tests/test_threads.py`, `sminos/tests/test-guide.sh`,
+seat), `join_on_sight` (a job that joined before its hand-off was
+written), `spawn_fresh` and `cmd_seat_add` (a refill advances the thread),
+`_projection`, `lineage` and `_member` (episodes, `thread_sessions`),
+`retirement_holds` (the process that handed off), `match_members`,
+`find_target`, `_resolve_tag`, `alias_reach`, `who_matches` and `who_lines`
+(a former id, and the thread id, as names), `guide_text` (the fork line).
+`sminos/tests/test_threads.py`, `sminos/tests/test-guide.sh`,
 `sminos/tests/test-who.sh` and the core suite's hand-off and occupancy
-cases. `sminos/hooks/hooks.json` only if the check promotes.
+cases. `sminos/hooks/hooks.json` only if the first check promotes.
 
 **Interfaces.** Consumes M1's `advance`, `thread_of`, `ensure` and the
-stamp. Exposes the resolution rule (X2, Interfaces §4), the continuation
-and refill event shapes (§2), `Member.former` as §8 gives it.
+stamp. Exposes `absorb` (Interfaces §1), the continuation and refill event
+shapes (§2), the resolution rule and the episode rule (X2, §4), and
+`Member.thread_sessions` (§8).
 
 **Decisions.**
 
@@ -400,47 +503,74 @@ and refill event shapes (§2), `Member.former` as §8 gives it.
   cursor and the join override, moves a seat, retires the old session
   `continued`, renames the new one, and is ordered so that a hand-off cut
   short is finished by the next. The thread record's `advance` joins that
-  sequence where the seat's move is, before the retirement, so the same
-  holds for it, and a hand-off whose log part an older copy wrote is
-  finished the same way. The one call that carries reach stays
+  sequence where the seat's move is, before the retirement, and is done
+  when the record already names the new session, so the same holds for it,
+  and a hand-off whose log part an older copy wrote is finished the same
+  way. The one call that carries reach stays
   `ensure_record(…, former=[old])`; nothing else passes `former`.
+- *A job that joined before its hand-off was written is absorbed.* The
+  engine may write its hand-off record after the job's first hook, and
+  `_reconcile` finishes such a hand-off later, as today. By then M1 has
+  given the job a human-opened record of its own. `absorb` makes the
+  proven hand-off whole: the old session's thread takes the job as its
+  current session and the job's own record is deleted, when that record is
+  human-opened, has not ended and holds that one session; the job is then
+  joined again, stamped with the thread it continues. Nothing of reach is
+  merged, because a thread record holds none: the job's sminos session
+  record gets its predecessor's provenance by the call above and no other
+  way. A record that fails those three tests is left, the two stay two
+  threads, and `daemon.log` says so.
 - *A refill keeps today's event:* `retired`, reason `replaced`, stamped,
-  with no `to`. This overturns the composite's advisory lean (an event
-  shaped as hand-off's, with `to`, under a reason of its own). Evidence: a
-  `to` is a reference to another session, and only under reason
+  with no `to` (the composite took this from the plan's first version).
+  A `to` is a reference to another session, and only under reason
   `continued` is it one the two repositories guard: `session_refs` in
   `sminos_audience.py`, pinned to MAWS's `sessionRefs` by
   `sminos/tests/audience-vectors.json`, is what `redact` nulls for an
   audience that may not reach the session named and what the hub checks.
-  Under `replaced` it would name the new session, whose reach is its own
-  launch's, in the old session's stream, to that stream's audience,
-  unredacted and unchecked. The stamp links the two sessions without
-  either naming the other.
-- *What `former` holds.* A member's `former` (the session ids a name
-  still reaches it by) becomes its continuation chain, then the other
-  sessions its thread has had, read from the stamps of the log, so that it
-  is the same on a machine that holds no record. `_member` takes alias,
-  in-charge line, status, `by` and worktree along all of them, and owners
-  along the continuation chain only.
+  The stamp links the two sessions without either naming the other.
+- *A session belongs to the thread its latest `joined` is stamped with,*
+  and a thread's name, alias, in-charge line, status and worktree are read
+  from the episodes stamped with its id, never from everything a session
+  ever wrote (Interfaces §4). Reason: a session that leaves a thread can
+  run again under another, and `_projection` holds one row per session
+  today, so the second thread's in-charge line would become the first's.
+  An event that carries no stamp of its own (another writer's line about
+  the session, an event from before threads) belongs to the episode its
+  time falls in. Owners stay read along the continuation chain alone.
+- *`Member.former` keeps today's meaning,* the continuation chain: the
+  manager reads it as the transcripts of one conversation. The other
+  sessions of a member's thread (a refill's predecessors) are
+  `Member.thread_sessions`. A name is matched against both.
 - *A name's order.* A name that is a member's current alias or current
   session comes before one that only matches a former session or alias,
   as `match_members` orders a former alias today. The thread id is matched
-  like a session id. Session ids stay what addresses a message: the event
-  names the current session.
+  like a session id, in full or by its first eight characters. Session ids
+  stay what addresses a message: the event names the current session.
+- *A session id from before threads resolves.* Its events carry no stamp:
+  an unstamped `joined` that names a seat in `seat` reads, for naming
+  alone, as that seat's thread, and an unstamped session with no seat
+  resolves through its `continued` chain as today. So a VM's creator tag or
+  a commit's `Sminos-Session` line that names an earlier session of an
+  adopted thread reaches its current one, on any machine. The reader rule
+  (§3) never reads `seat` as a stamp.
 - *A former session that runs again is another thread.* The cases: an
   interactive session resumed by id after it was handed to a job, and a
   replaced session of a seat resumed in a terminal. Today's code already
   makes the first its own member and drops the link (`_projection`: a
-  `joined` after its own `continued` clears `to`). Its thread is
-  human-opened, under its session id unless a thread already has that id,
-  then a minted one. The thread that went on keeps the id and keeps the
-  session in `sessions`; `thread_of(session)` answers the thread whose
-  current session it is before one that only had it.
+  `joined` after its own `continued` clears `to`). It gets a human-opened
+  record of its own; the thread that went on keeps the session in
+  `sessions`, and `thread_of(session)` answers the thread whose current
+  session it is before one that only had it. The process that handed the
+  session off is not such a return: it lives on for a moment as it exits,
+  and `retirement_holds` suppresses its re-join today from the `pid` its
+  `continued` recorded. That test stays, for `continued` and `replaced`
+  alike: only a process that is not the one the retirement saw, or that
+  started after it, makes the new thread.
 - *A `/clear`, a fork and an in-session `/resume` are pinned, not built.*
   Nothing in the code links them today, and nothing is added: each new id
   joins on sight (M1) and gets its record owners from its own evidence.
   `_hook_engine` lends such a session the process's engine record so that
-  it can join; it lends no lineage. The tests below hold that line.
+  it can be guided; it lends no lineage. The tests below hold that line.
 - *What the fork line must say* (the copy is M6's, with its evaluation;
   `guide_text` already has a sentence for source `fork`): that this
   session is a copy of another, with a session id and a name of its own;
@@ -452,18 +582,27 @@ and refill event shapes (§2), `Member.former` as §8 gives it.
 (`continued_in`, `predecessor`). `lineage_provenance`'s order of evidence.
 A lane B session's continuation (`bind_launched` in `sminos_records.py`,
 `session_evidence`'s `former`). That the session a `/clear` left is listed
-`stopped` (M3). The wake.
+`stopped`, and who holds its alias (M3). The wake.
 
-**What it proves.** Acceptance 3, but for the `stopped` listing of the
-session a `/clear` left (M3); acceptance 7's second half. Its tests pin:
+**What it proves.** Acceptance 3, but for the `stopped` listing and the
+alias of the session a `/clear` left (M3); acceptance 7's second half. Its
+tests pin:
 
 - a human-opened session handed to a background job: the record names
   the job as current with both ids in `sessions`, one stamp on both
   sessions' events, the job's record has the old one's owners, access and
   shares, the member lists once under the alias and in-charge line it had;
-- a hand-off cut short after the record advanced, and one whose
-  `continued` an unstamped writer wrote, are each finished by the next
-  reconciliation;
+- a hand-off cut short after the record advanced, a refill cut short
+  there, and a hand-off whose `continued` an unstamped writer wrote, are
+  each finished by the next reconciliation and by none after it
+  (Interfaces §6, row E);
+- the engine's hand-off record appended after the job's first join: one
+  thread afterwards, the job's own record gone, its latest `joined` stamped
+  with the thread it continues, and its owners its predecessor's by the
+  continuation alone;
+- the process that handed a session off, still running: no record and no
+  `joined` of its own; the same session resumed by a new process: a thread
+  of its own;
 - a refill: one thread id across both sessions, `retired` `replaced`
   stamped and without `to`, the new session's owners from its own launch
   and never its predecessor's (read on another machine's copy of the log
@@ -472,6 +611,18 @@ session a `/clear` left (M3); acceptance 7's second half. Its tests pin:
   and a full id, reach the current session after a hand-off and after a
   refill, from another machine's copy of the log, for `say`, `send` and
   `who`;
+- an adopted member and an adopted, refilled seat, each named by the short
+  id of a session that has no stamped event: the name reaches the current
+  session, from another machine's copy of the log too;
+- a handed-off session resumed by id, and a replaced seat session resumed
+  in a terminal: each a human-opened thread of its own; from a second
+  registry that holds only the log, its full id and its short id name it
+  and not the thread that went on, and a rename and an in-charge line it
+  writes afterwards change nothing the first thread shows;
+- a human-opened thread whose reach changed between two of its sessions:
+  a reader allowed only the later stream finds no id of an earlier session
+  in any `thread` it can read; a refilled seat's `thread` is what its
+  `seat` field already publishes, and nothing else;
 - a `SessionStart` of source `clear` under a new id in the process that
   held a thread's session: two thread ids, no `continued` event, no owner,
   access or share carried from the old session's record;
@@ -481,9 +632,6 @@ session a `/clear` left (M3); acceptance 7's second half. Its tests pin:
 - a fork (source `fork`), in the same process and in another: a thread of
   its own whose record owners come from its own evidence, no `continued`
   event, and the guide's fork line;
-- a handed-off session resumed by id, and a replaced seat session resumed
-  in a terminal: each a human-opened thread of its own, the first under a
-  minted id, and its short id names it, not the thread that went on;
 - the compaction case, if promoted.
 
 ### M3 — A closed session stays: stopped, held, and its sender told
@@ -493,36 +641,42 @@ is listed `stopped` by `sminos list --stopped` and folded by `sminos list`,
 under its alias and in-charge line; a new session with its name is told
 apart from it as two live ones are today. Reopened with `claude --resume`,
 it is live again under the same alias, and what was addressed to it
-meanwhile arrives. The session a `/clear` left is listed the same way and
-comes back when its id is resumed. While a session is stopped an addressed
-message is recorded and held, and the sender's line says the session is
-stopped and is not woken because its human opened it, with the machine it
-waits on when that is another one. `sminos send` to it is held the same
-way; `sminos resume`, `fill --resume` and `send --wait` aimed at it record
-their message, start no process and say so; a fresh `fill` of it is
-refused. A spawned session is resumed exactly as today. A stopped session's
-open asynchronous questions are closed in its project's log, and a session
-whose lane changes is told gone to the endpoint before its new frame.
+meanwhile arrives at the next delivery pass. After a `/clear` the new
+session holds the alias, as today, and the session that was left is listed
+`stopped`, is reached by `alias#short` and its short id, and comes back when
+its id is resumed. While a session is stopped an addressed message is
+recorded and held, on a cut-over machine too, and the sender's line says the
+session is stopped and is not woken because its human opened it, with the
+machine it waits on when that is another one. `sminos send` to it is held
+the same way; `sminos resume`, `fill --resume` and `send --wait` aimed at it
+record their message, start no process and say so; a fresh `fill` of it, or
+a `spawn` onto its alias, is refused. A spawned session is resumed exactly
+as today. A stopped session's open asynchronous questions are closed in its
+project's log.
 
 **What it touches.** In `sminos.py`: `_reconcile` (no `ended` for a
-thread), `push_member` and `push_event` (the hold), `resume_session` (the
-hold at the one place every resume passes), `resolve_seat`, `cmd_resume`,
-`cmd_fill`, `_send`, `send_to_member`, `deliver_say` (the sender's line),
-`unreachable_hint`, `who_lines`, `derive_refusal`. In `sminos_daemon.py`:
-`publish_state` (X3's field), `sweep_threads` (new), `owed_in`. In
-`sminos_outcomes.py`: `closed_sessions`, `of_push`. In `sminos_uplink.py`:
-`publish_members`. The tests that pin `ended` for a session its human
-opened, in the core suite and in the suites that hold the word
-(`test_owed.py`, `test_session_plane.py`, `test_manager.py`,
-`test_idle_reads.py`, `test_scale.py`, `test_holder.py`, `test-uplink.sh`,
-`test-sync.sh`, `test-guide.sh`), and the sentence of
-`sminos/skills/manager/scripts/CLAUDE.md` that says sminos retires such a
-session once its process ends.
+thread), `deliver_next`, `words_due`, `reach_due`, `words_unanswered`,
+`push_member` and `push_event` (the hold), `resume_session` and
+`spawn_fresh` (the two places a process is started for a seat),
+`resolve_seat`, `cmd_resume`, `cmd_fill`, `_send`, `send_to_member`,
+`deliver_say` (the sender's line), `lifecycle` (X3's field on a `state`),
+`cmd_record`, `record_session`, `guide_text` and `held_alias`'s callers
+(the alias at a `/clear`), `unreachable_hint`, `who_lines`,
+`derive_refusal`. In `sminos_daemon.py`: `publish_state`, `deliver_owed`,
+`sweep_threads` (new), `owed_in`. In `sminos_outcomes.py`:
+`closed_sessions`, `of_push`. In `sminos_uplink.py`: `expire_asks`. The
+tests that pin `ended` for a session its human opened, in the core suite
+and in the suites that hold the word (`test_owed.py`,
+`test_session_plane.py`, `test_manager.py`, `test_idle_reads.py`,
+`test_scale.py`, `test_holder.py`, `test-uplink.sh`, `test-sync.sh`,
+`test-guide.sh`), the sentence of `sminos/skills/manager/scripts/CLAUDE.md`
+that says sminos retires such a session once its process ends, and a new
+section of `docs/doperpowers/TECH-DEBT.md` (below).
 
-**Interfaces.** Consumes M1's record (`opened`), `lane_of` and the reader
-rule. Exposes X3's first two values and `wake_of` (Interfaces §5), the
-hold's outcome (§8), the closing event (§2), and the record's `stopped`
-mark, which M4's clock reads.
+**Interfaces.** Consumes M1's record (`opened`), `thread_of` and the reader
+rule, M2's episodes. Exposes `hold_of`, X3's first two values and `wake_of`
+(Interfaces §5), the hold's outcome and `cleared_from` (§8), the closing
+event (§2), and the record's `stopped` mark, which M4's clock reads.
 
 **Decisions.**
 
@@ -530,37 +684,88 @@ mark, which M4's clock reads.
   `ended` only for a session that is not a thread: a lane B session, as
   today. A lane B session that has a thread record from an earlier lane A
   life gets that `ended` stamped, so every reader honours it, with its
-  record ended first (Interfaces §6, row 11).
-- *The hold is an outcome of the one delivery operation.* An addressed
-  event owed to a stopped thread its machine will not wake comes out of
-  `deliver_next` in the `held:` family that `_conclude` already leaves
+  record ended first (Interfaces §6, row 11). From here on an older copy's
+  unstamped `ended` over an unstamped `joined` of a stopped thread is
+  undone by a stamped `joined` (row H), where M1 ended the record to match.
+- *One predicate says whether this machine holds delivery for a session,*
+  `hold_of` (Interfaces §5): a human-opened thread whose current session
+  no process holds. Every place that would push, wake, ask about or give
+  up on an event for that session asks it first.
+- *The hold is decided at selection, before the gates.* In `deliver_next`
+  an owed event of a held session comes out `held:human` after the checks
+  that settle without a push (a receipt already admitted, a revoked
+  signer, the read-only refusal, each as today) and before the words and
+  reach gates. Reason: on a cut-over machine those gates come before the
+  push, and the uplink walks the same rows, so a held event would be asked
+  about at every pass, and a `words?` the endpoint does not answer in time
+  is a failed attempt that settles the event after the attempt limit
+  (`expire_asks`, `words_unanswered`, `_conclude`). So `words_due` and
+  `reach_due` leave a held session out, an ask already outstanding when
+  its session stopped counts nothing when it expires, and a verdict that
+  arrives for a held session pushes nothing and leaves the event owed.
+  `push_member` holds too, as the last line: today it answers `recorded`
+  for a member with no seat and no process and the caller settles the
+  event, which would lose it for the reopened session; it survives today
+  only because a closed session is no member, so delivery never sees it.
+  The outcome is in the `held:` family that `_conclude` already leaves
   owed with no attempt counted, on the sender's fast path and the daemon's
-  alike. Today's code answers `recorded` there and settles the event,
-  which would lose it for the reopened session: today it survives only
-  because a closed session is no member, so delivery never sees it. An
-  outside sender is told `recorded` once and the event stays owed, as
+  alike. When the session runs again the event meets the gates as any
+  owed event does.
+- *An outside sender is told `recorded` once and the event stays owed,* as
   `report_closed` does today for a closed terminal session:
-  `closed_sessions` becomes "this machine's stopped sessions that are not
-  woken". An `@all` reaches only the live, as for a stopped seat today. A
-  read-only machine settles what comes from outside as it does today.
-- *`resume_session` holds for `human`, whatever else is true.* D1 says
-  every path that starts a process ends there, so the check sits there,
-  and it does not depend on whether the thread has a seat: an older CLI
-  may have given a human-opened session one (D7), and this code still
-  holds it. T2 replaces the hold with the wake at the same place.
+  `closed_sessions` becomes "this machine's sessions `hold_of` holds", with
+  today's reading kept for a session that ended before threads. An `@all`
+  reaches only the live, as for a stopped seat today. A read-only machine
+  settles what comes from outside as it does today.
+- *What a held backlog costs.* `deliver_owed` passes a held session by
+  before `deliver_next`, on the share of the log `addressees` already
+  split out for it, so a tick pays for a held session one look at its own
+  addressed events and no read of the whole log, no lock and no ask. The
+  backlog is bounded by M4: at three days the thread ends and what is held
+  is settled. `daemon owed` counts an event held for a session among those
+  waiting for closed sessions, which is not a debt and does not make it
+  exit 1: `owed_in` decides that before it counts a member's owed events
+  as deliveries or words, where today it tests membership first.
+- *A held event does not follow a continuation.* A stopped session
+  reopened and handed to a background job before the next delivery pass
+  leaves the event addressed to the old session id. `_owed` reads no
+  lineage, and everything after it is keyed by the addressed session (the
+  delivery record and its lock, receipts, the reach gate's decision, the
+  outcome): following it would deliver to one session under a decision
+  made for another. The event stays in the log, the job reads it at its
+  next `chat` through the cursor `hand_off` carries, and nothing counts it
+  as owed, as for a live session handed off with something owed today.
+  Logged in `docs/doperpowers/TECH-DEBT.md`, in a section for this child,
+  with the window (a reopen and a hand-off inside one daemon interval) as
+  what would promote it. Never across a refill.
+- *Two places start a process for a seat, and both hold for `human`.* D1
+  says every such path ends in `resume_session`; a fresh fill does not: it
+  goes from `cmd_fill` or `cmd_spawn` to `spawn_fresh`. Each checks, under
+  the seat's lock, the session the seat holds: when a human-opened record
+  names it (an older CLI gave such a session a seat, D7), `resume_session`
+  holds and `spawn_fresh` refuses, whatever the seat says. T2 replaces the
+  hold in `resume_session` with the wake at the same place. `manager
+  query`'s and `derive`'s `headless_fork` are outside the rule: each starts
+  a headless copy under a session id of its own, marked internal, and no
+  process for the thread.
 - *The verbs.* `send` to a stopped human-opened session does what a tagged
   `say` does: recorded, held, exit 0. `resume`, `fill --resume` and
   `send --wait` record their message as an addressed one, which is held
   like one (D1), say that nothing was started and why, and exit 4, the
   code for a target a verb cannot reach now: what they were asked for (a
   process, a reply) did not happen, and a script must not read it as
-  done. A fresh `fill` is refused and records nothing. For these verbs
-  `resolve_seat` has to find a thread that has no seat; it answers
-  through `find_target`'s rules, so a name that is ambiguous for `send` is
-  ambiguous here.
-- *X3's first values* are published on the thread's `state` event when
-  its word is `stopped`, and the event is written again when the value
-  changes while the word does not (Interfaces §5). A sender reads them with
+  done. A fresh `fill`, and a `spawn` onto the alias, are refused and
+  record nothing. For these verbs `resolve_seat` has to find a thread that
+  has no seat; it answers through `find_target`'s rules, so a name that is
+  ambiguous for `send` is ambiguous here.
+- *X3's value is built where every `state` of a session's own is written,*
+  in `lifecycle`, as a `joined`'s publication is built there today: a
+  `state` whose word is `stopped` gets `wake` from `hold_of`, whoever asked
+  for the event. Reason: `publish_state` is one of four writers of a
+  session's state (`sminos_visibility.py`'s snapshot for a newly admitted
+  audience, `rejoin_former`, `restate_withheld`), and a value added by one
+  is lost when another restates. `publish_state` writes the event again
+  when the value changes while the word does not. A sender reads it with
   `wake_of`; where the thread's machine published none (an older sminos
   there), the sender is told what it is told today (D7).
 - *The sweep marks the stop.* A thread whose current session no process
@@ -572,71 +777,109 @@ mark, which M4's clock reads.
   same persistence, and keeps its candidate between ticks the same way).
   "No process holds it" is the test for the session a `/clear` left too:
   its process lives on under another id.
-- *Closing the questions* is the sweep's, at the same transition: for each
-  `question` of the thread's sessions with no `answered` for its `src`, an
-  `answered` is appended through `append_host` (which chooses the store
-  and the asker's writer, and drops a second copy), with the text and the
-  marker Interfaces §2 gives. A closing is final in the log: the log
-  admits one answer per ask, so nothing reopens it.
-- *After a `/clear` the alias stays with the session that was left.* The
-  engine keeps a session's name across a `/clear`, the stopped thread
-  holds that name as its alias (D1), and `held_alias` never gives a new
-  session a name another member holds (`shadowing`): the new session goes
-  by its short id until it is named, and a message to the alias is held
-  for the stopped one. Today the cleared session takes the alias, because
-  the session it left is retired at once. This follows from the owner's
-  ruling and from D1's alias rule; it is pinned so that it is seen, and
-  reported to the composite's holder.
+- *Questions are closed while a thread is stopped, not at the moment it
+  stops.* At each pass, a thread whose record says `stopped` and whose
+  `swept` is not that same time has each `question` of its sessions with
+  no `answered` for its `src` closed, and then `swept` set: an `answered`
+  appended through `append_host` (which chooses the store and the asker's
+  writer, and drops a second copy), with the text and the marker
+  Interfaces §2 gives. A pass that dies between the mark and the closing
+  is finished by the next, and a thread that is asked again and stops
+  again is swept again. A closing is final in the log: the log admits one
+  answer per ask, so nothing reopens it.
+- *At a `/clear` the alias goes with the process* (D1, as the holder
+  ruled it). The engine keeps the session's name, and the session that was
+  left is now a stopped member holding that name, so `held_alias` would
+  refuse it to the new session (`shadowing`). The witness is the engine's
+  record of the hook's own process, which while the new session's
+  `SessionStart` hooks run still names the session that was left (M2's
+  check). `cleared_from` reads it raw, for a start whose source is
+  `clear`, with the validation `_hook_engine` makes of `CLAUDE_PID`:
+  before that function's stand-in replaces the record, and in the record
+  hook before `record_session` returns early for a session no engine
+  record names yet. With a witness, and only when the session it names is
+  a human-opened member of this machine whose alias is the name that
+  engine record carries, the record hook renames that session to its short
+  id (a `renamed` under its own writer, in the project it is a member of).
+  That frees the name: the new session takes it when it joins, by today's
+  rule, and `guide_text` reads the same witness so that its first line
+  names the new session by the alias whichever hook runs first. The
+  session left is then reached by `alias#short`, as a former alias is
+  (`alias_reach`), and by its short id; run again while the new one is
+  live it keeps its short id, as the second of two live sessions of one
+  name does today, and it takes the name back by today's rule when nobody
+  holds it. The witness is used for the name alone: it is never `former`
+  to `ensure_record`, and it is never inferred from two sessions sharing a
+  name. With no witness (the record already names the new id, the hook did
+  not run) nothing is renamed and the new session goes by its short id, as
+  a shadowed name does today. A spawned thread's alias is its seat's and
+  does not move.
 - *`derive` does not fork a stopped human-opened session.* `derive --all`
   forks every local member with enough activity and no line; today a
   closed terminal session is no member, so it is never forked. Keeping it
   that way keeps the daemon from starting an engine in a closed session's
   directory, which for a protected folder is the fault D2 names.
-- *`gone` before a frame whose lane differs from the one last sent,* in
-  `publish_members`, so the endpoint withdraws the old listing before it
-  takes the new one. MAWS's endpoint will withdraw it on its own when a
-  `member` frame states the other lane (its child MW); sminos's `gone`
-  stays, and is harmless beside it.
 
 **What it does not touch.** The wake's steps and its other exclusions
 (T2). The three-day rule and `retire` (M4). How a spawned thread is
 resumed, the protected-folder rule for it included. `sminos decide`.
 Whether a machine is on.
 
-**What it proves.** Acceptance 1, 2 and 8; the rest of 3; 11 (the tests
-that pinned `ended` for a session its human opened now pin `stopped`). Its
-tests pin:
+**What it proves.** Acceptance 1 and 2; the rest of 3; the question half
+of 8; 11 (the tests that pinned `ended` for a session its human opened now
+pin `stopped`). Its tests pin:
 
 - its process gone: no `retired`, `stopped` in `list --stopped`, folded in
   `list`; reopened: live under the same alias and in-charge line, and what
-  was owed is pushed, in order;
-- after a `/clear`: the session left is `stopped` under its alias and its
-  in-charge line, the new one is a member under its short id, a message to
-  the alias is held for the stopped one, and the stopped one is live again
-  when a process resumes its id;
+  was owed is pushed, in order, at the next pass;
+- after a `/clear`, with the witness: the new session is a member under
+  the alias; the session left is `stopped` under its short id with its
+  in-charge line, is reached by `alias#short` and by its short id, and a
+  bare `@alias` reaches the new one; resumed while the new one is live it
+  keeps its short id; no `continued` event and nothing of the old record's
+  owners on the new one;
+- the same with the guide hook run before the record hook, and after it;
+- with no witness (the engine record already names the new id): nothing
+  is renamed, the new session goes by its short id, and the alias still
+  reaches the stopped one;
 - a lane B session still leaves with its process, unstamped when it never
   was a thread, stamped and with its record ended when it was;
 - an older copy's unstamped `ended` for a stopped thread: `list --stopped`
-  still shows it and reconciliation writes nothing; the same after an
-  unstamped `joined`: it is joined again, stamped, at the next
-  reconciliation (Interfaces §6, rows 15 and 16);
+  still shows it and reconciliation writes nothing; after an unstamped
+  `joined` and that `ended`: joined again, stamped, once. An older tick, a
+  tick of this code, an older tick, a tick of this code, over a stopped
+  thread and over a reopened one: the count of events stops growing after
+  the first round;
 - an addressed `say` to it: recorded, still owed after daemon passes with
-  no attempt counted, the sender's line as above; an outside sender's
-  outcome is `recorded`, once; an `@all` settles as for a stopped seat;
-- `send`, `resume`, `fill --resume`, `send --wait` and a fresh `fill`, each
-  as decided above, with no `claude` call in the stub's log;
-- a human-opened session that also has a seat record is held;
+  no attempt counted, the sender's line as above; from another local
+  sender the same; an outside sender's outcome is `recorded`, once; an
+  `@all` settles as for a stopped seat;
+- on a cut-over machine whose endpoint gives no verdict: a person's words
+  addressed to a stopped session are never asked about and never counted a
+  failed attempt, through more passes than the attempt limit; an ask
+  outstanding when the session stopped expires with no attempt counted;
+  reopened, the event is asked about and delivered on the verdict. A
+  revoked signer's event and a read-only machine's outside event settle as
+  today;
+- a tick over a stopped session with many held events reads the log no
+  more often than a tick over none, and `daemon owed` lists them as
+  waiting for a closed session and exits 0;
+- `send`, `resume`, `fill --resume`, `send --wait`, a fresh `fill` and a
+  `spawn` onto the alias, each as decided above, with no `claude` call in
+  the stub's log;
+- a human-opened session that also has a seat record is held, and neither
+  filled nor spawned onto;
 - the spawned cases of the suite pass unchanged;
-- a `state` event for a stopped thread carries the value, is written again
-  when only the value changes, and a sender on another machine reports it
-  with the machine; with none published it reports today's line;
+- a `state` event for a stopped thread carries the value whichever of its
+  four writers wrote it, a newly admitted audience's snapshot among them;
+  it is written again when only the value changes; a sender on another
+  machine reports it with the machine, and with none published reports
+  today's line;
 - an open asynchronous question is closed after two passes, once, not
-  during a resume's stop and relaunch, and a later answer in the reopened
+  during a resume's stop and relaunch; a pass killed after the stop was
+  marked leaves it to the next pass; a later answer in the reopened
   session appends nothing;
-- a lane change sends `gone` first;
-- `derive --all` forks no stopped human-opened session;
-- `daemon owed` counts an event held for such a session as it counts one
-  waiting for a closed session today.
+- `derive --all` forks no stopped human-opened session.
 
 ### M4 — A thread ends, and returns
 
@@ -651,34 +894,53 @@ a spawned one returns when it is filled. A thread on a retired machine
 counts as ended on every other machine.
 
 **What it touches.** In `sminos.py`: `cmd_retire`, `_retire_one`,
-`cmd_remove`, `join_on_sight` and `joinable` (the return),
-`retirement_holds` (removed: the record says it), `view_of` and `cmd_list`
-(rows for ended threads), `_member` (a retired machine), `unreachable_hint`
-and `no_member` (what a sender is told), `cmd_resume`, `resume_session` and
-`send_to_seat` (an ended spawned thread). In `sminos_daemon.py`:
-`sweep_threads`' ending pass.
+`cmd_remove`, `unlink_seat_files`' callers (a purge after its event),
+`join_on_sight` and `joinable` (the return), `retirement_holds` (its
+`retire` half goes: the record says it), `view_of`, `View` and `cmd_list`
+(rows for ended threads), `_member` and `Member` (`end`), `has_ended`,
+`unreachable_hint` and `no_member` (what a sender is told), `cmd_resume`,
+`resume_session` and `send_to_seat` (an ended spawned thread). In
+`sminos_daemon.py`: `sweep_threads`' ending pass. In `sminos_outcomes.py`:
+`report_closed` (what was held for a thread that ended).
 
 **Interfaces.** Consumes the record's `stopped` (M3), `end`, `restore`,
 `purge` (M1). Exposes the end events (Interfaces §2), X3's `ended` (§5),
-and `has_ended`, which CH's rosters read.
+`Member.end` and `has_ended` (§8), which CH's rosters read on a machine
+that holds no record.
 
 **Decisions.**
 
-- *An end is a record.* `end` marks the record, and for a spawned thread
-  sets the seat's `status` to `retired`, the form older code reads as a
-  retired seat (D7); then the stamped `retired` is appended. The explicit
-  retire keeps reason `retire`; the three-day rule writes reason `ended`,
-  which the shared vectors already call a stamped `ended`.
+- *An end is a record, then an event, then the record's last step.* `end`
+  marks the record where it is, and for a spawned thread sets the seat's
+  `status` to `retired`, the form older code reads as a retired seat (D7);
+  then the stamped `retired` is appended; only then is a human-opened
+  record moved aside, or a purged one deleted. A process that dies after
+  the first step leaves a record that says ended beside a log that does
+  not, and the next reconciliation finishes it (Interfaces §6, rows A to
+  C). The explicit retire keeps reason `retire`; the three-day rule writes
+  reason `ended`, which the shared vectors already call a stamped `ended`.
+- *`retire --purge` and `remove` keep their evidence until the retirement
+  is published.* Today the files are unlinked before the event. Here the
+  record is ended with its purge marked, the event is appended, and the
+  files go last, so an interrupted purge is finished and never leaves a
+  session joined in the log with nothing on the machine that says why.
+  They apply to every thread (D1): for a human-opened one they end it and
+  delete its record.
 - *A session that retires itself is recorded before it is stopped.*
   `_retire_one` stops the process first today; run by the session being
   stopped, that can end the caller before the record and the event exist.
   A self-retire writes both, then stops what there is to stop.
-- *"Reopened" is a process holding the thread's current session that
-  started after the end.* It is the test `retirement_holds` makes from the
-  event today, now made from the record's `ended` (its time, and the pid
-  seen), for every thread: the process that ran when the thread was
-  retired does not return it, however long it runs on in its terminal, and
-  a new one does. A former session that runs again is another thread (M2).
+- *"Reopened" is a process holding the thread's current session that the
+  end did not see.* When the end recorded a process (a retire of a running
+  session, a self-retire), that is a process with another pid, or one
+  started after the end, as `retirement_holds` tests it from the event
+  today: the process that ran when the thread was retired does not return
+  it, however long it runs on in its terminal. When the end recorded none
+  (the three-day rule, a retire of a stopped thread), any process holding
+  the session returns it. Reason for the second half: a process that
+  started a moment before the end, and that the end's check did not yet
+  see, must not stay ended while it runs. A former session that runs again
+  is another thread (M2).
 - *What returns a spawned thread.* A fill, fresh or `--resume`, and its
   human reopening its session. `send`, `resume` and a tagged message do
   not: they are refused or reported as for a retired seat today, naming
@@ -695,6 +957,19 @@ and `has_ended`, which CH's rosters read.
   On a machine with no daemon a thread stays `stopped` until
   `sminos daemon tick` runs, which is also when anything else of the
   daemon's would happen there.
+- *The end is written only for the stop it was decided for.* Under the
+  record's lock the ending pass reads the record again and ends the thread
+  only when `stopped` is the very time the decision was made for, the
+  current session is the same, and no process holds that session by the
+  engine's records read afresh (`running_now`), not by the tick's copy of
+  them. Only the sweep removes `stopped`, a pass later, so the mark alone
+  would let a session that reopened meanwhile be ended.
+- *At an end, what is held for the thread is settled,* as it is for a
+  retired target today: `recorded`. The events stay in the project's log,
+  which a returned thread reads at its next `chat`; nothing is delivered
+  again on a return. This bounds the held backlog at three days. An event
+  from outside that reaches the log after the end is reported `recorded`
+  and settled the same way.
 - *The word in lists is `retired`* for an ended thread of either kind,
   today's word for a membership that ended and already in the chart's, the
   TUI's and `--state`'s vocabularies; where a line has room it says why
@@ -702,17 +977,18 @@ and `has_ended`, which CH's rosters read.
   machine keeps today's `gone`, which the views and their tests pin, and
   is counted as ended by everything that asks: a tag naming it is refused
   saying its machine was retired, and it is not woken.
-- *`--all` shows an ended thread from the log,* on its own machine as on
-  any other: a session whose membership in effect is a stamped `retired`
-  with reason `retire` or `ended`. A spawned one shows as a retired seat
-  does today. No horizon is put on them: the composite gives none, and how
-  long an ended thread stays in `--all` is reported to its holder.
+- *Ended is read from the log, by every machine the same way.* A session
+  has ended when its membership in effect is a `retired` with reason
+  `retire` or `ended`, whoever wrote it, or when its machine is retired in
+  the org's state. An older copy's unstamped `retire` therefore counts on
+  every reader, as it does on the thread's own machine (row F).
+  `has_ended` takes the reader's projected row and needs no record;
+  `Member.end` holds which of the three it was. `--all` shows an ended
+  thread from the log, on its own machine as on any other, and a spawned
+  one as a retired seat shows today. No horizon is put on them (the
+  composite: Deferred).
 - *A message addressed to an ended thread* is refused when it is sent, as
-  a tag naming a retired member is today. An event already owed to it
-  stays owed and is delivered if it returns.
-- *`remove` and `retire --purge` apply to every thread* (D1): for a
-  human-opened one they end it and delete its record. (The composite
-  writes `seat remove`; the verb is `sminos remove`.)
+  a tag naming a retired member is today.
 
 **What it does not touch.** The wake. A VM's notice. The channel
 memberships beyond keeping the field through an end and a return. The
@@ -726,26 +1002,43 @@ unknown, observed after T1).
   saying it ended; not ended a moment before the period; the clock starts
   again after a process held the session in between; a reading verb and a
   hook end nothing;
+- a process that takes the session after the pass decided and before it
+  writes: not ended; one the pass's cached records do not show but fresh
+  ones do: not ended;
+- what was held for the thread is settled `recorded` at its end and is
+  not pushed when it returns; `daemon owed` no longer lists it;
 - reopened by a new process: `joined` again under the same thread id,
   alias and in-charge line, the record back in the thread store with its
-  `channels` as they were, and what was owed is delivered;
+  `channels` as they were; a thread the rule ended with no process seen is
+  returned by a process that had started a moment before the end;
 - after a self-retire the same process's hooks do not join it again, and
   a new process does; a spawned session's self-retire leaves the record
   and the event written even when the stop ends the caller;
+- a failure injected after the record's write: for the rule's end, a
+  retire, a `retire --purge`, a `remove` and a return, each finished by the
+  next reconciliation and by none after it, a purged record gone only once
+  its retirement is in the log, and the same membership read from a second
+  registry that holds only the log;
 - a spawned thread ended: its seat reads `retired` to this code and to the
   seat store's older readers; `fill` and `fill --resume` return it; `send`,
   `resume` and a tagged `say` do not;
-- `retire --purge` and `remove` of a human-opened thread delete its record;
-- a member of a retired machine: a tag naming it is refused saying so, and
-  its word in `list --all` is `gone`.
+- an older copy's unstamped `retire`: `has_ended` is true from the log
+  alone, `--all` shows it, and a tag naming it is refused;
+- a member of a retired machine: a tag naming it is refused saying so, its
+  word in `list --all` is `gone`, and `has_ended` is true on a registry
+  that holds no record of it.
 
 ### M5 — A thread that owns a VM is neither retired nor ended
 
-DV is on `main` at this plan's pin (devcloud 0.17.0). The command, its
-answer, its exits and its matching rule are the composite's X9, with an
-example of each answer in DV's ledger
-(`docs/doperpowers/ledgers/2026-11-17-DV.md`); this document repeats none
-of it, and the milestone reads both as they stand when it runs.
+**Before it starts:** devcloud 0.17.2 is on `main` (a small change of its
+own, not this child's: for `vm owned-by` its launcher answers exit 6 on a
+machine with no seed key, or that is a devcloud host, before it needs an
+interpreter, and a driver that is present and fails to import no longer
+answers 6); merge `origin/main`. The command, its answer, its exits and its
+matching rule are the composite's X9, with an example of each answer in DV's
+ledger (`docs/doperpowers/ledgers/2026-11-17-DV.md`); this document repeats
+none of it, and the milestone reads both, and devcloud's own account of
+0.17.2, as they stand when it runs.
 
 **What exists at its end.** `sminos retire` of a thread that devcloud names
 as a host's creator is refused, naming each host, and the three-day rule
@@ -753,24 +1046,48 @@ leaves such a thread stopped. The same holds when devcloud gives no answer
 it stands behind, and the refusal then names what could not be asked. Where
 devcloud says its driver does not run, threads retire and end as M4 left
 them. A person at a terminal can retire a thread whose answer is unknown,
-with a flag that nothing else accepts.
+with a flag that nothing else accepts. The daemon's tick never waits for
+devcloud.
 
 **What it touches.** `sminos_threads.py` (`owned_by`, the one function that
 runs devcloud, and `owned_vms`); `sminos.py`: `cmd_retire`, `_retire_one`,
 `cmd_remove`, the `retire` parser; `sminos_daemon.py`: `sweep_threads`'
-ending pass, `service_env`; `sminos_visibility.py`'s `confirmed`, made
-usable with another prompt; the suite's shared setup (the stand-in).
+ending pass, the census and its verb (`cmd_daemon`'s table), `service_env`;
+`sminos_visibility.py`'s `confirmed`, made usable with another prompt; the
+suite's shared setup (the stand-in).
 
-**Interfaces.** Consumes X9. Exposes `owned_by` and `owned_vms` (Interfaces
-§7), which EN's handover and `channel show` also read.
+**Interfaces.** Consumes X9. Exposes `owned_by`, `owned_vms` and the
+census's file (Interfaces §7), which EN's handover and `channel show` also
+read.
 
 **Decisions.**
 
 - *Where each guard runs.* The retire guard runs in the process running
-  the verb: a session's Bash tool or a person's terminal. The three-day
-  guard runs in the daemon, whose environment is the one its service file
-  recorded at install (`service_env`): its `PATH` need not hold devcloud's
-  `bin/`, and it has none of a session's variables.
+  the verb, a session's Bash tool or a person's terminal, and waits for
+  the answer there. The three-day guard is the daemon's, whose environment
+  is the one its service file recorded at install (`service_env`): its
+  `PATH` need not hold devcloud's `bin/`, and it has none of a session's
+  variables.
+- *The daemon asks off its tick.* The question takes seconds and a
+  network, and the tick is what delivers messages and keeps the machine's
+  connection. The ending pass starts the census as a child process it does
+  not wait for, as `derive_duty` starts `derive --all`: one in flight on
+  the machine, under a lock of its own, its pid in the daemon's state
+  file, its answer written whole to a file under `daemon/` (Interfaces
+  §7). A later pass takes the answer up, for each thread whose `stopped`
+  and current session are the ones it was asked about, and no older than
+  one spacing of the ending pass; any other thread is asked about again. A
+  thread ends two passes after it falls due at the soonest. *Alternative: a
+  thread of the daemon's process.* It lost because a hung call there holds
+  the interpreter's own shutdown and shares the tick's caches, and the
+  daemon already has the child's whole pattern, reaping included.
+- *What a hung census costs, and how it is reaped.* The child bounds its
+  one call (Interfaces §8) and writes unknown past it. A child still
+  running after twice that bound is killed, with its process group, by the
+  pass that finds it, and `daemon.log` says so once. Meanwhile nothing on
+  the machine ends by the rule, and nothing else waits. A child the daemon
+  holds no handle on (the daemon restarted in place) is reaped as
+  `derive_running` reaps its own.
 - *How the CLI is found,* in this order, the first that exists being the
   one asked:
 
@@ -779,9 +1096,9 @@ usable with another prompt; the suite's shared setup (the stand-in).
   | the path in `SMINOS_DEVCLOUD` | the suite's stand-in; an operator's override |
   | `devcloud/bin/devcloud` beside the running sminos plugin's root | the copy in the same clone or checkout: where the daemon runs from (`installed_cli`), and never older than this sminos |
   | the same file in the doperpowers marketplace clone, found as `installed_cli` finds the clone | what a CLI running from the plugin cache has, where the cache holds sminos alone |
-  | `devcloud` on `PATH` | last, because a long-lived session's `PATH`, or a service's recorded one, can name the cache directory of a devcloud from before `owned-by` |
+  | `devcloud` on `PATH` | last, because a long-lived session's `PATH`, or a service's recorded one, can name the cache directory of a devcloud from before 0.17.2 |
 
-  The launcher needs a Python 3.11 on `PATH`, sminos runs on 3.10, and the
+  The driver needs a Python 3.11 on `PATH`, sminos runs on 3.10, and the
   driver finds a provider's own tool (`hcloud`, `gcloud`) on the `PATH` it
   is given: the call puts the directory of sminos's own interpreter first
   on the child's `PATH` and changes nothing else of it.
@@ -793,38 +1110,38 @@ usable with another prompt; the suite's shared setup (the stand-in).
   | exit 0, `answer` `owned` | owned | the hosts in `vms`; whatever is in `unknown` is named too |
   | exit 0, `answer` `none` | none | every configured account was listed in full |
   | exit 0, `answer` `unknown` | unknown | `unknown` says what could not be asked |
-  | exit 6 | none | devcloud says the driver does not run on this machine (a devcloud host, or no seed key) |
+  | exit 6, from a devcloud of 0.17.2 or later | none | devcloud says the driver does not run on this machine (a devcloud host, or no seed key) |
+  | the copy found is older than 0.17.2 (the version in the plugin manifest beside it), whatever it answered | unknown | before 0.17.2 a broken driver answers 6 and a machine with no interpreter for it answers 1; the refusal names the version and the copy |
   | no copy of the CLI found | unknown | nothing on this machine said the driver does not run: the CLI ships beside sminos, so its absence is a broken install; the refusal says where it looked |
-  | any other exit, a timeout, exit 0 with output that is not the JSON object, a launcher that cannot be run | unknown | the refusal gives the exit code and the first line of what it printed (no Python 3.11 is one of these, exit 1) |
+  | any other exit, a timeout, exit 0 with output that is not the JSON object, a launcher that cannot be run | unknown | the refusal gives the exit code and the first line of what it printed (a seed key with no Python 3.11 for the driver is one of these) |
 
-  A provider tool missing from the daemon's `PATH` comes back from
-  devcloud as `unknown` with its reason, so it holds the thread and is
-  named.
+  A copy named by `SMINOS_DEVCLOUD` has no manifest to read and is taken
+  at its word. A provider tool missing from the daemon's `PATH` comes back
+  from devcloud as `unknown` with its reason, so it holds the thread and
+  is named.
 - *Exit 6 is only as good as the environment it was asked in.* devcloud
   finds its seed and its profile under `HOME` unless `DEVCLOUD_SEED_FILE`
   or `DEVCLOUD_PROFILE` is set. `service_env` records those two for the
   daemon when the installing environment sets them, as it records the
-  gateway's keys. Two wrong nones are left, both rare and bounded: the one
-  D4 accepts (a Mac that lost its seed key), and a Mac whose sessions set
-  one of the two variables after its service file was written. In either
-  the VM's notices still go on to the project's live members, and the
-  ended thread returns when reopened. The second is reported to the
-  composite's holder beside the first. *Alternative: the record hook notes
-  each pair of the two variables it meets, and the daemon asks under each.*
-  It lost as more machinery than an override nobody is known to set
-  deserves.
+  gateway's keys. Two wrong nones are left, both in the composite's D4 as
+  accepted: a Mac that lost its seed key, and a Mac whose sessions set one
+  of the two variables after its service file was written. In either the
+  VM's notices still go on to the project's live members, and the ended
+  thread returns when reopened.
 - *The names asked about* are the short ids of every session id the
-  thread has had (`sessions`), bare: X9 matches a short id whole, and
-  nothing through an alias.
-- *One question per ending pass, and none when no thread is due.* The
-  sweep asks once for every thread that is due and reads each thread's
-  answer from the one reply (Interfaces §7). A thread that is owned or
-  unknown is asked about again at the next pass, and `daemon.log` gets a
-  line when its answer changes, not at every pass.
-- *Asked before any lock, checked again under it.* The call takes seconds
-  and a network, and is bounded (Interfaces §8); the end is written only if
-  the thread is still as the decision found it (still stopped, the same
-  current session), so a thread that came back meanwhile is not ended.
+  thread has had (`sessions`, which adoption rebuilt for a thread from
+  before this code, M1), bare: X9 matches a short id whole, and nothing
+  through an alias. A thread with no session (a vacant seat) is not asked
+  about, since devcloud refuses a question with no name: its answer is
+  none.
+- *One question per census, and none when no thread is due.* The census
+  asks once for every thread that is due and reads each thread's answer
+  from the one reply (Interfaces §7). A thread that is owned or unknown is
+  asked about again by the next census, and `daemon.log` gets a line when
+  its answer changes, not at every pass.
+- *An answer does not end a thread by itself.* The end is written under
+  M4's check: the stop the answer was asked for, the same current session,
+  and no process by fresh evidence.
 - *Every path that ends a thread on purpose asks:* `retire`,
   `retire --purge`, `remove`, by another session or by itself. A refill
   and a continuation do not: the thread goes on.
@@ -848,9 +1165,12 @@ usable with another prompt; the suite's shared setup (the stand-in).
   until a person retires it.
 
 **What it does not touch.** devcloud. `devcloud vm owner` and the notice
-(EN). A copy in sminos of what a thread owns: there is none (D4).
+(EN). A copy in sminos of what a thread owns: there is none (D4); the
+census's file is an answer to one question about threads that are due, and
+nothing reads it as what a thread owns.
 
-**What it proves.** Acceptance 6. Its tests, against the stand-in, pin:
+**What it proves.** Acceptance 6. Its tests, against the stand-in unless
+they say otherwise, pin:
 
 - owned: `retire` refused naming the host, an adopted machine named as
   one, the thread still a member; the ending pass leaves it stopped and
@@ -858,24 +1178,38 @@ usable with another prompt; the suite's shared setup (the stand-in).
 - each row of the second table that reads unknown: refused naming it, and
   the pass leaves the thread stopped;
 - none and exit 6: the retire and the end go through;
-- the lookup's order, each place found when the ones before it are absent;
+- the lookup's order, against a made-up plugin layout whose root the test
+  controls (changing `HOME` and `PATH` does not hide the worktree's own
+  devcloud beside sminos): each place found when the ones before it are
+  absent, and a manifest older than 0.17.2 read as unknown, named;
+- the real launcher, once, under a `HOME` that holds no seed key: exit 6,
+  read as none;
 - the names passed are the short ids of every session the thread has had;
+  a seat adopted after it was refilled, whose host names only its first
+  occupant, is refused; a vacant seat is retired with no question asked;
 - `--owner-unknown`: refused from a session, refused with no terminal,
   retires on unknown at a terminal after a typed yes, refused on owned;
-- one call for all due threads in a pass, each thread's answer its own,
-  and no call when none is due;
-- a thread that came back between the question and the end is not ended.
+- the pass that finds threads due returns before the stand-in answers,
+  and delivery goes on in the ticks between; the answer is taken up by a
+  later pass; one call for all due threads, each thread's answer its own,
+  and no child when none is due;
+- a stand-in that never answers: the child is killed after its bound, one
+  line in `daemon.log`, the thread still stopped, no second child beside
+  it;
+- a thread that reopened during the question, and one that reopened and
+  stopped again, are not ended by the answer.
 
 ### M6 — What sessions are told, an older sminos beside this one, the shared vectors, and the acceptance run
 
 **What exists at its end.** The skill, the spawn preamble, the guide and
 `sminos help` say what is now true, in today's words, with an evaluation
-that shows the change in behavior. A script shows that the oldest sminos
-still in a plugin cache, run against a store this code wrote, resumes no
-human-opened session and that the `ended` it writes changes nothing for
-this code. The vectors shared with MAWS are the copy of a named commit of
-MAWS's master, pinned. The acceptance has been run as Concrete Steps gives
-it, the version is bumped, and the branch is ready for its review.
+that shows the change in behavior. A script shows that sminos 1.27.10, the
+oldest still in a plugin cache on the owner's machines, run against a store
+this code wrote, resumes no human-opened session and that the `ended` it
+writes changes nothing for this code. The vectors shared with MAWS are the
+copy of a named commit of MAWS's master, pinned. The acceptance has been
+run as Concrete Steps gives it, the version is bumped, and the branch is
+ready for its review.
 
 **What it touches.** `sminos/skills/sminos/SKILL.md`,
 `sminos/skills/sminos/references/spawn-preamble.md`, `guide_text`'s fork
@@ -910,38 +1244,41 @@ files `scripts/bump-version.sh --plugin sminos` writes.
   addressed to its original alone; a session whose `retire` is refused
   naming a VM reports it and does not force it. A line the baseline
   already produces is cut.
-- *The older CLI.* The version to run is the oldest one present in a
-  plugin cache of the owner's machines when the milestone runs: the
-  executor reads its own machine's cache and asks the composite's holder
-  for the others'. The script takes the path of an older `sminos`
-  launcher, so it runs against a cached copy on a machine and against a
-  revision extracted from this repository's history (`git archive` of the
-  commit that set that version) in the suite, where the clone has that
-  history, and says so in one line where it has not. It drives this code
-  and the older one against one registry with the suite's stub engine:
-  this code makes a human-opened thread, stops it and holds a message for
-  it; the older CLI then runs every verb that reads the store (`list`,
-  `say` with its tag, `send`, `resume`, `fill`, `daemon tick`); the stub's
-  log holds no `--resume` of that session; then this code's
+- *The older CLI is 1.27.10,* the revision `aefb80aa` of this repository
+  set that version. `test-older-cli.sh` takes the path of an older `sminos`
+  launcher, so it runs against a cached copy on a machine; in the suite it
+  runs against that revision extracted from this repository's history
+  (`git archive`). The gates check out one commit (ci-kit's default depth),
+  so the script fetches that one revision from `origin` by its id when the
+  clone lacks it, and fails when it cannot have it: it never passes on a
+  line saying it was skipped. If a gate's runner cannot fetch it, the
+  script leaves `run_suites`, is run on a full clone, and acceptance 10 is
+  reported as an open item with what was run, never as green. It drives
+  this code and the older one against one registry with the suite's stub
+  engine: this code makes a human-opened thread, stops it and holds a
+  message for it; the older CLI then runs every verb that reads the store
+  (`list`, `say` with its tag, `send`, `resume`, `fill`, `daemon tick`);
+  the stub's log holds no `--resume` of that session; then this code's
   `list --stopped` still shows it. D7's accepted degradations (the older
   CLI settles the message it only recorded; it writes its `ended`) are
   asserted as what happens, so a change in them is seen.
 - *The vectors' pin.* `sminos/tests/vectors/maws/sync.sh` copies
   `apps/org-protocol/vectors/channel-rule.json` from the commit of MAWS's
   master that holds it when the milestone runs, named in the pin, and the
-  `retired` cases pass on that copy. A difference from the copy M1 wrote
+  `retired` cases pass on that copy. A difference from the copy M1 made
   is a change of contract to pass, not to edit away. If MAWS's master does
-  not hold the file by then, M1's copy stays, byte for byte what MAWS's
-  execution document gives, the pin stays unset, and the open item goes to
-  the composite's holder and into Progress: the build does not wait.
+  not hold the file by then, M1's copy and its pin stay, naming a commit of
+  MAWS's branch, and the open item goes to the composite's holder and into
+  Progress: the build does not wait.
 - *The live pass.* Two acceptance items rest on what the real engine does
   at a session's start and end (1, and 3's `/clear`, fork and in-session
   `/resume`), which the stub only models. They are run once on a real
-  engine against a scratch store, the session loading the sminos plugin
-  from the worktree in place of the installed copy (Concrete Steps). If
-  the two copies cannot be kept apart on the machine the milestone runs
-  on, that pass is run on the released version as the first step of the
-  parent's acceptance, and is an open item reported with the branch.
+  engine against a scratch store, every session of the pass loading the
+  sminos plugin from the worktree in place of the installed copy (Concrete
+  Steps). If the two copies cannot be kept apart on the machine the
+  milestone runs on, that pass is run on the released version as the first
+  step of the parent's acceptance, and is an open item reported with the
+  branch (the holder accepted this).
 
 **What it does not touch.** The words thread and channel in anything a
 session reads, and the manager's skill (CH). MAWS.
@@ -981,44 +1318,48 @@ among them once registered), `sminos-idle` the daemon's idle cost, and
 `issue-tracker` and `board-api` the board scripts that call the sminos CLI
 and write seat records. A `FAIL` line gives the path of the gate's log.
 
-**M2's live check** (the compaction question), on the machine the
-milestone runs on, with the installed sminos; it changes nothing in the
-repository:
-
-1. `claude --version`, recorded with the verdict.
-2. In a scratch directory, in a terminal multiplexer's own server so that
-   nothing of the executor's session leaks into it, start `claude`, give it
-   one prompt with a tool call, and note its session id (`claude agents
-   --json`, or the transcript's file name).
-3. A throwaway `SessionStart` hook that appends its payload to a file, set
-   in that directory's local settings, shows `source` and `session_id` at
-   each start.
-4. Type `/compact`. Read: the session id after (the same two places), the
-   process id before and after, the payload the hook wrote, and the last
-   records of the transcript that held the old id.
-5. The same for a background session: `claude --bg "<prompt>"` in the
-   scratch directory, then `sminos compact <its short id>`.
-6. Each form twice. The verdict is one of M2's three, written to
-   Surprises & Discoveries with the version and what was read.
-
-**M6: the vectors.** With a checkout of MAWS at hand and the commit of its
-master that holds `apps/org-protocol/vectors/channel-rule.json`:
+**M1 and M6: the vectors.** With a checkout of MAWS at hand and the commit
+that holds `apps/org-protocol/vectors/channel-rule.json` (M1: its master's,
+else its branch `mw-channels`'s; M6: its master's):
 
     sminos/tests/vectors/maws/sync.sh <MAWS checkout> <commit> channel-rule.json
     python3 -B sminos/tests/test_threads.py
 
 The first prints the file's name, the commit and the copy's sha256, and
-rewrites the copy and `channel-rule.PIN.json`; the second passes the four
-`retired` cases on that copy and its line for the pin says pinned. Without
-such a commit, neither file changes and the open item is recorded.
+rewrites the copy and `channel-rule.PIN.json`; the second passes the
+`retired` cases on that copy.
+
+**M2's live check,** on the machine the milestone runs on, with the
+installed sminos; it changes nothing in the repository:
+
+1. `claude --version`, recorded with the verdicts.
+2. In a scratch directory, in a terminal multiplexer's own server so that
+   nothing of the executor's session leaks into it, start `claude`, give it
+   one prompt with a tool call, and note its session id (`claude agents
+   --json`, or the transcript's file name).
+3. A throwaway `SessionStart` hook, set in that directory's local
+   settings, appends to a file: its payload, its `CLAUDE_PID`, and the
+   content of that process's engine session record as the hook finds it.
+4. Type `/compact`. Read: the session id after (the same two places), the
+   process id before and after, what the hook wrote, and the last records
+   of the transcript that held the old id.
+5. The same for a background session: `claude --bg "<prompt>"` in the
+   scratch directory, then `sminos compact <its short id>`.
+6. Each form twice. The verdict is one of M2's three.
+7. Name the interactive session, type `/clear`, and read what the hook
+   wrote: the `sessionId` and the `name` of the engine record at the hook,
+   against the payload's `session_id`; then the same record a second
+   later. Twice. The verdict is one of M2's two.
+8. Both verdicts go to Surprises & Discoveries with the version and what
+   was read.
 
 **M6: the version.**
 
     scripts/bump-version.sh --plugin sminos <the next minor version>
     scripts/bump-version.sh --since origin/main
 
-The second lists the plugins whose shipped files changed since `origin/main` and exits 0
-once sminos's version is above the base's.
+The second lists the plugins whose shipped files changed since `origin/main`
+and exits 0 once sminos's version is above the base's.
 
 **M6: the acceptance run.** T1's acceptance in the composite, item by item.
 Each item is shown by the suite's cases named for it, run through the gates
@@ -1027,44 +1368,57 @@ run live, below.
 
 | Item | Shown by | What is seen |
 |---|---|---|
-| 1 | M3's cases "its process gone" and "reopened"; the live pass | `sminos list --stopped` holds the closed session's row with the word `stopped`; after `claude --resume`, `sminos list` holds it live under the same alias and in-charge line, and the held message is in its context |
+| 1 | M3's cases "its process gone" and "reopened"; the live pass | `sminos list --stopped` holds the closed session's row with the word `stopped`; after `claude --resume` and a `sminos daemon tick`, `sminos list` holds it live under the same alias and in-charge line, and the held message is in its context |
 | 2 | M3's hold and verb cases | the sender's line says recorded, stopped, not woken, opened by its human; the stub's log holds no `claude --bg --resume` for it; `fill` of it exits non-zero and says its sessions are its human's to open; a spawned one's line says `woken` as today |
-| 3 | M2's hand-off, refill, `clear`, fork and `/resume` cases; M3's `/clear` case; the live pass | `sminos list --stopped --json` gives the session a `/clear` left and the new one two `thread` values; a hand-off and a refill give one |
-| 4 | M4's three-day cases, with `SMINOS_THREAD_END_AFTER` set short | after `sminos daemon tick` past the period: gone from `list` and `--stopped`, in `--all` as `retired`; `sminos say "@<alias> …"` exits 4 saying it ended |
+| 3 | M2's hand-off, refill, `clear`, fork and `/resume` cases; M3's `/clear` cases; the live pass | `sminos list --stopped --json` gives the session a `/clear` left and the new one two `thread` values, the alias on the new one, and `sminos say "@<alias>#<old short> …"` is held for the old one; a hand-off and a refill give one `thread` |
+| 4 | M4's three-day cases, with `SMINOS_THREAD_END_AFTER` set short | after two `sminos daemon tick`s past the period (the first asks devcloud, the second reads the answer): gone from `list` and `--stopped`, in `--all` as `retired`; `sminos say "@<alias> …"` exits 4 saying it ended |
 | 5 | M4's self-retire cases | the session's own `sminos retire <itself>` prints the retirement; its row stays out of `list` after its process exits and through later hooks of that process |
 | 6 | M5's cases against the stand-in | `sminos retire` exits non-zero naming the host; with the stand-in answering unknown, naming the account that could not be asked; with it exiting 6, the retire goes through |
-| 7 | M1's stamp cases, M2's naming cases | every `joined`, `retired` and `state` of a thread in the log carries `thread`; `sminos say "@<former short> …"` is delivered to the current session, from a second registry that only holds the log |
-| 8 | M3's question and lane cases | the project's host events hold an `answered` with `closed` for the open question; the endpoint stand-in receives `gone` before the frame of the other lane |
+| 7 | M1's stamp cases, M2's naming cases | every `joined`, `retired` and `state` of a thread in the log carries `thread`, and no human-opened thread's is a session id; `sminos say "@<former short> …"` is delivered to the current session, from a second registry that only holds the log |
+| 8 | M3's question cases, M1's lane case | the project's host events hold an `answered` with `closed` for the open question; the endpoint stand-in receives `gone` before the frame of the other lane |
 | 9 | M4's retired-machine case | on another registry, `list --all` shows the member `gone` and a tag naming it is refused saying its machine was retired |
-| 10 | `test-older-cli.sh`; the vectors' `retired` cases | no `--resume` of the human-opened session in the stub's log after every older verb; `list --stopped` of this code still shows it |
+| 10 | `test-older-cli.sh` against 1.27.10; the vectors' `retired` cases | no `--resume` of the human-opened session in the stub's log after every older verb; `list --stopped` of this code still shows it |
 | 11 | the `sminos` and `sminos-suites` gates | `GREEN` |
 
 **M6: the live pass,** on a real engine, against a scratch store:
 
 1. A scratch git repository in a scratch directory, a scratch
    `SMINOS_HOME` exported, and a terminal multiplexer's own server. The
-   session is started so that the sminos it loads is the worktree's and
-   not the installed copy (`claude --plugin-dir <worktree>/sminos`, with
-   the installed sminos plugin disabled for that launch); inside it,
+   scratch store is enrolled by hand, as the Python suites enroll one
+   (`write_identity` in `sminos/tests/rl10_identity.py`: an identity whose
+   hub address nothing listens on), since the guide prints nothing on a
+   machine that is not enrolled. No daemon runs against it; delivery is
+   `sminos daemon tick`, run by hand where a step says so.
+2. Every session of the pass, at its first launch and at every relaunch
+   and resume, is started so that the sminos it loads is the worktree's
+   and not the installed copy (`claude --plugin-dir <worktree>/sminos`,
+   with the installed sminos plugin disabled for that launch); inside it,
    `command -v sminos` names the worktree. If it names the installed copy,
    stop: the pass cannot be run here (M6's decision says what then).
-2. Give the session a name and one prompt, then `/exit`. From the scratch
-   repository, with the worktree's CLI: `sminos list --stopped` shows the
-   session `stopped`. `sminos say "@<name> hello"` prints the held line,
-   and `claude agents --json` shows no process for the session.
-3. `claude --resume <its id>` in the multiplexer. `sminos list` shows it
-   live under the same name; its transcript holds the message's frame.
-4. Type `/clear`. `sminos list --stopped --json` shows two members: the old
-   id `stopped` under the name, the new id live under its short id, with
-   different `thread` values, and the old one's events hold no `retired`.
-   Resume the old id in a second pane: it is live under the name.
-5. Fork a session (the engine's own command for a copy). The copy's guide
+3. Session S: give it a name and one prompt, have it run
+   `sminos charge "<a line>"`, then `/exit`. From the scratch repository,
+   with the worktree's CLI: `sminos list --stopped` shows S `stopped` under
+   its name and that line. A second session P of the same repository runs
+   `sminos say "@<name> hello"` (a peer's message: on an enrolled machine a
+   person's words from a terminal wait for an endpoint this store has
+   none of); its line says S is stopped and not woken, and
+   `claude agents --json` shows no process for S.
+4. `claude --resume <S's id>`, then `sminos daemon tick`. `sminos list`
+   shows S live under the same name and line; its transcript holds the
+   message's frame.
+5. In S, type `/clear`. `sminos list --stopped --json` shows two members
+   beside P: the new id live under the name, the old id `stopped` under its
+   short id with the in-charge line, with different `thread` values, and
+   the old one's events hold no `retired`. From P,
+   `sminos say "@<name>#<old short> again"` is held for the old one.
+   Resume the old id in a second pane: it is live under its short id.
+6. Fork a session (the engine's own command for a copy). The copy's guide
    line carries the fork sentence, and `list --json` gives it a `thread`
    of its own.
-6. In a session, `/resume` into another session of the directory. Both are
+7. In a session, `/resume` into another session of the directory. Both are
    members with their own `thread`, and no `retired` with reason
    `continued` was written for either.
-7. What was seen, with the engine's version, goes to Surprises &
+8. What was seen, with the engine's version, goes to Surprises &
    Discoveries; the scratch store and directories are removed.
 
 ## Interfaces and Dependencies
@@ -1085,8 +1439,8 @@ today.
 | Path | Holds | Lock |
 |---|---|---|
 | `<seat id>.json` | a spawned thread: its seat record, with the stored keys below added | `.metalock` |
-| `threads/<thread id>.json` | a human-opened thread that has not ended | `threads/.lock` |
-| `threads/ended/<thread id>.json` | a human-opened thread that has ended; `end` moves it here and `restore` back | `threads/.lock` |
+| `threads/<thread id>.json` | a human-opened thread that has not ended, or whose end is not yet in the log | `threads/.lock` |
+| `threads/ended/<thread id>.json` | a human-opened thread whose end is in the log; `set_aside` moves it here and `restore` back | `threads/.lock` |
 
 Each file is one JSON object, mode 0600, written by atomic replace.
 
@@ -1094,26 +1448,27 @@ Each file is one JSON object, mode 0600, written by atomic replace.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `thread` | string | the thread id: a spawned thread's seat id; a human-opened thread's first session id, or a minted UUID in M2's one case |
+| `thread` | string | the thread id: a spawned thread's seat id; a human-opened thread's own UUID, minted when the record is made and never a session's id |
 | `opened` | `"spawned"` or `"human"` | fixed when the record is made |
-| `sessions` | list of strings | every session id the thread has had, oldest first; its last is `current` whenever there is one |
+| `sessions` | list of strings | every session id the thread has had, oldest first; its last is `current` whenever there is one. Rebuilt at adoption for a thread from before this code (M1) |
 | `current` | string | the session that fills it now; `""` for a vacant spawned thread |
 | `alias` | string | a spawned thread's seat alias; for a human-opened one, the alias its latest `joined` or `renamed` carried: a copy for readers without the log, whose own events decide the alias |
 | `launch` | `{"cwd": string, "options": list of strings, "at": timestamp}` | the directory and the options of the engine process that last started `current`; `options` is option tokens in order, kept for `LAUNCH_OPTIONS` alone, and is absent when they could not be read |
 | `channels` | list of strings | declared channel ids. T1 makes it `[]` and carries it through an end and a return; CH writes it |
 | `stopped` | timestamp, or absent | since when the thread sweep has found no process holding `current` |
-| `ended` | `{"at": timestamp, "reason": "retire" or "ended", "by": string, "pid": integer or null}`, or absent | the end: who retired it (`by`, `""` for the rule) and the process seen then |
+| `swept` | timestamp, or absent | the `stopped` for which the sweep has closed the thread's open questions |
+| `ended` | `{"at": timestamp, "reason": "retire" or "ended", "by": string, "pid": integer or null, "purge": true or absent}`, or absent | the end: who retired it (`by`, `""` for the rule), the process seen then, and whether the record is to be deleted once the end is in the log |
 | `created`, `updated` | timestamps | |
 
 A human-opened file holds exactly these, and `"v": 1`. A seat record gains
-the stored keys `opened`, `sessions`, `launch`, `channels`, `stopped` and
-`ended`; `thread`, `current` and `alias` are read from what it already
-holds, and its `status` is `retired` whenever `ended` is set. A seat record
-without the keys reads as `opened: "spawned"`, `sessions: [current]`,
-`launch: {"cwd": <its cwd>}`, `channels: []`. One whose `status` is
-`retired` and that holds no `ended` (a seat retired before this code, or by
-an older copy) reads as ended at its `updated`. Timestamps are
-`sminos.now()`'s.
+the stored keys `opened`, `sessions`, `launch`, `channels`, `stopped`,
+`swept` and `ended`; `thread`, `current` and `alias` are read from what it
+already holds, and its `status` is `retired` whenever `ended` is set. A seat
+record without the keys reads as `opened: "spawned"`, `sessions: [current]`
+until adoption rebuilds it, `launch: {"cwd": <its cwd>}`, `channels: []`.
+One whose `status` is `retired` and that holds no `ended` (a seat retired
+before this code, or by an older copy) reads as ended at its `updated`.
+Timestamps are `sminos.now()`'s.
 
 **The functions:**
 
@@ -1121,24 +1476,34 @@ an older copy) reads as ended at its `updated`. Timestamps are
     LAUNCH_OPTIONS = (...)     # the option names launch.options keeps; T2 extends it
 
     def all_threads(ended=False) -> list[dict]
-        # this machine's threads of both stores; the ended human-opened ones only on request
+        # this machine's threads of both stores; those set aside only on request
     def get(thread_id) -> dict | None
     def thread_of(session) -> dict | None
-        # the thread whose current session it is, else one that had it, ended ones included
+        # the thread whose current session it is, a human-opened one before a seat;
+        # else one that had it, those set aside included
     def stamp(session) -> str
         # the thread id an event of this session carries; "" for a session that is no thread
     def ensure(session, seat=None, project=None, events=None, lock_until=None) -> dict | None
         # the record of the thread the session fills, made when there is none (project and
-        # events: the log an adopted member's first session id is read from); None for lane B
+        # events: the log an adopted thread's sessions are rebuilt from); None for lane B and
+        # for a launch's child that no seat holds yet
     def update(thread_id, fields, remove=(), guard=None, lock_until=None) -> bool
         # the one writer: a merge under the store's lock, applied only if guard(record) holds
     def advance(thread_id, old, new, lock_until=None) -> bool
-        # current old -> new, new appended to sessions; False when current is not old
+        # current old -> new, new appended to sessions; True when current already is new,
+        # False when it is neither
+    def absorb(thread_id, old, new, other_id) -> bool
+        # advance, and the human-opened record other_id deleted, when that record has not
+        # ended and holds new alone; its launch is kept as the thread's; False, nothing
+        # changed, otherwise
     def note_launch(thread_id, cwd, options=None) -> bool
-    def end(thread_id, reason, by="", pid=None, at=None) -> bool
-    def restore(thread_id) -> bool          # ended and stopped removed; a seat's status as fill leaves it
-    def purge(thread_id) -> bool
-    def has_ended(thread) -> bool
+    def end(thread_id, reason, by="", pid=None, at=None, purge=False, guard=None) -> bool
+        # marks the record where it is; guard(record) is read under the lock
+    def set_aside(thread_id) -> bool        # an ended human-opened record into threads/ended/
+    def restore(thread_id) -> bool          # ended, stopped and swept removed; a seat's status as fill leaves it
+    def purge(thread_id) -> bool            # deletes a record whose `ended` is marked purge
+    def record_ended(record) -> bool        # this machine's record says ended
+    def hold_of(session) -> str             # §5
     def set_channels(thread_id, channels) -> bool          # CH's writer
 
 `lock_until` is the hook's deadline: past it the write raises `LockBusy`
@@ -1158,8 +1523,9 @@ under the session's own writer, in its project's log.
 | end by a retire | `retired`, `"reason": "retire"`, `"by": <who>`, `"pid"` when a process was seen, stamped | `retire`, `retire --purge`, `remove` |
 | end by the rule | `retired`, `"reason": "ended"`, `"by": ""`, stamped | the sweep, after three days stopped; and a lane B session's process ending, when it has a thread record |
 | return | `joined`, stamped with the thread id it had | a reopened or filled ended thread |
-| whether it is woken | `state` with `"state": "stopped"` gains `"wake": "woken"` or `"wake": "held"` | `publish_state`, again when the value changes |
-| a question closed | `answered`, `"src": <the question's>`, `"from": <the asker's alias>`, `"text": "closed: the session stopped before this was answered"`, `"closed": "stopped"` | the sweep, when it marks the stop |
+| whether it is woken | a `state` whose `"state"` is `"stopped"` carries `"wake": "woken"` or `"wake": "held"`, built in `lifecycle` for every writer of a session's state | whenever such a `state` is written, and again by `publish_state` when the value changes |
+| a question closed | `answered`, `"src": <the question's>`, `"from": <the asker's alias>`, `"text": "closed: the session stopped before this was answered"`, `"closed": "stopped"` | the sweep, while the thread is stopped |
+| the alias given up at a `/clear` | `renamed`, `"alias": <the session's short id>`, `"name_source": "derived"`, stamped | the record hook of the session that took its place, on `cleared_from`'s witness |
 
 A `moved` retirement and the `joined` that follows it in the other log are
 today's, stamped. The reasons a reader meets on a `retired` are `ended`,
@@ -1174,9 +1540,11 @@ today's, stamped. The reasons a reader meets on a `retired` are `ended`,
         # the latest `joined` of the same session before it in its own writer's order, is stamped
 
 A reader that decides membership from lifecycle events treats an event
-that is passed by as absent. Every other `retired` takes effect, whoever
+that is passed by as absent: the membership in effect is whatever the
+events before and after it say. Every other `retired` takes effect, whoever
 wrote it. The rule's cases are the `retired` list of
-`sminos/tests/vectors/maws/channel-rule.json`, MAWS's file:
+`sminos/tests/vectors/maws/channel-rule.json`, MAWS's file, at its version
+1:
 
 | Case | One session's own events, in order | A member after each |
 |---|---|---|
@@ -1184,31 +1552,52 @@ wrote it. The rule's cases are the `retired` list of
 | 2 | case 1, then unstamped `retired` `moved` | yes; yes; no |
 | 3 | case 1, then stamped `retired` `ended` | yes; yes; no |
 | 4 | unstamped `joined`; unstamped `retired` `ended` | yes; no |
+| 5 | stamped `joined`; unstamped `retired` `moved`; unstamped `retired` `ended` | yes; no; no |
 
-### §4. Naming a thread (X2)
+The fifth catches a reader that keeps one latest `retired` per session and
+lets the one it passes by displace the one it honours.
 
-On any machine, from the log as that machine may read it: the sessions of
-a thread are those whose own events carry its id in `thread`; its current
-session is the one among them whose membership is in effect, and when none
-is (it has ended), the one whose `joined` is latest. A name that is the
-thread id or the id of any of those sessions, in the forms a session id
-takes today (`@short`, `@alias#short`, a full id), resolves to that
-current session. Where a name is one member's current session or alias and
-another's former one, the first is the match, as a former alias is ordered
-today. A session whose events carry no stamp resolves as today, through
-its `continued` chain. An event that addresses a message names the current
-session's id.
+### §4. Naming a thread, and what a thread's row reads (X2)
 
-### §5. Whether a thread is woken (X3, the first values)
+On any machine, from the log as that machine may read it.
 
-    def wake_of(member) -> str | None
+- **Which thread a session is in.** The thread its latest `joined` is
+  stamped with. For naming alone, an unstamped `joined` that carries a
+  seat's id in `seat` counts as stamped with it, and an unstamped session
+  with no seat is in no thread and resolves through its `continued` chain,
+  as today.
+- **A thread's sessions** are the sessions in it by that rule. Its
+  **current session** is the one among them whose membership is in effect;
+  when none is (it has ended), or more than one is (a refill whose
+  retirement is not yet written), the one whose `joined` is latest.
+- **A name.** The thread id, or the id of any session of the thread, or of
+  any session a session of it continues, in the forms a session id takes
+  today (`@short`, `@alias#short`, a full id), resolves to the thread's
+  current session. Where a name is one member's current session or alias
+  and another's former one, the first is the match, as a former alias is
+  ordered today. An event that addresses a message names the current
+  session's id.
+- **Episodes.** A session's events are read in episodes, each beginning at
+  a `joined` whose stamp differs from the one before it. A thread's row
+  (alias, in-charge line, status, `by`, worktree) is read from the
+  episodes stamped with its id, of its current session and of its other
+  sessions. An event with no stamp of its own belongs to the episode of
+  its session that its time falls in. Owners are read along the
+  continuation chain and nowhere else.
+
+### §5. Whether a thread is held or woken (X3, the first values)
+
+    def hold_of(session) -> str          # S/sminos_threads.py, on the thread's own machine
+        # "" when this machine delivers to the session or wakes it; "human" when it holds:
+        # a human-opened thread whose current session no process holds. T2 adds its reasons.
+    def wake_of(member) -> str | None    # S/sminos.py, on any machine
         # "woken" | "held" | "ended", or None when its machine published nothing
 
 | Value | Thread | Read from |
 |---|---|---|
-| `woken` | spawned and stopped: an addressed message resumes it, as today | on its own machine, the record; elsewhere, `wake` on its latest `state` |
+| `woken` | spawned and stopped: an addressed message resumes it, as today | on its own machine, `hold_of`; elsewhere, `wake` on its latest `state` |
 | `held` | human-opened and stopped: recorded and held until its human reopens it. T1 writes this value and T2 retires it for the reasons of its own list | the same |
-| `ended` | ended by a retire or by the rule | its membership: a stamped `retired` with reason `retire` or `ended`, in effect |
+| `ended` | ended by a retire or by the rule, or on a retired machine | `has_ended` (§8) |
 
 A sender's CLI reads it when it sends and says it with the machine the
 message waits on. With `None` (an older sminos on that machine) it says
@@ -1225,26 +1614,50 @@ says what the event would.
 
 | # | What happens | Guard | The record | The event |
 |---|---|---|---|---|
-| 1 | a lane A session with no thread is seen for the first time (the hook, a reconciliation) | joinable as today | `ensure`: a human-opened record | `joined`, stamped |
+| 1 | a lane A session with no thread is seen for the first time (its hook, a reconciliation) | joinable as today, and no launch's child (M1) | `ensure`: a human-opened record under a minted id | `joined`, stamped |
 | 2 | `spawn` makes a seat; `seat add` | as today | the seat record, with the thread keys | `joined`, stamped |
-| 3 | a member or seat from before threads, or one whose latest `joined` an older copy wrote | this machine's, lane A, its latest `joined` unstamped | `ensure` | `joined` again, stamped |
-| 4 | the engine hands a session to a background job | `continued_in`'s evidence, as today | `ensure_record(new, former=[old])`, then `advance` | `retired` `continued` on the old, `joined` or `renamed` on the new, one stamp |
-| 5 | a refill | the seat's lock, as today | `advance` | `retired` `replaced` on the old, `joined` on the new, one stamp |
-| 6 | no process holds `current` | two consecutive sweep passes, no resume lock held | `stopped` set | none for membership; `state` `stopped` with `wake`; `answered` for each open question |
-| 7 | a process holds `current` again | — | `stopped` removed | none; what was held is delivered |
-| 8 | `retire`, by another or by itself | M5's answer is none, or unknown with the terminal's flag | `end(reason="retire")` | `retired` `retire`, stamped; then the process is stopped where sminos can stop it |
-| 9 | stopped for more than the period | the sweep's ending pass; M5's answer is none; still stopped with the same `current`, read again under the lock | `end(reason="ended")` | `retired` `ended`, stamped |
-| 10 | an ended thread's session is held by a process that started after the end, or a spawned one is filled | the record's `ended`, its time and pid | `restore` (a fresh fill then goes on as row 5) | `joined`, stamped |
+| 3 | a member or seat from before threads, or a member an older copy joined | this machine's, lane A, its membership in effect an unstamped `joined` | `ensure`, its `sessions` rebuilt | `joined` again, stamped |
+| 4 | the engine hands a session to a background job | `continued_in`'s evidence, as today | `ensure_record(new, former=[old])`, then `advance`, or `absorb` when the job has a record of its own | `retired` `continued` on the old, `joined` or `renamed` on the new, one stamp |
+| 5 | a refill | the seat's lock, as today; refused when a human-opened record names the seat's session | `advance` | `retired` `replaced` on the old, `joined` on the new, one stamp |
+| 6 | no process holds `current` | two consecutive sweep passes, no resume lock held | `stopped` set | none for membership; `state` `stopped` with `wake` |
+| 7 | a process holds `current` again | — | `stopped` and `swept` removed | none; what was held is delivered at the next pass |
+| 8 | `retire`, by another or by itself | M5's answer is none, or unknown with the terminal's flag | `end(reason="retire")`, with the process seen | `retired` `retire`, stamped; what was held is settled; then the process is stopped where sminos can stop it |
+| 9 | stopped for more than the period | the sweep's ending pass, under the lock: `stopped` is the time decided for, `current` the same, no process by fresh evidence, M5's answer for that stop is none | `end(reason="ended")` | `retired` `ended`, stamped; what was held is settled |
+| 10 | an ended thread's session is held by a process the end did not see (M4), or a spawned one is filled | the record's `ended`, its time and pid | `restore` (a fresh fill then goes on as row 5) | `joined`, stamped |
 | 11 | a thread's session becomes lane B | `lane_of` | kept; when its process ends, `end(reason="ended")` | `gone` to the endpoint before the new frame; at its process's end `retired` `ended`, stamped. Reopened as lane A it returns by row 10 |
-| 12 | `retire --purge`, `remove` | as row 8 | the id read, then `purge` | `retired` `retire`, stamped |
+| 12 | `retire --purge`, `remove` | as row 8 | `end(reason="retire", purge=True)` | `retired` `retire`, stamped; then `purge` and, for a seat, its files |
 | 13 | a `join`, or a directory that resolves elsewhere | as today | unchanged | `retired` `moved` and `joined`, today's, stamped |
-| 14 | a former session of a thread runs again | it is not the thread's `current` | `ensure`: a human-opened record of its own, its id minted when a thread has its session id | `joined`, stamped with the new id |
-| 15 | an older copy wrote `retired` `ended`, unstamped, after a stamped `joined` | — | unchanged | none: passed by |
-| 16 | an older copy wrote an unstamped `joined`, and then perhaps its `ended`, which then takes effect | the record has not ended | unchanged | `joined` again, stamped (row 3's guard) |
-| 17 | an older copy retired a thread (`retired` `retire`, unstamped, honoured) | the record has not ended | `end(reason="retire")` from the event's `by`, `pid` and time | none |
+| 14 | a former session of a thread runs again | a process holds it that is not the one its retirement saw, or that started after it | `ensure`: a human-opened record of its own | `joined`, stamped with the new id |
+| 15 | a `/clear` (M3) | `cleared_from` names a human-opened member of this machine whose alias is the engine's name for the process | unchanged but for the alias copy | `renamed` to its short id on the session left; the new session is row 1 |
 
 A `/clear`, a fork and an in-session `/resume` are rows 1 and 6: the new
 id is seen for the first time, and the session left has no process.
+
+**Brought back together.** What a reconciliation does when a record of this
+machine and the log, read for the record's current session in its project,
+do not say the same. Each row is applied under the same locks and guards as
+the transition it finishes, and a second application finds nothing to do.
+Rows A to E finish a transition of this code that died between its two
+writes; F to H meet what an older copy wrote (D7). Nothing else is
+repaired.
+
+| # | The record says | The log shows | What is done |
+|---|---|---|---|
+| A | ended | the session's membership in effect is a `joined`, and no process the end did not see holds it | the stamped `retired` is appended from `ended` (its reason, `by`, `pid`) |
+| B | ended, human-opened, not yet set aside | the retirement in effect | `set_aside` |
+| C | ended, marked purge | the retirement in effect | `purge`, and for a seat its files |
+| D | not ended | a stamped `retired` with reason `retire` or `ended` in effect: a return whose `joined` was not written | `joined` is appended, stamped |
+| E | `current` is another session, and `sessions` holds this one | this one's membership in effect is a `joined` stamped with the thread, and no process holds it: an advance whose retirement was not written | a hand-off is run again (`hand_off`); a refill's `retired` `replaced` is appended |
+| F | not ended | an unstamped `retired` `retire` in effect: an older copy retired it | `end(reason="retire")` from the event's `by`, `pid` and time; no event |
+| G | not ended | an unstamped `retired` `ended` after a stamped `joined` | nothing: it is passed by |
+| H | not ended, and this is its current session in this project | an unstamped `joined` followed by an unstamped `retired` `ended`, in effect | until M3, with no process holding the session: `end(reason="ended")`, no event; from M3: `joined` again, stamped |
+
+A stamped retirement beside a record that is not ended can only be a
+return (D): this code never writes a retirement before its record. A
+record that is ended beside a `joined` in effect is an end to finish (A)
+unless a process the end did not see holds the session, which is a return
+(row 10). The sweep's closing of questions is finished the same way, by
+`swept` (M3).
 
 ### §7. Which hosts a thread owns (X9, as consumed)
 
@@ -1254,7 +1667,7 @@ id is seen for the first time, and the session left has no process.
         unknown: list      # devcloud's `unknown` entries, or one entry sminos makes for no answer
         asked: list        # the short ids asked about
 
-    def owned_by(shorts) -> Owned          # the one function that runs devcloud
+    def owned_by(shorts) -> Owned          # the one function that runs devcloud; no shorts: none, unasked
     def owned_vms(thread) -> Owned         # owned_by for the short ids of thread["sessions"]
 
 `owned_by` runs `devcloud vm owned-by <short>...` as M5 finds and reads
@@ -1266,17 +1679,40 @@ none is unknown when `unknown` is not empty, and none otherwise. An entry
 sminos makes for no answer has devcloud's keys, with `account` and
 `provider` null, `failed` `"query"` and the reason in `reason`.
 
+The census is `sminos daemon census`, a verb the daemon runs as a child
+and no person runs. It asks `owned_by` once for the threads due and writes
+`$SMINOS_HOME/daemon/census.json` whole:
+
+    {"at": <timestamp>,
+     "threads": [{"thread": <id>, "current": <session>, "stopped": <timestamp>, "shorts": [...]}],
+     "answer": "owned" | "none" | "unknown", "vms": [...], "unknown": [...]}
+
+The ending pass reads a thread's answer from it only when `current` and
+`stopped` are the record's and `at` is within one spacing of the pass.
+
 ### §8. Other names
 
 - `S/sminos_records.py`: `lane_of(record) -> "A" | "B"`, the rule
   `member_frame` holds today, moved there; `record` may be `None`.
-- `Member` (the view's row) gains `thread` (the thread id, `""` for none)
-  and `opened` (`"spawned"`, `"human"` or `""`); `former` holds the
-  continuation chain, then the thread's other sessions. `member_json`
-  prints `thread`.
+  `launch_of(session) -> str`: the launch a session is bound to (this
+  process's own launch when it is bound to the session, else the binding
+  that names it), `""` for none. `unbound_launch(within) -> bool`: whether
+  a pending launch of this machine younger than `within` seconds is bound
+  to no session yet.
+- `Member` (the view's row) gains `thread` (the thread id, `""` for none),
+  `opened` (`"spawned"`, `"human"` or `""`), `thread_sessions` (the other
+  sessions of its thread that its continuation chain does not hold, newest
+  first) and `end` (`""`, or why it has ended: `"retire"`, `"ended"`, or
+  `"machine"` for a retired machine). `former` is unchanged: the
+  continuation chain. `member_json` prints `thread`.
+- `S/sminos.py`: `has_ended(member) -> bool`, true when `member.end` is
+  set: read from the log and the org's state alone, on any machine. `View`
+  gains `ended`, the rows of the project's ended threads.
+- `S/sminos.py`: `cleared_from(session, source) -> str`, the session the
+  process of a `SessionStart` hook held before a `/clear`, `""` for none.
 - `S/sminos_daemon.py`: `sweep_threads()`, called by the daemon's loop and
   by `daemon tick`: the stop pass at every call, the ending pass on its
-  spacing.
+  spacing and when a census has landed since the last.
 - The hold's outcome from `deliver_next` and `push_member` is
   `"held:human"`.
 - `sminos retire <member> --owner-unknown`.
@@ -1289,21 +1725,22 @@ sminos makes for no answer has devcloud's keys, with `account` and
 ### §9. Dependencies
 
 - Python's standard library alone, at sminos's floor (3.10).
-- devcloud 0.17.0 or later for `devcloud vm owned-by` (on `main` at this
-  plan's pin). An older devcloud answers exit 2, which reads as unknown.
+- devcloud 0.17.2 or later for `devcloud vm owned-by` and for what its
+  exit 6 means. An older copy reads as unknown, named (M5).
 - The engine: the facts the code already rests on (`continued_in`'s
   record, the session record per process, `CLAUDE_PID` in a hook's
-  environment). M2's check and M6's live pass record the version they ran
-  on.
-- MAWS, none that blocks: the vectors' file (M1 carries its content, M6
-  pins it); its endpoint's own withdrawal at a lane change and its app's
-  reader rule are MW's and are wanted by this child's release without
-  holding it.
+  environment), and one M2's check establishes before M3 uses it (which
+  session the process's record names during a `/clear`'s hooks). M2's
+  check and M6's live pass record the version they ran on.
+- MAWS, none that blocks: the vectors' file (M1 copies it from the commit
+  that holds it, M6 pins a commit of its master); its endpoint's own
+  withdrawal at a lane change and its app's reader rule are MW's and are
+  wanted by this child's release without holding it.
 
 ## Surprises & Discoveries
 
-Found while the plan was written against the code; the executor adds its
-own below.
+Found while the plan was written and reviewed against the code; the
+executor adds its own below.
 
 - Observation: a `to` on a `retired` is guarded only under reason
   `continued`. Under another reason it is neither redacted for an audience
@@ -1317,6 +1754,33 @@ own below.
   Evidence: `push_member`'s branch for a member with no seat; `report_closed`
   and `refuse_owed` in `S/sminos_outcomes.py` ("a closed session is no
   member, so deliver_next never sees it").
+- Observation: on a cut-over machine the words and reach gates come before
+  the push, and the uplink asks about the same rows; an unanswered `words?`
+  is a failed attempt, and attempts settle an event.
+  Evidence: `deliver_next`'s order; `ask_words`, `expire_asks` in
+  `S/sminos_uplink.py`; `words_unanswered` and `_conclude` in `S/sminos.py`.
+- Observation: `daemon owed` exits 1 for an event owed to a member and 0
+  for one waiting for a closed session, and it tests membership first.
+  Evidence: `owed_in` and `cmd_owed` in `S/sminos_daemon.py`.
+- Observation: a session's `state` has four writers.
+  Evidence: `publish_state`, `rejoin_former` and `restate_withheld` in
+  `S/sminos_daemon.py`; `snapshot` in `S/sminos_visibility.py`. All pass
+  `lifecycle`.
+- Observation: a spawn's child is joined today by its own first hook, as a
+  seat-less background session, before its seat names it: the engine is
+  started before the seat's record is written, and the session's id is
+  learned by polling.
+  Evidence: `spawn_fresh` (`run_claude_bg`, then the record, then
+  `poll_uuid`); `record_session` and `session_evidence`, which take a
+  pending launch's child with no seat as joinable.
+- Observation: a fresh fill starts a process without passing
+  `resume_session`.
+  Evidence: `cmd_fill` without `--resume` and `cmd_spawn` onto an existing
+  alias both call `spawn_fresh`.
+- Observation: a seat from before this code knows its earlier occupants
+  only by its `history` (the last ten) and by the `seat` field of their
+  `joined` events.
+  Evidence: `spawn_fresh`'s re-fill branch; `joined_fields`.
 - Observation: any JSON file at the root of `$SMINOS_HOME` reads as a seat.
   Evidence: `record_files` globs `*.json` there, and `load_seat` gives
   every missing field a default.
@@ -1325,71 +1789,123 @@ own below.
   writes such a `joined` from its own hooks for as long as it lives.
   Evidence: `refresh_joined` and `publish_owners` append a `joined` built
   by `joined_fields`; the vectors' fourth case.
-- Observation: after a `/clear` the new session carries the name of the
-  session it left, and a name another member holds is never taken.
-  Evidence: `held_alias` and `shadowing`; the composite's own account of a
-  `/clear`, under its Surprises.
+- Observation: the code says which session the engine's record names
+  during a start's hooks for `/branch` and an in-session `/resume`, and
+  says nothing of `/clear`; at such a start the record hook returns before
+  it joins anything, and only the guide borrows the process's record.
+  Evidence: `_hook_engine`'s account (engine 2.1.303) and its one caller,
+  `guide_text`; `record_session`'s early return when neither a seat nor an
+  engine record names the session. M2's check settles the `/clear` case.
 - Observation: `sminos resume` returns a retired seat to its project
   today.
   Evidence: `resume_session`'s `launched` calls `join_seat`, whose guard is
   only that the latest membership is not `joined`.
-- Observation: devcloud's launcher wants a Python 3.11 on `PATH`, where
-  sminos runs on 3.10, and the driver runs a provider's own tool from the
-  `PATH` it is given.
-  Evidence: `devcloud/bin/devcloud`; `MIN_PYTHON` in `S/sminos.py`; the
-  comment at the head of `devcloud/boot/devcloud`'s `vm` branch.
+- Observation: before devcloud 0.17.2 its launcher wants a Python 3.11
+  before it looks for a seed key, and a driver that fails to import
+  answers exit 6. The driver runs a provider's own tool from the `PATH` it
+  is given.
+  Evidence: `devcloud/bin/devcloud` and `devcloud/boot/devcloud` at 0.17.1;
+  `MIN_PYTHON` in `S/sminos.py`.
+- Observation: the gates check out one commit, so a test that needs an
+  older revision of this repository must fetch it.
+  Evidence: ci-kit's `setup.fetch_depth`, default 1, unset in
+  `.github/ci-kit.yml`.
+- Observation: on an enrolled machine a person's words from a terminal are
+  delivered only on an endpoint's verdict, so a scratch store enrolled by
+  hand delivers a session's message and never a person's.
+  Evidence: `WordsGate` and `words_route` in `S/sminos.py`.
 - Observation: every closed terminal session becomes an ended thread whose
   record D1 keeps, and a `/clear` makes one each time. Nothing bounds
   their number.
   Evidence: D1's lifecycle; the thread store's layout in Interfaces §1 is
-  the answer for the daemon's cost, and `list --all` has none.
+  the answer for the daemon's cost, and `list --all` has none (the
+  composite: Deferred).
 
 ## Decision Log
 
 - 2026-11-17 — **Verification.** This plan gets one
-  `doperpowers:adversarial-reviewer` pass before it is executed, on whether
-  each milestone can be built from this document and the code and whether
-  the names in Interfaces are enough for T2 and CH. Execution runs through
-  doperpowers:subagent-driven-execution, a review at each milestone's
-  boundary before the next consumes it. The branch gets
-  doperpowers:review-code at the high rung, as the composite's Decision Log
-  sets for T1: it changes who stays a member, with privacy consequences.
-- 2026-11-17 — **The pin moved twice while the plan was written,** from
-  the composite's blob `8c29b665` at `main` `88e771ba` to `681c0075` at
-  `279bb44a`. What moved with it: a `/clear` is no continuation (M2 was
-  built around it and is now the hand-off, the refill and the naming, with
-  a `/clear` pinned as another thread; the record lost the field that held
-  the process, which only that case read); X9 is devcloud's command as
-  built (M5); the reader rule's cases are a file of MAWS's (M1, M6).
-- 2026-11-17 — **Residue decided in this plan,** each with its reason in
-  the milestone named, for the composite's holder to fold under T1:
-  - a person at a terminal may retire a thread whose ownership answer is
-    unknown, with `--owner-unknown`, and never one that is owned (M5: the
-    composite's lean);
-  - the record of a spawned thread is its seat record and that of a
-    human-opened one a file of the thread store, behind one module, an
-    ended one moved aside (M1);
-  - the thread id is the first session id but for a vacant seat's and a
-    former session that runs again (M1, M2);
-  - `seat add --session` is refused for a session that already is a
-    human-opened thread (M1);
-  - a refill's event keeps reason `replaced` and gets no `to`, which
-    overturns the composite's advisory lean (M2, with its evidence);
-  - `retirement_holds` goes, as the composite's advisory says: the
-    record's `ended` holds the time and the process (M4);
-  - the hold is an outcome of delivery that leaves the event owed, and
-    `resume`, `fill --resume` and `send --wait` aimed at a held thread
-    record their message and exit 4 (M3);
-  - the three-day clock runs from the stop the sweep recorded, so nothing
-    ends in the first three days after the update (M4);
-  - an ended thread reads `retired` in lists and is shown by `--all` from
-    the log (M4);
-  - a devcloud CLI that cannot be found or run reads as unknown, and only
-    exit 6 as none; the daemon's service carries the two variables that
-    move devcloud's seed and profile (M5);
-  - what older code leaves disagreeing between the log and a record is
-    brought back together in three cases and no more (Interfaces §6, rows
-    15 to 17).
+  `doperpowers:adversarial-reviewer` pass before it is executed (done
+  2026-11-18, below). Execution is by one `doperpowers:plan-executor`,
+  which runs the milestones and the review at each milestone's boundary
+  before the next consumes it. The branch gets doperpowers:review-code at
+  the high rung, as the composite's Decision Log sets for T1: it changes
+  who stays a member, with privacy consequences.
+- 2026-11-17 — **The pin moved while the plan was written,** from the
+  composite's blob `8c29b665` at `main` `88e771ba` to `681c0075` at
+  `279bb44a`: a `/clear` is no continuation, X9 is devcloud's command as
+  built, and the reader rule's cases are a file of MAWS's.
+- 2026-11-18 — **The review and the holder's rulings.** The adversarial
+  reviewer read the plan at `b45a5172` against the code and returned
+  fourteen findings; each was checked in the code again while this
+  revision was made, and all hold but for one fact no code shows (which
+  session the engine's record names during a `/clear`'s hooks), which M2
+  now checks live before M3 rests on it. The pin moved to `135fb0f4` at
+  `ca9b6df4`. What the holder ruled that the composite at that pin does
+  not yet say, and this document follows:
+  - a human-opened thread's id is minted and never a session's (the pin's
+    D1 and its Decision Log say the first session's id, and that `thread`
+    needs no redaction);
+  - at an end, what is held for a thread is settled `recorded`, and is not
+    delivered on a return;
+  - an older copy's unstamped `retire` counts as ended for every reader,
+    and `has_ended` is read from the log and the org's state, with no
+    record;
+  - `Member.former` keeps today's meaning, and a thread's other sessions
+    are a field of their own;
+  - devcloud's minimum is 0.17.2, and an older copy reads as unknown;
+  - the vectors have a fifth `retired` case, and the copy is made from
+    MAWS's tree, not from its execution document's text;
+  - the oldest sminos to test against is 1.27.10.
+  What the holder ruled against the plan's first version: at a `/clear`
+  the alias goes with the new session (the plan had left it with the
+  session that was left).
+- 2026-11-18 — **Mechanisms the rulings left to this plan,** each with its
+  reason in the milestone named:
+  - a record and the log are brought back together by eight rules, five
+    for this code's own interrupted transitions and three for an older
+    copy's writes; an end is three steps (the mark, the event, the record
+    set aside or purged), so the evidence outlives a crash; a stamped
+    retirement beside a record that is not ended is a return, since this
+    code never writes one before its record (M1, M4; Interfaces §6);
+  - a spawn's child is told from a session its human opened by the launch
+    binding, read by the session's own hook from its environment and by a
+    reconciliation from the bindings, with a short wait while a launch of
+    the machine is still unbound (M1);
+  - a job that joined before its hand-off was written has its own record
+    absorbed by the thread it continues (M2);
+  - the process that handed a session off is told from a later return by
+    the `pid` its retirement recorded, as today (M2);
+  - a thread's row is read per episode (M2; Interfaces §4);
+  - the hold is one predicate asked at selection, before the words and
+    reach gates, and by the uplink's asks; a held session costs a tick one
+    look at its own addressed events (M3);
+  - a held event does not follow a continuation: `_owed` reads no lineage
+    and delivery is keyed by the addressed session throughout; logged as
+    debt (M3);
+  - both places that start a process for a seat check for a human-opened
+    record under the seat's lock (M3);
+  - X3's value is built in `lifecycle` (M3);
+  - questions are closed while a thread is stopped, by a mark of the stop
+    that was swept (M3);
+  - the `/clear` witness is the engine's record of the hook's process,
+    read raw; with it the session left gives the name up by a `renamed` to
+    its short id, and the new session takes it by today's rule (M3);
+  - an ended thread is returned by any process when its end saw none (M4);
+  - the census is a child process of the daemon, one per machine, killed
+    past twice its bound (M5);
+  - devcloud's version is read from the manifest beside the copy found
+    (M5);
+  - `test-older-cli.sh` fetches the one revision it needs and fails
+    without it (M6).
+- 2026-11-18 — **Residue decided in the first version and kept,** which
+  the composite at the pin already holds: `--owner-unknown` at a terminal
+  alone; two stores behind one module; `seat add --session` refused for a
+  human-opened thread; a refill's event keeps `replaced` and gets no `to`;
+  the hold is a delivery outcome, and `resume`, `fill --resume` and
+  `send --wait` aimed at a held thread exit 4; the three-day clock runs
+  from the stop the sweep recorded; an ended thread reads `retired` in
+  lists; `sminos resume` no longer returns an ended spawned thread; only
+  exit 6 reads as none.
 
 ## Outcomes & Retrospective
 
