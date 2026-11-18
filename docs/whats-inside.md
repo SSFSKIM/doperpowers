@@ -50,7 +50,7 @@ Registered as `doperpowers:<name>` and dispatched by the skills above; you rarel
 | [`reviewer-high`](../agents/reviewer-high.md) | astra, high | A focused diff whose stakes warrant the frontier model |
 | [`adversarial-reviewer`](../agents/adversarial-reviewer.md) | astra, high | Tries to break confidence in a design, spec or change along a named focus |
 | [`critique`](../agents/critique.md) | fable, xhigh | Attacks a matured design and its reasoning, then debates the session until the disagreement converges |
-| [`plan-executor`](../agents/plan-executor.md) | opus, high | Runs a spec's plan of work on behalf of the session that wrote it |
+| [`plan-executor`](../agents/plan-executor.md) | opus, high | Runs a multi-milestone execspec spec through subagent-driven execution, on behalf of the session that wrote it |
 | [`task-executor`](../agents/task-executor.md) | opus, high | Builds one milestone inside `subagent-driven-execution` |
 | [`task-reviewer`](../agents/task-reviewer.md) | sol, xhigh | Reviews one milestone inside `subagent-driven-execution` |
 
