@@ -15,7 +15,7 @@ import pathlib
 
 from . import bake_check, compose, hostctl, names
 from .context import Entry
-from .errors import FAILED, REFUSED, DriverError
+from .errors import FAILED, REFUSED, DriverError, Refused
 
 BUILD_EVERY = 24 * 3600     # the reaper's build, per account, at most this often
 SSH_WAIT = 5 * 60
@@ -40,30 +40,48 @@ def current(images, recipe, arch=ANY):
     """The newest image (`devcloud=image`) whose recipe hash is `recipe` and
     which a create can use now (`state` ready), or None. With `arch` (the
     requested type's `architecture`, None when its provider names none), only
-    an image baked on that architecture: Hetzner offers x86 and Arm types."""
+    an image baked on that architecture: Hetzner and GCE offer x86 and Arm
+    types."""
     ours = [i for i in images if i["labels"].get("devcloud") == "image" and i["labels"].get("devcloud-recipe") == recipe
             and i.get("state") == "ready" and (arch is ANY or i["labels"].get(ARCH_LABEL) == arch)]
     return max(ours, key=lambda i: (i["created"], i["id"]), default=None)
+
+
+def builder_types(types, arch=None, vcpu_max=None):
+    """The types a builder may take, smallest first: available, of
+    architecture `arch` when given, with the least disk the provider offers so
+    the image fits every type (§7). The first is the builder's; the rest are
+    its fallbacks when the cloud has none of it (`unavailable`), up to
+    `vcpu_max` vCPU, the person's size cap."""
+    offered = [t for t in types if t.get("available") and (arch is None or t.get("architecture") == arch)]
+    if not offered:
+        raise DriverError(REFUSED, "the provider offers no available type for a builder here")
+    least = min(t["disk_gb"] for t in offered)
+    ordered = sorted((t for t in offered if t["disk_gb"] == least),
+                     key=lambda t: (t["vcpus"], t.get("memory_gb") or 0, t.get("hourly_price") or 0, t["type"]))
+    return ordered[:1] + [t for t in ordered[1:] if vcpu_max is None or t["vcpus"] <= vcpu_max]
 
 
 def builder_type(types, arch=None):
     """The smallest available type whose disk is the least the provider
     offers, so the image fits every type (§7); of architecture `arch` when
     given."""
-    offered = [t for t in types if t.get("available") and (arch is None or t.get("architecture") == arch)]
-    if not offered:
-        raise DriverError(REFUSED, "the provider offers no available type for a builder here")
-    least = min(t["disk_gb"] for t in offered)
-    return min((t for t in offered if t["disk_gb"] == least),
-               key=lambda t: (t["vcpus"], t.get("memory_gb") or 0, t.get("hourly_price") or 0, t["type"]))
+    return builder_types(types, arch)[0]
 
 
-def needs_build(images, builders, recipe, last, now):
-    """The reaper's daily build (§7, M4): an account lacking a current image,
-    with no builder of its own alive, last tried more than a day ago."""
-    if current(images, recipe) is not None or builders:
+def needs_build(images, builders, recipe, last, now, arch=ANY):
+    """The reaper's daily build (§7, M4): an account lacking a current image
+    (of `arch`, its default type's architecture, when given), with no builder
+    of its own alive, last tried more than a day ago."""
+    if current(images, recipe, arch) is not None or builders:
         return False
     return last is None or now - last >= BUILD_EVERY
+
+
+def default_arch(types, account):
+    """The architecture of the account's default type, which most VMs take:
+    None when its provider names none, ANY when the type is not offered."""
+    return next((t.get("architecture") for t in types if t["type"] == account.type), ANY)
 
 
 # --- image build ---------------------------------------------------------------------------
@@ -84,17 +102,18 @@ def _accounts(ctx, account_name):
     return pairs
 
 
-def build_command(ctx, account_name=None):
-    """`image build [--account A]`: one image for the account named, else for
-    each usable account whose provider has images."""
+def build_command(ctx, account_name=None, arch=None):
+    """`image build [--account A] [--arch x86|arm]`: one image for the account
+    named, else for each usable account whose provider has images; of `arch`
+    when given, else of the account's default type's architecture."""
     pairs = _accounts(ctx, account_name)
     if len(pairs) == 1:
-        build(ctx, *pairs[0])
+        build(ctx, *pairs[0], arch=arch)
         return 0
     failed = False
     for account, client in pairs:
         try:
-            build(ctx, account, client)
+            build(ctx, account, client, arch=arch)
         except DriverError as error:
             ctx.warn(f"devcloud vm image build: account {account.name}: {error}")
             failed = True
@@ -105,13 +124,17 @@ def _stamp(now):
     return datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y%m%d%H%M")
 
 
-def build(ctx, account, client):
-    """Bakes one image for `account` and returns it (an I13 Image)."""
+def build(ctx, account, client, arch=None):
+    """Bakes one image for `account` and returns it (an I13 Image): of `arch`
+    when given, else of the account's default type's architecture."""
     recipe = compose.recipe_hash(ctx.plugin)
     types = client.types(account.location)
-    # The architecture of the account's default type, which most VMs take.
-    arch = next((t.get("architecture") for t in types if t["type"] == account.type), None)
-    type_ = builder_type(types, arch)
+    if arch is None:
+        arch = default_arch(types, account)
+        arch = None if arch is ANY else arch
+    elif not any(t.get("architecture") == arch for t in types if t.get("available")):
+        raise DriverError(REFUSED, f"account {account.name} offers no available {arch} type in {account.location}")
+    candidates = builder_types(types, arch, ctx.profile.caps.vcpu_max)
     keys = ctx.driver_keys()
     taken = {vm["name"] for vm in client.list()}
     name = names.draw("bake", taken, ctx.token_hex, ctx.profile.name_prefix)
@@ -120,9 +143,9 @@ def build(ctx, account, client):
     if test_run:
         labels["devcloud-test"] = test_run
     user_data = compose.user_data(None, keys) if client.has("user_data") else None
-    vm = client.create({"name": name, "type": type_["type"], "location": account.location, "image": None,
-                        "labels": labels, "ssh_public_keys": keys, "user_data": user_data, "disk_gb": None,
-                        "spot": False})
+    type_, vm = _create_builder(ctx, client, account, candidates, {
+        "name": name, "location": account.location, "image": None, "labels": labels, "ssh_public_keys": keys,
+        "user_data": user_data, "disk_gb": None, "spot": False})
     entry = Entry(account, client, vm)
     host = entry.host
     ctx.say(f"builder   {name} (id {vm['id']}, {type_['type']} in {account.location}) for account {account.name}")
@@ -160,6 +183,26 @@ def build(ctx, account, client):
         raise DriverError(FAILED, f"image {made['name']} is recorded, but its builder {name} (id {vm['id']}) "
                                   "was not deleted; the reaper deletes builders older than 2 hours")
     return made
+
+
+def _create_builder(ctx, client, account, candidates, request):
+    """The builder, on the first of `candidates` the cloud has: a type it
+    answers `unavailable` for is followed by the next, each named; any other
+    refusal ends the bake there. Returns (its type, the Vm)."""
+    refused = []
+    for i, type_ in enumerate(candidates):
+        try:
+            return type_, client.create(dict(request, type=type_["type"]))
+        except Refused as refusal:
+            if refusal.kind != "unavailable":
+                raise
+            refused.append(type_["type"])
+            if i + 1 < len(candidates):
+                ctx.warn(f"devcloud vm image build: {type_['type']} is unavailable in {account.location}; "
+                         f"trying {candidates[i + 1]['type']}")
+    arch = candidates[0].get("architecture")
+    raise DriverError(REFUSED, f"every {arch + ' ' if arch else ''}builder type is unavailable in "
+                               f"{account.location} for account {account.name}: {', '.join(refused)}")
 
 
 def check(ctx, address, key_alias):
@@ -220,16 +263,19 @@ def _delete(ctx, entry):
 
 def ls(ctx):
     recipe = compose.recipe_hash(ctx.plugin)
-    rows = [("ACCOUNT", "NAME", "ID", "RECIPE", "CREATED", "")]
+    rows = [("ACCOUNT", "NAME", "ID", "ARCH", "RECIPE", "CREATED", "")]
     for account, client in ctx.usable():
         if not client.has("images"):
             continue
         listed = [i for i in client.images() if i["labels"].get("devcloud") == "image"]
-        newest = current(listed, recipe)
+        # Each architecture's own current image: `up` picks by the type's.
+        newest = {i["id"] for i in (current(listed, recipe, a) for a in {i["labels"].get(ARCH_LABEL) for i in listed})
+                  if i is not None}
         for i in sorted(listed, key=lambda i: (i["created"], i["id"]), reverse=True):
             created = datetime.datetime.fromtimestamp(i["created"], datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-            rows.append((account.name, i["name"] or "-", i["id"], i["labels"].get("devcloud-recipe", "-"), created,
-                         "current" if newest is not None and i["id"] == newest["id"] else
+            rows.append((account.name, i["name"] or "-", i["id"], i["labels"].get(ARCH_LABEL, "-"),
+                         i["labels"].get("devcloud-recipe", "-"), created,
+                         "current" if i["id"] in newest else
                          ("" if i.get("state") == "ready" else i.get("state") or "no state")))
     widths = [max(len(r[c]) for r in rows) for c in range(len(rows[0]))]
     for r in rows:

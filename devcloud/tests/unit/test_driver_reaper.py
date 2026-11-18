@@ -121,6 +121,12 @@ class DecisionTest(unittest.TestCase):
         surplus = [i["id"] for i in reaper.surplus_images(listed, NOW, recipe="aaaaaaaaaaaa")]
         self.assertEqual(sorted(surplus), ["broken", "stale-new"],
                          "a failed image goes; a pending one is a build's; the current recipe's are kept first")
+        arm = [dict(img("arm-1", 9, "aaaaaaaaaaaa"), labels={"devcloud": "image", "devcloud-recipe": "aaaaaaaaaaaa",
+                                                               "devcloud-arch": "arm"})]
+        x86 = [dict(i, labels=dict(i["labels"], **{"devcloud-arch": "x86"})) for i in listed]
+        surplus = [i["id"] for i in reaper.surplus_images(x86 + arm, NOW, recipe="aaaaaaaaaaaa")]
+        self.assertEqual(sorted(surplus), ["broken", "stale-new"],
+                         "each architecture keeps its own newest two: x86 builds never push an Arm image out")
         unstated = img("unstated", 5, "aaaaaaaaaaaa")
         del unstated["state"]
         self.assertEqual([i["id"] for i in reaper.surplus_images([unstated], NOW, recipe="aaaaaaaaaaaa")], [],

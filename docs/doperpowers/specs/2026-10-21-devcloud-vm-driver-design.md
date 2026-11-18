@@ -617,7 +617,8 @@ comes from the descriptor because the driver knows it for certain; the metadata 
   (`--force`) when reachable and deleted, until three remain; an older one above the cap is logged,
   never deleted (§2).
 - **Leftovers**: builders (§7) and `provider test` servers (§6.2) of usable accounts older than 2
-  hours; per account, failed images, and ready images beyond the newest two (current recipe first);
+  hours; per account, failed images, and ready images beyond the newest two of their architecture
+  (current recipe first);
   pending images are their build's, and an image with no state is neither deleted nor chosen. The reaper never runs an unregistered provider or
   one with no passing copy, so a leftover of one is `provider test`'s to report (§6.2).
 
@@ -904,18 +905,23 @@ after `~/`, no `..`, not the home itself. The release never removes the home its
 
 ### 7. Images
 
-`devcloud vm image build [--account A]`, for an account whose provider has `images`, creates a
-builder through `create` (label `devcloud=builder`, the smallest type whose disk is the provider's
-minimum, so the image fits every type), runs `setup.sh` from the plugin's own `devcloud/` over SSH,
+`devcloud vm image build [--account A] [--arch x86|arm]`, for an account whose provider has `images`,
+creates a builder through `create` (label `devcloud=builder`, the smallest type of the account's
+default type's architecture, or of `--arch`, whose disk is the provider's minimum, so the image fits
+every type of that architecture; when the cloud answers `unavailable` for it, the next such type up
+to the size cap, each fallback named), runs `setup.sh` from the plugin's own `devcloud/` over SSH,
 checks the builder structurally — no `/etc/devcloud/boot.env`, an empty seed directory, none of the
 credential files the guard knows (parent check 6(b)), no `$SMINOS_HOME/daemon/` — cleans cloud-init's
 state and the machine id so each VM gets its own, powers it off, records the image through
-`image-create` with labels `devcloud=image` and the recipe hash, and deletes the builder. The builder
+`image-create` with labels `devcloud=image`, the recipe hash and the builder's architecture
+(`devcloud-arch`), and deletes the builder. The builder
 never receives a seed, a descriptor, or any secret, which is why the bake does not need the parent's
 known-value scan; that scan stays where it runs today, on the container image in the `devcloud`
-gate. `up` uses the newest image of its account whose recipe hash is current; with none it takes the
-slow path and the reaper, at its next run on the always-on Mac, builds one for each such account
-that lacks a current image (at most once a day per account). A Hetzner snapshot creates servers in
+gate. `up` uses the newest image of its account whose recipe hash is current and whose architecture
+is its type's; with none it takes the slow path and the reaper, at its next run on the always-on
+Mac, builds one for each such account that lacks a current image of its default type's
+architecture (at most once a day per account). An image of the other architecture is built only on
+request (`--arch`). A Hetzner snapshot creates servers in
 every location (M1), so images are per account, not per location. The builder runs in the account's
 default location, and that location's smallest type sets the image's disk. Hetzner's US locations
 give 40 GB, so the image cannot create a type with a smaller disk, which no account's type has today.
@@ -1683,7 +1689,7 @@ provider):
     devcloud-by=<driver machine's name, lowercased>
     devcloud-creator=<session short id>
     devcloud-recipe=<12 hex>
-    devcloud-arch=x86|arm                    # an image's architecture, from its builder (the account's default type); up uses only a matching image
+    devcloud-arch=x86|arm                    # an image's architecture, from its builder (the account's default type, or image build --arch); up uses only a matching image
     devcloud-confirmed=1                     # created with --confirmed; not counted toward the count cap
     devcloud-enroll=key|code                 # how the VM enrolls at the desk; absent: it does not
     devcloud-held=1                          # its departure is held on a failed ship (§4.3)
@@ -1733,7 +1739,7 @@ commit 5168e433 on its branch, 2026-10-21):
     devcloud vm ssh <name> [--root] [-- command...]      # refused (exit 1) once the host's departure started, unless --root
     devcloud vm lease <name> <duration|keep>      # waits for a rejoin (§4.1)
     devcloud vm down <name> [--force]
-    devcloud vm image build [--account A] | image ls
+    devcloud vm image build [--account A] [--arch x86|arm] | image ls
     devcloud vm reap [--install]
     devcloud vm provider register <account> --confirmed | provider test <account>    # register first
 
@@ -1929,7 +1935,8 @@ commit 5168e433 on its branch, 2026-10-21):
   us-west1-a. This is a profile value.
 - Observation (M5): GCE's cheapest predefined types (shared-core, and Arm such as t2a and c4a) made
   `provider test`'s smallest pick fail, since the image is x86. The custom default type is in no
-  predefined list.
+  predefined list. (Superseded 2026-11-17, #187: an Arm type now boots Ubuntu's arm64 family, and
+  GCE offers its Arm types; see the Decision Log.)
 - Observation (M5): A released adoption keeps `/var/lib/devcloud` (`identity.env`, `status.json`),
   so `setup.sh`'s final check refuses to adopt it again. systemd also keeps a `not-found failed`
   record of a failed boot unit until a reboot or `reset-failed`.
@@ -2022,6 +2029,17 @@ commit 5168e433 on its branch, 2026-10-21):
     metadata, and adopt's account preflight refused it. `block-project-ssh-keys=TRUE` on the
     instance avoids that (friction tracker).
   Evidence: `docs/doperpowers/plans/2026-10-22-devcloud-node-removal-report.md`.
+- Observation (#187, 2026-11-18): Arm on GCE, live in us-west1-a.
+  - `up --type c4a-standard-8` on the slow path took 3m14s and printed 0.3592 USD/h. The host reported
+    `aarch64`, node v26.13.1 and Claude Code 2.1.327, and every boot step was `ok`. Its boot disk was
+    hyperdisk-balanced, ARM64, from ubuntu-2404-noble-arm64-v20261105.
+  - The first Arm bake was refused: `ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS`, "A n4a-highcpu-2 VM
+    instance is currently unavailable in the us-west1-a zone". The bake had no fallback at the time
+    (Decision Log, #187).
+  - With the fallback, the bake ran on c4a-highcpu-2 and took 364 s. Its image is ARM64, in family
+    `devcloud-arm`, and the x86 image stayed current beside it.
+  - `up` from that image took 1m36s.
+  - Both VMs were downed ("departed and deleted").
 
 ## Decision Log
 
@@ -2464,8 +2482,9 @@ commit 5168e433 on its branch, 2026-10-21):
   M4's finding.
 
 - Decision: How M5 settled the GCE provider, adopt, and the open path:
-  - **GCE `types`:** excludes shared-core, accelerator and Arm types, and anything under 2 vCPU or
-    2 GB. An account adds custom types by name through `GCE_CUSTOM_TYPES`.
+  - **GCE `types`:** excludes shared-core and accelerator types, and anything under 2 vCPU or
+    2 GB. An account adds custom types by name through `GCE_CUSTOM_TYPES`. (Revised 2026-11-17,
+    #187: Arm types, which this first excluded, are offered; see the Decision Log.)
   - **GCE disk:** every type reports `GCE_DISK_GB` (default 50), and `create` uses the larger of
     that and the request, on pd-balanced (hyperdisk-balanced where a family needs it).
   - **GCE prices:** read from the Cloud Billing catalog (the family's on-demand core and RAM rates,
@@ -2742,6 +2761,36 @@ commit 5168e433 on its branch, 2026-10-21):
     - Reaches only hosts made after it lands: a host keeps the boot code its image installed.
   Date/Author: 2026-11-04, devcloud setup session, from the person's report of a host missing a
   plugin change.
+
+- Decision (board #187): GCE offers Arm hosts. The recipe (`setup.sh`, `packages.sh`,
+  `fetch-claude.sh`) already builds on arm64, and Hetzner's cax hosts boot from it, so M5's Arm
+  exclusion was stale.
+  - **`types`:** c4a, n4a and t2a (where the zone has them) are offered under the x86 filters, with
+    `architecture` from GCE's own machine-type field (ARM64, X86_64; absent on older x86 families),
+    and the family as the fallback. Prices come from the catalog's `<FAMILY> Arm Instance Core|Ram`
+    SKUs (N4A's carry no "Arm"), which the rate pattern already read: c4a-standard-8 in us-west1 is
+    8 × $0.03086 + 32 GiB × $0.00351 = $0.3592 an hour, the list price gcloud-compute.com shows for us-west1.
+  - **`create`:** with no image, the type's architecture (a `machine-types describe`, one call)
+    picks `ubuntu-2404-lts-amd64` or `ubuntu-2404-lts-arm64`. c4a and n4a boot on
+    hyperdisk-balanced, t2a on pd-balanced, as the hyperdisk table already said.
+  - **Images:** `image build --arch x86|arm` builds the other architecture's image on request
+    (default: the default type's, as before). An Arm image joins the family `<GCE_IMAGE_FAMILY>-arm`,
+    since GCE resolves a family to its newest image of either architecture; the image's own
+    architecture comes from its source disk. Retention keeps the newest two images of each
+    architecture, the daily build looks only for a current image of the default type's
+    architecture, and `image ls` marks each architecture's current image. Without these, x86
+    builds would delete an Arm image, and an Arm image would stop the x86 daily build.
+  - **The builder's fallback** (the coordinator's ruling, 2026-11-17, after the first live Arm
+    build was refused with `ZONE_RESOURCE_POOL_EXHAUSTED` for n4a-highcpu-2 in us-west1-a): when
+    the cloud answers `unavailable` for the builder's type, the bake tries the next type of the same
+    architecture and least disk, smallest first and up to the size cap's vCPU, naming each type
+    refused and the type tried next. Both architectures get it. A quota, limit or other refusal still
+    ends the bake at once. If every candidate is refused, the bake fails and names them all. It
+    never moves to another zone. A refusal now carries its kind (`errors.Refused`).
+  - Rejected: a daily Arm build. An Arm image is built only on request, so an account whose
+    default is x86 never pays for one it does not use.
+  Date/Author: 2026-11-17, #187's executor, for cua #171 M5's arm64 acceptance run (Hetzner had had
+  no cax capacity for 72 h).
 
 ## Outcomes & Retrospective
 

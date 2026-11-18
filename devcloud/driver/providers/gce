@@ -7,7 +7,7 @@
 Its environment (the account's vars, and the driver's DEVCLOUD_SEED_FILE):
     GCE_PROJECT          the project the instances and images live in
     GCE_SERVICE_ACCOUNT  the host account every instance runs as (the seed: DEVCLOUD_SEED=gce-metadata)
-    GCE_IMAGE_FAMILY     the family devcloud's images join (default devcloud)
+    GCE_IMAGE_FAMILY     the family devcloud's x86 images join (default devcloud); Arm ones join <family>-arm
     GCE_DISK_GB          every instance's boot disk unless a request asks for more (default 50)
     GCE_CUSTOM_TYPES     custom machine types to offer besides the zone's predefined ones, e.g.
                          "e2-custom-4-8192" (a zone lists no custom type)
@@ -31,11 +31,11 @@ import tempfile
 import time
 import urllib.request
 
-UBUNTU = ("ubuntu-2404-lts-amd64", "ubuntu-os-cloud")
+UBUNTU = {"x86": ("ubuntu-2404-lts-amd64", "ubuntu-os-cloud"), "arm": ("ubuntu-2404-lts-arm64", "ubuntu-os-cloud")}
 DISK_GB = 50
 METADATA_MAX = 256 * 1024           # GCE's limit on one metadata value
 HYPERDISK = ("c4", "c4a", "c4d", "c4n", "n4", "n4a", "n4d", "m4", "m4n", "z4m", "x4", "a4")
-# Arm families: the recipe and Ubuntu's image family here are x86-64.
+# Arm families, for a type GCE describes without its architecture (or not at all, in this zone).
 ARM = ("t2a", "c4a", "n4a")
 PRICE_TTL = 7 * 86400
 COMPUTE_SERVICE = "6F81-5844-456A"   # Compute Engine in the Cloud Billing catalog
@@ -171,6 +171,15 @@ def family(type_name):
     return type_name.split("-", 1)[0]
 
 
+def architecture(mtype):
+    """A machine type's architecture as the protocol words it: GCE's own field (ARM64, X86_64; absent
+    on older x86 families), else the family."""
+    named = mtype.get("architecture")
+    if named:
+        return "arm" if named == "ARM64" else "x86"
+    return "arm" if family(mtype["name"]) in ARM else "x86"
+
+
 # --- prices, from the Cloud Billing catalog, cached a week ---------------------------------
 
 _RATE = re.compile(r"(?P<family>[A-Z][A-Z0-9]*)(?: AMD| Arm| Intel)?(?: Predefined)? Instance (?P<what>Core|Ram) "
@@ -247,13 +256,13 @@ def op_info(req):
 
 
 def op_types(gc, req):
-    """The zone's predefined types a host can use — x86-64, at least 2 dedicated vCPUs and 2 GB, no
-    accelerator (the recipe is x86-64, a smaller or shared-core type cannot hold the sessions, and a
-    GPU is a cost class the caps do not weigh) — and the custom types the account names. Every
-    type's disk is the account's default boot disk."""
+    """The zone's predefined types a host can use — x86-64 or Arm, at least 2 dedicated vCPUs and 2 GB,
+    no accelerator (a smaller or shared-core type cannot hold the sessions, and a GPU is a cost class
+    the caps do not weigh) — and the custom types the account names. Every type's disk is the
+    account's default boot disk."""
     zone = req["location"]
     found = [t for t in gc.run("compute", "machine-types", "list", f"--zones={zone}")
-             if not t.get("isSharedCpu") and not t.get("accelerators") and family(t["name"]) not in ARM
+             if not t.get("isSharedCpu") and not t.get("accelerators")
              and t["guestCpus"] >= 2 and t["memoryMb"] >= 2048]
     for name in (os.environ.get("GCE_CUSTOM_TYPES") or "").replace(",", " ").split():
         try:
@@ -268,7 +277,7 @@ def op_types(gc, req):
         memory = round(t["memoryMb"] / 1024, 2)
         out.append({"type": t["name"], "vcpus": t["guestCpus"], "memory_gb": memory, "disk_gb": disk,
                     "available": not t.get("deprecated"), "hourly_price": price(t["name"], t["guestCpus"], memory, rates),
-                    "currency": "USD", "architecture": "x86"})
+                    "currency": "USD", "architecture": architecture(t)})
     return out
 
 
@@ -286,7 +295,8 @@ def op_create(gc, req):
     if req.get("image"):
         argv += [f"--image={req['image']}", f"--image-project={gc.project}"]
     else:
-        argv += [f"--image-family={UBUNTU[0]}", f"--image-project={UBUNTU[1]}"]
+        ubuntu = UBUNTU[type_architecture(gc, type_name, zone)]
+        argv += [f"--image-family={ubuntu[0]}", f"--image-project={ubuntu[1]}"]
     if req.get("spot"):
         argv += ["--provisioning-model=SPOT", "--instance-termination-action=DELETE"]
     with tempfile.TemporaryDirectory(prefix="devcloud-gce-") as tmp:
@@ -303,6 +313,17 @@ def op_create(gc, req):
                 raise Refused("unavailable", str(e)) from None
             raise
     return vm(made[0] if isinstance(made, list) else made)
+
+
+def type_architecture(gc, type_name, zone):
+    """The architecture of `type_name` in `zone`, for the Ubuntu image it boots. A type the zone does
+    not describe goes by its family; the create then refuses it."""
+    try:
+        return architecture(gc.run("compute", "machine-types", "describe", type_name, f"--zone={zone}"))
+    except GcloudError as e:
+        if not e.not_found:
+            raise
+        return architecture({"name": type_name})
 
 
 def instance(gc, iid):
@@ -358,7 +379,10 @@ def op_image_create(gc, req):
     argv = ["compute", "images", "create", req["name"], f"--source-disk={basename(boot['source'])}",
             f"--source-disk-zone={basename(inst['zone'])}", f"--labels={labels_arg(req['labels'])}", "--force"]
     if req["labels"].get("devcloud") == "image":
-        argv.append(f"--family={os.environ.get('GCE_IMAGE_FAMILY') or 'devcloud'}")
+        # One family per architecture: GCE resolves a family to its newest image, whatever it was
+        # built on. The image's own architecture comes from its source disk.
+        base = os.environ.get('GCE_IMAGE_FAMILY') or 'devcloud'
+        argv.append(f"--family={base}-arm" if req["labels"].get("devcloud-arch") == "arm" else f"--family={base}")
     made = gc.run(*argv)
     return image(made[0] if isinstance(made, list) else made)
 
