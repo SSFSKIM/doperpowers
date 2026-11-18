@@ -649,17 +649,20 @@ checkout when it is that repository, else from GitHub with `gh api`) sits
 between the flags and the profile's defaults; an unknown key or an account
 the profile lacks is exit 2 before anything runs.
 
-**Images.** `image build [--account A]` creates a builder (the smallest type
+**Images.** `image build [--account A] [--arch x86|arm]` creates a builder (the smallest type
+of the account's default type's architecture, or of `--arch`,
 with the provider's least disk, labeled `devcloud=builder`, given the driver
 keys and nothing else), runs `setup.sh`, checks that it holds no descriptor,
 seed, credential file the guard knows or sminos enrollment
 (`driver/bake_check.py`), resets cloud-init, the machine id, the SSH host
 keys and the tailnet state, powers it off and records the image
-(`devcloud=image`, the recipe hash), then deletes the builder. A bake that
+(`devcloud=image`, the recipe hash, `devcloud-arch`), then deletes the builder. A bake that
 fails labels its builder `devcloud-bake=failed-<step>` and deletes it.
-`image ls` lists them. The scheduled reaper builds an image for an account
-that lacks a current one, at most once a day per account and never while a
-builder of the account is alive.
+`image ls` lists them, with each architecture's current image; `up` uses
+only an image of its type's architecture, and retention keeps the newest
+two of each. The scheduled reaper builds an image for an account
+that lacks a current one of its default type's architecture, at most once a
+day per account and never while a builder of the account is alive.
 
 **`ssh`** reaches the host's user over the tailnet (`--root` for root); one
 argument after `--` is a shell line as given, several are an argument list,
@@ -722,10 +725,13 @@ host service account every instance runs as with the `cloud-platform` scope
 key file reaches the VM), the image family (`GCE_IMAGE_FAMILY`), the boot
 disk (`GCE_DISK_GB`, 50 by default) and any custom machine types to offer
 (`GCE_CUSTOM_TYPES`, since a zone lists none). It offers the zone's x86-64
-types with at least 2 dedicated vCPUs and 2 GB and no accelerator, priced
-from the Cloud Billing catalog (cached a week), creates every instance with
+and Arm types (c4a, n4a, t2a; `architecture` arm) with at least 2 dedicated
+vCPUs and 2 GB and no accelerator, priced from the Cloud Billing catalog
+(cached a week), boots a type without an image from Ubuntu 24.04's amd64 or
+arm64 family to match it, creates every instance with
 `block-project-ssh-keys=TRUE`, a spot request with termination action
-`DELETE`, and images in the family from a stopped builder's boot disk. A provider of the person's own lives in the profile's
+`DELETE`, and images from a stopped builder's boot disk, an x86 one in the
+family and an Arm one in `<family>-arm`. A provider of the person's own lives in the profile's
 `providers/<name>`: the person registers it once (`provider register
 <account> --confirmed` records its sha256 in `driver.toml`), and `provider
 test <account>` runs it through the conformance sequence on a real server; a

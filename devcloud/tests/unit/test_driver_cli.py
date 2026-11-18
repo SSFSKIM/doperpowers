@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 
 import _path  # noqa: F401
-from driver import cli
+from driver import cli, images
 
 from driver_fixtures import DriverBase, vm_labels, NOW
 
@@ -74,6 +74,12 @@ class CliTest(DriverBase):
         self.ctx = self.make_ctx()
         self.assertEqual(self.main("image", "build", "--account", "main"), 3)
         self.assertIn("no images capability", self.err.getvalue())
+        self.assertEqual(self.main("image", "build", "--account", "main", "--arch", "sparc"), 2)
+
+    def test_image_build_takes_an_architecture(self):
+        with mock.patch.object(images, "build_command", return_value=0) as build:
+            self.assertEqual(self.main("image", "build", "--account", "main", "--arch", "arm"), 0)
+        build.assert_called_once_with(self.ctx, "main", arch="arm")
 
     def test_adopt_needs_confirmed_and_dry_runs_with_it(self):
         self.assertEqual(self.main("adopt", "root@203.0.113.50", "--dry-run"), 4)

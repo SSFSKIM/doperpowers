@@ -25,8 +25,10 @@ def epoch(text):
     return int(datetime.datetime.fromisoformat(text).timestamp())
 
 
-def mtype(name, cpus, mb, shared=False, accelerators=None, deprecated=None):
+def mtype(name, cpus, mb, shared=False, accelerators=None, deprecated=None, arch=None):
     t = {"name": name, "guestCpus": cpus, "memoryMb": mb, "isSharedCpu": shared, "zone": ZONE}
+    if arch:
+        t["architecture"] = arch
     if accelerators:
         t["accelerators"] = accelerators
     if deprecated:
@@ -38,7 +40,8 @@ MACHINE_TYPES = {ZONE: [
     mtype("e2-standard-4", 4, 16384), mtype("e2-highcpu-2", 2, 2048), mtype("e2-micro", 2, 1024, shared=True),
     mtype("f1-micro", 1, 614, shared=True), mtype("g2-standard-4", 4, 16384, accelerators=[{"guestAcceleratorCount": 1}]),
     mtype("n1-standard-2", 2, 7680, deprecated=True), mtype("n4a-highcpu-2", 2, 4096), mtype("n1-standard-1", 1, 3840),
-    mtype("n1-highcpu-2", 2, 1843)]}
+    mtype("n1-highcpu-2", 2, 1843), mtype("c4a-standard-8", 8, 32768, arch="ARM64"),
+    mtype("c4a-highcpu-1", 1, 2048, arch="ARM64"), mtype("c4-standard-4", 4, 15360, arch="X86_64")]}
 
 
 def instance(iid, name, labels, status="RUNNING", zone=ZONE, mt="e2-standard-4", ip="198.51.100.7"):
@@ -187,11 +190,23 @@ class InfoAndTypesTest(GceBase):
 
     def test_types_are_the_zones_dedicated_types_and_the_named_custom_ones(self):
         types = {t["type"]: t for t in self.ok("types", {"location": ZONE})}
-        self.assertEqual(sorted(types), ["e2-custom-4-8192", "e2-highcpu-2", "e2-standard-4", "n1-standard-2"])
+        self.assertEqual(sorted(types), ["c4-standard-4", "c4a-standard-8", "e2-custom-4-8192", "e2-highcpu-2",
+                                         "e2-standard-4", "n1-standard-2", "n4a-highcpu-2"])
         self.assertEqual(types["e2-custom-4-8192"], {"type": "e2-custom-4-8192", "vcpus": 4, "memory_gb": 8.0,
                                                      "disk_gb": 50, "available": True, "hourly_price": None,
                                                      "currency": "USD", "architecture": "x86"})
         self.assertFalse(types["n1-standard-2"]["available"], "a deprecated type is not available")
+
+    def test_arm_types_are_offered_with_their_architecture(self):
+        """GCE names a type's architecture (ARM64, X86_64, or nothing on older x86 families); an Arm
+        family it leaves unnamed is still Arm. The same filters hold: c4a-highcpu-1 has 1 vCPU."""
+        types = {t["type"]: t for t in self.ok("types", {"location": ZONE})}
+        self.assertEqual({name: t["architecture"] for name, t in types.items()},
+                         {"c4a-standard-8": "arm", "n4a-highcpu-2": "arm", "c4-standard-4": "x86",
+                          "e2-custom-4-8192": "x86", "e2-highcpu-2": "x86", "e2-standard-4": "x86",
+                          "n1-standard-2": "x86"})
+        self.assertEqual(types["c4a-standard-8"]["vcpus"], 8)
+        self.assertEqual(types["c4a-standard-8"]["memory_gb"], 32.0)
 
     def test_the_disk_default_comes_from_the_account(self):
         self.vars["GCE_DISK_GB"] = "80"
@@ -200,9 +215,11 @@ class InfoAndTypesTest(GceBase):
     def test_prices_come_from_a_fresh_cache(self):
         cache = self.home / ".local/state/devcloud/gce/prices-us-west1.json"
         cache.parent.mkdir(parents=True)
-        cache.write_text(json.dumps({"fetched": 4102444800, "rates": {"e2": {"core": 0.02, "ram": 0.003}}}))
+        cache.write_text(json.dumps({"fetched": 4102444800, "rates": {"e2": {"core": 0.02, "ram": 0.003},
+                                                                       "c4a": {"core": 0.03086, "ram": 0.00351}}}))
         types = {t["type"]: t for t in self.ok("types", {"location": ZONE})}
         self.assertAlmostEqual(types["e2-custom-4-8192"]["hourly_price"], 4 * 0.02 + 8 * 0.003)
+        self.assertAlmostEqual(types["c4a-standard-8"]["hourly_price"], 0.3592, msg="Google's us-west1 price")
         self.assertIsNone(types["n1-standard-2"]["hourly_price"], "no rate for its family")
 
 
@@ -223,11 +240,25 @@ class PriceParseTest(unittest.TestCase):
                 sku("N2D AMD Instance Ram running in Americas", "RAM", "OnDemand", ["us-west1"], 0.004, "GiBy.h"),
                 sku("N1 Predefined Instance Core running in Americas", "CPU", "OnDemand", ["us-west1"], 0.031),
                 sku("E2 Instance Core running in Paris", "CPU", "OnDemand", ["europe-west9"], 0.5),
-                sku("Commitment v1: E2 Cpu in Americas for 1 Year", "CPU", "Commit1Yr", ["us-west1"], 0.01)]
+                sku("Commitment v1: E2 Cpu in Americas for 1 Year", "CPU", "Commit1Yr", ["us-west1"], 0.01),
+                # The Arm families' SKUs as the catalog words them (2026-11-17, us-west1).
+                sku("C4A Arm Instance Core running in Americas", "CPU", "OnDemand", ["us-west1"], 0.03086),
+                sku("C4A Arm Instance Ram running in Americas", "RAM", "OnDemand", ["us-west1"], 0.00351, "GiBy.h"),
+                sku("C4A Sole Tenancy Instance Core running in Americas", "CPU", "OnDemand", ["us-west1"], 0.9),
+                sku("C4A Instance Local SSD running in Americas", "LocalSSD", "OnDemand", ["us-west1"], 0.12),
+                sku("T2A Arm Instance Core running in Americas", "CPU", "OnDemand", ["us-west1"], 0.0249),
+                sku("T2A Arm Instance Ram running in Americas", "RAM", "OnDemand", ["us-west1"], 0.0034, "GiBy.h"),
+                sku("N4A Instance Core running in Oregon", "CPU", "OnDemand", ["us-west1"], 0.02646),
+                sku("N4A Instance Ram running in Oregon", "RAM", "OnDemand", ["us-west1"], 0.00301, "GiBy.h"),
+                sku("N4A Custom Instance Core running in Oregon", "CPU", "OnDemand", ["us-west1"], 0.9)]
         rates = gce.rates_from(skus, "us-west1")
         self.assertEqual(rates["e2"], {"core": 0.0218, "ram": 0.0029})
         self.assertEqual(rates["n2d"], {"core": 0.03, "ram": 0.004})
         self.assertEqual(rates["n1"], {"core": 0.031})
+        self.assertEqual(rates["c4a"], {"core": 0.03086, "ram": 0.00351})
+        self.assertEqual(rates["t2a"], {"core": 0.0249, "ram": 0.0034})
+        self.assertEqual(rates["n4a"], {"core": 0.02646, "ram": 0.00301})
+        self.assertAlmostEqual(gce.price("c4a-standard-8", 8, 32.0, rates), 0.3592)
         self.assertAlmostEqual(gce.price("e2-standard-4", 4, 16.0, rates), 4 * 0.0218 + 16 * 0.0029)
         self.assertIsNone(gce.price("n1-standard-1", 1, 3.75, rates), "a family without both rates")
         self.assertIsNone(gce.price("n2d-custom-4-8192", 4, 8.0, rates), "custom outside E2 is priced apart")
@@ -287,6 +318,26 @@ class CreateTest(GceBase):
     def test_hyperdisk_families(self):
         _, argv = self.create(type="c4-standard-4")
         self.assertEqual(self.flag(argv, "--boot-disk-type"), "hyperdisk-balanced")
+
+    def test_an_arm_type_boots_ubuntus_arm64_family_on_hyperdisk(self):
+        _, argv = self.create(type="c4a-standard-8")
+        self.assertEqual(self.flag(argv, "--image-family"), "ubuntu-2404-lts-arm64")
+        self.assertEqual(self.flag(argv, "--image-project"), "ubuntu-os-cloud")
+        self.assertEqual(self.flag(argv, "--boot-disk-type"), "hyperdisk-balanced")
+
+    def test_an_arm_family_the_zone_does_not_describe_is_still_arm(self):
+        _, argv = self.create(type="t2a-standard-2")
+        self.assertEqual(self.flag(argv, "--image-family"), "ubuntu-2404-lts-arm64")
+        self.assertEqual(self.flag(argv, "--boot-disk-type"), "pd-balanced")
+
+    def test_an_x86_type_described_as_x86_boots_amd64(self):
+        _, argv = self.create(type="c4-standard-4")
+        self.assertEqual(self.flag(argv, "--image-family"), "ubuntu-2404-lts-amd64")
+
+    def test_an_image_needs_no_architecture_lookup(self):
+        _, argv = self.create(type="c4a-standard-8", image="dc-img-0123456789ab-202610210500")
+        self.assertEqual(self.flag(argv, "--image"), "dc-img-0123456789ab-202610210500")
+        self.assertEqual(self.calls_of("compute", "machine-types"), [])
 
     def test_no_seed_is_delivered_and_no_key_reaches_the_instance_metadata(self):
         self.create()
@@ -375,6 +426,16 @@ class ImagesTest(GceBase):
         self.write_state(state)
         self.assertEqual([(i["name"][-4:], i["state"]) for i in self.ok("images")],
                          [("0500", "ready"), ("1002", "pending"), ("1003", "failed")])
+
+    def test_an_arm_image_joins_its_own_family(self):
+        """GCE resolves a family to its newest image, so an Arm image in the x86 family would shadow
+        the x86 one for anything that boots the family."""
+        labels = {"devcloud": "image", "devcloud-recipe": "aaaaaaaaaaaa", "devcloud-arch": "arm"}
+        self.ok("image-create", {"id": "103", "name": "dc-img-aaaaaaaaaaaa-202611171200", "labels": labels})
+        self.ok("image-create", {"id": "103", "name": "dc-img-aaaaaaaaaaaa-202611171300",
+                                 "labels": dict(labels, **{"devcloud-arch": "x86"})})
+        self.assertEqual([self.flag(argv, "--family") for argv in self.calls_of("compute", "images", "create")],
+                         ["devcloud-arm", "devcloud"])
 
     def test_a_test_image_joins_no_family(self):
         self.ok("image-create", {"id": "103", "name": "dc-ptest-img-1", "labels": {"devcloud": "test"}})

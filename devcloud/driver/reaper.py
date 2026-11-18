@@ -118,16 +118,21 @@ def leftovers(vms, now):
 
 
 def surplus_images(images, now, recipe=None):
-    """Failed images; ready images beyond the newest two, those of the current
-    `recipe` kept first; and provider-test images past 2 h. A pending image
-    is a build's, still being made; one without a state (a provider that
-    gives none) is not known to have failed."""
+    """Failed images; ready images beyond the newest two of their
+    architecture, those of the current `recipe` kept first; and provider-test
+    images past 2 h. A pending image is a build's, still being made; one
+    without a state (a provider that gives none) is not known to have
+    failed."""
     ours = [i for i in images if i["labels"].get("devcloud") == "image"]
     failed = [i for i in ours if i.get("state") and i["state"] not in ("ready", "pending")]
-    kept = sorted((i for i in ours if i.get("state") == "ready"),
-                  key=lambda i: (i["labels"].get("devcloud-recipe") == recipe, i["created"], i["id"]), reverse=True)
+    surplus = []
+    for arch in sorted({i["labels"].get(images_mod.ARCH_LABEL) or "" for i in ours}):
+        kept = sorted((i for i in ours if i.get("state") == "ready"
+                       and (i["labels"].get(images_mod.ARCH_LABEL) or "") == arch),
+                      key=lambda i: (i["labels"].get("devcloud-recipe") == recipe, i["created"], i["id"]), reverse=True)
+        surplus += kept[KEEP_IMAGES:]
     tests = [i for i in images if i["labels"].get("devcloud") == "test" and now - i["created"] > LEFTOVER]
-    return failed + kept[KEEP_IMAGES:] + tests
+    return failed + surplus + tests
 
 
 # --- the run ---------------------------------------------------------------------------
@@ -307,7 +312,15 @@ def _daily_build(ctx, account, client, listed, builders):
     day; the attempt is recorded before it starts. False when it failed."""
     now = ctx.clock()
     recipe = compose.recipe_hash(ctx.plugin)
-    if not images_mod.needs_build(listed, builders, recipe, images_mod.last_build(ctx, account.name), now):
+    arch = images_mod.ANY
+    if images_mod.current(listed, recipe) is not None:
+        # Some architecture's image is current: the build is due only if it is not the default type's.
+        try:
+            arch = images_mod.default_arch(client.types(account.location), account)
+        except DriverError as error:
+            log(ctx, f"image build check for account {account.name} failed: {error}")
+            return False
+    if not images_mod.needs_build(listed, builders, recipe, images_mod.last_build(ctx, account.name), now, arch):
         return True
     images_mod.record_build(ctx, account.name, now)
     tell(ctx, False, f"account {account.name} has no image of recipe {recipe}: building one")

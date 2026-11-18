@@ -32,6 +32,17 @@ def image(iid, recipe, created, kind="image", state="ready", arch=None):
     return {"id": iid, "name": f"img-{iid}", "labels": labels, "created": created, "state": state}
 
 
+ARM_AND_X86 = [
+    {"type": "armsmall", "vcpus": 2, "memory_gb": 4, "disk_gb": 40, "available": True, "hourly_price": 0.005,
+     "architecture": "arm"},
+    {"type": "armbig", "vcpus": 8, "memory_gb": 32, "disk_gb": 40, "available": True, "hourly_price": 0.36,
+     "architecture": "arm"},
+    {"type": "small", "vcpus": 2, "memory_gb": 4, "disk_gb": 40, "available": True, "hourly_price": 0.01,
+     "architecture": "x86"},
+    {"type": "medium", "vcpus": 4, "memory_gb": 8, "disk_gb": 160, "available": True, "hourly_price": 0.1,
+     "architecture": "x86"}]
+
+
 class CurrentTest(unittest.TestCase):
     def test_the_newest_image_whose_recipe_is_current(self):
         found = images.current([image("a", "aaaaaaaaaaaa", NOW - 3 * HOUR), image("b", RECIPE, NOW - 2 * HOUR),
@@ -311,6 +322,25 @@ class BuildTest(BuildBase):
         self.assertEqual(code, 3)
         self.assertEqual(self.servers(), {})
 
+    def arm_and_x86(self):
+        state = self.state()
+        state["types"] = {"here": ARM_AND_X86}
+        self.state_file.write_text(json.dumps(state))
+
+    def test_the_architecture_asked_for_sets_the_builder_and_the_label(self):
+        """GCE and Hetzner offer both; an account's default type is one of them, so the other's image
+        is built on request."""
+        self.arm_and_x86()
+        self.assertEqual(images.build_command(self.ctx, "main", arch="arm"), 0)
+        self.assertEqual(self.calls("create")[0]["type"], "armsmall")
+        self.assertEqual(self.state()["images"][0]["labels"]["devcloud-arch"], "arm")
+
+    def test_an_architecture_the_provider_does_not_offer_is_a_refusal(self):
+        with self.assertRaises(DriverError) as caught:
+            images.build_command(self.ctx, "main", arch="arm")
+        self.assertEqual(caught.exception.code, 3)
+        self.assertNotIn("create", self.ops())
+
     def test_a_provider_without_images_is_exit_3(self):
         self.behave(capabilities=["user_data"])
         code, message = self.failed("main")
@@ -337,6 +367,22 @@ class ImageLsTest(BuildBase):
         self.assertNotIn("current", stale)
 
 
+class ArchLsTest(BuildBase):
+    def test_each_architecture_has_its_own_current_image(self):
+        state = self.state()
+        state["images"] = [image("x1", RECIPE, NOW - HOUR, arch="x86"), image("a1", RECIPE, NOW - 2 * HOUR, arch="arm"),
+                           image("x0", RECIPE, NOW - 3 * HOUR, arch="x86")]
+        self.state_file.write_text(json.dumps(state))
+        self.assertEqual(images.ls(self.ctx), 0)
+        lines = self.out.getvalue().splitlines()
+        self.assertIn("ARCH", lines[0])
+        row = {iid: next(line for line in lines if f"img-{iid} " in line) for iid in ("x1", "a1", "x0")}
+        self.assertIn("current", row["x1"])
+        self.assertIn("current", row["a1"], "the newest x86 image does not shadow the Arm one")
+        self.assertNotIn("current", row["x0"])
+        self.assertIn(" arm ", row["a1"])
+
+
 class DailyBuildTest(BuildBase):
     """§7: the reaper's unbounded run builds an image for each account that
     lacks a current one, at most once a day, never while a builder of the
@@ -349,6 +395,20 @@ class DailyBuildTest(BuildBase):
         self.assertFalse(images.needs_build(stale, [{"name": "dc-bake-0001"}], RECIPE, None, NOW))
         self.assertFalse(images.needs_build(stale, [], RECIPE, last=NOW - 23 * HOUR, now=NOW))
         self.assertTrue(images.needs_build(stale, [], RECIPE, last=NOW - 25 * HOUR, now=NOW))
+        arm = [image("a1", RECIPE, NOW, arch="arm")]
+        self.assertTrue(images.needs_build(arm, [], RECIPE, None, NOW, arch="x86"),
+                        "an Arm image is not the x86 default type's image")
+        self.assertFalse(images.needs_build(arm, [], RECIPE, None, NOW, arch="arm"))
+
+    def test_an_arm_image_does_not_hold_off_the_default_architectures_build(self):
+        state = self.state()
+        state["types"] = {"here": ARM_AND_X86}
+        state["images"] = [image("a1", RECIPE, NOW - HOUR, arch="arm")]
+        self.state_file.write_text(json.dumps(state))
+        self.assertEqual(reaper.run(self.ctx), 0)
+        made = [i for i in self.state()["images"] if i["id"] != "a1"]
+        self.assertEqual([i["labels"].get("devcloud-arch") for i in made], ["x86"])
+        self.assertIn("a1", [i["id"] for i in self.state()["images"]], "the Arm image is kept")
 
     def test_a_scheduled_run_builds_and_logs_it(self):
         self.assertEqual(reaper.run(self.ctx), 0)

@@ -7,7 +7,7 @@
   devcloud vm ssh <name> [--root] [-- command...]
   devcloud vm lease <name> <duration|keep>
   devcloud vm down <name> [--force]
-  devcloud vm image build [--account A] | image ls
+  devcloud vm image build [--account A] [--arch x86|arm] | image ls
   devcloud vm reap [--install]
   devcloud vm provider register <account> --confirmed | provider test <account>
 
@@ -83,6 +83,7 @@ def parser():
     isub = p.add_subparsers(dest="image_action", required=True, parser_class=_Parser)
     q = isub.add_parser("build")
     q.add_argument("--account")
+    q.add_argument("--arch", choices=("x86", "arm"), help="the default type's architecture unless given")
     isub.add_parser("ls")
     p = sub.add_parser("reap", help="delete what outlived its lease, purpose or retention")
     p.add_argument("--install", action="store_true")
@@ -110,7 +111,8 @@ def _dispatch(ctx, args, command):
     if args.command == "down":
         return ops.down(ctx, args.name, force=args.force)
     if args.command == "image":
-        return images.build_command(ctx, args.account) if args.image_action == "build" else images.ls(ctx)
+        return (images.build_command(ctx, args.account, arch=args.arch) if args.image_action == "build"
+                else images.ls(ctx))
     if args.command == "reap":
         return reaper.install(ctx) if args.install else reaper.run(ctx)
     if args.action == "register":

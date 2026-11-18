@@ -40,7 +40,8 @@ def current(images, recipe, arch=ANY):
     """The newest image (`devcloud=image`) whose recipe hash is `recipe` and
     which a create can use now (`state` ready), or None. With `arch` (the
     requested type's `architecture`, None when its provider names none), only
-    an image baked on that architecture: Hetzner offers x86 and Arm types."""
+    an image baked on that architecture: Hetzner and GCE offer x86 and Arm
+    types."""
     ours = [i for i in images if i["labels"].get("devcloud") == "image" and i["labels"].get("devcloud-recipe") == recipe
             and i.get("state") == "ready" and (arch is ANY or i["labels"].get(ARCH_LABEL) == arch)]
     return max(ours, key=lambda i: (i["created"], i["id"]), default=None)
@@ -58,12 +59,19 @@ def builder_type(types, arch=None):
                key=lambda t: (t["vcpus"], t.get("memory_gb") or 0, t.get("hourly_price") or 0, t["type"]))
 
 
-def needs_build(images, builders, recipe, last, now):
-    """The reaper's daily build (§7, M4): an account lacking a current image,
-    with no builder of its own alive, last tried more than a day ago."""
-    if current(images, recipe) is not None or builders:
+def needs_build(images, builders, recipe, last, now, arch=ANY):
+    """The reaper's daily build (§7, M4): an account lacking a current image
+    (of `arch`, its default type's architecture, when given), with no builder
+    of its own alive, last tried more than a day ago."""
+    if current(images, recipe, arch) is not None or builders:
         return False
     return last is None or now - last >= BUILD_EVERY
+
+
+def default_arch(types, account):
+    """The architecture of the account's default type, which most VMs take:
+    None when its provider names none, ANY when the type is not offered."""
+    return next((t.get("architecture") for t in types if t["type"] == account.type), ANY)
 
 
 # --- image build ---------------------------------------------------------------------------
@@ -84,17 +92,18 @@ def _accounts(ctx, account_name):
     return pairs
 
 
-def build_command(ctx, account_name=None):
-    """`image build [--account A]`: one image for the account named, else for
-    each usable account whose provider has images."""
+def build_command(ctx, account_name=None, arch=None):
+    """`image build [--account A] [--arch x86|arm]`: one image for the account
+    named, else for each usable account whose provider has images; of `arch`
+    when given, else of the account's default type's architecture."""
     pairs = _accounts(ctx, account_name)
     if len(pairs) == 1:
-        build(ctx, *pairs[0])
+        build(ctx, *pairs[0], arch=arch)
         return 0
     failed = False
     for account, client in pairs:
         try:
-            build(ctx, account, client)
+            build(ctx, account, client, arch=arch)
         except DriverError as error:
             ctx.warn(f"devcloud vm image build: account {account.name}: {error}")
             failed = True
@@ -105,12 +114,16 @@ def _stamp(now):
     return datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y%m%d%H%M")
 
 
-def build(ctx, account, client):
-    """Bakes one image for `account` and returns it (an I13 Image)."""
+def build(ctx, account, client, arch=None):
+    """Bakes one image for `account` and returns it (an I13 Image): of `arch`
+    when given, else of the account's default type's architecture."""
     recipe = compose.recipe_hash(ctx.plugin)
     types = client.types(account.location)
-    # The architecture of the account's default type, which most VMs take.
-    arch = next((t.get("architecture") for t in types if t["type"] == account.type), None)
+    if arch is None:
+        arch = default_arch(types, account)
+        arch = None if arch is ANY else arch
+    elif not any(t.get("architecture") == arch for t in types if t.get("available")):
+        raise DriverError(REFUSED, f"account {account.name} offers no available {arch} type in {account.location}")
     type_ = builder_type(types, arch)
     keys = ctx.driver_keys()
     taken = {vm["name"] for vm in client.list()}
@@ -220,16 +233,19 @@ def _delete(ctx, entry):
 
 def ls(ctx):
     recipe = compose.recipe_hash(ctx.plugin)
-    rows = [("ACCOUNT", "NAME", "ID", "RECIPE", "CREATED", "")]
+    rows = [("ACCOUNT", "NAME", "ID", "ARCH", "RECIPE", "CREATED", "")]
     for account, client in ctx.usable():
         if not client.has("images"):
             continue
         listed = [i for i in client.images() if i["labels"].get("devcloud") == "image"]
-        newest = current(listed, recipe)
+        # Each architecture's own current image: `up` picks by the type's.
+        newest = {i["id"] for i in (current(listed, recipe, a) for a in {i["labels"].get(ARCH_LABEL) for i in listed})
+                  if i is not None}
         for i in sorted(listed, key=lambda i: (i["created"], i["id"]), reverse=True):
             created = datetime.datetime.fromtimestamp(i["created"], datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-            rows.append((account.name, i["name"] or "-", i["id"], i["labels"].get("devcloud-recipe", "-"), created,
-                         "current" if newest is not None and i["id"] == newest["id"] else
+            rows.append((account.name, i["name"] or "-", i["id"], i["labels"].get(ARCH_LABEL, "-"),
+                         i["labels"].get("devcloud-recipe", "-"), created,
+                         "current" if i["id"] in newest else
                          ("" if i.get("state") == "ready" else i.get("state") or "no state")))
     widths = [max(len(r[c]) for r in rows) for c in range(len(rows[0]))]
     for r in rows:
