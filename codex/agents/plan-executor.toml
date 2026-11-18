@@ -1,5 +1,5 @@
 name = "doperpowers:plan-executor"
-description = "Executes a spec's Plan of Work — or a ticket body — on behalf of the session that authored it."
+description = "Dispatch to execute a multi-milestone spec (execspec) through subagent-driven execution, on behalf of the session that authored it."
 model = "gpt-5.6-sol"
 model_reasoning_effort = "xhigh"
 developer_instructions = '''

@@ -24,7 +24,7 @@ import sys
 
 from . import adopt, conformance, images, ops, owned, reaper, up
 from .context import Context, Paths
-from .errors import NOT_DRIVER, USAGE, DriverError
+from .errors import FAILED, NOT_DRIVER, USAGE, DriverError
 
 HOST_MARKER = "/etc/devcloud/boot.env"
 
@@ -126,6 +126,19 @@ def _dispatch(ctx, args, command):
     return conformance.test(ctx, args.account)
 
 
+def _absent(seed):
+    """No seed key there: only "no such file" and "not a directory" say so.
+    A lookup that fails otherwise (a directory the caller cannot search) is no
+    answer, where Path.exists() on 3.14 would read it as absent."""
+    try:
+        seed.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return True
+    except OSError as error:
+        raise DriverError(FAILED, f"cannot look up the seed key at {seed}: {error.strerror}") from None
+    return False
+
+
 def main(argv, env=None, ctx=None, host_marker=HOST_MARKER):
     env = dict(os.environ if env is None else env)
     err = ctx.err if ctx is not None else sys.stderr
@@ -142,7 +155,7 @@ def main(argv, env=None, ctx=None, host_marker=HOST_MARKER):
         except SystemExit as stop:      # --help
             return stop.code or 0
         ctx = ctx or Context(Paths.from_env(env), env=env)
-        if not ctx.paths.seed.exists():
+        if _absent(ctx.paths.seed):
             raise DriverError(NOT_DRIVER, f"no seed key at {ctx.paths.seed} ($DEVCLOUD_SEED_FILE, else "
                                           "~/.config/devcloud/seed.json): this machine is not a driver")
         return _dispatch(ctx, args, command)
