@@ -2029,6 +2029,17 @@ commit 5168e433 on its branch, 2026-10-21):
     metadata, and adopt's account preflight refused it. `block-project-ssh-keys=TRUE` on the
     instance avoids that (friction tracker).
   Evidence: `docs/doperpowers/plans/2026-10-22-devcloud-node-removal-report.md`.
+- Observation (#187, 2026-11-18): Arm on GCE, live in us-west1-a.
+  - `up --type c4a-standard-8` on the slow path took 3m14s and printed 0.3592 USD/h. The host reported
+    `aarch64`, node v26.13.1 and Claude Code 2.1.327, and every boot step was `ok`. Its boot disk was
+    hyperdisk-balanced, ARM64, from ubuntu-2404-noble-arm64-v20261105.
+  - The first Arm bake was refused: `ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS`, "A n4a-highcpu-2 VM
+    instance is currently unavailable in the us-west1-a zone". The bake had no fallback at the time
+    (Decision Log, #187).
+  - With the fallback, the bake ran on c4a-highcpu-2 and took 364 s. Its image is ARM64, in family
+    `devcloud-arm`, and the x86 image stayed current beside it.
+  - `up` from that image took 1m36s.
+  - Both VMs were downed ("departed and deleted").
 
 ## Decision Log
 
