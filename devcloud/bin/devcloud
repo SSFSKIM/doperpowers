@@ -5,6 +5,23 @@
 # commands (status, the jobs, the lifecycle) keep their root-only behavior.
 # Builtins only until Python is found.
 here="$(cd "${BASH_SOURCE[0]%/*}" && pwd -P)" || exit 1
+# `vm owned-by` is a program's question, and exit 6 is its "nothing here owns
+# a VM": a host, or a machine with no seed key, answers it before any Python is
+# looked for, so a caller whose PATH has none still hears that a non-driver is
+# one. The same refusals and wording as the driver's (driver/cli.py, and Paths
+# in driver/context.py for the seed's location). DEVCLOUD_HOST_MARKER is the
+# tests' seam; the driver itself checks only the fixed path.
+if [ "${1:-}" = vm ] && [ "${2:-}" = owned-by ]; then
+  if [ -e "${DEVCLOUD_HOST_MARKER:-/etc/devcloud/boot.env}" ]; then
+    echo "devcloud vm: this machine is a devcloud host; drive from a Mac" >&2
+    exit 6
+  fi
+  seed="${DEVCLOUD_SEED_FILE:-${HOME:+$HOME/.config/devcloud/seed.json}}"
+  if [ -n "$seed" ] && [ ! -e "$seed" ]; then
+    echo "devcloud vm: no seed key at $seed (\$DEVCLOUD_SEED_FILE, else ~/.config/devcloud/seed.json): this machine is not a driver" >&2
+    exit 6
+  fi
+fi
 for py in python3.14 python3.13 python3.12 python3.11 python3; do
   if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
     DEVCLOUD_BIN="$here/devcloud" exec "$py" "$here/../boot/devcloud" "$@"

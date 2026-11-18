@@ -60,12 +60,15 @@ if sys.argv[1:2] == ["vm"]:
     if os.path.exists("/etc/devcloud/boot.env"):
         print("devcloud vm: this machine is a devcloud host; drive from a Mac", file=sys.stderr)
         sys.exit(6)
-    sys.path.insert(0, os.path.dirname(HERE))
-    try:
-        from driver import cli
-    except ImportError:
+    # Exit 6 is "the driver does not run here", which a caller of owned-by
+    # reads as owning nothing: only a copy without the driver says it (a
+    # host's, which installs boot/ alone). A driver that is present and does
+    # not import fails as any crash does, with its traceback.
+    if not os.path.isdir(os.path.join(os.path.dirname(HERE), "driver")):
         print("devcloud vm: this copy of devcloud has no driver (a host's); drive from a Mac", file=sys.stderr)
         sys.exit(6)
+    sys.path.insert(0, os.path.dirname(HERE))
+    from driver import cli
     sys.exit(cli.command_line(sys.argv[2:]))
 if sys.argv[1:2] == ["guard"]:
     # User-local evidence commands also run on Macs. Preserve the caller's PATH
