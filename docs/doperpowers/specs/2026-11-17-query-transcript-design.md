@@ -193,7 +193,10 @@ Where building departed from the text above, with the evidence:
   `compactMetadata.preservedMessages` / `preservedSegment` name rows from
   before it (the last reply and its turn's closing rows; 2 to 3 rows on each of
   the 83 boundaries of the CI-opt session) that the resume puts back after the
-  summary. The copy and the quote check start with them, then the boundary.
+  summary (`preservedSegment` names a chain by its ends, walked by
+  `parentUuid`; one shared index of row offsets finds them, 3.9 s for all 83
+  boundaries of a 764 MB transcript). The copy and the quote check start with
+  them, then the boundary.
   This is the spike's 39-token gap between a copy from the boundary and one
   from the file's start.
 - **`--until T` ends with the last row stamped at or before T in file order**,

@@ -191,6 +191,22 @@ class Segments(Case):
                                    "bbbb0001-0000-4000-8000-000000000001"])
         self.assertEqual(got.count("aaaa0003-0000-4000-8000-000000000003"), 1)
 
+    def test_a_kept_chain_named_only_by_its_ends_is_walked(self):
+        rs = rows()
+        u1, u2, u3 = (r["uuid"] for r in rs[1:4])
+        rs[2]["parentUuid"], rs[3]["parentUuid"] = u1, u2
+        rs[7]["compactMetadata"] = {"trigger": "auto", "preTokens": 1234,
+                                    "preservedSegment": {"headUuid": u1, "tailUuid": u3}}
+        self.path.write_text(dump(rs))
+        self.run_cli(SID, "q", "--segment", "1")
+        got = [x.get("uuid") for x in self.copy_rows(self.calls()[0])]
+        self.assertEqual(got[:4], [u1, u2, u3, "bbbb0001-0000-4000-8000-000000000001"])
+        # A chain that never reaches its head adds nothing.
+        rs[7]["compactMetadata"]["preservedSegment"]["headUuid"] = "aaaa0004-0000-4000-8000-000000000004"
+        self.path.write_text(dump(rs))
+        self.run_cli(SID, "q", "--segment", "1")
+        self.assertEqual(self.copy_rows(self.calls()[1])[0]["uuid"], "bbbb0001-0000-4000-8000-000000000001")
+
     def test_segment_out_of_range_is_a_usage_error(self):
         r = self.run_cli(SID, "q", "--segment", "3")
         self.assertEqual(r.returncode, 2)

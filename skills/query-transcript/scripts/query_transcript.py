@@ -249,34 +249,75 @@ def stretch_lines(path, start, end):
             off += len(raw)
 
 
-@functools.lru_cache(maxsize=None)
+UUID_FIELD = re.compile(rb'"uuid":"([0-9a-f-]{36})"')
+_ROW_INDEX = {}             # path -> {uuid: offset of the first row carrying it}
+_ROW_INDEX_LOCK = threading.Lock()
+_KEPT = {}                  # (path, segment) -> the rows its compaction kept
+
+
+def row_index(path):
+    """Where each uuid's row is, from one pass over the file, built the first
+    time a segment past the first needs its kept rows and shared after."""
+    with _ROW_INDEX_LOCK:
+        if path not in _ROW_INDEX:
+            index = {}
+            for off, raw in stretch_lines(path, 0, os.path.getsize(path)):
+                for m in UUID_FIELD.finditer(raw):
+                    index.setdefault(m.group(1).decode(), off)
+            _ROW_INDEX[path] = index
+        return _ROW_INDEX[path]
+
+
+def _row(path, index, u, before):
+    """The row whose own uuid is `u`, from before offset `before`, or None."""
+    off = index.get(u)
+    if off is None or off >= before:
+        return None
+    o = _load(_read(path, off))
+    return o if o and o.get("uuid") == u else None
+
+
 def preserved(path, seg):
-    """The rows from before segment `seg`'s boundary that its compaction kept
-    (`compactMetadata.preservedMessages` and `preservedSegment`): the resume
-    puts them back after the summary, so the session held them in this segment."""
+    """The rows from before segment `seg`'s boundary that its compaction kept,
+    in file order: the ones `compactMetadata.preservedMessages` lists, and the
+    chain `preservedSegment` names by its ends (walked from its tail to its
+    head by parentUuid). The resume puts them back after the summary, so the
+    session held them in this segment."""
     if seg.n == 0:
         return []
+    key = (path, seg.n)
+    if key in _KEPT:
+        return _KEPT[key]
     meta = (_load(_read(path, seg.start)) or {}).get("compactMetadata") or {}
     kept = meta.get("preservedMessages")
     if isinstance(kept, str):
         kept = _load(kept)
+    chain = meta.get("preservedSegment")
     wanted = set()
-    for d in (kept, meta.get("preservedSegment")):
-        if isinstance(d, dict):
-            for v in d.values():
-                for u in (v if isinstance(v, list) else [v]):
-                    if isinstance(u, str) and re.fullmatch(r"[0-9a-f-]{36}", u):
-                        wanted.add(u)
-    if not wanted:
-        return []
-    needle = re.compile(rb'"uuid":"(' + b"|".join(u.encode() for u in sorted(wanted)) + rb')"')
+    if isinstance(kept, dict):
+        for k in ("uuids", "allUuids"):
+            wanted.update(u for u in kept.get(k) or [] if isinstance(u, str))
     rows = {}
-    for _, raw in stretch_lines(path, 0, seg.start):
-        if needle.search(raw):
-            u = (_load(raw) or {}).get("uuid")
-            if u in wanted and u not in rows:
-                rows[u] = raw
-    return list(rows.values())
+    if wanted or isinstance(chain, dict):
+        index = row_index(path)
+        for u in wanted:
+            o = _row(path, index, u, seg.start)
+            if o:
+                rows[u] = index[u]
+        if isinstance(chain, dict) and chain.get("tailUuid") and chain.get("headUuid"):
+            # Taken only when the walk reaches the head: a broken chain adds nothing.
+            u, walk = chain["tailUuid"], {}
+            while u and u not in walk and len(walk) < 10000:
+                o = _row(path, index, u, seg.start)
+                if not o:
+                    break
+                walk[u] = index[u]
+                if u == chain["headUuid"]:
+                    rows.update(walk)
+                    break
+                u = o.get("parentUuid")
+    _KEPT[key] = [_read(path, off) for off in sorted(rows.values())]
+    return _KEPT[key]
 
 
 def segment_rows(path, seg, end):
