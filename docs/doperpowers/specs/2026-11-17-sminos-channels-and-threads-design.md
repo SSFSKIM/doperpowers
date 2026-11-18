@@ -123,13 +123,12 @@ Decisions marked **[binding]** were settled with the whole picture in view, or a
 
 **Naming a thread** **[binding — two other parts name a thread from another machine: a channel request (D3) and a VM's notice (D4)]**. A thread's machine publishes the thread id in the thread's own lifecycle events, in the field `thread`. Any machine that may read those events resolves a thread id, or any session id the thread has had, to the thread's current session. The id is the thread's first session id unless T1 finds a reason against it, so that a name recorded before threads existed (a VM's creator tag, a commit's `Sminos-Session` line) already names the thread (contract X2).
 
-**Continuation and refill** **[binding — a continuation carries its predecessor's record owners and reach (`lineage_provenance`, `ensure_record`), so a wrong one is a privacy fault that cannot be undone]**. A thread gets a new session id in three ways, and only the first two carry reach:
+**Continuation and refill** **[binding — a continuation carries its predecessor's record owners and reach (`lineage_provenance`, `ensure_record`), so a wrong one is a privacy fault that cannot be undone]**. A thread gets a new session id in two ways, and only the first carries reach:
 
-1. *Continuation:* a session start whose source is `clear`, under a new id that has no record, in the process that held the old id.
-2. *Continuation:* the engine's hand-off to a background job, by the record the engine leaves for it (`continued_in`, `hand_off`).
-3. *Refill:* `sminos fill` without `--resume`, or a `spawn` onto the alias, starts a fresh session in a spawned thread. The thread keeps its id, alias, in-charge line and memberships; the new session's record owners and reach come from its own launch, as today.
+1. *Continuation:* the engine's hand-off to a background job, by the record the engine leaves for it (`continued_in`, `hand_off`).
+2. *Refill:* `sminos fill` without `--resume`, or a `spawn` onto the alias, starts a fresh session in a spawned thread. The thread keeps its id, alias, in-charge line and memberships; the new session's record owners and reach come from its own launch, as today.
 
-An in-session `/resume` and a fork are other threads. A fork's start guide says so, since its transcript claims to be the original. *Alternative: "the same process, therefore the same thread."* It lost because one process can resume an unrelated session.
+**A `/clear` starts another thread** **[binding — the owner, 2026-11-17: "'/clear'는 그대로 새 세션 id로 새 멤버인 것으로 하고 싶다" (`/clear` stays as it is: a new session id is a new member)]**. The new session id is a new member with a thread of its own, as today. The thread it left stays `stopped` under its old session id, with its alias, its in-charge line and its memberships, for its human to resume. An in-session `/resume` and a fork are other threads too, and a fork's start guide says so, since its transcript claims to be the original. *Alternative: `/clear` continues the thread* (this design until that ruling). It lost to the ruling, and to what happened the day it was made (Surprises & Discoveries): after a `/clear` the owner got the conversation back by resuming the old session id, and under the continuation rule that resume would have met a thread that had already moved on. *Alternative: "the same process, therefore the same thread."* It lost because one process can resume an unrelated session.
 
 **Lifecycle** **[binding — the owner's rulings of 2026-11-17]**.
 
@@ -267,7 +266,7 @@ Each is assigned to the child that settles it.
 | Unknown | Settled by |
 |---|---|
 | How the engine decides a session has saved options; what `claude rm` or the expiry of the engine's row does to them; which launch options a first background resume accepts beyond the mode and the model; first-wake flags on a session that was backgrounded once and then used in a terminal; what differs in a wake's environment from the terminal's | T2's spike milestone |
-| Whether a compaction gives a background session a new id. A friction entry says so; no code shows it. If it does, it is a third continuation case, keyed as `clear` is | T1, a live check before the continuation rule is built |
+| Whether a compaction gives a background session a new id. A friction entry says so; no code shows it. If it does, it is a second continuation case, keyed on the engine's own record of the change as the hand-off is | T1, a live check before the continuation rule is built |
 | How a thread whose reach is not the default says something in a channel: which stream it is written under, and how the channel's hub object learns that stream's policy | CH, with MAWS |
 | How long a pending request lives before it expires | CH |
 | How `--on new` derives the VM's label, project and branch and the new thread's directory | EN (leaning: from the spawner's repository and branch, as `devcloud vm up` reads them from the directory it runs in) |
@@ -282,7 +281,7 @@ Each is assigned to the child that settles it.
 - **Acceptance:**
   1. A session opened in a terminal, then exited, is listed `stopped` by `sminos list --stopped`, where today it is gone. Reopened with `claude --resume`, it is listed live under the same alias and in-charge line, and receives what was recorded for it meanwhile.
   2. A message addressed to it while stopped is recorded, and the sender's CLI says the thread is stopped and is not woken because its human opened it (the hold T2 lifts). `sminos resume`, `fill --resume` and `send --wait` aimed at it start no process either, and a fresh `fill` of it is refused. A spawned thread is woken exactly as today.
-  3. After `/clear`, the new session id carries the thread: same thread id, alias, in-charge line, record owners and reach. A fork and an in-session `/resume` are other threads, and a fork's start guide says it is a copy with an identity of its own. A refill keeps the thread and takes its reach from the new launch.
+  3. After `/clear`, the new session id is a new member with a thread of its own, as today, and the thread it left is listed `stopped` under its old session id and comes back when that id is resumed. A fork and an in-session `/resume` are other threads, and a fork's start guide says it is a copy with an identity of its own. The engine's hand-off to a background job carries the thread: same thread id, alias, in-charge line, record owners and reach. A refill keeps the thread and takes its reach from the new launch.
   4. A thread stopped for more than three days (a clock a test can set) is ended by an event its machine writes: out of `sminos list` and `--stopped`, shown by `--all`, and a message addressed to it reports that it ended. Reopening it, or for a spawned thread `sminos fill`, returns it with its alias and in-charge line.
   5. `sminos retire` run by a session on itself ends its thread, and the end holds after its process exits against everything but its human reopening it.
   6. A thread that X9's query names as owning a VM, by the creator tags devcloud writes today, is neither ended by the three-day rule nor retired; the refusal names the VM. The same holds when the query answers unknown, and the refusal then names what could not be asked. On a machine where devcloud's driver does not run, threads end and retire without a question.
@@ -293,7 +292,7 @@ Each is assigned to the child that settles it.
   11. Parent acceptance line 8 for this child's surface: the sminos suites pass, with the tests that pinned `ended` for a seat-less session changed to pin `stopped`.
 - **Edges:** blocked-by: DV (acceptance 6). blocks: T2, CH, EN.
 - **Contracts:** X1 (owner), X2 (owner), X3 (the first values), X6, X7 (owner), X9 (the consumer).
-- **Design inheritance:** D1 whole and D7 (binding where marked). Advisory: the differences to remove are the rows of the Grounding Baseline's table; `retirement_holds` loses its reason once a retire is a record; the continuation event for `/clear` can take the shape hand-off's has (`retired`, reason `continued`, `to`), and a refill a reason of its own, since it carries no reach; devcloud's driver writes the creator as the session's short id (`session_creator` in `devcloud/driver/context.py`), which today's resolver already follows through continuations. From DV's run: only that short id can match a VM (X9), and `devcloud` is on a session's PATH and not on the daemon's, so the plan says how each guard finds the CLI and what it concludes for each way of getting no answer. Residue for its plan, with the answer this design leans to: whether a person at a terminal may retire a thread whose ownership answer is unknown (yes, with a flag only a terminal accepts, so that a dead provider account cannot hold a thread forever). If its plan trips the split signals, it is cut there; this design sees one unit, with one verification strategy.
+- **Design inheritance:** D1 whole and D7 (binding where marked). Advisory: the differences to remove are the rows of the Grounding Baseline's table; `retirement_holds` loses its reason once a retire is a record; a refill links the old session id to the new with an event shaped as hand-off's is (`retired`, reason `continued`, `to`) under a reason of its own, since it carries no reach; devcloud's driver writes the creator as the session's short id (`session_creator` in `devcloud/driver/context.py`), which today's resolver already follows through continuations. From DV's run: only that short id can match a VM (X9), and `devcloud` is on a session's PATH and not on the daemon's, so the plan says how each guard finds the CLI and what it concludes for each way of getting no answer. Residue for its plan, with the answer this design leans to: whether a person at a terminal may retire a thread whose ownership answer is unknown (yes, with a flag only a terminal accepts, so that a dead provider account cannot hold a thread forever). If its plan trips the split signals, it is cut there; this design sees one unit, with one verification strategy.
 - **Required:** required for parent acceptance.
 - **Status:** not-dispatched (the owner said go on 2026-11-17; dispatched once DV has landed, its plan written meanwhile).
 
@@ -402,7 +401,7 @@ DV first and small: T1's two guards ask it. T1 next: it is what every other chil
 - **A woken thread's mode or model differs from what its human last ran.** The owner ruled the mode out as a worry (D2). What remains is carried, not guarded: a first wake passes the last turn's mode and model, and the opening line says what the thread runs under.
 - **An older sminos on the same machine applies the old rules.** D7: what older code can see, what readers believe, and the degradations it lists as accepted. T1's acceptance 10.
 - **devcloud cannot be asked for a long time** (a provider account that stopped working), and every thread on that Mac can neither end nor retire. The refusal names the account; T1's residue is a terminal-only way past it.
-- **A wrong continuation hands one thread's record owners and reach to another.** The rule is two cases, keyed on evidence the engine writes, and T1 pins a fork, an in-session `/resume` and a refill as not carrying reach.
+- **A wrong continuation hands one thread's record owners and reach to another.** The rule is one case, keyed on evidence the engine writes, and T1 pins a `/clear`, a fork, an in-session `/resume` and a refill as not carrying reach.
 - **A long-quiet spawned thread now ends after three days,** where today it would be woken a week later. The sender is told it ended; `sminos fill` returns it. Watched after T1 (Delegated unknowns).
 - **A VM whose owning thread cannot be woken** (a mode that asks, a Mac that is off) keeps costing while its notices are only recorded. devcloud's order sends the notice on to the project's live members; `sminos channel show` lists the VM's age and cost.
 - **Every machine follows every channel's log,** which costs the hub one renewal per open log per heartbeat and each machine one policy rebuild per newly opened log (`code-map.md` §2). An emptied channel leaves the directory and its row is retired after seven days. Measured in CH if channels number in the tens.
@@ -431,7 +430,7 @@ DV first and small: T1's two guards ask it. T1 next: it is what every other chil
 |---|---|---|
 | (landed before this cut) CLI on PATH, stdin bodies, the backtick guard | PR #509, sminos 1.48.0; residue in `docs/doperpowers/TECH-DEBT.md` | landed 2026-11-17; PATH verified on an installed 1.48.0 in an interactive session, a `--bg` seat and a subagent (PR #510) |
 | DV | PR #514, devcloud 0.17.0; `docs/doperpowers/ledgers/2026-11-17-DV.md` | landed 2026-11-17 |
-| T1 | — | the owner said go, 2026-11-17; its plan is written while DV is built |
+| T1 | its plan is being written (`docs/doperpowers/plans/2026-11-17-sminos-threads-t1.md`, branch `sminos-threads-t1`) | DV landed; the plan, its review, then the build |
 | T2 | — | not-dispatched: blocked-by T1 |
 | MW | the contract of D6, agreed with MAWS's architect in the two projects' sminos chat on 2026-11-17 | MAWS's architect told to start, 2026-11-17 |
 | CH | — | not-dispatched: blocked-by T1; cut at dispatch |
@@ -456,6 +455,9 @@ DV first and small: T1's two guards ask it. T1 next: it is what every other chil
   Evidence: `labels` in `devcloud/driver/compose.py`; DV's ledger, Surprises.
 - Observation: a provider's listing can be partial and still succeed. gcloud's aggregated lists return the zones they reached with a warning on stderr and exit 0 (the hidden property `compute/allow_partial_error`, true by default in gcloud 580), and the GCE provider read stderr only on a failure. `Path.is_dir()` and `Path.glob()` likewise read a directory they are refused as an empty one.
   Evidence: DV's first review (two findings, both reproduced or read from the SDK's source); the fix and its tests in PR #514.
+
+- Observation: a `/clear` moves a live process to a new session id and leaves everything attached to the process with it. The cleared session kept the old one's name and alias, received its background agents' reports and the messages peers addressed to that alias, and carried the work on for 35 minutes from the documents alone; the conversation itself stayed with the old session id, where resuming it brought it back.
+  Evidence: this design's own session, 2026-11-17: a message that began with `/clear` ran the command; the cleared process reviewed, fixed and opened DV's pull request under a new session id, and the owner then resumed the old id to recover the context.
 
 ## Decision Log
 
@@ -502,6 +504,8 @@ DV first and small: T1's two guards ask it. T1 next: it is what every other chil
   - *A Mac that lost its seed key reads as a machine without the driver.* Not guarded: a thread kept alive there could not down the VM either, the VM's notice goes on to the project's live members, and a guard keyed on leftover driver state would hold every thread on a Mac whose seed was removed on purpose.
   - *The GCE provider's list is strict for every caller,* not for this question alone: the cap count, `ls`, the reaper and the by-id lookup behind `down` are each better served by a failure than by a zone left out, and a flag in the provider protocol would have left them on the partial answer.
   Review: two rounds at the high rung. The first found two ways to a false none (the partial GCE listing and an unreadable adoption directory), both verified and fixed test-first; the second found nothing in the fix range.
+
+- 2026-11-17 — **The owner's ruling on `/clear`.** A `/clear` starts another thread, as it starts another member today; the thread it left stays stopped and resumable under its old session id. D1's first continuation case is removed, and with it T1's acceptance for it. The hand-off to a background job is the one continuation left. Alternative rejected then: the continuation this design had, for the reason in D1.
 
 ## Outcomes & Retrospective
 
