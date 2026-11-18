@@ -598,6 +598,16 @@ the request needs is missing), 4 over a cap (needs `--confirmed`), 5 the down
 guard (unpushed work), 6 not a driver here (no seed key, or a devcloud host),
 7 the account's provider is not usable (not registered, or no passing copy).
 
+    devcloud vm owned-by <tag|short>...
+
+answers a program, not a session (sminos asks it before it retires a
+thread, contract X9 of `docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md`):
+which hosts, VMs and adopted machines alike, name any of the given creators,
+as one JSON object whose `answer` is `owned`, `none` (every account listed in
+full) or `unknown` (naming each account that could not be used and each
+listing that failed). Unlike `ls` it never takes a partial fleet for the
+whole. The shape is in `driver/owned.py`.
+
 **What it needs.** The profile's `driver.toml` (beside the host profile in
 `~/.claude/devcloud/`, or `$DEVCLOUD_PROFILE`): the caps, the default
 account, the descriptor fields every host gets (`[host]`), the desk

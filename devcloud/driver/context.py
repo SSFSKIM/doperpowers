@@ -200,6 +200,27 @@ class Context:
                 self.warn(f"devcloud vm: account {account.name}: {error}")
         return entries
 
+    def census(self, kinds=("vm",)):
+        """`fleet_of` every configured account, whole or saying where it is
+        not: (entries, listed, missing), `listed` the accounts listed in
+        full, `missing` (account, "account" | "listing", error) for each one
+        that could not be used or whose list failed. Nothing is skipped
+        silently, for what must not read a partial fleet as the whole."""
+        entries, listed, missing = [], [], []
+        for account in self.profile.accounts.values():
+            try:
+                client = self.client(account)
+            except DriverError as error:
+                missing.append((account, "account", error))
+                continue
+            try:
+                entries += self.fleet_of(account, client, kinds)
+            except DriverError as error:
+                missing.append((account, "listing", error))
+                continue
+            listed.append(account)
+        return entries, listed, missing
+
     def find(self, name):
         for entry in self.fleet(quiet=True):
             if entry.vm["name"] == name:
