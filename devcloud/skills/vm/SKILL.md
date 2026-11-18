@@ -102,7 +102,7 @@ profile is `~/.claude/devcloud/`, or `$DEVCLOUD_PROFILE`. The protocol
     types       {"location"} -> [{"type", "vcpus", "memory_gb", "disk_gb", "available", "hourly_price", "currency"?}]
     create      {"name","type","location","image","labels","ssh_public_keys","user_data","disk_gb","spot"} -> Vm
                 image null: the cloud's Ubuntu 24.04, the only OS the boot supports
-    list        {} -> [Vm]             only servers carrying the label devcloud
+    list        {} -> [Vm]             every server carrying the label devcloud and only those, or fail
     get         {"id"} -> Vm | null
     set-labels  {"id","labels"} -> Vm  the full label set
     delete      {"id"} -> {}

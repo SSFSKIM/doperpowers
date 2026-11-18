@@ -323,6 +323,17 @@ class ServersTest(GceBase):
         [argv] = self.calls_of("compute", "instances", "list")
         self.assertEqual(self.flag(argv, "--filter"), "labels.devcloud:*")
 
+    def test_a_list_missing_a_zone_fails_rather_than_answer_without_it(self):
+        state = self.state()
+        state["unreachable"] = [ZONE]
+        self.write_state(state)
+        r = self.run_op("list")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("unreachable", r.stderr)
+        [argv] = self.calls_of("compute", "instances", "list")
+        [call] = [c for c in self.state()["calls"] if c["argv"] == argv]
+        self.assertEqual(call["env"].get("CLOUDSDK_COMPUTE_ALLOW_PARTIAL_ERROR"), "false")
+
     def test_get_by_id_or_null(self):
         self.assertEqual(self.ok("get", {"id": "101"})["name"], "dc-a")
         self.assertIsNone(self.ok("get", {"id": "999"}))

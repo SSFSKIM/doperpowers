@@ -598,6 +598,16 @@ the request needs is missing), 4 over a cap (needs `--confirmed`), 5 the down
 guard (unpushed work), 6 not a driver here (no seed key, or a devcloud host),
 7 the account's provider is not usable (not registered, or no passing copy).
 
+    devcloud vm owned-by <tag|short>...
+
+answers a program, not a session (sminos asks it before it retires a
+thread, contract X9 of `docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md`):
+which hosts, VMs and adopted machines alike, name any of the given creators,
+as one JSON object whose `answer` is `owned`, `none` (every account listed in
+full) or `unknown` (naming each account that could not be used and each
+listing that failed). Unlike `ls` it never takes a partial fleet for the
+whole. The shape is in `driver/owned.py`.
+
 **What it needs.** The profile's `driver.toml` (beside the host profile in
 `~/.claude/devcloud/`, or `$DEVCLOUD_PROFILE`): the caps, the default
 account, the descriptor fields every host gets (`[host]`), the desk
@@ -710,7 +720,11 @@ an account whose list fails stops the `up` before anything is created.
 answer on stdout per operation (`info`, `types`, `create`, `list`, `get`,
 `set-labels`, `delete`, and with images `image-create`, `images`,
 `image-delete`); exit 3 is a refusal (`{"error", "kind"}`), any other
-non-zero exit a failure. The driver gives a provider its account's
+non-zero exit a failure. `list` answers every server carrying the `devcloud`
+label or fails: the cap count and `owned-by` take a server missing from it
+for one that does not exist, so a cloud answering in part (a zone it could
+not reach) is a failure, which is why `gce` runs gcloud with
+`compute/allow_partial_error` off. The driver gives a provider its account's
 credentials in its environment only and scrubs them from its stderr.
 `driver/providers/hetzner` ships here (it drives `hcloud` under a private,
 empty configuration), and so does `driver/providers/gce`: it drives `gcloud`

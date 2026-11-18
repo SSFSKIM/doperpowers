@@ -91,15 +91,22 @@ def load(ctx, name):
         return Record(**json.loads(path(ctx, name).read_text()))
     except FileNotFoundError:
         return None
-    except (ValueError, TypeError) as error:
-        raise DriverError(FAILED, f"the adoption record {path(ctx, name)} does not read ({error})") from None
+    except (OSError, ValueError, TypeError) as error:
+        raise DriverError(FAILED, f"the adoption record {path(ctx, name)} does not read "
+                                  f"({getattr(error, 'strerror', None) or error})") from None
 
 
 def records(ctx):
+    """Every adoption record: none when the directory is absent; a directory
+    or a record that exists and cannot be read fails, never reads as none."""
     directory = _dir(ctx)
-    if not directory.is_dir():
+    try:
+        names = sorted(p.name for p in directory.iterdir())
+    except FileNotFoundError:
         return []
-    return [r for r in (load(ctx, p.stem) for p in sorted(directory.glob("*.json"))) if r is not None]
+    except OSError as error:
+        raise DriverError(FAILED, f"the adoption records in {directory} do not read ({error.strerror})") from None
+    return [r for r in (load(ctx, n[:-5]) for n in names if n.endswith(".json")) if r is not None]
 
 
 def remove(ctx, record):

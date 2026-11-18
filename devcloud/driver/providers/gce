@@ -99,6 +99,9 @@ class Gcloud:
         self.env.update(CLOUDSDK_CONFIG=str(config), CLOUDSDK_CORE_PROJECT=self.project,
                         CLOUDSDK_CORE_ACCOUNT=account, CLOUDSDK_CORE_DISABLE_PROMPTS="1",
                         CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK="1",
+                        # An aggregated list missing a zone fails instead of answering without it:
+                        # `list` returns every labelled instance or none (the protocol's list).
+                        CLOUDSDK_COMPUTE_ALLOW_PARTIAL_ERROR="false",
                         CLOUDSDK_CORE_DISABLE_FILE_LOGGING="1")
         self._activate(seed, hashlib.sha256(data).hexdigest())
 
