@@ -35,6 +35,13 @@ class CliTest(DriverBase):
             self.assertEqual(self.main(*argv), 6, argv)
         self.assertIn("no seed key", self.err.getvalue())
 
+    def test_a_seed_that_cannot_be_looked_up_is_1_not_6(self):
+        refused = PermissionError(13, "Permission denied")
+        with mock.patch.object(pathlib.Path, "stat", side_effect=refused):
+            self.assertEqual(self.main("owned-by", "@abcd1234"), 1)
+        self.assertIn("cannot look up the seed key", self.err.getvalue())
+        self.assertNotIn("no seed key", self.err.getvalue())
+
     def test_a_sigterm_ends_the_command_as_an_interrupt_does(self):
         previous = signal.getsignal(signal.SIGTERM)
         self.addCleanup(signal.signal, signal.SIGTERM, previous)
@@ -202,6 +209,21 @@ class OwnedByEntryTest(unittest.TestCase):
         self.assertEqual(done.returncode, 1, done.stderr)
         self.assertIn("Python 3.11", done.stderr)
 
+    @unittest.skipIf(os.geteuid() == 0, "root searches every directory")
+    def test_a_seed_that_is_a_symlink_is_never_absent(self):
+        sealed = self.tmp / "sealed"
+        sealed.mkdir()
+        (sealed / "seed.json").write_text("{}")
+        sealed.chmod(0)
+        self.addCleanup(sealed.chmod, 0o755)
+        self.seed.parent.mkdir(parents=True)
+        for target in (sealed / "seed.json", self.tmp / "nowhere.json"):     # unreadable, dangling
+            self.seed.unlink(missing_ok=True)
+            self.seed.symlink_to(target)
+            done = self.run_launcher(self.no_python)
+            self.assertEqual(done.returncode, 1, (target, done.stderr))
+            self.assertIn("Python 3.11", done.stderr)
+
     def test_without_home_the_seed_is_under_the_accounts_home(self):
         from driver.context import Paths
         account_seed = Paths.from_env({}).seed      # the driver's own reading
@@ -219,6 +241,16 @@ class OwnedByEntryTest(unittest.TestCase):
             done = self.run_launcher(path, root=root)
             self.assertEqual(done.returncode, 6, (path, done.stderr))
             self.assertIn("has no driver", done.stderr)
+
+    def test_a_symlinked_boot_program_is_not_refused_for_a_driver_beside_it(self):
+        self.give_seed()
+        root = self.copy(driver=False)
+        entry = root / "boot" / "devcloud"
+        entry.unlink()
+        entry.symlink_to(_path.DEVCLOUD / "boot" / "devcloud")    # its realpath has a driver beside it
+        done = self.run_launcher(self.no_python, root=root)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("Python 3.11", done.stderr)
 
     def test_a_driver_that_does_not_import_is_not_6(self):
         self.give_seed()

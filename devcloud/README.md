@@ -613,7 +613,8 @@ driver that is present and does not import fails with its traceback, exit 1.
 Where no Python 3.11+ is on `PATH`, `bin/devcloud` makes those three
 refusals itself, so a caller's `PATH` without one does not turn a non-driver
 into an unknown; it answers 6 only on confirmed evidence (a seed it cannot
-look up is not a missing one) and exit 1 otherwise.
+look up, or one named through a symlink, is not a missing one) and exit 1
+otherwise. The driver too reads a seed it cannot look up as a failure, exit 1.
 
 **What it needs.** The profile's `driver.toml` (beside the host profile in
 `~/.claude/devcloud/`, or `$DEVCLOUD_PROFILE`): the caps, the default

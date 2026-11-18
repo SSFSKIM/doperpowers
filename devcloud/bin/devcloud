@@ -11,12 +11,13 @@ for py in python3.14 python3.13 python3.12 python3.11 python3; do
   fi
 done
 
-# Confirmed absent, as pathlib's exists() reads a path: the nearest ancestor
+# Confirmed absent, as the driver's _absent reads a path: the nearest ancestor
 # that exists is a file (ENOTDIR) or a directory the caller can search
-# (ENOENT). Under one it cannot search, the driver fails, and so does this.
+# (ENOENT). Under one it cannot search, the driver fails, and so does this. A
+# symlink is never confirmed absent: its target's directories are not walked.
 absent() {
   local p=$1 up
-  [ -e "$p" ] && return 1
+  [ -e "$p" ] || [ -L "$p" ] && return 1
   while :; do
     case $p in
       */*) up=${p%/*}; up=${up:-/} ;;
@@ -42,8 +43,10 @@ if [ "${1:-}" = vm ] && [ "${2:-}" = owned-by ]; then
     echo "devcloud vm: this machine is a devcloud host; drive from a Mac" >&2
     exit 6
   fi
+  # boot/devcloud looks for driver/ beside its own realpath: when the entry
+  # file is a symlink that is elsewhere, so this refusal is not made.
   boot="$(cd "$here/../boot" && pwd -P)" || exit 1
-  if [ ! -d "${boot%/*}/driver" ]; then
+  if [ ! -L "$boot/devcloud" ] && [ ! -d "${boot%/*}/driver" ]; then
     echo "devcloud vm: this copy of devcloud has no driver (a host's); drive from a Mac" >&2
     exit 6
   fi
