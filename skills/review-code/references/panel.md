@@ -35,9 +35,10 @@ Optional:
 | max | panel | sol / xhigh | astra / high | astra / high |
 
 The panel on Sol finders and a Sol verifier tends to raise design choices the
-change documents as intended, and to confirm them (two such false positives on
-the seeded benchmark set; max raised none): weigh a panel finding against the
-change's stated intent.
+change documents as intended, and to confirm them (observed on GPT-5.6 Sol,
+not yet re-measured on GPT-6.1; two such false positives on the seeded
+benchmark set, max raised none): weigh a panel finding against the change's
+stated intent.
 
 ## The panel
 
@@ -54,9 +55,9 @@ five to ten minutes.
 Without `repo`, every stage runs in a fresh worktree at HEAD: reviewers read
 committed content, and nothing they run can touch the session's working tree.
 With `repo` set that isolation does not apply, so point it at an untouched
-checkout. No lane can start a second review inside the first: the registered
-reviewers lack `Agent` and `Skill`, and the deriver's and verifier's prompts
-say the same in words.
+checkout. The registered reviewers cannot start a second review inside the
+first, since their tool lists lack `Agent` and `Skill`; the deriver and
+verifier are plain agents and are only told not to, in their prompts.
 
 ## Result
 
@@ -74,6 +75,9 @@ say the same in words.
 - `coverage` — one row per lane: `{finder, lens, status: ok|dead, candidates}`.
 - On `interrupted`, confirmed findings still ride along as partial evidence,
   and an unjudged candidate pool is attached raw as `pool`.
+
+When the run returns, re-resolve the merge-base and HEAD: if either moved, the
+verdict describes a diff that no longer exists — read it as `interrupted`.
 
 ## Working with findings
 
