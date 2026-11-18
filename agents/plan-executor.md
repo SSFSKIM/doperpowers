@@ -1,6 +1,6 @@
 ---
 name: plan-executor
-description: Executes a spec's Plan of Work — or a ticket body — on behalf of the session that authored it.
+description: Dispatch to execute a multi-milestone spec (execspec) through subagent-driven execution, on behalf of the session that authored it.
 model: opus
 effort: high
 autoCompactWindow: 483000
