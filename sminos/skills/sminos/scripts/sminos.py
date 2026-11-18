@@ -5000,8 +5000,9 @@ def charge_of(member, events, title=True, published=""):
     """(line, source, ts): what a member is in charge of, the first present of
     (§5) the latest of its `set` and `derived` in-charge lines — a set line
     until a line derived after it (a compaction derives over a set line:
-    derive_refusal) —, the name the human gave it, and its title — read from its transcript on this
-    machine, else the one its machine `published` (`titled`); ("", "", "")
+    derive_refusal), "after" as latest_across_writers orders them —, the
+    other of the two when the latest is written empty, the name the human
+    gave it, and its title — read from its transcript on this machine, else the one its machine `published` (`titled`); ("", "", "")
     when none is. `ts` is the line's event's, "" for a line no event wrote (a
     name, a title). A set or derived line written empty is no line. `events`
     is the log, or any part of it holding the member's in-charge events, each
@@ -5014,7 +5015,11 @@ def charge_of(member, events, title=True, published=""):
     for source in ("set", "derived"):
         e = latest_across_writers([x for x in mine if x.get("source") == source])
         lines[source] = (str(e.get("text") or "").strip(), str(e.get("ts") or "")) if e else ("", "")
-    order = ("derived", "set") if lines["derived"][0] and lines["derived"][1] > lines["set"][1] else ("set", "derived")
+    # Which source is the later decided by the one latest event of both: seq
+    # within a writer, ts only between writers (a session's charge and its
+    # derive share its file, where a clock step or a ts tie must not decide).
+    latest = latest_across_writers([x for x in mine if x.get("source") in ("set", "derived")])
+    order = ("derived", "set") if latest and latest.get("source") == "derived" else ("set", "derived")
     for source in order + ("name", "title"):
         ts = ""
         if source == "name":
@@ -8554,7 +8559,7 @@ def cmd_derive(a):
         outcome = derive_member(project, m, held_off=a.all, refreshes_spent=a.refreshes if spent else None,
                                 compacted=a.compacted)
         failed += outcome == "failed"
-        forked_refreshes += refresh and outcome in ("derived", "failed")
+        forked_refreshes += refresh and outcome in ("derived", "superseded", "failed")
     if failed:
         sys.exit(1)
 
@@ -8569,7 +8574,7 @@ def clear_status(project, m):
         lifecycle(project, m.session, "status", text="")
         if m.seat:
             meta_set(m.seat["seat_id"], {"now": "", "updated": now()}, bump=False, create=False)
-    except (OSError, audience_module().StreamUnknown) as e:
+    except (OSError, LogWriteFailed) as e:
         warn("the status of %s was not cleared: %s" % (m.alias, e))
     else:
         print("%s now: (cleared at compaction)" % m.alias)
@@ -8603,7 +8608,8 @@ def derive_member(project, m, held_off=False, refreshes_spent=None, compacted=Fa
     refused, said once in daemon.log. `refreshes_spent`, the run's cap on
     refreshes once it is reached: a member that would be forked is left to
     the next run. `compacted`: derive_refusal's. Returns
-    "refused", "deferred", "derived", or "failed" (nothing recorded)."""
+    "refused", "deferred", "derived", "superseded" (forked, but a line was
+    set meanwhile, so nothing recorded) or "failed" (nothing recorded)."""
     why = derive_refusal(project, m, compacted=compacted)
     if not why and held_off:
         age = derive_failed_age(m.session)
@@ -8649,6 +8655,11 @@ def derive_member(project, m, held_off=False, refreshes_spent=None, compacted=Fa
             name = answer_name(answer)
             why_not = charge_name_refusal(name, naming.taken)
             name = "" if why_not else name
+    if not compacted and charge_of(m, log_read(project, kinds=("in-charge",)), title=False)[1] == "set":
+        # Only a compaction derives over a set line: one the member set while
+        # the fork answered wins.
+        print("%s: not derived — its line was set meanwhile" % m.alias)
+        return "superseded"
     lifecycle(project, m.session, "in-charge", text=line, source="derived", **({"name": name} if name else {}))
     print("%s: %s" % (m.alias, line))
     if name:

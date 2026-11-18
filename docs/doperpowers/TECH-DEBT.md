@@ -789,3 +789,9 @@ Residue of the guard that refuses a sminos call with a live backtick (`sminos/ho
 Residue of `query-transcript` (`skills/query-transcript/scripts/query_transcript.py`, PR #512), from its builder's report and the first live runs. (The builder's other note, a $0.01 cost for forks of 44k and 73k tokens, is the list price: haiku bills $0.10 per million up to a 100k-token prompt and $0.50 beyond.)
 
 - **The answerer can name a replay notice as the session's.** The resume appends notices the session never saw (a tool call "interrupted", background work that "didn't finish before the previous session ended"); the frame says so and the quote check marks them not found, yet an answer once called one "the first task-notification" while labelling it replay-added. T3. Trigger: an answer that builds a conclusion on one.
+
+## derive on compaction (2026-11-18, sminos 1.49.0)
+
+Residue of the compaction's derive (`clear_status` and `cmd_derive` in `sminos/skills/sminos/scripts/sminos.py`), from its code review; spec `docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md` §4.
+
+- **The clear can take a status set after the compaction.** The hook (`smns-derive.sh`) starts `derive --compacted` detached, so a `sminos status` the session runs in the second or so before the derive reads the log is cleared with the one the compaction made stale. Clearing only a status older than the compaction (its time passed to the derive as a cutoff) closes it. T3. Trigger: a status seen lost right after a compaction.
