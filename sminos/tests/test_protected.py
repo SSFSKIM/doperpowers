@@ -484,6 +484,7 @@ class Derive(unittest.TestCase):
         for sid in (self.home, self.docs):
             self.assertEqual(self.lines(sid), [], "nothing recorded")
             self.assertEqual(len(self.logged(sid)), 1, "one daemon.log line for the session, not one per run")
+            self.assertIsNotNone(sminos.derive_failed_age(sid), "held off for an hour, as a failed fork is")
         self.assertEqual(len(self.lines(self.plain)), 1)
 
     def test_derive_member_from_the_members_own_directory_forks_there(self):

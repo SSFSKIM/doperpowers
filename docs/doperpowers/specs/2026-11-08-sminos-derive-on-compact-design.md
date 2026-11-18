@@ -32,7 +32,8 @@ Running `sminos derive` from the session's own environment is an existing path, 
 |---|---|---|
 | a derived line within the last six hours (`derived … ago`) | waived | a compaction is the evidence that much has happened since |
 | the transcript not written since the last line (`no activity since its last line`) | waived | a compaction writes the transcript, so this never holds anyway; waived so the flag's meaning does not depend on the ordering |
-| no session; not local; line `set`; another config dir; no transcript here | kept | they say the session cannot or must not be derived, whatever the trigger |
+| line `set` | waived since 2026-11-18 (§4) | a set line was never refreshed by anything: lines set weeks earlier stood in `list` |
+| no session; not local; another config dir; no transcript here | kept | they say the session cannot or must not be derived, whatever the trigger |
 | fewer than ten tool calls by its model | kept | the first-line threshold; a session that compacts before ten tool calls (a `/compact` early on) has too little to say |
 | `launch_refused` (macOS protected folders, in `derive_member`) | kept | it guards against a system dialog, not a pacing choice |
 
@@ -42,11 +43,21 @@ Naming, recording, the pending name and `name.tsx`'s application of it are uncha
 
 The daemon's `derive --all` keeps its five-minute run, its first-line rule, its six-hour spacing and its two-refresh cap. A line derived after a compaction is an `in-charge` event with `source: derived` like any other, so the age rule reads it and the daemon leaves the session alone for six hours from it. If a daemon derive and a compaction derive happen to run together, both record and the later line stands, which is harmless.
 
+### 4. Amendment, 2026-11-18: a compaction refreshes set lines and clears the status
+
+The human observed in-charge lines a week or more stale in `sminos list`. The org-wide count that day: of the live members with a line older than six hours, every one but two held a *set* line (`sminos charge`, or a spawn's brief), which `derive_refusal` refused whatever the trigger, and `charge_of` ranked a set line above every derived one, so nothing replaced it; the linux171 seat showed its 20-day-old set line and a 20-day-old `now:` status. The six-hour path for derived lines was working.
+
+- `--compacted` also waives `its line is set`, and `charge_of` takes the later of the latest set and latest derived lines (by ts), so the line a compaction derives wins until the member sets another. The daemon's `derive --all` still leaves a set line alone; once a derived line wins, the six-hour path refreshes it as any other.
+- `--compacted` clears the member's `now:` status (`clear_status`: an empty `status` event, the seat's local `now` with it) when it has one, whether or not the derive runs: nothing else ever refreshed it. A status set just before the compaction is cleared too; the session sets it again.
+- A member whose fork `launch_refused` skips under `--all` is stamped `derive-failed`, held off an hour as a failed fork is: its side question, asked first, could fail every five minutes (personal-notes-curation, in `$HOME`, whose bridge had nothing to fork after a `/clear`).
+
+Not taken: counting compactions (every third) instead of the six-hour spacing. The compaction derive asks through the session's warm cache (`btw`, about 7k tokens read and 460 written in the logs) and already runs at each compaction; the six-hour path is the backstop for a session that never compacts.
+
 ## Acceptance
 
 1. A compaction's `SessionStart` hook payload, given to `sminos/hooks/smns-derive.sh`, starts `sminos derive <session-id> --compacted` and returns at once with no output. In the suite: the hook exits 0 within a second, prints nothing, and the stub fork's call log shows the derive's fork for that session.
 2. `sminos derive <member> --compacted` derives a member whose line is minutes old, and records a new `derived` line; a plain `sminos derive <member>` right after refuses with `not derived — derived … ago`.
-3. `--compacted` still refuses a member whose line was set with `sminos charge` (`its line is set`), and one whose model has made fewer than ten tool calls.
+3. `--compacted` still refuses a member whose model has made fewer than ten tool calls. Since §4 it derives over a set line, the derived line wins in `list` until the member sets another, and it clears the member's `now:` status.
 4. For a session sminos may name, the compaction derive proposes a charge name and leaves the pending file, as a daemon derive does.
 5. `sminos derive --all --compacted` exits 2 with the usage line.
 6. With `SMNS_INTERNAL` set, the hook starts nothing.

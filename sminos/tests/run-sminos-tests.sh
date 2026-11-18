@@ -5858,8 +5858,21 @@ assert_contains "$OUT" "hd: Owns the compacted stub." "derive --compacted derive
 assert_contains "$(tail -1 "$HPLOG/testhost.$HD.jsonl")" '"text": "Owns the compacted stub.", "source": "derived"' "and records the new line"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: not derived — derived" "the compaction's line restarts the six-hour spacing"
+# A set line yields to a compaction: the line derived after it wins until the
+# member sets another (2026-11-08-sminos-derive-on-compact-design.md §4).
+run "$SMINOS" derive ha
+assert_contains "$OUT" "ha: not derived — its line is set" "a plain derive leaves a set line alone"
+tx "$TA" tool h8000001 10
+CLAUDE_CODE_SESSION_ID="$HA" run "$SMINOS" status ha "drafting the parser"
+STUB_FORK_RESULT="Owns the parser rewrite." run "$SMINOS" derive ha --compacted
+assert_contains "$OUT" "ha: Owns the parser rewrite." "--compacted derives over a set line"
+assert_contains "$OUT" "ha now: (cleared at compaction)" "and clears its now: status"
+assert_equals "$(json_row ha charge)|$(json_row ha charge_source)" "Owns the parser rewrite.|derived" "the line derived after the set one wins"
+assert_equals "$(json_row ha status)" "" "the status is cleared in the log"
 run "$SMINOS" derive ha --compacted
-assert_contains "$OUT" "ha: not derived — its line is set" "--compacted leaves a set line alone"
+assert_not_contains "$OUT" "now: (cleared" "a status already clear writes nothing"
+CLAUDE_CODE_SESSION_ID="$HA" run "$SMINOS" charge "parser, again"
+assert_equals "$(json_row ha charge)|$(json_row ha charge_source)" "parser, again|set" "a line set after it wins again"
 HF=6f00000a-0000-4000-8000-00000000006f
 hp_peer hf "$HF" derived interactive
 tx "$TXD/$HF.jsonl" tool h9000001 9
@@ -5867,6 +5880,45 @@ run "$SMINOS" derive hf --compacted
 assert_contains "$OUT" "hf: not derived — 9 tool calls, needs 10" "and still asks for ten tool calls by the session's model"
 run "$SMINOS" derive --all --compacted
 assert_rc 2 "$RC" "--compacted speaks for one session: with --all it is a usage error"
+# Within one writer's file seq orders a set and a derived line, never ts: a
+# clock stepped back, or two lines in one millisecond, leave the later line
+# the later (latest_across_writers).
+ha_append() { # source text ts-offset-seconds → an in-charge line of ha's, written by lifecycle, its ts the latest's plus the offset
+  python3 - "$SMINOS_PY" "$HP" "$HA" "$@" <<'PY_HA_APPEND'
+import calendar, importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p, sid, source, text, offset = mod.find_project(sys.argv[2]), *sys.argv[3:]
+last = [e for e in mod.log_read(p, kinds=("in-charge",)) if e.get("session") == sid][-1]["ts"]
+t = calendar.timegm(time.strptime(last[:19], "%Y-%m-%dT%H:%M:%S")) + int(offset)
+ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + last[19:]
+mod.now = lambda ms=False: ts
+mod.lifecycle(p, sid, "in-charge", text=text, source=source)
+PY_HA_APPEND
+}
+ha_append derived "Owns the parser, derived under a clock stepped back." -60
+assert_equals "$(json_row ha charge)|$(json_row ha charge_source)" "Owns the parser, derived under a clock stepped back.|derived" \
+  "a line derived after a set one in the same file wins, its ts earlier"
+ha_append set "parser, set in the same millisecond" 0
+assert_equals "$(json_row ha charge)|$(json_row ha charge_source)" "parser, set in the same millisecond|set" \
+  "and a line set after it with the same ts wins back"
+ha_append derived "Owns the parser, derived in the same millisecond." 0
+assert_equals "$(json_row ha charge)|$(json_row ha charge_source)" "Owns the parser, derived in the same millisecond.|derived" \
+  "as a line derived after that with the same ts wins in turn"
+ha_append derived "" 0
+assert_equals "$(json_row ha charge)|$(json_row ha charge_source)" "parser, set in the same millisecond|set" \
+  "a derived line written empty after it is no line: the set one stands"
+# A plain derive whose fork is answering while the member sets its line
+# records nothing: only a compaction derives over a set line.
+tx "$TXD/$HF.jsonl" tool h9000002 1
+STUB_FORK_SLEEP=3 STUB_FORK_RESULT="Owns the fixture, from a slow fork." "$SMINOS" derive hf > "$TEST_ROOT/hf-derive.out" 2>&1 & HF_DERIVE=$!
+hf_forking() { grep -q -- "--resume $HF --fork-session" "$STUB_STATE/log/calls.log"; }
+wait_until hf_forking || true
+CLAUDE_CODE_SESSION_ID="$HF" run "$SMINOS" charge "fixtures, set while it forked"
+wait "$HF_DERIVE"
+assert_contains "$(cat "$TEST_ROOT/hf-derive.out")" "hf: not derived — its line was set meanwhile" \
+  "a plain derive whose fork answered after the member set its line says so"
+assert_not_contains "$(cat "$HPLOG/testhost.$HF.jsonl")" "from a slow fork" "and records nothing"
+assert_equals "$(json_row hf charge)|$(json_row hf charge_source)" "fixtures, set while it forked|set" "the set line stands"
 # The hook: the compaction's SessionStart payload starts the derive detached
 # and returns at once, printing nothing into the session's context.
 DERIVE_HOOK="$PLUGIN_ROOT/hooks/smns-derive.sh"
