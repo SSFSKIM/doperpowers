@@ -771,8 +771,9 @@ class MembersFirst(Machine):
         frames = link.session_lane.take()
         events = self.first(frames, lambda f: self.carries(f, "testhost/" + S1))
         self.assertIsNotNone(events, "its event went up")
+        # A `maws` origin makes it lane B: a `gone` (no owners) goes before its new frame.
         changed = self.first(frames, lambda f: f["t"] == "member" and f["session"] == S1
-                             and f["owners"] == ["mem-1"])
+                             and f.get("owners") == ["mem-1"])
         self.assertIsNotNone(changed, "the record as it is now was published")
         self.assertLess(changed, events)
         link.next_upload = 0.0

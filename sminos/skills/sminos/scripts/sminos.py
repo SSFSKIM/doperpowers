@@ -4290,7 +4290,7 @@ def join_seat(seat, by=""):
                            seat["seat_id"], by, "seat", session=seat["current"])
     if project is not None:
         threads = threads_module()
-        threads.finish(seat["seat_id"], project=project)   # an open entry is finished before the record changes
+        finish_thread(seat["seat_id"], project=project)   # an open entry is finished before the record changes
         thread = threads.ensure(seat["current"], seat=reload_seat(seat["seat_id"]) or seat, project=project)
         fresh = reload_seat(seat["seat_id"]) or seat
         if thread is not None and isinstance(fresh.get("ended"), dict):
@@ -4309,15 +4309,25 @@ def thread_transition(project, thread_id, op, events, required=False, **begin):
     entry whose events could not all be appended raises LogWriteFailed: the
     record's change stands, and the next reconciliation finishes the entry."""
     threads = threads_module()
-    threads.finish(thread_id, project=project)
+    finish_thread(thread_id, project=project)
     entry = threads.begin(thread_id, op, project, events, **begin)
     if entry is None:
         return []
     appended = []
-    if not threads.finish(thread_id, appended, project) and required:
-        raise LogWriteFailed("the %s of %s is recorded, but not all of it is in %s's log yet; the next reading verb "
-                             "finishes it" % (op, thread_id[:8], project.name))
+    if not finish_thread(thread_id, appended, project) and required:
+        owed = [e for e in entry["events"] if not any(x["kind"] == e["kind"] and x.get("op") == entry["id"]
+                                                      for x in appended)]
+        e = owed[0] if owed else {"kind": op, "session": thread_id}
+        raise LogWriteFailed("recording %s of %s in %s's log failed; its record holds it, and the next reading verb "
+                             "finishes it" % (e["kind"], e["session"][:8], project.name))
     return appended
+
+
+def finish_thread(thread_id, appended=None, project=None):
+    """sminos_threads.finish, its events appended through this module's own
+    lifecycle, so the caches a verb reads afterwards (its views) see them,
+    whichever copy of this module loaded the threads module."""
+    return threads_module().finish(thread_id, appended, project, append=lifecycle)
 
 
 def seats_by_session(project, all_seats):
@@ -4418,7 +4428,7 @@ def _reconcile(project, events, local, by_session, all_seats=None):
     for t in threads.open_entries(project, human, seats() if all_seats is None else all_seats):
         busy.update(str(e.get("session") or "") for e in t["pending"].get("events") or [])
         busy.add(t["current"])
-        threads.finish(t["thread"], out, project)
+        finish_thread(t["thread"], out, project)
     out += older_writes(project, human, effect, joined, busy)
     for sid, e in joined.items():
         if latest[sid] != "joined" or sid in local or sid in busy or not is_self(str(e.get("machine") or ""), sid):
@@ -4538,6 +4548,8 @@ def adopt(project, sid, seat, peer, last, events):
     threads = threads_module()
     if threads.stamped(last):
         return []
+    if project.hub is not None and writer_base(str(last.get("writer") or "")) != writer_id(sid):
+        return []   # joined under a former name of this machine: the daemon's rejoin_former joins it again, stamped
     if seat is None and threads.awaits_seat(sid, peer, sid == os.environ.get("CLAUDE_CODE_SESSION_ID")):
         return []
     try:
@@ -11163,7 +11175,7 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         # Its thread's open entry, if one was left, is finished first, and an
         # end it had is lifted (`ended`, below).
         rec_id = seat_id
-        threads_module().finish(rec_id)
+        finish_thread(rec_id)
         history = list(prev["history"]) if prev else []
         if prev and (prev["current"] or prev["short"]):
             entry = {"current": prev["current"], "short": prev["short"], "status": prev["status"],
@@ -11421,7 +11433,7 @@ def cmd_seat_add(a):
     if existing:
         s = existing[0]
         seat_id = s["seat_id"]
-        threads_module().finish(seat_id)   # an entry left open is finished before the record changes
+        finish_thread(seat_id)   # an entry left open is finished before the record changes
         fields = {"role": a.role if a.role is not None else s["role"],
                   "brief": a.brief if a.brief is not None else s["brief"], "updated": now()}
         if session:
@@ -12532,7 +12544,7 @@ def end_seat(s, purge):
     project = seat_project(s)
     threads = threads_module()
     if s["current"] and project is not None and not guessed(project):
-        threads.finish(s["seat_id"], project=project)
+        finish_thread(s["seat_id"], project=project)
         threads.ensure(s["current"], seat=reload_seat(s["seat_id"]) or s, project=project)
         if not isinstance((reload_seat(s["seat_id"]) or {}).get("ended"), dict):
             at = now()

@@ -602,7 +602,7 @@ def _holds(project, session, kind, op):
     return any(x["kind"] == kind and x.get("op") == op for x in sminos.own_events_of(project, session))
 
 
-def _owe(project, entry, event, appended):
+def _owe(project, entry, event, appended, append):
     """One event the entry owes, appended unless the session's own events
     hold one of its kind under the entry's id already, whoever appended it;
     whether the log holds it now."""
@@ -612,12 +612,12 @@ def _owe(project, entry, event, appended):
     def none_yet(evs):
         return not any(x["kind"] == kind and x.get("op") == entry["id"] for x in evs)
 
-    got = sminos.lifecycle(project, session, kind, guard=none_yet, required=False, op=entry["id"], **fields)
+    got = append(project, session, kind, guard=none_yet, required=False, op=entry["id"], **fields)
     appended += got
     return bool(got) or _holds(project, session, kind, entry["id"])
 
 
-def finish(thread_id, appended=None, project=None):
+def finish(thread_id, appended=None, project=None, append=None):
     """Carries out the record's open entry from where it stands, and clears
     it (§6, steps 2 to 4): each event the log does not hold yet; then, in
     one write, the entry removed and an end's record set aside or deleted
@@ -625,7 +625,8 @@ def finish(thread_id, appended=None, project=None):
     when the record has no open entry left. `appended`, a list, gains the
     events appended. `project`: the caller's, when it is the entry's (a
     project need not be registered here to be resolved); else the entry's
-    is looked up."""
+    is looked up. `append`: the caller's sminos.lifecycle (a test may load
+    its own copy of sminos, whose view cache an append must clear)."""
     appended = [] if appended is None else appended
     t = get(thread_id)
     entry = (t or {}).get("pending")
@@ -636,7 +637,7 @@ def finish(thread_id, appended=None, project=None):
     if project is None:
         return False
     for event in entry.get("events") or []:
-        if not _owe(project, entry, event, appended):
+        if not _owe(project, entry, event, appended, append or sminos.lifecycle):
             return False
     # What is held for `settle` is settled here once the hold exists (M3).
     if entry.get("op") == "absorb" and entry.get("other"):

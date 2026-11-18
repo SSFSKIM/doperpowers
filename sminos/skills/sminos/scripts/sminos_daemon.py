@@ -740,6 +740,12 @@ def rejoin_former(project, view=None):
         if not j or sminos.writer_base(str(j.get("writer") or "")) == sminos.writer_id(m.session):
             continue
 
+        try:
+            # It is adopted here (its thread record made), so the joined under its name now is stamped.
+            sminos.threads_module().ensure(m.session, m.seat, project, view.events)
+        except (OSError, sminos.LockBusy) as e:
+            sminos.warn("the thread record of %s could not be made: %s" % (m.session[:8], e or "its lock is busy"))
+
         def guard(evs, mine=sminos.writer_id(m.session)):
             last = sminos.threads_module().in_effect(evs)
             return last is not None and last["kind"] == "joined" and sminos.writer_base(last["writer"]) != mine
