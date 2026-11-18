@@ -6468,7 +6468,17 @@ cn_member cnrepo-q7 "$CQ" derived
 STUB_FORK_RESULT=$'Owns the seated work.\nname: seated-later-name' run "$SMINOS" derive cnrepo-q7
 run "$SMINOS" name-due --session "$CQ"
 assert_equals "$RC|$OUT" "0|seated-later-name" "(a proposal for a seat-less session is due)"
-"$SMINOS" seat add cn-repo cnseatq --session "$CQ" >/dev/null
+# This code refuses `seat add --session` for a session its human opened that is a member (its thread
+# record keeps it); an older sminos still gives one a seat, as its seat record says (older_seat).
+older_seat() { # group alias session cwd — a seat record as an older sminos's `seat add --session` writes it
+  printf '{"uuid":"%s","current":"%s","name":"%s","alias":"%s","group":"%s","status":"idle","cwd":"%s","history":[]}' \
+    "$3" "$3" "$2" "$2" "$1" "$4" > "$SMINOS_HOME/$3.json"
+  chmod 600 "$SMINOS_HOME/$3.json"
+}
+run "$SMINOS" seat add cn-repo cnseatq --session "$CQ"
+assert_rc 4 "$RC" "seat add --session is refused for a member its human opened"
+assert_contains "$OUT" "its record already keeps it" "saying its record keeps it"
+older_seat cn-repo cnseatq "$CQ" "$R4"
 run "$SMINOS" name-due --session "$CQ"
 assert_equals "$RC|$OUT" "0|" "nor once the session took a seat"
 
@@ -6478,7 +6488,7 @@ assert_equals "$RC|$OUT" "0|" "nor once the session took a seat"
 CW=0c000012-0000-4000-8000-0000000000d2
 cn_member cnrepo-w1 "$CW" derived
 run "$SMINOS" list
-"$SMINOS" seat add cn-repo cnseatw --session "$CW" >/dev/null
+older_seat cn-repo cnseatw "$CW" "$R4"
 bound_by() { # name → find_target's kind and the session it binds
   python3 - "$SMINOS_PY" "$1" 2>/dev/null <<'PY'
 import importlib.util, sys
