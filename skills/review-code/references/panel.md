@@ -1,4 +1,4 @@
-# The review workflow: contract and findings doctrine
+# The review workflow: contract and findings
 
 `workflows/code-review.js` has one routing input, `level`. xhigh and max run
 the panel; low, medium, and high run one reviewer at the registered agent's
@@ -34,18 +34,10 @@ Optional:
 | xhigh | panel | sol / high | sol / high | sol / high |
 | max | panel | sol / xhigh | astra / high | astra / high |
 
-Sol at xhigh — medium when scored, low from 2026-09-25, medium again since
-2026-09-29 — reproduced the codex baseline exactly on the X1 seeded set (17/17,
-FP 0; `tests/review-bench/results/2026-09-09-native-x1`, on GPT-5.6 Sol).
-GPT-6.1 Sol, which `sol` resolves to since 2026-09-29, scored the same at both
-single sol rungs — high and xhigh each 17/17, FP 0, the findings exactly the
-truth set (`tests/review-bench/results/2026-09-29-sol61-x1`); the seeded set is
-saturated and no longer separates the two. Known tendency of the panel on Sol
-finders and a Sol verifier (at xhigh until 2026-09-25, at high since
-2026-09-29; observed on GPT-5.6 Sol, not yet re-measured on GPT-6.1): it raises
-intent-documented design choices and confirms them (two such FPs on the seeded
-set; max raised none) — weigh a panel finding against the change's stated
-intent.
+The panel on Sol finders and a Sol verifier tends to raise design choices the
+change documents as intended, and to confirm them (two such false positives on
+the seeded benchmark set; max raised none): weigh a panel finding against the
+change's stated intent.
 
 ## The panel
 
@@ -62,10 +54,9 @@ five to ten minutes.
 Without `repo`, every stage runs in a fresh worktree at HEAD: reviewers read
 committed content, and nothing they run can touch the session's working tree.
 With `repo` set that isolation does not apply, so point it at an untouched
-checkout. The registered reviewers exclude the mutating tools, `Agent`, and
-`Skill`, so an instruction file that routes reviews through this skill cannot
-make a finder start a second review inside the first; the deriver and
-verifier lanes are plain agents, so their prompts say the same in words.
+checkout. No lane can start a second review inside the first: the registered
+reviewers lack `Agent` and `Skill`, and the deriver's and verifier's prompts
+say the same in words.
 
 ## Result
 
@@ -83,9 +74,6 @@ verifier lanes are plain agents, so their prompts say the same in words.
 - `coverage` — one row per lane: `{finder, lens, status: ok|dead, candidates}`.
 - On `interrupted`, confirmed findings still ride along as partial evidence,
   and an unjudged candidate pool is attached raw as `pool`.
-
-When the run returns, re-resolve the merge-base and HEAD: if either moved, the
-verdict describes a diff that no longer exists — read it as `interrupted`.
 
 ## Working with findings
 
