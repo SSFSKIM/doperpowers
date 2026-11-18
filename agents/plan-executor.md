@@ -1,6 +1,6 @@
 ---
 name: plan-executor
-description: Dispatch to execute a multi-milestone doperpowers:execspec spec through doperpowers:subagent-driven-execution, on behalf of the session that authored it.
+description: Dispatch to execute a multi-milestone spec (execspec) through subagent-driven execution, on behalf of the session that authored it.
 model: opus
 effort: high
 autoCompactWindow: 483000
