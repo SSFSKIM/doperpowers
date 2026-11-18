@@ -203,6 +203,14 @@ gates:
     timeout: 10
     paths: ["application-agents/triaging-feedback/**", ".github/**"]
 
+  # query-transcript against a stand-in claude (no model calls); its live
+  # check, tests/query-transcript/live-check.py, needs a transcript on the MacBook.
+  - name: query-transcript
+    setup: false
+    run: python3 tests/query-transcript/test_query_transcript.py -v
+    timeout: 5
+    paths: ["skills/query-transcript/**", "bin/**", "tests/query-transcript/**", ".github/**"]
+
   - name: repo-checks
     # Fast checks of the repo as a whole: the lint script's own test, doc
     # cross-references, the version bump (per plugin), the review engine, the

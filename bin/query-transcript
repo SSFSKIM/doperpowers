@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# query-transcript on a session's PATH: the engine puts every plugin's bin/
+# there. It runs the CLI beside its skill, found from this file's real path
+# (a symlink to it works too).
+exec python3 "$(dirname "$(readlink -f "$0")")/../skills/query-transcript/scripts/query_transcript.py" "$@"
