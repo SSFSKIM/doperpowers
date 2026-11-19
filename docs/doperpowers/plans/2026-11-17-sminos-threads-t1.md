@@ -34,7 +34,7 @@ the composite, run as Concrete Steps gives it.
 - [x] (2026-11-18) Revised again for the confirm pass (eight findings) and the holder's second rulings: transitions are journaled in the record.
 - [x] (2026-11-19) M1 — Every member has a thread record, and its events say which thread (reviewed clean after five fix waves; `b8c1dbfb..793dd7c0`)
 - [x] (2026-11-19) M2 — One thread across its session ids: hand-off, refill, and what is another thread (reviewed: four fix waves, the last checked by the controller; `3bb026ec..a5b8c5fc`)
-- [ ] M3 — A closed session stays: stopped, held, and its sender told
+- [x] (2026-11-19) M3 — A closed session stays: stopped, held, and its sender told (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `ef5a4cd0..dd83567f`)
 - [ ] M4 — A thread ends, and returns
 - [ ] M5 — A thread that owns a VM is neither retired nor ended
 - [ ] M6 — What sessions are told, an older sminos beside this one, the shared vectors, and the acceptance run
@@ -2354,6 +2354,59 @@ Found while executing:
   milestone (a first review and two re-reviews); each round's real defects
   on paths the plan names are fixed, and what the third leaves goes to the
   report's residue for the branch's review at the high rung.
+- 2026-11-19 — **M3 as built** (the executor's decisions and its three
+  reviews' fixes, accepted by the holder; detail in its report):
+  - the seam fell after the hold and the `/clear` transfer (part 1), with
+    the verbs that start a process, row 6's check under the seat's lock and
+    the closing of questions in part 2;
+  - `update` may remove `released` and no other journaled key;
+  - one fresh hold, `hold_now` (`thread_of`'s canonical record, live stores
+    only, and the engine's records read afresh), is asked last at every
+    push, ask and counted attempt, under the delivery lock where one is
+    held; views keep a cached index (`_live_index`) built by `thread_of`'s
+    own rule; every push hands over through `bound_peer`, which resolves
+    the session, its pid and its socket together and refuses a process
+    other than the one looked at; asks are held at enqueue; `cmd_steer`
+    (the human's own steer to the session named) and the projectless send
+    by harness name (a machine not enrolled, no thread) are not bound;
+  - `wake` is written for stamped sessions, and `publish_state` decides
+    from the current thread; `Member` gains `wake`; `wake_of` answers
+    `woken`, `held` or None, and `ended` is M4's;
+  - a held member is `stopped` from the thread and process evidence, with
+    or without a transcript;
+  - the skip's memory lives in the daemon's process, keyed on existing
+    generations (the log's and the delivery record's stat, receipts, the
+    revocation set, the policy file), taken before the pass and kept only
+    when the pass settled nothing and no outside report is still owed;
+  - held members get the normal settlement order first, then
+    `report_closed` for what is still owed, once; nonmembers keep the
+    legacy settlement;
+  - sweep candidates persist in `daemon/threads.json`; the stop mark
+    applies to seat records too; questions are closed for every stopped
+    thread, spawned ones included, each in its session's own last project,
+    under the resume lock for the whole decision; the sweep's hold names
+    the sweep, and a resume that meets it waits up to `SWEEP_WAIT` (5 s),
+    then raises `ResumeBusy` (exit 1, the message owed, no attempt);
+  - the `/clear` witness also requires `CLAUDE_CODE_SESSION_ID` to be the
+    new session and a pid that is no internal fork; the hook has no
+    matcher and filters on the reason itself; the release's `renamed` is
+    journaled in the old session's own project; a rename chosen from a view
+    before a release is not appended over it;
+  - `resume` and `fill` resolve by `find_target`'s precedence and keep the
+    bound session through the seat lock; `resume` and `fill --resume`
+    aimed at a human-opened thread record the message and exit 4, a fresh
+    fill is refused, `send --wait` to a known hold (local, a seat an older
+    copy made, or remote) records and exits 4 without waiting, and a plain
+    `send` exits 0 with the held line; the remote sender's lines report
+    `held` and `woken` with the machine;
+  - `spawn` is refused onto the alias of any human-opened member, live or
+    stopped; `derive` refuses a held session even when named, at each fork,
+    with no failure stamp;
+  - row 13 ends a lane B session's thread in either store, chosen by
+    `thread_of`;
+  - the suites that pinned an ending turn the session lane B first
+    (`set_lane`); RL10's 11.18 amendment also expects S4's writer at 1 (a
+    stopped thread writes no retirement), sent to the holder for MAWS.
 
 ## Outcomes & Retrospective
 
