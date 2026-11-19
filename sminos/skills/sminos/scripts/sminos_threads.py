@@ -996,9 +996,11 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
         if not _claimed(thread_id, entry, view, fields, absorbs):
             return False
         if op == "return" and entry.get("settle"):
-            # Under the record's lock: a settlement that read the log before this write sees the record ended
-            # when it asks under the same lock (sminos_outcomes.end_stands), so it read nothing past `until`.
-            entry["until"] = sminos.now(ms=True)
+            # Under the record's lock, the positions the events addressed to the session have reached in the
+            # local log, each writer's seq: what the return settles, and nothing a clock decides. A settlement
+            # that read the log before this write sees the record ended when it asks under the same lock
+            # (sminos_outcomes.end_stands), so it read nothing past them.
+            entry["until"] = sminos.positions_to(project, entry["settle"])
         _apply(entry, view, raw, fields, remove)
         return "live" if op == "return" or more.get("last") == "purge" else True   # an open purge is read live
 
@@ -1136,10 +1138,11 @@ def finish(thread_id, appended=None, project=None, append=None, lock_until=None,
     default sminos.settle_ended (what is owed to the session settled
     `recorded`, under its delivery lock), answers whether it is done; while
     it answers False the entry stays open, and the record is neither set
-    aside nor deleted. A return's (`settle` with `until`, the time it
-    began) comes before its events: what reached the log for the session
-    while its end stood, up to `until`, is settled before its `joined`
-    makes it a member again, and nothing after it is.
+    aside nor deleted. A return's (`settle` with `until`, each writer's
+    seq the events addressed to the session had reached in the local log as
+    it began) comes before its events: what reached the log for the session
+    while its end stood, up to those positions, is settled before its
+    `joined` makes it a member again, and nothing after them is.
 
     An absorption first holds the record it absorbs, under that record's
     own lock (_hold): marked RESERVED by this entry while it is still
@@ -1199,8 +1202,8 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
                 return False
         if not returning and entry.get("settle") and not settle(project, entry["settle"], deadline, None):
             return False   # what is held for it is settled before the record is set aside or deleted (§6, 3)
-        if entry.get("seat"):
-            _project_seat(entry["seat"], deadline)
+        if entry.get("seat") and not _project_seat(entry["seat"], deadline):
+            return False   # the seat could not be read or written: the entry stays open for the replay
         if other:
             _change(other, lambda view, raw: "delete" if (view.get("pending") or {}).get("id") == entry["id"]
                     else False, deadline)
@@ -1243,16 +1246,33 @@ def _project_seat(seat, deadline):
     session, and `to`, "retired", "idle" or "purge"), before the entry is
     cleared: so a cut leaves it to the replay, and the seat never holds a
     state of its own for that thread. Only while the seat still holds that
-    session; safe to repeat."""
+    session; safe to repeat. Whether it is done: True for a seat brought
+    in line, one that is gone, or one that holds another session now; False
+    (the entry stays open) for one that could not be read or written."""
+    seen = []
+
     def mutate(view, raw):
-        if view["current"] != seat["session"]:
+        seen.append(view["current"] == seat["session"])
+        if not seen[-1]:
             return False
         if seat["to"] == "purge":
             return "delete"
         raw["status"] = seat["to"]
         raw["updated"] = sminos.now()
         return True
-    _change(seat["id"], mutate, deadline, bump=True)
+    try:
+        _change(seat["id"], mutate, deadline, bump=True)
+    except OSError:
+        return False
+    if seen:
+        return True
+    return not os.path.exists(sminos.meta_path(seat["id"]))   # gone is done; unreadable is not
+
+
+def project_seat(seat, deadline=None):
+    """_project_seat outside an entry: for an end found in place already
+    (a verb that met it), the older copy's seat brought in line once more."""
+    return _project_seat(seat, deadline)
 
 
 def _queued_entry(thread_id, queued):

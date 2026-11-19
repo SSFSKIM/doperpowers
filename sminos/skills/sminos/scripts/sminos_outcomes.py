@@ -359,7 +359,8 @@ def settle_ended(project, sid, lock_until=None, until=None, end=None):
     it ends the thread it delivers to). Whether nothing is owed to it any
     more: the journal's settlement (sminos_threads.finish) is done only
     then. Bounded by the end it is for: a return's settlement (`until`, the
-    time the return began) settles only what reached the log by then; the
+    positions, each writer's seq, the events addressed to the session had
+    reached in the local log as the return began) settles only those; the
     late pass's (`end`, the `retired` in effect it read) only while, read
     afresh under the lock, that end still stands (end_stands), so what
     reaches a thread after it returns is delivered to it."""
@@ -378,7 +379,7 @@ def settle_ended(project, sid, lock_until=None, until=None, end=None):
             for e in owed:
                 if e["writer"] in stopped or e["writer"] in past:
                     continue
-                if until is not None and str(e.get("ts") or "") > until:
+                if until is not None and e["seq"] > int(until.get(e["writer"]) or 0):
                     past.add(e["writer"])   # after the return began: the returned session's own, and not a failure
                     continue
                 outside = policy.outside_origin(e)

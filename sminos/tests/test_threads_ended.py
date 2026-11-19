@@ -308,7 +308,9 @@ class Retire(Ending):
 
     def test_a_spawned_self_retire_is_recorded_even_when_the_stop_ends_its_caller(self):
         sid, proc, seat_id = self.seated()
-        with mock.patch.object(sminos, "stop_session", side_effect=Killed), \
+        sminos.agents_json.return_value = [{"id": "job00001", "sessionId": sid, "state": "working",
+                                            "status": "busy"}]   # the harness's turn of it, which the end sees
+        with mock.patch.object(sminos, "claude_stop", side_effect=Killed), \
                 mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": sid}), self.assertRaises(Killed):
             self.cli("retire", "g/w")
         seat = sminos.load_seat(sminos.meta_path(seat_id))
@@ -992,7 +994,7 @@ class Boundaries(Ending):
         real = sminos.settle_ended
         start, poll = self.engine(sid)
         with start, poll, mock.patch.object(sminos, "settle_ended", side_effect=lambda p, s, lock_until=None,
-                                            until=None: False if until else real(p, s, lock_until, until)):
+                                            until=None: False if until is not None else real(p, s, lock_until, until)):
             code, out = self.cli("fill", "g/w", "carry on", "--resume")
         self.assertEqual(code, 1, out)
         self.assertIn("its joined waits for the next reconciliation", out)
@@ -1049,6 +1051,178 @@ class Boundaries(Ending):
                 code, out = self.cli(*argv)
                 self.assertEqual(code, 4, out)
                 self.assertIn(said, out)
+
+
+# ------------------------------------------------------------ the canonical end, final (review 3)
+
+
+class Canonical(Ending):
+    """The end in effect governs a seat an older copy gave a thread its
+    human opened, a seat that cannot be read keeps the entry open, the
+    return's boundary is the log's positions, and nothing is stopped,
+    returned or edited past what was seen."""
+
+    older_seat = Boundaries.older_seat
+
+    def remote_message(self, sid, offset):
+        """An addressed message from another machine's writer, its clock `offset` seconds off this one's."""
+        writer = "farhost/%s" % uuidlib.uuid4()
+        t = time.time() + offset
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % int((t % 1) * 1000)
+        with open(sminos.writer_path(self.p, writer), "a") as f:
+            f.write(json.dumps({"ts": ts, "writer": writer, "seq": 1, "kind": "message", "session": str(uuidlib.uuid4()),
+                                "text": "@alpha from afar", "to": [{"session": sid, "alias": "alpha"}]}) + "\n")
+        sminos.forget_caches()
+
+    def legacy_retired(self, project_seat=True):
+        """A thread its human opened, an older copy's seat over it, and that copy's retire of it, reconciled."""
+        sid, proc = self.opened(inbox=True)
+        tid = threads.stamp(sid)
+        seat_id = self.older_seat(sid)
+        self.write_own(sid, [{"kind": "retired", "by": "legacy", "reason": "retire", "pid": proc.pid}])
+        if project_seat:
+            self.reconcile()
+        else:
+            with mock.patch.object(sminos, "seat_over", return_value=None):
+                self.reconcile()
+        self.assertTrue(threads.record_ended(threads.get(tid)))
+        return sid, tid, seat_id
+
+    def assert_ended_governs(self, sid):
+        code, out = self.cli("list", "--all")
+        row = next((" ".join(line.split()) for line in out.splitlines() if line.lstrip().startswith("w [")), "")
+        self.assertIn("retired", row, out)
+        self.assertNotIn("idle", row)
+        code, out = self.cli("send", "g/w", "are you there")
+        self.assertEqual(code, 4, out)
+        self.assertIn("has ended", out)
+        self.assertEqual(self.inbox(sid), [], "nothing reached it")
+
+    def test_an_older_copys_retire_of_a_seated_human_thread_governs_its_row_and_send(self):
+        sid, _, seat_id = self.legacy_retired()
+        self.assertEqual(sminos.load_seat(sminos.meta_path(seat_id))["status"], "retired", "its seat followed")
+        self.assert_ended_governs(sid)
+
+    def test_the_end_governs_even_where_the_seat_never_followed_and_a_retire_then_aligns_it(self):
+        sid, _, seat_id = self.legacy_retired(project_seat=False)
+        self.assertNotEqual(sminos.load_seat(sminos.meta_path(seat_id))["status"], "retired")
+        self.assert_ended_governs(sid)
+        with mock.patch.object(sminos, "stop_session"):
+            code, out = self.cli("retire", "g/w")
+        self.assertEqual(sminos.load_seat(sminos.meta_path(seat_id))["status"], "retired", out)
+
+    def test_a_purge_whose_seat_cannot_be_read_stays_open_until_it_can(self):
+        sid, _ = self.opened()
+        tid = threads.stamp(sid)
+        seat_id = self.older_seat(sid)
+        path, real = sminos.meta_path(seat_id), sminos.settle_ended
+        self.addCleanup(lambda: os.path.exists(path) and os.chmod(path, 0o600))
+
+        def unreadable(*a, **k):
+            os.chmod(path, 0)   # an OSError on the seat's read, just before the entry brings it in line
+            return real(*a, **k)
+        with mock.patch.object(sminos, "settle_ended", side_effect=unreadable), \
+                mock.patch.object(sminos, "stop_session"):
+            code, out = self.cli("retire", "g/w", "--purge")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(threads.get(tid)["pending"]["last"], "purge", "not purged while its seat stands")
+        os.chmod(path, 0o600)
+        self.reconcile()
+        self.assertIsNone(threads.get(tid))
+        self.assertFalse(os.path.exists(path))
+        self.assertFalse(self.is_member(sid))
+
+    def test_a_remote_event_from_a_clock_ahead_that_reached_the_log_before_the_return_is_settled_by_it(self):
+        sid, tid = self.ended_by_rule()
+        self.remote_message(sid, 3600)
+        self.assertEqual(len(self.owed_any(sid)), 1)
+        self.live(sid=sid, name="alpha")
+        self.reconcile()
+        self.assertTrue(self.is_member(sid))
+        self.assertEqual(self.owed_any(sid), [], "it reached the log while the end stood")
+
+    def test_a_remote_event_from_a_clock_behind_that_reached_the_log_after_the_return_began_is_its_own(self):
+        sid, tid = self.ended_by_rule()
+        self.live(sid=sid, name="alpha")
+        real = threads.begin
+
+        def begin(*a, **k):
+            entry = real(*a, **k)
+            if entry is not None and entry["op"] == "return":
+                self.remote_message(sid, -3600)
+            return entry
+        with mock.patch.object(threads, "begin", side_effect=begin):
+            self.reconcile()
+        self.assertTrue(self.is_member(sid))
+        self.assertEqual(len(self.owed_any(sid)), 1, "it reached the log after the return began")
+
+    def test_a_retire_with_no_turn_seen_never_stops_a_turn_found_after_its_end(self):
+        sid, proc, seat_id = self.seated()
+        real, swapped = sminos.agents_refresh, []
+
+        def refresh():
+            if not swapped and isinstance((sminos.reload_seat(seat_id) or {}).get("ended"), dict):
+                swapped.append(1)   # after the end: the process it saw is gone, and another holds the session
+                self.end(proc)
+                self.session(sid=sid, kind="bg", started=ms_ago(0))
+                sminos.agents_json.return_value = [{"id": "newjob01", "sessionId": sid, "state": "working",
+                                                    "status": "busy"}]
+            return real()
+        with mock.patch.object(sminos, "agents_refresh", side_effect=refresh):
+            code, out = self.cli("retire", "g/w")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(swapped)
+        self.assertNotIn(mock.call("newjob01"), sminos.claude_stop.call_args_list)
+
+    def test_an_unconfirmed_fill_resume_does_not_return_the_seat(self):
+        sid, seat_id = EndStands.retired_seat(self)
+        start, _ = self.engine(sid)
+        with start, mock.patch.object(sminos, "poll_uuid", return_value=None):
+            code, out = self.cli("fill", "g/w", "carry on", "--resume")
+        self.assertEqual(code, 1, out)
+        seat = sminos.load_seat(sminos.meta_path(seat_id))
+        self.assertEqual((seat["status"], (seat.get("ended") or {}).get("reason")), ("retired", "retire"))
+        self.assertFalse(self.is_member(sid))
+        self.assertIn("stays retired", out)
+
+    def open_end(self, seat_id, sid):
+        at = sminos.now()
+        return threads.begin(seat_id, "end", self.p, [{"kind": "retired", "session": sid, "by": "", "reason": "retire"}],
+                             fields={"status": "retired", "updated": at,
+                                     "ended": {"at": at, "reason": "retire", "by": "", "pid": None}}, settle=sid)
+
+    def test_seat_add_is_refused_while_an_end_it_cannot_finish_is_open(self):
+        sid, proc, seat_id = self.seated()
+        self.end(proc)
+        self.reconcile()
+        self.assertIsNotNone(self.open_end(seat_id, sid))
+        with mock.patch.object(sminos, "settle_ended", return_value=False):
+            code, out = self.cli("seat", "add", "g", "w", "--session", sid, "--role", "reviewer")
+        self.assertEqual(code, 1, out)
+        seat = sminos.load_seat(sminos.meta_path(seat_id))
+        self.assertEqual((seat["role"], seat["pending"]["op"]), ("", "end"))
+
+    def test_seat_add_writes_nothing_through_an_end_begun_meanwhile(self):
+        sid, proc, seat_id = self.seated()
+        self.end(proc)
+        self.reconcile()
+        real = sminos.seat_project
+
+        def begun_meanwhile(s):
+            if s and s.get("seat_id") == seat_id and not (sminos.reload_seat(seat_id) or {}).get("pending"):
+                self.assertIsNotNone(self.open_end(seat_id, sid))
+            return real(s)
+        with mock.patch.object(sminos, "seat_project", side_effect=begun_meanwhile):
+            code, out = self.cli("seat", "add", "g", "w", "--session", sid, "--role", "reviewer")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(sminos.load_seat(sminos.meta_path(seat_id))["role"], "")
+
+    def test_a_qualified_tag_naming_a_retired_seat_by_its_short_is_refused_saying_so(self):
+        sid, _ = EndStands.retired_seat(self)
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        code, out = self.say("@%s/%s are you there" % (self.p.name, sid[:8]))
+        self.assertEqual(code, 4, out)
+        self.assertIn("is retired — a fill returns it", out)
 
 
 if __name__ == "__main__":

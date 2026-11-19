@@ -291,7 +291,7 @@ class Stopped(Rig):
         last = threads.in_effect(self.own(sid))
         self.assertEqual((last["kind"], last["reason"], last["thread"]), ("retired", "ended", tid))
         seat = sminos.load_seat(sminos.meta_path(seat_id))
-        self.assertNotEqual(seat["status"], "retired", "the seat row is not its record")
+        self.assertEqual(seat["status"], "retired", "the seat row is not its record: it follows the record's end")
         self.reconcile()
         self.assertEqual(len([e for e in self.own(sid) if e["kind"] == "retired"]), 1, "once")
 

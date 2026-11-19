@@ -4384,8 +4384,9 @@ def thread_transition(project, thread_id, op, events, required=False, began=None
         owed = [e for e in entry["events"] if not any(x["kind"] == e["kind"] and x.get("op") == entry["id"]
                                                       for x in appended)]
         if not owed and entry.get("settle"):
-            raise LogWriteFailed("what is owed to %s could not be settled yet (its delivery lock is busy); its record "
-                                 "holds the %s, and the next reading verb finishes it" % (entry["settle"][:8], op))
+            raise LogWriteFailed("the %s of %s could not be completed yet (what is owed to it settled, or a seat it "
+                                 "brings in line written); its record holds it, and the next reading verb finishes it"
+                                 % (op, entry["settle"][:8]))
         e = owed[0] if owed else {"kind": op, "session": thread_id}
         raise LogWriteFailed("recording %s of %s in %s's log failed; its record holds it, and the next reading verb "
                              "finishes it" % (e["kind"], e["session"][:8], project.name))
@@ -4402,9 +4403,20 @@ def finish_thread(thread_id, appended=None, project=None, lock_until=None):
                                    before=carry_hand_offs, settle=settle_ended)
 
 
+def positions_to(project, session):
+    """{writer: the seq} the events addressed to the session have reached in
+    the local log, each writer's latest: a return's boundary (its `until`),
+    which a writer's seq places whatever the clock of the machine that
+    wrote it."""
+    out = {}
+    for e in log_read(project, to_session=session):
+        out[e["writer"]] = max(out.get(e["writer"], 0), int(e["seq"]))
+    return out
+
+
 def settle_ended(project, session, lock_until=None, until=None):
     """An end's settlement (Interfaces §6, step 3), or a return's, of what
-    reached the log up to `until`: what is owed to the session of a thread
+    reached the log up to `until` (positions_to): what is owed to the session of a thread
     that ended, settled `recorded` (sminos_outcomes.settle_ended); whether
     nothing is owed to it now."""
     return sibling_module("sminos_outcomes").settle_ended(project, session, lock_until, until=until)
@@ -4612,7 +4624,8 @@ def end_human_lane_b(project, sid, thread, gone):
     return thread_transition(
         project, thread["thread"], "end", [{"kind": "retired", "session": sid, "by": "", "reason": "ended"}],
         fields={"ended": {"at": now(), "reason": "ended", "by": "", "pid": None}},
-        guard=lambda t: t["current"] == sid and not threads.record_ended(t) and gone(), settle=sid, last="aside")
+        guard=lambda t: t["current"] == sid and not threads.record_ended(t) and gone(), settle=sid, last="aside",
+        seat=seat_over(sid, "retired"))
 
 
 def end_by_rule(thread, stopped):
@@ -4643,7 +4656,8 @@ def end_by_rule(thread, stopped):
             and not running_now(cur)
 
     return thread_transition(project, tid, "end", [{"kind": "retired", "session": cur, "by": "", "reason": "ended"}],
-                             fields=fields, guard=guard, settle=cur, last="aside" if seat is None else None)
+                             fields=fields, guard=guard, settle=cur, last="aside" if seat is None else None,
+                             seat=seat_over(cur, "retired") if seat is None else None)
 
 
 def end_lane_b_seat(project, sid, seat):
@@ -4651,7 +4665,7 @@ def end_lane_b_seat(project, sid, seat):
     turned lane B and whose process then ended leaves with its process. The
     record is the one thread_of reads for it, never the seat row alone: a
     record its human opened that an older CLI also seated ends in the thread
-    store (end_human_lane_b), the seat left as it is; a spawned thread, the
+    store (end_human_lane_b), its entry bringing the seat in line; a spawned thread, the
     seat's own record, ends as end_seat journals one — the record first
     (`status` retired and `ended`, reason `ended`, with the event owed, in
     one write), then the stamped `retired` — and the seat stays, reading
@@ -4739,7 +4753,7 @@ def older_writes(project, live, effect, joined, busy):
         out += thread_transition(project, t["thread"], "end", [], fields={"ended": ended},
                                  guard=lambda r, sid=sid, e=e: r["current"] == sid and not threads.record_ended(r)
                                  and still_in_effect(project, sid, e) and membership_here(project, sid),
-                                 settle=sid, last="aside")
+                                 settle=sid, last="aside", seat=seat_over(sid, "retired"))
     return out
 
 
@@ -5145,7 +5159,7 @@ def return_change(thread):
     `stopped` and `swept` removed (a record set aside is brought back by
     `begin`), and a seat's `status` no longer `retired`; begin()'s `fields`
     and `remove`. Its entry settles what reached the log for the session
-    while the end stood (`settle`, up to `until`, which begin sets under the record's lock:
+    while the end stood (`settle`, up to `until`, the log positions begin reads under the record's lock:
     sminos_threads.finish) before its `joined`, so the returned session is
     pushed nothing of its ended interval, and what comes after is its own.
     A seat an older copy gave a human-opened thread, retired with it, is
@@ -5973,6 +5987,8 @@ def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
     # A machine the org retired governs over an end its log shows: nothing there returns it.
     ended = latest.get("kind") == "retired" and latest.get("reason") in END_REASONS and not gone_machine
     end = "machine" if gone_machine else str(latest["reason"]) if ended else ""
+    if ended and seat:
+        state_word = "retired"   # the end in effect (the fold) governs, whatever the seat's own status says
     m = Member(
         session=sid, short=sid[:8], alias=alias or sid[:8], name_source=name_source,
         machine=host_name() if local else machine, local=local, state=state_word, state_age=age,
@@ -7514,7 +7530,7 @@ def _resolve_tag(project, t):
             found = match_members(name, short, [p])
             if found:
                 return one_member(raw, found, False)
-        no_member(raw, name, short, tiers)
+        no_member(raw, name, short, tiers, ids=() if short else tiers)
     if project is None:
         scope = org_scope()
         found = one_per_session(match_members(name, short, scope))
@@ -12722,7 +12738,10 @@ def cmd_seat_add(a):
     if existing:
         s = existing[0]
         seat_id = s["seat_id"]
-        finish_thread(seat_id)   # an entry left open is finished before the record changes
+        if not finish_thread(seat_id):   # an entry left open is finished before the record changes
+            unlock(locks)
+            die("seat %s/%s holds a transition not finished yet (its events or settlement could not be completed "
+                "now): nothing was changed, and the next reading verb finishes it" % (a.group, a.alias), 1)
         fields = {"role": a.role if a.role is not None else s["role"],
                   "brief": a.brief if a.brief is not None else s["brief"], "updated": now()}
         if session:
@@ -12739,8 +12758,9 @@ def cmd_seat_add(a):
                     die("session %s is another thread's (a record its human opened, or another seat, holds it): it "
                         "takes no seat" % session[:8], EXIT_UNKNOWN)
                 fields = None
-        if fields is not None:
-            meta_set_if(seat_id, fields, lambda data: keep_end(data, fields, session))
+        if fields is not None and not meta_set_if(seat_id, fields, lambda data: keep_end(data, fields, session)):
+            unlock(locks)
+            die("seat %s/%s holds a transition begun meanwhile, or is gone: nothing was changed" % (a.group, a.alias), 1)
     else:
         seat_id = session if session else str(uuidlib.uuid4())
         if os.path.exists(meta_path(seat_id)):
@@ -13063,12 +13083,20 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
         copy_started(m.group(1))
     polled = poll_uuid(short)
     if not polled:
-        meta_set(s["seat_id"], {"status": "error", "pending_short": short, "updated": now()})
-        launched()  # launched with the message: delivery is uncertain, not failed
+        # No process confirmed for its session: a retired seat stays one (no return is authorized on an unconfirmed
+        # launch; a reconciliation returns it once a process its end did not see holds the session).
+        meta_set(s["seat_id"], {"status": "retired" if ended else "error", "pending_short": short, "updated": now()})
+        if ended:
+            if on_launched:
+                on_launched()   # the message went into a launched process: delivery is uncertain, not failed
+        else:
+            launched()  # launched with the message: delivery is uncertain, not failed
         if quiet:
             unlock(locks)
             return "woken?"
-        raise ResumeRefused("resume: session %s produced no usable session uuid; kept previous current (recover via pending_short)" % short, 1)
+        raise ResumeRefused("resume: session %s produced no usable session uuid; kept previous current (recover via "
+                            "pending_short)%s" % (short, "; the seat stays retired until a process holding its session "
+                                                  "is seen" if ended else ""), 1)
     uuid, state, _cwd = polled
     if uuid != cur:
         copy_started(uuid)
@@ -13104,6 +13132,35 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
         verb, s["group"], s["alias"], short, s["seat_id"], status, turns))
     if wait:
         print_reply_block(s["seat_id"])
+
+
+def canonical_end(session, project):
+    """The end in effect for a session, read afresh, whatever a seat says of
+    it: its thread's record (thread_of) ended, or its membership in effect
+    (the fold, its own events in `project`) a `retired` of END_REASONS;
+    None when it has not ended."""
+    if not session:
+        return None
+    threads = threads_module()
+    t = threads.thread_of(session)
+    if t is not None and t["current"] == session and threads.record_ended(t):
+        return t["ended"]
+    if project is None:
+        return None
+    e = threads.in_effect(_own_events(project, session))
+    return e if e is not None and e["kind"] == "retired" and e.get("reason") in END_REASONS else None
+
+
+def refuse_ended_seat(s, ref):
+    """Exit 4 for a send to a seat whose session's thread has ended
+    (canonical_end), saying what returns it: a fill, or for a thread its
+    human opened (an older copy seated it), its human reopening it."""
+    if not canonical_end(s["current"], seat_project(s)):
+        return
+    if opened_by_human(s["current"]):
+        die("seat %s's session has ended: nothing was recorded for it — it returns when its human reopens its "
+            "session" % ref, EXIT_UNKNOWN)
+    die(retired_seat_refusal(s), EXIT_UNKNOWN)
 
 
 def retired_seat_refusal(s):
@@ -13234,6 +13291,8 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
     # live seat to a resume, which stops and relaunches its turn.
     peer = peer_for_session(s["current"]) if needs_probe(s) else None
     st = seat_state(s, peer)
+    # The end in effect decides, before the seat's own status (an older copy's seat over a thread its human opened).
+    refuse_ended_seat(s, ref)
     if st in ("vacant", "retired"):
         die('seat %s is %s — fill it with: sminos fill %s "<task>"' % (ref, st, ref), EXIT_UNKNOWN)
     if st == "gone":
@@ -13249,6 +13308,13 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         # No log event to ask the endpoint about (P5 O18 D8): only the recipient's owners' sessions reach it.
         unlock(locks)
         die(refusal, EXIT_UNKNOWN)
+    if canonical_end(s["current"], seat_project(s)):
+        # Ended since the check above (an end, which settles what is owed to it, holds no seat lock): its event is
+        # the end's to settle, and nothing is pushed.
+        unlock(locks)
+        if delivery is not None:
+            delivery.release()
+        refuse_ended_seat(s, ref)
     if opened_by_human(s["current"]) and (not peer or hold_now(s["current"])):
         # A session its human opened that an older copy seated (D7, T1's M3): held, resolved here under the
         # seat's lock, after the append and before both the live route and the resume, the gates and the wait (a
@@ -13712,7 +13778,7 @@ def _send(a):
     name, _, short = rest.partition("#")
     tiers = project_tiers(proj) if proj else []
     if tiers:
-        no_member(a.target, name, short, tiers, at="")
+        no_member(a.target, name, short, tiers, at="", ids=() if short else tiers)
     if UUID_RE.fullmatch(a.target.lower()):
         # A full session id, as the live lookup reads it across the org: what the org still knows of it.
         hint = unreachable_hint(a.target, a.target.lower(), "", org_scope(), "", ids_only=True)
@@ -14056,6 +14122,8 @@ def end_human(project, thread, sid, by, pid, purge):
         die("%s changed while its end was decided (no longer this record's session, or no longer a member here): "
             "nothing was written" % sid[:8], EXIT_UNKNOWN)
     if not purge:
+        if seat is not None:
+            threads.project_seat(seat)   # an end made before its seat followed it: in line now
         return "already"
     member = latest_membership(_own_events(project, sid)) == "joined"
     thread_transition(project, tid, "end", [{"kind": "retired", "session": sid, **fields}] if member else [],
@@ -14073,7 +14141,10 @@ def keep_end(data, fields, session):
     older copy's `status` retired) keeps it, `status` and the `updated` an
     older copy's end is dated by left as they are (D1: its own occupant
     added again is no return; join_seat returns it to a process its end did
-    not see). `fields` changed in place; always True, for meta_set_if."""
+    not see). `fields` changed in place. False, nothing written, for a
+    record with an open entry (§6, 6: nothing writes through it)."""
+    if data.get("pending"):
+        return False
     same = not session or str(data.get("current") or "") == session
     if same and (isinstance(data.get("ended"), dict) or data.get("status") == "retired"):
         fields.pop("status", None)
@@ -14087,7 +14158,10 @@ def seat_over(sid, to):
     "purge"; sminos_threads._project_seat), or None for none. The seat is
     never the thread's authority: it is written only by the record's own
     journal, and only to follow it."""
-    s = next((s for s in seats() if s["current"] == sid), None) if sid else None
+    t = threads_module().thread_of(sid) if sid else None
+    if t is None or t["opened"] != "human" or t["current"] != sid:
+        return None
+    s = next((s for s in seats() if s["current"] == sid), None)
     return {"id": s["seat_id"], "session": sid, "to": to} if s is not None else None
 
 
@@ -14157,9 +14231,12 @@ def stop_seen_turn(s, seen, turn):
     """The stop of what an end saw of a seat's session, and only that: its
     harness turn (`turn`, the row then) while the harness still shows that
     row's id for it, the process the end saw (`seen`) still that process
-    (still_seen); a process the end saw with no row, by the seat's own stop
-    (stop_session). Nothing when the end saw neither: a process started
-    since is one the end did not see, which returns the seat."""
+    (still_seen); a process the end saw with no row, by the row the harness
+    shows for its session now or else the seat's recorded short, only if,
+    read after that query and right before the stop, the process is still
+    the one the end saw: nothing is rediscovered unbound. Nothing when the
+    end saw neither: a process started since is one the end did not see,
+    which returns the seat."""
     if s["engine"] == "codex" or (seen is not None and not still_seen(seen, s["current"])):
         return
     if turn and turn.get("id"):
@@ -14168,7 +14245,12 @@ def stop_seen_turn(s, seen, turn):
         if now_ and now_.get("id") == turn["id"]:
             claude_stop(turn["id"])
     elif seen is not None:
-        stop_session(s)
+        agents_refresh()
+        row = harness_row(s)
+        target = str(row["id"]) if row and row.get("id") else \
+            s["short"] if s["short"] and identity_local(s["host"], s["boot_id"], s["current"]) else ""
+        if target and still_seen(seen, s["current"]):   # the identity again, after the harness's answer
+            claude_stop(target)
 
 
 def still_seen(seen, sid):
