@@ -488,6 +488,13 @@ def stage_machine():
     sminos.lifecycle(P, B["session:S1"], "titled", title="the main session")
     MODS["S1"] = Mod(B["session:S1"], B["launch:L1"])
     MODS["S2"] = Mod(B["session:S2"], B["launch:L2"])
+    # Each bridge child relays its launch's lane to the record on a thread of its own: S2, the engine host's
+    # launch (lane B at its join), turns lane A, and the reconciliation after adopts it as a thread (AMENDMENTS).
+    for name in ("S1", "S2"):
+        if not wait_for(lambda name=name: (records.read(B["session:" + name]) or {}).get("controller"), timeout=10):
+            raise RuntimeError("%s's bridge never relayed its lane" % name)
+    sminos.forget_caches()
+    sminos.reconcile(P)
     # Case 4's own events: the operator's words to S1, as _append writes
     # them (the fixture's, "taken from a real sminos log"), and S1's say.
     append_at(P, own("human"), "2026-10-27T18:02:11.482Z", "human",

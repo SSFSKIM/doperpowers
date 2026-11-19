@@ -746,11 +746,8 @@ def rejoin_former(project, view=None):
         except (OSError, sminos.LockBusy) as e:
             sminos.warn("the thread record of %s could not be made: %s" % (m.session[:8], e or "its lock is busy"))
 
-        def guard(evs, mine=sminos.writer_id(m.session)):
-            last = sminos.threads_module().in_effect(evs)
-            return last is not None and last["kind"] == "joined" and sminos.writer_base(last["writer"]) != mine
-
-        got = sminos.lifecycle(project, m.session, "joined", guard=guard, required=False,
+        got = sminos.lifecycle(project, m.session, "joined", required=False,
+                               guard=lambda evs, mine=sminos.writer_id(m.session): joined_elsewhere(evs, mine),
                                **sminos.joined_fields(m.alias, m.name_source, *(
                                    j.get(k, "") for k in ("cwd", "worktree", "role", "seat", "by")),
                                    session_kind=str(j.get("session_kind") or m.kind), session=m.session))
@@ -762,6 +759,14 @@ def rejoin_former(project, view=None):
             sminos.daemon_log("%s in %s joined again as %s (it had joined as %s)"
                               % (m.alias, project.name, sminos.host_name(), j.get("machine")))
     return n
+
+
+def joined_elsewhere(events, mine):
+    """rejoin_former's guard: a session's membership in effect (the reducer,
+    sminos_threads.in_effect) is a `joined` under another writer than
+    `mine`, its writer under this machine's name now."""
+    last = sminos.threads_module().in_effect(events)
+    return last is not None and last["kind"] == "joined" and sminos.writer_base(last["writer"]) != mine
 
 
 def enrolled_at():

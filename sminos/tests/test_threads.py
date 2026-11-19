@@ -17,6 +17,12 @@ docs/doperpowers/plans/2026-11-17-sminos-threads-t1.md, the milestone's
   reconciliation, no event twice; an older copy's writes.
 - `seat add --session`, the hook's bounded lock, the launch's options, the
   lane change, the plane's idle read.
+- An open entry is its record's: a hook finishes it or leaves it, update()
+  leaves the record alone, a purge stops behind one it cannot finish and
+  deletes the file that carries the journal last; an older copy's writes
+  only in the project whose membership is in effect; lane A alone makes a
+  thread; §1's order with a record set aside; what list --json shows of a
+  seat; a publication reads no record set aside.
 
 Hermetic: HOME and SMINOS_HOME are temporary, fresh for each test; the
 sessions are `sleep` processes with engine records the test writes.
@@ -154,7 +160,10 @@ class Machine(unittest.TestCase):
         p = p or self.p
         writer = sminos.writer_id(sid)
         path = sminos.writer_path(p, writer)
-        have = [json.loads(line) for line in open(path)] if os.path.exists(path) else []
+        have = []
+        if os.path.exists(path):
+            with open(path) as f:
+                have = [json.loads(line) for line in f]
         seq = max((e["seq"] for e in have), default=0)
         with open(path, "a") as f:
             for e in events:
@@ -503,8 +512,22 @@ class ReaderRule(Machine):
         effect = threads.in_effect(own)
         self.assertEqual(sid in closed, effect["kind"] == "retired" and effect.get("reason") == "ended",
                          "closed_sessions")
+        # A retire's hold, against a process started before it, follows the retirement in effect.
+        self.assertEqual(sminos.retirement_holds(own, {"pid": 1}),
+                         effect["kind"] == "retired" and effect.get("reason") in ("retire", "continued"),
+                         "retirement_holds")
+        # rejoin_former's guard, for a session whose writer under this machine's name now is another.
+        got["rejoin_former"] = sminos.daemon_module().joined_elsewhere(own, "elsewhere/" + sid)
         for reader, member in got.items():
             self.assertEqual(member, expected, reader)
+        # The visibility snapshot, through its own guard (a view listing the session, so the guard
+        # under the writer file's lock decides): a joined again only for a member.
+        listed = types.SimpleNamespace(
+            info=sminos._projection(log), members=[types.SimpleNamespace(
+                session=sid, local=True, alias="v", name_source="user", kind="interactive", state=None)])
+        with mock.patch.object(sminos, "view_of", return_value=listed):
+            wrote = sminos.sibling_module("sminos_visibility").snapshot(sid, self.p)
+        self.assertEqual(bool(wrote), expected, "sminos_visibility.snapshot")
         # Clear the log for the next step.
         shutil.rmtree(os.path.join(self.p.home, "log"))
         sminos.project_path(self.p, "log")
@@ -802,6 +825,7 @@ class HookLock(Machine):
                                    "import fcntl,sys,time\nf=open(sys.argv[1],'a')\nfcntl.flock(f,fcntl.LOCK_EX)\n"
                                    "print('held',flush=True)\ntime.sleep(30)",
                                    os.path.join(threads.store_dir(), ".lock")], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.stdout.close)
         self.addCleanup(holder.kill)
         self.assertEqual(holder.stdout.readline().strip(), "held")
         with mock.patch.object(sminos, "_RECORD_DEADLINE", time.time() + 0.3):
@@ -832,6 +856,7 @@ class LaunchOptions(Machine):
     def test_a_process_argument_vector_keeps_its_boundaries(self):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "--model", "a b",
                                  "--settings", "/p q/s.json"])
+        self.addCleanup(proc.wait)
         self.addCleanup(proc.kill)
         time.sleep(0.3)
         argv = threads.process_argv(proc.pid)
@@ -899,6 +924,266 @@ class PlaneRead(Machine):
         self.assertEqual(pl.stale({self.p.id: self.p}, False), [], "nothing moved")
         threads.update(threads.stamp(sid), {"stopped": sminos.now()})
         self.assertEqual([p.id for p, _ in pl.stale({self.p.id: self.p}, False)], [self.p.id])
+
+
+# ------------------------------------------------------------ M1's review: the journal's edges
+
+
+class OpenEntry(Machine):
+    """A record whose entry is open is the entry's: the hook finishes it or
+    leaves it, an update leaves it alone, a purge stops behind it."""
+
+    def kill_after_begin(self):
+        real = threads.begin
+
+        def begin(*a, **k):
+            if real(*a, **k) is not None:
+                raise Killed()
+            return None
+        return mock.patch.object(threads, "begin", side_effect=begin)
+
+    def returning(self):
+        """A thread ended and run again, its return cut after the record's write."""
+        sid, proc = self.session()
+        self.reconcile()
+        tid = threads.stamp(sid)
+        self.end(proc)
+        self.reconcile()
+        self.session(sid=sid)
+        with self.kill_after_begin(), self.assertRaises(Killed):
+            self.reconcile()
+        t = threads.get(tid)
+        self.assertEqual((t["pending"]["op"], t.get("ended")), ("return", None))
+        return sid, tid
+
+    def joins_after_end(self, sid):
+        own = self.own(sid)
+        last_end = max(i for i, e in enumerate(own) if e["kind"] == "retired")
+        return [e for e in own[last_end:] if e["kind"] == "joined"]
+
+    def test_a_hook_meeting_an_open_return_finishes_it_and_appends_no_joined_of_its_own(self):
+        sid, tid = self.returning()
+        self.hook(sid)
+        [j] = self.joins_after_end(sid)
+        self.assertTrue(j.get("op"), "the return's own joined, not an ordinary one")
+        self.assertIsNone(threads.get(tid).get("pending"))
+        self.reconcile()
+        self.assertEqual(len(self.joins_after_end(sid)), 1)
+
+    def test_a_hook_whose_deadline_is_near_leaves_it_to_the_replay(self):
+        sid, tid = self.returning()
+        with mock.patch.object(sminos, "_RECORD_DEADLINE", time.time() + 0.2):
+            self.hook(sid)
+        self.assertEqual(self.joins_after_end(sid), [], "nothing appended around the entry")
+        self.assertEqual(threads.get(tid)["pending"]["op"], "return")
+        self.reconcile()
+        [j] = self.joins_after_end(sid)
+        self.assertTrue(j.get("op"))
+
+    def test_a_join_whose_writer_lock_sees_an_entry_begun_meanwhile_appends_nothing(self):
+        sid, tid = self.returning()
+        guard = sminos.record_settled(threads.get(tid), None)
+        self.assertFalse(guard(self.own(sid)), "the record is read again under the writer file's lock")
+
+    def test_update_leaves_a_record_with_an_open_entry_alone(self):
+        sid, tid = self.returning()
+        self.assertFalse(threads.update(tid, {"stopped": sminos.now()}))
+        self.assertNotIn("stopped", threads.get(tid))
+
+    def test_the_returns_alias_is_copied_into_the_record_as_its_entry_clears(self):
+        sid, tid = self.returning()
+        entry = threads.get(tid)["pending"]
+        [owed] = entry["events"]
+        self.reconcile()
+        self.assertEqual(threads.get(tid)["alias"], owed["alias"])
+
+
+class SeatPurge(Machine):
+    def seat(self, alias="w"):
+        sid, proc = self.session()
+        code, out = self.cli("seat", "add", "g", alias, "--session", sid)
+        self.assertEqual(code, 0, out)
+        return sid, sminos.load_seat(next(sminos.record_files()))["seat_id"]
+
+    def failing_appends(self):
+        return mock.patch.object(sminos, "_append", side_effect=OSError("disk full"))
+
+    def test_a_retire_whose_event_failed_then_remove_stops_behind_the_entry_and_appends_nothing_around_it(self):
+        sid, seat_id = self.seat()
+        before = list(self.own(sid))
+        with self.failing_appends():
+            code, out = self.cli("retire", "g/w")
+            self.assertNotEqual(code, 0, out)
+            self.assertEqual(sminos.load_seat(sminos.meta_path(seat_id))["pending"]["op"], "end")
+            code, out = self.cli("remove", "g/w")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("next reading verb finishes it", out)
+        self.assertTrue(os.path.exists(sminos.meta_path(seat_id)), "the record that holds the entry stays")
+        self.assertEqual(self.own(sid), before, "no event outside the journal")
+        code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(os.path.exists(sminos.meta_path(seat_id)))
+        retired = [e for e in self.own(sid) if e["kind"] == "retired"]
+        self.assertEqual([(e["reason"], bool(e.get("op")), e["thread"]) for e in retired],
+                         [("retire", True, seat_id)], "one retired, the retire's own, and none for the purge")
+
+    def test_a_purge_of_an_ended_seat_cut_inside_its_file_cleanup_is_finished_by_the_replay(self):
+        sid, seat_id = self.seat()
+        code, out = self.cli("retire", "g/w")
+        self.assertEqual(code, 0, out)
+        for path in sminos.seat_files(seat_id)[1:]:
+            with open(path, "a"):
+                pass
+        real, calls = os.unlink, []
+
+        def unlink(path, *a, **k):
+            if path in sminos.seat_files(seat_id):
+                calls.append(path)
+                if len(calls) == 2:
+                    raise Killed()
+            return real(path, *a, **k)
+        with mock.patch.object(threads.os, "unlink", side_effect=unlink), self.assertRaises(Killed):
+            self.cli("remove", "g/w")
+        self.assertNotIn(sminos.meta_path(seat_id), calls, "the record is deleted last")
+        self.assertEqual(sminos.load_seat(sminos.meta_path(seat_id))["pending"]["last"], "purge")
+        self.reconcile()
+        self.assertEqual([p for p in sminos.seat_files(seat_id) if os.path.exists(p)], [])
+        self.assertEqual(len([e for e in self.own(sid) if e["kind"] == "retired"]), 1,
+                         "the session was no member: the purge owed no event")
+
+
+class OlderWritesScope(Machine):
+    def reopened_elsewhere(self):
+        other = self.project_of(self.repo("other"))
+        sid, proc = self.session()
+        self.reconcile()
+        tid = threads.stamp(sid)
+        self.write_own(sid, [{"kind": "retired", "by": "old", "reason": "retire", "pid": proc.pid}])   # an older CLI's
+        time.sleep(0.01)   # later by the clock, as a reopening is
+        fields = sminos.joined_fields("there", "user", other.root, session_kind="interactive", session=sid)
+        self.assertTrue(sminos.lifecycle(other, sid, "joined", **fields), "reopened, and joined there")
+        return other, sid, tid
+
+    def test_an_older_retire_in_a_project_the_session_has_since_left_ends_nothing(self):
+        other, sid, tid = self.reopened_elsewhere()
+        self.reconcile(self.p)
+        t = threads.get(tid)
+        self.assertFalse(threads.record_ended(t))
+        self.assertEqual(self.human_files(), [tid + ".json"], "not set aside")
+        self.assertTrue(self.is_member(sid, other))
+
+    def test_the_project_is_checked_again_under_the_records_lock(self):
+        other, sid, tid = self.reopened_elsewhere()
+        real, seen = sminos.membership_here, []
+
+        def first_stale(project, s):
+            seen.append(s)
+            return True if len(seen) == 1 else real(project, s)
+        with mock.patch.object(sminos, "membership_here", side_effect=first_stale):
+            self.reconcile(self.p)
+        self.assertGreaterEqual(len(seen), 2, "asked again as the end is begun")
+        self.assertFalse(threads.record_ended(threads.get(tid)))
+
+
+class LaneAndOrder(Machine):
+    def test_seat_add_session_on_a_lane_b_session_makes_no_thread(self):
+        sid, _ = self.session()
+        records.establish(sid, records.default_provenance())
+        records.set_controller(sid, "B")
+        code, out = self.cli("seat", "add", "g", "w", "--session", sid)
+        self.assertEqual(code, 0, out)
+        raw = sminos.load_seat(next(sminos.record_files()))
+        self.assertNotIn("opened", raw)
+        self.assertIsNone(threads.thread_of(sid))
+        self.assertTrue(all("thread" not in j for j in self.joins(sid)))
+
+    def test_a_thread_whose_session_turned_lane_b_ends_stamped_when_its_process_ends(self):
+        sid, proc = self.session()
+        self.reconcile()
+        tid = threads.stamp(sid)
+        records.set_controller(sid, "B")
+        self.end(proc)
+        self.reconcile()
+        e = threads.in_effect(self.own(sid))
+        self.assertEqual((e["kind"], e["reason"], e["thread"]), ("retired", "ended", tid))
+
+    def test_an_ended_human_opened_record_answers_before_an_older_copys_seat_for_its_current_session(self):
+        sid, proc = self.session()
+        self.reconcile()
+        tid = threads.stamp(sid)
+        self.end(proc)
+        self.reconcile()
+        self.assertEqual(self.human_files(aside=True), [tid + ".json"])
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})
+        self.assertEqual(threads.thread_of(sid)["thread"], tid)
+        self.assertEqual(threads.stamp(sid), tid)
+
+    def test_a_rebuilt_seats_sessions_are_oldest_first_with_its_current_last(self):
+        early, first, second, before, current = (str(uuidlib.uuid4()) for _ in range(5))
+        seat_id = str(uuidlib.uuid4())
+        # An occupant older than the history's window, in the log alone.
+        self.write_own(early, [self.old_joined(early, alias="worker", seat=seat_id, name_source="seat")])
+        time.sleep(0.01)
+        first_ended = sminos.now(ms=True)
+        time.sleep(0.01)
+        self.write_own(second, [self.old_joined(second, alias="worker", seat=seat_id, name_source="seat")])
+        # The current session continues one the engine handed it from (a lineage chain).
+        self.write_own(before, [self.old_joined(before, alias="worker"),
+                                {"kind": "retired", "by": "", "reason": "continued", "to": current}])
+        self.session(sid=current)
+        self.write_own(current, [self.old_joined(current, alias="worker", seat=seat_id, name_source="seat")])
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": current, "alias": "worker", "group": "g",
+                                  "cwd": self.root, "status": "idle",
+                                  "history": [{"current": first, "short": first[:8], "status": "idle",
+                                               "ended": first_ended},
+                                              {"current": second, "short": second[:8], "status": "idle"}]})
+        self.reconcile()
+        self.assertEqual(threads.get(seat_id)["sessions"], [early, first, second, before, current])
+
+
+class Surfaces(Machine):
+    def test_list_json_carries_thread_and_opened_and_none_of_the_records_internal_keys(self):
+        sid, _ = self.session()
+        self.cli("seat", "add", "g", "w", "--session", sid)
+        seat_id = sminos.load_seat(next(sminos.record_files()))["seat_id"]
+        threads.note_launch(seat_id, self.root, ["--model", "opus"])
+        sminos.meta_set(seat_id, {"sessions": [str(uuidlib.uuid4()), sid]})
+        for private in (True, False):
+            with self.subTest(private=private):
+                view = sminos.view_of(self.p)
+                [m] = [m for m in view.members if m.session == sid]
+                row = sminos.member_json(m, self.p, private=private)
+                self.assertEqual((row["thread"], row["opened"]), (seat_id, "spawned"))
+                self.assertEqual(sorted(set(row["seat"]) & set(threads.SEAT_KEYS)), [])
+
+    def test_publishing_a_lane_b_members_state_reads_no_record_set_aside(self):
+        for _ in range(20):   # an archive of unrelated ended threads
+            s, proc = self.session()
+            self.reconcile()
+            self.end(proc)
+            self.reconcile()
+        self.assertEqual(len(self.human_files(aside=True)), 20)
+        past = time.time() - 60
+        os.utime(threads.aside_dir(), (past, past))
+        sid, _ = self.session()
+        records.establish(sid, records.default_provenance())
+        records.set_controller(sid, "B")
+        self.reconcile()
+        threads.stamp(sid)   # the index, once
+        daemon = sminos.daemon_module()
+        view = sminos.view_of(self.p)
+        real, read = threads._human_at, []
+
+        def human_at(path):
+            if os.path.dirname(path) == threads.aside_dir():
+                read.append(path)
+            return real(path)
+        with mock.patch.object(threads, "_human_at", side_effect=human_at):
+            self.assertEqual(daemon.publish_state(self.p, view, {}), 1)
+        self.assertEqual(read, [])
+        self.assertNotIn("thread", self.own(sid)[-1])
 
 
 if __name__ == "__main__":

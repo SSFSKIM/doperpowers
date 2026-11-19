@@ -280,9 +280,13 @@ SECRET_RE = re.compile(r"bearer|token|secret", re.I)
 
 
 def public_seat(s):
-    """A seat dict with the task body and any secret-shaped field removed —
-    for every model-facing surface (list, list --json, chart)."""
-    return {k: v for k, v in s.items() if k != "task" and not SECRET_RE.search(k)}
+    """A seat dict with the task body, any secret-shaped field and the
+    thread record's keys (sminos_threads.SEAT_KEYS: its earlier sessions,
+    its launch's options, an open entry's events) removed — for every
+    model-facing surface (list, list --json, chart). A member's row carries
+    its `thread` and `opened`."""
+    hidden = threads_module().SEAT_KEYS
+    return {k: v for k, v in s.items() if k != "task" and k not in hidden and not SECRET_RE.search(k)}
 
 
 def home_dir():
@@ -3957,22 +3961,19 @@ def _lineage_index(events):
 
 
 def _lineage_scan(events):
-    passed_by = threads_module().passed_by
-    conts, published, membership, joined = {}, {}, {}, {}
+    fold = threads_module().Fold()
+    conts, published = {}, {}
     for e in events:
         sid = e.get("session")
         if not isinstance(sid, str) or e["kind"] not in MEMBERSHIP or writer_session(e["writer"]) != sid:
             continue
-        if e["kind"] == "joined":
-            joined[sid] = e
-        elif passed_by(e, joined.get(sid)):
+        if fold.add(sid, e) is None:
             continue
-        membership[sid] = e["kind"]
         if e["kind"] == "retired" and e.get("reason") == "continued" and UUID_RE.fullmatch(str(e.get("to") or "")):
             conts[e["to"]] = sid
         elif publishes(e):
             published[sid] = e
-    return conts, published, membership
+    return conts, published, {sid: e["kind"] for sid, e in fold.effect.items()}
 
 
 def lineage_of(project, sid, peer=None, events=None):
@@ -4288,6 +4289,7 @@ def join_seat(seat, by=""):
         ensure_record(project, seat["current"], seat)
     fields = joined_fields(seat["alias"], "seat", seat_cwd(seat), seat["worktree"], seat["role"],
                            seat["seat_id"], by, "seat", session=seat["current"])
+    thread = None
     if project is not None:
         threads = threads_module()
         finish_thread(seat["seat_id"], project=project)   # an open entry is finished before the record changes
@@ -4297,8 +4299,42 @@ def join_seat(seat, by=""):
             return thread_transition(project, thread["thread"], "return",
                                      [{"kind": "joined", "session": seat["current"], **fields}],
                                      remove=("ended",), guard=lambda t: t["current"] == seat["current"])
-    return lifecycle(project, seat["current"], "joined", guard=lambda evs: latest_membership(evs) != "joined",
-                     **fields)
+    return lifecycle(project, seat["current"], "joined",
+                     guard=record_settled(thread, lambda evs: latest_membership(evs) != "joined"), **fields)
+
+
+ENTRY_MARGIN = 1.0   # seconds of the hook's deadline an open entry's replay needs; with less, it is left
+
+
+def finish_open_entry(project, thread_id):
+    """A record's open entry, met before a write for its session: finished
+    here, True once none is left; from the hook with its deadline near (or
+    its lock held past it), left to the next reconciliation's replay,
+    False."""
+    if _RECORD_DEADLINE is not None and time.time() > _RECORD_DEADLINE - ENTRY_MARGIN:
+        return False
+    try:
+        return finish_thread(thread_id, project=project, lock_until=_RECORD_DEADLINE)
+    except LockBusy:
+        return False
+
+
+def record_settled(thread, guard):
+    """`guard` with the thread's record read again under the writer file's
+    lock, where the event is appended: an ordinary `joined` goes in only
+    while the record has no open entry (a return's begun since owes its own
+    `joined`) and a human-opened record has not ended (its return is
+    journaled). `guard` alone for a session that is no thread."""
+    if thread is None:
+        return guard
+    threads, tid = threads_module(), thread["thread"]
+
+    def settled(evs):
+        rec = threads.get(tid)
+        if rec is not None and (rec.get("pending") or (rec["opened"] == "human" and threads.record_ended(rec))):
+            return False
+        return guard is None or guard(evs)
+    return settled
 
 
 def thread_transition(project, thread_id, op, events, required=False, **begin):
@@ -4309,12 +4345,12 @@ def thread_transition(project, thread_id, op, events, required=False, **begin):
     entry whose events could not all be appended raises LogWriteFailed: the
     record's change stands, and the next reconciliation finishes the entry."""
     threads = threads_module()
-    finish_thread(thread_id, project=project)
+    finish_thread(thread_id, project=project, lock_until=begin.get("lock_until"))
     entry = threads.begin(thread_id, op, project, events, **begin)
     if entry is None:
         return []
     appended = []
-    if not finish_thread(thread_id, appended, project) and required:
+    if not finish_thread(thread_id, appended, project, begin.get("lock_until")) and required:
         owed = [e for e in entry["events"] if not any(x["kind"] == e["kind"] and x.get("op") == entry["id"]
                                                       for x in appended)]
         e = owed[0] if owed else {"kind": op, "session": thread_id}
@@ -4323,11 +4359,11 @@ def thread_transition(project, thread_id, op, events, required=False, **begin):
     return appended
 
 
-def finish_thread(thread_id, appended=None, project=None):
+def finish_thread(thread_id, appended=None, project=None, lock_until=None):
     """sminos_threads.finish, its events appended through this module's own
     lifecycle, so the caches a verb reads afterwards (its views) see them,
     whichever copy of this module loaded the threads module."""
-    return threads_module().finish(thread_id, appended, project, append=lifecycle)
+    return threads_module().finish(thread_id, appended, project, append=lifecycle, lock_until=lock_until)
 
 
 def seats_by_session(project, all_seats):
@@ -4515,7 +4551,11 @@ def older_writes(project, live, effect, joined, busy):
     written before threads) is, while no process holds the session, an end
     with reason `ended` that owes no event (M3 joins it again instead). An
     unstamped `ended` after a stamped `joined` is passed by and needs
-    nothing. `live`: this machine's human-opened records as the pass read them."""
+    nothing. Only in the project whose membership is in effect for the
+    session (membership_here: no later own event in another project, such
+    as a reopening joined there), checked again under the record's lock as
+    the end is begun. `live`: this machine's human-opened records as the
+    pass read them."""
     threads = threads_module()
     holding = {t["current"]: t for t in live if t["current"]}
     out = []
@@ -4529,12 +4569,23 @@ def older_writes(project, live, effect, joined, busy):
             continue
         if e["reason"] == "ended" and session_running(sid):
             continue
+        if not membership_here(project, sid):
+            continue
         ended = {"at": str(e.get("ts") or now()), "reason": e["reason"], "by": str(e.get("by") or ""),
                  "pid": e.get("pid") or None}
         out += thread_transition(project, t["thread"], "end", [], fields={"ended": ended},
-                                 guard=lambda r, sid=sid: r["current"] == sid and not threads.record_ended(r),
-                                 settle=sid, last="aside")
+                                 guard=lambda r, sid=sid: r["current"] == sid and not threads.record_ended(r)
+                                 and membership_here(project, sid), settle=sid, last="aside")
     return out
+
+
+def membership_here(project, sid):
+    """Whether the session's membership in effect, across the projects known
+    here, is the one it holds in `project`: its latest own membership event
+    of this machine is there (last_project, read afresh)."""
+    _LAST.pop(sid, None)
+    p = last_project(sid)
+    return p is not None and p.id == project.id
 
 
 def adopt(project, sid, seat, peer, last, events):
@@ -4570,24 +4621,18 @@ def adopt(project, sid, seat, peer, last, events):
         e = threads.in_effect(evs)
         return e is not None and e["kind"] == "joined" and not threads.stamped(e)
 
-    return lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
+    return lifecycle(project, sid, "joined", guard=record_settled(thread, guard), required=False, **fields)
 
 
 def _memberships(events):
     """({session: the kind of its own membership event in effect}, {session:
     its latest own joined}, {session: that event}) of a log as read, for
-    _reconcile; an event passed by (sminos_threads.passed_by) is absent."""
-    passed_by = threads_module().passed_by
-    latest, joined, effect = {}, {}, {}
+    _reconcile: the reducer folded over it (sminos_threads.Fold)."""
+    fold = threads_module().Fold()
     for e in events:
         if e["kind"] in MEMBERSHIP and e.get("session") and writer_session(e["writer"]) == e["session"]:
-            if e["kind"] == "retired" and passed_by(e, joined.get(e["session"])):
-                continue
-            latest[e["session"]] = e["kind"]
-            effect[e["session"]] = e
-            if e["kind"] == "joined":
-                joined[e["session"]] = e
-    return latest, joined, effect
+            fold.add(e["session"], e)
+    return {sid: e["kind"] for sid, e in fold.effect.items()}, fold.joined, fold.effect
 
 
 def here_now(project, ev):
@@ -4832,6 +4877,13 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
     except OSError as e:
         thread = None
         warn("the thread record of %s could not be written: %s" % (sid[:8], e))
+    if thread is not None and thread.get("pending"):
+        # An open entry is its record's until it is finished (§6, 6): never a join around it.
+        if not finish_open_entry(project, thread["thread"]):
+            return out
+        thread = threads.get(thread["thread"])
+        if thread is None:
+            return out
     if thread is not None and not seat and thread["opened"] == "human" and threads.record_ended(thread):
         if not threads.returns(thread, peer) or not guard(_own_events(project, sid)):
             return out
@@ -4842,7 +4894,7 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
         except LockBusy:
             return out
     else:
-        joined = lifecycle(project, sid, "joined", guard=guard, required=False, **fields)
+        joined = lifecycle(project, sid, "joined", guard=record_settled(thread, guard), required=False, **fields)
     if joined:
         position_carry(project, sid)
     return out + joined
@@ -5125,7 +5177,7 @@ def _projection(events):
     for none, or none carrying one): an arriving event carries what its
     endpoint signed, this machine's own carry neither (unlisted_here)."""
     info = {}
-    passed_by = threads_module().passed_by
+    fold = threads_module().Fold()   # the membership in effect: `latest` and `joined` are its
 
     def row(sid):
         return info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
@@ -5144,7 +5196,7 @@ def _projection(events):
                 r["unlisted"] = max(r["unlisted"], rev)
             continue
         if kind in MEMBERSHIP or kind in ("renamed", "state", "titled"):
-            if not own or (kind == "retired" and passed_by(e, r["joined"])):
+            if not own or (kind in MEMBERSHIP and fold.add(sid, e) is None):
                 continue
             if kind in ("joined", "state"):
                 r["policyRev"] = max(r["policyRev"], rev)
@@ -5152,9 +5204,8 @@ def _projection(events):
                 held, ts = str(e["alias"]), str(e.get("ts") or "")
                 r["aliases"][held] = max(r["aliases"].get(held, ""), ts)
             if kind in MEMBERSHIP:
-                r["latest"] = e
+                r["latest"], r["joined"] = fold.effect[sid], fold.joined.get(sid)
                 if kind == "joined":
-                    r["joined"] = e
                     r["to"] = ""
                     if not r["by"] and e.get("by"):
                         r["by"] = str(e["by"])
@@ -12537,26 +12588,41 @@ def end_seat(s, purge):
     """A seat's end (retire, retire --purge, remove), under its lifecycle
     locks: the record first — `status` retired and `ended`, with the event
     owed, in one write (Interfaces §6, the end) — then the event, then, for
-    a purge, the seat's files deleted as the entry's last step. A seat with
-    no session, or one whose record says it ended already, is retired as
+    a purge, the seat's files deleted as the entry's last step. A purge of
+    a seat whose record says it ended already is journaled too: the entry
+    (owing the `retired` only while the log still holds the session a
+    member), then the deletion, so a cut leaves the entry to replay. An
+    open entry the record holds is finished first; one that cannot be
+    (its log not written) stops the verb with nothing else done. A seat
+    that is no thread (no session, a lane B session's) is retired as
     before: the record, then the event."""
     by = caller_alias()
     project = seat_project(s)
     threads = threads_module()
     if s["current"] and project is not None and not guessed(project):
-        finish_thread(s["seat_id"], project=project)
-        threads.ensure(s["current"], seat=reload_seat(s["seat_id"]) or s, project=project)
-        if not isinstance((reload_seat(s["seat_id"]) or {}).get("ended"), dict):
-            at = now()
-            appended = thread_transition(
-                project, s["seat_id"], "end", [{"kind": "retired", "session": s["current"], "by": by,
-                                                "reason": "retire"}],
-                required=True, fields={"status": "retired", "updated": at,
-                                       "ended": {"at": at, "reason": "retire", "by": by, "pid": None}},
-                settle=s["current"], last="purge" if purge else None)
-            if appended or not os.path.exists(meta_path(s["seat_id"])) or \
-                    isinstance((reload_seat(s["seat_id"]) or {}).get("ended"), dict):
-                return   # ended by its record (a refusal leaves neither: a seat already retired, below)
+        if not finish_thread(s["seat_id"], project=project):
+            raise LogWriteFailed("%s/%s holds a transition whose events could not all be recorded in %s's log; "
+                                 "nothing more was done, and the next reading verb finishes it"
+                                 % (s["group"], s["alias"], project.name))
+        thread = threads.ensure(s["current"], seat=reload_seat(s["seat_id"]) or s, project=project)
+        fresh = reload_seat(s["seat_id"])
+        if thread is not None and fresh is not None:
+            retired = {"kind": "retired", "session": s["current"], "by": by, "reason": "retire"}
+            if not isinstance(fresh.get("ended"), dict):
+                at = now()
+                appended = thread_transition(
+                    project, s["seat_id"], "end", [retired], required=True,
+                    fields={"status": "retired", "updated": at,
+                            "ended": {"at": at, "reason": "retire", "by": by, "pid": None}},
+                    settle=s["current"], last="purge" if purge else None)
+                if appended or not os.path.exists(meta_path(s["seat_id"])) or \
+                        isinstance((reload_seat(s["seat_id"]) or {}).get("ended"), dict):
+                    return   # ended by its record (a refusal leaves neither: a seat already retired, below)
+            elif purge:
+                member = latest_membership(_own_events(project, s["current"])) == "joined"
+                thread_transition(project, s["seat_id"], "end", [retired] if member else [], required=True,
+                                  guard=threads.record_ended, settle=s["current"], last="purge")
+                return
     if purge:
         unlink_seat_files(s["seat_id"])
     else:
