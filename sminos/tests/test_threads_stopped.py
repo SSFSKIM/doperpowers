@@ -23,6 +23,8 @@ test (test_threads.Machine); sessions are `sleep` processes with engine
 records the test writes.
 Run: python3 -B sminos/tests/test_threads_stopped.py
 """
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -274,6 +276,25 @@ class Stopped(Rig):
         self.reconcile()
         self.assertEqual(len([e for e in self.own(sid) if e["kind"] == "retired"]), 1, "once")
 
+    def test_a_human_opened_session_an_older_cli_seated_ends_by_its_own_record(self):
+        sid, proc = self.opened()
+        tid = threads.stamp(sid)
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})   # the older CLI's seat, no thread keys
+        self.reconcile()
+        records.set_controller(sid, "B")
+        self.end(proc)
+        self.reconcile()
+        self.assertTrue(threads.record_ended(threads.get(tid)), "its record, in the thread store, ended")
+        self.assertEqual(threads.get(tid)["ended"]["reason"], "ended")
+        last = threads.in_effect(self.own(sid))
+        self.assertEqual((last["kind"], last["reason"], last["thread"]), ("retired", "ended", tid))
+        seat = sminos.load_seat(sminos.meta_path(seat_id))
+        self.assertNotEqual(seat["status"], "retired", "the seat row is not its record")
+        self.reconcile()
+        self.assertEqual(len([e for e in self.own(sid) if e["kind"] == "retired"]), 1, "once")
+
     def test_an_ordinary_lane_a_seat_whose_process_ended_is_left_as_it_is(self):
         sid, proc = self.session()
         self.cli("seat", "add", "g", "w", "--session", sid)
@@ -346,6 +367,30 @@ class Hold(Rig):
             got = sminos.deliver_next(self.p, self.member(sid))
         self.assertEqual([o for x, o in got["outcomes"] if x["seq"] == e["seq"]], ["refused-read-only"])
         self.assertEqual(self.owed_to(sid), [])
+
+    def test_a_seated_send_after_a_clear_pushes_nothing_through_the_socket_the_pid_kept(self):
+        """An older copy's seat holding a session its human opened, live; a
+        `/clear` moves its process to another id, its socket kept, while
+        this process's copy of the engine's records still names it."""
+        sid, proc = self.opened(inbox=True)
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})
+        seat = sminos.load_seat(sminos.meta_path(seat_id))
+        sminos.forget_caches()
+        sminos.peer_records()
+        path = self.peer_path(proc.pid)
+        with open(path) as f:
+            rec = json.load(f)
+        with open(path, "w") as f:
+            json.dump(dict(rec, sessionId=str(uuidlib.uuid4())), f)   # the /clear, this process not told
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            sminos.send_to_seat(seat, "to the old session", "m1", False,
+                                record=lambda s: sminos.record_send(s, "human", "human", "to the old session", "m1"))
+        self.assertIn("recorded and held", out.getvalue())
+        self.assertEqual(self.inbox(sid), [], "nothing through the socket the pid kept")
+        self.assertEqual([e["text"] for e in sminos.owed(self.p, self.member(sid))], ["to the old session"])
 
     def test_the_hold_reads_the_record_thread_of_reads(self):
         """hold_of's index answers what thread_of does from the live stores,
@@ -484,6 +529,39 @@ class Hold(Rig):
         view = sminos.view_of(self.p, titles=False)
         self.daemon.deliver_owed(self.p, view._replace(members=[m for m in view.members if m.session != sid]))
         self.assertNotIn((self.p.id, sid), self.daemon._HELD_PASSES)
+
+    def test_what_moves_during_a_pass_is_the_next_passs(self):
+        sid = self.stopped()
+        self.say("@alpha later")
+        real = sminos.deliver_next
+
+        def admitted_meanwhile(project, member):
+            got = real(project, member)
+            os.makedirs(sminos.holder_module().home(), exist_ok=True)
+            with open(os.path.join(sminos.holder_module().home(), "mid.json"), "w") as f:
+                f.write("{}")   # a receipt written while the pass ran
+            return got
+        with mock.patch.object(sminos, "deliver_next", side_effect=admitted_meanwhile):
+            self.tick()
+        with mock.patch.object(sminos, "deliver_next", wraps=sminos.deliver_next) as passes:
+            self.tick()
+            self.assertEqual(passes.call_count, 1, "not skipped on a snapshot taken after the change")
+            self.tick()
+            self.assertEqual(passes.call_count, 1, "then skipped")
+
+    def test_a_report_that_could_not_be_written_is_not_remembered_as_done(self):
+        hub, sid = self.hub_stopped()
+        sminos.log_append(hub, "othermachine/human", "human", **{
+            "from": "human", "to": [{"session": sid, "alias": "alpha"}], "text": "from elsewhere"})
+        outcomes = sminos.sibling_module("sminos_outcomes")
+        with mock.patch.object(outcomes.Outbox, "record", side_effect=OSError("disk full")):
+            sminos.forget_caches()
+            self.daemon.deliver_owed(hub, sminos.view_of(hub, titles=False))
+        self.assertNotIn((hub.id, sid), self.daemon._HELD_PASSES, "a report still owed")
+        sminos.forget_caches()
+        self.daemon.deliver_owed(hub, sminos.view_of(hub, titles=False))
+        self.assertEqual([r["outcome"] for r in self.outbox(hub)], ["recorded"], "written by the next pass")
+        self.assertIn((hub.id, sid), self.daemon._HELD_PASSES)
 
     def test_daemon_owed_counts_what_is_held_as_waiting_for_a_closed_session(self):
         sid = self.stopped()
@@ -763,6 +841,20 @@ class Clear(Rig):
         renames = [x["alias"] for x in self.own(self.old) if x["kind"] == "renamed"]
         self.assertEqual(renames, [self.old[:8]], "the name did not go back")
         self.assert_transferred()
+
+    def test_a_rename_chosen_from_a_view_before_the_release_does_not_undo_it(self):
+        """publish_renames run between the release and the new session's
+        join, from a view it took before the release."""
+        self.peer_set(self.proc, name="alpha-two")   # its human renames it: a rename is due in this view
+        sminos.forget_caches()
+        before = sminos.view_of(self.p, titles=False)
+        self.assertEqual(next(m for m in before.members if m.session == self.old).alias, "alpha-two")
+        self.peer_set(self.proc, name="alpha")
+        self.note()
+        self.start()
+        self.assertEqual(self.daemon.publish_renames(self.p, before), 0, "the stale choice is not appended")
+        renames = [x["alias"] for x in self.own(self.old) if x["kind"] == "renamed"]
+        self.assertEqual(renames[-1], self.old[:8], "the release stands")
 
     def test_a_release_cut_after_the_records_write_is_finished_from_the_journal(self):
         self.note()
@@ -1055,6 +1147,57 @@ class Questions(Rig):
         self.assertEqual(self.answers(sid), [], "nor once a process holds it again")
         self.sweep()
         self.assertEqual(len(self.answers(sid)), 1, "then closed, once")
+
+
+    def test_a_spawned_resume_during_the_sweeps_hold_waits_it_out_with_no_attempt_counted(self):
+        import threading
+        sid, proc = self.session()
+        self.transcript(sid)
+        self.cli("seat", "add", "g", "w", "--session", sid)
+        seat_id = sminos.load_seat(next(sminos.record_files()))["seat_id"]
+        self.reconcile()
+        self.end(proc)
+        launched = []
+
+        def start(args, cwd, settings):   # the resume's engine: the session's process again
+            launched.append(args)
+            self.session(sid=sid, kind="bg")
+            return sid[:8], "backgrounded · %s" % sid[:8]
+        with mock.patch.object(sminos, "run_claude_bg", side_effect=start), \
+                mock.patch.object(sminos, "poll_uuid", return_value=(sid, "working", self.root)), \
+                mock.patch.object(sminos, "claude_stop", return_value=None):
+            for hold_for_s, wait_s in ((0.4, 5.0), (1.0, 0.2)):
+                with self.subTest(hold=hold_for_s, wait=wait_s), mock.patch.object(sminos, "SWEEP_WAIT", wait_s):
+                    held, release = threading.Event(), threading.Event()
+
+                    def sweep_hold():
+                        with self.daemon.resume_lock_out(seat_id) as out:
+                            self.assertTrue(out)
+                            held.set()
+                            release.wait(hold_for_s)
+                    t = threading.Thread(target=sweep_hold)
+                    t.start()
+                    held.wait(5)
+                    code, out = self.cli("send", "g/w", "while the sweep decides")
+                    release.set()
+                    t.join(5)
+                    self.assertNotIn("in flight", out)
+                    self.assertNotIn("Traceback", out)
+                    self.assertEqual(set(self.attempts(sid).values()) - {0}, set(), "no attempt counted")
+                    if wait_s > hold_for_s:
+                        self.assertEqual(code, 0, out)
+                        self.assertNotIn("waits for the thread sweep", out, "waited out")
+                        self.assertEqual(len(launched), 1, "and resumed")
+                        self.stop_all()
+                        for p_ in list(self.procs):
+                            self.procs.remove(p_)
+                        for f in os.listdir(os.path.join(os.environ["HOME"], ".claude", "sessions")):
+                            os.unlink(os.path.join(os.environ["HOME"], ".claude", "sessions", f))
+                        sminos.forget_caches()
+                    else:
+                        self.assertEqual(code, 0, out)
+                        self.assertIn("waits for the thread sweep", out, "tried again later")
+                        self.assertTrue(self.owed_to(sid), "owed for the next pass")
 
 
 class Derive(Rig):

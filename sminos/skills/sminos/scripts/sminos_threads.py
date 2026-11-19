@@ -371,12 +371,10 @@ def thread_of(session, ended=True):
     if not session:
         return None
     live = all_threads()
-    for t in live:
-        if t.get("pending") and not reservation(t) and t["current"] == session:
-            return t
+    first = _live_rule(session, live)
+    if first is not None:
+        return first
     current = [t for t in live if t["current"] == session]
-    if any(t["opened"] == "human" for t in current):
-        return next(t for t in current if t["opened"] == "human")
     aside = _aside_holding(session, live) if ended else []
     human = [t for t in aside if t["current"] == session]
     if human:
@@ -396,6 +394,19 @@ def stamp(session):
     return (thread_of(session, ended=False) or {}).get("thread", "")
 
 
+def _live_rule(session, live):
+    """thread_of's first two rules, over the live records `live` (seats
+    first, as all_threads lists them): the first record whose open entry,
+    not a reservation, makes the session its current one; else the
+    human-opened record whose current session it is (one before a seat an
+    older CLI gave it). None when neither: the one rule thread_of and the
+    hold's index (_live_index) share."""
+    for t in live:
+        if t.get("pending") and not reservation(t) and t["current"] == session:
+            return t
+    return next((t for t in live if t["current"] == session and t["opened"] == "human"), None)
+
+
 def hold_of(session, fresh=False):
     """Whether this machine holds delivery for a session (Interfaces §5): ""
     when it delivers to the session or wakes it; "human" when it holds, for a
@@ -408,36 +419,31 @@ def hold_of(session, fresh=False):
     a boundary that would push or ask (a delivery, a verdict's handler, the
     uplink's question): the engine's records read afresh (sminos.running_now),
     since a live pid alone is no evidence that its process still runs this
-    session (a `/clear` moves the same process to another id)."""
-    t = _live_index().get(session) if session else None
-    if t is None or t["opened"] != "human" or record_ended(t) or reservation(t):
+    session (a `/clear` moves the same process to another id), and the
+    record is thread_of's own, read from the stores as they are, not the
+    index's (hold_now)."""
+    if not session:
+        return ""
+    t = thread_of(session) if fresh else _live_index().get(session)
+    if t is None or t["opened"] != "human" or t["current"] != session or record_ended(t) or reservation(t):
         return ""
     return "" if (sminos.running_now if fresh else sminos.session_running)(session) else "human"
+
+
+def hold_now(session):
+    """The fresh hold (hold_of with `fresh`): what every push, every ask and
+    every counted attempt asks last, under the delivery lock where one is
+    held."""
+    return hold_of(session, fresh=True)
 
 
 _LIVE = []   # [the cache generation it was checked in, the stores' stat key, {current session: record}]
 
 
-def _in_effect_for(session_records, live):
-    """{session: record}: for each session some live record names as its
-    current one, the record thread_of answers for it from the live stores
-    (its first two rules: the first record whose open entry, not a
-    reservation, makes the session current; else the human-opened record
-    whose current session it is). `live`, those records in all_threads'
-    order (seats first); `session_records`, the human-opened ones."""
-    index = {t["current"]: t for t in session_records if t["current"]}
-    entered = set()
-    for t in live:
-        cur = t["current"]
-        if cur and t.get("pending") and not reservation(t) and cur not in entered:
-            entered.add(cur)
-            index[cur] = t
-    return index
-
-
 def _live_index():
     """{current session: record} as thread_of reads it from the live stores
-    (_in_effect_for), for the sessions some live record names as current:
+    (_live_rule, the one rule both read), for the sessions some live record
+    names as current:
     the delivery pass, a view's alias selection and the publication of a
     stopped session's state ask it of every member. Checked once per cache
     generation (sminos.forget_caches: an invocation, a tick) and on this
@@ -464,7 +470,12 @@ def _live_index():
         return _LIVE[2]
     human = _human_threads() if st else []
     seats = [_of_seat(x) for x in sminos.seats() if x.get("pending") and _is_thread(x)] if rt else []
-    index = _in_effect_for(human, seats + human)
+    live = seats + human
+    index = {}
+    for cur in dict.fromkeys(t["current"] for t in live if t["current"]):
+        t = _live_rule(cur, live)
+        if t is not None:
+            index[cur] = t
     newest = max((x.st_mtime_ns for x in (st, rt) if x), default=0)
     _LIVE[:] = [gen, key, index] if before - newest >= RACY_NS else []
     return index

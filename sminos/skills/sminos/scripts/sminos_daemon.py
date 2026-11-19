@@ -671,9 +671,28 @@ def publish_renames(project, view):
         known = r.get("renamed") or r.get("joined") or {}
         source = m.name_source or ("derived" if m.alias == m.short else "")
         if known and (m.alias, source) != (str(known.get("alias") or ""), str(known.get("name_source") or "")):
-            n += len(sminos.lifecycle(project, m.session, "renamed", required=False,
-                                      alias=m.alias, name_source=source))
+            n += len(sminos.lifecycle(project, m.session, "renamed", required=False, alias=m.alias,
+                                      name_source=source, guard=rename_still_due(m.session, r.get("renamed"))))
     return n
+
+
+def rename_still_due(session, seen):
+    """The guard of a rename publish_renames chose from its view: under the
+    writer file's lock, the session's latest own `renamed` is still the one
+    the view read (`seen`, None for none: a `/clear`'s journaled release, or
+    any rename since, is newer), and its record holds no `released` alias
+    (sminos_threads.thread_of, read now). A rename chosen before a release
+    never undoes it (T1's M3, §6 row 16)."""
+    threads = sminos.threads_module()
+    mark = (seen.get("writer"), seen.get("seq")) if seen else None
+
+    def due(evs):
+        last = next((e for e in reversed(evs) if e["kind"] == "renamed"), None)
+        if ((last.get("writer"), last.get("seq")) if last else None) != mark:
+            return False
+        t = threads.thread_of(session, ended=False)
+        return not (t is not None and t["current"] == session and t.get("released"))
+    return due
 
 
 # (project id, session, writer and seq of its `retired`): the retirements of
@@ -928,9 +947,11 @@ def deliver_owed(project, view):
             except OSError as e:
                 sminos.daemon_log("delivery: what is held for %s in %s could not be reported: %s" % (
                     m.session[:8], project.name, e))
-            if all_held(result, owed):
-                # Read again after the pass and its report: what they wrote is what the next pass compares to.
-                _HELD_PASSES[key] = held_reads(project, view, m.session)
+            # The snapshot taken before the pass, so what moved during it (a receipt admitted) is the next
+            # pass's; kept only for a pass that settled nothing and left no outside report owed (one whose write
+            # failed is tried again).
+            if all_held(result, owed) and not outcomes.held_report_owed(project, m.session, to[m.session]):
+                _HELD_PASSES[key] = reads
         got = result["delivered"]
         if got:
             total += got
@@ -1389,15 +1410,17 @@ def stop_and_close(threads, tid, cur, stopped):
 def resume_lock_out(thread_id):
     """The thread's resume lock (`<id>.resume.lock`, which resume_session
     holds for the whole of a resume) held for the block, without waiting:
-    yields whether it is held. A seat's lock file is made when it has none,
-    so a resume that starts meanwhile finds it held (and is refused as one
-    in flight, the moment the sweep acts); a record its human opened has a
-    lock file only once something resumes it (none does in M3: the hold),
-    so with none there is nothing to keep out."""
+    yields whether it is held. The block is the sweep's decision and its
+    append alone (stop_and_close). While held the file names the sweep
+    (sminos.SWEEP_HOLD), so a resume that meets it waits it out — no twin,
+    no failed delivery — and finds it gone. A seat's lock file is made when
+    it has none; a record its human opened has a lock file only once
+    something resumes it (none does in M3: the hold), so with none there is
+    nothing to keep out."""
     path = os.path.join(sminos.root(), thread_id + ".resume.lock")
     seat = os.path.exists(sminos.meta_path(thread_id))
     try:
-        f = open(path, "a" if seat else "r")
+        f = open(path, "a+" if seat else "r+")
     except OSError:
         yield not seat
         return
@@ -1408,9 +1431,18 @@ def resume_lock_out(thread_id):
             yield False
             return
         try:
+            # Named as the sweep's, no launch's: a resume that meets it waits it out (sminos.SWEEP_HOLD).
+            f.seek(0)
+            f.truncate()
+            f.write(sminos.SWEEP_HOLD)
+            f.flush()
             yield True
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            try:
+                f.seek(0)
+                f.truncate()
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def resume_locked(thread_id):

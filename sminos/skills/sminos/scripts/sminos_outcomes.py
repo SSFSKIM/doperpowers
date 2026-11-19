@@ -312,6 +312,17 @@ def report_closed(project, view):
     return n
 
 
+def held_report_owed(project, sid, events):
+    """Whether report_held still owes a held member a report of `events`
+    (one it could not write, for its next pass): as report_held decides it,
+    without the lock."""
+    policy = sminos.sibling_module("sminos_policy")
+    if not project.hub or policy.read_only():
+        return False
+    events = [e for e in events if policy.outside_origin(e)]
+    return bool(events) and owes_report(project, sid, events, refuse=False)
+
+
 def report_held(project, sid, events):
     """For a member this machine holds (M3), after its delivery pass:
     `recorded` once for each outside-origin event of `events` (addressed to

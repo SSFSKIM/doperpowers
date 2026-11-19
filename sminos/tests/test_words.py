@@ -20,6 +20,8 @@ Run: python3 -B sminos/tests/test_words.py
 """
 
 import base64
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -1533,6 +1535,80 @@ class Held(WordsRig):
         self.assertIn("nothing was started", r.stderr)
         sminos.forget_caches()
         self.assertEqual([x["text"] for x in sminos.owed(self.hp, member(S1))], ["while away"])
+        self.assertEqual(self.bridge, [])
+
+    def engine_record(self, sid):
+        d = os.path.join(os.environ["HOME"], ".claude", "sessions")
+        return next(os.path.join(d, n) for n in os.listdir(d) if json.loads(Path(d, n).read_text())["sessionId"] == sid)
+
+    def stale_after_clear(self, path, rec):
+        """This process's copy of the engine's records names S1 running; then the same pid's record names
+        another session, its socket kept (a `/clear`)."""
+        Path(path).write_text(json.dumps(rec))
+        sminos.forget_caches()
+        sminos.peer_records()
+        self.assertEqual(sminos.hold_for(S1), "", "this process's copy: S1 runs")
+        Path(path).write_text(json.dumps(dict(rec, sessionId=S3)))
+
+    def seat_it(self):
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": S1, "alias": "w", "group": "g", "cwd": self.hp.root,
+                                  "status": "idle"})
+        return sminos.load_seat(sminos.meta_path(seat_id))
+
+    def test_a_seated_send_after_a_clear_pushes_nothing_through_the_inbox_the_pid_kept(self):
+        self.session(self.hp, S1, inbox=True)
+        path = self.engine_record(S1)
+        rec = json.loads(Path(path).read_text())
+        seat = self.seat_it()
+        self.stale_after_clear(path, rec)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            sminos.send_to_seat(seat, "to the old session", "m1", False,
+                                record=lambda s: sminos.record_send(s, "human", "human", "to the old session", "m1"))
+        self.assertIn("recorded and held", out.getvalue())
+        self.assertEqual(self.inbox(S1), [], "nothing reached the socket the pid kept")
+        self.assertEqual(self.bridge, [])
+        sminos.forget_caches()
+        self.assertEqual([x["text"] for x in sminos.owed(self.hp, member(S1))], ["to the old session"])
+
+    def test_an_expired_verdict_after_a_clear_counts_no_attempt(self):
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        self.session(self.hp, S1, inbox=True)
+        path = self.engine_record(S1)
+        self.stale_after_clear(path, json.loads(Path(path).read_text()))
+        self.assertEqual(sminos.words_unanswered(self.hp, member(S1), e, "no verdict"), 0)
+        w = self.record(self.hp, S1).get("hub/mem-1") or {}
+        self.assertEqual(w.get("attempts", 0), 0)
+
+    def test_a_seated_send_whose_append_waits_for_its_writers_head(self):
+        """The operator's writer waiting for the upstream's head (a new
+        enrolment): the append is queued with no seq. A plain send says so
+        and exits 0; with --wait it exits 4, waiting for nothing."""
+        self.seat_it()
+        real = sminos.waits_for_head
+
+        def queued(project, writer):
+            return sminos.writer_base(writer) == sminos.writer_id() or real(project, writer)
+        for argv, want in ((["send", "g/w", "queued note"], 0), (["send", "g/w", "queued wait", "--wait"], 4)):
+            with self.subTest(argv=argv), mock.patch.object(sminos, "waits_for_head", side_effect=queued), \
+                    mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+                out, here = io.StringIO(), os.getcwd()
+                os.chdir(self.hp.root)
+                try:
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                        try:
+                            sminos.main(argv)
+                            code = 0
+                        except SystemExit as x:
+                            code = x.code or 0
+                finally:
+                    os.chdir(here)
+                    sminos.forget_caches()
+                self.assertEqual(code, want, out.getvalue())
+                self.assertNotIn("Traceback", out.getvalue())
+                self.assertIn("for w:", out.getvalue())
         self.assertEqual(self.bridge, [])
 
 class Sends(WordsRig):
