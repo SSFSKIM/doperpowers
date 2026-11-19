@@ -540,11 +540,15 @@ continuation and refill event shapes (§2), the resolution rule and the episode 
   The guards are read before anything is carried: the job's record is
   human-opened, has not ended, holds that one session and has no open
   entry. When they fail the hand-off is not recorded at all:
-  `ensure_record(…, former=[old])` is not called, nothing of reach moves,
-  the two stay two threads, and `daemon.log` says so once. Nothing of
-  reach is merged in an absorption either, because a thread record holds
-  none: the job's sminos session record gets its predecessor's provenance
-  by that one call and no other way. What becomes of a channel membership
+  `ensure_record(…, former=[old])` is not called, no `continued` is
+  written, nothing the hand-off carries moves, the two stay two threads,
+  and `daemon.log` says so once. Nothing of reach is merged in an
+  absorption either, because a thread record holds none: the hand-off
+  carries its predecessor's provenance to the job's sminos session record
+  by that one call. What the engine's own evidence of a predecessor gives
+  a background job while that predecessor's process exits
+  (`lineage_of`'s `predecessor`) is unchanged from today, refused
+  absorption or not (the holder's ruling, Decision Log 2026-11-19). What becomes of a channel membership
   the job gained meanwhile is CH's (the composite); T1's records hold
   none.
 - *A refill keeps today's event:* `retired`, reason `replaced`, stamped,
@@ -635,8 +639,9 @@ tests pin:
   deleted and after: each finished the same, and the job's record is there
   until the entry's last step;
 - an absorption whose guards fail (the job's record has ended, or holds
-  another session): no `continued`, no owner, access or share of the old
-  session on the job's record, two threads;
+  another session), with the old process gone: no `continued`, no owner,
+  access or share of the old session carried to the job's record, two
+  threads;
 - the process that handed a session off, still running: no record and no
   `joined` of its own; the same session resumed by a new process: a thread
   of its own;
@@ -2011,6 +2016,13 @@ Found while executing:
   holder for MAWS to regenerate the fixture.
   Evidence: a kept run's S2 writer file; `d38b7cd2`.
 
+- Observation (M2): the transcript index can miss a transcript written
+  within `TRANSCRIPT_FRESH` of its last refresh, so `continued_in` reads
+  nothing for it; in the engine the old transcript exists long before its
+  hand-off record. Evidence: `TranscriptIndex.paths`; M2's first test run.
+- Observation (M2): `lineage_provenance` can carry reach to a `bg` job
+  without `former`, through `lineage_of`'s `predecessor`, while its
+  predecessor's process exits. Ruled to stay (Decision Log 2026-11-19).
 ## Decision Log
 
 - 2026-11-17 — **Verification.** This plan gets one
@@ -2187,6 +2199,51 @@ Found while executing:
     record's current project;
   - RL10 staging waits for the bridge's controller and reconciles before
     the replay, so the three amendments do not race.
+- 2026-11-19 — **M2's two rulings** (the composite's holder):
+  - Decision: `lineage_of`'s `predecessor` fallback stays. A background
+    job whose predecessor's process is still exiting takes its provenance
+    from the engine's own evidence, as today, even when its absorption was
+    refused. Rationale: reach follows the conversation, and the engine has
+    handed the old session's context to the job; without the fallback the
+    job's first `joined` would publish under the machine's default owners
+    until the hand-off is recorded, the worse error. A refused hand-off
+    binds what the hand-off path applies: no `ensure_record(…,
+    former=[old])`, no `continued`. M2's design and its test line were
+    amended to say so.
+  - Decision: "says so once" for a refused absorption is once per process
+    (a seat predecessor logs again in each new reconciling process). No key
+    is added to the record (X1 unchanged). Rationale: the guard failure is
+    practically unreachable and the cost is a repeated log line. Residue for
+    the tech-debt tracker at landing.
+- 2026-11-19 — **M2 as built** (the executor's decisions, accepted unless
+  the review finds otherwise; detail in its report):
+  - the advance always owes the job's `joined` (never `renamed`): one shape
+    for a job not yet joined, already joined, or joined by an older copy;
+  - the hand-off's carry (reach, cursor, override) runs from `finish`'s
+    `before` hook, so begin, carry, events, clear holds for every replay;
+  - an absorption's guards are read before `begin` (a failure carries
+    nothing) and again inside `begin`'s guard under the store lock; any
+    record `thread_of(job)` answers other than the advancing thread is the
+    job's own, and one that is not absorbable refuses the hand-off;
+  - a hand-off whose retirement an older copy wrote is finished from
+    `join_on_sight`'s `handed_to` branch, and by an `older_hand_offs` pass
+    in `_reconcile` for human-opened records when the job already joined
+    unstamped;
+  - a refill's record write stays at poll time and the launch write keeps
+    `current: ""`; the advance's guard is `current == ""` under the seat
+    lock, and it lifts `ended`; a displaced session in another project's log
+    gets its `replaced` directly, outside the entry;
+  - episodes: an unstamped `joined` starts none; one starts at a differing
+    stamp or after the session's own `continued`/`replaced`; a former id is
+    a name rank of its own (`former-id`), below a member's own session or
+    alias and above an alias held before; `who` answers a former id "went
+    on as";
+  - `retirement_holds` with no `pid` (a refill's `replaced`) holds while the
+    process's start is unknown or not after the retirement;
+  - `stamp()` of a session a thread only had stays that thread's id: an
+    `ended` written for a refilled seat's displaced occupant needs it;
+  - row 6's check for a human-opened record under the seat's lock is left
+    to M3, with both places that start a process for a seat.
 
 ## Outcomes & Retrospective
 
