@@ -1203,6 +1203,68 @@ class LaneAndOrder(Machine):
         self.assertNotIn("opened", sminos.load_seat(sminos.meta_path(seat_id)), "the older copy's seat left as is")
         self.assertTrue(self.is_member(sid))
 
+    def seated_after_its_end(self, lane, older_joined):
+        """A human-opened thread ended; the seat an older copy writes for its
+        session; the session reopened in `lane`, with or without the older
+        copy's unstamped `joined` already in the log; then a reconciliation."""
+        sid, proc = self.session()
+        self.reconcile()
+        tid = threads.stamp(sid)
+        self.end(proc)
+        self.reconcile()
+        self.assertTrue(threads.record_ended(threads.get(tid)))
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})
+        self.session(sid=sid)
+        if lane == "B":
+            records.set_controller(sid, "B")
+        if older_joined:
+            self.write_own(sid, [self.old_joined(sid, alias="w", seat=seat_id, name_source="seat")])
+        before = len(self.own(sid))
+        self.reconcile()
+        return sid, tid, seat_id, self.own(sid)[before:]
+
+    def test_one_choice_of_thread_at_the_join_and_at_the_adoption_in_either_lane(self):
+        for lane in ("A", "B"):
+            for older_joined in (False, True):
+                with self.subTest(lane=lane, older_joined=older_joined), self.fresh_machine_after():
+                    sid, tid, seat_id, new = self.seated_after_its_end(lane, older_joined)
+                    joins = [e for e in new if e["kind"] == "joined"]
+                    self.assertNotIn(seat_id, [e.get("thread") for e in self.own(sid)], "never the seat's id")
+                    self.assertNotIn("opened", sminos.load_seat(sminos.meta_path(seat_id)), "the seat left as is")
+                    self.assertTrue(self.is_member(sid))
+                    if lane == "A":
+                        [j] = joins
+                        self.assertEqual((j["thread"], bool(j.get("op"))), (tid, True), "the journaled return")
+                        self.assertFalse(threads.record_ended(threads.get(tid)))
+                        self.assertEqual(self.human_files(), [tid + ".json"])
+                    else:
+                        self.assertTrue(all("thread" not in e for e in joins), "a lane B session revives none")
+                        self.assertEqual(len(joins), 0 if older_joined else 1)
+                        self.assertTrue(threads.record_ended(threads.get(tid)), "the ended record stays ended")
+                        self.assertEqual(self.human_files(aside=True), [tid + ".json"])
+
+    @contextlib.contextmanager
+    def fresh_machine_after(self):
+        """Each case on a machine of its own, whatever the case before did."""
+        try:
+            yield
+        finally:
+            self.stop_all()
+            self.procs = []
+            self.setUp()
+
+    def test_list_json_pairs_a_human_threads_id_with_human_though_its_joined_names_a_seat(self):
+        sid, tid, seat_id, _ = self.seated_after_its_end("A", True)
+        code, out = self.cli("list", "--json")
+        self.assertEqual(code, 0, out)
+        rows = json.loads(out[:out.rindex("]") + 1])
+        [row] = [r for r in rows if r["session"] == sid]
+        self.assertEqual((row["thread"], row["opened"]), (tid, "human"))
+        j = self.joins(sid)[-1]
+        self.assertEqual(j["seat"], seat_id, "the legacy seat field kept on the event")
+
     def test_a_rebuilt_seats_sessions_are_oldest_first_with_its_current_last(self):
         early, first, second, before, current = (str(uuidlib.uuid4()) for _ in range(5))
         seat_id = str(uuidlib.uuid4())

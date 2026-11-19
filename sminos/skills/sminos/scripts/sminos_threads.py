@@ -615,6 +615,36 @@ def _lane_a(session):
     return records.lane_of(records.read(session)) == "A"
 
 
+lane_a = _lane_a
+
+
+def choose(session, seat=None, project=None, events=None, peer=None, lock_until=None):
+    """The one choice of the thread a session joins or returns under, for
+    every join (sminos.join_on_sight) and adoption (sminos.adopt): (thread,
+    action), action `join` (thread None: an unstamped join), `return` (the
+    journaled return of an ended human-opened record, §6 row 12) or `hold`
+    (nothing is joined: an ended record the process does not return, or an
+    ended seat, which fill, resume and send revive).
+
+    A lane B session revives no thread: it keeps a live record it has (its
+    end stamped, row 13), never one set aside, and makes none. A lane A
+    session's thread is §1's: a human-opened record whose current session
+    it is, set aside or not, before a seat (an older copy can have seated
+    such a session; the seat is then left as it is); else ensure()'s, which
+    makes the record when there is none. LockBusy past `lock_until`."""
+    if not _lane_a(session):
+        t = thread_of(session, ended=False)
+        return (t, "hold") if t is not None and record_ended(t) else (t, "join")
+    t = thread_of(session)
+    if t is None or t["opened"] != "human" or t["current"] != session:
+        t = ensure(session, seat, project, events, lock_until)
+    if t is None or not record_ended(t):
+        return t, "join"
+    if t["opened"] == "human" and t["current"] == session and returns(t, peer):
+        return t, "return"
+    return t, "hold"
+
+
 def spawner_bound():
     """How long a spawn's child that no seat holds is given before it joins
     as any session does, counted from its process's start: twice the

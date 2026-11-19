@@ -4598,17 +4598,18 @@ def adopt(project, sid, seat, peer, last, events):
         return []   # joined under a former name of this machine: the daemon's rejoin_former joins it again, stamped
     if seat is None and threads.awaits_seat(sid, peer, sid == os.environ.get("CLAUDE_CODE_SESSION_ID")):
         return []
+    if not threads.lane_a(sid):
+        return []   # row 3 adopts a lane A member alone
     try:
-        thread = threads.ensure(sid, seat, project, events)
+        thread, action = threads.choose(sid, seat, project, events, peer)
     except (OSError, LockBusy) as e:
         warn("the thread record of %s could not be made: %s" % (sid[:8], e or "its lock is busy"))
         return []
-    fields = joined_again(_own_events(project, sid), sid) if thread is not None else None
+    fields = joined_again(_own_events(project, sid), sid) if thread is not None and action != "hold" else None
     if fields is None:
         return []
-    if threads.record_ended(thread):
-        if seat is not None or thread["opened"] != "human" or not threads.returns(thread, peer):
-            return []
+    fields["thread"] = thread["thread"]   # the event names the thread chosen here, whatever stamp() reads
+    if action == "return":
         return thread_transition(project, thread["thread"], "return", [{"kind": "joined", "session": sid, **fields}],
                                  remove=("ended",), guard=threads.record_ended)
 
@@ -4812,9 +4813,10 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
     project told rather than read (Guessed): the session's own process joins
     it where it works.
 
-    The thread record comes before the `joined` (sminos_threads.ensure): a
-    seat's keys, else a record of its own under a minted id, so the event is
-    stamped. A spawn's child that no seat holds yet joins nothing
+    The thread comes before the `joined`, chosen by sminos_threads.choose
+    (as adopt chooses it): a human-opened record before a seat, a seat's
+    keys, else a record of its own under a minted id; none revived for a
+    lane B session. The event names it explicitly. A spawn's child that no seat holds yet joins nothing
     (awaits_seat; `own`, the caller runs for the session: its hook, a verb
     of its own). A session whose record says its thread ended returns by
     the journaled return, when its process is one the end did not see. A
@@ -4861,35 +4863,29 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
                                launch_cwd(sid, fallback=str(peer.get("cwd") or ""), fresh=True), by=by,
                                session_kind=str(peer.get("kind") or ""), session=sid)
     try:
-        # The session's thread is §1's: a human-opened record (set aside or not) before a seat an older copy
-        # gave the session, which is then left as it is.
-        owner = threads.thread_of(sid) if seat else None
-        if owner is not None and owner["opened"] == "human":
-            thread = owner
-        else:
-            thread = threads.ensure(sid, seat, lock_until=_RECORD_DEADLINE)
+        thread, action = threads.choose(sid, seat, peer=peer, lock_until=_RECORD_DEADLINE)
     except LockBusy:
-        thread = None
+        thread, action = None, "join"
         try:
             daemon_log("record: the thread record of %s waits for its lock: the next reconciliation makes it"
                        % sid[:8])
         except OSError:
             pass
     except OSError as e:
-        thread = None
+        thread, action = None, "join"
         warn("the thread record of %s could not be written: %s" % (sid[:8], e))
     if thread is not None and thread.get("pending"):
         # An open entry is its record's until it is finished (§6, 6): never a join around it. The hook,
         # whose wait is bounded, leaves it to the next reconciliation's replay and writes nothing.
         if _RECORD_DEADLINE is not None or not finish_thread(thread["thread"], project=project):
             return out
-        thread = threads.get(thread["thread"])
-        if thread is None:
-            return out
+        thread, action = threads.choose(sid, seat, peer=peer)
+    if action == "hold":
+        return out
     if thread is not None:
         fields["thread"] = thread["thread"]   # the event names the thread chosen here, whatever stamp() reads
-    if thread is not None and thread["opened"] == "human" and threads.record_ended(thread):
-        if not threads.returns(thread, peer) or not guard(_own_events(project, sid)):
+    if action == "return":
+        if not guard(_own_events(project, sid)):
             return out
         try:
             joined = thread_transition(project, thread["thread"], "return",
@@ -5398,7 +5394,7 @@ def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
         by=next((x["by"] for x in chain if x["by"]), ""), worktree=seat["worktree"] if seat else worktree,
         seat=seat, former=former, former_aliases=tuple(sorted(held.items())), kind=kind, cwd=cwd, repo=repo, branch=branch, active_age=active,
         title="" if local else published_title(r), owners=owners, origin=origin, record=record,
-        thread=thread, opened=("spawned" if seat or j.get("seat") else "human") if thread else "")
+        thread=thread, opened=("spawned" if thread == str(j.get("seat") or "") else "human") if thread else "")
     charge, source, ts = charge_of(m, in_charge, title, published_title(r))
     return m._replace(charge=charge, charge_source=source, charge_age=ts_age(ts) if ts else None)
 
