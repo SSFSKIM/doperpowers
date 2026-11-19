@@ -250,10 +250,7 @@ Each child section of the composite spec fixes:
   Every child's executor is a fresh context, so the hint names the grain
   of the brief, never who runs it. The grain follows what the child
   needs, not the parent's scale: a child of one milestone, or a bundle of
-  small items each clear from its section, does not need rigorous
-  execspec on its own. Giving every child a plan by default makes the
-  documents, their reviews and their upkeep cost more than the work they
-  carry, and holds small items behind their bundle's paperwork.
+  small items each clear from its section, needs no documents.
 
 Everything the parent hands a child carries one of two authority
 grades:
