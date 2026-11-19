@@ -1584,11 +1584,14 @@ Timestamps are `sminos.now()`'s.
         # writes the keys a journaled operation owns (`current`, `sessions`, `ended`,
         # `released`, `pending`)
     def begin(thread_id, op, project, events, fields=None, remove=(), guard=None,
-              lock_until=None, **more) -> dict | None
+              lock_until=None, absorbs=False, **more) -> dict | None
         # the one way a journaled operation starts (§6): under the store's lock, when the
         # record has no open entry and guard(record) holds, the record's change and the
         # entry in one write; the entry as written, None when nothing was
     def finish(thread_id) -> bool
+    def follow(thread_id, op, project, events, fields=None, remove=(), other=None,
+               absorbs=False) -> bool
+        # queues an operation behind the record's open entry as its `next`
         # carries out the record's open entry from where it stands and clears it (§6); True
         # when the record has none left. Any process may call it, any number of times
     def note_launch(thread_id, cwd, options=None) -> bool
@@ -1746,7 +1749,11 @@ nothing else. The entry:
                 "last": "aside" | "purge",  # end: what becomes of the record (absent for a seat that stays)
                 "other": <thread id>,       # absorb: the record deleted last
                 "carry": [<old>, <new>],    # advance out of `hand_off`: the reach to carry before any event
-                "was": {...}, "unset": [...]}  # absorb: the advance's prior values, to undo a lost hold
+                "was": {...}, "unset": [...],  # absorb: the advance's prior values, to undo a lost hold
+                "next": {"op", "project", "events", "fields", "remove", "other", "absorbs"}}
+                                            # an operation queued behind this one (`threads.follow`): a
+                                            # refill's poll whose advance could not begin while the
+                                            # launch's entry was open; begun in the write that clears it
 
     "pending": {"id": <the absorbing entry's id>, "op": "reserved", "by": <the absorbing thread>,
                 "project": ..., "at": ..., "events": []}
@@ -1780,9 +1787,10 @@ nothing else. The entry:
 4. *The last step,* one write: `pending` is removed, and in that same
    write an end's record is moved aside or deleted as `last` says, after
    its settlement has succeeded; for an absorption the other record is
-   deleted first, only while its reservation is this entry's, and any other
-   human-opened record whose current session the advance made current, with
-   no open entry and no session the thread does not hold, is deleted too.
+   deleted first, only while its reservation is this entry's. A queued
+   `next` is begun in that same write and finished in the same call.
+   Nothing deletes a rival record for its history: claims are exclusive
+   instead (below).
 5. *Replay.* A reconciliation that finds a record of this machine with an
    open entry for its project calls `finish`, which runs steps 2 to 4 from
    the entry, and does nothing else to that record in that pass. Any
@@ -1791,6 +1799,22 @@ nothing else. The entry:
    it, or reads it as finished: the rules below pass it by, and
    `thread_of` answers the entry's thread for the session it makes
    current.
+7. *One finisher per record.* `finish` holds the record's finisher lock,
+   `threads/.finish/<thread id>.lock` (for both stores; never at the root
+   of `$SMINOS_HOME`), for the whole of its run, reads the entry again
+   under it, and acts only for that entry: the hold, the carry, every
+   append, an undo and the clear. The carry is the module's: an entry with
+   `carry` appends nothing until the job's provenance is durable, whoever
+   calls `finish`.
+8. *Exclusive claims.* A session is made current by one record at a time.
+   Locks are taken in one order, the seat's `.metalock` before
+   `threads/.lock`. Making a human-opened record rechecks, under both, that
+   no seat holds the session and no open entry makes it current; `begin`
+   refuses a change that makes a session current while a human-opened
+   record has it current, unless the entry absorbs that record
+   (`absorbs=True`: the hand-off and a refill's poll, row 5). `seat add`
+   writes its seat through `claim_seat` under both locks and never absorbs:
+   a session another record holds exits 4.
 
 Rows 1 to 3, 7, 8, 14 and 15 are not journaled: each is finished by a rule
 that exists already (a record whose session has no `joined` in effect is
@@ -2287,6 +2311,19 @@ Found while executing:
   session's membership event and project under its lock; a thread's alias,
   name source and state are read per episode; same-thread history skips
   withdrawn rows; the hook's `ensure(old)` carries its deadline.
+- 2026-11-19 — **M2's review, second wave** (accepted by the holder):
+  `finish` is serialized per record by a finisher lock and fenced to the
+  entry it read under it (§6 rule 7); claims are exclusive under one lock
+  order and nothing deletes a rival for its history (`_sole` is gone; §6
+  rule 8; `begin(…, absorbs=)`; `claim_seat`; `seat add` exits 4 for a
+  session another record holds); a refill's poll that cannot begin behind
+  an open launch entry is queued in it as `next` (`threads.follow`) and
+  begun when that entry clears, and the verb succeeds, naming the wait,
+  since the session runs; the launch's write lifts `ended`; `view_of` keeps
+  one row per thread, the current one by §4, local or remote, and drops a
+  vacant seat whose thread a member row stands for; former names are
+  resolved within one project (§4, the holder's ruling). A queued poll
+  held open by a rival that cannot be absorbed is accepted as residue.
 
 ## Outcomes & Retrospective
 
