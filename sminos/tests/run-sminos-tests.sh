@@ -5805,7 +5805,7 @@ assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "int
 assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "nocache=1" "and is sent uncached: nothing would read the cache it wrote"
 assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "tools=[] mode=[<unset>]" "with no tools and no permission mode: a session with no bridge gets today's fork"
 FORK_ARGV="$(grep -- '--fork-session' "$STUB_STATE/log/calls.log" | tail -1)"
-if grep -Eq -- "^-p --resume $HD --fork-session --session-id [0-9a-f-]{36} --safe-mode --no-session-persistence --tools  --output-format json In one line: what is this session in charge of" <<<"$FORK_ARGV"; then
+if grep -Eq -- "^-p --resume $HD --fork-session --session-id [0-9a-f-]{36} --safe-mode --no-session-persistence --tools  --output-format json In one line of at most 120 characters: what is this session in charge of" <<<"$FORK_ARGV"; then
   pass "the fork is the headless resume the design names, its id pinned, in safe mode and persisting nothing, the prompt last"
 else fail "the fork is the headless resume the design names, its id pinned, in safe mode and persisting nothing, the prompt last"; echo "    in: $FORK_ARGV"; fi
 assert_equals "$(ls "$SMINOS_HOME/internal" 2>/dev/null | wc -l | tr -d ' ')" "0" "and its marker is removed"
@@ -5980,7 +5980,7 @@ run "$SMINOS" list --json
 assert_equals "$(json_row hu charge)|$(json_row hu charge_source)" "hu|name" "an owner-named member with no derived line has its name as its line"
 STUB_FORK_RESULT=$'Owns the user-named fixture.\nname: user-fixture-owner' run "$SMINOS" derive hu
 assert_contains "$OUT" "hu: Owns the user-named fixture." "a user-named session is derived"
-assert_equals "$(cat "$STUB_STATE/log/fork-prompt.txt")" "In one line: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only." \
+assert_equals "$(cat "$STUB_STATE/log/fork-prompt.txt")" "In one line of at most 120 characters: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only." \
   "with today's question, verbatim"
 assert_not_contains "$OUT" "hu: name" "and no name proposed"
 assert_not_contains "$OUT" "no name" "nor anything said of one"
@@ -6044,7 +6044,7 @@ standin() { # session config — the session's bridge, until standin_stop
 }
 standin_stop() { kill "$STANDIN_PID" 2>/dev/null || true; wait "$STANDIN_PID" 2>/dev/null || true; }
 forks() { grep -c -- '--fork-session' "$STUB_STATE/log/calls.log" || true; }
-DERIVE_PROMPT_NOW="In one line: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
+DERIVE_PROMPT_NOW="In one line of at most 120 characters: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
 HV=7e000001-0000-4000-8000-00000000007e
 hp_peer dbtw "$HV" user interactive
 tx "$TXD/$HV.jsonl" tool v0000001 10
@@ -6253,7 +6253,7 @@ CTX="$HOME/.claude/projects/cn-proj"
 mkdir -p "$CTX"
 cd "$R4"
 FORK_PROMPT="$STUB_STATE/log/fork-prompt.txt"
-DERIVE_PROMPT_TODAY="In one line: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
+DERIVE_PROMPT_TODAY="In one line of at most 120 characters: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
 cn_record() { printf '%s' "$HOME/.claude/sessions/cn-${1:0:8}.json"; }
 cn_peer() { # name session nameSource [cwd] — the session's running engine record, one file per session
   printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"%s","kind":"interactive","status":"idle","cwd":"%s"}\n' \
@@ -6361,8 +6361,10 @@ assert_equals "$(last_joined_source "$CA")" "user" "a resumed session joins agai
 cn_age "$CA"
 STUB_FORK_RESULT=$'Owns the desk\'s uplink.\nname: desk-uplink-owner' run "$SMINOS" derive desk-uplink-owner
 assert_not_contains "$OUT" "its human named it" "derive does not take the resumed name for its human's"
-assert_contains "$(cat "$FORK_PROMPT")" 'Its current name is `desk-uplink-owner`: keep it unless it no longer describes the standing responsibility well, because the responsibility changed or became clearer than when the name was chosen.' \
-  "the fork is told to keep the name it holds, unless the responsibility changed or became clearer"
+assert_contains "$(cat "$FORK_PROMPT")" 'Its current name is `desk-uplink-owner`: answer with it unchanged unless it no longer fits the responsibility, as for the line. A better wording is no reason: a name that changes is a session others lose track of.' \
+  "the fork is told to keep the name it holds unless it no longer fits, a better wording being no reason"
+assert_contains "$(cat "$FORK_PROMPT")" $'\nIts current line is: Owns the desk\'s uplink.\nOther sessions and your human partner follow this session by its line' \
+  "and shown its current line, to answer unchanged while it holds"
 assert_contains "$OUT" "desk-uplink-owner: name desk-uplink-owner" "and keeps it"
 assert_equals "$(pending "$CA" name)" "<none>" "no pending file remains: the engine holds the name already"
 cn_age "$CA"
@@ -6392,7 +6394,8 @@ assert_equals "$(json_row my-own-desk name_source)" "user" "the owner's name lis
 cn_age "$CA"
 STUB_FORK_RESULT=$'Owns the desk\'s uplink.\nname: desk-uplink-renamer' run "$SMINOS" derive my-own-desk
 assert_not_contains "$OUT" "not derived" "its next derive runs"
-assert_equals "$(cat "$FORK_PROMPT")" "$DERIVE_PROMPT_TODAY" "with today's question, verbatim"
+assert_equals "$(cat "$FORK_PROMPT")" "${DERIVE_PROMPT_TODAY% Answer with the line only.}"$'\nIts current line is: Owns the desk\'s uplink and its retries.\nOther sessions and your human partner follow this session by its line, so answer with it unchanged while it still holds. Write a new line only when it is wrong about the responsibility or the responsibility itself changed: work taken on or handed off, a goal reached, a move to other work.\nAnswer with the line only.' \
+  "with today's question and its current line to keep, verbatim, and no name asked for"
 assert_equals "$(cn_charge "$CA")" "derived|Owns the desk's uplink.|<none>" "its line recorded with no name"
 assert_equals "$(pending "$CA" name)" "desk-uplink-keeper" "and no new name handed over"
 run "$SMINOS" name-due --session "$CA"
