@@ -157,6 +157,28 @@ class Rows:
             self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
             self.assertIn("machine dc-gone was retired", r.stderr)
 
+    def test_a_retired_machine_governs_over_an_end_its_log_shows(self):
+        """An end a session of a retired machine wrote before it went: its
+        machine, not that end, is what every reader says, `gone`, with no
+        return to offer."""
+        project = sminos.find_project("pg")
+        sminos.log_append(project, "dc-gone/%s" % GONE1, "retired", session=GONE1, reason="retire", by="someone",
+                          thread="t-gone")
+        self.directory([{"name": "testhost", "online": True, "seen": None},
+                        {"name": "dc-gone", "online": False, "seen": ago(86400), "retired": True}],
+                       [self.machine_project("dc-gone", True)])
+        sminos.forget_caches()
+        view = sminos.view_of(project)
+        gone = next(m for m in list(view.members) + list(view.ended) if m.session == GONE1)
+        self.assertEqual((gone.end, gone.end_by, gone.state), ("machine", "", "gone"))
+        row = self.row(self.cli("list", "--org", "--all"), "vm-idler") or ""
+        self.assertIn("gone @dc-gone", row)
+        self.assertNotIn("retired by", row)
+        r = subprocess.run([sys.executable, "-B", str(CLI), "say", "--in", "pg", "@vm-idler are you there"],
+                           cwd=self.cwd, env=dict(os.environ), text=True, capture_output=True, timeout=60)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("machine dc-gone was retired", r.stderr)
+
     def test_a_directory_without_the_field_changes_nothing(self):
         self.assertEqual(self.states(), {"vm-idler": "idle", "vm-busy": "busy", "offliner": "idle"},
                          "no directory yet")

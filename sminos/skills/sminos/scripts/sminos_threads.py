@@ -835,17 +835,17 @@ def choose(session, seat=None, project=None, events=None, peer=None, lock_until=
     every join (sminos.join_on_sight) and adoption (sminos.adopt): (thread,
     action), action `join` (thread None: an unstamped join), `return` (the
     journaled return of an ended record, §6 row 12) or `hold` (nothing is
-    joined: an ended record the process does not return, or a seat an older
-    copy retired, which a fill returns).
+    joined: an ended record the process does not return, which for a seat
+    a fill may still return).
 
     A lane B session revives no thread: it keeps a live record it has (its
     end stamped, row 13), never one set aside, and makes none. A lane A
     session's thread is §1's: a human-opened record whose current session
     it is, set aside or not, before a seat (an older copy can have seated
     such a session; the seat is then left as it is); else ensure()'s, which
-    makes the record when there is none. A spawned thread this code ended
-    returns as a human-opened one does (seat_ended): by a process its end
-    did not see. LockBusy past `lock_until`."""
+    makes the record when there is none. An ended thread, of either kind,
+    returns by a process its end did not see (returns). LockBusy past
+    `lock_until`."""
     if not _lane_a(session):
         t = thread_of(session, ended=False)
         return (t, "hold") if t is not None and record_ended(t) else (t, "join")
@@ -854,17 +854,16 @@ def choose(session, seat=None, project=None, events=None, peer=None, lock_until=
         t = ensure(session, seat, project, events, lock_until)
     if t is None or not record_ended(t):
         return t, "join"
-    if t["current"] == session and (t["opened"] == "human" or seat_ended(t)) and returns(t, peer):
+    if t["current"] == session and returns(t, peer):
         return t, "return"
     return t, "hold"
 
 
 def seat_ended(record):
-    """Whether a spawned thread's end is this code's, held in its seat
-    record (`ended`): its human reopening its session returns it (M4). A
-    seat an older copy retired (its `status` alone: read as ended, §1) is
-    returned by a fill alone, as it was: what that copy's retire saw of a
-    process, nothing on the record says."""
+    """Whether a spawned thread's end is held in its seat record (`ended`,
+    this code's), rather than read from its `status` alone (a seat an older
+    copy retired, §1): what that copy's retire saw of a process, nothing on
+    the record says (returns)."""
     seat = sminos.reload_seat(record["thread"]) if record and record["opened"] == "spawned" else None
     return isinstance((seat or {}).get("ended"), dict)
 
@@ -914,17 +913,37 @@ def returns(record, peer):
     the end, unseen by its check, must not stay ended while it runs. An end
     that recorded one (a retire of a running session, a self-retire) is
     returned by another pid, or by one started after the end: the process
-    the retire saw runs on in its human's terminal and does not."""
+    the retire saw runs on in its human's terminal and does not. A seat an
+    older copy retired (its `status` alone, read as ended at its `updated`:
+    seat_ended false) says nothing of what that retire saw, so only a
+    process started after it returns it. "After" is at the end's own
+    precision, whole seconds (sminos.now): a process started within the
+    second of its end is not after it."""
     ended = (record or {}).get("ended") or {}
     peer = peer or {}
     if not ended or not peer.get("pid"):
         return False
-    if ended.get("pid") in (None, ""):
+    known = record["opened"] == "human" or seat_ended(record)
+    if known and ended.get("pid") in (None, ""):
         return True
-    if str(ended["pid"]) != str(peer.get("pid")):
+    if known and str(ended["pid"]) != str(peer.get("pid")):
         return True
     started, at = sminos.process_started(peer), sminos._ts_epoch(ended.get("at"))
-    return started is not None and at is not None and started > at
+    return started is not None and at is not None and int(started) > at
+
+
+def stop_seen(session, lock_until=None):
+    """A process holds the session again (§6, row 8), as its hook or a
+    launch sees it before the sweep can: the stop mark of the thread whose
+    current session it is, `stopped` and `swept`, removed, so the clock of
+    the rule starts again at its next stop and never runs on a mark from
+    before. Nothing for a record with no mark, an ended one (its return
+    lifts the mark) or one with an open entry."""
+    t = thread_of(session, ended=False)
+    if t is None or t["current"] != session or not (t.get("stopped") or t.get("swept")) or record_ended(t):
+        return False
+    return update(t["thread"], {}, remove=("stopped", "swept"),
+                  guard=lambda r: r["current"] == session and not record_ended(r), lock_until=lock_until)
 
 
 # ------------------------------------------------------------ the journal (§6)
@@ -965,7 +984,7 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
         if not _claimed(thread_id, entry, view, fields, absorbs):
             return False
         _apply(entry, view, raw, fields, remove)
-        return "live" if op == "return" else True
+        return "live" if op == "return" or more.get("last") == "purge" else True   # an open purge is read live
 
     return entry if _change(thread_id, mutate, lock_until, bump=True,
                             both=bool((fields or {}).get("current"))) else None
@@ -1097,11 +1116,14 @@ def finish(thread_id, appended=None, project=None, append=None, lock_until=None,
     stays open.
 
     An end's settlement (`settle`, its session) comes after its events and
-    before its last step: `settle(project, session, lock_until)`, by default
-    sminos.settle_ended (what is owed to the session settled `recorded`,
-    under its delivery lock), answers whether it is done; while it answers
-    False the entry stays open, and the record is neither set aside nor
-    deleted.
+    before its last step: `settle(project, session, lock_until, until)`, by
+    default sminos.settle_ended (what is owed to the session settled
+    `recorded`, under its delivery lock), answers whether it is done; while
+    it answers False the entry stays open, and the record is neither set
+    aside nor deleted. A return's (`settle` with `until`, the time it
+    began) comes before its events: what reached the log for the session
+    while its end stood, up to `until`, is settled before its `joined`
+    makes it a member again, and nothing after it is.
 
     An absorption first holds the record it absorbs, under that record's
     own lock (_hold): marked RESERVED by this entry while it is still
@@ -1153,10 +1175,13 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
                 return _undo(thread_id, entry, deadline)
         if entry.get("carry") and not before(project, entry):
             return False
+        returning = entry.get("op") == "return"
+        if returning and entry.get("settle") and not settle(project, entry["settle"], deadline, entry.get("until")):
+            return False   # what reached it while it was ended is settled before it is a member again
         for event in entry.get("events") or []:
             if not _owe(project, entry, event, sink, append):
                 return False
-        if entry.get("settle") and not settle(project, entry["settle"], deadline):
+        if not returning and entry.get("settle") and not settle(project, entry["settle"], deadline, None):
             return False   # what is held for it is settled before the record is set aside or deleted (§6, 3)
         if other:
             _change(other, lambda view, raw: "delete" if (view.get("pending") or {}).get("id") == entry["id"]

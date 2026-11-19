@@ -345,7 +345,7 @@ ENDED = ("the session's thread has ended (retired, or stopped past the period): 
          "the log if it returns")
 
 
-def settle_ended(project, sid, lock_until=None):
+def settle_ended(project, sid, lock_until=None, until=None, end=None):
     """What is owed to the session of a thread that ended, settled as for a
     retired target (T1's M4, D1): pushed nothing, each owed event settled,
     each writer in seq order from its settled prefix; one from outside a hub
@@ -358,17 +358,26 @@ def settle_ended(project, sid, lock_until=None):
     until `lock_until` (by default a few seconds: a verb may hold it while
     it ends the thread it delivers to). Whether nothing is owed to it any
     more: the journal's settlement (sminos_threads.finish) is done only
-    then."""
+    then. Bounded by the end it is for: a return's settlement (`until`, the
+    time the return began) settles only what reached the log by then; the
+    late pass's (`end`, the `retired` in effect it read) only while, read
+    afresh under the lock, that end still stands (end_stands), so what
+    reaches a thread after it returns is delivered to it."""
     policy = sminos.sibling_module("sminos_policy")
-    until = lock_until if lock_until is not None else time.time() + SETTLE_WAIT
+    wait = lock_until if lock_until is not None else time.time() + SETTLE_WAIT
     try:
         with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock"),
-                            lock_until=until):
+                            lock_until=wait):
+            if end is not None and not end_stands(project, sid, end):
+                return False
             record = sminos.delivered_load(project, sid)
             stopped = set()
             for e in sminos._owed(sorted(sminos.log_read(project, to_session=sid),
                                          key=lambda e: (e["writer"], e["seq"])), sid, record):
                 if e["writer"] in stopped:
+                    continue
+                if until is not None and str(e.get("ts") or "") > until:
+                    stopped.add(e["writer"])   # after the return began: the returned session's own
                     continue
                 outside = policy.outside_origin(e)
                 if outside and project.hub:
@@ -393,20 +402,36 @@ def settle_ended(project, sid, lock_until=None):
 SETTLE_WAIT = 5.0   # seconds settle_ended waits for a delivery lock when its caller set no deadline
 
 
+def end_stands(project, sid, end):
+    """Whether the end `end` (a `retired` event) still stands for the
+    session, read afresh: its membership in effect is still that event, and
+    its thread's record, where it still has the session, has no open entry
+    (a return under way settles its own) and, for an end this code
+    journaled (stamped), still says ended. Asked under the session's
+    delivery lock, which a return's settlement takes too."""
+    threads = sminos.threads_module()
+    e = threads.in_effect(sminos._own_events(project, sid))
+    if e is None or (e.get("writer"), e.get("seq")) != (end.get("writer"), end.get("seq")):
+        return False
+    t = threads.thread_of(sid)
+    if t is None or t["current"] != sid:
+        return True
+    return not t.get("pending") and (threads.record_ended(t) or not threads.stamped(end))
+
+
 def settle_ended_owed(project, view):
     """For each session of this machine in the view whose thread has ended
-    (its membership in effect a stamped `retired`, reason `retire` or
-    `ended`: an end this code journaled, whose entry settled what was owed
-    then), what reached the log for it since — an event from outside, an
-    older sender's — settled the same way (settle_ended). Asked again for a
-    session only once the events addressed to it moved, so a tick pays for
-    ended threads the one comparison. How many sessions were settled."""
+    (_ended_threads), what reached the log for it since — an event from
+    outside, an older sender's — settled the same way (settle_ended), only
+    while that end still stands. Asked again for a session only once the
+    events addressed to it moved, so a tick pays for ended threads the one
+    comparison. How many sessions were settled."""
     ended = sminos.log_memo(view.events, "ended-threads", lambda _events: _ended_threads(view.info))
     if not ended:
         return 0
     to = sminos.addressees(view.events)
     n = 0
-    for sid in ended:
+    for sid, end in ended.items():
         mine = to.get(sid)
         if not mine:
             continue
@@ -414,7 +439,7 @@ def settle_ended_owed(project, view):
         if _SETTLED.get(key) == seen:
             continue
         if sminos._owed(mine, sid, sminos.delivered_load(project, sid)):
-            if not settle_ended(project, sid):
+            if not settle_ended(project, sid, end=end):
                 continue
             n += 1
         _SETTLED[key] = seen
@@ -425,13 +450,22 @@ _SETTLED = {}   # (project id, session) → the addressed events (their list's i
 
 
 def _ended_threads(info):
+    """{session: the `retired` that ended it} for each session of this
+    machine whose thread has ended: its membership in effect a stamped
+    `retired`, reason `retire` or `ended` (an end this code journaled, whose
+    entry settled what was owed then), or an older copy's explicit `retire`
+    (unstamped) of a session a thread record still has as its current one.
+    An unstamped `ended` is a lane B session's, never a thread's end."""
     threads = sminos.threads_module()
-    out = []
+    out = {}
     for sid, r in info.items():
         latest, joined = r["latest"], r["joined"] or {}
-        if latest and latest["kind"] == "retired" and latest.get("reason") in sminos.END_REASONS \
-                and threads.stamped(latest) and sminos.is_self(str(joined.get("machine") or ""), sid):
-            out.append(sid)
+        if not (latest and latest["kind"] == "retired" and sminos.is_self(str(joined.get("machine") or ""), sid)):
+            continue
+        reason = latest.get("reason")
+        if threads.stamped(latest) and reason in sminos.END_REASONS or \
+                reason == "retire" and (threads.thread_of(sid) or {}).get("current") == sid:
+            out[sid] = latest
     return out
 
 
