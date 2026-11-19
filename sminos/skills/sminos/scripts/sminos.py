@@ -4175,6 +4175,8 @@ def publish_owners(project, sid, events=None):
     def guard(evs):
         return latest_membership(evs) == "joined" and missing(evs, published_provenance(sid))
 
+    guard = record_settled(threads_module().thread_of(sid, ended=False), guard)   # never around an open entry
+
     return lifecycle(project, sid, "joined", guard=guard, required=False, **joined_again(own, sid))
 
 
@@ -4859,7 +4861,13 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
                                launch_cwd(sid, fallback=str(peer.get("cwd") or ""), fresh=True), by=by,
                                session_kind=str(peer.get("kind") or ""), session=sid)
     try:
-        thread = threads.ensure(sid, seat, lock_until=_RECORD_DEADLINE)
+        # The session's thread is §1's: a human-opened record (set aside or not) before a seat an older copy
+        # gave the session, which is then left as it is.
+        owner = threads.thread_of(sid) if seat else None
+        if owner is not None and owner["opened"] == "human":
+            thread = owner
+        else:
+            thread = threads.ensure(sid, seat, lock_until=_RECORD_DEADLINE)
     except LockBusy:
         thread = None
         try:
@@ -4878,7 +4886,9 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
         thread = threads.get(thread["thread"])
         if thread is None:
             return out
-    if thread is not None and not seat and thread["opened"] == "human" and threads.record_ended(thread):
+    if thread is not None:
+        fields["thread"] = thread["thread"]   # the event names the thread chosen here, whatever stamp() reads
+    if thread is not None and thread["opened"] == "human" and threads.record_ended(thread):
         if not threads.returns(thread, peer) or not guard(_own_events(project, sid)):
             return out
         try:
@@ -8016,6 +8026,8 @@ def record_session(project, session, tpath, event, last_message="", source=""):
     evidence, former = session_evidence(session, seat, marked)
     if event == "SessionStart":
         position_init(project, session, tpath, since)
+    if entry_open(session):
+        return   # its thread's open entry is the next reconciliation's to finish: nothing restated around it
     ensure_record(project, session, seat, peer, evidence, former)
     if seat is None and threads_module().awaits_seat(session, peer, True):
         return   # a spawn's child: its seat joins it once its launcher learns its id
@@ -8029,6 +8041,14 @@ def record_session(project, session, tpath, event, last_message="", source=""):
         until = min(until, _RECORD_DEADLINE - 0.5)
     await_flush(tpath, last_message, until)
     export_host(project, session, tpath, alias)
+
+
+def entry_open(session):
+    """Whether the session's thread (the live stores') has an open entry:
+    the hook then appends nothing for it (Interfaces §6, 6), neither a
+    `joined` nor a publication of its record, and leaves the entry to the
+    next reconciliation."""
+    return bool((threads_module().thread_of(session, ended=False) or {}).get("pending"))
 
 
 def note_launch_of(session, peer):

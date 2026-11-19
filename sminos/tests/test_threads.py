@@ -985,6 +985,29 @@ class OpenEntry(Machine):
         guard = sminos.record_settled(threads.get(tid), None)
         self.assertFalse(guard(self.own(sid)), "the record is read again under the writer file's lock")
 
+    def test_a_hook_meeting_an_open_end_with_a_publication_owed_appends_nothing(self):
+        sid, proc = self.session()
+        self.reconcile()
+        tid = threads.stamp(sid)
+        with self.kill_after_begin(), self.assertRaises(Killed):
+            self.cli("retire", sid[:8])
+        self.assertEqual(threads.get(tid)["pending"]["op"], "end")
+        # The record now publishes owners the member's joined does not carry: an owner update owed.
+        member = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+        records.establish(sid, {**records.default_provenance("launch"), "owners": [member], "principal": member,
+                                "origin": {"kind": "terminal"}})
+        self.assertTrue(sminos.published_provenance(sid), "a publication is owed")
+        before = list(self.own(sid))
+        with mock.patch.object(sminos, "_RECORD_DEADLINE", time.time() + 30):   # as run_record sets it
+            for event, source in (("SessionStart", "resume"), ("UserPromptSubmit", ""), ("Stop", "")):
+                self.hook(sid, event=event, source=source)
+        self.assertEqual(self.own(sid), before, "nothing appended around the open end")
+        self.reconcile()
+        e = threads.in_effect(self.own(sid))
+        self.assertEqual((e["kind"], e["reason"], bool(e.get("op"))), ("retired", "retire", True))
+        self.assertEqual([x for x in self.own(sid)[len(before):] if x["kind"] == "joined"], [],
+                         "and the replay's end comes with no joined before it")
+
     def test_update_leaves_a_record_with_an_open_entry_alone(self):
         sid, tid = self.returning()
         self.assertFalse(threads.update(tid, {"stopped": sminos.now()}))
@@ -1159,6 +1182,26 @@ class LaneAndOrder(Machine):
         sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
                                   "status": "idle"})
         self.assertEqual(threads.thread_of(sid)["thread"], tid)
+
+    def test_a_reopened_human_opened_session_an_older_copy_seated_returns_under_its_own_thread(self):
+        sid, proc = self.session()
+        self.reconcile()
+        tid = threads.stamp(sid)
+        self.end(proc)
+        self.reconcile()
+        self.assertTrue(threads.record_ended(threads.get(tid)))
+        seat_id = str(uuidlib.uuid4())   # the seat record an older copy writes for it
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})
+        self.session(sid=sid)
+        self.reconcile()
+        # What a remote reader sees: the log's latest joined of the session.
+        j = self.joins(sid)[-1]
+        self.assertEqual((j["thread"], bool(j.get("op"))), (tid, True), "the journaled return, stamped as its own")
+        self.assertFalse(threads.record_ended(threads.get(tid)))
+        self.assertEqual(self.human_files(), [tid + ".json"])
+        self.assertNotIn("opened", sminos.load_seat(sminos.meta_path(seat_id)), "the older copy's seat left as is")
+        self.assertTrue(self.is_member(sid))
 
     def test_a_rebuilt_seats_sessions_are_oldest_first_with_its_current_last(self):
         early, first, second, before, current = (str(uuidlib.uuid4()) for _ in range(5))
