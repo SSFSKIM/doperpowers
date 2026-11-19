@@ -248,7 +248,14 @@ Each child section of the composite spec fixes:
   doperpowers:execspec's references/living-spec.md), spike (deliverable
   is findings, never a merge), or another decomposing run at dispatch.
   Every child's executor is a fresh context, so the hint names the grain
-  of the brief, never who runs it.
+  of the brief, never who runs it. The grain follows what the child
+  needs, not the parent's scale: a child of one milestone, or a bundle of
+  small items each clear from its section, is a brief. Giving every
+  child a plan by default makes the documents, their reviews and their
+  upkeep cost more than the work they carry, and holds small items behind
+  their bundle's paperwork (MAWS's UX wave, 2026-11: 13 children all
+  `plan`, a 350-line refactor with a 50 KB document, a one-line ask
+  shipped 14 hours later).
 
 Everything the parent hands a child carries one of two authority
 grades:

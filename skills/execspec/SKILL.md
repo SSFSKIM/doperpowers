@@ -14,13 +14,13 @@ You arrive with an approved design: doperpowers:brainstorming explored the purpo
 3. Independent review
 4. Execute
 
-A goal that arrives as a child of a composite spec carries its section as its design, and the composite's approval covers it: you write only its standalone execution document (living-spec.md, "A child of a composite spec") and record residue decisions in the parent's Decision Log under the child's id.
+A goal that arrives as a child of a composite spec carries its section as its design, and the composite's approval covers it. A child whose grain is a brief writes no document: it builds from its section and the dispatch brief. A plan child writes only its standalone execution document (living-spec.md, "A child of a composite spec") and record residue decisions in the parent's Decision Log under the child's id.
 
 ## 1. Write the spec
 
 Write the design to `docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md` in the shape living-spec.md gives, and commit it. Reasoning lives in the design: where a section makes a decision it says why and names the strongest alternative and why it lost; the grill and the presentation already generated them, so capturing them is free. Capture everything the session produced: the spec is the only durable memory this work has — a stale written decision is detectably wrong later and flows back, an uncaptured insight is silently gone.
 
-Name the verification and record it as the Decision Log's one entry at authoring, so whoever executes, reviews, or recovers the work reads the same council. It follows from the stakes, not the size: the default is one independent spec review (step 3); an execution section of more than one milestone also gets the `doperpowers:adversarial-reviewer` agent's buildability review; and name the rung doperpowers:review-code will run on the branch at the end. A critique debate on the design belongs to brainstorming's presentation and has already happened when the design was novel or the cost of being wrong high.
+Name the verification and record it as the Decision Log's one entry at authoring, so whoever executes, reviews, or recovers the work reads the same council. It follows from the stakes, not the size: the default is one independent spec review (step 3); an execution section of more than one milestone also gets the `doperpowers:adversarial-reviewer` agent's buildability review, and one of a single milestone does not; and name the rung doperpowers:review-code will run on the branch at the end. A critique debate on the design belongs to brainstorming's presentation and has already happened when the design was novel or the cost of being wrong high.
 
 The execution section is written after the design is approved, never before: now, with the rest of the spec. Writing it is the first hostile read of the design.
 
