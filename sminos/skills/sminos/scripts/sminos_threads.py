@@ -648,6 +648,28 @@ def claim_seat(seat_id, record, deadline=None):
         return True
 
 
+def repoint_seat(seat_id, fields, deadline=None):
+    """An existing seat given `fields["current"]` by a plain write (no event
+    owed: `seat add --session` where no journal applies), under both stores'
+    locks only while no other record holds that session (_holder), as every
+    claim; its lifecycle generation moved. False, nothing written, when one
+    does or the seat is gone."""
+    session = fields["current"]
+    with _seat_lock(deadline), _human_lock(deadline):
+        path = sminos.meta_path(seat_id)
+        try:
+            with open(path) as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            return False
+        if not isinstance(raw, dict) or _holder(session, seat_id) is not None:
+            return False
+        raw.update(fields)
+        raw["gen"] = int(raw.get("gen") or 0) + 1
+        sminos._write_record(path, raw)
+        return True
+
+
 def ensure(session, seat=None, project=None, events=None, lock_until=None):
     """The record of the thread the session fills, made when there is none:
     for a seat, its seat record's keys (`project` and `events`, the log its

@@ -4329,18 +4329,23 @@ def record_settled(thread, guard):
     return settled
 
 
-def thread_transition(project, thread_id, op, events, required=False, **begin):
+def thread_transition(project, thread_id, op, events, required=False, began=None, **begin):
     """One journaled transition of a thread record (sminos_threads.begin,
     then finish): the record's change and what it owes in one write, then
-    the events. Returns the events appended; [] when the record refused it
-    (an open entry finished first, then the guard). With `required`, an
-    entry whose events could not all be appended raises LogWriteFailed: the
-    record's change stands, and the next reconciliation finishes the entry."""
+    the events. Returns the events this process appended; [] when the record
+    refused it (an open entry finished first, then the guard), or when
+    another finisher appended them. `began`, a list, gains the entry as
+    begin wrote it, whoever finishes it: the one way to tell a transition
+    begun from one refused. With `required`, an entry whose events could
+    not all be appended raises LogWriteFailed: the record's change stands,
+    and the next reconciliation finishes the entry."""
     threads = threads_module()
     finish_thread(thread_id, project=project, lock_until=begin.get("lock_until"))
     entry = threads.begin(thread_id, op, project, events, **begin)
     if entry is None:
         return []
+    if began is not None:
+        began.append(entry)
     appended = []
     if not finish_thread(thread_id, appended, project, begin.get("lock_until")) and required:
         owed = [e for e in entry["events"] if not any(x["kind"] == e["kind"] and x.get("op") == entry["id"]
@@ -11605,6 +11610,8 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         die("seat %s has an operation that could not be finished yet (%s); nothing was launched — try again once "
             "its log can be written" % (seat_id[:8], (threads_module().get(seat_id) or {}).get("pending", {}).get("op")),
             EXIT_UNKNOWN)
+    if seat_id and reload_seat(seat_id) is None:
+        die("seat %s was removed (its purge finished); nothing was launched" % seat_id[:8], EXIT_UNKNOWN)
     prev = reload_seat(seat_id) if seat_id else None
     project = seat_project({"cwd": cwd, "group": group})
     if project is None:   # its repository is in a protected folder this process may not read (read_refused)
@@ -11772,13 +11779,20 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
                     remove=("ended",) if seat_id is not None else (), other=other_id, absorbs=True)
         try:
             for _ in range(3):
-                if thread_transition(project, rec_id, "absorb" if other_id else "advance",
-                                     [{"kind": "joined", "session": uuid, **fields}], required=True,
-                                     guard=lambda t: t["current"] == ("" if seat_id is not None else uuid) and (
-                                         other_id is None or threads.absorbable(threads.get(other_id), uuid)),
-                                     **poll):
+                began = []
+                thread_transition(project, rec_id, "absorb" if other_id else "advance",
+                                  [{"kind": "joined", "session": uuid, **fields}], required=True, began=began,
+                                  guard=lambda t: t["current"] == ("" if seat_id is not None else uuid) and (
+                                      other_id is None or threads.absorbable(threads.get(other_id), uuid)),
+                                  **poll)
+                if began:
                     break
-                behind = (threads.get(rec_id) or {}).get("pending")
+                fresh = threads.get(rec_id) or {}
+                behind = fresh.get("pending")
+                holder = threads.thread_of(uuid)
+                if not behind and launched_entry is not None and fresh.get("current") == "" \
+                        and (holder is None or holder["thread"] == rec_id or holder["thread"] == other_id):
+                    continue   # this launch's entry was finished meanwhile, and the seat is still vacant: again
                 if not behind or launched_entry is None or behind["id"] != launched_entry:
                     log_failed.append("the seat's record did not take session %s: %s" % (
                         uuid[:8], "another record holds it" if not behind else "another operation's entry is open"))
@@ -11956,9 +11970,16 @@ def cmd_seat_add(a):
             if session != s["current"] and project is not None and not guessed(project) \
                     and threads_module().lane_a(session):
                 refill = project   # `current` is the advance's (below); a lane B session's seat is no thread
-            else:
-                fields["current"] = session
-        meta_set(seat_id, fields)
+            elif session != s["current"]:
+                # No journal (a project not read here, a lane B session), but the claim is any claim's: under both
+                # stores' locks, refused when another record holds the session (sminos_threads.repoint_seat).
+                if not threads_module().repoint_seat(seat_id, {**fields, "current": session}):
+                    unlock(locks)
+                    die("session %s is another thread's (a record its human opened, or another seat, holds it): it "
+                        "takes no seat" % session[:8], EXIT_UNKNOWN)
+                fields = None
+        if fields is not None:
+            meta_set(seat_id, fields)
     else:
         seat_id = session if session else str(uuidlib.uuid4())
         if os.path.exists(meta_path(seat_id)):
@@ -12016,19 +12037,20 @@ def refill_launch(seat, fields, remove, by, failed):
     project = seat_project(seat)
     if project is None or guessed(project):
         return None
+    began = []
     try:
         if threads.ensure(old, seat=seat, project=project) is None:
             return None
-        got = thread_transition(project, seat["seat_id"], "advance",
-                                [{"kind": "retired", "session": old, "by": by, "reason": "replaced"}],
-                                required=True, fields=fields, remove=remove, guard=lambda t: t["current"] == old)
-        return got[0]["op"] if got else None
+        thread_transition(project, seat["seat_id"], "advance",
+                          [{"kind": "retired", "session": old, "by": by, "reason": "replaced"}],
+                          required=True, began=began, fields=fields, remove=remove,
+                          guard=lambda t: t["current"] == old)
     except LogWriteFailed as e:
         failed.append("%s — the next reading verb finishes it" % e)
-        return ((threads.get(seat["seat_id"]) or {}).get("pending") or {}).get("id")
     except (OSError, LockBusy) as e:
         warn("the thread record of seat %s could not be written: %s" % (seat["seat_id"][:8], e or "its lock is busy"))
-        return None
+    # The entry as begin wrote it, whichever process appended its events or cleared it.
+    return began[0]["id"] if began else None
 
 
 def refill_seat(project, seat, old, new, by):

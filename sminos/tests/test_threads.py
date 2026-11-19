@@ -1784,6 +1784,22 @@ class HandOff(Sessions):
         self.assertEqual(sminos.load_seat(sminos.meta_path(third["seat_id"]))["current"], "", "not repointed")
         self.assertEqual([s["seat_id"] for s in sminos.seats() if s["current"] == new], [seat_a])
 
+    def test_a_plain_repoint_claims_the_session_as_every_claim_does(self):
+        old, seat_a = self.seated()
+        new, _, _ = self.refill(seat_a)
+        code, out = self.cli("seat", "add", "g", "third")
+        self.assertEqual(code, 0, out)
+        third = next(s for s in sminos.seats() if s["alias"] == "third")["seat_id"]
+        with open(sminos.meta_path(third), "rb") as f:
+            before = f.read()
+        with mock.patch.object(sminos, "seat_project", return_value=None):   # its project not read here: no journal
+            code, out = self.cli("seat", "add", "g", "third", "--session", new)
+        self.assertEqual(code, 4, out)
+        self.assertIn("takes no seat", out)
+        with open(sminos.meta_path(third), "rb") as f:
+            self.assertEqual(f.read(), before, "nothing written")
+        self.assertEqual([s["seat_id"] for s in sminos.seats() if s["current"] == new], [seat_a])
+
     def test_seat_add_and_an_adoption_meanwhile_never_both_take_the_session(self):
         for existing in (False, True):
             with self.subTest(existing=existing):
@@ -2246,23 +2262,79 @@ class Refill(Sessions):
                 self.assertEqual(got, [False], "the entry it read is gone: its caller begins its own advance")
                 self.assertIsNone(threads.get(seat_id).get("pending"), "nothing queued into a cleared entry")
 
+    def fill(self, seat_id):
+        """spawn_fresh onto the seat, its launch stubbed: (exit code or None, whether it launched)."""
+        with mock.patch.object(sminos, "run_claude_bg", side_effect=RuntimeError("launched")) as launch, \
+                contextlib.redirect_stderr(io.StringIO()):
+            try:
+                sminos.spawn_fresh(seat_id, "worker", "g", "", "", "a task", self.root, "", "", "", "", False, [],
+                                   "spawned")
+                code = None
+            except SystemExit as e:
+                code = e.code
+            except RuntimeError:
+                code = None
+        return code, launch.called
+
     def test_a_fill_over_an_operation_of_the_seat_that_cannot_be_finished_launches_nothing(self):
-        old, seat_id = self.seated()
-        with mock.patch.object(sminos, "_append", side_effect=OSError("disk full")):
-            code, out = self.cli("retire", "--purge", "g/worker")
-            self.assertNotEqual(code, 0, out)
-            entry = threads.get(seat_id)["pending"]
-            self.assertEqual(entry.get("last"), "purge", out)
-            with self.assertRaises(SystemExit) as cm, mock.patch.object(sminos, "run_claude_bg") as launch:
-                with contextlib.redirect_stderr(io.StringIO()):
-                    sminos.spawn_fresh(seat_id, "worker", "g", "", "", "a task", self.root, "", "", "", "", False,
-                                       [], "spawned")
-        self.assertNotEqual(cm.exception.code, 0)
-        launch.assert_not_called()
-        self.assertEqual(threads.get(seat_id)["pending"]["id"], entry["id"], "the purge's entry, untouched")
-        self.assertNotIn("next", threads.get(seat_id)["pending"])
-        self.reconcile()
-        self.assertFalse(os.path.exists(sminos.meta_path(seat_id)), "the purge, finished by the replay")
+        for log in ("blocked", "recovered"):
+            with self.subTest(log=log):
+                self.fresh()
+                old, seat_id = self.seated()
+                with mock.patch.object(sminos, "_append", side_effect=OSError("disk full")):
+                    code, out = self.cli("retire", "--purge", "g/worker")
+                    self.assertNotEqual(code, 0, out)
+                    entry = threads.get(seat_id)["pending"]
+                    self.assertEqual(entry.get("last"), "purge", out)
+                    if log == "blocked":
+                        code, launched = self.fill(seat_id)
+                if log == "recovered":   # the fill's own preflight finishes the purge: no seat is left to fill
+                    code, launched = self.fill(seat_id)
+                    self.assertEqual((code, launched), (sminos.EXIT_UNKNOWN, False))
+                    self.assertFalse(os.path.exists(sminos.meta_path(seat_id)), "no file recreated")
+                    self.assertEqual(list(sminos.record_files()), [])
+                    continue
+                self.assertEqual((code, launched), (sminos.EXIT_UNKNOWN, False))
+                self.assertEqual(threads.get(seat_id)["pending"]["id"], entry["id"], "the purge's entry, untouched")
+                self.assertNotIn("next", threads.get(seat_id)["pending"])
+                self.reconcile()
+                self.assertFalse(os.path.exists(sminos.meta_path(seat_id)), "the purge, finished by the replay")
+
+    def test_a_launch_entry_finished_by_another_process_is_this_launchs_all_the_same(self):
+        for when in ("launch", "poll"):
+            with self.subTest(when=when):
+                self.fresh()
+                old, seat_id = self.seated()
+                failing, real = [True], threads.begin
+                done = []
+
+                def begin(thread_id, op, project, events, **k):
+                    entry = real(thread_id, op, project, events, **k)
+                    poll = any(e["kind"] == "joined" for e in events)
+                    if done:
+                        return entry
+                    if when == "launch" and entry is not None and not poll:
+                        # A concurrent finisher completes the launch's entry before this process finishes it.
+                        done.append(1)
+                        failing.clear()
+                        with contextlib.redirect_stderr(io.StringIO()):
+                            self.assertTrue(sminos.finish_thread(seat_id))
+                    if when == "poll" and entry is None and poll:
+                        # A replay clears the launch's entry right after the poll's refused begin.
+                        done.append(1)
+                        failing.clear()
+                        with contextlib.redirect_stderr(io.StringIO()):
+                            self.assertTrue(sminos.finish_thread(seat_id))
+                    return entry
+                with self.failing_retirement(failing), mock.patch.object(threads, "begin", side_effect=begin):
+                    new, _, out = self.refill(seat_id)
+                self.assertTrue(done)
+                seat = sminos.load_seat(sminos.meta_path(seat_id))
+                self.assertEqual((seat["current"], seat["sessions"], seat.get("pending")), (new, [old, new], None),
+                                 out)
+                self.assertEqual(len([e for e in self.own(old) if e.get("reason") == "replaced"]), 1, "once")
+                self.assertEqual(threads.in_effect(self.own(new))["thread"], seat_id)
+                self.assert_finished(seat_id, (old, new))
 
     def test_a_queue_drained_across_projects_appends_into_each_projects_own_view(self):
         old, seat_id = self.seated()
