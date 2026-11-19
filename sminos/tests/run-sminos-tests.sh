@@ -6394,7 +6394,7 @@ assert_equals "$(json_row my-own-desk name_source)" "user" "the owner's name lis
 cn_age "$CA"
 STUB_FORK_RESULT=$'Owns the desk\'s uplink.\nname: desk-uplink-renamer' run "$SMINOS" derive my-own-desk
 assert_not_contains "$OUT" "not derived" "its next derive runs"
-assert_equals "$(cat "$FORK_PROMPT")" "${DERIVE_PROMPT_TODAY% Answer with the line only.}"$'\nIts current line is: Owns the desk\'s uplink and its retries.\nOther sessions and your human partner follow this session by its line, so answer with it unchanged while it still holds. Write a new line only when the responsibility itself changed: work taken on or handed off, a goal reached, a move to other work.\nAnswer with the line only.' \
+assert_equals "$(cat "$FORK_PROMPT")" "${DERIVE_PROMPT_TODAY% Answer with the line only.}"$'\nIts current line is: Owns the desk\'s uplink and its retries.\nOther sessions and your human partner follow this session by its line, so answer with it unchanged while it still holds. Write a new line only when it is wrong about the responsibility or the responsibility itself changed: work taken on or handed off, a goal reached, a move to other work.\nAnswer with the line only.' \
   "with today's question and its current line to keep, verbatim, and no name asked for"
 assert_equals "$(cn_charge "$CA")" "derived|Owns the desk's uplink.|<none>" "its line recorded with no name"
 assert_equals "$(pending "$CA" name)" "desk-uplink-keeper" "and no new name handed over"

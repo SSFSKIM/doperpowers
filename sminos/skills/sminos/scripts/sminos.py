@@ -8156,8 +8156,8 @@ DERIVE_PROMPT = DERIVE_QUESTION + " Answer with the line only."
 # reworded at every derive (1,005 of 1,018 re-derives, 2026-11-08 to 11-19,
 # when the fork was not shown its line) reads as new work each time.
 DERIVE_KEEP = ("\nIts current line is: %s\nOther sessions and your human partner follow this session by its line, so "
-               "answer with it unchanged while it still holds. Write a new line only when the responsibility "
-               "itself changed: work taken on or handed off, a goal reached, a move to other work.")
+               "answer with it unchanged while it still holds. Write a new line only when it is wrong about the "
+               "responsibility or the responsibility itself changed: work taken on or handed off, a goal reached, a move to other work.")
 DERIVE_MIN_TOOL_CALLS = 10
 DERIVE_EVERY = 6 * 3600
 # A compaction derives the member's line again only at every this many
@@ -8416,9 +8416,12 @@ def derive_prompt(naming, current=""):
 
 def current_line(project, m):
     """The member's set or derived in-charge line as charge_of reads it, ""
-    for none (a name or a title is no line to keep)."""
+    for none (a name or a title is no line to keep). The line is one plain
+    line, NULs dropped and whitespace runs (newlines of a multi-line brief
+    included) collapsed: answer_line keeps only an answer's first line, and a
+    NUL would make the headless fork's argv raise ValueError."""
     line, source, _ = charge_of(m, log_read(project, kinds=("in-charge",)), title=False)
-    return line if source in ("set", "derived") else ""
+    return " ".join(line.replace("\x00", "").split()) if source in ("set", "derived") else ""
 
 
 def pending_name_path(session):
