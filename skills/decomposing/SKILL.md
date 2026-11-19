@@ -251,6 +251,12 @@ Each child section of the composite spec fixes:
   of the brief, never who runs it. The grain follows what the child
   needs, not the parent's scale: a child of one milestone, or a bundle of
   small items each clear from its section, needs no documents.
+  Weigh the effort of writing a document and keeping it current against
+  what it does for the work. Write the plans and specifications the work
+  deserves: sizable, long-running work with several milestones, or a
+  composite of several such specs, needs a document for reliable
+  long-horizon execution; work that is scoped and clearly defined can run
+  from a brief.
 
 Everything the parent hands a child carries one of two authority
 grades:
