@@ -4353,9 +4353,9 @@ def thread_transition(project, thread_id, op, events, required=False, **begin):
 
 def finish_thread(thread_id, appended=None, project=None, lock_until=None):
     """sminos_threads.finish, its events appended through this module's own
-    lifecycle, so the caches a verb reads afterwards (its views) see them,
-    whichever copy of this module loaded the threads module; a hand-off's
-    steps before its events run first (carry_hand_offs)."""
+    lifecycle, and a hand-off's carry run by it (carry_hand_offs), so the
+    caches a verb reads afterwards (its views) see them, whichever copy of
+    this module loaded the threads module."""
     return threads_module().finish(thread_id, appended, project, append=lifecycle, lock_until=lock_until,
                                    before=carry_hand_offs)
 
@@ -5212,7 +5212,7 @@ def hand_off(project, old, new, old_peer=None):
     try:
         out = thread_transition(project, thread["thread"], "absorb" if other_id else "advance",
                                 owed + [{"kind": "joined", "session": new, **joined}], fields=fields, guard=guard,
-                                other=other_id, carry=[old, new], lock_until=_RECORD_DEADLINE)
+                                other=other_id, carry=[old, new], absorbs=True, lock_until=_RECORD_DEADLINE)
     except LockBusy:
         return []
     finally:
@@ -5245,8 +5245,11 @@ def carry_hand_off(project, old, new):
     step 2), each safe to repeat: `new`'s record takes `old`'s provenance
     (ensure_record(…, former=[old]): the one call that carries reach; a
     record already final stays), its chat cursor merged into `new`'s, and
-    `old`'s join override carried where `new` has none."""
+    `old`'s join override carried where `new` has none. Whether the cursor
+    and the override were carried (a failed write is a warning, and False:
+    a journaled hand-off then stays open, carry_hand_offs)."""
     ensure_record(project, new, former=[old])
+    ok = True
     try:
         carried = cursor_load(project, old)
         mine = writer_id(old)
@@ -5257,25 +5260,28 @@ def carry_hand_off(project, old, new):
             cursor_save(project, new, carried)
     except OSError as e:
         warn("carrying %s's chat cursor to %s failed: %s" % (old[:8], new[:8], e))
+        ok = False
     try:
         if override_of(old) and not override_of(new):
             write_override(new, override_of(old))
     except OSError as e:
         warn("carrying %s's join override to %s failed: %s" % (old[:8], new[:8], e))
+        ok = False
+    return ok
 
 
 def carry_hand_offs(project, entry):
-    """finish's `before` for every entry: a hand-off's steps (the pair its
-    entry carries, `carry`), so a replay carries what a process that died
-    after its record's write did not; whether what it carries is durable
-    (carried), without which nothing of the entry is appended. True for an
-    entry that carries nothing."""
+    """sminos_threads.finish's step for an entry that carries a hand-off's
+    reach (`carry`): the hand-off's steps, so a replay carries what a
+    process that died after its record's write did not; whether all of it
+    is durable (the cursor and the override written, and the provenance
+    carried), without which nothing of the entry is appended. An entry whose
+    `carry` does not read carries nothing durable: it stays open."""
     pair = entry.get("carry")
     if not (isinstance(pair, list) and len(pair) == 2 and all(UUID_RE.fullmatch(str(x)) for x in pair)):
-        return True
+        return False
     old, new = pair
-    carry_hand_off(project, old, new)
-    return carried(project, old, new)
+    return carry_hand_off(project, old, new) and carried(project, old, new)
 
 
 def carried(project, old, new):
@@ -5801,12 +5807,16 @@ def view_of(project, all_seats=None, titles=True):
     joined = [(sid, r) for sid, r in info.items()
               if r["latest"] and r["latest"]["kind"] == "joined" and sid not in forks and not unlisted_here(sid, r)]
     joined.sort(key=lambda x: (x[1]["joined"]["ts"], x[0]), reverse=True)
-    out = [_member(sid, r, by_session.get(sid), local.get(sid, {}).get("peer"), sid in local, titles, info,
-                   shadowing(project, sid, info, all_seats))
-           for sid, r in joined]
+    # One row per thread (§4): a read that spans a transition (each writer file is read in turn, and a
+    # retirement can be owed still) or a remote log behind holds two of its sessions, or a seat whose
+    # thread a member row stands for; the current one stays, the others are its `thread_sessions`.
+    out = thread_current([_member(sid, r, by_session.get(sid), local.get(sid, {}).get("peer"), sid in local, titles,
+                                  info, shadowing(project, sid, info, all_seats))
+                          for sid, r in joined])
     sessions = {m.session for m in out}
+    held = {m.thread for m in out if m.thread}
     rest = sorted((s for s, pid in _seat_pids(all_seats) if (not s["current"] or s["current"] not in sessions)
-                   and pid == project.id), key=lambda s: s["updated"], reverse=True)
+                   and pid == project.id and s["seat_id"] not in held), key=lambda s: s["updated"], reverse=True)
     rows = [_member(s["current"], info.get(s["current"]), s, None, True, titles, info) if s["current"] else
             vacant_member(s) for s in rest]
     # Seat-less sessions the log holds as retired, by alias: what a tag that
@@ -6908,19 +6918,16 @@ def note_former(name, short, p, m, home):
 
 
 def thread_current(found):
-    """`found`, members (or (project, member) pairs) newest join first, with
-    one member per thread: a thread two rows hold at once — a refill or a
-    hand-off whose new `joined` reached this log before the old session's
-    retirement — answers by its latest `joined` alone (§4); the other's ids
-    still name it (former_ids, thread_sessions)."""
+    """`found`, members newest join first, with one member per thread: a
+    thread two rows hold at once answers by its latest `joined` alone (§4);
+    the other's ids still name it (former_ids, thread_sessions)."""
     seen, out = set(), []
-    for x in found:
-        m = x if isinstance(x, Member) else x[1]
+    for m in found:
         if m.thread and m.session:
             if m.thread in seen:
                 continue
             seen.add(m.thread)
-        out.append(x)
+        out.append(m)
     return out
 
 
@@ -6936,7 +6943,7 @@ def match_members(name, short, projects, alias=True, ids=True):
     nothing."""
     hits = []
     for p in projects:
-        for m in thread_current(members(p)):
+        for m in members(p):
             if m.state == "retired":
                 continue
             if short:
@@ -9561,7 +9568,7 @@ def find_target(q):
         hits = []
         for p in projects:
             ms, rows = project_view(p)
-            for m in thread_current(ms) + rows:
+            for m in ms + rows:
                 if short:
                     how = alias_reach(m, name, short)
                 elif by_short:
@@ -11679,7 +11686,7 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
                 "board_detached", "closure_package", "retired_from", "relayed_comment",
                 "sweep_recoveries")
         write = {**launch, "now": "", "attempts": (prev["attempts"] if prev else 0) + 1, "history": history[-10:]}
-        remove = tuple(k for k in drop if k not in launch)
+        remove = tuple(k for k in drop if k not in launch) + ("ended",)
         if not (prev and prev["current"] and refill_launch(prev, write, remove, by, log_failed)):
             meta_set(rec_id, write, remove=remove)
             displaced = prev["current"] if prev else ""   # its `replaced` is recorded once the new session is
@@ -11753,15 +11760,25 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         # write, so a replay keeps them. Its owners and reach are its own
         # launch's (ensure_record above), never its predecessor's.
         other_id = other["thread"] if other is not None else None
+        poll = dict(fields={"current": uuid, "launch": launched} if seat_id is not None else {"launch": launched},
+                    remove=("ended",) if seat_id is not None else (), other=other_id, absorbs=True)
         try:
-            thread_transition(project, rec_id, "absorb" if other_id else "advance",
-                              [{"kind": "joined", "session": uuid, **fields}], required=True,
-                              fields={"current": uuid, "launch": launched} if seat_id is not None else
-                              {"launch": launched},
-                              remove=("ended",) if seat_id is not None else (),
-                              guard=lambda t: t["current"] == ("" if seat_id is not None else uuid) and (
-                                  other_id is None or threads.absorbable(threads.get(other_id), uuid)),
-                              other=other_id)
+            got = thread_transition(project, rec_id, "absorb" if other_id else "advance",
+                                    [{"kind": "joined", "session": uuid, **fields}], required=True,
+                                    guard=lambda t: t["current"] == ("" if seat_id is not None else uuid) and (
+                                        other_id is None or threads.absorbable(threads.get(other_id), uuid)),
+                                    **poll)
+            behind = (threads.get(rec_id) or {}).get("pending")
+            if not got and behind and seat_id is not None:
+                # The launch's entry could not finish (its retirement is still owed): the poll's advance waits
+                # behind it, recorded in it, and is begun by the write that clears it (sminos_threads.follow).
+                if threads.follow(rec_id, behind["id"], "absorb" if other_id else "advance", project,
+                                  [{"kind": "joined", "session": uuid, **fields}], **poll):
+                    log_failed.append("session %s's joined waits behind the displaced session's retirement — "
+                                      "the next reading verb finishes both" % uuid[:8])
+                else:
+                    log_failed.append("the seat's record did not take session %s: %s" % (
+                        uuid[:8], "a record of its own holds it" if not behind else "its entry is open"))
         except LogWriteFailed as e:
             log_failed.append("%s — the next reading verb finishes it" % e)
     else:
@@ -11935,17 +11952,27 @@ def cmd_seat_add(a):
         if os.path.exists(meta_path(seat_id)):
             die("a seat record for session %s already exists (%s/%s)" % (
                 session, meta_get(seat_id, "group"), meta_get(seat_id, "alias") or meta_get(seat_id, "name")), EXIT_UNKNOWN)
-        meta_set(seat_id, {
+        made = {
             "uuid": seat_id, "current": session, "short": short, "name": a.alias, "alias": a.alias,
             "group": a.group, "role": a.role or "",
             "brief": a.brief or "", "task": "", "now": "", "note": "", "cwd": os.getcwd(), "worktree": "",
             "model": "", "settings": "", "effort": "", "status": "idle" if session else "vacant",
             "host": host_name() if session else "", "boot_id": boot_id() if session else "",
-            "created": now(), "updated": now(), "turns": "0", "preamble": "1", "attempts": 1, "history": []})
+            "created": now(), "updated": now(), "turns": "0", "preamble": "1", "attempts": 1, "history": []}
+        if not session:
+            meta_set(seat_id, made)
+        elif not threads_module().claim_seat(seat_id, made):
+            unlock(locks)
+            die("session %s is a session its human opened, and its record already keeps it: it takes no seat"
+                % session[:8], EXIT_UNKNOWN)
     if refill is not None:
         # The session joins as this seat, displacing the one it held, as by a
         # fill: the refill's journaled advance (Interfaces §6, row 6).
         refill_seat(refill, reload_seat(seat_id), existing[0]["current"], session, caller_alias())
+        if (reload_seat(seat_id) or {}).get("current") != session:
+            unlock(locks)
+            die("session %s is a session its human opened, and its record already keeps it: it takes no seat"
+                % session[:8], EXIT_UNKNOWN)
     elif session:
         # The session joins as this seat; a session the seat held before is
         # displaced, as by a fill.
@@ -14247,7 +14274,7 @@ def who_matches(short):
     best = {}
     scope = org_scope()
     known = {p.id for p in scope}
-    rows = [(p, m) for p in scope for m in thread_current(view_of(p).members) + view_of(p).rows if m.session]
+    rows = [(p, m) for p in scope for m in view_of(p).members + view_of(p).rows if m.session]
     for p, m in rows:
         if m.short == short:
             best.setdefault(m.session, (p, m, ""))

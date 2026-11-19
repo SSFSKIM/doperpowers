@@ -173,6 +173,18 @@ def _seat_lock(deadline=None):
     return _locked(os.path.join(sminos.root(), ".metalock"), deadline)
 
 
+# Taking both stores' locks, the seats' comes first, never the reverse: a
+# seat that takes a session as its current one (begin) and a human-opened
+# record made for it (_create_human) each read the other store under both.
+
+
+def _finish_lock(thread_id, deadline=None):
+    """The record's own finisher lock (finish): one finisher of a record at a
+    time, whichever store the record is in; beside the thread store's lock,
+    where no sminos from before threads looks."""
+    return _locked(os.path.join(store_dir(), ".finish", thread_id + ".lock"), deadline)
+
+
 _FILES = {}   # path → ((st_ino, st_size, st_mtime_ns), the record read there)
 
 
@@ -597,10 +609,14 @@ def _ensure_seat(seat, project, events, deadline):
 
 def _create_human(session, sessions, cwd, deadline):
     """A record for a session no thread holds as its current one, under a
-    minted id; under the store's lock the store is read again, and the
-    record whose current session it is by then (another process made it,
-    or an ended one has it) is the answer instead."""
-    with _human_lock(deadline):
+    minted id. Under both stores' locks (the seats' first) both are read
+    again, and the record whose current session it is by then is the answer
+    instead: a seat that took it (a refill, a hand-off's advance, an open
+    entry making it current), another process's record, or an ended one."""
+    with _seat_lock(deadline), _human_lock(deadline):
+        for seat in sminos.seats():
+            if seat["current"] == session and _is_thread(seat):
+                return _of_seat(seat)
         live = _human_threads()
         for t in live + _aside_holding(session, live):
             if t["current"] == session:
@@ -611,6 +627,23 @@ def _create_human(session, sessions, cwd, deadline):
         os.makedirs(aside_dir(), mode=0o700, exist_ok=True)
         sminos.write_json(_human_path(rec["thread"]), rec)
         return rec
+
+
+def claim_seat(seat_id, record, deadline=None):
+    """A new seat record holding `record["current"]`, written under both
+    stores' locks (the seats' first) only while no human-opened record,
+    live or set aside, has that session current: `seat add --session`'s
+    claim and a record made for the session (_create_human) are one at a
+    time. False when one has it, or the seat's file exists; nothing
+    written."""
+    session = record["current"]
+    with _seat_lock(deadline), _human_lock(deadline):
+        live = _human_threads()
+        path = sminos.meta_path(seat_id)
+        if os.path.exists(path) or any(t["current"] == session for t in live + _aside_holding(session, live)):
+            return False
+        sminos._write_record(path, {**record, "gen": 1})
+        return True
 
 
 def ensure(session, seat=None, project=None, events=None, lock_until=None):
@@ -733,7 +766,8 @@ def returns(record, peer):
 # ------------------------------------------------------------ the journal (§6)
 
 
-def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lock_until=None, **more):
+def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lock_until=None, absorbs=False,
+          **more):
     """The one way a journaled operation starts: under the store's lock,
     when the record has no open entry and guard(record) holds, the record's
     change (`fields` merged, `remove` dropped; a return brings a record set
@@ -743,7 +777,13 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
     `other`, `carry`). A `current` the change sets is added to `sessions`,
     last (an advance, an absorption). An absorption keeps what its change
     replaced (`was`), for finish to undo when the record it absorbs can no
-    longer be held. The entry as written, None when nothing was."""
+    longer be held. A change that makes a session current is checked, under
+    the thread store's lock (a seat's taken inside its own), against a
+    human-opened record whose current session it is (_claimed): one the
+    entry absorbs already passes; with `absorbs` (a session that may have
+    made a record of its own first: a hand-off's job, a spawn's child), an
+    absorbable one makes an advance an absorption of it; any other refuses
+    the change. The entry as written, None when nothing was."""
     if op not in OPS:
         raise ValueError("not a journaled operation: %r" % (op,))
     owed = []
@@ -758,22 +798,81 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
     def mutate(view, raw):
         if view.get("pending") or (guard is not None and not guard(view)):
             return False
-        if op == "absorb":
-            keys = [*(fields or {}), *remove, "sessions"]
-            entry["was"] = {k: copy.deepcopy(raw[k]) for k in keys if k in raw}
-            entry["unset"] = [k for k in keys if k not in raw]
-        for k, v in (fields or {}).items():
-            raw[k] = copy.deepcopy(v)
-        for k in remove:
-            raw.pop(k, None)
-        current = str(raw.get("current") or "")
-        if current and current not in view["sessions"]:
-            # An advance or an absorption names its new session: `sessions` gains it, last.
-            raw["sessions"] = view["sessions"] + [current]
-        raw["pending"] = entry
+        if not _claimed(thread_id, entry, view, fields, lock_until, absorbs):
+            return False
+        _apply(entry, view, raw, fields, remove)
         return "live" if op == "return" else True
 
     return entry if _change(thread_id, mutate, lock_until, bump=True) else None
+
+
+def _claimed(thread_id, entry, view, fields, deadline, absorbs):
+    """Whether a change that makes a session current may: no human-opened
+    record (live or set aside) other than this one has it current, but the
+    one the entry absorbs; with `absorbs`, an absorbable one turns an
+    advance into its absorption (entry changed in place). Read under the
+    thread store's lock, taken here for a seat (inside the seats' lock: the
+    one order)."""
+    session = str((fields or {}).get("current") or "")
+    if not session or session == view["current"]:
+        return True
+
+    def rival():
+        live = _human_threads()
+        return next((t for t in live + _aside_holding(session, live)
+                     if t["thread"] != thread_id and t["current"] == session), None)
+
+    if view["opened"] == "spawned":
+        with _human_lock(deadline):
+            found = rival()
+    else:
+        found = rival()
+    if found is None or found["thread"] == entry.get("other"):
+        return True
+    if absorbs and entry["op"] == "advance" and not entry.get("other") and absorbable(found, session):
+        entry["op"], entry["other"] = "absorb", found["thread"]
+        return True
+    return False
+
+
+def _apply(entry, view, raw, fields, remove):
+    """An entry's change made in `raw`, the entry written in it: `fields`
+    merged, `remove` dropped, a `current` it sets added to `sessions`, last;
+    an absorption's prior values kept in the entry (`was`, `unset`)."""
+    if entry["op"] == "absorb":
+        keys = [*(fields or {}), *remove, "sessions"]
+        entry["was"] = {k: copy.deepcopy(raw[k]) for k in keys if k in raw}
+        entry["unset"] = [k for k in keys if k not in raw]
+    for k, v in (fields or {}).items():
+        raw[k] = copy.deepcopy(v)
+    for k in remove:
+        raw.pop(k, None)
+    current = str(raw.get("current") or "")
+    if current and current not in view["sessions"]:
+        # An advance or an absorption names its new session: `sessions` gains it, last.
+        raw["sessions"] = view["sessions"] + [current]
+    raw["pending"] = entry
+
+
+def follow(thread_id, after, op, project, events, fields=None, remove=(), lock_until=None, **more):
+    """An operation queued behind the open entry `after` (its id), as that
+    entry's `next`: finish begins it in the write that clears `after`, so a
+    change that could not begin while `after` stays open (a refill's poll
+    behind its launch's) is not lost. True when it was queued."""
+    if op not in OPS:
+        raise ValueError("not a journaled operation: %r" % (op,))
+    queued = {"op": op, "project": project.id, "events": [dict(e) for e in events],
+              "fields": copy.deepcopy(fields or {}), "remove": list(remove),
+              **{k: v for k, v in more.items() if v is not None}}
+
+    def mutate(view, raw):
+        entry = view.get("pending") or {}
+        if entry.get("id") != after or entry.get("next") or entry.get("op") == RESERVED:
+            return False
+        raw["pending"]["next"] = queued
+        return True
+
+    return _change(thread_id, mutate, lock_until)
 
 
 def _holds(project, session, kind, op):
@@ -805,77 +904,116 @@ def finish(thread_id, appended=None, project=None, append=None, lock_until=None,
     resolved); else the entry's is looked up. `append`: the caller's
     sminos.lifecycle (a test may load its own copy of sminos, whose view
     cache an append must clear). `lock_until`: the hook's deadline for each
-    write (LockBusy past it, the entry left open). The alias a human-opened
+    lock (LockBusy past it, the entry left open). The alias a human-opened
     thread's owed `joined` or `renamed` carries is copied in the last
     write, since update() leaves a record with an open entry alone.
-    `before(project, entry)`: the steps that come before the events, each
-    safe to repeat (a hand-off's reach, cursor and override:
-    sminos.carry_hand_offs), run at every attempt; while it answers False
-    (what it carries is not durable yet) no event is appended and the entry
+
+    One finisher of a record at a time (its finisher lock, held throughout:
+    a finish and its undo are one at a time), and every step is the open
+    entry's as read under that lock, so a finisher never acts for an entry
+    another one cleared or undid meanwhile.
+
+    An entry that carries a hand-off's reach (`carry`) appends nothing
+    until that reach is durable: `before(project, entry)`, by default
+    sminos.carry_hand_offs (the reach, the cursor, the override, each safe
+    to repeat), answers whether it is; while it answers False the entry
     stays open.
 
     An absorption first holds the record it absorbs, under that record's
     own lock (_hold): marked RESERVED by this entry while it is still
     absorbable; one with an open entry of its own is waited for; one that
     no longer is absorbable undoes a hand-off's advance, nothing appended
-    (_undo: the two stay two threads), and leaves a refill's seat to go on.
-    The absorbed record is deleted after the events, only while this
-    entry's mark is on it. Then, for an advance or an absorption, no other
-    record may answer for the session it made current (_sole). A record
-    marked RESERVED is finished through the entry that holds it, or
-    released when that entry is gone."""
+    (_undo: the two stay two threads), and leaves a refill's seat to go on
+    without it. The absorbed record is deleted after the events, only while
+    this entry's mark is on it. A record marked RESERVED is finished
+    through the entry that holds it, or released when that entry is gone.
+    An entry with an operation queued behind it (`next`: follow) begins
+    that operation in the write that clears it, and it is finished in
+    turn."""
     appended = [] if appended is None else appended
-    t = get(thread_id)
-    entry = (t or {}).get("pending")
-    if not entry:
+    if not (get(thread_id) or {}).get("pending"):
         return True
-    if entry.get("op") == RESERVED:
-        holder = get(entry.get("by"))
-        if ((holder or {}).get("pending") or {}).get("id") == entry["id"]:
-            finish(holder["thread"], appended, project, append, lock_until, before)
-        else:
-            _change(thread_id, lambda view, raw: _release(view, raw, entry), lock_until)
-        return not (get(thread_id) or {}).get("pending")
-    if project is None or project.id != entry.get("project"):
-        project = sminos.known_project(str(entry.get("project") or ""))
-    if project is None:
-        return False
-    session, other = t["current"], entry.get("other") if entry.get("op") == "absorb" else None
-    if other:
-        held = _hold(thread_id, entry, session, lock_until)
-        if held == "busy":
-            return False
-        if held == "lost" and entry.get("carry"):
-            return _undo(thread_id, entry, lock_until)
-    if before is not None and not before(project, entry):
-        return False
-    for event in entry.get("events") or []:
-        if not _owe(project, entry, event, appended, append or sminos.lifecycle):
-            return False
-    # What is held for `settle` is settled here once the hold exists (M3).
-    if other:
-        _change(other, lambda view, raw: "delete" if (view.get("pending") or {}).get("id") == entry["id"]
-                else False, lock_until)
-    if session and entry.get("op") in ("advance", "absorb") and not _sole(thread_id, session, lock_until):
-        return False
+    with _finish_lock(thread_id, lock_until):
+        return _finish(thread_id, appended, project, append or sminos.lifecycle, lock_until,
+                       before or sminos.carry_hand_offs)
 
-    def clear(view, raw):
-        if (view.get("pending") or {}).get("id") != entry["id"]:
-            return False
-        raw.pop("pending", None)
-        if view["opened"] == "human":
-            for e in entry.get("events") or []:
-                if e["kind"] in ("joined", "renamed") and e["session"] == view["current"] and e.get("alias"):
-                    raw["alias"] = str(e["alias"])
-        last = entry.get("last")
-        if last == "purge":
-            return "delete"
-        if last == "aside" and view["opened"] == "human":
-            return "aside"
-        return True
 
-    _change(thread_id, clear, lock_until)
-    return not (get(thread_id) or {}).get("pending")
+def _finish(thread_id, appended, project, append, deadline, before):
+    while True:
+        t = get(thread_id)
+        entry = (t or {}).get("pending")
+        if not entry:
+            return True
+        if entry.get("op") == RESERVED:
+            holder = get(entry.get("by"))
+            if ((holder or {}).get("pending") or {}).get("id") == entry["id"]:
+                finish(holder["thread"], appended, project, append, deadline, before)
+            else:
+                _change(thread_id, lambda view, raw: _release(view, raw, entry), deadline)
+            return not (get(thread_id) or {}).get("pending")
+        if project is None or project.id != entry.get("project"):
+            project = sminos.known_project(str(entry.get("project") or ""))
+        if project is None:
+            return False
+        session, other = t["current"], entry.get("other") if entry.get("op") == "absorb" else None
+        if other:
+            held = _hold(thread_id, entry, session, deadline)
+            if held == "busy":
+                return False
+            if held == "lost" and entry.get("carry"):
+                return _undo(thread_id, entry, deadline)
+        if entry.get("carry") and not before(project, entry):
+            return False
+        for event in entry.get("events") or []:
+            if not _owe(project, entry, event, appended, append):
+                return False
+        # What is held for `settle` is settled here once the hold exists (M3).
+        if other:
+            _change(other, lambda view, raw: "delete" if (view.get("pending") or {}).get("id") == entry["id"]
+                    else False, deadline)
+        chained = []
+
+        def clear(view, raw):
+            if (view.get("pending") or {}).get("id") != entry["id"]:
+                return False
+            raw.pop("pending", None)
+            if view["opened"] == "human":
+                for e in entry.get("events") or []:
+                    if e["kind"] in ("joined", "renamed") and e["session"] == view["current"] and e.get("alias"):
+                        raw["alias"] = str(e["alias"])
+            queued = entry.get("next")
+            if queued:
+                nxt = _queued_entry(thread_id, queued)
+                after = {**view, "current": str(raw.get("current") or ""), "pending": None}
+                if not _claimed(thread_id, nxt, after, queued["fields"], deadline, queued.get("absorbs")):
+                    return False   # its session is a record's that cannot be absorbed: the entry stays open
+                _apply(nxt, after, raw, queued["fields"], queued["remove"])
+                chained.append(nxt)
+                return True
+            last = entry.get("last")
+            if last == "purge":
+                return "delete"
+            if last == "aside" and view["opened"] == "human":
+                return "aside"
+            return True
+
+        _change(thread_id, clear, deadline, bump=bool(entry.get("next")))
+        if not chained:
+            return not (get(thread_id) or {}).get("pending")
+
+
+def _queued_entry(thread_id, queued):
+    """The entry a queued operation (follow) begins as: its events stamped
+    with the thread when they name none, under a new id."""
+    owed = []
+    for e in queued.get("events") or []:
+        e = dict(e)
+        if not stamped(e):
+            e["thread"] = thread_id
+        owed.append(e)
+    rest = {k: v for k, v in queued.items() if k not in ("op", "project", "events", "fields", "remove", "absorbs")}
+    return {"id": uuid.uuid4().hex, "op": queued["op"], "at": sminos.now(), "project": queued["project"],
+            "events": owed, **rest}
 
 
 def _release(view, raw, mark):
@@ -926,35 +1064,6 @@ def _undo(thread_id, entry, deadline):
 
     _change(thread_id, undo, deadline, bump=True)
     return not (get(thread_id) or {}).get("pending")
-
-
-def _sole(thread_id, session, deadline):
-    """After an advance or an absorption made `session` the thread's current
-    one, any other human-opened record whose current session it is (one a
-    hook made for it after the transition's check: a seat's advance is not
-    under the thread store's lock) is the thread's: deleted under its lock
-    when it has no open entry and every session it holds is the thread's.
-    False while one with an open entry is left, the entry then left open
-    to try again; one holding a session the thread never had is left as it
-    is."""
-    t = get(thread_id)
-    if t is None:
-        return True
-    mine = set(t["sessions"])
-    live = _human_threads()
-    waits = False
-    for r in live + _aside_holding(session, live):
-        if r["thread"] == thread_id or r["current"] != session:
-            continue
-
-        def absorb_stray(view, raw):
-            if view["current"] != session or view.get("pending") or not set(view["sessions"]) <= mine:
-                return False
-            return "delete"
-
-        if not _change(r["thread"], absorb_stray, deadline) and (get(r["thread"]) or {}).get("pending"):
-            waits = True
-    return not waits
 
 
 def open_entries(project, human=None, seats=None):
