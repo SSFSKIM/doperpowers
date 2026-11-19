@@ -115,7 +115,7 @@ assert_contains "$OUT" "  sminos say - <<'EOF'   the text on stdin, as written" 
 assert_contains "$OUT" "  sminos list --subagents   your subagents (--done N: finished ones, resumed by SendMessage to the agentId); these two replace ListAgents: use them instead" \
   "it names the subagent view, and says the two replace ListAgents"
 for verb in "list" "--here" "--org" "list --subagents" "--done N" "replace ListAgents" "who <commit|PR>" 'say "..."' "wakes no one" "@<short>" "@<project>/<alias>" \
-    "say --org|--project P|--machine M|--here" "join <project>" "charge"; do
+    "say --org|--project P|--machine M|--here" "join <project>"; do
   assert_contains "$OUT" "$verb" "it names $verb"
 done
 assert_equals "$(cat "$T/err")" "" "nothing on stderr"
@@ -175,7 +175,8 @@ transcript "$S4" "$REPO"
 guide "$(payload "$S4" "$REPO" "$TX")"
 assert_contains "$(head -1 <<<"$OUT")" "helper [4d000004]" "the seat is told who it is"
 assert_not_contains "$OUT" "join <project>" "and not offered a join"
-assert_contains "$OUT" 'charge "<line>"' "the rest stands"
+assert_contains "$OUT" 'say "@<short> ..."' "the rest stands"
+assert_not_contains "$OUT" 'charge "<line>"' "and no session is taught to write its in-charge line: it is derived"
 
 echo "after a compaction or a resume: the roster of the peers it exchanged messages with, from the logs:"
 emit() { # project-dir writer kind fields-json minutes-ago — one log event, as sminos appends it, at a given age

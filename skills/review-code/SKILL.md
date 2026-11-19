@@ -5,8 +5,6 @@ description: Use when a committed change needs an independent code review — cr
 
 # Review Code
 
-`<skill-base>` is this skill's directory, printed when it loads.
-
 ## 1. Pin the target and pick the level
 
 ```bash
@@ -14,8 +12,10 @@ base=main; mb=$(git merge-base "$base" HEAD); head=$(git rev-parse HEAD)
 git diff --stat "$mb" "$head" | tail -1
 ```
 
-The review covers the committed range `mb..head`; commit uncommitted work first
-(a work-in-progress commit is fine).
+The review covers the committed range `mb..head`, so commit first (a
+work-in-progress commit is fine). To review uncommitted work as it stands,
+dispatch a reviewer agent on the working tree instead (staged, unstaged, and
+untracked against HEAD `<head>`), and don't edit under it.
 
 | Level | What runs | When |
 |---|---|---|
@@ -50,18 +50,11 @@ Workflow({ name: "doperpowers:code-review",
            args: { level: "<level>", base: "<base>", baseCommit: "<mb>", headCommit: "<head>" } })
 ```
 
-The plugin registers `workflows/code-review.js` under that name. A `scriptPath`
-into the plugin's cache is refused — the tool's read-path check admits only
-the working directory and added directories — so pass the name, never the path.
-
-It runs in the background. [references/panel.md](references/panel.md) has the
-result contract, the optional args (`repo` for a worktree, `lenses`), and the
-isolation guarantee. Don't commit to the branch under review while a run is
-in flight; when it returns, re-resolve `mb` and `head`, and read a moved pin as
+Pass the name: a `scriptPath` into the plugin's cache is refused. The run is
+in the background; don't commit to the branch under review while it is in
+flight, and when it returns, re-resolve `mb` and `head` and read a moved pin as
 `interrupted`.
 
-For uncommitted work, dispatch a reviewer agent on the working tree instead
-(staged, unstaged, and untracked against HEAD `<head>`), and don't edit under
-it.
-
-Working with the findings, at any level: references/panel.md, last section.
+[references/panel.md](references/panel.md) has the result contract, the
+optional args (`repo` for a worktree, `lenses`), the isolation guarantee, and,
+for every level, how to work with the findings.
