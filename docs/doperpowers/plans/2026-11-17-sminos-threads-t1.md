@@ -33,7 +33,7 @@ the composite, run as Concrete Steps gives it.
 - [x] (2026-11-18) Revised for its adversarial review (fourteen findings, each checked in the code) and the composite holder's rulings, at the pin above.
 - [x] (2026-11-18) Revised again for the confirm pass (eight findings) and the holder's second rulings: transitions are journaled in the record.
 - [x] (2026-11-19) M1 — Every member has a thread record, and its events say which thread (reviewed clean after five fix waves; `b8c1dbfb..793dd7c0`)
-- [ ] M2 — One thread across its session ids: hand-off, refill, and what is another thread
+- [x] (2026-11-19) M2 — One thread across its session ids: hand-off, refill, and what is another thread (reviewed: four fix waves, the last checked by the controller; `3bb026ec..a5b8c5fc`)
 - [ ] M3 — A closed session stays: stopped, held, and its sender told
 - [ ] M4 — A thread ends, and returns
 - [ ] M5 — A thread that owns a VM is neither retired nor ended
@@ -1817,12 +1817,18 @@ nothing else. The entry:
    human-opened record, unless the entry absorbs that record (`absorbs=True`:
    the hand-off and a refill's poll, row 5, and only a human-opened,
    absorbable holder); a seat's claim reads and writes under both locks.
-   `seat add` never absorbs: a session another record holds exits 4. A
+   `seat add` never absorbs: a session another record holds exits 4; its
+   plain repoint (no journal applies: a project not read here, a lane B
+   session) claims through `repoint_seat` under both locks too. A
    fill finishes the seat's open entry before it launches and exits 4 when
    it cannot. `follow` holds the finisher lock and queues only behind its
    caller's own entry (a refill's launch passes that entry's id); `clear`
    reads `next` under the lock, and a `follow` that finds the entry gone
-   answers false, so the launcher retries its advance. `finish` returns the
+   answers false, so the launcher retries its advance. A launch knows its
+   entry by the id `begin` wrote (`thread_transition(…, began=)`), whoever
+   appended its events or cleared it, and retries while that entry is gone
+   and the seat still vacant. A fill whose preflight finished a purge of
+   its seat refuses and launches nothing. `finish` returns the
    appends of the caller's project alone.
 
 Rows 1 to 3, 7, 8, 14 and 15 are not journaled: each is finished by a rule
@@ -2341,6 +2347,13 @@ Found while executing:
   legacy row by its unstamped `joined`'s seat (§4). M2 closed after a last
   check; what it found beyond a defect on a path the plan names is
   residue (Outcomes).
+- 2026-11-19 — **M2 closed.** Its fourth wave (the plain repoint claims,
+  a launch told by its own entry id, no fill over a purged seat) was
+  checked by the controller in the diff, with all eight gates green (run
+  44476813269). From M3 on, the owner's rule: at most three reviews per
+  milestone (a first review and two re-reviews); each round's real defects
+  on paths the plan names are fixed, and what the third leaves goes to the
+  report's residue for the branch's review at the high rung.
 
 ## Outcomes & Retrospective
 
