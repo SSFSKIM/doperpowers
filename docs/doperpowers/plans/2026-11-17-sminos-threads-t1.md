@@ -1673,6 +1673,13 @@ On any machine, from the log as that machine may read it.
   and another's former one, the first is the match, as a former alias is
   ordered today. An event that addresses a message names the current
   session's id.
+  Names are resolved within one project's projection: after a refill that
+  changes a seat's project (its directory moved between fills), a
+  displaced occupant whose events are only in the project the seat left is
+  no former name in the new project, and its in-charge line is not read
+  there, as for a moved seat today; the thread itself resolves there by its
+  id and its current session (the holder's ruling, 2026-11-19; reading
+  history across logs is CH's).
 - **Episodes.** A session's events are read in episodes, each beginning at
   a `joined` whose stamp differs from the one before it. A thread's row
   (alias, in-charge line, status, `by`, worktree) is read from the
