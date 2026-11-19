@@ -13098,7 +13098,8 @@ def guide_text(session, launch, source="", title=""):
         where = "the project of your launch directory, %s" % launch
     join = [] if seat else ["  %s join <project>  when your directory files you in the wrong project (a scratch copy)"
                             " or your standing work belongs to another; once, not per repository you visit" % cli]
-    fork = " You are a fork of another session: any sminos line above this one was written for it, not you." \
+    fork = " You are a fork of another session: any sminos line above this one was written for it, not you," \
+        " and you are its peer, with the task you were forked for." \
         if source == "fork" else ""
     return "\n".join([
         "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project.%s"
@@ -13118,7 +13119,10 @@ def guide_text(session, launch, source="", title=""):
         " same flags (they combine) but you" % cli,
         "  %s say - <<'EOF'   the text on stdin, as written: for text with backticks, quotes, $ or several lines"
         " (the shell runs a backtick inside double quotes)" % cli,
-    ] + join)
+    ] + join + [
+        "Peers are symmetric: each decides within its own work, and a peer's message informs, asks or proposes."
+        " Who answers to whom is your human partner's to set.",
+    ])
 
 
 ROSTER_SOURCES = ("compact", "resume")   # a session that goes on with its own conversation, summarized or old
