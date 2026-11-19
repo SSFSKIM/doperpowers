@@ -59,6 +59,7 @@ sys.path.insert(0, SCRIPTS)
 import sminos  # noqa: E402
 import sminos_records as records  # noqa: E402
 import sminos_threads as threads  # noqa: E402
+import endpoint_standin  # noqa: E402 — the endpoint's `audience` frame, for the hub fixture
 
 VECTORS = os.path.join(HERE, "vectors", "maws", "channel-rule.json")
 PIN = os.path.join(HERE, "vectors", "maws", "channel-rule.PIN.json")
@@ -1418,14 +1419,40 @@ class Sessions(Machine):
     def stamps(self, sid, p=None):
         return {e.get("thread") for e in self.own(sid, p) if e["kind"] in ("joined", "retired")}
 
-    def kill_after_begin(self):
-        real = threads.begin
+    def kill_after_begin(self, nth=1):
+        """The process dies after the `nth` journaled operation it begins."""
+        real, begun = threads.begin, []
 
         def begin(*a, **k):
-            if real(*a, **k) is not None:
-                raise Killed()
-            return None
+            entry = real(*a, **k)
+            if entry is not None:
+                begun.append(entry)
+                if len(begun) == nth:
+                    raise Killed()
+            return entry
         return mock.patch.object(threads, "begin", side_effect=begin)
+
+    def after_begin(self, op, then):
+        """then(entry) runs once, right after the first `op` entry is begun:
+        what another process does meanwhile."""
+        real, done = threads.begin, []
+
+        def begin(*a, **k):
+            entry = real(*a, **k)
+            if entry is not None and entry["op"] == op and not done:
+                done.append(entry)
+                then(entry)
+            return entry
+        return mock.patch.object(threads, "begin", side_effect=begin)
+
+    def rewrite(self, tid, change):
+        """A human-opened record changed in its file, as another process's write leaves it."""
+        path = threads._human_path(tid)
+        with open(path) as f:
+            rec = json.load(f)
+        change(rec)
+        sminos.write_json(path, rec)
+        sminos.forget_caches()
 
     def kill_before_event(self, kind, session):
         """The process dies as it would append the entry's `kind` event of
@@ -1467,9 +1494,10 @@ class Sessions(Machine):
         self.setUp()
 
     @contextlib.contextmanager
-    def elsewhere(self):
+    def elsewhere(self, edit=None):
         """Another machine whose registry holds only this project's log: no
-        engine records, no seats, no thread records, another name."""
+        engine records, no seats, no thread records, another name. `edit(p)`
+        changes its copy of the log first (what has reached it so far)."""
         saved = {k: os.environ.get(k) for k in ("HOME", "SMINOS_HOME", "DAEMON_HOST")}
         there = tempfile.mkdtemp(dir=BASE)
         log = os.path.join(self.p.home, "log")
@@ -1480,6 +1508,8 @@ class Sessions(Machine):
         sminos.forget_caches()
         p = self.project_of(self.root)
         shutil.copytree(log, os.path.join(p.home, "log"), dirs_exist_ok=True)
+        if edit is not None:
+            edit(p)
         sminos.forget_caches()
         try:
             yield p
@@ -1497,24 +1527,31 @@ class Sessions(Machine):
         return sminos._resolve_tag(p, t)[1].session
 
     def target(self, name):
-        """The session `send` aims at for `name` (find_target)."""
-        got = sminos.find_target(name)
+        """The session `send` aims at for `name` (find_target), from the project's checkout."""
+        here = os.getcwd()
+        os.chdir(self.root)
+        try:
+            got = sminos.find_target(name)
+        finally:
+            os.chdir(here)
         return got[2].session if got[0] == "member" else (got[2] or got[1]["current"])
 
-    def refill(self, seat_id, alias="worker", brief=""):
+    def refill(self, seat_id, alias="worker", brief="", cwd=None):
         """spawn_fresh onto the seat (a `sminos fill` without --resume): the
         engine's start and the launcher's wait replaced, the new session's
         own launch provenance pending as a spawn leaves it."""
         new = {"sid": str(uuidlib.uuid4())}
 
-        def start(args, cwd, settings):
-            new["sid"], new["proc"] = self.session(kind="bg", sid=new["sid"], started=ms_ago(0))
+        cwd = cwd or self.root
+
+        def start(args, at, settings):
+            new["sid"], new["proc"] = self.session(root=cwd, kind="bg", sid=new["sid"], started=ms_ago(0))
             return new["sid"][:8], "banner"
 
         def poll(short, max_iter=None):
             if "meanwhile" in new:
                 new["meanwhile"]()
-            return new["sid"], "idle", self.root
+            return new["sid"], "idle", cwd
 
         out = io.StringIO()
         with mock.patch.object(sminos, "run_claude_bg", side_effect=start), \
@@ -1523,7 +1560,7 @@ class Sessions(Machine):
             here = os.getcwd()
             os.chdir(self.root)
             try:
-                sminos.spawn_fresh(seat_id, alias, "g", "", brief, "a task", self.root, "", "", "", "", False, [],
+                sminos.spawn_fresh(seat_id, alias, "g", "", brief, "a task", cwd, "", "", "", "", False, [],
                                    "spawned")
             finally:
                 os.chdir(here)
@@ -1627,6 +1664,96 @@ class HandOff(Sessions):
         self.assertEqual(threads.in_effect(self.own(job))["thread"], tid)
         self.assertEqual(reach_of(job), reach_of(old))
         self.assertEqual(self.human_files(), [tid + ".json"])
+
+
+    def test_a_membership_decided_after_the_hand_off_read_it_stands(self):
+        for change in ("retired", "moved"):
+            with self.subTest(change=change):
+                self.fresh()
+                other = self.project_of(self.repo("other"))
+                old, oproc, tid = self.member()
+                job, _ = self.job(old)
+                self.end(oproc)
+                real, done = threads.begin, []
+
+                def begin(*a, _change=change, _old=old, _there=other, **k):
+                    if a[1] == "advance" and not done:
+                        # An older copy's write, between the hand-off's read of `old` and its record's lock.
+                        done.append(_change)
+                        if _change == "retired":
+                            self.write_own(_old, [{"kind": "retired", "by": "keeper", "reason": "retire"}])
+                        else:
+                            self.write_own(_old, [self.old_joined(_old, alias="handy", cwd=_there.root)], p=_there)
+                    return real(*a, **k)
+                with mock.patch.object(threads, "begin", side_effect=begin):
+                    self.reconcile()
+                self.assertTrue(done)
+                t = threads.get(tid)
+                self.assertEqual((t["current"], t["sessions"], t.get("pending")), (old, [old], None),
+                                 "the thread did not advance over the newer decision")
+                self.assertFalse([e for e in self.own(old) if e.get("reason") == "continued"], "no continued")
+                self.assertNotIn(tid, self.stamps(job), "the job joined no thread of the old session's")
+
+    def test_the_hooks_hand_off_of_a_predecessor_from_before_threads_waits_no_longer_than_its_deadline(self):
+        old = str(uuidlib.uuid4())
+        self.write_own(old, [self.old_joined(old, alias="older")])   # a member from before threads: no record
+        job, _ = self.job(old)
+        os.makedirs(threads.store_dir(), exist_ok=True)
+        holder = subprocess.Popen([sys.executable, "-c",
+                                   "import fcntl,sys,time\nf=open(sys.argv[1],'a')\nfcntl.flock(f,fcntl.LOCK_EX)\n"
+                                   "print('held',flush=True)\ntime.sleep(30)",
+                                   os.path.join(threads.store_dir(), ".lock")], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.stdout.close)
+        self.addCleanup(holder.kill)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        err = io.StringIO()
+        began = time.time()
+        with mock.patch.object(sminos, "_RECORD_DEADLINE", time.time() + 0.3), contextlib.redirect_stderr(err):
+            self.assertEqual(sminos.hand_off(self.p, old, job), [])
+        self.assertLess(time.time() - began, 5, "bounded by the hook's deadline")
+        self.assertIn("waits", err.getvalue())
+        self.assertEqual(self.human_files(), [], "nothing made")
+        holder.kill()
+        holder.wait()
+        self.reconcile()
+        tid = threads.thread_of(job)["thread"]
+        self.assertEqual(threads.get(tid)["sessions"], [old, job], "the next reconciliation adopts and hands off")
+
+    def test_a_record_made_for_the_job_after_the_check_is_the_threads_and_never_wins_its_lookup(self):
+        for seat in (False, True):
+            with self.subTest(seat=seat):
+                self.fresh()
+                if seat:
+                    old, tid = self.seated(alias="keeper")
+                    _, oproc = self.session(sid=old)
+                else:
+                    old, oproc, tid = self.member()
+                job, _ = self.job(old)
+                self.end(oproc)
+                made = []
+
+                def hook_meanwhile(entry, job=job, made=made):
+                    # The job's hook, between the hand-off's check and its advance's last step: a record of
+                    # its own (a seat's advance is not under the thread store's lock; another process's write
+                    # is not seen by a check already made).
+                    at = sminos.now()
+                    rec = {"v": 1, "thread": str(uuidlib.uuid4()), "opened": "human", "sessions": [job],
+                           "current": job, "alias": "", "launch": {"cwd": self.root, "at": at}, "channels": [],
+                           "created": at, "updated": at}
+                    os.makedirs(threads.store_dir(), exist_ok=True)
+                    sminos.write_json(threads._human_path(rec["thread"]), rec)
+                    made.append(rec["thread"])
+                with self.after_begin("advance", hook_meanwhile):
+                    self.reconcile()
+                self.assertTrue(made)
+                self.assertIsNone(threads.get(made[0]), "the record made meanwhile is gone")
+                self.assertEqual(threads.thread_of(job)["thread"], tid)
+                self.assertEqual(threads.get(tid)["sessions"], [old, job])
+                self.assertEqual(self.human_files(), [] if seat else [tid + ".json"])
+                self.assert_finished(tid, (old, job))
+                with self.elsewhere() as p:
+                    rows = [m for m in sminos.view_of(p).members if m.session in (old, job)]
+                    self.assertEqual([(m.session, m.thread) for m in rows], [(job, tid)])
 
 
 class LateHandOff(Sessions):
@@ -1733,6 +1860,72 @@ class LateHandOff(Sessions):
                     self.assertEqual(len([line for line in f if "cannot be absorbed" in line]), 1)
 
 
+    def test_a_jobs_record_that_changes_between_the_check_and_the_hold_is_never_deleted(self):
+        for change in ("entry", "another"):
+            with self.subTest(change=change):
+                self.fresh()
+                old, job, tid, theirs = self.late()
+                stranger = str(uuidlib.uuid4())
+
+                def meanwhile(entry, change=change, theirs=theirs, stranger=stranger):
+                    if change == "entry":   # an operation of its own begun, in a project not read here
+                        self.rewrite(theirs, lambda r: r.update(pending={
+                            "id": "e" * 32, "op": "end", "at": sminos.now(), "project": "elsewhere", "events": []}))
+                    else:                   # it holds another session by now
+                        self.rewrite(theirs, lambda r: r.update(sessions=[stranger, job]))
+                with self.after_begin("absorb", meanwhile):
+                    self.reconcile()
+                self.assertIsNotNone(threads.get(theirs), "the job's record is not deleted")
+                self.assertFalse([e for e in self.own(old) if e.get("reason") == "continued"], "nothing appended")
+                self.assertNotIn(tid, self.stamps(job))
+                if change == "entry":
+                    self.assertEqual(threads.get(tid)["pending"]["op"], "absorb", "the absorption waits for it")
+                    self.assertEqual(threads.get(theirs)["pending"]["id"], "e" * 32, "its own entry, untouched")
+                    self.assertNotEqual(reach_of(job), reach_of(old), "nothing carried while it waits")
+                    self.rewrite(theirs, lambda r: r.pop("pending"))   # that operation finished, changing nothing
+                    self.reconcile()
+                    self.assert_absorbed(old, job, tid, theirs)
+                    self.assert_finished(tid, (old, job))
+                    continue
+                t = threads.get(tid)
+                self.assertEqual((t["current"], t["sessions"], t.get("pending")), (old, [old], None),
+                                 "the advance undone: two threads")
+                self.assertEqual(threads.get(theirs)["sessions"], [stranger, job])
+                self.assertNotEqual(reach_of(job), reach_of(old), "nothing of the old session's reach")
+                with open(os.path.join(sminos.root(), "daemon.log")) as f:
+                    self.assertEqual(len([line for line in f if "cannot be absorbed" in line]), 1)
+
+    def test_a_reservation_is_an_open_entry_to_every_writer_and_one_left_by_a_dead_absorption_is_released(self):
+        old, job, tid, theirs = self.late()
+        with self.kill_before_event("retired", old), self.assertRaises(Killed):
+            self.reconcile()
+        held = threads.get(theirs)["pending"]
+        self.assertEqual((held["op"], held["by"], held["id"]), (threads.RESERVED, tid, threads.get(tid)["pending"]["id"]))
+        self.assertFalse(threads.update(theirs, {"channels": ["c"]}), "update() leaves a held record alone")
+        self.assertIsNone(threads.begin(theirs, "end", self.p, []), "no operation starts on it")
+        self.assertEqual(threads.thread_of(job)["thread"], tid, "the lookup answers the absorbing thread")
+        self.assertTrue(sminos.entry_open(job), "the hook reads it as an open entry")
+        # A mark whose absorption is gone (its entry cleared some other way) is released, nothing else changed.
+        self.rewrite(theirs, lambda r: r["pending"].update(id="f" * 32))
+        self.reconcile()
+        self.reconcile()   # the absorption waits on a mark not its own until that mark is released
+        self.assert_absorbed(old, job, tid, theirs)
+
+    def test_what_the_jobs_own_record_named_and_published_before_its_absorption_is_not_the_threads(self):
+        old, job, tid, theirs = self.late()
+        sminos.lifecycle(self.p, job, "renamed", alias="tardyjob2", name_source="user")
+        sminos.lifecycle(self.p, job, "state", state="blocked", machine=sminos.host_name())
+        sminos.lifecycle(self.p, job, "titled", title="a title of its own")
+        self.assertEqual(self.stamps(job), {theirs})
+        self.reconcile()
+        self.assert_absorbed(old, job, tid, theirs)
+        with self.elsewhere() as p:
+            [m] = [m for m in sminos.view_of(p).members if m.session == job]
+            self.assertEqual((m.alias, m.thread), ("tardy", tid), "the thread's name, not its own record's")
+            self.assertNotEqual(m.state, "blocked", "nor what it published as that record")
+            self.assertNotEqual(m.title, "a title of its own")
+
+
 class Refill(Sessions):
     def test_a_refill_keeps_the_thread_and_takes_its_reach_from_its_own_launch(self):
         old, seat_id = self.seated()
@@ -1753,23 +1946,81 @@ class Refill(Sessions):
             self.assertEqual((there.alias, there.thread, there.charge), ("worker", seat_id, "keeps the seat"))
             self.assertNotIn("m-ann", there.owners, "read on another machine's copy of the log too")
 
-    def test_a_refill_killed_after_its_records_write_or_the_old_retirement_is_finished_by_the_next_reconciliation(
-            self):
-        for cut in ("begin", "retirement"):
+    def test_a_refill_killed_at_each_write_is_finished_by_the_next_reconciliation(self):
+        for cut in ("launch", "poll", "joined"):
             with self.subTest(cut=cut):
                 self.fresh()
                 old, seat_id = self.seated()
-                killer = self.kill_after_begin() if cut == "begin" else self.kill_before_event("joined", None)
+                killer = {"launch": self.kill_after_begin(1), "poll": self.kill_after_begin(2),
+                          "joined": self.kill_before_event("joined", None)}[cut]
                 with killer, self.assertRaises(Killed):
                     self.refill(seat_id)
-                self.assertEqual(threads.get(seat_id)["pending"]["op"], "advance")
+                entry = threads.get(seat_id)["pending"]
+                self.assertEqual(entry["op"], "advance")
+                if cut == "launch":
+                    self.assertEqual(entry["events"][0]["reason"], "replaced",
+                                     "the write that detached the old session owes its retirement")
+                else:
+                    self.assertEqual(threads.in_effect(self.own(old))["reason"], "replaced")
                 self.reconcile()
                 seat = sminos.load_seat(sminos.meta_path(seat_id))
+                last = threads.in_effect(self.own(old))
+                self.assertEqual((last["reason"], last["thread"], "to" in last), ("replaced", seat_id, False))
+                self.assertEqual(len([e for e in self.own(old) if e.get("reason") == "replaced"]), 1)
+                if cut == "launch":
+                    self.assertEqual((seat["current"], seat["sessions"]), ("", [old]),
+                                     "as its launch left it: the new session is the poll's to name")
+                    self.assert_finished(seat_id, (old,))
+                    continue
                 new = seat["current"]
                 self.assertEqual(seat["sessions"], [old, new])
-                self.assertEqual(threads.in_effect(self.own(old))["reason"], "replaced")
                 self.assertEqual(threads.in_effect(self.own(new))["thread"], seat_id)
+                self.assertIn("--permission-mode", threads.get(seat_id)["launch"].get("options") or [],
+                              "the new launch's options, in the advance's own write")
                 self.assert_finished(seat_id, (old, new))
+
+    def test_a_refill_into_another_project_owes_the_displaced_sessions_retirement_in_its_own(self):
+        for cut in (None, "launch"):
+            with self.subTest(cut=cut):
+                self.fresh()
+                other = self.project_of(self.repo("other"))
+                old, seat_id = self.seated()
+                if cut:
+                    with self.kill_after_begin(1), self.assertRaises(Killed):
+                        self.refill(seat_id, cwd=other.root)
+                    self.assertEqual(threads.get(seat_id)["pending"]["project"], self.p.id)
+                    self.reconcile()
+                else:
+                    new, _, out = self.refill(seat_id, cwd=other.root)
+                    self.assertEqual(threads.in_effect(self.own(new, other))["thread"], seat_id, out)
+                last = threads.in_effect(self.own(old))
+                self.assertEqual((last["reason"], last["thread"]), ("replaced", seat_id))
+                self.assertTrue(last.get("op"), "owed by the launch's entry, in the old session's own project")
+                self.assertFalse(self.own(old, other), "nothing of it in the project the seat moved to")
+                self.assertIsNone(threads.get(seat_id).get("pending"))
+
+    def test_a_former_occupant_withdrawn_from_this_reader_lends_the_later_one_nothing(self):
+        old, seat_id = self.seated()
+        new, _, _ = self.refill(seat_id)
+
+        def withdraw(p):
+            # The hub's notice of a change that withdrew this reader from the old session (P5 O18 D6).
+            path = next(os.path.join(p.home, "log", n) for n in os.listdir(os.path.join(p.home, "log"))
+                        if n.endswith(".jsonl") and old in n and "~" not in n)
+            with open(path) as f:
+                last = [json.loads(line) for line in f][-1]
+            with open(path, "a") as f:
+                f.write(json.dumps({"ts": sminos.now(ms=True), "writer": last["writer"], "seq": last["seq"] + 1,
+                                    "kind": "unlisted", "session": old, "policyRev": 2}) + "\n")
+        with self.elsewhere() as p:
+            [m] = [m for m in sminos.view_of(p).members if m.session == new]
+            self.assertEqual((m.thread_sessions, m.charge), ((old,), "keeps the seat"), "the control")
+        with self.elsewhere(withdraw) as p:
+            self.assertFalse([m for m in sminos.view_of(p).members if m.session == old])
+            [m] = [m for m in sminos.view_of(p).members if m.session == new]
+            self.assertEqual((m.alias, m.thread), ("worker", seat_id))
+            self.assertEqual(m.thread_sessions, (), "the withdrawn session is no part of its history here")
+            self.assertNotEqual(m.charge, "keeps the seat", "nor is its in-charge line")
 
     def test_seat_add_over_a_held_seat_is_a_refill_too(self):
         old, seat_id = self.seated()
@@ -1795,19 +2046,14 @@ class Naming(Sessions):
             out += [sid, sid[:8], "%s#%s" % (alias, sid[:8])]
         return out
 
-    def assert_reached(self, alias, ids, current, who=True):
-        for p_here in (True, False):
-            ctx = contextlib.nullcontext(self.p) if p_here else self.elsewhere()
+    def assert_reached(self, alias, ids, current, who=True, edit=None, here=True):
+        for p_here in (True, False) if here else (False,):
+            ctx = contextlib.nullcontext(self.p) if p_here else self.elsewhere(edit)
             with ctx as p:
                 for name in self.names(alias, ids):
                     with self.subTest(name=name, here=p_here):
                         self.assertEqual(self.reached(p, name), current, "say")
-                        here = os.getcwd()
-                        os.chdir(self.root)
-                        try:
-                            self.assertEqual(self.target(name), current, "send")
-                        finally:
-                            os.chdir(here)
+                        self.assertEqual(self.target(name), current, "send")
                 if who:
                     for sid in ids:
                         hits = [(m.session, how) for _, m, how in sminos.who_matches(sid[:8])]
@@ -1826,6 +2072,25 @@ class Naming(Sessions):
         old, seat_id = self.seated()
         new, _, _ = self.refill(seat_id)
         self.assert_reached("worker", (seat_id, old, new), new)
+
+    def test_a_refill_whose_new_joined_arrived_before_the_old_retirement_names_the_current_session_alone(self):
+        old, seat_id = self.seated()
+        new, _, _ = self.refill(seat_id)
+
+        def not_yet(p):
+            # What has reached the other machine: the new session's joined, not yet the old one's `replaced`.
+            for n in os.listdir(os.path.join(p.home, "log")):
+                path = os.path.join(p.home, "log", n)
+                if not n.endswith(".jsonl"):
+                    continue
+                with open(path) as f:
+                    kept = [line for line in f if json.loads(line).get("reason") != "replaced"]
+                with open(path, "w") as f:
+                    f.writelines(kept)
+        with self.elsewhere(not_yet) as p:
+            both = [m.session for m in sminos.view_of(p).members if m.thread == seat_id]
+            self.assertEqual(sorted(both), sorted([old, new]), "two rows of one thread, for now")
+        self.assert_reached("worker", (seat_id, old, new), new, edit=not_yet, here=False)
 
     def test_who_names_the_session_a_commit_line_named_as_the_one_it_went_on_as(self):
         old, seat_id = self.seated()
@@ -1880,10 +2145,14 @@ class FormerRunsAgain(Sessions):
         sminos.lifecycle(self.p, again, "in-charge", text="a new line of its own", source="set")
         sminos.forget_caches()
         self.assertEqual(self.shown(self.p, went_on), shown, "nothing the first thread shows changes")
+        for name in (again, again[:8]):
+            self.assertEqual(self.target(name), again, "send: its id names it, here too")
+        self.assertEqual([m.session for _, m, _ in sminos.who_matches(again[:8])], [again], "and who")
         with self.elsewhere() as p:
             self.assertEqual(self.shown(p, went_on), shown)
             for name in (again, again[:8]):
                 self.assertEqual(self.reached(p, name), again, "its id names it, not the thread that went on")
+                self.assertEqual(self.target(name), again, "send")
             self.assertEqual(self.reached(p, "second-life"), again)
 
     def test_a_handed_off_session_resumed_by_id(self):
@@ -1908,23 +2177,135 @@ class FormerRunsAgain(Sessions):
         self.check(old, new, seat_id, shown)
 
 
-class ThreadIdNamesNoSession(Sessions):
+class Hub(Sessions):
+    """M2's different-audience fixture: a machine cut over to its endpoint
+    (identity.json, the capabilities `access` and `reach`), and `work` one
+    of org-1's hub projects, so a private session's own events go under its
+    stream (`<writer>~<digest>`), which needs the endpoint's audience at its
+    record's policyRev, and fail closed without it."""
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(os.path.join(os.environ["SMINOS_HOME"], "daemon"), mode=0o700)
+        os.environ["MAWS_USER_DATA"] = os.path.join(self.home, "m")
+        self.addCleanup(os.environ.pop, "MAWS_USER_DATA", None)
+        sminos.write_json(sminos.sibling_module("sminos_rl10").identity_path(), {
+            "org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {}, "ref": "machine-ref-1",
+            "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"},
+            mode=0o600)
+        self.au = sminos.audience_module()
+        self.au.keep_capabilities(["access", "reach"])
+        code, out = self.cli("project", "init", "--name", "work")
+        self.assertEqual(code, 0, out)
+        smns = os.path.join(self.root, ".smns")
+        with open(smns) as f:
+            d = json.load(f)
+        d["hub"] = {"url": "http://127.0.0.1:9", "org": "org-1"}
+        with open(smns, "w") as f:
+            json.dump(d, f)
+        self.p = self.project_of(self.root)
+        self.assertEqual(sminos.project_kind(self.p), "hub")
+
+    def heard(self, sid):
+        """The endpoint's audience for the session at its record's policyRev, as the uplink keeps it."""
+        rec = records.read(sid)
+        members = list(rec["owners"]) + [x["member"] for x in rec.get("shares") or []]
+        self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(
+            sid, rec["owners"], members, rec["policyRev"])}))
+
+    def private(self, sid):
+        records.set_policy(sid, lambda a, shares: ("private", shares))
+        self.heard(sid)
+
+    def plain(self, sid):
+        """The session's events under its plain writer: what a reader of the project's whole log reads."""
+        return [e for e in sminos.log_read(self.p) if e["writer"] == sminos.writer_id(sid)]
+
+    def streams(self, sid):
+        """{writer: its events} of the session's audience streams, each as a reader admitted to it alone reads it."""
+        out = {}
+        for e in sminos.log_read(self.p):
+            if e["writer"] != sminos.writer_id(sid) and sminos.writer_session(e["writer"]) == sid:
+                out.setdefault(e["writer"], []).append(e)
+        return out
+
+    def quiet(self):
+        return contextlib.redirect_stderr(io.StringIO())
+
+
+class PrivateHandOff(Hub):
+    """A hand-off from a private session: the job's first publication is
+    under the predecessor's reach, or there is none yet."""
+
+    def handing(self):
+        old, oproc, tid = self.member()
+        self.private(old)
+        job, _ = self.job(old)
+        records.establish(job, records.default_provenance("hook"))   # its own hook's record, the defaults
+        self.end(oproc)
+        return old, job, tid
+
+    def assert_published_under_its_reach(self, old, job, tid):
+        self.assertFalse([e for e in self.plain(job) if e["kind"] == "joined"], "no joined on the plain stream")
+        with self.quiet():
+            self.reconcile()
+        self.assertFalse([e for e in self.plain(job) if e["kind"] == "joined"], "nor once its reach is carried")
+        self.assertEqual(reach_of(job), reach_of(old))
+        self.assertEqual(threads.get(tid)["pending"]["carry"], [old, job], "open: no audience for the job yet")
+        self.heard(job)
+        self.reconcile()
+        self.assert_finished(tid, (old, job))
+        self.assertFalse(self.plain(job), "nothing of the job's under its plain writer")
+        [(writer, events)] = self.streams(job).items()
+        self.assertEqual(events[0]["kind"], "joined", "its first publication, on its private stream")
+        self.assertEqual(events[0]["thread"], tid)
+
+    def test_a_policy_write_that_fails_keeps_the_entry_open_and_publishes_nothing(self):
+        old, job, tid = self.handing()
+        with mock.patch.object(records, "establish", side_effect=OSError("disk full")), self.quiet():
+            self.reconcile()
+        self.assertEqual(records.read(job)["owners"], ["@machine"], "the job's record as it was")
+        self.assertFalse([e for e in self.plain(job) if e["kind"] == "joined"], "nothing of the job published")
+        self.assertFalse([e for e in self.own(old) if e.get("reason") == "continued"])
+        entry = threads.get(tid)["pending"]
+        self.assertEqual((entry["op"], entry["carry"]), ("advance", [old, job]), "the entry stays open")
+        self.assert_published_under_its_reach(old, job, tid)
+
+    def test_a_retirement_an_older_copy_wrote_still_carries_the_reach_first(self):
+        old, job, tid = self.handing()
+        self.write_own(old, [{"kind": "retired", "by": "", "reason": "continued", "to": job}])   # unstamped
+        self.assert_published_under_its_reach(old, job, tid)
+
+
+class ThreadIdNamesNoSession(Hub):
+    """A thread's id told to a reader of a later session's stream alone,
+    whose reach is not the earlier one's."""
+
     def test_a_human_opened_threads_stamp_names_no_session_of_it_and_a_refilled_seats_is_its_seat_field(self):
         old, oproc, tid = self.member()
         job, _ = self.job(old)
         self.reconcile()
         self.end(oproc)
         self.reconcile()
-        sessions = set(threads.get(tid)["sessions"])
-        later = [e for e in sminos.log_read(self.p) if e.get("session") == job]
-        self.assertTrue(later)
-        self.assertFalse({e.get("thread") for e in later} & sessions,
-                         "a reader of the later session's events finds no id of an earlier one in `thread`")
+        self.assertEqual(threads.get(tid)["sessions"], [old, job])
+        self.private(job)   # its reach changes: what follows is for its new audience alone
+        sminos.lifecycle(self.p, job, "renamed", alias="handy-later", name_source="user")
+        sminos.lifecycle(self.p, job, "in-charge", text="a line for the later audience", source="set")
+        [(writer, later)] = self.streams(job).items()
+        self.assertEqual([e["kind"] for e in later if e["kind"] != "state"][-2:], ["renamed", "in-charge"])
+        self.assertEqual({e.get("thread") for e in later}, {tid})
+        self.assertFalse({e.get("thread") for e in later} & {old, job},
+                         "a reader of the later stream alone finds no session's id in `thread`")
         seat_old, seat_id = self.seated()
         new, _, _ = self.refill(seat_id)
-        for e in sminos.log_read(self.p):
-            if e.get("session") == new and e["kind"] == "joined":
-                self.assertEqual(e["thread"], e["seat"], "a refilled seat's `thread` is what `seat` publishes")
+        self.private(new)
+        sminos.lifecycle(self.p, new, "in-charge", text="the refilled seat's own line", source="set")
+        joined = [e for e in sminos.log_read(self.p) if e.get("session") == new and e["kind"] == "joined"]
+        self.assertTrue(joined)
+        for e in joined:
+            self.assertEqual(e["thread"], e["seat"], "a refilled seat's `thread` is what `seat` publishes")
+        [(writer, later)] = self.streams(new).items()
+        self.assertEqual({e.get("thread") for e in later}, {seat_id})
 
 
 class OtherStarts(Sessions):
