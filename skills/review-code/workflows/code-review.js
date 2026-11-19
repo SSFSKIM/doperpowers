@@ -36,7 +36,7 @@
 
 export const meta = {
   name: 'code-review',
-  description: 'Independent code review by effort level: a single reviewer (low/medium/high) or the multi-lens panel with one binding verifier (xhigh/max)',
+  description: 'Engine of the doperpowers:review-code skill, which pins the range and passes the args this needs: a single reviewer (low/medium/high) or the multi-lens panel with one binding verifier (xhigh/max)',
   phases: [
     { title: 'Derive', detail: 'panel levels: read the diff, write the scalpel lenses' },
     { title: 'Find', detail: 'the reviewer, or the lens-free sweep + one reviewer per lens' },
