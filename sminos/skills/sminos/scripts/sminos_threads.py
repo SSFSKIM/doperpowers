@@ -347,8 +347,11 @@ def thread_of(session, ended=True):
     whose current session it is, one its human opened (set aside or not)
     before a seat (an older CLI can have given such a session a seat); one
     that had it: a live one, the latest changed, else one set aside, the
-    latest changed. The records set aside are looked up through their index
-    (_aside_index), and not at all with `ended` False (stamp)."""
+    latest changed. A session one only had is that thread's for a lookup
+    (the stamp of an event about it, a name); a process that runs it again
+    makes it a thread of its own (ensure). The records set aside are looked
+    up through their index (_aside_index), and not at all with `ended`
+    False (stamp)."""
     if not session:
         return None
     live = all_threads()
@@ -380,6 +383,16 @@ def stamp(session):
 def record_ended(record):
     """Whether this machine's record says the thread has ended."""
     return bool((record or {}).get("ended"))
+
+
+def absorbable(record, session):
+    """Whether a thread that goes on in `session` may absorb `record`, the
+    record that session got of its own before its hand-off was read
+    (Interfaces §6, row 5): one its human opened, not ended, holding that
+    one session, with no open entry. Read before anything of reach is
+    carried."""
+    return (record is not None and record["opened"] == "human" and not record_ended(record)
+            and record["current"] == session and record["sessions"] == [session] and not record.get("pending"))
 
 
 # ------------------------------------------------------------ writing
@@ -568,14 +581,14 @@ def _ensure_seat(seat, project, events, deadline):
 
 
 def _create_human(session, sessions, cwd, deadline):
-    """A record for a session no thread holds, under a minted id; under the
-    store's lock the store is read again, and the record that holds the
-    session by then (another process made it, or an ended one had it) is
-    the answer instead."""
+    """A record for a session no thread holds as its current one, under a
+    minted id; under the store's lock the store is read again, and the
+    record whose current session it is by then (another process made it,
+    or an ended one has it) is the answer instead."""
     with _human_lock(deadline):
         live = _human_threads()
         for t in live + _aside_holding(session, live):
-            if t["current"] == session or session in t["sessions"]:
+            if t["current"] == session:
                 return t
         at = sminos.now()
         rec = {"v": V, "thread": str(uuid.uuid4()), "opened": "human", "sessions": sessions, "current": session,
@@ -591,8 +604,11 @@ def ensure(session, seat=None, project=None, events=None, lock_until=None):
     earlier sessions are found in); for a session no seat holds, a record
     in the thread store under a minted id, whose `sessions` are its
     continuation chain in `project`'s log (`events`) when one is given — an
-    adoption — and the session alone otherwise. A thread is established
-    for a lane A session alone: for a lane B session, the live record it
+    adoption — and the session alone otherwise. A session a thread only had
+    (one it handed off, a seat's replaced occupant) that runs again is
+    another thread (Interfaces §6, row 15): it gets a record of its own, and
+    the thread that went on keeps it in its `sessions`. A thread is
+    established for a lane A session alone: for a lane B session, the live record it
     has (its end is stamped: §6, row 13), else None, never one set aside. A spawn's child that no seat holds yet is the caller's to leave
     alone first (awaits_seat). LockBusy past `lock_until`, nothing written."""
     if seat is not None:
@@ -603,7 +619,7 @@ def ensure(session, seat=None, project=None, events=None, lock_until=None):
         # A lane B session is never made a thread, nor returned: only a live record it has is its own.
         return thread_of(session, ended=False)
     have = thread_of(session)
-    if have is not None:
+    if have is not None and have["current"] == session:
         return have
     chain = list(reversed(sminos.lineage_of(project, session, events=events))) if project is not None else []
     cwd = sminos.launch_cwd(session, fallback=str((sminos.session_running(session) or {}).get("cwd") or ""))
@@ -709,7 +725,8 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
     aside back) and the entry, in one write. Each event owed is whole (its
     kind, its session, its fields), stamped with the thread when it names
     no thread of its own. `more`: the entry's other keys (`settle`, `last`,
-    `other`). The entry as written, None when nothing was."""
+    `other`). A `current` the change sets is added to `sessions`, last (an
+    advance, an absorption). The entry as written, None when nothing was."""
     if op not in OPS:
         raise ValueError("not a journaled operation: %r" % (op,))
     owed = []
@@ -728,6 +745,10 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
             raw[k] = copy.deepcopy(v)
         for k in remove:
             raw.pop(k, None)
+        current = str(raw.get("current") or "")
+        if current and current not in view["sessions"]:
+            # An advance or an absorption names its new session: `sessions` gains it, last.
+            raw["sessions"] = view["sessions"] + [current]
         raw["pending"] = entry
         return "live" if op == "return" else True
 
@@ -753,7 +774,7 @@ def _owe(project, entry, event, appended, append):
     return bool(got) or _holds(project, session, kind, entry["id"])
 
 
-def finish(thread_id, appended=None, project=None, append=None, lock_until=None):
+def finish(thread_id, appended=None, project=None, append=None, lock_until=None, before=None):
     """Carries out the record's open entry from where it stands, and clears
     it (§6, steps 2 to 4): each event the log does not hold yet; then, in
     one write, the entry removed and an end's record set aside or deleted
@@ -766,7 +787,9 @@ def finish(thread_id, appended=None, project=None, append=None, lock_until=None)
     `lock_until`: the hook's deadline for the last write (LockBusy past it,
     the entry left open). The alias a human-opened thread's owed `joined` or
     `renamed` carries is copied in that write, since update() leaves a
-    record with an open entry alone."""
+    record with an open entry alone. `before(project, entry)`: the steps
+    that come before the events, each safe to repeat (a hand-off's reach,
+    cursor and override: sminos.carry_hand_offs), run at every attempt."""
     appended = [] if appended is None else appended
     t = get(thread_id)
     entry = (t or {}).get("pending")
@@ -776,6 +799,8 @@ def finish(thread_id, appended=None, project=None, append=None, lock_until=None)
         project = sminos.known_project(str(entry.get("project") or ""))
     if project is None:
         return False
+    if before is not None:
+        before(project, entry)
     for event in entry.get("events") or []:
         if not _owe(project, entry, event, appended, append or sminos.lifecycle):
             return False

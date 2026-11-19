@@ -346,6 +346,12 @@ record forked "$S10" "$REPO"
 guide "$(payload "$S10" "$REPO" "$T/none.jsonl" | sed 's/"startup"/"fork"/')"
 assert_contains "$(head -1 <<<"$OUT")" "forked [0a00000a]" "the fork is named"
 assert_contains "$(head -1 <<<"$OUT")" "You are a fork" "and told it is one"
+assert_contains "$(head -1 <<<"$OUT")" "a copy, with a session id and a name of your own" \
+  "a copy with an identity of its own"
+assert_contains "$(head -1 <<<"$OUT")" "Every sminos line above this one was written for the session you were copied from" \
+  "whose sminos lines above were written for the session it was copied from"
+assert_contains "$(head -1 <<<"$OUT")" "messages addressed to it are not for you" \
+  "and whose messages are not for it"
 guide "$(payload "$S10" "$REPO" "$T/none.jsonl")"
 assert_not_contains "$OUT" "You are a fork" "a session that is no fork is not told so"
 

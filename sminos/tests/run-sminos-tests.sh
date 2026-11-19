@@ -3989,7 +3989,7 @@ handoff_tx "$LO" "$LN"
 rm -f "$HOME/.claude/sessions/pf-tardy.json"
 run "$SMINOS" list
 assert_equals "$(events_of "$LO")" "joined retired:continued " "the exit is read as the hand-off, not an end"
-assert_equals "$(events_of "$LN")" "joined renamed " "the job is renamed to the alias it carries on"
+assert_equals "$(events_of "$LN")" "joined joined " "the job is joined again under the thread it carries on, and its alias"
 assert_equals "$(json_row tardy session)" "$LN" "and is the member"
 assert_not_contains "$OUT" "tardyjob" "no longer listed under its title"
 rm -f "$HOME/.claude/sessions/pf-tardyjob.json"
