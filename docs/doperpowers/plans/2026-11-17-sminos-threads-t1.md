@@ -1547,7 +1547,7 @@ Each file is one JSON object, mode 0600, written by atomic replace.
 | `swept` | timestamp, or absent | the `stopped` for which the sweep has closed the thread's open questions |
 | `ended` | `{"at": timestamp, "reason": "retire" or "ended", "by": string, "pid": integer or null}`, or absent | the end: who retired it (`by`, `""` for the rule) and the process seen then |
 | `released` | `{"alias": string, "at": timestamp}`, or absent | the name the thread gave up at a `/clear` (M3): alias selection refuses it to the thread until a process started after `at` holds its session |
-| `pending` | object, or absent | the journal: the one open entry of a transition that is not finished (§6) |
+| `pending` | object, or absent | the journal: the one open entry of a transition that is not finished, or the reservation an absorption holds on the record it will delete (§6) |
 | `created`, `updated` | timestamps | |
 
 A human-opened file holds exactly these, and `"v": 1`. A seat record gains
@@ -1713,7 +1713,7 @@ write, under its store's lock, is each transition's linearization point.
 | 3 | a member or seat from before threads, or a member an older copy joined | this machine's, lane A, its membership in effect an unstamped `joined` | `ensure`, its `sessions` rebuilt | `joined` again, stamped |
 | 4 | the engine hands a session to a background job | `continued_in`'s evidence, as today | **advance**: `current` old to new, new added to `sessions` | `hand_off`'s own steps (the reach by `ensure_record(new, former=[old])`, the cursor, the override), then `retired` `continued` on the old and `joined` or `renamed` on the new, one stamp |
 | 5 | the same, when the job already has a record of its own; a launcher that learns its session after the bound | that record is human-opened, not ended, holds the one session and has no open entry (read before row 4's reach is carried) | **absorb**: as an advance, the entry naming that record | as row 4, the new session's `joined` under the stamp of the thread that goes on; then that record is deleted |
-| 6 | a refill | the seat's lock, as today; refused when a human-opened record names the seat's session | **advance**; an ended seat's `ended` lifted in the same write | `retired` `replaced` on the old, `joined` on the new, one stamp |
+| 6 | a refill | the seat's lock, as today; refused when a human-opened record names the seat's session | two **advances**, each recoverable alone: the launch's write (`current` emptied, the launch's fields, an ended seat's `ended` lifted) and the poll's write (`current` the new session, its `launch`) | the launch's entry owes `retired` `replaced` on the old, in the old session's project; the poll's owes `joined` on the new; two `op`s, one stamp |
 | 7 | no process holds `current` | two consecutive sweep passes, no resume lock held | `update`: `stopped` set | none; `state` `stopped` with `wake`, as `publish_state` finds it |
 | 8 | a process holds `current` again | — | `update`: `stopped` and `swept` removed, and `released` when the process started after it | none; what was held is delivered at the next pass |
 | 9 | `retire`, by another or by itself | M5's answer is none, or unknown with the terminal's flag | **end**: `ended` with reason `retire` and the process seen | `retired` `retire`, stamped; what is held is settled; the record set aside. The verb then stops the process where sminos can |
@@ -1737,7 +1737,13 @@ nothing else. The entry:
                 "events": [<each event owed, whole and in order: its kind, its session, its fields>],
                 "settle": <session>,        # end: what is held for it is settled `recorded`
                 "last": "aside" | "purge",  # end: what becomes of the record (absent for a seat that stays)
-                "other": <thread id>}       # absorb: the record deleted last
+                "other": <thread id>,       # absorb: the record deleted last
+                "carry": [<old>, <new>],    # advance out of `hand_off`: the reach to carry before any event
+                "was": {...}, "unset": [...]}  # absorb: the advance's prior values, to undo a lost hold
+
+    "pending": {"id": <the absorbing entry's id>, "op": "reserved", "by": <the absorbing thread>,
+                "project": ..., "at": ..., "events": []}
+                                            # on the record an absorption will delete: its hold
 
 1. *Begin.* One write, under the store's lock: the record's change and
    the entry. It is refused while the record has an open entry; the caller
@@ -1750,13 +1756,26 @@ nothing else. The entry:
    publication of its owners) is read then; the rest is the entry's. For
    an advance out of `hand_off`, that function's steps that come before
    its events (the reach, the cursor, the override) are run first, each of
-   which is safe to repeat.
+   which is safe to repeat; the entry's `carry` names the reach to carry,
+   whatever events it still owes, and no event is appended until the
+   job's record holds provenance no weaker than its predecessor's
+   (`carried`): until then the entry stays open.
+   An absorption's first step is its hold: under the absorbed record's own
+   store lock, while that record is still absorbable, a `pending` of op
+   `reserved` naming the absorbing entry. A reservation is an open entry to
+   `begin`, `update` and the hook, and `thread_of` passes it by. If the
+   record has an open entry of its own, the absorption waits; if it is no
+   longer absorbable, a hand-off's advance is undone from `was` and
+   `unset` and nothing is appended, and a refill goes on without deleting
+   it. A reservation whose absorbing entry is gone is released.
 3. *What follows the events:* for an end, what is held for `settle` is
    settled.
 4. *The last step,* one write: `pending` is removed, and in that same
    write an end's record is moved aside or deleted as `last` says, after
    its settlement has succeeded; for an absorption the other record is
-   deleted first.
+   deleted first, only while its reservation is this entry's, and any other
+   human-opened record whose current session the advance made current, with
+   no open entry and no session the thread does not hold, is deleted too.
 5. *Replay.* A reconciliation that finds a record of this machine with an
    open entry for its project calls `finish`, which runs steps 2 to 4 from
    the entry, and does nothing else to that record in that pass. Any
@@ -2244,6 +2263,23 @@ Found while executing:
     `ended` written for a refilled seat's displaced occupant needs it;
   - row 6's check for a human-opened record under the seat's lock is left
     to M3, with both places that start a process for a seat.
+- 2026-11-19 — **M2's review, first wave** (the holder's word on what it
+  changed): the journal gains an advance's `carry: [old, new]`, held open
+  until the job's provenance is durable, and an absorption's hold, a
+  `pending` of op `reserved` on the record it will delete (Interfaces §1,
+  §6, as built); a refill is two journaled advances, the launch's write
+  owing the displaced session's `replaced` and the poll's owing the new
+  `joined`, with two `op`s under one stamp, since the two writes happen at
+  two times and each must be recoverable alone (§6 row 6 amended; the
+  alternative, keeping `current` on the old occupant and teaching
+  `caller_seat` a filling marker, was judged worse); a rival record that
+  holds a session the thread never had is left as it is, since no path
+  makes one; `list` may show two rows of one thread only while a remote
+  machine's log lacks the old session's retirement, and name resolution
+  picks the current one (`thread_current`); a hand-off rechecks the old
+  session's membership event and project under its lock; a thread's alias,
+  name source and state are read per episode; same-thread history skips
+  withdrawn rows; the hook's `ensure(old)` carries its deadline.
 
 ## Outcomes & Retrospective
 
