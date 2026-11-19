@@ -493,6 +493,9 @@ class Delivery(unittest.TestCase):
             project = project_of(self.root)
             sminos.reconcile(project)
             alias = member_of(project, sid).alias
+            # A closed session that is no member (lane B, its end reconciled): a stopped thread is reported after
+            # its delivery pass instead (T1's M3, sminos_outcomes.report_held).
+            self.assertTrue(sminos.records_module().set_controller(sid, "B"))
             gone.end()
             sminos.forget_caches()
             view = sminos.view_of(project, titles=False)

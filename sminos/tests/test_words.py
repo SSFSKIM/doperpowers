@@ -30,6 +30,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid as uuidlib
 from pathlib import Path
 from unittest import mock
 
@@ -1483,6 +1484,56 @@ class Held(WordsRig):
         sminos.deliver_verdict(self.hp, member(S1), e, "words")
         self.assertEqual(self.bridged(), [("hub/mem-1", 1)])
 
+
+    def test_a_clear_in_the_same_process_is_held_at_every_push_and_ask(self):
+        """The process that ran S1 runs another session after a `/clear`
+        while this process's copy of the engine's records still names S1
+        running: each boundary that would push or ask reads them afresh and
+        holds, pushing and asking nothing."""
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        self.session(self.hp, S1, inbox=True)
+        d = os.path.join(os.environ["HOME"], ".claude", "sessions")
+        path = next(os.path.join(d, n) for n in os.listdir(d) if json.loads(Path(d, n).read_text())["sessionId"] == S1)
+        rec = json.loads(Path(path).read_text())
+        link = self.link()
+
+        def stale():
+            Path(path).write_text(json.dumps(rec))
+            sminos.forget_caches()
+            sminos.peer_records()
+            self.assertEqual(sminos.hold_for(S1), "", "this process's copy: S1 runs")
+            Path(path).write_text(json.dumps(dict(rec, sessionId=S3)))   # the /clear: the same pid, another id
+        for name, call in (("words verdict", lambda: sminos.deliver_verdict(self.hp, member(S1), e, "words")),
+                           ("peer verdict", lambda: sminos.deliver_verdict(self.hp, member(S1), e, "peer")),
+                           ("reach verdict", lambda: sminos.deliver_reach(self.hp, member(S1), e, "deliver")),
+                           ("the delivery pass", lambda: [o for _, o in sminos.deliver_next(
+                               self.hp, member(S1))["outcomes"]][0]),
+                           ("a push", lambda: sminos.push_member(member(S1), "x", True))):
+            with self.subTest(name):
+                stale()
+                self.assertEqual(call(), sminos.HELD_HUMAN)
+        stale()
+        link.ask_peer({"key": (self.hp.id, S1, "hub/mem-1"), "project": self.hp, "member": member(S1), "event": e})
+        self.assertEqual(link.session_lane.take(), [], "no reach? asked")
+        self.assertEqual(self.bridge, [], "nothing pushed")
+        self.assertEqual(self.inbox(S1), [])
+
+    def test_a_seated_one_on_send_wait_is_recorded_and_exits_4_without_waiting(self):
+        """An older copy's seat holding the stopped S1 (D7): an operator's
+        `send --wait` on this cut-over machine, whose words the gate holds,
+        is recorded and owed, waits for nothing and exits 4."""
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": S1, "alias": "w", "group": "g", "cwd": self.hp.root,
+                                  "status": "idle"})
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        r = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "send", "g/w", "while away", "--wait"],
+                           cwd=self.hp.root, env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("recorded and held", r.stdout)
+        self.assertIn("nothing was started", r.stderr)
+        sminos.forget_caches()
+        self.assertEqual([x["text"] for x in sminos.owed(self.hp, member(S1))], ["while away"])
+        self.assertEqual(self.bridge, [])
 
 class Sends(WordsRig):
     """A session's `send` is a peer's and is pushed at once, with every

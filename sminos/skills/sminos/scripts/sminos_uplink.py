@@ -1037,7 +1037,7 @@ class Link:
         again by a later pass. A session that stopped while its words were
         asked about, and that this machine now holds (sminos.hold_for, M3),
         is asked nothing more: the event stays owed for its reopening."""
-        if self.session_lane.queued() >= UPLOAD_AHEAD or sminos.hold_for(held["member"].session):
+        if self.session_lane.queued() >= UPLOAD_AHEAD or sminos.hold_for(held["member"].session, fresh=True):
             return
         e, project = held["event"], held["project"]
         ask = os.urandom(12).hex()
@@ -2051,7 +2051,7 @@ class Link:
                     return
                 for sid, e, kind in owed:
                     key = (pid, sid, e["writer"])
-                    if key in self.asked:
+                    if key in self.asked or sminos.hold_for(sid, fresh=True):   # held since the pass read it (M3)
                         continue
                     if isinstance(e.get("verified"), dict) and (revoked is None or rl10.event_revoked(e, revoked)):
                         if revoked is not None:

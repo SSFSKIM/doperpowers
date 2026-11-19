@@ -4511,6 +4511,10 @@ def _reconcile(project, events, local, by_session, all_seats=None):
         if sid in busy:
             continue
         if (latest.get(sid) == "joined") if peer else (sid in latest):
+            if latest.get(sid) == "joined" and seat is not None and not peer and (ended := end_lane_b_seat(
+                    project, sid, seat)):
+                out += ended   # row 13 for a seat: a spawned thread turned lane B, its process ended
+                continue
             if latest.get(sid) == "joined":
                 # A member with no record (an older binary joined it), or a
                 # provisional one its lineage can now settle (an older
@@ -4566,6 +4570,26 @@ def end_closed(project, sid, events, joined=None):
         return latest_membership(evs) == "joined" and gone()
 
     return lifecycle(project, sid, "retired", guard=ended, required=False, by="", reason="ended")
+
+
+def end_lane_b_seat(project, sid, seat):
+    """Row 13 for a seat (Interfaces §6): a spawned thread whose session
+    turned lane B and whose process then ended leaves with its process, its
+    end journaled as end_seat journals one — the record first (`status`
+    retired and `ended`, reason `ended`, with the event owed, in one write),
+    then the stamped `retired` — and the seat stays, reading `retired`. An
+    ordinary seat (lane A, or none of the thread keys) is not touched; nor
+    is one whose process runs, or that ended already."""
+    threads = threads_module()
+    if "opened" not in seat or seat.get("status") == "retired" or isinstance(seat.get("ended"), dict) \
+            or threads.lane_a(sid) or session_running(sid):
+        return []
+    at = now()
+    return thread_transition(
+        project, seat["seat_id"], "end", [{"kind": "retired", "session": sid, "by": "", "reason": "ended"}],
+        fields={"status": "retired", "updated": at, "ended": {"at": at, "reason": "ended", "by": "", "pid": None}},
+        guard=lambda t: t["current"] == sid and not threads.record_ended(t) and not session_running(sid),
+        settle=sid)
 
 
 def join_stopped(project, sid, thread, in_effect):
@@ -5783,7 +5807,8 @@ def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
     elif rec:
         state_word = peer_state(rec)
     else:
-        state_word = "stopped" if transcript_path(sid) else "gone"
+        # A thread its human opened that no process holds is stopped by its record (M3: held), transcript or none.
+        state_word = "stopped" if hold_for(sid) or transcript_path(sid) else "gone"
     if rec and isinstance(rec.get("updatedAt"), (int, float)) and not isinstance(rec["updatedAt"], bool):
         active = max(0.0, time.time() - rec["updatedAt"] / 1000.0)
     if seat:
@@ -6026,11 +6051,12 @@ def push_words(project, session, e, gate, owed):
 HELD_HUMAN = "held:human"   # the hold's outcome (M3): owed, no attempt counted (holder_waiting), nothing pushed
 
 
-def hold_for(session):
+def hold_for(session, fresh=False):
     """Whether this machine holds delivery for the session
     (sminos_threads.hold_of): "human" for a stopped thread its human opened,
-    "" otherwise."""
-    return threads_module().hold_of(session)
+    "" otherwise. `fresh` at a boundary that pushes or asks: the engine's
+    records read afresh first (hold_of)."""
+    return threads_module().hold_of(session, fresh=fresh)
 
 
 def wake_of(member):
@@ -6042,6 +6068,20 @@ def wake_of(member):
     if member.local:
         return "held" if hold_for(member.session) else "woken"
     return member.wake or None
+
+
+def woken_line(machine):
+    """What a sender is told of a message to a stopped member another
+    machine published `woken` for (X3): that machine resumes it with it."""
+    return "recorded (on %s): the session is stopped, and its machine wakes it with this" % machine
+
+
+def remote_line(member):
+    """The sender's line for a member of another machine by what that
+    machine published of it (X3): held, woken, or None for nothing
+    published (today's line, the caller's)."""
+    wake = wake_of(member) if member.state == "stopped" else None
+    return held_line(member.machine) if wake == "held" else woken_line(member.machine) if wake == "woken" else None
 
 
 def held_line(machine=""):
@@ -6115,7 +6155,7 @@ def deliver_next(project, member):
     if gate is not None:
         result["gated"] = []
     with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
-        hold = hold_for(session)
+        hold = None   # asked at the first push, afresh (hold_for)
         events = log_read(project)
         record = delivered_load(project, session)
         streams = {}
@@ -6141,7 +6181,7 @@ def deliver_next(project, member):
                         break
                     if outside and policy.read_only():
                         outcome = outcomes.READ_ONLY
-                    elif hold:
+                    elif hold or hold is None and (hold := hold_for(session, fresh=True)):
                         # Held (M3): pushed nothing and asked nothing. An event for the live alone (an @all,
                         # a broadcast) settles as for a stopped seat; an addressed one stays owed.
                         outcome = "recorded" if e.get("wake") else HELD_HUMAN
@@ -6633,7 +6673,7 @@ def deliver_verdict(project, member, event, verdict):
                 outcome = outcomes.REFUSED_WORDS
                 daemon_log("the endpoint refused %s (%s) as words into %s: nothing delivered" % (
                     event_ref(e), project.name, session))
-            elif hold_for(session):
+            elif hold_for(session, fresh=True):
                 outcome = HELD_HUMAN   # stopped since it was asked about: pushed nothing, still owed (M3)
             else:
                 outcome = holder_push(project, member, session, e, events, cursor, words=verdict == "words",
@@ -6800,7 +6840,7 @@ def deliver_reach(project, member, event, verdict, reason=None):
                 outcome = outcomes.REFUSED_REACH
                 daemon_log("the endpoint refused %s (%s) reach into %s: %s; nothing delivered" % (
                     event_ref(e), project.name, session[:8], reason or "no reason given"))
-            elif hold_for(session):
+            elif hold_for(session, fresh=True):
                 outcome = HELD_HUMAN   # stopped since it was asked about: pushed nothing, still owed (M3)
             else:
                 with reach_permit(project, session, e):
@@ -7298,7 +7338,16 @@ class ResumeHeld(ResumeRefused):
     """resume_session's hold (T1's M3): the seat holds a session its human
     opened (an older copy gave it a seat, D7), for which no verb starts a
     process; the caller records its message as an addressed one, held like
-    any (hold_verb), and starts nothing."""
+    any (hold_verb), and starts nothing. `seat`: the seat as it was checked
+    under its lock, whose session and project the message goes to."""
+
+    def __init__(self, message, seat):
+        super().__init__(message)
+        self.seat = seat
+
+    def record(self, text):
+        """hold_verb for the session the check found held."""
+        hold_verb(seat_project(self.seat), self.seat["current"], self.seat["alias"], text)
 
 
 def opened_by_human(session):
@@ -7314,20 +7363,20 @@ def human_refusal(alias):
             % alias)
 
 
-def hold_verb(project, session, alias, text, sender="", via=""):
+def hold_verb(project, session, alias, text, sender="", via="", machine=""):
     """What `resume`, `fill --resume` and `send --wait` do aimed at a
     session its human opened (T1's M3, D1): the message recorded as an
     addressed one, held as any is until its human reopens the session (or
     delivered by the daemon, should it run), and exit 4, the code for a
     target a verb cannot reach now, saying that nothing was started and
-    why."""
+    why. `machine`: another machine that holds it (its published `wake`)."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     sender = sender or ("human" if not sid else default_from(""))
     e = record_message(project, session, alias, sender, via or sender, text, uuidlib.uuid4().hex[:8], deliver=False)
     if isinstance(e, WaitingSend):
         e.recorded_owed(alias)
     else:
-        print("recorded %s for %s" % (event_ref(e), alias))
+        print("recorded %s for %s: %s" % (event_ref(e), alias, held_line(machine)))
         nudge_daemon()
     die("nothing was started: %s; it reads the message when its human reopens it" % human_refusal(alias),
         EXIT_UNKNOWN)
@@ -7351,10 +7400,12 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
     session = session or member.session
     verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
     if member.seat is None:
-        peer = peer_for_session(session)
+        # First, afresh (M3): a process's record that names another session now (a `/clear`) is no peer of this one.
+        hold = hold_for(session, fresh=True)
+        peer = None if hold else peer_for_session(session)
         if not peer:
             # A stopped thread its human opened is held (M3): an addressed message stays owed for its reopening.
-            return HELD_HUMAN if tagged and hold_for(session) else "recorded"
+            return HELD_HUMAN if tagged and hold else "recorded"
         try:
             control_module().push_live(peer, session, text, event, project, **verdict)
             return "sent"
@@ -7488,8 +7539,7 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
             # Owed to it in the log; its own machine's daemon delivers it,
             # once this machine's daemon has pushed it: ask for that now. A
             # stopped session its machine says it holds (X3) is said so.
-            held_there = member.state == "stopped" and wake_of(member) == "held"
-            print("%s: %s" % (name(r), held_line(member.machine) if held_there else "recorded (on %s)" % member.machine))
+            print("%s: %s" % (name(r), remote_line(member) or "recorded (on %s)" % member.machine))
             nudge_daemon()
             continue
         result = deliver_next(dest, member) if member else {"outcomes": []}
@@ -8629,10 +8679,10 @@ def record_session(project, session, tpath, event, last_message="", source=""):
         return   # a spawn's child: its seat joins it once its launcher learns its id
     if event == "SessionStart" and source == "clear" and seat is None:
         # At a `/clear` the alias goes with the process (M3): the session left gives it up first.
-        left, given_up = cleared_witness(project, session, source)
+        left, given_up, where = cleared_witness(session, source)
         if left:
             try:
-                release_alias(project, left, given_up)
+                release_alias(where, left, given_up)   # in the project the session left is a member of
             except (OSError, LockBusy, LogWriteFailed) as e:
                 daemon_log("record: the alias of %s was not released to %s: %s" % (left[:8], session[:8], e))
     alias = _member_alias(project, session, seat, peer, marked, evidence)
@@ -9794,26 +9844,27 @@ def resolve_seat(q):
 
 
 def resolve_seat_or_opened(q, verb):
-    """The seat a query names (resolve_seat's find_seat), else, for the verbs
-    that start a process (`resume`, `fill`), a thread its human opened that
-    has no seat: (seat, None) or (None, (project, member)), the member found
-    through find_target's rules (a name ambiguous for `send` is ambiguous
-    here, exit 4). Exit 4 for none, and for another machine's session."""
-    kind, res = find_seat(q, caller_scope())
-    if kind == "ok":
-        return res, None
-    if kind == "ambiguous":
-        die(ambiguous_seat(q, res), EXIT_UNKNOWN)
+    """What the verbs that start a process (`resume`, `fill`) name, by
+    find_target's precedence (a name `send` refuses as ambiguous is refused
+    here, exit 4): (seat, the session the name bound, None) for a seat — the
+    bound session kept for locked_fresh, so a refill between this lookup and
+    the lock cannot put another session behind `alias#short` — or (None, "",
+    (project, member)) for a thread its human opened that holds no seat. A
+    name find_target does not know is looked up as resolve_seat does. Exit 4
+    for none, for a member that is neither, and for another machine's
+    session."""
     found = find_target(q)
     if found[0] == "seat":
-        return found[1], None
-    if found[0] == "member" and found[2].opened == "human":
+        return found[1], found[2], None
+    if found[0] == "member":
         project, m = found[1], found[2]
-        if not m.local:
-            die("%s runs on %s: %s from there, or sminos say/send reaches it from here" % (m.alias, m.machine, verb),
-                EXIT_UNKNOWN)
-        return None, (project, m)
-    die("no seat matching '%s'" % q, EXIT_UNKNOWN)
+        if m.opened == "human" or m.local and opened_by_human(m.session):
+            if not m.local:
+                die("%s runs on %s: %s from there, or sminos say/send reaches it from here" % (
+                    m.alias, m.machine, verb), EXIT_UNKNOWN)
+            return None, "", (project, m)
+        die("no seat matching '%s'" % q, EXIT_UNKNOWN)
+    return resolve_seat(q), "", None
 
 
 def find_target(q):
@@ -10776,7 +10827,7 @@ def seat_state(seat, peer):
     rec = peer or session_running(seat["current"])
     if rec:
         return peer_state(rec)
-    return "stopped" if transcript_path(seat["current"]) else "gone"
+    return "stopped" if hold_for(seat["current"]) or transcript_path(seat["current"]) else "gone"
 
 
 def state(seat):
@@ -12403,7 +12454,7 @@ def refuse_codex(s):
 
 
 def cmd_fill(a):
-    s0, opened = resolve_seat_or_opened(a.seat, "fill it")
+    s0, bound, opened = resolve_seat_or_opened(a.seat, "fill it")
     if opened is not None:
         m = opened[1]
         if not a.resume:
@@ -12411,13 +12462,9 @@ def cmd_fill(a):
         warn_resume_flags(a)
         hold_verb(opened[0], m.session, m.alias, a.task)
     refuse_codex(s0)
-    locks = lock_seat(s0)
     # Re-load under the lock and act on the fresh values: between resolve and
-    # lock the seat could have been re-filled or retired.
-    s = reload_seat(s0["seat_id"])
-    if s is None:
-        unlock(locks)
-        die("seat %s/%s vanished before the fill could start" % (s0["group"], s0["alias"]), EXIT_UNKNOWN)
+    # lock the seat could have been re-filled or retired (and a bound session replaced: refused).
+    locks, s = locked_fresh(s0, "fill", bound)
     refuse_codex(s)
     live = state(s)
     if live in FILLED:
@@ -12431,8 +12478,8 @@ def cmd_fill(a):
         warn_resume_flags(a)
         try:
             resume_session(s, a.task, a.wait, locks, verb="filled")
-        except ResumeHeld:
-            hold_verb(seat_project(s), s["current"], s["alias"], a.task)
+        except ResumeHeld as e:
+            e.record(a.task)
         except ResumeRefused as e:
             die(e.message, e.code)
         return
@@ -12498,7 +12545,8 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
     if locks is not None and opened_by_human(s["current"]):
         if quiet:
             return HELD_HUMAN
-        raise ResumeHeld(human_refusal("%s/%s" % (s["group"], s["alias"])))
+        unlock(locks)
+        raise ResumeHeld(human_refusal("%s/%s" % (s["group"], s["alias"])), s)
     if event is not None:
         reach_hold(project, s["current"], [event] if carried is None else carried, words)
     elif msg and s["current"]:
@@ -12532,10 +12580,10 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
         if s["engine"] == "codex":
             raise ResumeRefused(legacy_codex_refusal(s))
         if opened_by_human(s["current"]):
+            unlock(locks)
             if quiet:
-                unlock(locks)
                 return HELD_HUMAN
-            raise ResumeHeld(human_refusal("%s/%s" % (s["group"], s["alias"])))
+            raise ResumeHeld(human_refusal("%s/%s" % (s["group"], s["alias"])), s)
     if not s["current"]:
         raise ResumeRefused("seat %s/%s is vacant — fill it with: sminos fill %s/%s \"<task>\"" % (
             s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
@@ -12640,14 +12688,15 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
 
 
 def cmd_resume(a):
-    s, opened = resolve_seat_or_opened(a.seat, "resume it")
+    s0, bound, opened = resolve_seat_or_opened(a.seat, "resume it")
     warn_resume_flags(a)
     if opened is not None:
         hold_verb(opened[0], opened[1].session, opened[1].alias, a.msg)
+    locks, s = locked_fresh(s0, "resume", bound)
     try:
-        resume_session(s, a.msg, a.wait)
-    except ResumeHeld:
-        hold_verb(seat_project(s), s["current"], s["alias"], a.msg)
+        resume_session(s, a.msg, a.wait, locks)
+    except ResumeHeld as e:
+        e.record(a.msg)
     except ResumeRefused as e:
         die(e.message, e.code)
 
@@ -12773,6 +12822,18 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         # No log event to ask the endpoint about (P5 O18 D8): only the recipient's owners' sessions reach it.
         unlock(locks)
         die(refusal, EXIT_UNKNOWN)
+    if not peer and opened_by_human(s["current"]):
+        # A session its human opened that an older copy seated (D7, T1's M3): held, resolved here under the
+        # seat's lock before the gates and the wait (a words or reach hold would wait for a reply no process will
+        # write). Recorded, pushed nothing, owed with no attempt counted.
+        unlock(locks)
+        if delivery is not None:
+            delivery.release()
+            print("recorded %s for %s: %s" % (event_ref(delivery.event), s["alias"], held_line()), flush=True)
+            nudge_daemon()
+        if wait or delivery is None:
+            die("nothing was started: %s; no reply is waited for" % human_refusal(ref), EXIT_UNKNOWN)
+        return
     if delivery and (delivery.held or not delivery.queue):
         # A concurrent deliverer pushed it between the append and our lock, or
         # it is held (O12 M6: a person's words the uplink delivers on the
@@ -13089,11 +13150,14 @@ def send_to_member(project, m, sender, via, text, msg_id):
         if isinstance(e, WaitingSend):
             e.recorded_owed(m.alias)
             return
-        print("recorded %s for %s on %s — its machine delivers it" % (event_ref(e), m.alias, m.machine))
+        said = remote_line(m)
+        print("recorded %s for %s%s" % (event_ref(e), m.alias, ": %s" % said if said else
+                                        " on %s — its machine delivers it" % m.machine))
         nudge_daemon()
         return
+    hold = hold_for(m.session, fresh=True)   # first: the engine's records read afresh for what follows (M3)
     peer = peer_for_session(m.session)
-    if not peer and hold_for(m.session):
+    if not peer and hold:
         # A stopped session its human opened (T1's M3): recorded and held, as a tagged say is.
         e = record_message(project, m.session, m.alias, sender, via, text, msg_id, deliver=False)
         if isinstance(e, WaitingSend):
@@ -13174,8 +13238,10 @@ def _send(a):
         project, m = target[1], target[2]
         if sid and m.session == sid:
             die("you cannot send to yourself")
-        if a.wait and m.local and m.opened == "human" and hold_for(m.session):
-            hold_verb(project, m.session, m.alias, a.msg, sender, frm)   # a reply is waited for nowhere (M3)
+        if a.wait and (m.local and m.opened == "human" and hold_for(m.session, fresh=True)
+                       or not m.local and m.state == "stopped" and wake_of(m) == "held"):
+            # A reply is waited for nowhere (M3): recorded, held, exit 4; another machine's hold as it published it.
+            hold_verb(project, m.session, m.alias, a.msg, sender, frm, machine="" if m.local else m.machine)
         if a.wait:
             refuse_wait(a.target)
         send_to_member(project, m, sender, frm, a.msg, msg_id)
@@ -14319,36 +14385,42 @@ def cleared_from(session, source):
     return left
 
 
-def cleared_witness(project, session, source):
-    """(the session a `/clear` left, the alias it gives up) when the start
-    of `session` has a witness of one (cleared_from) and the session it
-    names is a human-opened member of this machine in `project` whose alias
-    is the engine's name for the process (its record, by CLAUDE_PID): ("",
-    "") otherwise. What both hooks act on, the record hook's release and the
-    guide's first line (§6, row 16)."""
+def cleared_witness(session, source):
+    """(the session a `/clear` left, the alias it gives up, the project it
+    is a member of) when the start of `session` has a witness of one
+    (cleared_from) and the session it names is a human-opened member of this
+    machine — in the project its membership in effect puts it in
+    (last_project, through the fold), wherever that is: a `join` of the
+    session left is not the new session's, which goes by its own launch —
+    whose alias is the engine's name for the process (its record, by
+    CLAUDE_PID): ("", "", None) otherwise. What both hooks act on, the
+    record hook's release and the guide's first line (§6, row 16)."""
     left = cleared_from(session, source)
-    if not left or project is None:
-        return "", ""
+    if not left:
+        return "", "", None
     t = threads_module().thread_of(left, ended=False)
     if t is None or t["opened"] != "human" or t["current"] != left or threads_module().record_ended(t):
-        return "", ""
-    own = _own_events(project, left)
+        return "", "", None
+    where = last_project(left)
+    own = _own_events(where, left) if where is not None else []
     joined = next((e for e in reversed(own) if e["kind"] == "joined"), {})
     if latest_membership(own) != "joined" or not is_self(str(joined.get("machine") or ""), left):
-        return "", ""
+        return "", "", None
     pid = os.environ.get("CLAUDE_PID", "")
     rec = next((r for r in peer_records() if str(r.get("pid")) == pid and peer_running(r)), None)
     alias = own_alias(own, left)[0]
     if rec is None or not alias or str(rec.get("name") or "") != alias:
-        return "", ""
-    return left, alias
+        return "", "", None
+    return left, alias, where
 
 
 def release_alias(project, left, alias):
     """The release at a `/clear` (§6, row 16): on the thread of the session
     left, `released` (the alias, and when) and the `renamed` to its short id
-    it owes, in one journaled operation; the next joins take the name by
-    today's rule. The events appended."""
+    it owes, in one journaled operation, the event in `project`, the one the
+    session left is a member of (cleared_witness); the next joins take the
+    name by today's rule, and nothing of the session left (its project, its
+    reach) moves to the new one. The events appended."""
     threads = threads_module()
     t = threads.thread_of(left, ended=False)
     if t is None:
@@ -14391,7 +14463,7 @@ def guide_text(session, launch, source="", title=""):
     home = resolve_project(launch)
     # The alias it goes by, as its own say would sign it (default_from); after a `/clear`, the one the session
     # left gives up whichever hook runs first (cleared_witness).
-    left = cleared_witness(project, session, source)[0] if seat is None else ""
+    left = cleared_witness(session, source)[0] if seat is None else ""
     alias = seat["alias"] if seat else \
         held_alias(*own_alias(_own_events(project, session), session), peer, session,
                    shadowing(project, session, released=(left,) if left else ()))[0]

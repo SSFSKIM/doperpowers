@@ -396,48 +396,77 @@ def stamp(session):
     return (thread_of(session, ended=False) or {}).get("thread", "")
 
 
-def hold_of(session):
+def hold_of(session, fresh=False):
     """Whether this machine holds delivery for a session (Interfaces §5): ""
     when it delivers to the session or wakes it; "human" when it holds, for a
     thread its human opened that has not ended, whose current session it is
     and no process holds (the hold: what is addressed to it is recorded and
     stays owed, and no process is started for it until its human reopens
-    it). T2 adds its reasons. From the live store alone (an ended thread is
-    not held: what is owed to it is settled; a seat is a spawned thread,
-    and an older copy's seat for a human-opened session leaves that
-    session's record in the thread store), through its index."""
+    it). T2 adds its reasons. The record is thread_of's for the session
+    (from the live stores: an ended thread is not held, what is owed to it
+    is settled; a seat is a spawned thread), through its index. `fresh`, at
+    a boundary that would push or ask (a delivery, a verdict's handler, the
+    uplink's question): the engine's records read afresh (sminos.running_now),
+    since a live pid alone is no evidence that its process still runs this
+    session (a `/clear` moves the same process to another id)."""
     t = _live_index().get(session) if session else None
-    if t is None or record_ended(t) or reservation(t):
+    if t is None or t["opened"] != "human" or record_ended(t) or reservation(t):
         return ""
-    return "" if sminos.session_running(session) else "human"
+    return "" if (sminos.running_now if fresh else sminos.session_running)(session) else "human"
 
 
-_LIVE = []   # [the cache generation it was checked in, the live store's stat key, {current session: record}]
+_LIVE = []   # [the cache generation it was checked in, the stores' stat key, {current session: record}]
+
+
+def _in_effect_for(session_records, live):
+    """{session: record}: for each session some live record names as its
+    current one, the record thread_of answers for it from the live stores
+    (its first two rules: the first record whose open entry, not a
+    reservation, makes the session current; else the human-opened record
+    whose current session it is). `live`, those records in all_threads'
+    order (seats first); `session_records`, the human-opened ones."""
+    index = {t["current"]: t for t in session_records if t["current"]}
+    entered = set()
+    for t in live:
+        cur = t["current"]
+        if cur and t.get("pending") and not reservation(t) and cur not in entered:
+            entered.add(cur)
+            index[cur] = t
+    return index
 
 
 def _live_index():
-    """{current session: record} of the live human-opened records: the
-    delivery pass, a view's alias selection and the publication of a
+    """{current session: record} as thread_of reads it from the live stores
+    (_in_effect_for), for the sessions some live record names as current:
+    the delivery pass, a view's alias selection and the publication of a
     stopped session's state ask it of every member. Checked once per cache
     generation (sminos.forget_caches: an invocation, a tick) and on this
-    process's own writes (_forget_live); read whole again only once the
-    store's directory moved (a record is written by a rename there), and not
-    kept while it may still move (as _aside_index)."""
+    process's own writes (_forget_live); read whole again only once a
+    store's directory moved (a record is written by a rename there: the
+    thread store's, or the root the seats are in), and not kept while one
+    may still move (as _aside_index). Of the seats only those with an open
+    entry are read: no other seat outranks a human-opened record."""
     gen = sminos._GENERATION[0]
     if _LIVE and _LIVE[0] == gen:
         return _LIVE[2]
-    d = store_dir()
     before = time.time_ns()
     try:
-        st = os.stat(d)
+        st = os.stat(store_dir())
     except OSError:
-        return {}
-    key = (st.st_ino, st.st_mtime_ns)
+        st = None
+    try:
+        rt = os.stat(sminos.root())
+    except OSError:
+        rt = None
+    key = tuple((x.st_ino, x.st_mtime_ns) if x else None for x in (st, rt))
     if _LIVE and _LIVE[1] == key:
         _LIVE[0] = gen
         return _LIVE[2]
-    index = {t["current"]: t for t in _human_threads() if t["current"]}
-    _LIVE[:] = [gen, key, index] if before - st.st_mtime_ns >= RACY_NS else []
+    human = _human_threads() if st else []
+    seats = [_of_seat(x) for x in sminos.seats() if x.get("pending") and _is_thread(x)] if rt else []
+    index = _in_effect_for(human, seats + human)
+    newest = max((x.st_mtime_ns for x in (st, rt) if x), default=0)
+    _LIVE[:] = [gen, key, index] if before - newest >= RACY_NS else []
     return index
 
 
@@ -534,10 +563,12 @@ def _change(tid, mutate, deadline=None, bump=False, both=False):
                         os.unlink(p)
                     except FileNotFoundError:
                         pass
+                _forget_live()
                 return True
             if bump:
                 raw["gen"] = int(raw.get("gen") or 0) + 1
             sminos._write_record(path, raw)
+            _forget_live()
             return True
     if not _ID_RE.fullmatch(str(tid or "")):
         return False

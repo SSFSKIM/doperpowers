@@ -180,30 +180,32 @@ def record(project, e, session, push, member):
 CLOSED = "a terminal session that was closed: kept owed, and delivered if it comes back"
 
 
-def closed_sessions(view):
+def closed_sessions(view, held=True):
     """The closed terminal sessions of this machine in a view: the members
-    it holds (sminos.hold_for: a stopped thread its human opened, M3), and
-    the seat-less sessions that joined from here whose membership ended with
-    their process (retired, reason `ended`: one from before threads, or a
-    lane B one; reconciliation retires a seat never so)."""
+    it holds (sminos.hold_for: a stopped thread its human opened, M3; left
+    out with `held` False), and the seat-less sessions that joined from here
+    whose membership ended with their process (retired, reason `ended`: one
+    from before threads, or a lane B one; reconciliation retires a seat
+    never so)."""
     out = set()
     for sid, r in view.info.items():
         latest, joined = (r or {}).get("latest"), (r or {}).get("joined") or {}
         if not (latest and joined and sminos.is_self(str(joined.get("machine") or ""), sid)):
             continue
         if latest["kind"] == "retired" and latest.get("reason") == "ended" \
-                or latest["kind"] == "joined" and sminos.hold_for(sid):
+                or held and latest["kind"] == "joined" and sminos.hold_for(sid):
             out.add(sid)
     return out
 
 
-def report_one(project, box, sid, events):
+def report_one(project, box, sid, events, refuse=True):
     """report_closed for one session; its caller holds the session's
-    delivery lock."""
+    delivery lock. `refuse` False (a held member, report_held): no read-only
+    refusal here, deliver_next's own."""
     n = 0
     settled = sminos.delivered_load(project, sid)
     if sminos.sibling_module("sminos_policy").read_only():
-        return refuse_owed(project, sid, events, settled)
+        return refuse_owed(project, sid, events, settled) if refuse else 0
     if not project.hub:
         return 0
     path = sminos.project_path(project, "recorded", sminos.reader_key(sid) + ".json")
@@ -247,7 +249,7 @@ def unreported(events, reported, settled):
     return out
 
 
-def owes_report(project, sid, events):
+def owes_report(project, sid, events, refuse=True):
     """Whether report_one has anything to do for the session, looked at
     without its delivery lock: what is settled and what is reported only
     grow, so nothing to do now is nothing to do under the lock. The tick
@@ -255,7 +257,7 @@ def owes_report(project, sid, events):
     is no."""
     settled = sminos.delivered_load(project, sid)
     if sminos.sibling_module("sminos_policy").read_only():
-        return bool(sminos._owed(events, sid, settled))
+        return refuse and bool(sminos._owed(events, sid, settled))
     if not project.hub:
         return False
     reported = recorded_load(os.path.join(project.home, "recorded", sminos.reader_key(sid) + ".json"))
@@ -290,7 +292,8 @@ def report_closed(project, view):
     policy = sminos.sibling_module("sminos_policy")
     if not (project.hub or policy.read_only()):
         return 0
-    closed = closed_sessions(view)
+    # A held member is reported after its delivery pass (report_held): what settles without a push first.
+    closed = closed_sessions(view, held=False)
     if not closed:
         return 0
     # A copy is owed to no one (sminos.addressed_to), and addressees leaves it out.
@@ -307,6 +310,23 @@ def report_closed(project, view):
         with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock")):
             n += report_one(project, box, sid, events)
     return n
+
+
+def report_held(project, sid, events):
+    """For a member this machine holds (M3), after its delivery pass:
+    `recorded` once for each outside-origin event of `events` (addressed to
+    it) still owed, as report_closed reports a nonmember's. What the pass
+    settled (a noted push, an admitted receipt, a revoked signer, a
+    broadcast for the live alone, the read-only refusal) is no longer owed,
+    so it is reported never. How many were reported."""
+    policy = sminos.sibling_module("sminos_policy")
+    if not project.hub or policy.read_only():
+        return 0
+    events = [e for e in events if policy.outside_origin(e)]
+    if not (events and owes_report(project, sid, events, refuse=False)):
+        return 0
+    with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock")):
+        return report_one(project, Outbox(project), sid, events, refuse=False)
 
 
 REFUSED = "the session dropped it after taking it, so it never entered the conversation: %s"
