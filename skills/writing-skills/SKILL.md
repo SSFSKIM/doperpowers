@@ -26,13 +26,13 @@ Two tests for every line you write:
 
 A hard constraint earns its place only when it maps to a validated
 failure — observed or structural, never hypothetical — and the
-observation is its license: cite it in the skill. Reasons travel further
+observation is its license; the skill states the reason, not the case. Reasons travel further
 than bans: "never `HEAD~1` — it silently drops all but the last commit"
 lets the reader recognize when the rule applies and when it doesn't; a
 bare "never" teaches nothing and invites negotiation.
 
-Cite the incident; generalize the rule. A case-study finding encoded
-as-is covers only that case — distill it into the principle it taught,
+Generalize the rule; don't state the case. A case-study finding
+encoded as-is covers only that case — distill it into the principle it taught,
 so the reader recognizes the next instance that doesn't look like the
 first.
 
