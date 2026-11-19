@@ -1851,6 +1851,10 @@ A thread ended by the first rule returns by row 12 like any other, and a
 return cut short is finished from its own entry: no rule reads an open
 entry's record.
 
+A purge deletes the record, so a purged human-opened thread does not
+return: its session, run again, is seen for the first time (row 1) and
+gets a thread of its own.
+
 ### §7. Which hosts a thread owns (X9, as consumed)
 
     class Owned(NamedTuple):
