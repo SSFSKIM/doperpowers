@@ -136,6 +136,27 @@ class Rows:
                        [self.machine_project("DC-Gone", True)])
         self.assertEqual(self.states(), {"vm-idler": "gone", "vm-busy": "gone", "offliner": "idle"})
 
+    def test_a_member_of_a_retired_machine_has_ended_and_a_tag_naming_it_is_refused(self):
+        """T1's M4: a thread on a retired machine can write no end of its own;
+        every reader counts it ended from the org's state, here with no
+        record of it, and keeps its word `gone`."""
+        self.directory([{"name": "testhost", "online": True, "seen": None},
+                        {"name": "dc-gone", "online": False, "seen": ago(86400), "retired": True}],
+                       [self.machine_project("dc-gone", True)])
+        sminos.forget_caches()
+        rows = {m.session: m for m in sminos.view_of(sminos.find_project("pg")).members}
+        gone, off = rows[GONE1], rows[OFF]
+        self.assertTrue(sminos.has_ended(gone))
+        self.assertEqual((gone.end, gone.state, sminos.wake_of(gone)), ("machine", "gone", "ended"))
+        self.assertIsNone(sminos.threads_module().thread_of(GONE1), "no record of it here")
+        self.assertFalse(sminos.has_ended(off), "an offline machine's member has not ended")
+        self.assertIn("gone @dc-gone", self.row(self.cli("list", "--org", "--all"), "vm-idler") or "")
+        for name in ("@vm-idler", "@%s" % GONE1[:8]):
+            r = subprocess.run([sys.executable, "-B", str(CLI), "say", "--in", "pg", "%s are you there" % name],
+                               cwd=self.cwd, env=dict(os.environ), text=True, capture_output=True, timeout=60)
+            self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+            self.assertIn("machine dc-gone was retired", r.stderr)
+
     def test_a_directory_without_the_field_changes_nothing(self):
         self.assertEqual(self.states(), {"vm-idler": "idle", "vm-busy": "busy", "offliner": "idle"},
                          "no directory yet")

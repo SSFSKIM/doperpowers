@@ -365,6 +365,8 @@ run_suites() {
     fail "every member a thread: its record, the stamp, the reader rule, the journal (test_threads.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_threads_stopped.py"; then pass "a closed session stays: stopped, held, its sender told, a /clear (test_threads_stopped.py)"; else
     fail "a closed session stays: stopped, held, its sender told, a /clear (test_threads_stopped.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_threads_ended.py"; then pass "a thread ends, and returns: the three-day rule, a retire, the settlement, a fill (test_threads_ended.py)"; else
+    fail "a thread ends, and returns: the three-day rule, a retire, the settlement, a fill (test_threads_ended.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else
     fail "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager.py"; then pass "the session manager's command: windows, pending, subscriptions (test_manager.py)"; else

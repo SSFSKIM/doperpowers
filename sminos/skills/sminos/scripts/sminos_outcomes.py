@@ -57,6 +57,7 @@ The uplink drains the file: it sends each record as DX4 `delivery`
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
@@ -338,6 +339,100 @@ def report_held(project, sid, events):
         return 0
     with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock")):
         return report_one(project, Outbox(project), sid, events, refuse=False)
+
+
+ENDED = ("the session's thread has ended (retired, or stopped past the period): it is pushed nothing, and reads "
+         "the log if it returns")
+
+
+def settle_ended(project, sid, lock_until=None):
+    """What is owed to the session of a thread that ended, settled as for a
+    retired target (T1's M4, D1): pushed nothing, each owed event settled,
+    each writer in seq order from its settled prefix; one from outside a hub
+    project with its outcome kept first — `recorded` (ENDED), a push the
+    record noted as made its own outcome, `refused-read-only` on a
+    read-only machine, as deliver_next would settle it — and one whose
+    outcome cannot be kept stops its writer. The events stay in the log,
+    which a returned thread reads at its next `chat`; nothing is delivered
+    again when it returns. Under the session's delivery lock, waited for
+    until `lock_until` (by default a few seconds: a verb may hold it while
+    it ends the thread it delivers to). Whether nothing is owed to it any
+    more: the journal's settlement (sminos_threads.finish) is done only
+    then."""
+    policy = sminos.sibling_module("sminos_policy")
+    until = lock_until if lock_until is not None else time.time() + SETTLE_WAIT
+    try:
+        with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock"),
+                            lock_until=until):
+            record = sminos.delivered_load(project, sid)
+            stopped = set()
+            for e in sminos._owed(sorted(sminos.log_read(project, to_session=sid),
+                                         key=lambda e: (e["writer"], e["seq"])), sid, record):
+                if e["writer"] in stopped:
+                    continue
+                outside = policy.outside_origin(e)
+                if outside and project.hub:
+                    noted = sminos._delivery(record, e["writer"]).get("pushed")
+                    outcome, reason = (of_push(noted[1], None) if noted and noted[0] == e["seq"] else
+                                       (READ_ONLY, of_push(READ_ONLY, None)[1]) if policy.read_only() else
+                                       ("recorded", ENDED))
+                    try:
+                        Outbox(project).record(e, sid, outcome, reason)
+                    except OSError as err:
+                        sminos.daemon_log("delivery: the outcome of %s for %s could not be recorded (%s): it stays "
+                                          "owed" % (sminos.event_ref(e), sid, err))
+                        stopped.add(e["writer"])
+                        continue
+                sminos.delivered_settle(project, sid, e["writer"], e["seq"])
+                sminos.holder_module().settled(project.id, sid, e)
+            return not stopped
+    except sminos.LockBusy:
+        return False
+
+
+SETTLE_WAIT = 5.0   # seconds settle_ended waits for a delivery lock when its caller set no deadline
+
+
+def settle_ended_owed(project, view):
+    """For each session of this machine in the view whose thread has ended
+    (its membership in effect a stamped `retired`, reason `retire` or
+    `ended`: an end this code journaled, whose entry settled what was owed
+    then), what reached the log for it since — an event from outside, an
+    older sender's — settled the same way (settle_ended). Asked again for a
+    session only once the events addressed to it moved, so a tick pays for
+    ended threads the one comparison. How many sessions were settled."""
+    ended = sminos.log_memo(view.events, "ended-threads", lambda _events: _ended_threads(view.info))
+    if not ended:
+        return 0
+    to = sminos.addressees(view.events)
+    n = 0
+    for sid in ended:
+        mine = to.get(sid)
+        if not mine:
+            continue
+        key, seen = (project.id, sid), (id(mine), len(mine))
+        if _SETTLED.get(key) == seen:
+            continue
+        if sminos._owed(mine, sid, sminos.delivered_load(project, sid)):
+            if not settle_ended(project, sid):
+                continue
+            n += 1
+        _SETTLED[key] = seen
+    return n
+
+
+_SETTLED = {}   # (project id, session) → the addressed events (their list's id and length) settled up to
+
+
+def _ended_threads(info):
+    threads = sminos.threads_module()
+    out = []
+    for sid, r in info.items():
+        latest, joined = r["latest"], r["joined"] or {}
+        if latest and latest["kind"] == "retired" and latest.get("reason") in sminos.END_REASONS \
+                and threads.stamped(latest) and sminos.is_self(str(joined.get("machine") or ""), sid):
+            out.append(sid)
+    return out
 
 
 REFUSED = "the session dropped it after taking it, so it never entered the conversation: %s"

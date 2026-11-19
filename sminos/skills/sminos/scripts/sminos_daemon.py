@@ -901,7 +901,9 @@ def deliver_owed(project, view):
     """Duty 4: for each local member with anything owed to it, deliver_next —
     the same operation the sender's fast path calls — in writer order from
     its settled prefix. Returns (events delivered, the aliases reached).
-    An event from outside owed to a closed terminal session that is no
+    What reaches the log for a thread that has ended is settled `recorded`
+    (sminos_outcomes.settle_ended_owed), as its end settled what was held
+    for it. An event from outside owed to a closed terminal session that is no
     member is reported `recorded` once and stays owed
     (sminos_outcomes.report_closed); to a member this machine holds, once
     after its delivery pass, of what that pass left owed
@@ -918,6 +920,12 @@ def deliver_owed(project, view):
     that one comparison: no read of the log, no enumeration of the backlog,
     no lock, no ask. The memory of a session that left the view goes."""
     outcomes = sminos.sibling_module("sminos_outcomes")
+    try:
+        # What reached the log for a thread after it ended is settled as its end settled what was held (M4).
+        outcomes.settle_ended_owed(project, view)
+    except OSError as e:
+        sminos.daemon_log("delivery: what is owed to ended threads of %s could not be settled: %s" % (
+            project.name, e))
     try:
         outcomes.report_closed(project, view)
     except OSError as e:
@@ -1316,7 +1324,29 @@ _TICKED_NS = [0]    # the last mark this process made
 
 # ------------------------------------------------------------- the thread sweep (T1)
 
-THREAD_SWEEP = "threads.json"   # under daemon/: the stop candidates one pass leaves for the next
+THREAD_SWEEP = "threads.json"   # under daemon/: the stop candidates one pass leaves for the next, the last ending
+THREAD_END_AFTER = 3 * 86400    # a thread stopped longer than this is ended by the rule (D1); SMINOS_THREAD_END_AFTER
+THREAD_END_EVERY = 3600         # seconds between the sweep's ending passes; SMINOS_THREAD_END_EVERY
+_ENDING = [0.0]                 # when this process's sweep last ran its ending pass (epoch seconds)
+
+
+def _seconds(name, default):
+    try:
+        return float(os.environ.get(name) or default)
+    except ValueError:
+        return float(default)
+
+
+def thread_end_after():
+    """How long a thread may stay stopped before the rule ends it: three
+    days, or SMINOS_THREAD_END_AFTER (seconds; a test sets it short)."""
+    return _seconds("SMINOS_THREAD_END_AFTER", THREAD_END_AFTER)
+
+
+def thread_end_every():
+    """The spacing of the sweep's ending pass: an hour, or
+    SMINOS_THREAD_END_EVERY (seconds)."""
+    return _seconds("SMINOS_THREAD_END_EVERY", THREAD_END_EVERY)
 
 
 def sweep_threads():
@@ -1338,7 +1368,16 @@ def sweep_threads():
     time, has its sessions' open asynchronous questions closed
     (sminos.close_questions), then `swept` set to it: a pass that dies
     between the two is finished by the next, a thread asked again that
-    stops again is swept again, and a closing is final in the log."""
+    stops again is swept again, and a closing is final in the log.
+
+    The ending pass (T1's M4; §6, row 10), on a spacing of its own
+    (thread_end_every, the last kept in daemon/threads.json once a pass had
+    a thread due): a thread whose `stopped` is older than the period
+    (thread_end_after) is ended by the rule, each through end_stopped, which
+    decides again under its locks. The clock is the record's stop mark, not
+    the transcript's last write: a session reopened in between has its mark
+    removed by the stop pass, and its clock starts again at its next stop.
+    Nothing else ends a thread by the rule: no reading verb, no hook."""
     threads = sminos.threads_module()
     running = {}
     for r in sminos.peer_records():
@@ -1350,8 +1389,12 @@ def sweep_threads():
         held = sminos.json_at(path)
     except (OSError, ValueError):
         held = {}
-    before = held.get("candidates") if isinstance(held, dict) and isinstance(held.get("candidates"), dict) else {}
-    candidates = {}
+    held = held if isinstance(held, dict) else {}
+    before = held.get("candidates") if isinstance(held.get("candidates"), dict) else {}
+    ending = _ts_float(held.get("ending"))
+    now, after = time.time(), thread_end_after()
+    ending_pass = now - max(_ENDING[0], ending) >= thread_end_every()
+    candidates, due = {}, []
     for t in threads.all_threads():
         tid, cur = t["thread"], t["current"]
         if not cur or t.get("pending") or threads.record_ended(t):
@@ -1364,6 +1407,8 @@ def sweep_threads():
                 if remove:
                     threads.update(tid, {}, remove=remove, guard=lambda r, cur=cur: r["current"] == cur)
                 continue
+            if ending_pass and t.get("stopped") and now - (sminos._ts_epoch(t["stopped"]) or now) > after:
+                due.append((tid, cur, t["stopped"]))
             if t.get("stopped") and t.get("swept") == t["stopped"]:
                 continue
             if not t.get("stopped") and before.get(tid) != cur:
@@ -1375,11 +1420,51 @@ def sweep_threads():
                     stop_and_close(threads, tid, cur, t.get("stopped"))
         except (OSError, sminos.LockBusy) as e:
             sminos.daemon_log("the thread sweep could not mark %s: %s" % (tid, e or "its lock is busy"))
-    if candidates != before:
+    if ending_pass:
+        _ENDING[0] = now
+        if due:
+            ending = now   # kept for the next process (daemon tick): a pass with nothing due writes nothing
+            end_due(threads, due)
+    if candidates != before or ending != _ts_float(held.get("ending")):
         try:
-            sminos.write_json(daemon_path(THREAD_SWEEP), {"candidates": candidates})
+            sminos.write_json(daemon_path(THREAD_SWEEP), {"candidates": candidates,
+                                                          **({"ending": ending} if ending else {})})
         except OSError as e:
             sminos.daemon_log("the thread sweep could not keep its candidates: %s" % e)
+
+
+def _ts_float(x):
+    return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else 0.0
+
+
+def end_due(threads, due):
+    """The ending pass's threads due, (thread id, current session, the stop
+    mark decided for), each ended by end_stopped. Its one place: what may
+    keep a due thread from its end (M5: devcloud's answer, that it owns a
+    VM or that ownership is unknown) is asked here, before any lock."""
+    for tid, cur, stopped in due:
+        try:
+            with resume_lock_out(tid) as out:
+                if out:
+                    end_stopped(threads, tid, cur, stopped)
+        except (OSError, sminos.LockBusy, sminos.LogWriteFailed) as e:
+            sminos.daemon_log("the thread sweep could not end %s: %s" % (tid, e or "its lock is busy"))
+
+
+def end_stopped(threads, tid, cur, stopped):
+    """One thread ended by the rule (§6, row 10), while its resume lock is
+    held out (resume_lock_out): the end is written only for the stop it was
+    decided for. The record is read again, and again under its store's lock
+    as the end begins (sminos.end_by_rule's guard): `stopped` the very mark
+    decided for, `current` the same session, no open entry, not ended, and
+    no process holding the session by the engine's records read afresh
+    (sminos.running_now), not by the pass's copy of them. The events
+    appended."""
+    t = threads.get(tid)
+    if t is None or t["current"] != cur or t.get("pending") or threads.record_ended(t) \
+            or t.get("stopped") != stopped or sminos.running_now(cur):
+        return []
+    return sminos.end_by_rule(t, stopped)
 
 
 def stop_and_close(threads, tid, cur, stopped):
