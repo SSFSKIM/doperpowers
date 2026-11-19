@@ -725,7 +725,7 @@ assert_contains "$(field "$R_UUID" task)" 'only the tags that open a message' "m
 assert_contains "$(field "$R_UUID" task)" '@<project>/<alias>' "preamble names another project's member"
 assert_contains "$(field "$R_UUID" task)" 'mcp__to-human__message where you have it (final: true when it ends your' "preamble sends the human a message through the tool, not a say"
 assert_contains "$(field "$R_UUID" task)" 'else in a <message>…</message> ending your reply' "and a <message> only where the tool is missing"
-assert_contains "$(field "$R_UUID" task)" "sminos charge \"" "preamble teaches the in-charge line"
+assert_not_contains "$(field "$R_UUID" task)" "sminos charge" "preamble does not teach writing the in-charge line: it is derived"
 assert_contains "$(field "$R_UUID" task)" "sminos status researcher \"what you are doing now\"" "and the status line, under the seat's own alias"
 assert_contains "$(field "$R_UUID" task)" "sminos spawn <alias> - --brief \"<its standing line>\" [--worktree <name>] <<'EOF'" "preamble teaches spawning a sibling with its line, its task on stdin"
 assert_not_contains "$(field "$R_UUID" task)" 'ListAgents' "preamble no longer routes outside a family: the project is the reach"
@@ -5872,11 +5872,13 @@ STUB_FORK_RESULT="Owns the stub, uncounted." run "$SMINOS" derive hd --compacted
 assert_contains "$OUT" "hd: Owns the stub, uncounted." "a count that cannot be read derives"
 # The cases below are a compaction's derive itself, each at its due compaction.
 export SMINOS_DERIVE_COMPACTIONS=1
-# A set line yields to a compaction: the line derived after it wins until the
-# member sets another (2026-11-08-sminos-derive-on-compact-design.md §4).
-run "$SMINOS" derive ha
-assert_contains "$OUT" "ha: not derived — its line is set" "a plain derive leaves a set line alone"
+# A set line (a spawn's brief, an operator's charge) is a placeholder: the
+# next derived line replaces it, whatever runs the derive
+# (2026-11-08-sminos-derive-on-compact-design.md §6).
 tx "$TA" tool h8000001 10
+CLAUDE_CODE_SESSION_ID="$HA" run "$SMINOS" charge "parser"
+run "$SMINOS" derive ha
+assert_contains "$OUT" "ha: not derived — derived" "a set line refuses no derive: only its last derived line's spacing holds one"
 CLAUDE_CODE_SESSION_ID="$HA" run "$SMINOS" status ha "drafting the parser"
 STUB_FORK_RESULT="Owns the parser rewrite." run "$SMINOS" derive ha --compacted
 assert_contains "$OUT" "ha: Owns the parser rewrite." "--compacted derives over a set line"
@@ -5921,18 +5923,17 @@ assert_equals "$(json_row ha charge)|$(json_row ha charge_source)" "Owns the par
 ha_append derived "" 0
 assert_equals "$(json_row ha charge)|$(json_row ha charge_source)" "parser, set in the same millisecond|set" \
   "a derived line written empty after it is no line: the set one stands"
-# A plain derive whose fork is answering while the member sets its line
-# records nothing: only a compaction derives over a set line.
+# A derive whose fork is answering while a line is set records its own,
+# later line: a set line stands only until the next derived one.
 tx "$TXD/$HF.jsonl" tool h9000002 1
 STUB_FORK_SLEEP=3 STUB_FORK_RESULT="Owns the fixture, from a slow fork." "$SMINOS" derive hf > "$TEST_ROOT/hf-derive.out" 2>&1 & HF_DERIVE=$!
 hf_forking() { grep -q -- "--resume $HF --fork-session" "$STUB_STATE/log/calls.log"; }
 wait_until hf_forking || true
 CLAUDE_CODE_SESSION_ID="$HF" run "$SMINOS" charge "fixtures, set while it forked"
 wait "$HF_DERIVE"
-assert_contains "$(cat "$TEST_ROOT/hf-derive.out")" "hf: not derived — its line was set meanwhile" \
-  "a plain derive whose fork answered after the member set its line says so"
-assert_not_contains "$(cat "$HPLOG/testhost.$HF.jsonl")" "from a slow fork" "and records nothing"
-assert_equals "$(json_row hf charge)|$(json_row hf charge_source)" "fixtures, set while it forked|set" "the set line stands"
+assert_contains "$(cat "$TEST_ROOT/hf-derive.out")" "hf: Owns the fixture, from a slow fork." \
+  "a derive whose fork answered after a line was set records its line"
+assert_equals "$(json_row hf charge)|$(json_row hf charge_source)" "Owns the fixture, from a slow fork.|derived" "which replaces the set one"
 # The hook: the compaction's SessionStart payload starts the derive detached
 # and returns at once, printing nothing into the session's context.
 DERIVE_HOOK="$PLUGIN_ROOT/hooks/smns-derive.sh"

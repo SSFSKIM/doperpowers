@@ -33,9 +33,10 @@ under your name in their stream (`chat --host`); no tag reaches them. When
 your task names where its questions are answered (a ticket), the answer
 comes back there, and a say or a message about one points there.
 
-Keep current the two lines `list` shows beside your name:
+`list` shows two lines beside your name: what you are in charge of,
+which sminos derives from your conversation as you work, and what you are
+doing now, which you keep current:
 
-    sminos charge "the standing responsibility you hold"
     sminos status {{ALIAS}} "what you are doing now"
 
 A sibling is for a separable standing responsibility, one that outlives

@@ -57,6 +57,10 @@ Not taken at first: counting compactions (every third) instead of the six-hour s
 
 The human chose, having heard the cost argument above, to derive at every third compaction since the member's last derived line rather than at each. `compaction_due` counts each `--compacted` run in `$SMINOS_HOME/compactions/<session>` (swept by `derive --all` after 30 days) and lets the derive through at the third (`DERIVE_COMPACTIONS`, overridden by `SMINOS_DERIVE_COMPACTIONS`); any recorded derived line, the daemon's six-hour refresh included, removes the count. A count that cannot be kept derives, as every compaction did before. The status line is still cleared at every compaction: that costs no fork, and a status from before a compaction is stale whether or not the line is re-derived. A set line now stands until the third compaction after it (the count runs from the last derived line, so it may be sooner).
 
+### 6. Amendment, 2026-11-18: the line is derived, never written by the session
+
+The human ruled that the background derive is the in-charge line's default: a session is no longer taught to write its own line (the guide's verb list, the skill and the spawn preamble drop `sminos charge`), since the derive's side question is the session itself answering from its own context, asked on a schedule instead of when the session remembers. A set line — a spawn's `--brief`, which gives a seat a line before its tenth tool call, or an operator's `sminos charge` from a terminal — is a placeholder: `derive_refusal` no longer refuses a member for a set line, so the daemon's first-line derive or six-hour refresh, or a due compaction, replaces it, and `charge_of` shows the later of the two. The §4 rule that a daemon derive yields to a line set while its fork answered is withdrawn with it.
+
 ## Acceptance
 
 1. A compaction's `SessionStart` hook payload, given to `sminos/hooks/smns-derive.sh`, starts `sminos derive <session-id> --compacted` and returns at once with no output. In the suite: the hook exits 0 within a second, prints nothing, and the stub fork's call log shows the derive's fork for that session.
