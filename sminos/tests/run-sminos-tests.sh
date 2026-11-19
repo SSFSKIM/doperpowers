@@ -5866,6 +5866,10 @@ run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: not derived — derived" "the compaction's line restarts the six-hour spacing"
 run "$SMINOS" derive hd --compacted
 assert_contains "$OUT" "hd: not derived — compaction 1 of 3 since its last line" "and the count of compactions"
+# A count that cannot be kept derives, as every compaction did before.
+printf 'garbage' > "$SMINOS_HOME/compactions/$HD"
+STUB_FORK_RESULT="Owns the stub, uncounted." run "$SMINOS" derive hd --compacted
+assert_contains "$OUT" "hd: Owns the stub, uncounted." "a count that cannot be read derives"
 # The cases below are a compaction's derive itself, each at its due compaction.
 export SMINOS_DERIVE_COMPACTIONS=1
 # A set line yields to a compaction: the line derived after it wins until the

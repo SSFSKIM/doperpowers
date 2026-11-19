@@ -8427,7 +8427,11 @@ def hand_name(session, name, before, line):
 def sweep_older(subdir, seconds):
     """Remove the files of $SMINOS_HOME/<subdir> older than `seconds`."""
     d = os.path.join(root(), subdir)
-    for name in (os.listdir(d) if os.path.isdir(d) else ()):
+    try:
+        names = os.listdir(d) if os.path.isdir(d) else ()
+    except OSError:
+        return
+    for name in names:
         path = os.path.join(d, name)
         try:
             if time.time() - os.path.getmtime(path) > seconds:
@@ -8579,20 +8583,23 @@ def compaction_due(m):
     due again: at every DERIVE_COMPACTIONS-th since its last derived line
     (derive_member resets the count). A count that cannot be kept derives,
     as every compaction did before."""
+    try:
+        every = int(os.environ.get("SMINOS_DERIVE_COMPACTIONS") or DERIVE_COMPACTIONS)
+    except ValueError:
+        every = DERIVE_COMPACTIONS
     path = compactions_path(m.session)
     try:
-        with open(path) as f:
-            n = int(f.read().strip() or 0) + 1
-    except (OSError, ValueError):
-        n = 1
-    try:
+        try:
+            with open(path) as f:
+                n = int(f.read().strip() or 0) + 1
+        except FileNotFoundError:
+            n = 1
         os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
         with open(path, "w") as f:
             f.write(str(n))
-    except OSError as e:
+    except (OSError, ValueError) as e:
         warn("the compactions of %s could not be counted: %s" % (m.session[:8], e))
         return True
-    every = int(os.environ.get("SMINOS_DERIVE_COMPACTIONS") or DERIVE_COMPACTIONS)
     if n < every:
         print("%s: not derived — compaction %d of %d since its last line" % (m.alias, n, every))
         return False
