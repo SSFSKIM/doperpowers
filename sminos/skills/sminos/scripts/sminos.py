@@ -14,7 +14,7 @@ member too, seat-less, from the first call that reads its project.
 
     sminos spawn    <alias> <task> [--role R] [--brief B] [--cwd C] [--worktree W]
                    [--model M] [--settings S] [--effort E] [--wait]   # a background session in a seat
-                   of this project (--cwd's); --brief is its in-charge line; --wait prints the reply.
+                   of this project (--cwd's); --brief is its in-charge line until its first derived one; --wait prints the reply.
                    --wait only watches, for DAEMON_TIMEOUT (default 18000 s): the seat works on after,
                    and `reply` reads its live transcript
     sminos seat add <group> <alias> [--role R] [--brief B] [--session S]   # register a vacant seat for a
@@ -37,8 +37,8 @@ member too, seat-less, from the first call that reads its project.
                    as @all wakes; recorded in each project it reaches, copied into yours; no @tags beside it
     sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
     sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
-    sminos charge   [<member>] "<one line>"               # what the member is in charge of (a session: its own),
-                   until the member's next compaction derives a line over it
+    sminos charge   [<member>] "<one line>"               # what the member is in charge of, until its next
+                   derived line: the line is derived in the background (derive), so sessions are not taught this
     sminos join     <project> | --cwd                     # this session's project, declared: a session is in
                    its launch directory's project (a `cd` moves nothing) until it joins another; --cwd goes
                    back; alone: which project it is in, and why. Not for a seat
@@ -8153,6 +8153,10 @@ DERIVE_QUESTION = ("In one line: what is this session in charge of in this proje
 DERIVE_PROMPT = DERIVE_QUESTION + " Answer with the line only."
 DERIVE_MIN_TOOL_CALLS = 10
 DERIVE_EVERY = 6 * 3600
+# A compaction derives the member's line again only at every this many
+# compactions since its last derived line (counted in $SMINOS_HOME/compactions/;
+# SMINOS_DERIVE_COMPACTIONS overrides it).
+DERIVE_COMPACTIONS = 3
 DERIVE_LINE_MAX = 120
 # A member whose fork failed is held out of `derive --all` this long (the
 # daemon runs it every five minutes, and a fork that timed out tends to time
@@ -8253,23 +8257,21 @@ def model_tool_calls(path, enough):
 
 
 def derive_refusal(project, m, compacted=False):
-    """Why a member is not derived, or "": only a local member with no set
-    line, at least ten tool calls by its model, and no derived line in the
+    """Why a member is not derived, or "": only a local member with at least
+    ten tool calls by its model, and no derived line in the
     last six hours (§5; whatever its name, which only decides whether derive
     may also name it: charge_naming); and one with a derived line only once
     its transcript was written since that line — the same conversation gives
     the same answer, and forking an idle session rebuilds its prompt cache.
-    `compacted` (the compaction hook's derive) waives those two pacing rules
-    and a set line: a compaction is the evidence that much has happened,
-    since the line was set too, and the line it derives wins until the
-    member sets another (charge_of;
-    docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md §2, §4)."""
+    `compacted` (the compaction hook's derive) waives those two pacing rules:
+    a compaction is the evidence that much has happened. A set line (a
+    spawn's brief, an operator's `charge`) never refuses: it stands only
+    until the next derived line (charge_of;
+    docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md §2, §4, §6)."""
     if not m.session:
         return "it holds no session"
     if not m.local:
         return "it runs on %s" % m.machine
-    if m.charge_source == "set" and not compacted:
-        return "its line is set"
     foreign = foreign_config(m.session)
     if foreign:
         return ("its engine runs under %s, not this process's config dir (%s), where a fork from here would look "
@@ -8423,7 +8425,11 @@ def hand_name(session, name, before, line):
 def sweep_older(subdir, seconds):
     """Remove the files of $SMINOS_HOME/<subdir> older than `seconds`."""
     d = os.path.join(root(), subdir)
-    for name in (os.listdir(d) if os.path.isdir(d) else ()):
+    try:
+        names = os.listdir(d) if os.path.isdir(d) else ()
+    except OSError:
+        return
+    for name in names:
         path = os.path.join(d, name)
         try:
             if time.time() - os.path.getmtime(path) > seconds:
@@ -8547,21 +8553,55 @@ def cmd_derive(a):
     if a.all:
         sweep_pending_names()
         sweep_older("derive-failed", DERIVE_RETRY)
+        sweep_older("compactions", 30 * 86400)
         targets = derive_order(targets)
     else:
         targets = [(p, m, False) for p, m in targets]
     if a.compacted:
         for project, m, _ in targets:
             clear_status(project, m)
+        targets = [(p, m, r) for p, m, r in targets if compaction_due(m)]
     forked_refreshes = failed = 0
     for project, m, refresh in targets:
         spent = refresh and a.refreshes is not None and forked_refreshes >= a.refreshes
         outcome = derive_member(project, m, held_off=a.all, refreshes_spent=a.refreshes if spent else None,
                                 compacted=a.compacted)
         failed += outcome == "failed"
-        forked_refreshes += refresh and outcome in ("derived", "superseded", "failed")
+        forked_refreshes += refresh and outcome in ("derived", "failed")
     if failed:
         sys.exit(1)
+
+
+def compactions_path(session):
+    return os.path.join(root(), "compactions", session)
+
+
+def compaction_due(m):
+    """Count one more compaction of the member and say whether its line is
+    due again: at every DERIVE_COMPACTIONS-th since its last derived line
+    (derive_member resets the count). A count that cannot be kept derives,
+    as every compaction did before."""
+    try:
+        every = int(os.environ.get("SMINOS_DERIVE_COMPACTIONS") or DERIVE_COMPACTIONS)
+    except ValueError:
+        every = DERIVE_COMPACTIONS
+    path = compactions_path(m.session)
+    try:
+        try:
+            with open(path) as f:
+                n = int(f.read().strip() or 0) + 1
+        except FileNotFoundError:
+            n = 1
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path, "w") as f:
+            f.write(str(n))
+    except (OSError, ValueError) as e:
+        warn("the compactions of %s could not be counted: %s" % (m.session[:8], e))
+        return True
+    if n < every:
+        print("%s: not derived — compaction %d of %d since its last line" % (m.alias, n, every))
+        return False
+    return True
 
 
 def clear_status(project, m):
@@ -8608,8 +8648,7 @@ def derive_member(project, m, held_off=False, refreshes_spent=None, compacted=Fa
     refused, said once in daemon.log. `refreshes_spent`, the run's cap on
     refreshes once it is reached: a member that would be forked is left to
     the next run. `compacted`: derive_refusal's. Returns
-    "refused", "deferred", "derived", "superseded" (forked, but a line was
-    set meanwhile, so nothing recorded) or "failed" (nothing recorded)."""
+    "refused", "deferred", "derived", or "failed" (nothing recorded)."""
     why = derive_refusal(project, m, compacted=compacted)
     if not why and held_off:
         age = derive_failed_age(m.session)
@@ -8655,12 +8694,11 @@ def derive_member(project, m, held_off=False, refreshes_spent=None, compacted=Fa
             name = answer_name(answer)
             why_not = charge_name_refusal(name, naming.taken)
             name = "" if why_not else name
-    if not compacted and charge_of(m, log_read(project, kinds=("in-charge",)), title=False)[1] == "set":
-        # Only a compaction derives over a set line: one the member set while
-        # the fork answered wins.
-        print("%s: not derived — its line was set meanwhile" % m.alias)
-        return "superseded"
     lifecycle(project, m.session, "in-charge", text=line, source="derived", **({"name": name} if name else {}))
+    try:
+        os.unlink(compactions_path(m.session))   # the compactions count from this line
+    except OSError:
+        pass
     print("%s: %s" % (m.alias, line))
     if name:
         print("%s: name %s" % (m.alias, name))
@@ -13080,9 +13118,7 @@ def guide_text(session, launch, source="", title=""):
         " same flags (they combine) but you" % cli,
         "  %s say - <<'EOF'   the text on stdin, as written: for text with backticks, quotes, $ or several lines"
         " (the shell runs a backtick inside double quotes)" % cli,
-    ] + join + [
-        '  %s charge "<line>" what you are in charge of, shown beside you in every list' % cli,
-    ])
+    ] + join)
 
 
 ROSTER_SOURCES = ("compact", "resume")   # a session that goes on with its own conversation, summarized or old
