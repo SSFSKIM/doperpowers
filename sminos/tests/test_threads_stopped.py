@@ -634,5 +634,164 @@ class Clear(Rig):
         self.assertEqual(self.member(self.old).alias, self.old[:8], "and the name stays the new session's")
 
 
+# ------------------------------------------------------------ the verbs that start a process
+
+
+class Verbs(Rig):
+    """No verb starts a process for a session its human opened (D1): `send`
+    is held as a tagged say is; `resume`, `fill --resume` and `send --wait`
+    record their message, start nothing and exit 4; a fresh `fill` and a
+    `spawn` onto its alias are refused and record nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.sid, proc = self.opened()
+        self.end(proc)
+        self.reconcile()
+        self.launched = []
+        for name in ("run_claude_bg", "claude_stop"):
+            patcher = mock.patch.object(sminos, name, side_effect=lambda *a, **k: self.launched.append(a) or ("", ""))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def owed_texts(self, sid=None):
+        m = self.member(sid or self.sid)
+        return [e["text"] for e in sminos.owed(self.p, m)]
+
+    def test_send_is_recorded_and_held(self):
+        code, out = self.cli("send", "alpha", "while you are away")
+        self.assertEqual(code, 0, out)
+        self.assertIn("for alpha: recorded and held", out)
+        self.assertEqual(self.owed_texts(), ["while you are away"])
+        self.assertEqual(self.launched, [])
+
+    def test_resume_fill_resume_and_send_wait_record_their_message_start_nothing_and_exit_4(self):
+        for argv, text in ((("resume", "alpha", "pick it up"), "pick it up"),
+                           (("fill", "alpha", "carry on", "--resume"), "carry on"),
+                           (("send", "alpha", "and answer", "--wait"), "and answer")):
+            with self.subTest(argv=argv):
+                code, out = self.cli(*argv)
+                self.assertEqual(code, 4, out)
+                self.assertIn("nothing was started: alpha is a session its human opened", out)
+                self.assertEqual(self.owed_texts()[-1], text)
+        self.assertEqual(len(self.owed_texts()), 3)
+        self.assertEqual(self.launched, [], "no claude call")
+
+    def test_a_fresh_fill_and_a_spawn_onto_its_alias_are_refused_and_record_nothing(self):
+        for argv in (("fill", "alpha", "a new task"), ("spawn", "alpha", "a new task")):
+            with self.subTest(argv=argv):
+                code, out = self.cli(*argv)
+                self.assertEqual(code, 4, out)
+                self.assertIn("its human", out)
+        self.assertEqual(self.owed_texts(), [])
+        self.assertEqual(list(sminos.record_files()), [], "no seat made")
+        self.assertEqual(self.launched, [])
+
+    def seated(self):
+        """The stopped human-opened session given a seat by an older CLI (D7)."""
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": self.sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle", "short": "ab12cd34"})
+        sminos.forget_caches()
+        return seat_id
+
+    def test_a_human_opened_session_with_a_seat_is_held_and_neither_filled_nor_spawned_onto(self):
+        self.seated()
+        for argv, code_wanted in ((("resume", "g/w", "go on"), 4), (("fill", "g/w", "go on", "--resume"), 4),
+                                  (("fill", "g/w", "fresh"), 4), (("send", "g/w", "a note"), 0),
+                                  (("send", "g/w", "a note", "--wait"), 4)):
+            with self.subTest(argv=argv):
+                code, out = self.cli(*argv)
+                self.assertEqual(code, code_wanted, out)
+                self.assertNotIn("Traceback", out)
+        with mock.patch.dict(os.environ, {"PWD": self.root}):
+            code, out = self.cli("spawn", "w", "fresh")
+        self.assertEqual(code, 4, out)
+        self.assertEqual(self.launched, [], "no claude call")
+        self.assertEqual(set(self.attempts(self.sid).values()) - {0}, set(), "no attempt counted")
+        m = self.member(self.sid)
+        self.assertEqual(sminos.push_member(m, "x", True), sminos.HELD_HUMAN)
+        self.tick()
+        self.assertEqual(self.launched, [])
+        self.assertTrue(self.owed_texts(), "what was recorded stays owed")
+
+
+# ------------------------------------------------------------ questions closed while stopped
+
+
+class Questions(Rig):
+    def asked(self, sid, src="toolu_q1"):
+        sminos.append_host(self.p, sid, [{"kind": "question", "from": "alpha", "to": "host", "text": ["which way?"],
+                                          "choices": [], "src": src}])
+
+    def answers(self, sid):
+        return [e for e in self.own(sid) if e["kind"] == "answered"]
+
+    def sweep(self, n=1):
+        for _ in range(n):
+            sminos.forget_caches()
+            self.daemon.sweep_threads()
+
+    def test_an_open_question_is_closed_after_two_passes_once(self):
+        sid, proc = self.opened()
+        self.asked(sid)
+        self.asked(sid, "toolu_q2")
+        sminos.append_host(self.p, sid, [{"kind": "answered", "from": "alpha", "src": "toolu_q2", "text": "left"}])
+        self.end(proc)
+        self.sweep()
+        self.assertEqual(len(self.answers(sid)), 1, "one pass is not a stop")
+        self.sweep()
+        closed = [e for e in self.answers(sid) if e.get("closed")]
+        self.assertEqual([(e["src"], e["text"], e["closed"], e["from"]) for e in closed],
+                         [("toolu_q1", sminos.QUESTION_CLOSED, "stopped", "alpha")])
+        t = threads.thread_of(sid)
+        self.assertEqual(t["swept"], t["stopped"])
+        self.sweep(2)
+        self.assertEqual(len(self.answers(sid)), 2, "once")
+        self.live(sid=sid)
+        sminos.append_host(self.p, sid, [{"kind": "answered", "from": "alpha", "src": "toolu_q1", "text": "late"}])
+        self.assertEqual(len(self.answers(sid)), 2, "a later answer appends nothing")
+
+    def test_a_pass_killed_after_the_stop_was_marked_leaves_it_to_the_next(self):
+        sid, proc = self.opened()
+        self.asked(sid)
+        self.end(proc)
+        self.sweep()
+        with mock.patch.object(sminos, "close_questions", side_effect=OSError("disk full")):
+            self.sweep()
+        t = threads.thread_of(sid)
+        self.assertIn("stopped", t)
+        self.assertNotIn("swept", t)
+        self.assertEqual(self.answers(sid), [])
+        self.sweep()
+        self.assertEqual(len(self.answers(sid)), 1)
+
+    def test_not_during_a_resumes_stop_and_relaunch(self):
+        sid, _ = self.session()
+        self.cli("seat", "add", "g", "w", "--session", sid)
+        seat_id = sminos.load_seat(next(sminos.record_files()))["seat_id"]
+        self.asked(sid)
+        self.stop_all()
+        import fcntl
+        with open(os.path.join(sminos.root(), seat_id + ".resume.lock"), "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            self.sweep(3)
+            fcntl.flock(lf, fcntl.LOCK_UN)
+        self.assertEqual(self.answers(sid), [])
+
+
+class Derive(Rig):
+    def test_derive_all_forks_no_stopped_human_opened_session(self):
+        sid, proc = self.opened()
+        self.end(proc)
+        self.reconcile()
+        m = self.member(sid)
+        self.assertIn("its human opened it", sminos.derive_refusal(self.p, m))
+        fork = sminos.sibling_module("sminos_fork")
+        with mock.patch.object(fork, "headless_fork") as forked:
+            self.cli("derive", "--all")
+        forked.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

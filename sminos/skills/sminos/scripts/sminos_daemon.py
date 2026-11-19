@@ -1290,7 +1290,13 @@ def sweep_threads():
     between passes in daemon/threads.json (written only when they change), as
     publish_state keeps a word's. Every change goes through
     sminos_threads.update, under the record's lock, guarded by its current
-    session. What it could not do is the next pass's."""
+    session. What it could not do is the next pass's.
+
+    A thread whose record says `stopped`, and whose `swept` is not that same
+    time, has its sessions' open asynchronous questions closed
+    (sminos.close_questions), then `swept` set to it: a pass that dies
+    between the two is finished by the next, a thread asked again that
+    stops again is swept again, and a closing is final in the log."""
     threads = sminos.threads_module()
     running = {}
     for r in sminos.peer_records():
@@ -1316,13 +1322,22 @@ def sweep_threads():
                 if remove:
                     threads.update(tid, {}, remove=remove, guard=lambda r, cur=cur: r["current"] == cur)
                 continue
-            if t.get("stopped") or resume_locked(tid):
-                continue
-            if before.get(tid) == cur:
-                threads.update(tid, {"stopped": sminos.now()},
-                               guard=lambda r, cur=cur: r["current"] == cur and not r.get("stopped"))
-            else:
-                candidates[tid] = cur
+            if not t.get("stopped"):
+                if resume_locked(tid):
+                    continue
+                if before.get(tid) != cur:
+                    candidates[tid] = cur
+                    continue
+                at = sminos.now()
+                if not threads.update(tid, {"stopped": at},
+                                      guard=lambda r, cur=cur: r["current"] == cur and not r.get("stopped")):
+                    continue
+                t = dict(t, stopped=at)
+            if t.get("swept") != t["stopped"]:
+                # Its open questions closed while it is stopped, then the stop marked swept (T1's M3).
+                sminos.close_questions(t)
+                threads.update(tid, {"swept": t["stopped"]},
+                               guard=lambda r, t=t: r["current"] == t["current"] and r.get("stopped") == t["stopped"])
         except (OSError, sminos.LockBusy) as e:
             sminos.daemon_log("the thread sweep could not mark %s: %s" % (tid, e or "its lock is busy"))
     if candidates != before:
