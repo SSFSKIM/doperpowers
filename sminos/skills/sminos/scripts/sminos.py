@@ -8148,9 +8148,16 @@ def chat_host(project, a):
 # took 1.3 s and 2.9 s: the daemon's processes ran in launchd's lower
 # scheduling band, which a loaded machine starves (the plist's ProcessType).
 
-DERIVE_QUESTION = ("In one line: what is this session in charge of in this project — its standing responsibility, "
-                   "not its latest step?")
+DERIVE_QUESTION = ("In one line of at most 120 characters: what is this session in charge of in this project — its "
+                   "standing responsibility, not its latest step?")
 DERIVE_PROMPT = DERIVE_QUESTION + " Answer with the line only."
+# A member that has a line is shown it, with the bar for changing it: other
+# sessions and the human find a session by its line and its name, so a line
+# reworded at every derive (1,005 of 1,018 re-derives, 2026-11-08 to 11-19,
+# when the fork was not shown its line) reads as new work each time.
+DERIVE_KEEP = ("\nIts current line is: %s\nOther sessions and your human partner follow this session by its line, so "
+               "answer with it unchanged while it still holds. Write a new line only when the responsibility "
+               "itself changed: work taken on or handed off, a goal reached, a move to other work.")
 DERIVE_MIN_TOOL_CALLS = 10
 DERIVE_EVERY = 6 * 3600
 # A compaction derives the member's line again only at every this many
@@ -8166,13 +8173,13 @@ DERIVE_RETRY = 3600
 DERIVE_WHY_MAX = 200
 
 # A member sminos may name (charge_naming) is asked for a charge name with its
-# line: the prompt is naming_prompt's, and the answer's name is kept only in
+# line: the prompt is derive_prompt's, and the answer's name is kept only in
 # this form — what can follow `@` in a message unquoted.
 NAMING_ASK = ("On a second line, name the session after that responsibility: `name: ` followed by 2 to 4 lowercase "
               "English words joined by hyphens, specific enough that another session reading only the name knows "
               "what this one owns. Leave out the project's name, which is shown beside it.")
-NAMING_KEEP = (" Its current name is `%s`: keep it unless it no longer describes the standing responsibility well, "
-               "because the responsibility changed or became clearer than when the name was chosen.")
+NAMING_KEEP = (" Its current name is `%s`: answer with it unchanged unless it no longer fits the responsibility, as "
+               "for the line. A better wording is no reason: a name that changes is a session others lose track of.")
 NAMING_TAKEN = " Taken by other sessions: %s."
 CHARGE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){1,3}")
 CHARGE_NAME_MAX = 48
@@ -8393,13 +8400,25 @@ def charge_naming(project, m):
                         names_taken(project, m.session, m.former))
 
 
-def naming_prompt(naming):
-    """The derive prompt that asks for a charge name with the line; the taken
-    list names only what could be answered (the kept form)."""
+def derive_prompt(naming, current=""):
+    """The derive prompt: the question, the member's `current` line to keep
+    (DERIVE_KEEP) when it has one, and, where it may be named (a
+    ChargeNaming), the ask for a charge name with the line; the taken list
+    names only what could be answered (the kept form)."""
+    question = DERIVE_QUESTION + (DERIVE_KEEP % current if current else "")
+    if naming is None:
+        return question + ("\n" if current else " ") + "Answer with the line only."
     shown = sorted(t for t in naming.taken if CHARGE_NAME_RE.fullmatch(t) and len(t) <= CHARGE_NAME_MAX)
     return "%s\n%s%s%s\nAnswer with the two lines only." % (
-        DERIVE_QUESTION, NAMING_ASK, NAMING_KEEP % naming.current if naming.current else "",
+        question, NAMING_ASK, NAMING_KEEP % naming.current if naming.current else "",
         NAMING_TAKEN % ", ".join(shown) if shown else "")
+
+
+def current_line(project, m):
+    """The member's set or derived in-charge line as charge_of reads it, ""
+    for none (a name or a title is no line to keep)."""
+    line, source, _ = charge_of(m, log_read(project, kinds=("in-charge",)), title=False)
+    return line if source in ("set", "derived") else ""
 
 
 def pending_name_path(session):
@@ -8662,7 +8681,7 @@ def derive_member(project, m, held_off=False, refreshes_spent=None, compacted=Fa
         return "deferred"
     naming = charge_naming(project, m)
     try:
-        line, answer = derive_line(project, m, naming_prompt(naming) if naming else DERIVE_PROMPT)
+        line, answer = derive_line(project, m, derive_prompt(naming, current_line(project, m)))
     except DeriveSkipped as e:
         # Said once per session (daemon.log), not with every run's refusals.
         said = "derive %s (%s): no fork started, nothing recorded: %s" % (m.alias, m.session[:8], e)
