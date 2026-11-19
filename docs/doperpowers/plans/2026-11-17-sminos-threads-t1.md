@@ -1976,6 +1976,41 @@ executor adds its own below.
   the answer for the daemon's cost, and `list --all` has none (the
   composite: Deferred).
 
+Found while executing:
+
+- Observation (M1): a project can resolve without being registered on the
+  machine (the core suite's legacy seat of a project not in the registry),
+  so an entry's log cannot be found by its project id alone.
+  Evidence: `finish` failed on `remove` of such a seat in CI; it now takes
+  the caller's project, and a replay is per project.
+- Observation (M1): a test that loads `sminos.py` by file location gets a
+  second copy of the module, so the journal's appends through
+  `sminos_threads`' own import missed the caller's view cache.
+  Evidence: the core suite's clock test; `finish` now appends through the
+  caller's `lifecycle`.
+- Observation (M1): `claim_launch` runs before `cmd_record`, so a spawn's
+  child normally finds its pending launch already claimed; the guard that
+  holds in practice is "the process is young". If the engine reports a
+  pre-started background process's pre-start time as its start, the child
+  can read as older than the bound and is absorbed when its launcher
+  learns its id: correct, but then routine rather than rare.
+  Evidence: `cmd_record`'s order; the engine's pre-started processes
+  (2.1.299). To be checked on a real `sminos spawn` in M6's live pass.
+- Observation (M1): the idle gate's margin is thin. M1's first cut measured
+  33,624 calls a second in CI against a ceiling of 33,570; after asking the
+  reducer only of `retired` events and reading the thread store once per
+  reconciliation, 31,473 locally.
+  Evidence: `sminos-idle` on `fafb8d05` and `05ac1c69`.
+- Observation (M1): MAWS's RL10 conversation fixture predates threads: three
+  lines change (4.0, 4.4, 11.18). S2 is the engine host's launch, lane B at
+  its join (origin `maws`, no controller), made lane A when its bridge sets
+  a controller (`relay_controller`), and adopted by the next reconciliation
+  with a stamped `joined` at seq 2; the lane A sessions' events carry
+  `thread`. Amended in `rl10_conformance.py`'s `AMENDMENTS` (the holder's
+  ruling); the fixture stays MAWS's byte for byte, and the list went to the
+  holder for MAWS to regenerate the fixture.
+  Evidence: a kept run's S2 writer file; `d38b7cd2`.
+
 ## Decision Log
 
 - 2026-11-17 — **Verification.** This plan gets one
@@ -2077,6 +2112,46 @@ executor adds its own below.
   at a held thread exit 4; the three-day clock runs from the stop the
   sweep recorded; an ended thread reads `retired` in lists; `sminos resume`
   no longer returns an ended spawned thread; only exit 6 reads as none.
+- 2026-11-18 — **M1 as built** (the executor's decisions, accepted):
+  - the hook's lock past its deadline skips the record and still writes
+    the `joined`, unstamped, for the next reconciliation to adopt, so
+    membership never waits on a record write;
+  - `awaits_seat` reads the launch token only in a process running for that
+    session (its hook, its bridge, a verb whose `CLAUDE_CODE_SESSION_ID` is
+    it); any other process applies the young-`bg` rule and ignores its own
+    token, which a verb inside a seat carries for that seat; an unknown
+    process start counts as not young;
+  - the entry's `settle` is recorded from M1 and does nothing until M3
+    holds anything;
+  - a seat's journaled writes bump its `gen`; `update` never does;
+  - until M4, a seat this code retired returns through `join_seat` (today's
+    `resume`, `fill --resume` and `send`), lifting `ended`; until M2,
+    `spawn_fresh`'s refill lifts `ended` in its own record write;
+  - the older-copy rules of §6 apply to human-opened records; an older
+    copy's retire of a seat already sets `status: retired`, which reads as
+    ended;
+  - until M2, `thread_of` and `ensure` answer a former session with the
+    thread that had it;
+  - `Member.thread` is read from the latest `joined`'s stamp, so any machine
+    reads it from the log; `opened` is `spawned` for a `joined` with a
+    `seat` or a seat row, `human` for one stamped without, `""` otherwise; a
+    vacant seat's row carries its seat id as its thread;
+  - `LAUNCH_OPTIONS` (in the module) holds the permission, model, effort,
+    settings, directory, agent, plugin, MCP and tool-list options; `--x=v`
+    becomes two tokens; a value starting `{` or `[`, or holding a UUID, is
+    dropped; system prompts are not kept;
+  - `sync.sh`'s third argument is a plain `*.json` name, and the pin names
+    are refused as one;
+  - extra keyword arguments beside §1's signatures: `finish(thread_id,
+    appended=None, project=None, append=None)`, `note_launch(…,
+    lock_until=None)`;
+  - a member joined under a former name of this machine in a hub project is
+    left to the daemon's `rejoin_former`, which makes the record first so
+    its `joined` is stamped;
+  - three core-suite cases that gave a live human-opened member a seat by
+    `seat add --session` (now refused) write the seat as an older sminos
+    does, and one asserts the refusal;
+  - the RL10 replay amends three lines (Surprises), by the holder's ruling.
 
 ## Outcomes & Retrospective
 
