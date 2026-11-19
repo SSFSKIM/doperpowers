@@ -8,7 +8,10 @@ from the template, follow these.
 - What lives on disk (code, documents, commits) your next self can re-read, so
   point to it instead of copying it: path and line range or symbol, what matters
   about it, and whether it changed since you last read it. Copy code only where
-  the exact text is needed to resume and cannot be re-read.
+  the exact text is needed to resume and cannot be re-read. A checkpoint or
+  state note written for the reset is not such a file: this summary carries
+  the state of the work, so a note only repeats it. Don't send your next self
+  to one.
 - What existed only in this conversation (decisions and why, approaches rejected and why, error output,
   investigation findings): copy it. If it is too long, quote a distinctive phrase
   your next self can grep for in the session transcript, whose path you will be
