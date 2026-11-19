@@ -32,7 +32,7 @@ the composite, run as Concrete Steps gives it.
 - [x] (2026-11-17) The plan written against the code at `main` 279bb44a.
 - [x] (2026-11-18) Revised for its adversarial review (fourteen findings, each checked in the code) and the composite holder's rulings, at the pin above.
 - [x] (2026-11-18) Revised again for the confirm pass (eight findings) and the holder's second rulings: transitions are journaled in the record.
-- [ ] M1 — Every member has a thread record, and its events say which thread
+- [x] (2026-11-19) M1 — Every member has a thread record, and its events say which thread (reviewed clean after five fix waves; `b8c1dbfb..793dd7c0`)
 - [ ] M2 — One thread across its session ids: hand-off, refill, and what is another thread
 - [ ] M3 — A closed session stays: stopped, held, and its sender told
 - [ ] M4 — A thread ends, and returns
@@ -2152,6 +2152,41 @@ Found while executing:
     `seat add --session` (now refused) write the seat as an older sminos
     does, and one asserts the refusal;
   - the RL10 replay amends three lines (Surprises), by the holder's ruling.
+- 2026-11-19 — **M1's review, and what it changed** (five fix waves; the
+  controller's rulings marked):
+  - one reducer in fact: `sminos_threads.Fold` holds the state transition,
+    and `in_effect`, `_lineage_scan`, `_memberships` and `_projection` all
+    step it; the vectors run through `retirement_holds`, `rejoin_former`'s
+    guard (extracted as `joined_elsewhere`) and the visibility snapshot too;
+  - (ruling) a hook that meets an open entry for its session's thread
+    writes nothing at all (no `joined`, no record, no owners, no launch
+    note) and leaves the entry to reconciliation; `publish_owners` checks
+    the record again under the writer lock; `update` refuses a record with
+    an open entry; reconciliation and the verbs replay;
+  - (ruling) `stamp()` reads the live stores and the open entries only,
+    never `threads/ended/`: after an end, a session's events are the
+    journal's or a return's, each with an explicit `thread`;
+  - one eligibility rule (`_is_thread`) for the whole store API: a seat with
+    no thread keys holding a lane B session is no thread;
+  - one choice of thread at a join and an adoption
+    (`sminos_threads.choose`): lane B revives nothing and makes no record;
+    in lane A a human-opened record whose current session it is wins over
+    a seat (an older copy's), live or set aside; an ended human-opened
+    record returns by the journal when the process qualifies; an ended seat
+    holds until M4 gives it its returns; every `joined` these write names
+    the chosen thread, and a spawned thread's restatement takes its seat's
+    id and alias;
+  - `opened` on a projected row is `spawned` exactly when a stamped
+    `joined`'s `thread` equals its `seat`; an unstamped one reads as before;
+  - `public_seat` filters the thread record's keys out of `list --json`'s
+    embedded seat (`sessions`, `launch`, `pending` stay local);
+  - an end's purge deletes the file that carries the journal last, a retry
+    of `remove` after a replay that finished the purge appends nothing, and
+    an older copy's `retire` ends a record only if, under the record's lock,
+    that very event is still the session's membership in effect in the
+    record's current project;
+  - RL10 staging waits for the bridge's controller and reconciles before
+    the replay, so the three amendments do not race.
 
 ## Outcomes & Retrospective
 
