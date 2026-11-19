@@ -1430,6 +1430,58 @@ class Deliverers(WordsRig):
                          "the owner's words by their writer, through the bridge")
 
 
+class Held(WordsRig):
+    """A stopped thread its human opened, on a cut-over machine (T1's M3):
+    the hold comes before the words and reach gates, on every path that
+    asks. Its words are never asked about and never counted a failed
+    attempt; an ask out when it stopped counts nothing; a late verdict that
+    calls for a push pushes nothing, asks nothing more and leaves the event
+    owed; a refusal settles as today; reopened, it is asked and delivered."""
+
+    def setUp(self):
+        super().setUp()
+        sminos.threads_module().ensure(S1)   # its record; no process holds S1
+        sminos.lifecycle(self.hp, S1, "joined", alias="m", name_source="user", machine="testhost",
+                         cwd=self.hp.root, worktree="", role="", seat="", by="", session_kind="interactive")
+        sminos.forget_caches()
+        self.assertEqual(sminos.hold_for(S1), "human")
+
+    def test_its_words_are_never_asked_and_never_counted(self):
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        self.assertEqual(sminos.words_due(self.hp, [member(S1)]), {})
+        for _ in range(sminos.DELIVERY_ATTEMPTS + 2):
+            self.assertEqual(sminos.words_unanswered(self.hp, member(S1), e, "no verdict"), 0)
+            result = sminos.deliver_next(self.hp, member(S1))
+            self.assertEqual([o for _, o in result["outcomes"]], [sminos.HELD_HUMAN])
+        w = self.record(self.hp, S1).get("hub/mem-1") or {}
+        self.assertEqual((w.get("settled", 0), w.get("attempts", 0)), (0, 0), "owed, no attempt counted")
+
+    def test_a_late_verdict_that_calls_for_a_push_pushes_nothing_and_a_refusal_settles(self):
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        for verdict in ("words", "peer"):
+            self.assertEqual(sminos.deliver_verdict(self.hp, member(S1), e, verdict), sminos.HELD_HUMAN)
+        self.assertEqual(sminos.deliver_reach(self.hp, member(S1), e, "deliver"), sminos.HELD_HUMAN)
+        self.assertEqual(self.bridge, [], "nothing pushed")
+        self.assertEqual(self.settled(self.hp, S1, "hub/mem-1"), 0)
+        link = self.link()
+        held = {"key": (self.hp.id, S1, "hub/mem-1"), "project": self.hp, "member": member(S1), "event": e}
+        link.ask_peer(held)
+        self.assertEqual(link.session_lane.take(), [], "a late peer verdict asks no reach?")
+        self.assertEqual(sminos.deliver_verdict(self.hp, member(S1), e, "refuse"), outcomes.REFUSED_WORDS)
+        self.assertEqual(self.settled(self.hp, S1, "hub/mem-1"), 1)
+        r = self.arrive(self.hp, "hub/mem-1", 2, signer=DEV_A)
+        self.assertEqual(sminos.deliver_reach(self.hp, member(S1), r, "refuse"), outcomes.REFUSED_REACH)
+        self.assertEqual(self.settled(self.hp, S1, "hub/mem-1"), 2)
+
+    def test_reopened_its_words_are_asked_and_delivered_on_the_verdict(self):
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A, text="while you were away")
+        self.session(self.hp, S1, inbox=True)
+        self.assertEqual(sminos.hold_for(S1), "")
+        self.assertEqual([x["seq"] for x in sminos.words_due(self.hp, [member(S1)])[S1]], [1])
+        sminos.deliver_verdict(self.hp, member(S1), e, "words")
+        self.assertEqual(self.bridged(), [("hub/mem-1", 1)])
+
+
 class Sends(WordsRig):
     """A session's `send` is a peer's and is pushed at once, with every
     earlier event of its writer still owed to the target in the same push

@@ -4203,8 +4203,11 @@ class Lifecycle(unittest.TestCase):
 
     def ended_presence_project(self, name):
         """A project with one running member and one session that joined
-        from here and ended: (project, running sid, ended sid)."""
+        from here and ended: (project, running sid, ended sid). The one that
+        ends is a lane B session: a thread stays a member, stopped, when its
+        process ends (T1's M3), and a lane B session leaves with it."""
         import sminos
+        import sminos_records
         root = os.path.join(T, name)
         subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "-q", root], check=True)
         subprocess.run([os.path.join(SCRIPTS, "sminos"), "project", "init", "--name", name], cwd=root,
@@ -4229,6 +4232,7 @@ class Lifecycle(unittest.TestCase):
         project = sminos.resolve_project(root)
         sminos.view_of(project, titles=False)            # both join
         p, ended, rec = holders["ended"]
+        sminos_records.set_controller(ended, "B")
         p.terminate()
         p.wait(5)
         os.unlink(rec)

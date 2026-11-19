@@ -356,6 +356,8 @@ run_suites() {
     fail "stopped members fold only in text views (test_list_fold.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_threads.py"; then pass "every member a thread: its record, the stamp, the reader rule, the journal (test_threads.py)"; else
     fail "every member a thread: its record, the stamp, the reader rule, the journal (test_threads.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_threads_stopped.py"; then pass "a closed session stays: stopped, held, its sender told, a /clear (test_threads_stopped.py)"; else
+    fail "a closed session stays: stopped, held, its sender told, a /clear (test_threads_stopped.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else
     fail "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager.py"; then pass "the session manager's command: windows, pending, subscriptions (test_manager.py)"; else
@@ -3879,25 +3881,26 @@ assert_contains "$OUT" "· now: reading the schema" "list shows a member's statu
 # A status set in one home reaching the other's list is pinned through the
 # real mirror, in "the mirror and the daemon".
 
-# A seat-less member's membership ends with its process, as it began with it:
-# the next reading verb retires it (reason ended) and it re-joins when it runs
-# again. Only interactive and bg sessions are members on sight.
+# A seat-less member that its human opened (a thread, T1) stays a member when
+# its process ends: stopped, folded out of a plain list, and what is addressed
+# to it is recorded and held for its reopening (T1's M3). Only interactive and
+# bg sessions are members on sight.
 IE=2d00000d-0000-4000-8000-00000000002d
 pf_peer closer "$IE" idle user
 run "$SMINOS" list
 assert_contains "$OUT" "closer" "a live interactive session lists"
 rm -f "$HOME/.claude/sessions/pf-closer.json"   # its session exits
 run "$SMINOS" list
-assert_not_contains "$OUT" "closer" "once its session exits, the next reading verb ends its membership"
-assert_equals "$(events_of "$IE")" "joined retired:ended " "recording retired, reason ended, in its own file"
-assert_contains "$(tail -1 "$PFLOG/testhost.$IE.jsonl")" '"by": "", "reason": "ended"' "by no one"
+assert_not_contains "$OUT" "closer" "once its session exits, a plain list folds it"
+assert_equals "$(events_of "$IE")" "joined " "and nothing retires it: it is stopped"
 run "$SMINOS" say "@closer are you there"
-assert_rc 4 "$RC" "a tag to it while it is closed is refused"
-assert_contains "$OUT" "@closer: closer's session ended; say it untagged to leave a note" "saying its session ended and how to leave it a note"
+assert_rc 0 "$RC" "a tag to it while it is closed is recorded"
+assert_contains "$OUT" "closer: recorded and held: the session is stopped, and a session its human opened is not woken" \
+  "saying it is held for its human to reopen"
 pf_peer closer "$IE" idle user                  # resumed outside sminos
 run "$SMINOS" list
 assert_contains "$OUT" "closer" "when it runs again it lists again"
-assert_equals "$(events_of "$IE")" "joined retired:ended joined " "re-joined under the same uuid"
+assert_equals "$(events_of "$IE")" "joined " "the same membership, under the same uuid"
 rm -f "$HOME/.claude/sessions/pf-closer.json"
 HL=2e00000e-0000-4000-8000-00000000002e
 start_inbox headless
@@ -4164,7 +4167,7 @@ rm -f "$HOME/.claude/sessions/pf-drifter.json"
 run "$SMINOS" list
 pf_peer drifter-3f "$RS" idle derived   # resumed: the harness drew its name again
 run "$SMINOS" list
-assert_equals "$(events_of "$RS")" "joined retired:ended joined " "a resumed session re-joins"
+assert_equals "$(events_of "$RS")" "joined " "a resumed session is the member it was (stopped meanwhile, T1's M3)"
 assert_contains "$(tail -1 "$PFLOG/testhost.$RS.jsonl")" '"alias": "drifter"' "under the alias it held, not the name drawn again"
 assert_equals "$(json_row drifter session)" "$RS" "and lists under it"
 CLAUDE_CODE_SESSION_ID="$RS" run "$SMINOS" say "back again"

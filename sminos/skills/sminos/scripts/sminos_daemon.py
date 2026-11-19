@@ -623,6 +623,9 @@ def publish_state(project, view, record):
     session's own file. Only another machine reads a published word (a local
     view computes it live), so a project with neither a remote nor a hub
     publishes none.
+    A stopped thread's `state` says whether this machine wakes it (X3:
+    `wake`, which sminos.lifecycle adds for each of its writers); it is
+    written again when that value changes while the word does not.
     Returns how many events it appended."""
     before = record.get("candidates")
     before = before if isinstance(before, dict) else {}
@@ -630,8 +633,14 @@ def publish_state(project, view, record):
     for m in view.members:
         if not (m.local and m.session):
             continue
-        last = ((view.info.get(m.session) or {}).get("state") or {}).get("state")
+        published = (view.info.get(m.session) or {}).get("state") or {}
+        last = published.get("state")
         if m.state == last:
+            # Only over a stamped state (lifecycle stamps again what it writes, and adds the value to it).
+            if last == "stopped" and published.get("thread") and published.get("wake") != \
+                    ("held" if sminos.hold_for(m.session) else "woken"):
+                n += len(sminos.lifecycle(project, m.session, "state", required=False,
+                                          state=m.state, machine=sminos.host_name()))
             continue
         if last is None or before.get(m.session) == m.state:
             n += len(sminos.lifecycle(project, m.session, "state", required=False,
@@ -829,6 +838,37 @@ def late_former_writers(events, former, since):
     return late
 
 
+# (project id, session) → what a delivery pass over a held session read (held_reads), when that pass found
+# every writer's head held (HELD_HUMAN) and settled nothing: the tick passes the session by while it reads the same.
+_HELD_PASSES = {}
+
+
+def _stat_key(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def held_reads(project, owed, record):
+    """What a delivery pass over a held session reads, as one value: the
+    events owed to it (their positions: the log only grows), its delivery
+    record, and the stores of its receipts (an admission rewrites one), the
+    revocation set and the machine's policy."""
+    return (tuple((e["writer"], e["seq"]) for e in owed), json.dumps(record, sort_keys=True),
+            _stat_key(sminos.holder_module().home(create=False)), _stat_key(rl10.revoked_path()),
+            _stat_key(sminos.sibling_module("sminos_policy").policy_path()))
+
+
+def all_held(result, owed):
+    """Whether a delivery pass found every writer of `owed` held at its head
+    and settled nothing."""
+    outcomes = result["outcomes"]
+    return bool(outcomes) and not result["delivered"] and all(o == sminos.HELD_HUMAN for _, o in outcomes) \
+        and {e["writer"] for e, _ in outcomes} == {e["writer"] for e in owed}
+
+
 def deliver_owed(project, view):
     """Duty 4: for each local member with anything owed to it, deliver_next —
     the same operation the sender's fast path calls — in writer order from
@@ -836,7 +876,15 @@ def deliver_owed(project, view):
     An event from outside owed to a closed terminal session is reported
     `recorded` once and stays owed (sminos_outcomes.report_closed); one a
     session's engine dropped after its bridge took it is reported `failed`
-    once, after its delivery (sminos_outcomes.report_refused)."""
+    once, after its delivery (sminos_outcomes.report_refused).
+
+    A session this machine holds (a stopped thread its human opened, M3) is
+    passed by without a delivery pass only on the memory of one that ran: a
+    pass in which every writer came out held and nothing settled, while
+    nothing that pass read has changed (held_reads) and the session is still
+    held. A writer's head the skip passes by is so always an addressed event
+    a full pass found nothing to settle for, and a held backlog costs a tick
+    one comparison: no read of the log, no lock, no ask."""
     outcomes = sminos.sibling_module("sminos_outcomes")
     try:
         outcomes.report_closed(project, view)
@@ -848,9 +896,23 @@ def deliver_owed(project, view):
     for m in view.members:
         if not (m.local and m.session) or m.session not in to:
             continue
-        if not sminos._owed(to[m.session], m.session, sminos.delivered_load(project, m.session)):
+        record = sminos.delivered_load(project, m.session)
+        owed = sminos._owed(to[m.session], m.session, record)
+        key = (project.id, m.session)
+        if not owed:
+            _HELD_PASSES.pop(key, None)
             continue
-        got = sminos.deliver_next(project, m)["delivered"]
+        memory = _HELD_PASSES.pop(key, None)
+        if memory is not None and sminos.hold_for(m.session):
+            reads = held_reads(project, owed, record)
+            if memory == reads:
+                _HELD_PASSES[key] = memory
+                continue
+        reads = held_reads(project, owed, record) if sminos.hold_for(m.session) else None
+        result = sminos.deliver_next(project, m)
+        if reads is not None and all_held(result, owed):
+            _HELD_PASSES[key] = reads
+        got = result["delivered"]
         if got:
             total += got
             reached.append(m.alias)
@@ -1199,6 +1261,7 @@ def tick_all(quiet=False):
             continue
         if not quiet or worth_saying(out, before):
             print(("%s " % sminos.now() if quiet else "") + tick_line(p, out))
+    sweep_threads()
     derive_duty()
     bridge_duty()
     override_duty()
@@ -1207,6 +1270,83 @@ def tick_all(quiet=False):
 
 TICKED = "ticked"   # under daemon/: its mtime is when a tick last ended here
 _TICKED_NS = [0]    # the last mark this process made
+
+
+# ------------------------------------------------------------- the thread sweep (T1)
+
+THREAD_SWEEP = "threads.json"   # under daemon/: the stop candidates one pass leaves for the next
+
+
+def sweep_threads():
+    """The thread sweep (Interfaces §8), called by the daemon's loop and by
+    `daemon tick`, its stop pass at every call (§6, rows 7 and 8): a thread
+    whose current session no process holds gets `stopped` (a time) in its
+    record once that has held for two consecutive passes, and loses it, and
+    `swept`, when a process holds the session again; a `released` alias
+    (M3's `/clear`) is let go of once a process started after it holds the
+    session. Two passes, and never while the thread's resume lock is held:
+    a resume stops one process and starts another, and one pass between them
+    must not read as the session having stopped. The candidates are kept
+    between passes in daemon/threads.json (written only when they change), as
+    publish_state keeps a word's. Every change goes through
+    sminos_threads.update, under the record's lock, guarded by its current
+    session. What it could not do is the next pass's."""
+    threads = sminos.threads_module()
+    running = {}
+    for r in sminos.peer_records():
+        sid = r.get("sessionId")
+        if isinstance(sid, str) and sid and sid not in running and sminos.peer_running(r):
+            running[sid] = r
+    path = os.path.join(sminos.root(), "daemon", THREAD_SWEEP)
+    try:
+        held = sminos.json_at(path)
+    except (OSError, ValueError):
+        held = {}
+    before = held.get("candidates") if isinstance(held, dict) and isinstance(held.get("candidates"), dict) else {}
+    candidates = {}
+    for t in threads.all_threads():
+        tid, cur = t["thread"], t["current"]
+        if not cur or t.get("pending") or threads.record_ended(t):
+            continue
+        try:
+            if cur in running:
+                remove = [k for k in ("stopped", "swept") if t.get(k)]
+                if t.get("released") and threads.release_outlived(t["released"], running[cur]):
+                    remove.append("released")
+                if remove:
+                    threads.update(tid, {}, remove=remove, guard=lambda r, cur=cur: r["current"] == cur)
+                continue
+            if t.get("stopped") or resume_locked(tid):
+                continue
+            if before.get(tid) == cur:
+                threads.update(tid, {"stopped": sminos.now()},
+                               guard=lambda r, cur=cur: r["current"] == cur and not r.get("stopped"))
+            else:
+                candidates[tid] = cur
+        except (OSError, sminos.LockBusy) as e:
+            sminos.daemon_log("the thread sweep could not mark %s: %s" % (tid, e or "its lock is busy"))
+    if candidates != before:
+        try:
+            sminos.write_json(daemon_path(THREAD_SWEEP), {"candidates": candidates})
+        except OSError as e:
+            sminos.daemon_log("the thread sweep could not keep its candidates: %s" % e)
+
+
+def resume_locked(thread_id):
+    """Whether a resume of the thread holds its lock now (a seat's
+    `<seat id>.resume.lock`, held for the whole of resume_session)."""
+    path = os.path.join(sminos.root(), thread_id + ".resume.lock")
+    try:
+        f = open(path)
+    except OSError:
+        return False
+    with f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return False
 
 
 def mark_tick():
@@ -1419,6 +1559,7 @@ def override_duty():
     sweep_overrides()
     sweep_launches()
     sweep_holder_deliveries()
+    sweep_cleared()
 
 
 def sweep_holder_deliveries():
@@ -1432,6 +1573,26 @@ def sweep_holder_deliveries():
         return
     if receipts:
         sminos.daemon_log("removed %d receipt%s of settled deliveries" % (receipts, "" if receipts == 1 else "s"))
+
+
+def sweep_cleared():
+    """The note of a `/clear` (`$SMINOS_HOME/cleared/<pid>.json`, kept by
+    smns-cleared.sh for the next session's hooks, sminos.cleared_from) whose
+    engine process runs no more is removed: it is believed for a minute, and
+    only by that process."""
+    d = os.path.join(sminos.root(), sminos.CLEARED)
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    running = {str(r.get("pid")) for r in sminos.peer_records() if sminos.peer_running(r)}
+    for name in names:
+        pid, ext = os.path.splitext(name)
+        if ext == ".json" and pid.isdigit() and pid not in running:
+            try:
+                os.unlink(os.path.join(d, name))
+            except OSError:
+                pass
 
 
 def sweep_launches():
@@ -2234,7 +2395,7 @@ def owed_in(project, upstream, kept, failed):
         alias = str((r["renamed"] or joined).get("alias") or sid[:8])
         for e in sminos._owed(to[sid], sid, sminos.delivered_load(project, sid)):
             item = (sminos._ts_epoch(e.get("ts")), "%s → %s" % (sminos.event_ref(e), alias))
-            if not member:
+            if sid in closed or not member:   # a held member's (M3) waits for its reopening: no debt
                 gone.append(item)
             elif cut and sminos.words_route(project, e) == "ask":
                 out["words"].append(item)

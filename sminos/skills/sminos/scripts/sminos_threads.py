@@ -396,6 +396,78 @@ def stamp(session):
     return (thread_of(session, ended=False) or {}).get("thread", "")
 
 
+def hold_of(session):
+    """Whether this machine holds delivery for a session (Interfaces §5): ""
+    when it delivers to the session or wakes it; "human" when it holds, for a
+    thread its human opened that has not ended, whose current session it is
+    and no process holds (the hold: what is addressed to it is recorded and
+    stays owed, and no process is started for it until its human reopens
+    it). T2 adds its reasons. From the live store alone (an ended thread is
+    not held: what is owed to it is settled; a seat is a spawned thread,
+    and an older copy's seat for a human-opened session leaves that
+    session's record in the thread store), through its index."""
+    t = _live_index().get(session) if session else None
+    if t is None or record_ended(t) or reservation(t):
+        return ""
+    return "" if sminos.session_running(session) else "human"
+
+
+_LIVE = []   # [the cache generation it was checked in, the live store's stat key, {current session: record}]
+
+
+def _live_index():
+    """{current session: record} of the live human-opened records: the
+    delivery pass, a view's alias selection and the publication of a
+    stopped session's state ask it of every member. Checked once per cache
+    generation (sminos.forget_caches: an invocation, a tick) and on this
+    process's own writes (_forget_live); read whole again only once the
+    store's directory moved (a record is written by a rename there), and not
+    kept while it may still move (as _aside_index)."""
+    gen = sminos._GENERATION[0]
+    if _LIVE and _LIVE[0] == gen:
+        return _LIVE[2]
+    d = store_dir()
+    before = time.time_ns()
+    try:
+        st = os.stat(d)
+    except OSError:
+        return {}
+    key = (st.st_ino, st.st_mtime_ns)
+    if _LIVE and _LIVE[1] == key:
+        _LIVE[0] = gen
+        return _LIVE[2]
+    index = {t["current"]: t for t in _human_threads() if t["current"]}
+    _LIVE[:] = [gen, key, index] if before - st.st_mtime_ns >= RACY_NS else []
+    return index
+
+
+def _forget_live():
+    _LIVE.clear()
+
+
+def released_alias(session, peer=None):
+    """The alias a human-opened thread whose current session is `session`
+    gave up at a `/clear` (its record's `released`, §1), "" for none: alias
+    selection refuses that name to the session while it stands
+    (sminos.held_alias, sminos.shadowing), and stops when a process started
+    after the release holds the session (`peer`, its engine record; the
+    sweep then removes the mark). Through the live store's index."""
+    released = (_live_index().get(session) or {}).get("released") if session else None
+    if not isinstance(released, dict):
+        return ""
+    if peer and release_outlived(released, peer):
+        return ""
+    return str(released.get("alias") or "")
+
+
+def release_outlived(released, peer):
+    """Whether the process of `peer` (an engine record) started after the
+    release `released` (a record's `released`): it ends the release (§6,
+    row 8)."""
+    started, at = sminos.process_started(peer or {}), sminos._ts_epoch((released or {}).get("at"))
+    return started is not None and at is not None and started > at
+
+
 def reservation(record):
     """The mark of the absorption that holds `record` (RESERVED), or None."""
     entry = (record or {}).get("pending") or {}
@@ -428,6 +500,7 @@ def _write_human(tid, rec, aside):
         os.unlink(_human_path(tid, not aside))
     except FileNotFoundError:
         pass
+    _forget_live()
 
 
 def _change(tid, mutate, deadline=None, bump=False, both=False):
@@ -487,6 +560,7 @@ def _change(tid, mutate, deadline=None, bump=False, both=False):
                     os.unlink(p)
                 except FileNotFoundError:
                     pass
+            _forget_live()
             return True
         _write_human(tid, raw, where == "aside")
         return True
@@ -494,11 +568,14 @@ def _change(tid, mutate, deadline=None, bump=False, both=False):
 
 def update(thread_id, fields, remove=(), guard=None, lock_until=None):
     """A change that owes no event (the stop mark, `swept`, a launch noted,
-    the alias's copy, CH's channels): merged under the store's lock, applied
-    only if guard(record) holds and the record has no open entry. Never a
-    key a journaled operation owns."""
-    if set(fields) & set(JOURNALED) or set(remove) & set(JOURNALED):
-        raise ValueError("update() never writes %s" % ", ".join(sorted((set(fields) | set(remove)) & set(JOURNALED))))
+    the alias's copy, CH's channels, the end of a release: `released`
+    removed once a process started after it holds the session): merged under
+    the store's lock, applied only if guard(record) holds and the record has
+    no open entry. Never a key a journaled operation owns, but that
+    removal."""
+    owned = (set(fields) & set(JOURNALED)) | (set(remove) & (set(JOURNALED) - {"released"}))
+    if owned:
+        raise ValueError("update() never writes %s" % ", ".join(sorted(owned)))
 
     def mutate(view, raw):
         if view.get("pending") or (guard is not None and not guard(view)):
@@ -628,6 +705,7 @@ def _create_human(session, sessions, cwd, deadline):
                "alias": "", "launch": {"cwd": cwd, "at": at}, "channels": [], "created": at, "updated": at}
         os.makedirs(aside_dir(), mode=0o700, exist_ok=True)
         sminos.write_json(_human_path(rec["thread"]), rec)
+        _forget_live()
         return rec
 
 

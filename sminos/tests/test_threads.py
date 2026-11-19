@@ -145,6 +145,21 @@ class Machine(unittest.TestCase):
         sminos.forget_caches()
         return sminos.reconcile(p or self.p)
 
+    def close(self, sid, proc):
+        """The session's process ended as a lane B session's: from M3 a
+        thread stays a member when its process ends, and the one way a
+        reconciliation ends one is its session turning lane B first (§6,
+        row 13)."""
+        records.set_controller(sid, "B")
+        self.end(proc)
+
+    def ended_by_its_process(self, sid, proc):
+        """The thread ended at its process's end (close, then a
+        reconciliation), its session lane A again for a later reopening."""
+        self.close(sid, proc)
+        self.reconcile()
+        records.set_controller(sid, "A")
+
     def own(self, sid, p=None):
         return sminos._own_events(p or self.p, sid)
 
@@ -585,11 +600,22 @@ class ReaderRule(Machine):
 
 
 class Transitions(Machine):
-    def test_its_process_gone_it_ends_stamped_and_its_record_is_set_aside(self):
+    def test_its_process_gone_it_stays_a_member_and_its_record_stays_live(self):
         sid, proc = self.session()
         self.reconcile()
         tid = threads.stamp(sid)
         self.end(proc)
+        self.reconcile()
+        self.assertEqual([e for e in self.own(sid) if e["kind"] == "retired"], [], "no end with the process (M3)")
+        self.assertTrue(self.is_member(sid))
+        self.assertEqual(self.human_files(), [tid + ".json"])
+        self.assertFalse(threads.record_ended(threads.get(tid)))
+
+    def test_its_process_gone_as_a_lane_b_session_it_ends_stamped_and_its_record_is_set_aside(self):
+        sid, proc = self.session()
+        self.reconcile()
+        tid = threads.stamp(sid)
+        self.close(sid, proc)
         self.reconcile()
         e = threads.in_effect(self.own(sid))
         self.assertEqual((e["kind"], e["reason"], e["thread"]), ("retired", "ended", tid))
@@ -720,7 +746,7 @@ class Journal(Machine):
 
     def test_an_end_killed_after_the_records_write(self):
         sid, proc, tid = self.ended_thread()
-        self.end(proc)
+        self.close(sid, proc)
         with self.kill_after_begin(), self.assertRaises(Killed):
             self.reconcile()
         t = threads.get(tid)
@@ -733,7 +759,7 @@ class Journal(Machine):
 
     def test_an_end_killed_after_its_event(self):
         sid, proc, tid = self.ended_thread()
-        self.end(proc)
+        self.close(sid, proc)
         with self.kill_before_last_step(), self.assertRaises(Killed):
             self.reconcile()
         self.assertFalse(self.is_member(sid))
@@ -744,8 +770,7 @@ class Journal(Machine):
 
     def test_a_return_killed_after_the_records_write(self):
         sid, proc, tid = self.ended_thread()
-        self.end(proc)
-        self.reconcile()
+        self.ended_by_its_process(sid, proc)
         self.session(sid=sid)
         with self.kill_after_begin(), self.assertRaises(Killed):
             self.reconcile()
@@ -757,8 +782,7 @@ class Journal(Machine):
 
     def test_a_return_killed_after_its_event(self):
         sid, proc, tid = self.ended_thread()
-        self.end(proc)
-        self.reconcile()
+        self.ended_by_its_process(sid, proc)
         self.session(sid=sid)
         with self.kill_before_last_step(), self.assertRaises(Killed):
             self.reconcile()
@@ -951,8 +975,7 @@ class OpenEntry(Machine):
         sid, proc = self.session()
         self.reconcile()
         tid = threads.stamp(sid)
-        self.end(proc)
-        self.reconcile()
+        self.ended_by_its_process(sid, proc)
         self.session(sid=sid)
         with self.kill_after_begin(), self.assertRaises(Killed):
             self.reconcile()
@@ -1177,8 +1200,7 @@ class LaneAndOrder(Machine):
         sid, proc = self.session()
         self.reconcile()
         tid = threads.stamp(sid)
-        self.end(proc)
-        self.reconcile()
+        self.ended_by_its_process(sid, proc)
         self.assertEqual(self.human_files(aside=True), [tid + ".json"])
         seat_id = str(uuidlib.uuid4())
         sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
@@ -1189,8 +1211,7 @@ class LaneAndOrder(Machine):
         sid, proc = self.session()
         self.reconcile()
         tid = threads.stamp(sid)
-        self.end(proc)
-        self.reconcile()
+        self.ended_by_its_process(sid, proc)
         self.assertTrue(threads.record_ended(threads.get(tid)))
         seat_id = str(uuidlib.uuid4())   # the seat record an older copy writes for it
         sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
@@ -1212,8 +1233,7 @@ class LaneAndOrder(Machine):
         sid, proc = self.session()
         self.reconcile()
         tid = threads.stamp(sid)
-        self.end(proc)
-        self.reconcile()
+        self.ended_by_its_process(sid, proc)
         self.assertTrue(threads.record_ended(threads.get(tid)))
         seat_id = str(uuidlib.uuid4())
         sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
@@ -1323,15 +1343,13 @@ class Surfaces(Machine):
         for _ in range(20):   # an archive of unrelated ended threads
             s, proc = self.session()
             self.reconcile()
-            self.end(proc)
-            self.reconcile()
+            self.ended_by_its_process(s, proc)
         sid, _ = self.session()
         records.establish(sid, records.default_provenance())
         records.set_controller(sid, "B")
         member, member_proc = self.session()
         self.reconcile()
-        self.end(member_proc)
-        self.reconcile()   # the archive changed just now: one more record set aside
+        self.ended_by_its_process(member, member_proc)   # the archive changed just now: one more record set aside
         self.assertEqual(len(self.human_files(aside=True)), 21)
         probe = (
             "import json, os, sys\n"
@@ -1921,8 +1939,7 @@ class LateHandOff(Sessions):
                 self.reconcile()
                 theirs = threads.thread_of(job)["thread"]
                 if why == "ended":
-                    self.end(jproc)
-                    self.reconcile()
+                    self.ended_by_its_process(job, jproc)
                     self.assertTrue(threads.record_ended(threads.get(theirs)))
                 else:
                     path = os.path.join(threads.store_dir(), theirs + ".json")

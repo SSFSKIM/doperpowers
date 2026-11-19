@@ -31,13 +31,15 @@ a crash between the push and the settlement pushes and records it again. The
 hub keeps the latest per event and recipient.
 
 One outcome comes without a settlement: an event owed to a closed terminal
-session (a seat-less session of this machine whose membership ended with its
-process) is reported `recorded` once, when it first becomes owed to it
+session (a stopped thread its human opened, which this machine holds, M3; or
+a seat-less session of this machine whose membership ended with its process)
+is reported `recorded` once, when it first becomes owed to it
 (report_closed), and stays owed; if the session comes back (Resume) and the
-event is delivered, `delivered` follows for the same key. A closed session is
-no member, so delivery never reaches it: on a read-only machine the report
-applies the policy itself, settling what is owed to it from outside
-undelivered as `refused-read-only`, as deliver_next would. What was reported
+event is delivered, `delivered` follows for the same key. Delivery pushes a
+held session nothing and leaves what it holds owed, and never reaches a
+session whose membership ended: on a read-only machine the report applies
+the policy itself, settling what is owed to it from outside undelivered as
+`refused-read-only`, as deliver_next would. What was reported
 is kept per session in the project's `recorded/<session>.json` ({writer: the
 last seq reported}).
 
@@ -179,14 +181,18 @@ CLOSED = "a terminal session that was closed: kept owed, and delivered if it com
 
 
 def closed_sessions(view):
-    """The closed terminal sessions of this machine in a view: seat-less
-    sessions that joined from here whose membership ended with their process
-    (retired, reason `ended`; reconciliation retires a seat never so)."""
+    """The closed terminal sessions of this machine in a view: the members
+    it holds (sminos.hold_for: a stopped thread its human opened, M3), and
+    the seat-less sessions that joined from here whose membership ended with
+    their process (retired, reason `ended`: one from before threads, or a
+    lane B one; reconciliation retires a seat never so)."""
     out = set()
     for sid, r in view.info.items():
         latest, joined = (r or {}).get("latest"), (r or {}).get("joined") or {}
-        if latest and latest["kind"] == "retired" and latest.get("reason") == "ended" and joined \
-                and sminos.is_self(str(joined.get("machine") or ""), sid):
+        if not (latest and joined and sminos.is_self(str(joined.get("machine") or ""), sid)):
+            continue
+        if latest["kind"] == "retired" and latest.get("reason") == "ended" \
+                or latest["kind"] == "joined" and sminos.hold_for(sid):
             out.add(sid)
     return out
 

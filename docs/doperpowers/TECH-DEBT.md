@@ -796,3 +796,9 @@ Residue of the compaction's derive (`clear_status` and `cmd_derive` in `sminos/s
 
 - **The clear can take a status set after the compaction.** The hook (`smns-derive.sh`) starts `derive --compacted` detached, so a `sminos status` the session runs in the second or so before the derive reads the log is cleared with the one the compaction made stale. Clearing only a status older than the compaction (its time passed to the derive as a cutoff) closes it. T3. Trigger: a status seen lost right after a compaction.
 - **The compaction count is not serialized.** `compaction_due`'s read-increment-write of the count is not serialized with `derive_member`'s record-then-reset. When a detached compaction derive overlaps a daemon derive, one compaction can be lost or counted twice, so that derive comes one compaction early or late. The fix would be a per-session lock across the increment and the record/reset pair, not held during the fork. T3. Trigger: a derive seen at the wrong compaction.
+
+## sminos threads (2026-11-19, T1 of the channels-and-threads composite)
+
+Residue of T1 (`docs/doperpowers/plans/2026-11-17-sminos-threads-t1.md`), each with what would promote it.
+
+- **A held event does not follow a continuation.** A stopped session its human opened, reopened and handed to a background job before the next delivery pass, leaves what was held for it addressed to the old session id: `_owed` reads no lineage, and everything after it (the delivery record and its lock, receipts, the reach gate's decision, the outcome) is keyed by the addressed session, so following it would deliver under a decision made for another session. The job reads it at its next `chat` through the cursor the hand-off carries, and nothing counts it owed, as for a live session handed off with something owed. Never across a refill. T3. Trigger: a reopen and a hand-off inside one daemon interval seen to lose a held message's push.

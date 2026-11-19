@@ -1034,8 +1034,10 @@ class Link:
         push asks `reach?`, whatever admitted it before): the same event,
         remembered as the words pass's, under a new id. With the lane full
         nothing is asked now, and the event, still owed, is asked `words?`
-        again by a later pass."""
-        if self.session_lane.queued() >= UPLOAD_AHEAD:
+        again by a later pass. A session that stopped while its words were
+        asked about, and that this machine now holds (sminos.hold_for, M3),
+        is asked nothing more: the event stays owed for its reopening."""
+        if self.session_lane.queued() >= UPLOAD_AHEAD or sminos.hold_for(held["member"].session):
             return
         e, project = held["event"], held["project"]
         ask = os.urandom(12).hex()
