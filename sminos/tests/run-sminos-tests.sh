@@ -6682,7 +6682,7 @@ assert_not_contains "$OUT" "note:" "and tells of no rename"
 FQ=0fa00009-0000-4000-8000-0000000000f9
 fa_peer seatless-old "$FQ" "$FAR" fa-q
 run "$SMINOS" list
-"$SMINOS" seat add fa-repo fa-seat --session "$FQ" >/dev/null
+older_seat fa-repo fa-seat "$FQ" "$FAR"   # a member its human opened takes a seat only from an older sminos
 run "$SMINOS" status seatless-old "seated"
 assert_contains "$OUT" "note: @seatless-old is now @fa-seat#${FQ:0:8}" "(seated, its alias before the seat's reaches it)"
 run "$SMINOS" retire fa-seat
