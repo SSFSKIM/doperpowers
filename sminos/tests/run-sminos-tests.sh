@@ -19,6 +19,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # mismatch it.
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 SMINOS="$PLUGIN_ROOT/skills/sminos/scripts/sminos"
+# set_lane <session> <A|B>: the session's controller on its record. From T1's
+# M3 a thread (lane A) stays a member when its process ends; a test of an
+# ending turns its session lane B first.
+set_lane() {
+  python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import sminos_records as r
+sys.exit(0 if r.set_controller(sys.argv[2], sys.argv[3]) else 1)' "$PLUGIN_ROOT/skills/sminos/scripts" "$1" "$2"
+}
 # The root is the plugin's, not a repository's that holds it: its manifest says so.
 if [ "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("name"))' "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null)" != sminos ]; then
   echo "run-sminos-tests: $PLUGIN_ROOT is not the sminos plugin's root" >&2
@@ -6357,8 +6364,10 @@ assert_equals "$(renamed_to "$CA" desk-uplink-owner)" "1 user" "the daemon's tic
 assert_equals "$(other_row desk-uplink-owner machine)|$(other_row desk-uplink-owner local)" "testhost|false" "(the other machine reads the member as testhost's)"
 assert_equals "$(other_row desk-uplink-owner name_source)|$(other_row desk-uplink-owner charge_source)" "user|derived" \
   "another machine reads the same label and the same line"
+set_lane "$CA" B   # a session that ends (a thread would stay, stopped)
 rm -f "$(cn_record "$CA")"
 run "$SMINOS" list   # the session ends: retired
+set_lane "$CA" A
 cn_peer desk-uplink-owner "$CA" user   # and is resumed under the name it restored
 run "$SMINOS" list
 assert_equals "$(last_joined_source "$CA")" "user" "a resumed session joins again under the engine's label"
@@ -6744,6 +6753,7 @@ assert_rc 4 "$RC" "two members that last held it at the same time are refused as
 assert_contains "$OUT" "why-now#${FY:0:8}" "naming the one"
 assert_contains "$OUT" "zed-now#${FZ:0:8}" "and the other"
 # A retired member's former alias reaches nothing.
+set_lane "$FT" B   # a session that ends (a thread would stay, stopped)
 rm -f "$HOME/.claude/sessions/fa-fa-t.json"
 run "$SMINOS" list   # it ends: retired
 CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@oldname are you there"

@@ -44,6 +44,7 @@ import endpoint_standin  # noqa: E402
 import sminos  # noqa: E402
 import sminos_audience as audience  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
+import sminos_records as records  # noqa: E402
 import sminos_rl10 as rl10  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
 
@@ -329,11 +330,16 @@ class Moves(unittest.TestCase):
         self.assertEqual(self.membership(S1), ([MINTED], 1))
         self.assertEqual(self.membership(S2), ([MINTED], 1))
         # A session that ended and is resumed while the statements are not
-        # known rejoins the project it was last in, and moves no more.
+        # known rejoins the project it was last in, and moves no more. A
+        # thread stays a member when its process ends; a lane B session
+        # ends, so the session turns lane B for its end and A again for
+        # its reopening.
+        self.assertTrue(records.set_controller(S1, "B"))
         self.procs[S1].kill()
         self.procs[S1].wait()
         self.tick()
         self.assertEqual(self.membership(S1), ([], 1), "ended with its process")
+        records.set_controller(S1, "A")
         os.remove(sminos.org_path())
         self.session("one", S1)
         self.tick()
