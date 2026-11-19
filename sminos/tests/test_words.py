@@ -662,6 +662,8 @@ class Members(Machine):
         changed = link.session_lane.take()
         self.assertEqual([(f["session"], f.get("title")) for f in changed], [(S1, "a new title")],
                          "a changed title sent alone")
+        # A thread stays a member when its process ends (T1's M3); a lane B session's membership ends with it.
+        self.assertTrue(sminos.records_module().set_controller(S2, "B"))
         end2()
         sminos.forget_caches()
         link.plane.live = link.plane.records.scan()   # the plane's look at the engine's records (PRESENCE_EVERY)

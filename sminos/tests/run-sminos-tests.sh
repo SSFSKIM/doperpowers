@@ -6477,10 +6477,12 @@ CT=0c00000a-0000-4000-8000-0000000000ca
 cn_member cnseat-engine "$CT" derived
 "$SMINOS" seat add cn-repo cnseat --session "$CT" >/dev/null
 not_named cnseat "$CT" "a seat"
-# A member that stopped after its row was read.
+# A member that stopped after its row was read: a session its human opened,
+# stopped, is not forked (T1's M3), so no line and no name.
 CZ=0c00000b-0000-4000-8000-0000000000cb
 cn_member cnrepo-z0 "$CZ" derived
 run "$SMINOS" list
+rm -f "$FORK_PROMPT"
 set +e
 OUT="$(STUB_FORK_RESULT=$'Runs the thing.\nname: some-fresh-name' python3 - "$SMINOS_PY" "$CNP" "$CZ" "$(cn_record "$CZ")" 2>&1 <<'PY'
 import importlib.util, os, sys
@@ -6492,8 +6494,9 @@ mod.derive_member(p, m)
 PY
 )"
 set -e
-assert_equals "$(cat "$FORK_PROMPT")" "$DERIVE_PROMPT_TODAY" "a stopped member: the fork is asked today's question, verbatim"
-assert_equals "$(cn_charge "$CZ")" "derived|Runs the thing.|<none>" "a stopped member: the line is recorded with no name"
+assert_equals "$(cat "$FORK_PROMPT" 2>/dev/null)" "" "a stopped member: no fork is started"
+assert_contains "$OUT" "its human opened it" "a stopped member: saying why"
+assert_equals "$(cn_charge "$CZ")" "||<none>" "a stopped member: no line is recorded"
 assert_equals "$(pending "$CZ" name)" "<none>" "a stopped member: and no pending file"
 # The owner renames the session while its fork runs.
 CR=0c00000c-0000-4000-8000-0000000000cc
@@ -6714,6 +6717,7 @@ assert_contains "$(inbox fa-u)" "to the holder" "and reaches the member that hol
 assert_equals "$(inbox fa-t)" "" "not the one that held it before"
 run "$SMINOS" status oldname "the holder"
 assert_contains "$(tail -1 "$FALOG/testhost.$FU.jsonl")" '"text": "the holder"' "find_target too takes the current holder"
+set_lane "$FU" B   # a session that ends (a thread would stay, stopped, holding the name)
 rm -f "$HOME/.claude/sessions/fa-fa-u.json"
 run "$SMINOS" list   # it ends: retired
 # Two members held a name before: the more recent holder gets it.

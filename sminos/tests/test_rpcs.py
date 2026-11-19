@@ -3351,6 +3351,8 @@ class CopyNames(unittest.TestCase):
     def test_c_a_name_no_live_identity_holds_is_taken(self):
         gone = self.session("was-here")
         self.tick()
+        # A lane B session: a thread stays a member when its process ends (T1's M3).
+        self.assertTrue(sminos.records_module().set_controller(gone.sid, "B"))
         gone.end()
         self.sessions.remove(gone)
         self.tick()

@@ -396,6 +396,8 @@ class RestateOnRl10(OverRl10):
 
     def test_a_withheld_joined_of_a_session_that_ended_is_not_restated(self):
         self.withhold_the_first_snapshots()
+        # A thread stays a member when its process ends (T1's M3); a lane B session ends.
+        self.assertTrue(sminos.records_module().set_controller(S1, "B"))
         self.end_sender()
         self.tick()
         kinds = [e["kind"] for e in self.own()]

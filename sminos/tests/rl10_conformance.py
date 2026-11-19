@@ -829,7 +829,10 @@ PROBES = {
 #   verdict of a launch with no lane mark (sminos_bridge's relay_controller),
 #   and the next reconciliation adopts it as a thread (sminos.adopt): one
 #   stamped `joined` again, its writer's seq 2.
+# - S4, a thread, stays a member when its process ends (T1's M3): stopped,
+#   with no `retired`, so its writer stays at its `joined`'s seq 1.
 S2_WRITER = "{{name}}/{{session:S2}}"
+S4_WRITER = "{{name}}/{{session:S4}}"
 STAMPED = (("{{session:S1}}", "joined"), ("{{session:S1}}", "titled"), ("{{session:S4}}", "joined"))
 
 
@@ -837,6 +840,14 @@ def amend_s2_adopted(step):
     """A vector of P: S2's writer at 2, its adoption's `joined`."""
     step = copy.deepcopy(step)
     step["up"]["have"][S2_WRITER] = 2
+    return step, {}
+
+
+def amend_s2_adopted_s4_stopped(step):
+    """A vector of P after S3 and S4 ended: S2's writer at 2, and S4's at 1,
+    a thread stopped rather than retired."""
+    step, _ = amend_s2_adopted(step)
+    step["up"]["have"][S4_WRITER] = 1
     return step, {}
 
 
@@ -861,7 +872,8 @@ AMENDMENTS = {
              amend_s2_adopted),
     (4, 4): ("thread on the lane A sessions' lifecycle events, and S2's adoption joined at its seq 2 (T1)",
              amend_threads_upload),
-    (11, 18): ("S2's writer at 2: its adoption joined (T1)", amend_s2_adopted),
+    (11, 18): ("S2's writer at 2: its adoption joined (T1); S4's at 1: a thread stopped, not retired (T1's M3)",
+               amend_s2_adopted_s4_stopped),
 }
 
 # A step whose line comes on the next connection: none since the fixture
