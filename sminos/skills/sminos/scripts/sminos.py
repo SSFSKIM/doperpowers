@@ -112,8 +112,10 @@ human reopening it brings it back as itself; a seat comes back by a fill.
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
     sminos status   <member> <one line>                   # the member's own "now" line
-    sminos retire   <member> [--purge]                    # end it (recorded first), then stop what can be
-                   stopped; --purge deletes its record (a seat's, or a session its human opened)
+    sminos retire   <member> [--purge] [--owner-unknown]  # end it (recorded first), then stop what can be
+                   stopped; --purge deletes its record (a seat's, or a session its human opened). Refused for
+                   a session that made a devcloud host that still exists (naming it: devcloud vm down <name>),
+                   and when devcloud cannot tell; --owner-unknown retires it then, for a person at a terminal
     sminos access   <member> private|listed|org-view|org-converse   # who may reach a session of this
                    machine: private, its owners' agents and its shares'; listed or org-wide, every member's
     sminos share    <member> <person> list|view|converse|approve|none   # a member's grade on it (<person> an
@@ -4628,7 +4630,7 @@ def end_human_lane_b(project, sid, thread, gone):
         seat=seat_over(sid, "retired"))
 
 
-def end_by_rule(thread, stopped):
+def end_by_rule(thread, stopped, asked=None):
     """A thread stopped for more than the period ended by the rule (T1's M4,
     Interfaces §6 row 10), by the thread sweep alone (sminos_daemon's ending
     pass): the record first — `ended`, reason `ended` and no process, and
@@ -4637,9 +4639,11 @@ def end_by_rule(thread, stopped):
     the settlement of what was held for it, and a record its human opened
     set aside last. Begun only while, under the record's lock, its stop
     mark is still `stopped`, its current session the same, and no process
-    holds that session by the engine's records read afresh. In the
-    session's own project: a seat's, else the one its membership in effect
-    puts it in. The events appended."""
+    holds that session by the engine's records read afresh, and every
+    session it has had is among the short ids devcloud was asked about
+    (`asked`, M5: its answer was none for them). In the session's own
+    project: a seat's, else the one its membership in effect puts it in.
+    The events appended."""
     threads = threads_module()
     cur, tid = thread["current"], thread["thread"]
     seat = reload_seat(tid) if thread["opened"] == "spawned" else None
@@ -4653,7 +4657,7 @@ def end_by_rule(thread, stopped):
 
     def guard(r):
         return r["current"] == cur and r.get("stopped") == stopped and not threads.record_ended(r) \
-            and not running_now(cur)
+            and threads.asked_all(r, asked) and not running_now(cur)
 
     return thread_transition(project, tid, "end", [{"kind": "retired", "session": cur, "by": "", "reason": "ended"}],
                              fields=fields, guard=guard, settle=cur, last="aside" if seat is None else None,
@@ -14056,22 +14060,70 @@ def locked_fresh(s0, verb, session=""):
 
 def cmd_retire(a):
     """End one member's thread and stop what sminos can stop. Nothing it
-    spawned goes with it: a spawner is provenance, not a host. The end is
-    recorded before anything is stopped (T1's M4): a session that retires
-    itself may be ended by the stop."""
+    spawned goes with it: a spawner is provenance, not a host. A thread that
+    made a host devcloud still has is not ended, nor one whose answer is
+    unknown unless a person at a terminal passes it (`--owner-unknown`,
+    refused inside a session; owner_guard). The end is recorded before
+    anything is stopped (T1's M4): a session that retires itself may be
+    ended by the stop."""
+    if a.owner_unknown and os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        die("--owner-unknown is for a person at a terminal, and this runs inside a session: nothing was retired. "
+            "Report the refusal to your human instead", 1)
     target = find_target(a.seat)
     if target[0] == "none":
         die("no seat or member matching '%s'" % a.seat, EXIT_UNKNOWN)
+    how = OwnerAsk(a.seat, "purge" if a.purge else "retire", a.owner_unknown)
     if target[0] == "seat":
-        _retire_one(target[1], a.purge, target[2])
+        _retire_one(target[1], a.purge, target[2], how)
         return
     project, m = target[1], target[2]
     if not m.local:
         die("%s is on %s" % (m.alias, m.machine), EXIT_UNKNOWN)
-    retire_member(project, m, a.purge)
+    retire_member(project, m, a.purge, how=how)
 
 
-def retire_member(project, m, purge, verb="retired"):
+class OwnerAsk(NamedTuple):
+    """How a verb that ends a thread on purpose asks devcloud first
+    (owner_guard): the name it was given, the verb ("retire", "purge" or
+    "remove"), and whether a person at a terminal passes an unknown answer
+    (`retire --owner-unknown`)."""
+    name: str
+    verb: str
+    owner_unknown: bool = False
+
+
+def owner_guard(how, records, label):
+    """The question every end on purpose asks before it writes anything
+    (T1's M5): devcloud's answer about every session the thread has had
+    (`records`: its record, and a seat that follows it; sminos_threads.
+    owner_sessions). Owned: refused, exit 1, naming each host and
+    `devcloud vm down <name>` as the way on; unknown: refused naming what
+    could not be asked, unless the verb was given `--owner-unknown` and the
+    person confirms it at the controlling terminal (exit 1 where there is
+    none). Returns the short ids asked, which the end rechecks under the
+    record's lock (sminos_threads.asked_all): a session the thread gained
+    since was not asked about."""
+    threads = threads_module()
+    shorts = threads.shorts_of([x for r in records for x in threads.owner_sessions(r)])
+    owned = threads.owned_among(threads.owned_by(shorts), shorts) if shorts else threads.Owned("none", [], [], [])
+    if owned.answer == "none":
+        return owned.asked
+    done = {"retire": "retired", "purge": "retired", "remove": "removed"}[how.verb]
+    what = threads.owned_words(owned)
+    if owned.answer == "owned":
+        die("%s is not %s: %s" % (label, done, what), 1)
+    anyway = "sminos retire %s%s --owner-unknown" % (shlex.quote(how.name), "" if how.verb == "retire" else " --purge")
+    if not how.owner_unknown:
+        die("%s is not %s: %s. Its human, at a terminal, may retire it anyway: %s" % (label, done, what, anyway), 1)
+    prompt = "%s: %s. Retire it anyway? [y/N] " % (label, what)
+    if not sibling_module("sminos_visibility").confirmed(
+            label, None, prompt=prompt, none="--owner-unknown needs a person at a terminal to confirm it, and this "
+                                             "has none: nothing was retired"):
+        die("%s: not confirmed; nothing was retired" % label, 1)
+    return owned.asked
+
+
+def retire_member(project, m, purge, verb="retired", how=None):
     """The end of a member of this machine that holds no seat (`retire`,
     `retire --purge`, `remove`; Interfaces §6 rows 9 and 11). A thread its
     human opened ends by its record (end_human): `ended`, with the process
@@ -14090,12 +14142,16 @@ def retire_member(project, m, purge, verb="retired"):
     human = thread is not None and thread["opened"] == "human" and thread["current"] == m.session
     if purge and not human:
         die("%s holds no seat and no thread record of this machine: there is no record to purge" % m.alias)
+    asked = None
+    if thread is not None and thread["current"] == m.session and (purge or not threads.record_ended(thread)):
+        asked = owner_guard(how or OwnerAsk(m.alias, "purge" if purge else "retire"), [thread],
+                            "%s (session %s)" % (m.alias, m.short))
     agents_refresh()
     row = agent_row(session_id=m.session)
     proc = session_running(m.session)
     by, pid = caller_alias(), (proc.get("pid") if proc else None)
     if human:
-        if end_human(project, thread, m.session, by, pid, purge) == "already":
+        if end_human(project, thread, m.session, by, pid, purge, asked) == "already":
             die("%s was retired already; nothing more was recorded" % m.alias, EXIT_UNKNOWN)
     else:
         lifecycle(project, m.session, "retired", by=by, reason="retire", **({"pid": pid} if proc else {}))
@@ -14111,7 +14167,7 @@ def retire_member(project, m, purge, verb="retired"):
         print("%s %s (session %s; %s)" % (verb, m.alias, m.short, kept))
 
 
-def end_human(project, thread, sid, by, pid, purge):
+def end_human(project, thread, sid, by, pid, purge, asked=None):
     """A retire of a thread its human opened, journaled on its record:
     "ended" once this call's end (or, for a purge, the purge) began;
     "already" when the record had ended already and no purge was asked.
@@ -14122,7 +14178,9 @@ def end_human(project, thread, sid, by, pid, purge):
     the record ended (by another retire, or the rule, that won the claim)
     purges that end: its own entry, owing a `retired` only while the log
     still holds the session a member. Never a second, unjournaled
-    retirement, and never a deletion reported that did not begin."""
+    retirement, and never a deletion reported that did not begin. Every
+    session the record has had is among the short ids devcloud was asked
+    about (`asked`, owner_guard), read again under the lock."""
     threads = threads_module()
     tid = thread["thread"]
     fields = {"by": by, "reason": "retire", **({"pid": pid} if pid else {})}
@@ -14130,6 +14188,7 @@ def end_human(project, thread, sid, by, pid, purge):
 
     def live_member(t):
         return t["opened"] == "human" and t["current"] == sid and not threads.record_ended(t) \
+            and threads.asked_all(t, asked) \
             and latest_membership(_own_events(project, sid)) == "joined" and membership_here(project, sid)
 
     began = []
@@ -14149,7 +14208,8 @@ def end_human(project, thread, sid, by, pid, purge):
         return "already"
     member = latest_membership(_own_events(project, sid)) == "joined"
     thread_transition(project, tid, "end", [{"kind": "retired", "session": sid, **fields}] if member else [],
-                      required=True, began=began, guard=lambda r: r["current"] == sid and threads.record_ended(r),
+                      required=True, began=began,
+                      guard=lambda r: r["current"] == sid and threads.record_ended(r) and threads.asked_all(r, asked),
                       settle=sid, last="purge", seat=seat)
     if not began:
         die("the purge of %s could not begin (its record changed meanwhile): nothing was deleted" % sid[:8],
@@ -14198,7 +14258,27 @@ def retired_in_log(project, sid):
     return e is not None and e["kind"] == "retired" and e.get("reason") in END_REASONS
 
 
-def _retire_one(s0, purge, session=""):
+def seat_owner_guard(s0, purge, how):
+    """owner_guard for a seat's end, asked before its locks are taken (the
+    question can take a minute): the record that ends (its session's
+    canonical one, else the seat's own) and the seat. None, nothing asked,
+    for a seat that is no thread (a lane B session's) and for a retire of
+    one ended already, which ends nothing."""
+    threads = threads_module()
+    cur = s0["current"]
+    t = threads.thread_of(cur) if cur else None
+    own = threads.get(s0["seat_id"])
+    t = t if t is not None and t["current"] == cur else own
+    if t is None or threads.record_ended(t) and not purge:
+        return None
+    return owner_guard(how, [t] + ([own] if own is not None and own is not t else []),
+                       "%s/%s (session %s)" % (s0["group"], s0["alias"], cur[:8]) if cur
+                       else "%s/%s" % (s0["group"], s0["alias"]))
+
+
+def _retire_one(s0, purge, session="", how=None):
+    asked = seat_owner_guard(s0, purge, how or OwnerAsk("%s/%s" % (s0["group"], s0["alias"]),
+                                                        "purge" if purge else "retire"))
     locks, s = locked_fresh(s0, "retire", session)
     try:
         if s["engine"] == "codex":
@@ -14207,7 +14287,7 @@ def _retire_one(s0, purge, session=""):
             hint = 'sminos fill %s/%s --resume "<task>"' % (s["group"], s["alias"])
         else:
             hint = 'sminos fill %s/%s "<task>"' % (s["group"], s["alias"])
-        end_and_stop(s, purge)
+        end_and_stop(s, purge, asked)
         if purge:
             print("purged %s/%s [%s] from the registry (session transcript left intact)%s" % (
                 s["group"], s["alias"], s["seat_id"], worktree_note(s)))
@@ -14218,7 +14298,7 @@ def _retire_one(s0, purge, session=""):
         unlock(locks)
 
 
-def end_and_stop(s, purge):
+def end_and_stop(s, purge, asked=None):
     """A seat's end, then its turn stopped (stop_session) only once the
     retirement is in the log (retired_in_log): a session that retires
     itself, whose stop can end its caller, is stopped only after its record
@@ -14231,7 +14311,9 @@ def end_and_stop(s, purge):
     (end_human), its entry bringing the seat in line, retired or for a
     purge deleted; else the seat's own (end_seat). The verb's lifecycle
     locks are held. What may keep a thread from its end (M5: devcloud's
-    answer) is asked by the verb before this."""
+    answer) is asked by the verb before this (seat_owner_guard), and `asked`,
+    the short ids it asked about, rechecked by the end under the record's
+    lock."""
     cur = s["current"]
     thread = threads_module().thread_of(cur) if cur else None
     project = seat_project(s)
@@ -14241,9 +14323,9 @@ def end_and_stop(s, purge):
     try:
         if thread is not None and thread["opened"] == "human" and thread["current"] == cur:
             project = last_project(cur) or project
-            end_human(project, thread, cur, caller_alias(), seen.get("pid") if seen else None, purge)
+            end_human(project, thread, cur, caller_alias(), seen.get("pid") if seen else None, purge, asked)
         else:
-            end_seat(s, purge)
+            end_seat(s, purge, asked)
     finally:
         if retired_in_log(project, cur):
             stop_seen_turn(s, seen, turn)
@@ -14286,7 +14368,7 @@ def still_seen(seen, sid):
         and process_started(now_) == process_started(seen)
 
 
-def end_seat(s, purge):
+def end_seat(s, purge, asked=None):
     """A seat's end (retire, retire --purge, remove), under its lifecycle
     locks: the record first — `status` retired and `ended`, with the event
     owed, in one write (Interfaces §6, the end) — then the event, then, for
@@ -14299,7 +14381,9 @@ def end_seat(s, purge):
     process seen running the session is recorded (`pid`): the end holds
     against it, and only another process returns the seat. A seat that is
     no thread (no session, a lane B session's) is retired as before: the
-    record, then the event; purged, the event, then its files."""
+    record, then the event; purged, the event, then its files. Begun only
+    while every session the record has had is among the short ids devcloud
+    was asked about (`asked`, T1's M5)."""
     by = caller_alias()
     project = seat_project(s)
     threads = threads_module()
@@ -14326,7 +14410,7 @@ def end_seat(s, purge):
                     project, s["seat_id"], "end", [retired], required=True, began=began,
                     fields={"status": "retired", "updated": at,
                             "ended": {"at": at, "reason": "retire", "by": by, "pid": pid}},
-                    guard=lambda t: t["current"] == cur and not threads.seat_ended(t),
+                    guard=lambda t: t["current"] == cur and not threads.seat_ended(t) and threads.asked_all(t, asked),
                     settle=cur, last="purge" if purge else None)
                 fresh = reload_seat(s["seat_id"])
                 if began or fresh is None:
@@ -14338,8 +14422,8 @@ def end_seat(s, purge):
                 # Ended already (the rule, another retire): that end's record purged, journaled.
                 member = latest_membership(_own_events(project, cur)) == "joined"
                 thread_transition(project, s["seat_id"], "end", [retired] if member else [], required=True,
-                                  began=began, guard=lambda t: t["current"] == cur and threads.record_ended(t),
-                                  settle=cur, last="purge")
+                                  began=began, guard=lambda t: t["current"] == cur and threads.record_ended(t)
+                                  and threads.asked_all(t, asked), settle=cur, last="purge")
                 if not began and reload_seat(s["seat_id"]) is not None:
                     die("the purge of seat %s/%s could not begin (its record changed meanwhile): nothing was "
                         "deleted" % (s["group"], s["alias"]), EXIT_UNKNOWN)
@@ -14356,17 +14440,19 @@ def end_seat(s, purge):
 def cmd_remove(a):
     """A seat's end and its record deleted, or a thread's its human opened
     (D1: the verbs that only manage a record apply to every thread)."""
+    how = OwnerAsk(a.seat, "remove")
     if find_seat(a.seat, caller_scope())[0] != "none":
         s0 = resolve_seat(a.seat)
     else:
         s0, _, opened = resolve_seat_or_opened(a.seat, "remove it")
         if opened is not None:
-            retire_member(opened[0], opened[1], True, verb="removed")
+            retire_member(opened[0], opened[1], True, verb="removed", how=how)
             return
+    asked = seat_owner_guard(s0, True, how)
     locks, s = locked_fresh(s0, "remove")
     try:
         # A removed seat's session leaves the family with it.
-        end_and_stop(s, True)
+        end_and_stop(s, True, asked)
         print("removed %s/%s [%s] (chat history kept)%s" % (s["group"], s["alias"], s["seat_id"], worktree_note(s)))
     finally:
         unlock(locks)
@@ -16005,6 +16091,8 @@ def build_parser():
     dr.add_argument("--interval", type=float, default=5.0)
     for op in ("tick", "install", "status", "owed", "uplink", "probe"):
         dsub.add_parser(op, add_help=False)
+    dc = dsub.add_parser("census", add_help=False)   # the ending pass's child (T1's M5); no person runs it
+    dc.add_argument("threads", nargs="*")
     dpr = dsub.add_parser("profile", add_help=False)
     dpr.add_argument("--seconds", type=float, default=20.0)
     dpr.add_argument("--of", choices=("uplink", "run"), default="uplink")
@@ -16104,6 +16192,7 @@ def build_parser():
     rt = sub.add_parser("retire", add_help=False)
     rt.add_argument("seat")
     rt.add_argument("--purge", action="store_true")
+    rt.add_argument("--owner-unknown", dest="owner_unknown", action="store_true")
     rt.set_defaults(fn=cmd_retire)
 
     ac = sub.add_parser("access", add_help=False)

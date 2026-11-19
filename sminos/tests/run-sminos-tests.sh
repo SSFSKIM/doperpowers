@@ -124,6 +124,10 @@ export DAEMON_HOST="testhost"
 export SMINOS_NO_EXEC=1
 # The daemon's derivation (every five minutes) starts a child; only the cases that pin it turn it on.
 export SMINOS_DERIVE_EVERY=0
+# devcloud is a stand-in for every suite run from here (T1's M5): no test reaches a real driver, and
+# none of devcloud's own variables (its seed key, its profile) reaches one.
+export SMINOS_DEVCLOUD="$SCRIPT_DIR/devcloud_standin.py"
+while IFS= read -r var; do unset "$var"; done < <(compgen -e | grep '^DEVCLOUD_' || true)
 WORK="$TEST_ROOT/work"
 mkdir -p "$HOME/.claude/sessions" "$WORK" "$STUB_STATE/agents" "$STUB_STATE/log"
 
@@ -367,6 +371,8 @@ run_suites() {
     fail "a closed session stays: stopped, held, its sender told, a /clear (test_threads_stopped.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_threads_ended.py"; then pass "a thread ends, and returns: the three-day rule, a retire, the settlement, a fill (test_threads_ended.py)"; else
     fail "a thread ends, and returns: the three-day rule, a retire, the settlement, a fill (test_threads_ended.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_threads_owner.py"; then pass "a thread that made a VM is neither retired nor ended: devcloud asked, the census (test_threads_owner.py)"; else
+    fail "a thread that made a VM is neither retired nor ended: devcloud asked, the census (test_threads_owner.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else
     fail "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager.py"; then pass "the session manager's command: windows, pending, subscriptions (test_manager.py)"; else

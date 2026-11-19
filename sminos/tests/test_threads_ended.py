@@ -57,7 +57,21 @@ class Ending(Rig):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.daemon._ENDING[0] = 0.0
+        self.daemon._CENSUS_SEEN[0] = None
+        self.daemon._CENSUS_LIVE[0] = False
+        self.daemon._CENSUS = None
+        self.addCleanup(self.census_gone)
         self.launched = []
+
+    def census_gone(self):
+        """A census this test started, waited for (or stopped) before its machine goes."""
+        proc, self.daemon._CENSUS = self.daemon._CENSUS, None
+        if proc is not None:
+            try:
+                proc.wait(30)
+            except Exception:  # noqa: BLE001 — stopped, then reaped
+                proc.kill()
+                proc.wait()
 
     def engine(self, sid, short=None):
         """The harness's two steps a fill takes, stood in for: the engine's
@@ -74,9 +88,16 @@ class Ending(Rig):
             mock.patch.object(sminos, "poll_uuid", return_value=(sid, "idle", self.root))
 
     def sweep(self):
+        """A pass of the thread sweep; when it started a census (T1's M5:
+        the three-day rule asks devcloud first, off the tick), the census
+        waited for and the pass that takes its answer up."""
         sminos.forget_caches()
         self.daemon.sweep_threads()
         sminos.forget_caches()
+        if self.daemon._CENSUS is not None:
+            self.daemon._CENSUS.wait(30)
+            self.daemon.sweep_threads()
+            sminos.forget_caches()
 
     def stopped_since(self, sid, seconds):
         """The thread's stop marked by the sweep (two passes), then dated

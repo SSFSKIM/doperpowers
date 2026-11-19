@@ -53,8 +53,10 @@ for var in ("SMINOS_RL10", "MAWS_USER_DATA", "CLAUDE_CODE_SESSION_ID", "DAEMON_H
             "SMNS_MEMBER", "SMNS_INTERNAL", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "SMINOS_LAUNCH", "CLAUDE_PID",
             "MAWS_LAUNCHED_BY"):
     os.environ.pop(var, None)
+for var in [v for v in os.environ if v.startswith("DEVCLOUD_")]:
+    os.environ.pop(var)   # devcloud's own: where a real driver finds its seed and profile
 os.environ.update(HOME=os.path.join(BASE, "home"), SMINOS_HOME=os.path.join(BASE, "s"), DAEMON_HOST="testhost",
-                  SMINOS_DERIVE_EVERY="0")
+                  SMINOS_DERIVE_EVERY="0", SMINOS_DEVCLOUD=os.path.join(HERE, "devcloud_standin.py"))
 sys.path.insert(0, SCRIPTS)
 
 import sminos  # noqa: E402

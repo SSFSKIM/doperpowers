@@ -26,6 +26,10 @@ write, finish() appends each event the log does not hold yet (each carries
 the entry's id in `op`), then clears the entry in the write that sets the
 record aside or deletes it. Any process may finish an entry, any number of
 times; nothing else changes a record while its entry is open.
+
+Which hosts a thread owns is devcloud's answer, never a copy kept here
+(contract X9; M5): owned_by() is the one function that runs devcloud, and
+owned_vms() asks it about a thread's sessions.
 """
 import contextlib
 import copy
@@ -33,10 +37,15 @@ import fcntl
 import json
 import os
 import re
+import shutil
+import signal
 import struct
+import subprocess
 import sys
+import tempfile
 import time
 import uuid
+from typing import NamedTuple
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 if SCRIPT_DIR not in sys.path:
@@ -1436,3 +1445,314 @@ def _darwin_argv(pid):
     if argc <= 0 or len(parts) < argc:
         return None
     return [p.decode("utf-8", "surrogateescape") for p in parts[:argc]]
+
+
+# ------------------------------------------------------------ which hosts a thread owns (X9; M5)
+
+ANSWERS = ("owned", "none", "unknown")
+DEVCLOUD_MIN = (0, 17, 2)       # from this version on, exit 6 is devcloud's word that its driver does not run here
+DEVCLOUD_TIMEOUT = 60           # seconds one question may take; SMINOS_DEVCLOUD_TIMEOUT
+DEVCLOUD_GRACE = 5              # seconds between the driver's SIGTERM and the kill of it and its descendants
+_MANIFEST = os.path.join(".claude-plugin", "plugin.json")
+
+
+class Owned(NamedTuple):
+    """devcloud's answer about some short ids (Interfaces §7): `answer`
+    "owned", "none" or "unknown"; `vms` devcloud's matching hosts; `unknown`
+    devcloud's entries for what it could not ask, or the one entry sminos
+    makes for no answer; `asked` the short ids asked about."""
+    answer: str
+    vms: list
+    unknown: list
+    asked: list
+
+
+def devcloud_timeout():
+    """The bound on one question: SMINOS_DEVCLOUD_TIMEOUT seconds, else a minute."""
+    try:
+        v = float(os.environ.get("SMINOS_DEVCLOUD_TIMEOUT") or DEVCLOUD_TIMEOUT)
+    except ValueError:
+        return float(DEVCLOUD_TIMEOUT)
+    return v if v > 0 else float(DEVCLOUD_TIMEOUT)
+
+
+def plugin_root():
+    """The running sminos plugin's root (this file is its
+    skills/sminos/scripts/)."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(SCRIPT_DIR)))
+
+
+def devcloud_places():
+    """Where the devcloud CLI is looked for, in order (M5), each (what the
+    place is, the path there or "" for none): the path in SMINOS_DEVCLOUD;
+    devcloud/bin/devcloud beside this sminos plugin's root (the same clone
+    or checkout, never older than it); the same file in the doperpowers
+    marketplace clone, found as the daemon's installed_cli finds it (a CLI
+    run from the plugin cache, which holds sminos alone); `devcloud` on
+    PATH, last, since a long-lived PATH can name the cache of a devcloud
+    from before 0.17.2."""
+    beside = os.path.join(os.path.dirname(plugin_root()), "devcloud", "bin", "devcloud")
+    clone = sminos.daemon_module().marketplace_clone()
+    return [("$SMINOS_DEVCLOUD", os.environ.get("SMINOS_DEVCLOUD") or ""),
+            ("beside sminos", beside),
+            ("the marketplace clone", os.path.join(clone, "devcloud", "bin", "devcloud") if clone else ""),
+            ("PATH", shutil.which("devcloud") or "")]
+
+
+def find_devcloud():
+    """(the place, its path) of the first copy that exists; (None, every
+    place looked at, said) when none does."""
+    places = devcloud_places()
+    for where, path in places:
+        if path and os.path.isfile(path):
+            return where, path
+    return None, "; ".join("%s (%s)" % (where, path or "none") for where, path in places)
+
+
+def devcloud_version(path):
+    """The version of the devcloud plugin a copy of its CLI belongs to,
+    read from the manifest beside it (its bin/'s parent, as the launcher
+    finds its own directory), as a tuple of three ints; None when it cannot
+    be read."""
+    manifest = os.path.join(os.path.dirname(os.path.realpath(os.path.dirname(path))), _MANIFEST)
+    try:
+        with open(manifest) as f:
+            version = json.load(f).get("version")
+    except (OSError, ValueError, AttributeError):
+        return None
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)", version) if isinstance(version, str) else None
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def no_answer(shorts, reason):
+    """An unknown sminos makes where devcloud gave no answer it stands
+    behind: one entry with devcloud's keys, `failed` "query"."""
+    return Owned("unknown", [], [{"account": None, "provider": None, "failed": "query", "reason": reason}],
+                 list(shorts))
+
+
+def shorts_of(sessions):
+    """The short ids of session ids, bare, each once, in order."""
+    out = []
+    for x in sessions:
+        if isinstance(x, str) and x and x[:8] not in out:
+            out.append(x[:8])
+    return out
+
+
+def owned_by(shorts):
+    """Which hosts name these short ids, by devcloud's own word (X9): the
+    one function that runs devcloud. `devcloud vm owned-by <short>...`, the
+    CLI found by find_devcloud, bounded by devcloud_timeout() (then
+    stop_tree), with the directory of sminos's own interpreter first on its
+    PATH (the driver needs a Python 3.11, and finds a provider's tool on
+    the PATH it is given) and nothing else of the environment changed. Only
+    devcloud's own word reads as none: exit 0 with `answer` none, or exit 6
+    (the driver does not run here) from a devcloud of 0.17.2 or later, or
+    from the copy SMINOS_DEVCLOUD names, which has no manifest and is taken
+    at its word. Every other way of getting no answer is unknown, with the
+    reason: no copy found, a copy older than 0.17.2 or of no readable
+    version (not asked), any other exit, a timeout, output that is not the
+    answer, a launcher that cannot be run. No short ids: none, unasked."""
+    shorts = shorts_of(shorts)
+    if not shorts:
+        return Owned("none", [], [], [])
+    where, path = find_devcloud()
+    if where is None:
+        return no_answer(shorts, "no devcloud CLI was found here, so nothing said its driver does not run (looked "
+                                 "at: %s)" % path)
+    if where != "$SMINOS_DEVCLOUD":
+        version = devcloud_version(path)
+        if version is None or version < DEVCLOUD_MIN:
+            return no_answer(shorts, "the devcloud at %s is %s, older than %s, whose answer sminos does not read" % (
+                path, ".".join(map(str, version)) if version else "of no readable version",
+                ".".join(map(str, DEVCLOUD_MIN))))
+    timeout = devcloud_timeout()
+    env = dict(os.environ)
+    env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            proc = subprocess.Popen([path, "vm", "owned-by"] + shorts, stdin=subprocess.DEVNULL, stdout=out,
+                                    stderr=err, env=env)
+        except OSError as e:
+            return no_answer(shorts, "the devcloud at %s could not be run: %s" % (path, e.strerror or e))
+        try:
+            code = proc.wait(timeout)
+        except BaseException as e:   # past the bound, or this process stopped (a census's SIGTERM, a Ctrl-C)
+            stop_tree(proc.pid, proc.wait)
+            if not isinstance(e, subprocess.TimeoutExpired):
+                raise
+            return no_answer(shorts, "devcloud vm owned-by gave no answer within %gs, and was stopped" % timeout)
+        printed = [_text(f) for f in (out, err)]
+    if code == 6:
+        return Owned("none", [], [], shorts)
+    first = next((line.strip() for text in (printed[1], printed[0]) for line in text.splitlines() if line.strip()),
+                 "it printed nothing")
+    if code != 0:
+        return no_answer(shorts, "devcloud vm owned-by exited %d: %s" % (code, first[:300]))
+    reply = _reply(printed[0])
+    if reply is None:
+        return no_answer(shorts, "devcloud vm owned-by exited 0 without its answer: %s" % first[:300])
+    return Owned(reply["answer"], reply["vms"], reply["unknown"], shorts)
+
+
+def _text(f, limit=1 << 20):
+    f.seek(0)
+    return f.read(limit).decode("utf-8", "replace")
+
+
+def _reply(stdout):
+    """devcloud's answer object (X9) from what it printed, or None when it
+    is not one."""
+    try:
+        d = json.loads(stdout)
+    except ValueError:
+        return None
+    if not (isinstance(d, dict) and d.get("answer") in ANSWERS and isinstance(d.get("vms"), list)
+            and isinstance(d.get("unknown"), list) and all(isinstance(v, dict) for v in d["vms"] + d["unknown"])):
+        return None
+    return d
+
+
+def owned_among(reply, shorts):
+    """One thread's answer, read from a reply about many (Interfaces §7):
+    owned when a host's `creator` is `@` and one of its short ids, whatever
+    else is unknown (named too); else unknown when the reply could not ask
+    something; else none."""
+    shorts = shorts_of(shorts)
+    tags = {"@" + s for s in shorts}
+    mine = [v for v in reply.vms if v.get("creator") in tags]
+    if mine:
+        return Owned("owned", mine, list(reply.unknown), shorts)
+    if reply.unknown:
+        return Owned("unknown", [], list(reply.unknown), shorts)
+    if reply.answer == "unknown":
+        return no_answer(shorts, "devcloud answered unknown and named nothing it could not ask")
+    return Owned("none", [], [], shorts)
+
+
+def owner_sessions(thread):
+    """Every session a thread has had, for the question: its `sessions`;
+    for a seat, also the occupants its `history` names, and, for a seat from
+    before threads not yet adopted, what adoption will rebuild its
+    `sessions` from (_seat_sessions: the log's `joined`s naming the seat,
+    and their hand-offs). A host names only the session that made it."""
+    sessions = list(thread["sessions"]) + ([thread["current"]] if thread["current"] else [])
+    seat = sminos.reload_seat(thread["thread"]) if thread["opened"] == "spawned" else None
+    if seat is not None:
+        sessions += [str(h.get("current") or "") for h in seat.get("history") or [] if isinstance(h, dict)]
+        if "opened" not in seat:
+            project = sminos.seat_project(seat) if seat["current"] else None
+            sessions += _seat_sessions(seat, project if project is not None and not sminos.guessed(project) else None,
+                                       None)
+    return sessions
+
+
+def owned_vms(thread):
+    """owned_by for the short ids of every session the thread has had
+    (owner_sessions); a thread with none (a vacant seat never filled) is
+    not asked about: none."""
+    shorts = shorts_of(owner_sessions(thread))
+    return owned_among(owned_by(shorts), shorts) if shorts else Owned("none", [], [], [])
+
+
+def asked_all(record, asked):
+    """Whether a question asked about `asked` (short ids) still covers the
+    record as it is now: every session it has had among them. What an end
+    rechecks under the record's lock (its guard), since the answer was
+    read before."""
+    return asked is None or set(shorts_of(list(record["sessions"]) + [record["current"]])) <= set(asked)
+
+
+def host_words(vm):
+    """One host as a person is told it: its name, with its provider and
+    account, or as an adopted machine."""
+    if vm.get("adopted") or vm.get("account") == "adopted":
+        return "%s (an adopted machine)" % vm.get("name")
+    return "%s (%s, account %s)" % (vm.get("name"), vm.get("provider"), vm.get("account"))
+
+
+def unknown_words(entry):
+    """One thing devcloud could not ask, or sminos's reason for no answer."""
+    if entry.get("failed") == "query":
+        return str(entry.get("reason") or "no answer")
+    if entry.get("account") == "adopted":
+        return "the adopted machines' records: %s" % entry.get("reason")
+    return "account %s (%s): %s" % (entry.get("account"), entry.get("provider"), entry.get("reason"))
+
+
+def owned_words(owned):
+    """What an answer that holds a thread says (owned or unknown): the hosts
+    and the way on, and what could not be asked."""
+    parts = []
+    if owned.vms:
+        parts.append("it made hosts that still exist: %s; take each down first (%s)" % (
+            ", ".join(host_words(v) for v in owned.vms),
+            "; ".join("devcloud vm down %s" % v.get("name") for v in owned.vms)))
+    if owned.unknown:
+        parts.append("%sdevcloud could not tell whether it made a host that still exists: %s" % (
+            "and " if parts else "", "; ".join(unknown_words(u) for u in owned.unknown)))
+    return "; ".join(parts)
+
+
+def descendants(pid):
+    """The pids descended from `pid` in the process table as read now
+    (`ps`), children first; [] when it cannot be read."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid="], capture_output=True, text=True,
+                             timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    children = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append(int(parts[0]))
+    found, todo = [], [int(pid)]
+    while todo:
+        for child in children.get(todo.pop(0), []):
+            if child not in found:
+                found.append(child)
+                todo.append(child)
+    return found
+
+
+def stop_tree(pid, wait, grace=None):
+    """A question past its bound stopped (M5): SIGTERM to the process, which
+    devcloud's driver handles by taking its provider's process group down
+    with it; after the grace (DEVCLOUD_GRACE), if it still runs, a kill of
+    it and of every process then descended from it, read from the process
+    table before the kill: the driver starts a provider in a process session
+    of its own, which a kill of the caller's group does not reach. `wait`,
+    the process's wait(timeout) (Popen.wait), raises TimeoutExpired while
+    it runs. A SIGTERM or SIGINT to this process waits until it is done, so
+    that stopping the caller never leaves the driver behind."""
+    before = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+    try:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            wait(DEVCLOUD_GRACE if grace is None else grace)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        kill_tree(pid)
+        try:
+            wait(DEVCLOUD_GRACE)
+        except subprocess.TimeoutExpired:
+            pass
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, before)
+
+
+def kill_tree(pid):
+    """SIGKILL to a process and every process descended from it, the
+    descendants read before the kill."""
+    below = descendants(pid)
+    for p in [pid] + below:
+        try:
+            os.kill(p, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass

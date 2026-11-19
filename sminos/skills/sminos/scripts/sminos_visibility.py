@@ -473,17 +473,19 @@ def described(before, after):
     return "; ".join(out)
 
 
-def confirmed(name, w):
+def confirmed(name, w, prompt=None, none=None):
     """The operator's yes at the controlling terminal, /dev/tty itself (no
-    stand-in for it: an agent could set one); exit 1 when there is none."""
+    stand-in for it: an agent could set one); exit 1, saying `none`, when
+    there is none. A widening's prompt, or another (`prompt`, which ends in
+    its question; `retire --owner-unknown`'s, T1's M5)."""
     try:
         fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
     except OSError:
-        S.die("widening reach needs its owner at a terminal to confirm it, and this has none: run this in a "
-              "terminal, or use MAWS", 1)
+        S.die(none or "widening reach needs its owner at a terminal to confirm it, and this has none: run this in "
+              "a terminal, or use MAWS", 1)
     try:
-        os.write(fd, ("%s: %s widens who may reach it. Confirm? [y/N] " % (name, described(w.before, w.after)))
-                 .encode("utf-8"))
+        os.write(fd, (prompt or "%s: %s widens who may reach it. Confirm? [y/N] " % (
+            name, described(w.before, w.after))).encode("utf-8"))
         answer = b""
         while len(answer) < 256:
             c = os.read(fd, 1)
