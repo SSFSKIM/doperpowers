@@ -35,7 +35,7 @@ the composite, run as Concrete Steps gives it.
 - [x] (2026-11-19) M1 — Every member has a thread record, and its events say which thread (reviewed clean after five fix waves; `b8c1dbfb..793dd7c0`)
 - [x] (2026-11-19) M2 — One thread across its session ids: hand-off, refill, and what is another thread (reviewed: four fix waves, the last checked by the controller; `3bb026ec..a5b8c5fc`)
 - [x] (2026-11-19) M3 — A closed session stays: stopped, held, and its sender told (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `ef5a4cd0..dd83567f`)
-- [ ] M4 — A thread ends, and returns
+- [x] (2026-11-20) M4 — A thread ends, and returns (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `b32c3a77..56fc6d4f`)
 - [ ] M5 — A thread that owns a VM is neither retired nor ended
 - [ ] M6 — What sessions are told, an older sminos beside this one, the shared vectors, and the acceptance run
 
@@ -2411,6 +2411,60 @@ Found while executing:
   - the suites that pinned an ending turn the session lane B first
     (`set_lane`); RL10's 11.18 amendment also expects S4's writer at 1 (a
     stopped thread writes no retirement), sent to the holder for MAWS.
+- 2026-11-20 — **M4 as built** (the executor's decisions and its three
+  reviews' fixes, accepted by the holder; detail in its report):
+  - the ending pass's spacing lives in the daemon's memory and
+    `daemon/threads.json` gains `ending` only when a pass had a thread due,
+    so a quiet tick writes nothing; M5's question sits where the due work is;
+  - an end's settlement waits for the session's delivery lock at most 5 s
+    (`SETTLE_WAIT`), past which the entry stays open; what reaches the log
+    after an end is settled by the tick for an end that stands, read under
+    the record's lock after the log was read; an older copy's explicit
+    `retire` of a thread is an end for this; an unstamped lane B `ended` is
+    not;
+  - a return's entry carries `until`, the positions (each writer's seq) the
+    events addressed to the session had reached in the local log as it
+    began: those are settled before its `joined`, nothing after them, and
+    reaching them is a successful stop, never a failure that strands the
+    return; no clock decides it;
+  - a return is guarded by `return_guard` under the record's lock: the
+    exact end (`at`, `by`, `pid`), a process the end did not see, read
+    afresh, compared at the end's precision;
+  - a spawned thread returns by a fill, fresh or `--resume`, or by its human
+    reopening it when this code ended it, or when an older copy retired it
+    and the process started after the seat's `updated`; `resume`, `send` and
+    a tag never return it; `join_seat` never returns an ended seat by
+    itself; `resume_session` rechecks the end and the journal under the
+    resume lock and refuses an open entry (exit 1); a failed or unconfirmed
+    `fill --resume` keeps the retired state (with `pending_short` when the
+    engine launched); a `fill --resume` whose return does not finish writes
+    nothing through it and exits 1, saying the session runs and its `joined`
+    waits;
+  - the canonical record (`thread_of`, `end_human`) governs an end, the
+    row's word and `send`, whatever a seat an older copy made over a
+    human-opened thread says; that seat is projected (retired, deleted for
+    a purge, idle at a return) inside the entry, and one that cannot be
+    read keeps the entry open;
+  - every verb's end records the process it saw, and a retire stops only
+    that process while it is the same, and the harness turn the end saw,
+    by its id; a self-retire stops only after its retirement is in the log;
+    a retire that lost the claim exits 4, "retired already";
+  - an observed launch or resume clears `stopped` and `swept` through
+    `update`, and a refill does too, so the clock restarts;
+  - `seat add` edits under the record's lock, keeps a standing end's
+    `status` and `updated`, and refuses when an open entry cannot be
+    finished;
+  - `View.ended` is built lazily; `list` shows ended rows only with `--all`
+    or `--state retired`; rows say "ended after it stopped" or "retired by
+    X"; a retired machine governs over an explicit end (`gone`);
+    `Member.end_by` is added; `match_members` skips ended members; the
+    refusal of an ended target uses the same tiers as delivery.
+- 2026-11-20 — **Two CI reds at M4's head, held as residue** (the holder's
+  ruling): `test-join.sh` "RL10: joined there" and `test_scale.py`
+  `QuietTick.test_a_change_is_still_seen` each failed once in three runs of
+  56fc6d4f (runs 44624490754, 44627757301; 44631166073 green), neither
+  reproduced locally. Every recurrence through M5 and M6 is counted in the
+  ledger; a third of either is diagnosed to its cause.
 
 ## Outcomes & Retrospective
 
