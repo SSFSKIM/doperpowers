@@ -1641,7 +1641,10 @@ assert_equals "$(field "$SA_UUID" short)" "" "seat add --session clears a short 
 
 # One liveness probe both classifies a send and routes it. A second probe could
 # disagree with the first (the session came up, or went away, in between) and
-# route a live seat to a resume, which stops and relaunches its turn.
+# route a live seat to a resume, which stops and relaunches its turn. The push
+# reads it once more, at its last hop, only to bind the frame to the process
+# that runs the session (sminos.bound_peer): it never reroutes, and one that
+# finds it gone is a socket that vanished before the write (below).
 PROBE_UUID="0f0f1212-abab-4000-8000-0000000f1212"
 "$SMINOS" seat add grp probed --session "$PROBE_UUID" >/dev/null
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$PROBE_UUID.jsonl"
@@ -1656,7 +1659,7 @@ for first_live in (True, False):
     probes, actions = [], []
     def probe(cur, first_live=first_live):
         probes.append(cur)
-        return live if (len(probes) == 1) == first_live else None
+        return live if first_live or len(probes) > 1 else None   # dead-first: up only after the route
     sminos.peer_for_session = probe
     sminos.send_frame = lambda path, text, sender="": actions.append("socket")
     sminos.resume_session = lambda *a, **k: actions.append("resume")
@@ -1667,7 +1670,7 @@ for first_live in (True, False):
 print(" ".join(out))
 PY
 )"
-assert_equals "$PROBE_OUT" "live-first:1:socket dead-first:1:resume" "a send probes its seat once and routes on that probe"
+assert_equals "$PROBE_OUT" "live-first:2:socket dead-first:1:resume" "a send routes on its one probe; the push binds it once more"
 rm -f "$HOME/.claude/projects/fake-proj/$PROBE_UUID.jsonl"; "$SMINOS" remove grp/probed >/dev/null
 
 # A session's transcript sits directly in a project dir; the newest copy wins
