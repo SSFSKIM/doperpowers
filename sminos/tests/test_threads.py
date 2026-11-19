@@ -1768,6 +1768,22 @@ class HandOff(Sessions):
         self.assertEqual((got["opened"], got["thread"]), ("spawned", sid))
         self.assertEqual(self.human_files(), [], "no record of its own beside the seat")
 
+    def test_a_session_another_seat_holds_takes_no_seat_by_a_new_seat_or_a_repoint(self):
+        old, seat_a = self.seated()
+        new, _, _ = self.refill(seat_a)
+        self.assertNotEqual(new, seat_a, "its id is no seat's id")
+        code, out = self.cli("seat", "add", "g", "second", "--session", new)
+        self.assertEqual(code, 4, out)
+        self.assertIn("takes no seat", out)
+        self.assertFalse(os.path.exists(sminos.meta_path(new)), "no seat B")
+        code, out = self.cli("seat", "add", "g", "third")
+        self.assertEqual(code, 0, out)
+        third = next(s for s in sminos.seats() if s["alias"] == "third")
+        code, out = self.cli("seat", "add", "g", "third", "--session", new)
+        self.assertEqual(code, 4, out)
+        self.assertEqual(sminos.load_seat(sminos.meta_path(third["seat_id"]))["current"], "", "not repointed")
+        self.assertEqual([s["seat_id"] for s in sminos.seats() if s["current"] == new], [seat_a])
+
     def test_seat_add_and_an_adoption_meanwhile_never_both_take_the_session(self):
         for existing in (False, True):
             with self.subTest(existing=existing):
@@ -2108,22 +2124,33 @@ class Refill(Sessions):
                               "the new launch's options, in the advance's own write")
                 self.assert_finished(seat_id, (old, new))
 
-    def failing_retirement(self):
-        """Appends of a `retired` fail (a full disk, a lock): the launch's entry stays open."""
-        real = sminos._append
+    def failing_retirement(self, failing=None):
+        """Appends of a `retired` fail (a full disk, a lock) while `failing`
+        (a list, default always) is non-empty: the launch's entry stays open."""
+        real, failing = sminos._append, [True] if failing is None else failing
 
         def append(project, writer, events, **k):
-            if any(e.get("kind") == "retired" for e in events):
+            if failing and any(e.get("kind") == "retired" for e in events):
                 raise OSError("no space left")
             return real(project, writer, events, **k)
         return mock.patch.object(sminos, "_append", side_effect=append)
 
+    def legacy_seat(self):
+        """A seat from before threads holding a session whose latest joined is unstamped and names the seat."""
+        old = str(uuidlib.uuid4())
+        seat_id = old
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": old, "short": old[:8], "name": "worker",
+                                  "alias": "worker", "group": "g", "cwd": self.root, "worktree": "", "role": "",
+                                  "brief": "", "status": "idle", "history": [], "attempts": 1})
+        self.write_own(old, [self.old_joined(old, alias="worker", seat=seat_id, name_source="seat")])
+        return old, seat_id
+
     def test_a_poll_behind_a_launch_entry_that_cannot_finish_waits_in_it_and_is_not_lost(self):
-        for retired in (False, True):
+        for retired in (False, True, "legacy"):
             with self.subTest(retired=retired):
                 self.fresh()
-                old, seat_id = self.seated()
-                if retired:
+                old, seat_id = self.legacy_seat() if retired == "legacy" else self.seated()
+                if retired is True:
                     code, out = self.cli("retire", "g/worker")
                     self.assertEqual(code, 0, out)
                     self.assertIn("ended", sminos.load_seat(sminos.meta_path(seat_id)))
@@ -2140,8 +2167,12 @@ class Refill(Sessions):
                     # log, unless it was retired before.
                     view = sminos.view_of(self.p)
                     rows = [m.session for m in view.members + view.rows
-                            if m.thread == seat_id or (m.seat or {}).get("seat_id") == seat_id]
-                    self.assertEqual(rows, [""] if retired else [old], "one row of the thread")
+                            if m.thread == seat_id or (m.session and m.session == old)
+                            or (m.seat or {}).get("seat_id") == seat_id]
+                    self.assertEqual(rows, [""] if retired is True else [old], "one row of the thread")
+                    if retired == "legacy":
+                        [m] = [m for m in view.members if m.session == old]
+                        self.assertEqual(m.thread, "", "the legacy joined names no thread: X7 reads no stamp there")
                 self.reconcile()
                 seat = sminos.load_seat(sminos.meta_path(seat_id))
                 self.assertEqual((seat["current"], seat["sessions"], seat.get("pending")), (new, [old, new], None))
@@ -2149,6 +2180,105 @@ class Refill(Sessions):
                 self.assertEqual(threads.in_effect(self.own(old))["reason"], "replaced")
                 self.assertEqual(threads.in_effect(self.own(new))["thread"], seat_id)
                 self.assert_finished(seat_id, (old, new))
+
+    def test_a_poll_whose_launch_entry_finished_meanwhile_begins_its_advance_itself(self):
+        old, seat_id = self.seated()
+        failing, real = [True], threads.follow
+
+        def follow(*a, **k):
+            # A replay finishes the launch's entry between the poll's refused begin and its queueing.
+            failing.clear()
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertTrue(sminos.finish_thread(seat_id))
+            got = real(*a, **k)
+            self.assertFalse(got, "the entry it would queue behind is gone")
+            return got
+        with self.failing_retirement(failing), mock.patch.object(threads, "follow", side_effect=follow):
+            new, _, out = self.refill(seat_id)
+        seat = sminos.load_seat(sminos.meta_path(seat_id))
+        self.assertEqual((seat["current"], seat["sessions"], seat.get("pending")), (new, [old, new], None), out)
+        self.assertNotIn("waits behind", out)
+        self.assertEqual(threads.in_effect(self.own(new))["thread"], seat_id)
+        self.assert_finished(seat_id, (old, new))
+
+    def test_a_queued_advance_and_a_replay_are_one_at_a_time_in_either_order(self):
+        for first in ("follow", "replay"):
+            with self.subTest(first=first):
+                self.fresh()
+                old, seat_id = self.seated()
+                with self.kill_after_begin(1), self.assertRaises(Killed):
+                    self.refill(seat_id)
+                entry = threads.get(seat_id)["pending"]
+                later = str(uuidlib.uuid4())
+                joined = {"kind": "joined", "session": later, **sminos.joined_fields(
+                    "worker", "seat", self.root, "", "", seat_id, "", "seat", session=later)}
+
+                def queue():
+                    return threads.follow(seat_id, entry["id"], "advance", self.p, [joined],
+                                          fields={"current": later})
+                if first == "follow":
+                    self.assertTrue(queue())
+                    self.reconcile()
+                    self.assertEqual(threads.get(seat_id)["current"], later, "begun by the write that cleared it")
+                    self.assertEqual(threads.in_effect(self.own(later))["thread"], seat_id)
+                    continue
+                gate, paused, got = threading.Event(), threading.Event(), []
+                real_change = threads._change
+
+                def change(tid_, mutate, *a, **k):
+                    if mutate.__name__ == "clear" and threading.current_thread() is not main:
+                        paused.set()
+                        self.assertTrue(gate.wait(10))
+                    return real_change(tid_, mutate, *a, **k)
+                main = threading.current_thread()
+                with mock.patch.object(threads, "_change", side_effect=change):
+                    a = threading.Thread(target=lambda: sminos.finish_thread(seat_id, project=self.p))
+                    a.start()
+                    self.assertTrue(paused.wait(10))
+                    b = threading.Thread(target=lambda: got.append(queue()))
+                    b.start()
+                    b.join(0.5)
+                    self.assertTrue(b.is_alive(), "the queueing waits for the finisher")
+                    gate.set()
+                    a.join(10)
+                    b.join(10)
+                sminos.forget_caches()
+                self.assertEqual(got, [False], "the entry it read is gone: its caller begins its own advance")
+                self.assertIsNone(threads.get(seat_id).get("pending"), "nothing queued into a cleared entry")
+
+    def test_a_fill_over_an_operation_of_the_seat_that_cannot_be_finished_launches_nothing(self):
+        old, seat_id = self.seated()
+        with mock.patch.object(sminos, "_append", side_effect=OSError("disk full")):
+            code, out = self.cli("retire", "--purge", "g/worker")
+            self.assertNotEqual(code, 0, out)
+            entry = threads.get(seat_id)["pending"]
+            self.assertEqual(entry.get("last"), "purge", out)
+            with self.assertRaises(SystemExit) as cm, mock.patch.object(sminos, "run_claude_bg") as launch:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    sminos.spawn_fresh(seat_id, "worker", "g", "", "", "a task", self.root, "", "", "", "", False,
+                                       [], "spawned")
+        self.assertNotEqual(cm.exception.code, 0)
+        launch.assert_not_called()
+        self.assertEqual(threads.get(seat_id)["pending"]["id"], entry["id"], "the purge's entry, untouched")
+        self.assertNotIn("next", threads.get(seat_id)["pending"])
+        self.reconcile()
+        self.assertFalse(os.path.exists(sminos.meta_path(seat_id)), "the purge, finished by the replay")
+
+    def test_a_queue_drained_across_projects_appends_into_each_projects_own_view(self):
+        old, seat_id = self.seated()
+        other = self.project_of(self.repo("other"))
+        with self.failing_retirement():
+            new, _, out = self.refill(seat_id, cwd=other.root)
+        self.assertIn("next", threads.get(seat_id)["pending"], out)
+        sminos.forget_caches()
+        here = sminos.view_of(self.p)   # this invocation drains the queue: `replaced` here, `joined` there
+        self.assertIsNone(threads.get(seat_id).get("pending"))
+        self.assertNotIn(new, here.info, "the other project's joined is not this view's")
+        self.assertFalse([m for m in here.members if m.session == new])
+        there = sminos.view_of(other)
+        self.assertEqual([m.thread for m in there.members if m.session == new], [seat_id])
+        self.assertEqual(threads.in_effect([e for e in here.events if e.get("session") == old])["reason"],
+                         "replaced")
 
     def test_a_refill_into_another_project_owes_the_displaced_sessions_retirement_in_its_own(self):
         for cut in (None, "launch"):
