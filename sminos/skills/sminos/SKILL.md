@@ -137,7 +137,7 @@ their agent ids; other sessions are reached through sminos.
 
 ## Your lines and your project
 
-    sminos charge "owns the parser"          # your standing responsibility, until your next compaction re-derives it; "" clears it
+    sminos charge "owns the parser"          # your standing responsibility, until a compaction re-derives it (every third); "" clears it
     sminos status <member> "form validation" # what it is doing now; a compaction clears it
     sminos join MAWS                          # declare the project your standing work belongs to
     sminos join --cwd | sminos join           # back to your launch directory's project | where you are, and why

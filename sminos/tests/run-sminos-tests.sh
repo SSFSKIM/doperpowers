@@ -5853,11 +5853,21 @@ assert_contains "$OUT" "hd: owns the stub tool" "once one more record is written
 # (docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md §2).
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: not derived — derived" "a plain derive right after its line refuses"
+# Every third compaction since the member's last derived line derives it
+# (DERIVE_COMPACTIONS, §4); the others only count.
+STUB_FORK_RESULT="Owns the compacted stub." run "$SMINOS" derive hd --compacted
+assert_contains "$OUT" "hd: not derived — compaction 1 of 3 since its last line" "a first compaction only counts"
+STUB_FORK_RESULT="Owns the compacted stub." run "$SMINOS" derive hd --compacted
+assert_contains "$OUT" "hd: not derived — compaction 2 of 3 since its last line" "as does a second"
 STUB_FORK_RESULT="Owns the compacted stub." run "$SMINOS" derive hd --compacted
 assert_contains "$OUT" "hd: Owns the compacted stub." "derive --compacted derives a member whose line is minutes old"
 assert_contains "$(tail -1 "$HPLOG/testhost.$HD.jsonl")" '"text": "Owns the compacted stub.", "source": "derived"' "and records the new line"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: not derived — derived" "the compaction's line restarts the six-hour spacing"
+run "$SMINOS" derive hd --compacted
+assert_contains "$OUT" "hd: not derived — compaction 1 of 3 since its last line" "and the count of compactions"
+# The cases below are a compaction's derive itself, each at its due compaction.
+export SMINOS_DERIVE_COMPACTIONS=1
 # A set line yields to a compaction: the line derived after it wins until the
 # member sets another (2026-11-08-sminos-derive-on-compact-design.md §4).
 run "$SMINOS" derive ha
@@ -5955,6 +5965,7 @@ printf '{"session_id":"%s","source":"compact"}' "$HD" | SMNS_INTERNAL=1 CLAUDE_P
 printf '{"session_id":"not-a-session","source":"compact"}' | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$DERIVE_HOOK"
 sleep 1
 assert_equals "$(hd_forks)" "$HD_FORKS" "in an internal fork, or with no session id, the hook starts nothing"
+unset SMINOS_DERIVE_COMPACTIONS
 # A user-named session with tool calls enough and no line set: its name is its
 # line until it is derived, as it is; its name is left alone.
 HU=6e000009-0000-4000-8000-00000000006e
