@@ -346,6 +346,28 @@ assert_rc 0 "$RC" "join --cwd"
 assert_equals "$(override_of "$S1")" "none" "removes the override"
 assert_equals "$(events_of "$OPID" "$S1" | tail -1)" "retired moved $SPID - -" "and moves it back to its directory's project"
 assert_equals "$(events_of "$SPID" "$S1" | tail -1)" "joined - - join $R" "joined there again"
+echo "a tick of another process in the middle of join:"
+mid_join() { # session args... — sminos <args> as the session runs it, a daemon tick run once its override changed
+  env CLAUDE_CODE_SESSION_ID="$1" python3 - "$SMINOS" "${@:2}" <<'PY'
+import os, subprocess, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+move, cli = sminos.move_session, sys.argv[1]
+def ticked(*a, **k):
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    subprocess.run([cli, "daemon", "tick"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return move(*a, **k)
+sminos.move_session = ticked
+sys.argv = ["sminos"] + sys.argv[2:]
+sminos.main()
+PY
+}
+run_in "$T/x" mid_join "$S1" join other
+assert_rc 0 "$RC" "join other, a tick between its override and its join"
+assert_equals "$(events_of "$OPID" "$S1" | tail -1)" "joined - - join $R" "leaves the join to the verb: joined by join"
+run_in "$T/x" mid_join "$S1" join --cwd
+assert_rc 0 "$RC" "join --cwd, a tick between its override's removal and its join"
+assert_equals "$(events_of "$SPID" "$S1" | tail -1)" "joined - - join $R" "joined back by join"
 
 echo "a session moving back into a project exports only what is new:"
 S16=1a000016-0000-4000-8000-000000000016

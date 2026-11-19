@@ -2630,6 +2630,47 @@ def remove_override(session):
         pass
 
 
+_MOVING = set()   # the sessions this process's `join` is moving
+
+
+@contextmanager
+def moving(session):
+    """`join`'s move of the calling session, held from before its override
+    is written or removed until both memberships are: a reconciliation in
+    another process that sees the override meanwhile leaves the session's
+    join to the verb (moving_elsewhere), so the joined says `join`, never
+    `move`. The lock file goes with the move."""
+    path = override_path(session) + ".lock"
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with flocked(path):
+        _MOVING.add(session)
+        try:
+            yield
+        finally:
+            _MOVING.discard(session)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def moving_elsewhere(session):
+    """Whether another process's `join` is moving the session now (moving)."""
+    if session in _MOVING:
+        return False
+    try:
+        fd = os.open(override_path(session) + ".lock", os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        return False
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+
+
 def known_project(pid):
     """A project registered here (its project.json), by id, or None."""
     d = registration(pid)
@@ -5075,6 +5116,8 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
             return False
         if recheck is not None and ((p := recheck()) is None or p.id != project.id):
             return False
+        if recheck is not None and moving_elsewhere(sid):
+            return False   # a `join` is moving it here: its own join follows, by `join` (read after the override)
         fresh = reload_seat(seat["seat_id"]) if seat else None
         return not (seat and (fresh is None or fresh["status"] == "retired" and not returning))
 
@@ -15160,8 +15203,9 @@ def cmd_join(a):
         if guessed(home) or _resolve(launch) is UNREAD:   # its project would be told, not read
             die("its launch directory, %s, is in a folder macOS asks the person about before this process reads it: "
                 "run sminos join --cwd from inside that folder" % launch, 1)
-        remove_override(sid)
-        move_session(sid, now_in, home, "join")
+        with moving(sid):
+            remove_override(sid)
+            move_session(sid, now_in, home, "join")
         print("%s is back in %s" % (me, home_line))
         return
     target = find_project(a.project)
@@ -15171,8 +15215,9 @@ def cmd_join(a):
     if now_in is not None and now_in.id == target.id:
         print("%s is already in %s" % (me, target.name))
         return
-    write_override(sid, target.id)
-    move_session(sid, now_in, target, "join")
+    with moving(sid):
+        write_override(sid, target.id)
+        move_session(sid, now_in, target, "join")
     print("%s joined %s (was in %s); sminos join --cwd returns it to %s" % (
         me, target.name, now_in.name if now_in else "no project", home.name if home else "no project"))
 
