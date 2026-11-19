@@ -137,12 +137,12 @@ their agent ids; other sessions are reached through sminos.
 
 ## Your lines and your project
 
-    sminos charge "owns the parser"          # your standing responsibility, until your next compaction re-derives it; "" clears it
     sminos status <member> "form validation" # what it is doing now; a compaction clears it
     sminos join MAWS                          # declare the project your standing work belongs to
     sminos join --cwd | sminos join           # back to your launch directory's project | where you are, and why
 
-The in-charge line is what others choose you by. `join` is for a session
+The in-charge line is what others choose you by. sminos derives it from
+your conversation in the background, so you never write it. `join` is for a session
 whose directory files it in the wrong project — a scratch copy, a
 session that owns work in another repository. Join the project of your
 standing responsibility once; reading or editing other repositories
@@ -188,7 +188,7 @@ verbs act on this machine's processes, so run them on its machine.
     EOF
 
 The session starts detached (`claude --bg`, permission mode `auto`) in
-your project, or `--cwd`'s; `--brief` becomes its in-charge line.
+your project, or `--cwd`'s; `--brief` is its in-charge line until its first derived one.
 Spawning an alias whose seat is not live re-fills it fresh; a live seat
 is refused. `--wait` only watches, for `DAEMON_TIMEOUT`: the seat works
 on after, and `reply` reads its live transcript.
