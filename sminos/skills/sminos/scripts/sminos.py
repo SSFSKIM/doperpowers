@@ -14315,6 +14315,10 @@ def end_and_stop(s, purge, asked=None):
     the short ids it asked about, rechecked by the end under the record's
     lock."""
     cur = s["current"]
+    if asked is not None and cur and cur[:8] not in asked:
+        # Read under the seat's locks: a refill since devcloud was asked put a session it was not asked about here.
+        die("seat %s/%s changed while devcloud was asked (it now holds %s): nothing was written; run it again" % (
+            s["group"], s["alias"], cur[:8]), EXIT_UNKNOWN)
     thread = threads_module().thread_of(cur) if cur else None
     project = seat_project(s)
     seen = session_running(cur) if cur else None   # the process the end sees, and records

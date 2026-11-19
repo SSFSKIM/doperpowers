@@ -292,6 +292,24 @@ class Owned(Owner):
         self.assertEqual(seat["status"], "retired")
 
 
+    def test_a_seat_filled_while_devcloud_was_asked_is_not_retired(self):
+        code, out = self.cli("seat", "add", "g", "v")
+        self.assertEqual(code, 0, out)
+        seat_id = next(s["seat_id"] for s in sminos.seats() if s["alias"] == "v")
+        sid, _ = self.session(name="v")
+        real = sminos.owner_guard
+
+        def meanwhile(*a):
+            got = real(*a)
+            sminos.meta_set(seat_id, {"current": sid})   # a fill, between the question and the seat's locks
+            return got
+        with mock.patch.object(sminos, "owner_guard", side_effect=meanwhile):
+            code, out = self.cli("retire", "g/v")
+        self.assertEqual(code, 4, out)
+        self.assertIn("changed while devcloud was asked", out)
+        self.assertNotEqual(sminos.reload_seat(seat_id)["status"], "retired")
+
+
 # ------------------------------------------------------------ unknown
 
 
