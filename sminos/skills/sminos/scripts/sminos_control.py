@@ -210,8 +210,15 @@ def push_live(peer, session, text, event=None, project=None, words=None, marker=
     log event the text carries (`carried`, every event of a batch; `[event]`
     by default) that goes as a peer frame must be one the uplink holds the
     endpoint's `deliver` for (S.ReachGate), else S.ReachHeld — a
-    SendFailed("before") — is raised before anything is handed over."""
+    SendFailed("before") — is raised before anything is handed over.
+
+    Then the peer is bound to its recipient (S.bound_peer: the session, the
+    pid and the socket read afresh together, and the process the caller
+    looked at), and every route below goes through that peer; S.PushHeld
+    when the session is held or another process runs it, SendFailed("before")
+    when none does."""
     S.reach_hold(project, session, [event] if carried is None else carried, words)
+    peer = S.bound_peer(peer, session)
     if marker is not None:
         text = "%s\n%s" % (marker, text)
     else:

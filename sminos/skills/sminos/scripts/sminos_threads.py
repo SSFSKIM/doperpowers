@@ -424,7 +424,8 @@ def hold_of(session, fresh=False):
     index's (hold_now)."""
     if not session:
         return ""
-    t = thread_of(session) if fresh else _live_index().get(session)
+    # The live stores alone, fresh or not: an ended record holds nothing, so the archive is never read here.
+    t = thread_of(session, ended=False) if fresh else _live_index().get(session)
     if t is None or t["opened"] != "human" or t["current"] != session or record_ended(t) or reservation(t):
         return ""
     return "" if (sminos.running_now if fresh else sminos.session_running)(session) else "human"
@@ -470,10 +471,13 @@ def _live_index():
         return _LIVE[2]
     human = _human_threads() if st else []
     seats = [_of_seat(x) for x in sminos.seats() if x.get("pending") and _is_thread(x)] if rt else []
-    live = seats + human
+    by_current = {}
+    for t in seats + human:   # grouped by current session, each group in all_threads' order (seats first)
+        if t["current"]:
+            by_current.setdefault(t["current"], []).append(t)
     index = {}
-    for cur in dict.fromkeys(t["current"] for t in live if t["current"]):
-        t = _live_rule(cur, live)
+    for cur, records in by_current.items():
+        t = _live_rule(cur, records)
         if t is not None:
             index[cur] = t
     newest = max((x.st_mtime_ns for x in (st, rt) if x), default=0)

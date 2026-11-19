@@ -6095,18 +6095,20 @@ def wake_of(member):
     return member.wake or None
 
 
-def held_send(delivery, alias):
+def held_send(delivery, alias, why=None):
     """A send to a held session, recorded (its SendDelivery, or the
     WaitingSend of an append that waits for its writer's head, which has no
     seq yet and is said as it is): released, pushed nothing, the sender told
-    it is held, and the daemon nudged."""
+    it is held (`why`, a PushHeld that is not the human's hold, said
+    instead), and the daemon nudged."""
     if delivery is None:
         return
     if isinstance(delivery, WaitingSend):
         delivery.recorded_owed(alias)
         return
     delivery.release()
-    print("recorded %s for %s: %s" % (event_ref(delivery.event), alias, held_line()), flush=True)
+    said = held_line() if why is None or getattr(why, "human", False) else "not pushed now: %s" % why
+    print("recorded %s for %s: %s" % (event_ref(delivery.event), alias, said), flush=True)
     nudge_daemon()
 
 
@@ -6367,7 +6369,7 @@ def holder_carry(plan, project, member, session, e, events, cursor, peer):
         # The receipt's verdict rides along: the reach gate tells a peer's push from a person's words by it.
         control_module().push_live(peer, session, text, e, project.id, words=plan.words,
                                    marker=holder_module().marker(plan.receipt, plan.attempt, plan.body))
-    except ReachHeld as err:
+    except PushHeld as err:
         return err.outcome()   # its receipt stays prepared: its next step is a push (HOLDER_RETRY)
     except SendFailed as err:
         if err.phase == "before":
@@ -7389,29 +7391,37 @@ SWEEP_HOLD = "the thread sweep"
 SWEEP_WAIT = 5.0
 
 
-def resume_lock_holder(lf):
-    """The holder a resume lock's file names, read again once after a
-    moment when it names none (a holder writes it right after it locks)."""
-    for _ in range(2):
-        lf.seek(0)
-        holder = lf.read().strip()
-        if holder:
-            return holder
-        time.sleep(0.05)
-    return ""
-
-
-def flock_within(lf, seconds):
-    """The file's lock taken within `seconds`, polled: whether it was."""
-    until = time.monotonic() + seconds
+def resume_lock_taken(lf, ref):
+    """A seat's resume lock, met held, taken once it is free (resume_session):
+    polled until SWEEP_WAIT has passed. Its holder is a launch's (a send or
+    resume in flight: a twin, refused) only when the file names one other
+    than the sweep twice, a poll apart, while the lock stays held: a sweep
+    writes SWEEP_HOLD right after it locks, and empties the file right
+    before it unlocks, so a file that names no holder, or the previous
+    resume's for a moment, is the sweep's moment too. Past the wait,
+    ResumeBusy: retryable, no attempt counted."""
+    until = time.monotonic() + SWEEP_WAIT
+    named = None
     while True:
         try:
             fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return True
+            return
         except OSError:
-            if time.monotonic() >= until:
-                return False
-            time.sleep(0.02)
+            pass
+        lf.seek(0)
+        holder = lf.read().strip()
+        if holder and holder != SWEEP_HOLD:
+            if holder == named:
+                raise ResumeRefused("a send/resume of %s is already in flight (%s) — not starting a twin" % (
+                    ref, holder), 1)
+            named = holder
+        else:
+            named = None
+        if time.monotonic() >= until:
+            raise ResumeBusy("the resume of %s waits for %s: tried again later, nothing started" % (
+                ref, "the thread sweep, which holds its lock" if holder == SWEEP_HOLD else
+                "its lock, whose holder names none yet"))
+        time.sleep(0.05)
 
 
 class ResumeHeld(ResumeRefused):
@@ -7489,7 +7499,7 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
         try:
             control_module().push_live(peer, session, text, event, project, **verdict)
             return "sent"
-        except ReachHeld as e:
+        except PushHeld as e:
             return e.outcome()
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
@@ -7519,7 +7529,7 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
         try:
             control_module().push_live(peer, fresh["current"], text, event, project, **verdict)
             return "sent"
-        except ReachHeld as e:
+        except PushHeld as e:
             return e.outcome()
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
@@ -7550,7 +7560,7 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
         if unreachable(fresh) or not fresh["current"]:
             return "recorded"
         return resume_session(fresh, text, False, locks, quiet=True, event=event, project=project, words=words)
-    except ReachHeld as e:
+    except PushHeld as e:
         return e.outcome()
     except ResumeBusy as e:
         return "held:%s" % e.message   # owed, no attempt counted: the next pass resumes it
@@ -9280,6 +9290,13 @@ class DeriveSkipped(Exception):
     """No fork may start where the member works (launch_refused)."""
 
 
+class DeriveHeld(DeriveSkipped):
+    """No fork of the session is started: this machine holds it (hold_now, T1's M3)."""
+
+
+DERIVE_HELD = "it is stopped, and its human opened it: no fork of it is started until its human reopens it"
+
+
 def model_tool_calls(path, enough):
     """How many tool calls the session's own model made in a transcript,
     counted up to `enough`: the tool_use blocks of its main conversation's
@@ -9319,8 +9336,9 @@ def derive_refusal(project, m, compacted=False):
         return "it runs on %s" % m.machine
     if hold_for(m.session):
         # T1's M3: no engine is started in the directory of a session its human closed (for a protected folder,
-        # the system's dialog would be the daemon's); it is derived again once it runs.
-        return "it is stopped, and its human opened it: no fork of it is started until its human reopens it"
+        # the system's dialog would be the daemon's); it is derived again once it runs. derive_line asks
+        # hold_now at each fork.
+        return DERIVE_HELD
     foreign = foreign_config(m.session)
     if foreign:
         return ("its engine runs under %s, not this process's config dir (%s), where a fork from here would look "
@@ -9534,9 +9552,13 @@ def derive_line(project, m, prompt=DERIVE_PROMPT):
     uncached, persisting nothing, no tools (the section's note), so derive
     succeeds wherever it did before, but where the fork may not start
     (DeriveSkipped: launch_refused). How it asked goes to stderr; a failure
-    of the headless fork says why (DeriveFailed)."""
+    of the headless fork says why (DeriveFailed). Each fork is preceded by
+    the fresh hold (hold_now: a session that stopped, or whose process moved
+    to another, since derive_refusal read it): DeriveHeld, nothing asked."""
     fork = sibling_module("sminos_fork")
     timeout = float(os.environ.get("SMINOS_DERIVE_TIMEOUT") or 120)
+    if hold_now(m.session):
+        raise DeriveHeld(DERIVE_HELD)
     if fork.bridge_offers(m.session, "btw"):
         try:
             got = fork.ask_btw(m.session, prompt, timeout=timeout)
@@ -9548,6 +9570,8 @@ def derive_line(project, m, prompt=DERIVE_PROMPT):
             _derive_said(m, got)
             return line, got.text
         sys.stderr.write("sminos: derive %s: btw gave no line (%s); asking a headless fork\n" % (m.alias, why))
+    if hold_now(m.session):   # again: the side question may have taken its timeout
+        raise DeriveHeld(DERIVE_HELD)
     refused = launch_refused(member_cwd(project, m))
     if refused:
         raise DeriveSkipped(refused)
@@ -9712,6 +9736,10 @@ def derive_member(project, m, held_off=False, refreshes_spent=None, compacted=Fa
     naming = charge_naming(project, m)
     try:
         line, answer = derive_line(project, m, naming_prompt(naming) if naming else DERIVE_PROMPT)
+    except DeriveHeld as e:
+        # As derive_refusal's hold: refused, nothing stamped, so its reopening derives it at the next run.
+        print("%s: not derived — %s" % (m.alias, e))
+        return "refused"
     except DeriveSkipped as e:
         # Said once per session (daemon.log), not with every run's refusals.
         said = "derive %s (%s): no fork started, nothing recorded: %s" % (m.alias, m.session[:8], e)
@@ -10668,6 +10696,32 @@ def quiet_inbox_refusal(ref):
             '"<msg>" stops its turn and resumes it' % (ref, ref))
 
 
+def bound_peer(peer, session):
+    """The last hop's peer, bound to its recipient: the engine's record of
+    the process that runs `session` now — the records read afresh, the
+    session id, the pid and the socket resolved together, its inbox
+    answering — which must be the process the caller looked at (`peer`, its
+    pid and socket; None for none looked at). What every push hands over
+    through (push_live, and the one raw frame of a projectless send), so no
+    caller hands in a peer it read before a `/clear` moved its pid to
+    another session. With no process running it now: PushHeld (human) when
+    this machine holds it (hold_now), else SendFailed("before"), as a socket
+    that does not answer. PushHeld when another process runs it than the one
+    looked at. Nothing is pushed either way."""
+    global _PEERS
+    _PEERS = None
+    now = peer_for_session(session)
+    if now is None:
+        if hold_now(session):
+            raise PushHeld("session %s is held: a session its human opened, stopped" % session[:8], human=True)
+        raise SendFailed("before", "session %s runs in no process that answers now" % session[:8])
+    if peer is not None and (str(now.get("pid")), socket_path_of(now)) != (str(peer.get("pid")),
+                                                                        socket_path_of(peer)):
+        raise PushHeld("session %s runs in another process than the one looked at: pushed at its next pass"
+                       % session[:8])
+    return now
+
+
 def peer_for_session(session_id):
     if not session_id:
         return None
@@ -10711,14 +10765,28 @@ class SendFailed(OSError):
         self.phase = phase
 
 
-class ReachHeld(SendFailed):
+class PushHeld(SendFailed):
+    """A push the last hop held before anything was handed over (phase
+    "before"): the delivery is left owed with no attempt counted, its
+    outcome `held:…` (HELD_HUMAN for a session this machine holds, `human`).
+    bound_peer raises it; so, as ReachHeld, does the reach gate."""
+
+    def __init__(self, why, human=False):
+        super().__init__("before", why)
+        self.human = human
+
+    def outcome(self):
+        return HELD_HUMAN if self.human else "held:%s" % self
+
+
+class ReachHeld(PushHeld):
     """A push the reach gate held (ReachGate, P5 O18 D8): nothing was handed
     over, nothing stopped or launched (phase "before"). `verdict` the
     gate's, "owed": no answer this process may act on, so the delivery is
     left owed with no attempt counted; `events` the ones it held."""
 
     def __init__(self, verdict, events, why):
-        super().__init__("before", why)
+        super().__init__(why)
         self.verdict, self.events = verdict, list(events)
 
     def outcome(self):
@@ -12684,17 +12752,8 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
             s["group"], s["alias"], cwd), EXIT_USAGE)
     lock_path = os.path.join(root(), s["seat_id"] + ".resume.lock")
     lf = open(lock_path, "a+")
-    try:
-        fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        holder = resume_lock_holder(lf)
-        if holder != SWEEP_HOLD:
-            raise ResumeRefused("a send/resume of %s/%s is already in flight%s — not starting a twin" % (
-                s["group"], s["alias"], (" (%s)" % holder) if holder else ""), 1)
-        # The thread sweep's moment under the lock (its stop decision and its append), no launch: waited out.
-        if not flock_within(lf, SWEEP_WAIT):
-            raise ResumeBusy("the resume of %s/%s waits for the thread sweep, which holds its lock: tried again "
-                             "later, nothing started" % (s["group"], s["alias"]))
+    # Free, or the thread sweep's moment under it (its stop decision and its append), no launch: waited out.
+    resume_lock_taken(lf, "%s/%s" % (s["group"], s["alias"]))
     lf.seek(0)
     lf.truncate()
     lf.write("pid %d since %s" % (os.getpid(), now()))
@@ -12987,7 +13046,6 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
     if not peer:
         resume(locks)
         return
-    sock = socket_path_of(peer)
     row = harness_row(s)
     # Idle-at-send: from the harness row when there is one; with no row, from
     # the peer record's own status — never from normalising an empty state.
@@ -12997,9 +13055,18 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
             control_module().push_live(peer, s["current"], delivery.payload(True), delivery.queue[-1],
                                        delivery.project.id, carried=delivery.carried(True))
         else:
-            send_frame(sock, text, sender)
+            send_frame(socket_path_of(bound_peer(peer, s["current"])), text, sender)
     except ReachHeld:
         reach_held()
+        return
+    except PushHeld as e:
+        # The last hop, bound afresh, found the session held, gone or in another process: nothing pushed, owed.
+        unlock(locks)
+        if delivery is None:
+            die("nothing was sent: %s" % e, EXIT_UNKNOWN)
+        held_send(delivery, s["alias"], e)
+        if wait:
+            die("nothing was started: %s; no reply is waited for" % e, EXIT_UNKNOWN)
         return
     except SendFailed as e:
         if e.phase == "before":
@@ -13296,6 +13363,9 @@ def send_to_member(project, m, sender, via, text, msg_id):
     except ReachHeld:
         delivery.held = "the endpoint decides its delivery"
         delivery.recorded_owed(m.alias)
+        return
+    except PushHeld as e:
+        held_send(delivery, m.alias, e)   # the last hop, bound afresh: nothing pushed, owed
         return
     except SendFailed as e:
         if e.phase == "after":

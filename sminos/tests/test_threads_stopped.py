@@ -37,7 +37,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_threads import BASE, Killed, Machine, records, sminos, threads  # noqa: E402
+from test_threads import BASE, SCRIPTS, Killed, Machine, records, sminos, threads  # noqa: E402
 
 HOOK = os.path.join(os.path.dirname(HERE), "hooks", "smns-cleared.sh")
 INBOX = os.path.join(HERE, "inbox_standin.py")
@@ -391,6 +391,99 @@ class Hold(Rig):
         self.assertIn("recorded and held", out.getvalue())
         self.assertEqual(self.inbox(sid), [], "nothing through the socket the pid kept")
         self.assertEqual([e["text"] for e in sminos.owed(self.p, self.member(sid))], ["to the old session"])
+
+    def successor_during_the_append(self, sid, proc):
+        """The reviewer's interleaving, run while the send's append is
+        written: the process looked at moves to a successor session (a
+        `/clear`, its socket kept) and the old id reopens in another process
+        with its own inbox. Returns the inbox file of the process looked at."""
+        looked_at = self.inboxes[sid]
+
+        def swap():
+            self.peer_set(proc, sessionId=str(uuidlib.uuid4()))
+            self.live(sid=sid, inbox=True)
+        return looked_at, swap
+
+    def test_a_seated_send_pushes_nothing_when_its_session_moved_process_during_the_append(self):
+        sid, proc = self.opened(inbox=True)
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})
+        seat = sminos.load_seat(sminos.meta_path(seat_id))
+        looked_at, swap = self.successor_during_the_append(sid, proc)
+
+        def record(s):
+            d = sminos.record_send(s, "human", "human", "to the old session", "m1")
+            swap()
+            return d
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            sminos.send_to_seat(seat, "to the old session", "m1", False, record=record)
+        with open(looked_at) as f:
+            self.assertEqual(f.read(), "", "nothing through the socket the successor holds")
+        self.assertEqual(self.inbox(sid), [], "nor to a process the sender never looked at")
+        self.assertIn("not pushed now", out.getvalue())
+        self.assertEqual([e["text"] for e in sminos.owed(self.p, self.member(sid))], ["to the old session"])
+
+    def test_a_seatless_send_pushes_nothing_when_its_session_moved_process_during_the_append(self):
+        sid, proc = self.opened(inbox=True)
+        looked_at, swap = self.successor_during_the_append(sid, proc)
+        real = sminos.record_message
+
+        def record_message(*a, **k):
+            d = real(*a, **k)
+            swap()
+            return d
+        with mock.patch.object(sminos, "record_message", side_effect=record_message):
+            code, out = self.cli("send", "alpha", "to the old session")
+        self.assertEqual(code, 0, out)
+        with open(looked_at) as f:
+            self.assertEqual(f.read(), "", "nothing through the socket the successor holds")
+        self.assertEqual(self.inbox(sid), [], "nor to a process the sender never looked at")
+        self.assertIn("not pushed now", out)
+        self.assertEqual([e["text"] for e in sminos.owed(self.p, self.member(sid))], ["to the old session"])
+
+    def test_the_fresh_hold_after_an_archive_change_in_a_fresh_process_reads_no_record_set_aside(self):
+        """What every push and ask asks last (hold_now) reads the live stores
+        alone: in a fresh process, just after the archive changed, neither an
+        ordinary seat's session, a live session its human opened nor a
+        stopped one opens an ended record."""
+        for _ in range(5):   # an archive of unrelated ended threads
+            s, proc = self.session()
+            self.reconcile()
+            self.ended_by_its_process(s, proc)
+        seated, _ = self.session(name="seated")
+        self.transcript(seated)
+        code, out = self.cli("seat", "add", "g", "w", "--session", seated)
+        self.assertEqual(code, 0, out)
+        live, _ = self.opened(inbox=True)
+        stopped = self.stopped()
+        s, proc = self.session()
+        self.reconcile()
+        self.ended_by_its_process(s, proc)   # the archive changed just now
+        self.assertEqual(len(self.human_files(aside=True)), 6)
+        probe = (
+            "import json, os, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import sminos, sminos_threads as threads\n"
+            "read = []\n"
+            "real_at, real_list = threads._human_at, os.listdir\n"
+            "aside = os.path.realpath(threads.aside_dir())\n"
+            "def at(path):\n"
+            "    if os.path.realpath(os.path.dirname(path)) == aside: read.append(path)\n"
+            "    return real_at(path)\n"
+            "def listdir(path='.'):\n"
+            "    if os.path.realpath(str(path)) == aside: read.append(str(path))\n"
+            "    return real_list(path)\n"
+            "threads._human_at, os.listdir = at, listdir\n"
+            "holds = [sminos.hold_now(sid) for sid in sys.argv[2:]]\n"
+            "print(json.dumps({'holds': holds, 'read': read}))\n")
+        r = subprocess.run([sys.executable, "-B", "-c", probe, SCRIPTS, seated, live, stopped], capture_output=True,
+                           text=True, cwd=self.root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(got["holds"], ["", "", "human"])
+        self.assertEqual(got["read"], [], "the hold reads only the live stores")
 
     def test_the_hold_reads_the_record_thread_of_reads(self):
         """hold_of's index answers what thread_of does from the live stores,
@@ -1199,6 +1292,75 @@ class Questions(Rig):
                         self.assertIn("waits for the thread sweep", out, "tried again later")
                         self.assertTrue(self.owed_to(sid), "owed for the next pass")
 
+    def test_a_resume_that_meets_the_sweep_releasing_its_lock_takes_it_with_no_twin_and_no_attempt(self):
+        """The sweep's last moment under the resume lock: its name emptied
+        from the file, the lock not yet released. A resume that meets it
+        then retries the lock rather than refusing a twin; one whose holder
+        never names itself is left owed, no attempt counted."""
+        import fcntl
+        import threading
+        sid, proc = self.session()
+        self.transcript(sid)
+        self.cli("seat", "add", "g", "w", "--session", sid)
+        seat_id = sminos.load_seat(next(sminos.record_files()))["seat_id"]
+        self.reconcile()
+        self.end(proc)
+        launched = []
+
+        def start(args, cwd, settings):
+            launched.append(args)
+            self.session(sid=sid, kind="bg")
+            return sid[:8], "backgrounded · %s" % sid[:8]
+        path = os.path.join(sminos.root(), seat_id + ".resume.lock")
+        real_flock = fcntl.flock
+        # The one that never names itself first: the resume that takes the lock keeps it (an in-process cli).
+        for releases, wait_s in ((False, 0.3), (True, 5.0)):
+            with self.subTest(releases=releases):
+                sweep = open(path, "a+")
+                real_flock(sweep, fcntl.LOCK_EX)
+                sweep.seek(0)
+                sweep.truncate()   # its name emptied, its lock still held (resume_lock_out's finally)
+                sweep.flush()
+                met = threading.Semaphore(0)
+
+                def flock(f, op):
+                    try:
+                        return real_flock(f, op)
+                    except OSError:
+                        if f is not sweep:
+                            met.release()   # the resume met the held lock
+                        raise
+
+                def release():
+                    for _ in range(3):   # past the resume's first look at it, and two more
+                        if not met.acquire(timeout=2):
+                            break
+                    real_flock(sweep, fcntl.LOCK_UN)
+                t = threading.Thread(target=release) if releases else None
+                if t:
+                    t.start()
+                with mock.patch.object(sminos, "run_claude_bg", side_effect=start), \
+                        mock.patch.object(sminos, "poll_uuid", return_value=(sid, "working", self.root)), \
+                        mock.patch.object(sminos, "claude_stop", return_value=None), \
+                        mock.patch.object(sminos.fcntl, "flock", side_effect=flock), \
+                        mock.patch.object(sminos, "SWEEP_WAIT", wait_s):
+                    code, out = self.cli("send", "g/w", "while the sweep lets go")
+                if t:
+                    t.join(5)
+                else:
+                    real_flock(sweep, fcntl.LOCK_UN)
+                sweep.close()
+                self.assertNotIn("in flight", out)
+                self.assertNotIn("Traceback", out)
+                self.assertEqual(code, 0, out)
+                self.assertEqual(set(self.attempts(sid).values()) - {0}, set(), "no attempt counted")
+                if releases:
+                    self.assertEqual(len(launched), 1, "it took the lock and resumed")
+                else:
+                    self.assertIn("whose holder names none", out)
+                    self.assertEqual(launched, [])
+                    self.assertTrue(self.owed_to(sid), "owed for the next pass")
+
 
 class Derive(Rig):
     def test_derive_all_forks_no_stopped_human_opened_session(self):
@@ -1211,6 +1373,53 @@ class Derive(Rig):
         with mock.patch.object(fork, "headless_fork") as forked:
             self.cli("derive", "--all")
         forked.assert_not_called()
+
+
+    def test_derive_forks_nothing_once_a_clear_moved_its_session_away_after_the_refusal_read_it(self):
+        """A live session its human opened, whose process `/clear`s after
+        derive_refusal read this process's copy of the engine's records:
+        neither the fork straight after it nor the one after a failed side
+        question starts, and nothing is stamped failed."""
+        sid, proc = self.opened()
+        d = os.path.join(os.environ["HOME"], ".claude", "projects", "p-work")
+        with open(os.path.join(d, sid + ".jsonl"), "a") as f:
+            for i in range(sminos.DERIVE_MIN_TOOL_CALLS):
+                f.write(json.dumps({"type": "assistant", "sessionId": sid, "message": {
+                    "role": "assistant", "content": [{"type": "tool_use", "id": "t%d" % i, "name": "Bash",
+                                                      "input": {}}]}}) + "\n")
+        m = self.member(sid)
+        fork = sminos.sibling_module("sminos_fork")
+        refusal = sminos.derive_refusal
+
+        def clear():
+            self.peer_set(proc, sessionId=str(uuidlib.uuid4()))
+
+        def refused_then_cleared(*a, **k):
+            why = refusal(*a, **k)
+            self.assertEqual(why, "", "this process's copy: it runs")
+            clear()
+            return why
+
+        def btw_cleared(*_a, **_k):
+            clear()
+            raise fork.ForkFailed("aborted")
+        for name, offers, btw, refused in (("no side question", False, None, refused_then_cleared),
+                                          ("after the side question failed", True, btw_cleared, refusal)):
+            with self.subTest(name):
+                self.peer_set(proc, sessionId=sid)
+                sminos.forget_caches()
+                sminos.peer_records()
+                with mock.patch.object(sminos, "derive_refusal", side_effect=refused), \
+                        mock.patch.object(fork, "bridge_offers", return_value=offers), \
+                        mock.patch.object(fork, "ask_btw", side_effect=btw), \
+                        mock.patch.object(fork, "headless_fork", return_value=mock.Mock(
+                            text="in charge of nothing", via="a headless fork",
+                            usage={"cacheRead": 0, "input": 0})) as forked, \
+                        contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(sminos.derive_member(self.p, m, held_off=True), "refused")
+                forked.assert_not_called()
+                self.assertIn("its human opened it", out.getvalue())
+                self.assertIsNone(sminos.derive_failed_age(sid), "nothing stamped failed")
 
 
 if __name__ == "__main__":

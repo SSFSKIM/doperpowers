@@ -1404,7 +1404,9 @@ class Deliverers(WordsRig):
     def test_push_live_never_decides_a_persons_words_by_the_writer(self):
         e = {"ts": "2026-10-27T01:00:01.000Z", "writer": "hub/mem-1", "seq": 1, "kind": "human", "from": "alice",
              "to": [{"session": S1, "alias": "m"}], "text": "x"}
-        peer = {"sessionId": S1, "messagingSocketPath": "/nonexistent"}
+        self.session(self.hp, S1, inbox=True)   # every push is bound to the process that runs its session
+        sminos.forget_caches()
+        peer = sminos.peer_for_session(S1)
         with self.assertRaises(sminos.SendFailed) as raised:
             control.push_live(peer, S1, "x", e, self.hp.id)
         self.assertEqual(raised.exception.phase, "before")
@@ -1519,6 +1521,30 @@ class Held(WordsRig):
         self.assertEqual(link.session_lane.take(), [], "no reach? asked")
         self.assertEqual(self.bridge, [], "nothing pushed")
         self.assertEqual(self.inbox(S1), [])
+
+    def test_an_ask_whose_recipient_stopped_after_the_pass_checked_it_is_neither_sent_nor_held_open(self):
+        """Two recipients' words in one batch; the first's engine row switches
+        (a `/clear`) after the pass checked it and before the batch is
+        queued: only the second's ask goes out and is registered."""
+        self.session(self.hp, S1, inbox=True)
+        self.session(self.hp, S2, inbox=True)
+        self.arrive(self.hp, "hub/mem-1", 1, to=(S1, S2), signer=DEV_A)
+        path = self.engine_record(S1)
+        rec = json.loads(Path(path).read_text())
+        link = self.link()
+        link.plane = mock.Mock(member_rows={self.hp.id: {S1: member(S1), S2: member(S2)}})
+        enqueue = link.queue_asks
+
+        def switched_then_queued(batch):
+            self.assertEqual(sorted(h["member"].session for _, h, _ in batch), [S1, S2], "both checked and batched")
+            Path(path).write_text(json.dumps(dict(rec, sessionId=S3)))
+            return enqueue(batch)
+        with mock.patch.object(link, "queue_asks", side_effect=switched_then_queued), \
+                mock.patch.object(link, "members_before", return_value=True):   # their member frames, not asked here
+            link.ask_words({self.hp.id: self.hp})
+        self.assertEqual([f["session"] for f in link.session_lane.take() if f["t"] == "words?"], [S2])
+        self.assertEqual(sorted(h["member"].session for h in link.asks.values()), [S2])
+        self.assertEqual(sorted(k[1] for k in link.asked), [S2])
 
     def test_a_seated_one_on_send_wait_is_recorded_and_exits_4_without_waiting(self):
         """An older copy's seat holding the stopped S1 (D7): an operator's
