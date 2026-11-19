@@ -1682,7 +1682,9 @@ On any machine, from the log as that machine may read it.
   no former name in the new project, and its in-charge line is not read
   there, as for a moved seat today; the thread itself resolves there by its
   id and its current session (the holder's ruling, 2026-11-19; reading
-  history across logs is CH's).
+  history across logs is CH's). For the view's one row per thread
+  alone, a legacy row's thread is the seat its unstamped `joined` names;
+  that is never a stamp for the reader rule (§3).
 - **Episodes.** A session's events are read in episodes, each beginning at
   a `joined` whose stamp differs from the one before it. A thread's row
   (alias, in-charge line, status, `by`, worktree) is read from the
@@ -1809,12 +1811,19 @@ nothing else. The entry:
 8. *Exclusive claims.* A session is made current by one record at a time.
    Locks are taken in one order, the seat's `.metalock` before
    `threads/.lock`. Making a human-opened record rechecks, under both, that
-   no seat holds the session and no open entry makes it current; `begin`
-   refuses a change that makes a session current while a human-opened
-   record has it current, unless the entry absorbs that record
-   (`absorbs=True`: the hand-off and a refill's poll, row 5). `seat add`
-   writes its seat through `claim_seat` under both locks and never absorbs:
-   a session another record holds exits 4.
+   no seat holds the session and no open entry makes it current. Every
+   claim (`begin`'s change, a chained `next`, `claim_seat`) refuses a
+   session that any other record holds current, another seat or a
+   human-opened record, unless the entry absorbs that record (`absorbs=True`:
+   the hand-off and a refill's poll, row 5, and only a human-opened,
+   absorbable holder); a seat's claim reads and writes under both locks.
+   `seat add` never absorbs: a session another record holds exits 4. A
+   fill finishes the seat's open entry before it launches and exits 4 when
+   it cannot. `follow` holds the finisher lock and queues only behind its
+   caller's own entry (a refill's launch passes that entry's id); `clear`
+   reads `next` under the lock, and a `follow` that finds the entry gone
+   answers false, so the launcher retries its advance. `finish` returns the
+   appends of the caller's project alone.
 
 Rows 1 to 3, 7, 8, 14 and 15 are not journaled: each is finished by a rule
 that exists already (a record whose session has no `joined` in effect is
@@ -2324,6 +2333,14 @@ Found while executing:
   vacant seat whose thread a member row stands for; former names are
   resolved within one project (§4, the holder's ruling). A queued poll
   held open by a rival that cannot be absorbed is accepted as residue.
+- 2026-11-19 — **M2's review, third wave and convergence** (accepted by
+  the holder): claims refuse any other holder, seat or human-opened, under
+  both locks (§6 rule 8); `follow` is serialized behind its caller's own
+  entry and a fill behind an unrelated open entry exits 4; `finish` returns
+  its caller's project's appends alone; the view's one-row rule keys a
+  legacy row by its unstamped `joined`'s seat (§4). M2 closed after a last
+  check; what it found beyond a defect on a path the plan names is
+  residue (Outcomes).
 
 ## Outcomes & Retrospective
 
