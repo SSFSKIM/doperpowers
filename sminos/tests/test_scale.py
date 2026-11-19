@@ -578,6 +578,8 @@ class QuietTick(unittest.TestCase):
     quiet tick did 84 renames of project records changed only in their
     stamp, 193 failed mkdirs and 1100 opens."""
 
+    maxDiff = None  # a failure prints the whole write list
+
     @classmethod
     def setUpClass(cls):
         cls.env = mock.patch.dict(os.environ, {"SMINOS_DERIVE_EVERY": "300"})
