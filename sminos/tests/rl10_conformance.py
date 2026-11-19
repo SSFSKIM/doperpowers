@@ -30,11 +30,15 @@ below with its reason:
   revoked signer's event). Neither the probe nor the endpoint's answer to it
   is played here; what sminos does instead is checked over the whole
   conversation: it never sends such a line.
-- No line is amended: O10's fixture is written to sminos's real frames
-  (MAWS 6d57a6160, which took M7b's amendment list), so a line sminos
-  cannot send as written fails.
+- AMENDMENTS: lines sminos's threads (T1) change, each played as amended
+  and printed `amend` with its reason: a lane A session's lifecycle events
+  carry `thread`, and S2, lane B at its join and lane A once its bridge
+  relays the verdict, is adopted as a thread by one more `joined`. O10's
+  fixture is otherwise written to sminos's real frames (MAWS 6d57a6160,
+  which took M7b's amendment list), so any other line sminos cannot send
+  as written fails.
 
-Prints one `ok` or `FAIL` line per line of the conversation it
+Prints one `ok`, `amend` or `FAIL` line per line of the conversation it
 plays, for run-sminos-tests.sh to count, and exits 1 when one fails.
 
     python3 -B rl10_conformance.py <skills/sminos/scripts> <rl10-conversation.json>
@@ -805,9 +809,53 @@ PROBES = {
     (11, 36): ("the endpoint's answer to it", None),
 }
 
-# O10's fixture is written to sminos's real frames (MAWS 6d57a6160): no line
-# is amended, and a line sminos cannot send as written fails.
-AMENDMENTS = {}
+# O10's fixture is written to sminos's real frames (MAWS 6d57a6160). The lines
+# below are the ones sminos's threads (T1 of the channels-and-threads design)
+# change, each played as amended and said so; any other line sminos cannot send
+# as written fails.
+#
+# - A lane A session's lifecycle events carry `thread`, its thread's id (minted
+#   here: compared for presence, as a `vary` path is). S1 and S4 are lane A from
+#   their first join; S3 (a `maws` origin and no bridge) stays lane B, unstamped.
+# - S2 is the engine host's launch (origin `maws`), so it joins as lane B,
+#   unstamped, at its writer's seq 1. Its bridge child then relays lane A, the
+#   verdict of a launch with no lane mark (sminos_bridge's relay_controller),
+#   and the next reconciliation adopts it as a thread (sminos.adopt): one
+#   stamped `joined` again, its writer's seq 2.
+S2_WRITER = "{{name}}/{{session:S2}}"
+STAMPED = (("{{session:S1}}", "joined"), ("{{session:S1}}", "titled"), ("{{session:S4}}", "joined"))
+
+
+def amend_s2_adopted(step):
+    """A vector of P: S2's writer at 2, its adoption's `joined`."""
+    step = copy.deepcopy(step)
+    step["up"]["have"][S2_WRITER] = 2
+    return step, {}
+
+
+def amend_threads_upload(step):
+    """The first upload: `thread` on the lane A sessions' lifecycle events,
+    and S2's adoption `joined` after its first, as joined_again builds it
+    (that first's fields) at its own ts with its own `thread`."""
+    step = copy.deepcopy(step)
+    events = step["up"]["events"]
+    ts_varied = {int(p.split(".")[1]) for p in step.get("vary", []) if p.endswith(".ts")}
+    rows = [(e, i in ts_varied, (e.get("session"), e["kind"]) in STAMPED) for i, e in enumerate(events)]
+    at = next(i for i, (e, _, _) in enumerate(rows) if e["writer"] == S2_WRITER) + 1
+    rows.insert(at, (dict(rows[at - 1][0], seq=2), True, True))
+    step["up"]["events"] = [e for e, _, _ in rows]
+    step["vary"] = ["events.%d.ts" % i for i, (_, ts, _) in enumerate(rows) if ts] + \
+                   ["events.%d.thread" % i for i, (_, _, stamped) in enumerate(rows) if stamped]
+    return step, {}
+
+
+AMENDMENTS = {
+    (4, 0): ("S2's writer at 2: lane B at its join, then lane A by its bridge, adopted as a thread (T1)",
+             amend_s2_adopted),
+    (4, 4): ("thread on the lane A sessions' lifecycle events, and S2's adoption joined at its seq 2 (T1)",
+             amend_threads_upload),
+    (11, 18): ("S2's writer at 2: its adoption joined (T1)", amend_s2_adopted),
+}
 
 # A step whose line comes on the next connection: none since the fixture
 # places the host resend on the reconnect, before its restated.

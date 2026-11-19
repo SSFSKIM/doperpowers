@@ -425,10 +425,11 @@ run_suites() {
   if python3 "$SCRIPT_DIR/test_heads.py"; then pass "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; else
     fail "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; fi
   # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink
-  # (rl10_conformance.py): every line as written; an `amend` would mean a line sminos cannot send as written, and fails.
+  # (rl10_conformance.py): every line as written but those its AMENDMENTS name (sminos's threads), played as amended.
   while IFS= read -r line; do
     case "$line" in
       "ok "*) pass "rl10 conformance: ${line#ok }" ;;
+      "amend "*) pass "rl10 conformance (amended for threads): ${line#amend }" ;;
       *) fail "rl10 conformance: ${line#FAIL }" ;;
     esac
   done < <(python3 -B "$SCRIPT_DIR/rl10_conformance.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/rl10-conversation.json" 2>&1)
