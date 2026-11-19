@@ -368,16 +368,18 @@ def settle_ended(project, sid, lock_until=None, until=None, end=None):
     try:
         with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock"),
                             lock_until=wait):
+            record = sminos.delivered_load(project, sid)
+            owed = sminos._owed(sorted(sminos.log_read(project, to_session=sid),
+                                       key=lambda e: (e["writer"], e["seq"])), sid, record)
+            # After the snapshot: a return that begins later sets its `until` after every event read here.
             if end is not None and not end_stands(project, sid, end):
                 return False
-            record = sminos.delivered_load(project, sid)
-            stopped = set()
-            for e in sminos._owed(sorted(sminos.log_read(project, to_session=sid),
-                                         key=lambda e: (e["writer"], e["seq"])), sid, record):
-                if e["writer"] in stopped:
+            stopped, past = set(), set()
+            for e in owed:
+                if e["writer"] in stopped or e["writer"] in past:
                     continue
                 if until is not None and str(e.get("ts") or "") > until:
-                    stopped.add(e["writer"])   # after the return began: the returned session's own
+                    past.add(e["writer"])   # after the return began: the returned session's own, and not a failure
                     continue
                 outside = policy.outside_origin(e)
                 if outside and project.hub:
@@ -407,8 +409,12 @@ def end_stands(project, sid, end):
     session, read afresh: its membership in effect is still that event, and
     its thread's record, where it still has the session, has no open entry
     (a return under way settles its own) and, for an end this code
-    journaled (stamped), still says ended. Asked under the session's
-    delivery lock, which a return's settlement takes too."""
+    journaled (stamped), still says ended — the record read under its own
+    lock (sminos_threads.holds), which a return's begin holds while it sets
+    its `until`. Asked under the session's delivery lock after the
+    settlement's snapshot of the log: a return not begun by then sets its
+    `until` after every event the snapshot holds, so what is settled here is
+    the end's alone."""
     threads = sminos.threads_module()
     e = threads.in_effect(sminos._own_events(project, sid))
     if e is None or (e.get("writer"), e.get("seq")) != (end.get("writer"), end.get("seq")):
@@ -416,7 +422,8 @@ def end_stands(project, sid, end):
     t = threads.thread_of(sid)
     if t is None or t["current"] != sid:
         return True
-    return not t.get("pending") and (threads.record_ended(t) or not threads.stamped(end))
+    return threads.holds(t["thread"], lambda r: r["current"] != sid or not r.get("pending") and (
+        threads.record_ended(r) or not threads.stamped(end)), missing=True)
 
 
 def settle_ended_owed(project, view):

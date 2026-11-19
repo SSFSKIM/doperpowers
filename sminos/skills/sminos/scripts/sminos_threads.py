@@ -612,6 +612,18 @@ def _change(tid, mutate, deadline=None, bump=False, both=False):
         return True
 
 
+def holds(thread_id, pred, lock_until=None, missing=False):
+    """pred(record), read under the record's own store lock (nothing
+    written); `missing` for a record that is gone."""
+    out = []
+
+    def read(view, raw):
+        out.append(bool(pred(view)))
+        return False
+    _change(thread_id, read, lock_until)
+    return out[0] if out else missing
+
+
 def update(thread_id, fields, remove=(), guard=None, lock_until=None):
     """A change that owes no event (the stop mark, `swept`, a launch noted,
     the alias's copy, CH's channels, the end of a release: `released`
@@ -983,6 +995,10 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
             return False
         if not _claimed(thread_id, entry, view, fields, absorbs):
             return False
+        if op == "return" and entry.get("settle"):
+            # Under the record's lock: a settlement that read the log before this write sees the record ended
+            # when it asks under the same lock (sminos_outcomes.end_stands), so it read nothing past `until`.
+            entry["until"] = sminos.now(ms=True)
         _apply(entry, view, raw, fields, remove)
         return "live" if op == "return" or more.get("last") == "purge" else True   # an open purge is read live
 
@@ -1183,6 +1199,8 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
                 return False
         if not returning and entry.get("settle") and not settle(project, entry["settle"], deadline, None):
             return False   # what is held for it is settled before the record is set aside or deleted (§6, 3)
+        if entry.get("seat"):
+            _project_seat(entry["seat"], deadline)
         if other:
             _change(other, lambda view, raw: "delete" if (view.get("pending") or {}).get("id") == entry["id"]
                     else False, deadline)
@@ -1217,6 +1235,24 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
         _change(thread_id, clear, deadline, both=True)
         if not chained:
             return not (get(thread_id) or {}).get("pending")
+
+
+def _project_seat(seat, deadline):
+    """The seat an older copy gave a thread its human opened, brought in
+    line with that record by the record's own entry (`seat`: its id, the
+    session, and `to`, "retired", "idle" or "purge"), before the entry is
+    cleared: so a cut leaves it to the replay, and the seat never holds a
+    state of its own for that thread. Only while the seat still holds that
+    session; safe to repeat."""
+    def mutate(view, raw):
+        if view["current"] != seat["session"]:
+            return False
+        if seat["to"] == "purge":
+            return "delete"
+        raw["status"] = seat["to"]
+        raw["updated"] = sminos.now()
+        return True
+    _change(seat["id"], mutate, deadline, bump=True)
 
 
 def _queued_entry(thread_id, queued):
