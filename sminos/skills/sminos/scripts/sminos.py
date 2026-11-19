@@ -4609,6 +4609,10 @@ def adopt(project, sid, seat, peer, last, events):
     if fields is None:
         return []
     fields["thread"] = thread["thread"]   # the event names the thread chosen here, whatever stamp() reads
+    if thread["opened"] == "spawned":
+        # A seat's thread joins under its seat, as joined_fields gives a seat (its older joined can predate
+        # the binding: a bg join with no seat); a human thread keeps the legacy fields as they are.
+        fields.update(seat=thread["thread"], alias=thread["alias"] or fields["alias"], name_source="seat")
     if action == "return":
         return thread_transition(project, thread["thread"], "return", [{"kind": "joined", "session": sid, **fields}],
                                  remove=("ended",), guard=threads.record_ended)

@@ -1265,6 +1265,20 @@ class LaneAndOrder(Machine):
         j = self.joins(sid)[-1]
         self.assertEqual(j["seat"], seat_id, "the legacy seat field kept on the event")
 
+    def test_a_seat_bound_after_its_sessions_legacy_bg_joined_is_restated_as_spawned(self):
+        sid, _ = self.session(kind="bg")
+        self.write_own(sid, [{**self.old_joined(sid, alias="bgjob"), "session_kind": "bg"}])   # before the binding
+        seat_id = str(uuidlib.uuid4())   # the launcher binds the seat
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "worker", "group": "g", "cwd": self.root,
+                                  "status": "idle"})
+        self.reconcile()
+        j = self.joins(sid)[-1]
+        self.assertEqual((j["thread"], j["seat"], j["alias"]), (seat_id, seat_id, "worker"))
+        code, out = self.cli("list", "--json")
+        self.assertEqual(code, 0, out)
+        [row] = [r for r in json.loads(out[:out.rindex("]") + 1]) if r["session"] == sid]
+        self.assertEqual((row["thread"], row["opened"]), (seat_id, "spawned"))
+
     def test_a_rebuilt_seats_sessions_are_oldest_first_with_its_current_last(self):
         early, first, second, before, current = (str(uuidlib.uuid4()) for _ in range(5))
         seat_id = str(uuidlib.uuid4())
