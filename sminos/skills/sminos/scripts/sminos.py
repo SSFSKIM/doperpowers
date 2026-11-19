@@ -14011,8 +14011,9 @@ def retire_member(project, m, purge, verb="retired"):
             die("%s was retired already; nothing more was recorded" % m.alias, EXIT_UNKNOWN)
     else:
         lifecycle(project, m.session, "retired", by=by, reason="retire", **({"pid": pid} if proc else {}))
-    stopped = bool(row and row.get("id")) and still_seen(proc, m.session) and retired_in_log(project, m.session) \
-        and claude_stop(row["id"])
+    # The turn the end saw (its row then), never a process started since (still_seen).
+    stopped = bool(row and row.get("id")) and (proc is None or still_seen(proc, m.session)) \
+        and retired_in_log(project, m.session) and claude_stop(row["id"])
     kept = "its record deleted" if purge else "it returns when its human reopens it" if human \
         else "it holds no seat, so nothing is kept"
     if proc and not stopped:
@@ -14126,9 +14127,9 @@ def end_and_stop(s, purge):
     retirement is in the log (retired_in_log): a session that retires
     itself, whose stop can end its caller, is stopped only after its record
     and its event are written (T1's M4), and an end whose event could not be
-    appended stops nothing. Only the process the end saw is stopped, and
-    only while it is still that process (still_seen): one that started
-    since is one the end did not see, which returns the seat. Which record
+    appended stops nothing. Only what the end saw is stopped, while it is
+    still that (stop_seen_turn): a process started since is one the end did
+    not see, which returns the seat. Which record
     ends is the canonical one of the seat's session (thread_of): a thread
     its human opened that an older copy seated ends by that record
     (end_human), its entry bringing the seat in line, retired or for a
@@ -14139,6 +14140,8 @@ def end_and_stop(s, purge):
     thread = threads_module().thread_of(cur) if cur else None
     project = seat_project(s)
     seen = session_running(cur) if cur else None   # the process the end sees, and records
+    agents_refresh()
+    turn = harness_row(s) if cur else None   # and the harness's turn of it, by its id
     try:
         if thread is not None and thread["opened"] == "human" and thread["current"] == cur:
             project = last_project(cur) or project
@@ -14146,8 +14149,26 @@ def end_and_stop(s, purge):
         else:
             end_seat(s, purge)
     finally:
-        if still_seen(seen, cur) and retired_in_log(project, cur):
-            stop_session(s)
+        if retired_in_log(project, cur):
+            stop_seen_turn(s, seen, turn)
+
+
+def stop_seen_turn(s, seen, turn):
+    """The stop of what an end saw of a seat's session, and only that: its
+    harness turn (`turn`, the row then) while the harness still shows that
+    row's id for it, the process the end saw (`seen`) still that process
+    (still_seen); a process the end saw with no row, by the seat's own stop
+    (stop_session). Nothing when the end saw neither: a process started
+    since is one the end did not see, which returns the seat."""
+    if s["engine"] == "codex" or (seen is not None and not still_seen(seen, s["current"])):
+        return
+    if turn and turn.get("id"):
+        agents_refresh()
+        now_ = harness_row(s)
+        if now_ and now_.get("id") == turn["id"]:
+            claude_stop(turn["id"])
+    elif seen is not None:
+        stop_session(s)
 
 
 def still_seen(seen, sid):
