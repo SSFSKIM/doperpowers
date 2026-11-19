@@ -115,7 +115,7 @@ export function compactGuidance(threshold: number | undefined, gate: OfferGate =
     '"select:mcp__doperpowers__compact" loads it.',
     '',
     'When. Let the work decide rather than the context size: compact at a',
-    'checkpoint in the work where none of its state is lost; the larger the',
+    'checkpoint in the work, one your own summary can carry it across; the larger the',
     'context, the smaller a checkpoint that will do. You write the summary',
     'yourself, with the whole conversation in view, and the last few messages',
     'stay verbatim after it, so nothing needs saving beforehand: no note to',
