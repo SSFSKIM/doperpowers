@@ -38,7 +38,7 @@ member too, seat-less, from the first call that reads its project.
     sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
     sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
     sminos charge   [<member>] "<one line>"               # what the member is in charge of (a session: its own),
-                   until the member's next compaction derives a line over it
+                   until a compaction derives a line over it (every third)
     sminos join     <project> | --cwd                     # this session's project, declared: a session is in
                    its launch directory's project (a `cd` moves nothing) until it joins another; --cwd goes
                    back; alone: which project it is in, and why. Not for a seat
@@ -8153,6 +8153,10 @@ DERIVE_QUESTION = ("In one line: what is this session in charge of in this proje
 DERIVE_PROMPT = DERIVE_QUESTION + " Answer with the line only."
 DERIVE_MIN_TOOL_CALLS = 10
 DERIVE_EVERY = 6 * 3600
+# A compaction derives the member's line again only at every this many
+# compactions since its last derived line (counted in $SMINOS_HOME/compactions/;
+# SMINOS_DERIVE_COMPACTIONS overrides it).
+DERIVE_COMPACTIONS = 3
 DERIVE_LINE_MAX = 120
 # A member whose fork failed is held out of `derive --all` this long (the
 # daemon runs it every five minutes, and a fork that timed out tends to time
@@ -8547,12 +8551,14 @@ def cmd_derive(a):
     if a.all:
         sweep_pending_names()
         sweep_older("derive-failed", DERIVE_RETRY)
+        sweep_older("compactions", 30 * 86400)
         targets = derive_order(targets)
     else:
         targets = [(p, m, False) for p, m in targets]
     if a.compacted:
         for project, m, _ in targets:
             clear_status(project, m)
+        targets = [(p, m, r) for p, m, r in targets if compaction_due(m)]
     forked_refreshes = failed = 0
     for project, m, refresh in targets:
         spent = refresh and a.refreshes is not None and forked_refreshes >= a.refreshes
@@ -8562,6 +8568,35 @@ def cmd_derive(a):
         forked_refreshes += refresh and outcome in ("derived", "superseded", "failed")
     if failed:
         sys.exit(1)
+
+
+def compactions_path(session):
+    return os.path.join(root(), "compactions", session)
+
+
+def compaction_due(m):
+    """Count one more compaction of the member and say whether its line is
+    due again: at every DERIVE_COMPACTIONS-th since its last derived line
+    (derive_member resets the count). A count that cannot be kept derives,
+    as every compaction did before."""
+    path = compactions_path(m.session)
+    try:
+        with open(path) as f:
+            n = int(f.read().strip() or 0) + 1
+    except (OSError, ValueError):
+        n = 1
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        with open(path, "w") as f:
+            f.write(str(n))
+    except OSError as e:
+        warn("the compactions of %s could not be counted: %s" % (m.session[:8], e))
+        return True
+    every = int(os.environ.get("SMINOS_DERIVE_COMPACTIONS") or DERIVE_COMPACTIONS)
+    if n < every:
+        print("%s: not derived — compaction %d of %d since its last line" % (m.alias, n, every))
+        return False
+    return True
 
 
 def clear_status(project, m):
@@ -8661,6 +8696,10 @@ def derive_member(project, m, held_off=False, refreshes_spent=None, compacted=Fa
         print("%s: not derived — its line was set meanwhile" % m.alias)
         return "superseded"
     lifecycle(project, m.session, "in-charge", text=line, source="derived", **({"name": name} if name else {}))
+    try:
+        os.unlink(compactions_path(m.session))   # the compactions count from this line
+    except OSError:
+        pass
     print("%s: %s" % (m.alias, line))
     if name:
         print("%s: name %s" % (m.alias, name))

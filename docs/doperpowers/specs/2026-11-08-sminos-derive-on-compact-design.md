@@ -51,7 +51,11 @@ The human observed in-charge lines a week or more stale in `sminos list`. The or
 - `--compacted` clears the member's `now:` status (`clear_status`: an empty `status` event, the seat's local `now` with it) when it has one, whether or not the derive runs: nothing else ever refreshed it. A status set just before the compaction is cleared too; the session sets it again.
 - A member whose fork `launch_refused` skips under `--all` is stamped `derive-failed`, held off an hour as a failed fork is: its side question, asked first, could fail every five minutes (personal-notes-curation, in `$HOME`, whose bridge had nothing to fork after a `/clear`).
 
-Not taken: counting compactions (every third) instead of the six-hour spacing. The compaction derive asks through the session's warm cache (`btw`, about 7k tokens read and 460 written in the logs) and already runs at each compaction; the six-hour path is the backstop for a session that never compacts.
+Not taken at first: counting compactions (every third) instead of the six-hour spacing. The compaction derive asks through the session's warm cache (`btw`, about 7k tokens read and 460 written in the logs) and already runs at each compaction; the six-hour path is the backstop for a session that never compacts.
+
+### 5. Amendment, 2026-11-18: every third compaction
+
+The human chose, having heard the cost argument above, to derive at every third compaction since the member's last derived line rather than at each. `compaction_due` counts each `--compacted` run in `$SMINOS_HOME/compactions/<session>` (swept by `derive --all` after 30 days) and lets the derive through at the third (`DERIVE_COMPACTIONS`, overridden by `SMINOS_DERIVE_COMPACTIONS`); any recorded derived line, the daemon's six-hour refresh included, removes the count. A count that cannot be kept derives, as every compaction did before. The status line is still cleared at every compaction: that costs no fork, and a status from before a compaction is stale whether or not the line is re-derived. A set line now stands until the third compaction after it (the count runs from the last derived line, so it may be sooner).
 
 ## Acceptance
 
