@@ -66,9 +66,9 @@ or brainstorm first.
    against the spec's intent or crosses the gate is not folded: it goes
    back to the executor, or up to whoever dispatched you; one the reviewer
    later rejects is reversed in the log when the fix lands.
-5. **Review at the frontier:** a task is reviewed clean — findings fixed
-   and re-reviewed — before any task that consumes what it produced
-   dispatches; the milestones' Interfaces name the producers, and the
+5. **Review at the frontier:** a task is reviewed clean — nothing left
+   that must be fixed (step 6) — before any task that consumes what it
+   produced dispatches; the milestones' Interfaces name the producers, and the
    spec's last milestone consumes the whole branch. Tasks nothing
    downstream consumes yet may keep executing and are reviewed together
    when the frontier closes (the next task consumes from them, or the Plan
@@ -93,15 +93,27 @@ or brainstorm first.
    detached worktree at the packaged HEAD (`git worktree add --detach
    <workspace>/review-N <HEAD_N>`, removed after the review) rather
    than in the shared checkout.
-6. **Findings:** Critical/Important findings go back to the executor that
+6. **Findings:** the reviewer reports what it sees; what the task owes
+   is your call against the spec, made for each Critical/Important
+   finding before any goes back. A defect this task introduced that
+   its consumers would meet, or one that is costly or irreversible if
+   wrong, is fixed. One that was there before the task, or is rare or
+   cosmetic and cheap to live with, is recorded in the ledger with a
+   one-line reason, beside the Minor findings, and not reopened. One
+   the spec's intent contradicts is dismissed. One you cannot place is
+   fixed. Those to fix go back to the executor that
    wrote the code — resume it with the findings; it holds the task's
    context and skips the orientation a fresh fixer pays. Several tasks
    with findings in one wave resume one at a time (shared worktree).
    Re-review by resuming the reviewer with the fix commits' package
    (`scripts/review-package SPEC_FILE FIX_BASE FIX_HEAD` — the fix range:
    the reviewer already holds the task's original package, and a deferred
-   task's fix lands past its siblings' commits); repeat until both
-   verdicts are clean. That message names the fix range, sends the
+   task's fix lands past its siblings' commits); repeat until a round
+   leaves nothing to fix. A reviewer finds something on every pass
+   (ci-kit #217: three rounds, new items in each), so a loop that waits
+   for its clean verdict has no end of its own. That message names the
+   fix range and what you dismissed or recorded, so it is not raised
+   again, sends the
    reviewer back to the report (the executor appended the fix's test
    evidence there), and carries the refreshed checkout head and what
    landed since — plus a fresh detached worktree at the fix head if the
