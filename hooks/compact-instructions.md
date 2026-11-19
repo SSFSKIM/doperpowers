@@ -14,10 +14,6 @@ from the template, follow these.
   investigation findings): copy it. If it is too long, quote a distinctive phrase
   your next self can grep for in the session transcript, whose path you will be
   given after the reset.
-- Carry no section of standing rules. A repository's conventions live in the
-  repository (its CLAUDE.md and docs), and the session's purpose in its charge
-  line; neither is copied here. If a lasting instruction exists only in this
-  conversation, the next step is to write it into the repository, not to carry it.
 - Mark each claim [verified] when a tool result in this conversation showed it,
   or [assumed] / [unchecked] otherwise.
 - The last section is required, not optional: the step in progress and the
