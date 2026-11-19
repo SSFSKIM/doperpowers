@@ -1784,11 +1784,13 @@ printf '{"pid":%s,"sessionId":"%s","name":"prevocc","kind":"bg","status":"idle",
 run "$SMINOS" spawn prevocc "again"
 assert_rc 4 "$RC" "re-spawn is refused while the previous occupant still answers"
 assert_contains "$OUT" "previous occupant" "the live previous occupant is named"
-assert_contains "$OUT" "use sminos resume, or stop it first" "the hint names resume"
+assert_contains "$OUT" "still answers — stop it first" "the hint says to stop it"
+assert_not_contains "$OUT" "sminos resume" "and not resume, which refuses a retired seat (T1's M4)"
 assert_not_contains "$OUT" "sminos send" "and not send, which refuses a retired seat"
 run "$SMINOS" fill work/prevocc "again"
 assert_rc 4 "$RC" "fresh fill is refused while the previous occupant still answers"
-assert_contains "$OUT" "use sminos resume, or stop it" "fill's hint names resume"
+assert_contains "$OUT" "still answers — stop it first" "fill's hint says to stop it"
+assert_not_contains "$OUT" "sminos resume" "and not resume"
 assert_not_contains "$OUT" "sminos send" "and not send"
 rm -f "$HOME/.claude/sessions/prevocc.json"; "$SMINOS" remove work/prevocc >/dev/null
 

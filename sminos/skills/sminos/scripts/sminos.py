@@ -12588,8 +12588,9 @@ def cmd_spawn(a):
         if live in FILLED:
             die("seat %s/%s is filled (%s) — message it with sminos send" % (group, alias, live), EXIT_UNKNOWN)
         if peer_for_session(existing["current"]):  # a retired seat whose session still runs
-            die("seat %s/%s: the previous occupant (session %s) still answers — use sminos resume, or "
-                "stop it first" % (group, alias, existing["current"][:8]), EXIT_UNKNOWN)
+            die("seat %s/%s: the previous occupant (session %s) still answers — stop it first%s" % (
+                group, alias, existing["current"][:8], "" if live == "retired" else ", or use sminos resume"),
+                EXIT_UNKNOWN)
         if existing["engine"] == "codex" and existing["status"] in ("working", "blocked"):
             die("seat %s/%s is a legacy codex-CLI worker still marked %s — retire it before re-filling" % (
                 group, alias, existing["status"]), EXIT_UNKNOWN)
@@ -13927,8 +13928,8 @@ def retire_member(project, m, purge, verb="retired"):
     kept = "its record deleted" if purge else "it returns when its human reopens it" if human \
         else "it holds no seat, so nothing is kept"
     if proc and not stopped:
-        print("%s %s (session %s; %s): its session keeps running in its terminal; only a new process of it "
-              "returns it" % (verb, m.alias, m.short, kept))
+        print("%s %s (session %s%s): %s's session keeps running in its terminal; it re-joins when resumed as a new "
+              "process" % (verb, m.alias, m.short, "; its record deleted" if purge else "", m.alias))
     else:
         print("%s %s (session %s; %s)" % (verb, m.alias, m.short, kept))
 
