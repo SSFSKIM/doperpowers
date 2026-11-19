@@ -248,8 +248,17 @@ def _of_seat(s):
     return rec
 
 
+def _is_thread(seat):
+    """Whether a seat is a thread (§1): one with the thread keys, one with no
+    session, or one whose session is lane A. A seat with no keys holding a
+    lane B session (`seat add` made it for one; or one from before threads)
+    is none, as a lane B session has no record (D1): no lookup of the
+    store answers it (all_threads, get, thread_of)."""
+    return "opened" in seat or not seat.get("current") or _lane_a(seat["current"])
+
+
 def _seat_threads():
-    return [_of_seat(s) for s in sminos.seats()]
+    return [_of_seat(s) for s in sminos.seats() if _is_thread(s)]
 
 
 def _human_threads(aside=False):
@@ -267,7 +276,7 @@ def open_threads(human=None, seats=None):
     read them."""
     human = _human_threads() if human is None else human
     seats = sminos.seats() if seats is None else seats
-    return [_of_seat(s) for s in seats if s.get("pending")] + [t for t in human if t.get("pending")]
+    return [_of_seat(s) for s in seats if s.get("pending") and _is_thread(s)] + [t for t in human if t.get("pending")]
 
 
 def all_threads(ended=False):
@@ -288,7 +297,7 @@ def get(thread_id):
         return None
     if os.path.exists(sminos.meta_path(tid)):
         s = sminos.reload_seat(tid)
-        return _of_seat(s) if s is not None else None
+        return _of_seat(s) if s is not None and _is_thread(s) else None
     if not _ID_RE.fullmatch(tid):
         return None
     return _human_at(_human_path(tid)) or _human_at(_human_path(tid, aside=True))
@@ -332,23 +341,24 @@ def _aside_holding(session, live):
     return out
 
 
-def thread_of(session):
+def thread_of(session, ended=True):
     """The record of the thread `session` is in, or None: in this order, the
     thread whose open entry makes the session its current one; the thread
     whose current session it is, one its human opened (set aside or not)
     before a seat (an older CLI can have given such a session a seat); one
-    that had it, those set aside included, the latest changed first. The
-    records set aside are looked up through their index (_aside_index)."""
+    that had it: a live one, the latest changed, else one set aside, the
+    latest changed. The records set aside are looked up through their index
+    (_aside_index), and not at all with `ended` False (stamp)."""
     if not session:
         return None
-    live = [t for t in all_threads() if not (session in t["sessions"] and _bare_lane_b(t, session))]
+    live = all_threads()
     for t in live:
         if t.get("pending") and t["current"] == session:
             return t
     current = [t for t in live if t["current"] == session]
     if any(t["opened"] == "human" for t in current):
         return next(t for t in current if t["opened"] == "human")
-    aside = _aside_holding(session, live)
+    aside = _aside_holding(session, live) if ended else []
     human = [t for t in aside if t["current"] == session]
     if human:
         return max(human, key=lambda t: t.get("updated") or "")
@@ -358,18 +368,13 @@ def thread_of(session):
     return max(had, key=lambda t: t.get("updated") or "") if had else None
 
 
-def _bare_lane_b(t, session):
-    """A seat that has no thread keys yet (one from before threads, or one
-    `seat add` made for a lane B session) holding a lane B session: no
-    thread, as a lane B session has none (D1)."""
-    return t["opened"] == "spawned" and "opened" not in (sminos.reload_seat(t["thread"]) or {}) \
-        and not _lane_a(session)
-
-
 def stamp(session):
     """The thread id an event of this session carries; "" for a session
-    that is no thread."""
-    return (thread_of(session) or {}).get("thread", "")
+    that is no thread. From the live stores and their open entries alone,
+    never the records set aside: after an end, what a session's thread
+    writes is the journal's (or a return's), each event naming its thread,
+    and a former session that runs again is another thread."""
+    return (thread_of(session, ended=False) or {}).get("thread", "")
 
 
 def record_ended(record):
@@ -490,7 +495,7 @@ def set_channels(thread_id, channels):
 def note_alias(session, alias, lock_until=None):
     """The alias a human-opened thread's latest `joined` or `renamed` carried,
     copied into its record for readers without the log (lifecycle)."""
-    t = thread_of(session)
+    t = thread_of(session, ended=False)
     if t is None or t["opened"] != "human" or t["current"] != session or t.get("alias") == alias:
         return False
     return update(t["thread"], {"alias": alias}, guard=lambda r: r["current"] == session, lock_until=lock_until)
@@ -587,19 +592,19 @@ def ensure(session, seat=None, project=None, events=None, lock_until=None):
     in the thread store under a minted id, whose `sessions` are its
     continuation chain in `project`'s log (`events`) when one is given — an
     adoption — and the session alone otherwise. A thread is established
-    for a lane A session alone: None for a lane B session with no thread
-    history (one that has a record keeps it, and its end is stamped: §6,
-    row 13). A spawn's child that no seat holds yet is the caller's to leave
+    for a lane A session alone: for a lane B session, the live record it
+    has (its end is stamped: §6, row 13), else None, never one set aside. A spawn's child that no seat holds yet is the caller's to leave
     alone first (awaits_seat). LockBusy past `lock_until`, nothing written."""
     if seat is not None:
-        if "opened" not in seat and seat["current"] and not _lane_a(seat["current"]):
+        if not _is_thread(seat):
             return None
         return _ensure_seat(seat, project, events, lock_until)
+    if not _lane_a(session):
+        # A lane B session is never made a thread, nor returned: only a live record it has is its own.
+        return thread_of(session, ended=False)
     have = thread_of(session)
     if have is not None:
         return have
-    if not _lane_a(session):
-        return None
     chain = list(reversed(sminos.lineage_of(project, session, events=events))) if project is not None else []
     cwd = sminos.launch_cwd(session, fallback=str((sminos.session_running(session) or {}).get("cwd") or ""))
     return _create_human(session, [s for s in chain if s != session] + [session], cwd, lock_until)

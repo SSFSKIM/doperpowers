@@ -4303,22 +4303,6 @@ def join_seat(seat, by=""):
                      guard=record_settled(thread, lambda evs: latest_membership(evs) != "joined"), **fields)
 
 
-ENTRY_MARGIN = 1.0   # seconds of the hook's deadline an open entry's replay needs; with less, it is left
-
-
-def finish_open_entry(project, thread_id):
-    """A record's open entry, met before a write for its session: finished
-    here, True once none is left; from the hook with its deadline near (or
-    its lock held past it), left to the next reconciliation's replay,
-    False."""
-    if _RECORD_DEADLINE is not None and time.time() > _RECORD_DEADLINE - ENTRY_MARGIN:
-        return False
-    try:
-        return finish_thread(thread_id, project=project, lock_until=_RECORD_DEADLINE)
-    except LockBusy:
-        return False
-
-
 def record_settled(thread, guard):
     """`guard` with the thread's record read again under the writer file's
     lock, where the event is appended: an ordinary `joined` goes in only
@@ -4553,8 +4537,9 @@ def older_writes(project, live, effect, joined, busy):
     unstamped `ended` after a stamped `joined` is passed by and needs
     nothing. Only in the project whose membership is in effect for the
     session (membership_here: no later own event in another project, such
-    as a reopening joined there), checked again under the record's lock as
-    the end is begun. `live`: this machine's human-opened records as the
+    as a reopening joined there); under the record's lock, as the end is
+    begun, the retirement read is still the one in effect (still_in_effect:
+    no joined since) and the project still the session's. `live`: this machine's human-opened records as the
     pass read them."""
     threads = threads_module()
     holding = {t["current"]: t for t in live if t["current"]}
@@ -4574,9 +4559,17 @@ def older_writes(project, live, effect, joined, busy):
         ended = {"at": str(e.get("ts") or now()), "reason": e["reason"], "by": str(e.get("by") or ""),
                  "pid": e.get("pid") or None}
         out += thread_transition(project, t["thread"], "end", [], fields={"ended": ended},
-                                 guard=lambda r, sid=sid: r["current"] == sid and not threads.record_ended(r)
-                                 and membership_here(project, sid), settle=sid, last="aside")
+                                 guard=lambda r, sid=sid, e=e: r["current"] == sid and not threads.record_ended(r)
+                                 and still_in_effect(project, sid, e) and membership_here(project, sid),
+                                 settle=sid, last="aside")
     return out
+
+
+def still_in_effect(project, sid, event):
+    """Whether `event` (a reconciliation's reading) is still the session's
+    membership in effect in the project's log, read afresh."""
+    now_in = threads_module().in_effect(_own_events(project, sid))
+    return now_in is not None and (now_in.get("writer"), now_in.get("seq")) == (event.get("writer"), event.get("seq"))
 
 
 def membership_here(project, sid):
@@ -4878,8 +4871,9 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
         thread = None
         warn("the thread record of %s could not be written: %s" % (sid[:8], e))
     if thread is not None and thread.get("pending"):
-        # An open entry is its record's until it is finished (§6, 6): never a join around it.
-        if not finish_open_entry(project, thread["thread"]):
+        # An open entry is its record's until it is finished (§6, 6): never a join around it. The hook,
+        # whose wait is bounded, leaves it to the next reconciliation's replay and writes nothing.
+        if _RECORD_DEADLINE is not None or not finish_thread(thread["thread"], project=project):
             return out
         thread = threads.get(thread["thread"])
         if thread is None:
@@ -12604,6 +12598,8 @@ def end_seat(s, purge):
             raise LogWriteFailed("%s/%s holds a transition whose events could not all be recorded in %s's log; "
                                  "nothing more was done, and the next reading verb finishes it"
                                  % (s["group"], s["alias"], project.name))
+        if reload_seat(s["seat_id"]) is None:
+            return   # the replay finished a purge: the seat is gone, and its end recorded
         thread = threads.ensure(s["current"], seat=reload_seat(s["seat_id"]) or s, project=project)
         fresh = reload_seat(s["seat_id"])
         if thread is not None and fresh is not None:
