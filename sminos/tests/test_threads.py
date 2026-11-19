@@ -1561,6 +1561,11 @@ class HandOff(Sessions):
         rows = [m for m in sminos.view_of(self.p).members]
         self.assertEqual([(m.session, m.alias, m.charge) for m in rows], [(job, "handy", "owns the hand-off")])
         self.assertEqual(rows[0].former, (old,))
+        with self.elsewhere() as p:
+            rows = [m for m in sminos.view_of(p).members]
+            self.assertEqual([(m.session, m.alias, m.charge, m.thread, m.former) for m in rows],
+                             [(job, "handy", "owns the hand-off", tid, (old,))], "the same from the log alone")
+            self.assertEqual(rows[0].owners, ("m-ann",))
 
     def test_the_process_that_handed_it_off_still_running_writes_nothing_and_a_new_process_is_a_thread_of_its_own(
             self):
@@ -1652,6 +1657,9 @@ class LateHandOff(Sessions):
         self.assertEqual(threads.in_effect(self.own(old))["to"], job)
         self.assertEqual(reach_of(job), reach_of(old), "its owners its predecessor's, by the continuation")
         self.assertEqual(len([m for m in sminos.view_of(self.p).members if m.session in (old, job)]), 1)
+        with self.elsewhere() as p:
+            rows = [m for m in sminos.view_of(p).members if m.session in (old, job)]
+            self.assertEqual([(m.session, m.thread) for m in rows], [(job, tid)], "one thread from the log alone")
 
     def test_a_human_opened_predecessor_absorbs_the_jobs_record(self):
         old, job, tid, theirs = self.late()
@@ -1938,6 +1946,10 @@ class OtherStarts(Sessions):
         self.assertEqual(self.continued(), [])
         self.assertEqual(records.read(new)["owners"], ["@machine"], "nothing carried from the old record")
         self.assertNotEqual(reach_of(new), reach_of(old))
+        with self.elsewhere() as p:
+            info = sminos._projection(sminos.log_read(p))
+            self.assertEqual((sminos.row_thread(info[old]), sminos.row_thread(info[new])), (tid, mine["thread"]))
+            self.assertEqual(sminos.lineage(new, info), [], "no link to the session it came from")
 
     def test_an_in_session_resume_of_another_session_is_another_thread(self):
         target, tproc, ttid = self.member(name="target", charge="")
