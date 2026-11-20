@@ -1343,7 +1343,8 @@ class Questions(Rig):
                         sminos.forget_caches()
                     else:
                         self.assertEqual(code, 0, out)
-                        self.assertIn("its process is starting, and the daemon delivers it", out, "tried again later")
+                        self.assertIn("its wake waits for the thread sweep or a transition of it, which holds its lock, and the "
+                                      "daemon delivers it", out, "tried again later")
                         self.assertTrue(self.owed_to(sid), "owed for the next pass")
 
     def test_a_resume_that_meets_the_sweep_releasing_its_lock_takes_it_with_no_twin_and_no_attempt(self):
@@ -1411,7 +1412,8 @@ class Questions(Rig):
                 if releases:
                     self.assertEqual(len(launched), 1, "it took the lock and resumed")
                 else:
-                    self.assertIn("its process is starting, and the daemon delivers it", out,
+                    self.assertIn("its wake waits for the thread sweep or a transition of it, which holds its lock, and the "
+                                  "daemon delivers it", out,
                                   "a holder that names none is the sweep's moment: a hold that passes (T2's §5)")
                     self.assertEqual(launched, [])
                     self.assertTrue(self.owed_to(sid), "owed for the next pass")
