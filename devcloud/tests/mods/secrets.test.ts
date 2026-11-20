@@ -94,14 +94,14 @@ const bash = (stdout: string, extra: Record<string, unknown> = {}) => ({ stdout,
  * A second guard beside devcloud's, as Interfaces I9 asks one to behave
  * (cua's vendored copy): each hook reads devcloud's marker and passes the
  * event on untouched when it reads the marker at version 0, the loaded
- * module's answer; otherwise it acts, and marks what it touched. In the
- * prepend tier it sits outside devcloud, in append inside it. An inline
- * plugin's hooks run in a module of their own, so what they did is read off
- * what they return.
+ * module's answer; otherwise it acts, and marks what it touched. It loads as
+ * cua does, a plugin a person installs, in the `user` tier, where the kit
+ * seats an inline plugin inside the one under test. An inline plugin's hooks
+ * run in a module of their own, so what they did is read off what they
+ * return.
  */
-const secondGuard = (tier: 'prepend' | 'append') => ({
+const secondGuard = {
   name: 'cua',
-  tier,
   register: (on: On) => {
     on('tool.call', async ($, e, next) => {
       const { value, version } = await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' })
@@ -135,22 +135,22 @@ const secondGuard = (tier: 'prepend' | 'append') => ({
       return version === 0 && value?.owner === 'devcloud' && value.version === 1 ? attached : { text: 'second guard acted' }
     })
   },
-})
+}
 
 // Another plugin reading the marker: a Bash call answers with what it read.
-const markerReader = {
+const markerReader = (tier: 'prepend' | 'user' | 'append') => ({
   name: 'reader',
-  tier: 'prepend' as const,
+  tier,
   register: (on: On) => {
     on('tool.call', async ($, e, next) => {
       await next(e)
       return { result: (await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' })) as never }
     })
   },
-}
+})
 
 describe("Interfaces I9: one guard per session, devcloud's while its module is loaded", () => {
-  test("another plugin's read of the marker is the loaded module's answer, at version 0, and nothing is stored", { plugins: [markerReader] }, async ($, on) => {
+  test("a person's plugin's read of the marker is the loaded module's answer, at version 0, and nothing is stored", { plugins: [markerReader('user')] }, async ($, on) => {
     const set: unknown[] = []
     on('state.set', (_, e) => {
       set.push({ plugin: e.plugin, key: e.key, value: e.value })
@@ -163,40 +163,51 @@ describe("Interfaces I9: one guard per session, devcloud's while its module is l
     expect(set).toEqual([])
   })
 
-  for (const [tier, place] of [['prepend', 'outside'], ['append', 'inside']] as const) {
-    test(`a second guard ${place} devcloud passes every event on, and devcloud alone scrubs`, { plugins: [secondGuard(tier)] }, async ($, on) => {
-      tool(on, () => bash(STORED))
-      const session = mock.session(on)
-      let told: string | undefined
-      on('session.compact', (_, e) => {
-        told = e.instructions
-        return { messages: [{ role: 'user' as const, text: `summary ${STORED}`, toolUses: [], handle: 'h1' }] }
-      })
-      on('prompt.compose', () => ({ sections: [{ id: 'other:notes', text: `use ${STORED}`, scope: 'session' as const }] }))
-      on('prompt.context', () => ({ blocks: [{ name: 'claudeMd', text: `KEY=${STORED}` }] }))
-      on('prompt.attachment', () => ({ text: `changed: ${STORED}` }))
-      await start($, on, { [`${STORE}/API_KEY`]: STORED })
-      expect((await $.tool.call({ tool: 'Bash', command: 'env' })).result).toEqual(bash('[secret:API_KEY]'))
-      await $.session
-        .append({
-          message: { type: 'user', role: 'user', content: [{ type: 'text', text: `the key ${STORED}` }] },
-          door: 'prompt',
-          origin: { kind: 'engine' },
-          uuid: 'row-1',
-        } as never)
-        .catch(() => undefined)
-      expect(session.appended().map((row) => row.message.content)).toEqual([[{ type: 'text', text: 'the key [secret:API_KEY]' }]])
-      const conversation = [{ role: 'user' as const, text: 'earlier', toolUses: [], handle: 'h0' }]
-      const compacted = await $.session.compact({ trigger: 'manual', instructions: `keep ${STORED}`, messages: conversation } as never)
-      expect(told).toBe('keep [secret:API_KEY]')
-      expect('messages' in compacted && compacted.messages?.map((m) => m.text)).toEqual(['summary [secret:API_KEY]'])
-      const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] })
-      expect(composed.sections.map((s) => s.id)).toEqual(['other:notes', 'devcloud:secrets'])
-      expect(composed.sections[0]?.text).toBe('use [secret:API_KEY]')
-      expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([{ name: 'claudeMd', text: 'KEY=[secret:API_KEY]' }])
-      expect((await $.prompt.attachment({ type: 'edited_text_file', origin: { kind: 'engine' }, text: '' } as never)).text).toBe('changed: [secret:API_KEY]')
+  // The marker's limit. From 2.1.328 the engine keeps a call an organization's
+  // mod makes from a person's hooks, and an inline plugin in `prepend` or
+  // `append` is the organization's: its read passes this module, a person's
+  // here as on every machine it is installed on, and gets the host's answer.
+  // A guard an organization seats therefore never stands down for devcloud's.
+  for (const tier of ['prepend', 'append'] as const) {
+    test(`a plugin an organization seats (${tier}) reads the host's answer, never the marker`, { plugins: [markerReader(tier)] }, async ($, on) => {
+      tool(on, () => bash(''))
+      await start($, on, {})
+      expect((await $.tool.call({ tool: 'Bash', command: 'true' })).result).toEqual({ value: undefined, version: 0 })
     })
   }
+
+  test('a second guard a person installs passes every event on, and devcloud alone scrubs', { plugins: [secondGuard] }, async ($, on) => {
+    tool(on, () => bash(STORED))
+    const session = mock.session(on)
+    let told: string | undefined
+    on('session.compact', (_, e) => {
+      told = e.instructions
+      return { messages: [{ role: 'user' as const, text: `summary ${STORED}`, toolUses: [], handle: 'h1' }] }
+    })
+    on('prompt.compose', () => ({ sections: [{ id: 'other:notes', text: `use ${STORED}`, scope: 'session' as const }] }))
+    on('prompt.context', () => ({ blocks: [{ name: 'claudeMd', text: `KEY=${STORED}` }] }))
+    on('prompt.attachment', () => ({ text: `changed: ${STORED}` }))
+    await start($, on, { [`${STORE}/API_KEY`]: STORED })
+    expect((await $.tool.call({ tool: 'Bash', command: 'env' })).result).toEqual(bash('[secret:API_KEY]'))
+    await $.session
+      .append({
+        message: { type: 'user', role: 'user', content: [{ type: 'text', text: `the key ${STORED}` }] },
+        door: 'prompt',
+        origin: { kind: 'engine' },
+        uuid: 'row-1',
+      } as never)
+      .catch(() => undefined)
+    expect(session.appended().map((row) => row.message.content)).toEqual([[{ type: 'text', text: 'the key [secret:API_KEY]' }]])
+    const conversation = [{ role: 'user' as const, text: 'earlier', toolUses: [], handle: 'h0' }]
+    const compacted = await $.session.compact({ trigger: 'manual', instructions: `keep ${STORED}`, messages: conversation } as never)
+    expect(told).toBe('keep [secret:API_KEY]')
+    expect('messages' in compacted && compacted.messages?.map((m) => m.text)).toEqual(['summary [secret:API_KEY]'])
+    const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: [], tools: [], outputStyle: null, traits: [] })
+    expect(composed.sections.map((s) => s.id)).toEqual(['other:notes', 'devcloud:secrets'])
+    expect(composed.sections[0]?.text).toBe('use [secret:API_KEY]')
+    expect((await $.prompt.context({ blocks: [] })).blocks).toEqual([{ name: 'claudeMd', text: 'KEY=[secret:API_KEY]' }])
+    expect((await $.prompt.attachment({ type: 'edited_text_file', origin: { kind: 'engine' }, text: '' } as never)).text).toBe('changed: [secret:API_KEY]')
+  })
 })
 
 describe('redact, never refuse', () => {

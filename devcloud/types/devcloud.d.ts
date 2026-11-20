@@ -11,7 +11,13 @@
  * a devcloud before 0.5.0 started, the marker that one stored, at version 1:
  * a value that outlives its module. A plugin that scrubs secrets of its own
  * (`cua`) reads it at hook time and stands down only on the marker at
- * version 0, so one guard decides every handle and a guard always acts:
+ * version 0, so one guard decides every handle and a guard always acts.
+ * The answer reaches a plugin a person installs, as devcloud is. A plugin an
+ * organization's managed settings seat in `prepend` or `append` reads
+ * `undefined` while devcloud is a person's (the engine, from 2.1.328, keeps
+ * an organization's call from a person's hooks): to it devcloud's guard is
+ * not there.
+ *
  *
  *   const { value, version } = await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' })
  *   if (version === 0 && value?.owner === 'devcloud') return next(e)
