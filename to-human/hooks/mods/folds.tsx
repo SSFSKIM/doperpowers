@@ -1,9 +1,9 @@
 import type { EngineInterface, On, SessionAppendInput } from 'claude-code'
 
-import type { FoldRun, Folds, OpenFold, OpenFoldLast } from '../../types/to-human'
+import type { FoldRun, Folds, OpenFold, OpenFoldLast, StoredFolds } from '../../types/to-human'
 import { MESSAGE_TOOL, isMadeUp } from './message'
 import type { PromptRowProps, View } from './to-human'
-import { isApiError, isRead, isSpawn, keyOf, parse, promptRow } from './to-human'
+import { isApiError, isMawsDrawing, isRead, isSpawn, parse, placeAt, promptRow } from './to-human'
 
 /**
  * The run tracker: what a fold's button says before it is opened. The view
@@ -435,18 +435,42 @@ export const published = (tracker: Tracker): { folds: Folds; fold: OpenFold; fol
   foldLast: tracker.open?.last ?? null,
 })
 
-/** The session's file: each run with a summary by its first row, the last row it holds and the summary. */
-export type StoredFolds = { shape: 1; runs: [string, string, string][] }
+/** The shape of a session's file kept as a contract (`StoredFolds`): replaced in one step, merged before each write. */
+export const FOLDS_SHAPE = 2
 
-/** What the session's file keeps: every run with a summary, the open run's bounded by the last row its summary covered. */
+/** What this tracker keeps of its session's file: every run with a summary, the open run's bounded by the last row its summary covered. */
 export function stored(tracker: Tracker): StoredFolds {
-  const runs = tracker.closed.flatMap((run): [string, string, string][] => (run.summary === undefined ? [] : [[run.first, run.last, run.summary]]))
+  const runs = tracker.closed.flatMap((run): StoredFolds['runs'] => (run.summary === undefined ? [] : [[run.first, run.last, run.summary]]))
   const open = tracker.open
   if (open?.summary !== undefined) runs.push([open.first, open.covered ?? open.last, open.summary])
-  return { shape: 1, runs }
+  return { shape: FOLDS_SHAPE, runs }
 }
 
-/** A session's file read back as closed runs, or undefined when it is not one. */
+/**
+ * This tracker's runs (`own`) with every run of the file as it stands
+ * (`theirs`, another process's on the same session among them) whose first
+ * row the tracker's runs do not hold, each where the file had it: before the
+ * first of the tracker's runs the file holds after it, the tracker's runs in
+ * their own order. Where both hold a run, the tracker's wins.
+ */
+export function merged(own: StoredFolds['runs'], theirs: readonly FoldRun[]): StoredFolds['runs'] {
+  const at = new Map(own.map((run, i) => [run[0], i]))
+  const runs: StoredFolds['runs'] = []
+  let next = 0
+  for (const run of theirs) {
+    const i = at.get(run.first)
+    if (i === undefined) {
+      if (run.last !== undefined && run.summary !== undefined) runs.push([run.first, run.last, run.summary])
+    } else if (i >= next) {
+      runs.push(...own.slice(next, i + 1))
+      next = i + 1
+    }
+  }
+  runs.push(...own.slice(next))
+  return runs
+}
+
+/** A session's file read back as closed runs, shape 1 (a release before the file was a contract) or 2, or undefined when it is not one. */
 export function storedRuns(text: string): FoldRun[] | undefined {
   let value: unknown
   try {
@@ -455,7 +479,7 @@ export function storedRuns(text: string): FoldRun[] | undefined {
     return undefined
   }
   const { shape, runs } = (typeof value === 'object' && value !== null ? value : {}) as { shape?: unknown; runs?: unknown }
-  if (shape !== 1 || !Array.isArray(runs)) return undefined
+  if ((shape !== 1 && shape !== FOLDS_SHAPE) || !Array.isArray(runs)) return undefined
   return runs.flatMap((run: unknown) =>
     Array.isArray(run) && run.length === 3 && run.every((part) => typeof part === 'string') ? [{ first: run[0] as string, last: run[1] as string, summary: run[2] as string }] : [],
   )
@@ -502,34 +526,70 @@ export function takeUp(tracker: Tracker, folds: Folds | undefined, open: OpenFol
 const labelFor = (run: FoldRun) => (run.isLive === true ? run.line ?? run.summary : run.summary)
 
 /**
- * The text a fold's button reads for the run `rowId` stands in, or undefined
- * for `working record`: the open run's, if the row's place is at or after the
- * open run's first row's, else the closed run whose first and last rows'
- * places hold it. A row whose place, or whose run's bound's place, the view
- * does not know reads nothing (a place the view only guessed, for a row drawn
- * before it was kept, is not one). A group is known by its first call's id.
- * By place, so whichever row of a run draws its button finds the label.
+ * The text a fold's button reads for the stretch `rowId` draws the line of
+ * (its first row; `lastId` its last, `runEnd`), or undefined for `working
+ * record`, by the rows' places (`placeAt`):
+ * 1. a row with no place reads nothing (a place the view only guessed, for a
+ *    row drawn before it was kept, is not one);
+ * 2. the open run's, if the row's place is at or after the open run's first
+ *    row's;
+ * 3. else the newest closed run whose first and last rows' places hold it;
+ * 4. else, of the open run and the closed runs with both bounds placed, the
+ *    one whose first row is placed nearest after the row and at or before
+ *    the stretch's last row: a stretch that a row the tracker never follows
+ *    opens (a thought, a notice a client's host made) reads the run that
+ *    begins inside it.
+ * A group is known by its first call's id. By place, so whichever row of a
+ * run draws its button finds the label. The rule is the one
+ * `tests/mods/fold-label-cases.json` holds, which a client that draws the
+ * same lines from the session's file answers alike.
  */
-export function labelOf(folds: Folds | undefined, open: OpenFold | undefined, view: View, rowId: string): string | undefined {
-  const at = view.place.get(keyOf(rowId))
+export function labelOf(folds: Folds | undefined, open: OpenFold | undefined, view: View, rowId: string, lastId = rowId): string | undefined {
+  const at = placeAt(view, rowId)
   if (at === undefined) return undefined
-  const from = open === null || open === undefined ? undefined : view.place.get(keyOf(open.first))
+  const from = open === null || open === undefined ? undefined : placeAt(view, open.first)
   if (open && from !== undefined && at >= from) return labelFor(open)
   const runs = folds?.runs ?? []
-  for (let i = runs.length - 1; i >= 0; i -= 1) {
-    const run = runs[i]!
-    const [first, last] = [view.place.get(keyOf(run.first)), run.last === undefined ? undefined : view.place.get(keyOf(run.last))]
-    if (first !== undefined && last !== undefined && first <= at && at <= last) return labelFor(run)
+  const placed = runs.flatMap((run) => {
+    const [first, last] = [placeAt(view, run.first), run.last === undefined ? undefined : placeAt(view, run.last)]
+    return first !== undefined && last !== undefined ? [{ run, first, last }] : []
+  })
+  for (let i = placed.length - 1; i >= 0; i -= 1) {
+    const { run, first, last } = placed[i]!
+    if (first <= at && at <= last) return labelFor(run)
   }
-  return undefined
+  const end = placeAt(view, lastId)
+  if (end === undefined) return undefined
+  const inside = [...(open && from !== undefined ? [{ run: open, first: from }] : []), ...placed].filter(({ first }) => first > at && first <= end)
+  const nearest = inside.reduce<(typeof inside)[number] | undefined>((best, next) => (best === undefined || next.first < best.first ? next : best), undefined)
+  return nearest === undefined ? undefined : labelFor(nearest.run)
 }
 
 const FOLDS = { plugin: 'to-human', key: 'folds' } as const
 const OPEN = { plugin: 'to-human', key: 'fold' } as const
 const OPEN_LAST = { plugin: 'to-human', key: 'foldLast' } as const
 
-/** What a session reads once: the summaries' model, whether it is one nobody reads the report of here, and the files' folder. */
-type Settings = { model: string; isQuiet: boolean; dir?: string }
+/**
+ * What a session reads once: the summaries' model, whether summaries are
+ * asked for in it at all (`isQuiet` where not), whether a client reads its
+ * summaries (it advertises `MAWS_READS_FOLDS_FROM` or more), and the files'
+ * folder.
+ */
+type Settings = { model: string; isQuiet: boolean; isClientRead: boolean; dir?: string }
+
+/** The value of `TO_HUMAN_FOLD_SUMMARIES` that turns the asking off: exactly this, anything else leaving summaries on. */
+export const SUMMARIES_OFF = 'off'
+
+/**
+ * The MAWS contract version from which MAWS reads a session's summaries: at 8
+ * it draws its own view and puts on its fold lines what the session's file
+ * holds, from 9 it reads this view's drawing (`MAWS_DRAWS_FROM`). A headless
+ * session that advertises it asks for summaries as a terminal does.
+ */
+export const MAWS_READS_FOLDS_FROM = 8
+
+/** Whether a client reads this session's summaries, by `MAWS_NATIVE_TO_HUMAN`: a number of `MAWS_READS_FOLDS_FROM` or more. */
+const isFoldsReader = (value: string | undefined) => value !== undefined && value !== '' && Number(value) >= MAWS_READS_FOLDS_FROM
 
 /** What one registration of the tracker keeps between its hooks. */
 type Following = {
@@ -555,16 +615,23 @@ type Following = {
   file: Promise<string | undefined>
   /** The writes of the session's file, one after another. */
   fileWrites: Promise<void>
+  /** Names this registration's temporary for the file, apart from another process's on the same session. */
+  token: string
 }
 
 /**
  * Whether a run due its summary is asked for: a to-human reader (a mark the
  * view drew, or one the tracker followed, so the message that closes a
- * session's first run counts for that run though it has not drawn yet), at
- * this terminal, not MAWS's or a sminos internal fork's.
+ * session's first run counts for that run though it has not drawn yet) who
+ * reads the summaries, at this terminal or through a client that advertises
+ * 8 or more; not under a MAWS below 8 (or a value that is no number), in a
+ * sminos internal fork, or with summaries off (`isQuiet`).
  */
 const isAsking = (following: Following) =>
-  (following.isOn() || following.hasKeptMark) && following.isInteractive && following.settings !== undefined && !following.settings.isQuiet
+  (following.isOn() || following.hasKeptMark) &&
+  following.settings !== undefined &&
+  (following.isInteractive || following.settings.isClientRead) &&
+  !following.settings.isQuiet
 
 /** A kept response that is a mark, as the view reads a drawn one: a message-tool call, or text with a marked span. */
 const isMark = (row: KeptRow) =>
@@ -579,17 +646,19 @@ const isMark = (row: KeptRow) =>
 function readSettings($: EngineInterface, following: Following): Promise<Settings | undefined> {
   following.reading ??= (async () => {
     try {
-      const [model, maws, internal, configured, home] = await Promise.all([
+      const [model, maws, internal, summaries, configured, home] = await Promise.all([
         $.env.get('TO_HUMAN_FOLD_MODEL'),
         $.env.get('MAWS_NATIVE_TO_HUMAN'),
         $.env.get('SMNS_INTERNAL'),
+        $.env.get('TO_HUMAN_FOLD_SUMMARIES'),
         $.env.get('CLAUDE_CONFIG_DIR'),
         $.env.get('HOME'),
       ])
       const config = configured || (home ? `${home}/.claude` : undefined)
       following.settings = {
         model: model || 'haiku',
-        isQuiet: (maws !== undefined && maws !== '') || internal !== undefined,
+        isQuiet: (isMawsDrawing(maws) && !isFoldsReader(maws)) || internal !== undefined || summaries === SUMMARIES_OFF,
+        isClientRead: isFoldsReader(maws),
         ...(config !== undefined && { dir: `${config}/to-human/folds` }),
       }
       return following.settings
@@ -626,11 +695,18 @@ async function readStored($: EngineInterface, path: string | undefined): Promise
   }
 }
 
-/** Removes the sessions' files older than 30 days (`$.fs` has no delete). */
+/**
+ * The suffix of a temporary the session's file is written to before it is
+ * moved over the file (`keepFile`): the file's name, a token of this
+ * registration's (two processes on one session write their own), `.tmp`.
+ */
+const TEMPORARY = '.json.*.tmp'
+
+/** Removes the sessions' files older than 30 days, and any temporary a write that died left (`$.fs` has no delete). */
 async function prune($: EngineInterface, dir: string | undefined) {
   if (dir === undefined) return
   try {
-    if (await $.fs.exists(dir)) await $.process.run(['find', dir, '-type', 'f', '-name', '*.json', '-mtime', '+30', '-delete'])
+    if (await $.fs.exists(dir)) await $.process.run(['find', dir, '-type', 'f', '(', '-name', '*.json', '-o', '-name', `*${TEMPORARY}`, ')', '-mtime', '+30', '-delete'])
   } catch (error) {
     $.ui.log(`to-human: the old folds files could not be removed (${String(error)})`, { to: 'debug' })
   }
@@ -657,14 +733,25 @@ function publish($: EngineInterface, following: Following) {
     .catch((error: unknown) => $.ui.log(`to-human: the folds could not be published (${String(error)})`, { to: 'debug' }))
 }
 
-/** Writes the session's file whole, from memory, after any write of it before. */
+/**
+ * Keeps the session's file, after any write of it before, as the contract
+ * says (`StoredFolds`): the file read again and every run of it the tracker
+ * does not hold kept (`merged`), the whole written to a temporary beside it
+ * and moved over it in one step (`$.fs` has no rename), so a reader finds
+ * the file as one write left it, never a part of one.
+ */
 function keepFile($: EngineInterface, following: Following) {
-  const text = `${JSON.stringify(stored(following.tracker))}\n`
+  const own = stored(following.tracker).runs
   const file = following.file
   following.fileWrites = following.fileWrites
     .then(async () => {
       const path = await file
-      if (path !== undefined) await $.fs.write(path, text)
+      if (path === undefined) return
+      const theirs = (await readStored($, path)) ?? []
+      const temporary = `${path}.${following.token}.tmp`
+      await $.fs.write(temporary, `${JSON.stringify({ shape: FOLDS_SHAPE, runs: merged(own, theirs) } satisfies StoredFolds)}\n`)
+      const moved = await $.process.run(['mv', '-f', temporary, path])
+      if (moved.exitCode !== 0) throw new Error(`the move over it failed (${moved.stderr.trim() || `exit ${moved.exitCode}`})`)
     })
     .catch((error: unknown) => $.ui.log(`to-human: the folds could not be kept in the session's file (${String(error)})`, { to: 'debug' }))
 }
@@ -810,6 +897,7 @@ export function registerFolds(on: On, view: View, isOn: () => boolean) {
     isInteractive: false,
     file: Promise.resolve(undefined),
     fileWrites: Promise.resolve(),
+    token: Math.random().toString(36).slice(2, 10) || 'tmp',
   }
 
   // Each load of the module raises this, the first and every reload.

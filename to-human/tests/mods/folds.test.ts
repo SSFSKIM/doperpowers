@@ -2,9 +2,9 @@ import type { EngineInterface, On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
-import type { Folds, OpenFold } from '../../types/to-human'
+import type { Folds, OpenFold, StoredFolds } from '../../types/to-human'
 import type { Ask, KeptRow, Step } from '../../hooks/mods/folds'
-import { LABEL_SYSTEM, follow, labelOf, lineOf, newTracker, published, registerFolds, stepsOf, summaryOf, takeUp } from '../../hooks/mods/folds'
+import { LABEL_SYSTEM, follow, labelOf, lineOf, newTracker, published, registerFolds, stepsOf, stored as storedOf, storedRuns, summaryOf, takeUp } from '../../hooks/mods/folds'
 import { FINAL_ANSWER, MESSAGE_TOOL } from '../../hooks/mods/message'
 import { newView, placeAll } from '../../hooks/mods/to-human'
 
@@ -368,6 +368,40 @@ describe('labelOf: the run a row stands in, by place', () => {
   })
 })
 
+describe("labelOf: a line's row takes the run that begins inside its stretch", () => {
+  // t1 opens a stretch with a thought the tracker never follows: p0 | t1 toolu_2 toolu_3 | m4 | t5 | m6 | toolu_7 (open)
+  const view = newView(() => true)
+  ;['p0', 't1', 'toolu_2', 'toolu_3', 'm4', 't5', 'm6', 'toolu_7'].forEach((id, i) => view.place.set(id, i))
+  const folds: Folds = { shape: 1, runs: [{ first: 'toolu_2', last: 'toolu_2', summary: 'Read the config' }, { first: 'toolu_3', last: 'toolu_3', summary: 'Reloaded it' }] }
+  const open: OpenFold = { first: 'toolu_7', line: 'Run the tests', isLive: true }
+
+  test('a row before its run\'s first tracked row reads the run that begins nearest within its stretch', () => {
+    expect(labelOf(folds, open, view, 't1', 'toolu_3')).toBe('Read the config')
+  })
+
+  test('a run that begins past the stretch\'s last row is not its', () => {
+    expect(labelOf(folds, open, view, 't1', 't1')).toBeUndefined()
+    expect(labelOf(folds, null, view, 't5', 't5')).toBeUndefined()
+  })
+
+  test('the open run counts where it begins inside the stretch', () => {
+    view.place.set('t6b', 6.5)
+    expect(labelOf(folds, open, view, 't6b', 'toolu_7')).toBe('Run the tests')
+  })
+
+  test('a closed run with a bound unplaced is no candidate, and a stretch\'s last row with no place takes none', () => {
+    expect(labelOf({ shape: 1, runs: [{ first: 'toolu_2', last: 'gone', summary: 'x' }] }, null, view, 't1', 'toolu_3')).toBeUndefined()
+    expect(labelOf(folds, null, view, 't1', 'unplaced')).toBeUndefined()
+  })
+
+  test('an ask anchored at a row takes its place from the row: it reads the run it stands in, or begins', () => {
+    const across: Folds = { shape: 1, runs: [{ first: 'toolu_2', last: 'toolu_3', summary: 'Read and reloaded the config' }] }
+    expect(labelOf(across, open, view, 'toolu_2~n1', 'toolu_3')).toBe('Read and reloaded the config')
+    expect(labelOf(folds, open, view, 'p0~n1', 'toolu_3')).toBe('Read the config')
+    expect(labelOf(folds, open, view, 'unplaced~n1', 'toolu_3')).toBeUndefined()
+  })
+})
+
 /** A model call the hand-made engine holds until the test answers it. */
 type Held = { request: Record<string, unknown>; answer: (reply: unknown) => void; fail: (error: Error) => void }
 const answered = (text: string) => ({ isAnswered: true, text, usage: { input_tokens: 1, output_tokens: 1 } })
@@ -384,14 +418,20 @@ type HookOptions = {
   holdFile?: boolean
   isOn?: () => boolean
   sessionId?: string
+  /** Each move of a file (`mv -f`) waits until the test lets it land (`landMoves`). */
+  holdMove?: boolean
+  failMove?: boolean
 }
 
 /** The tracker's hooks over a hand-made engine whose `$.state` is a map, as the host keeps it across a reload. */
 function trackerHooks(kept = new Map<string, unknown>(), options: HookOptions = {}) {
-  const { failWrites = false, writes = [], env = { HOME: '/home/u' }, files = new Map<string, string>(), failFile = false, holdFile = false, isOn = () => true, sessionId = 's1' } = options
+  const { failWrites = false, writes = [], env = { HOME: '/home/u' }, files = new Map<string, string>(), failFile = false, holdFile = false, isOn = () => true, sessionId = 's1', holdMove = false, failMove = false } = options
   const landing: (() => void)[] = []
   /** Lets every held write of a file land. */
   const landWrites = () => landing.splice(0).forEach((land) => land())
+  const moving: (() => void)[] = []
+  /** Lets every held move of a file land. */
+  const landMoves = () => moving.splice(0).forEach((land) => land())
   type Hook = (engine: EngineInterface, e: Record<string, unknown>, next: (e: unknown) => Promise<unknown>) => Promise<unknown>
   const hooks: { event: string; handler: Hook }[] = []
   const on = ((event: string, ...rest: unknown[]) => hooks.push({ event, handler: rest[rest.length - 1] as Hook })) as unknown as On
@@ -428,6 +468,16 @@ function trackerHooks(kept = new Map<string, unknown>(), options: HookOptions = 
     process: {
       run: async (argv: readonly string[]) => {
         runs.push(argv)
+        // A move as mv makes one in one directory: the name takes the other file's text in one step.
+        if (argv[0] === 'mv') {
+          if (failMove) return { exitCode: 1, stdout: '', stderr: 'mv: refused' }
+          if (holdMove) await new Promise<void>((land) => moving.push(land))
+          const [from, to] = [argv[2]!, argv[3]!]
+          const text = files.get(from)
+          if (text === undefined) return { exitCode: 1, stdout: '', stderr: `mv: ${from}: No such file` }
+          files.set(to, text)
+          files.delete(from)
+        }
         return { exitCode: 0, stdout: '', stderr: '' }
       },
     },
@@ -448,7 +498,7 @@ function trackerHooks(kept = new Map<string, unknown>(), options: HookOptions = 
     hook('turn.complete')(engine, { turnId: 't1', answer: '', durationMs: 1, isAborted: false, reason: 'answer', ...(agentId !== undefined && { agentId }) }, async () => ({ text: '' }))
   /** Lets the chained writes land. */
   const settle = () => Promise.resolve().then(() => undefined)
-  return { kept, logs, held, files, runs, append, start, sessionStart, turnEnd, settle, landWrites }
+  return { kept, logs, held, files, runs, append, start, sessionStart, turnEnd, settle, landWrites, landMoves }
 }
 
 const drain = async (settle: () => Promise<void>) => {
@@ -801,7 +851,7 @@ describe('registerFolds: summaries', () => {
     h.held[0]!.answer(answered('Listed the files'))
     await drain(h.settle)
     expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_1', last: 'toolu_1', summary: 'Listed the files' }] })
-    expect(stored(h.files)).toEqual({ shape: 1, runs: [['toolu_1', 'toolu_1', 'Listed the files']] })
+    expect(stored(h.files)).toEqual({ shape: 2, runs: [['toolu_1', 'toolu_1', 'Listed the files']] })
   })
 
   test('TO_HUMAN_FOLD_MODEL names the model, and CLAUDE_CONFIG_DIR the folder of the file', async () => {
@@ -814,7 +864,7 @@ describe('registerFolds: summaries', () => {
     expect(h.held[0]!.request.model).toBe('claude-nope-0')
     h.held[0]!.answer(answered('Listed the files'))
     await drain(h.settle)
-    expect(stored(h.files, '/cfg/to-human/folds/s1.json')).toEqual({ shape: 1, runs: [['toolu_1', 'toolu_1', 'Listed the files']] })
+    expect(stored(h.files, '/cfg/to-human/folds/s1.json')).toEqual({ shape: 2, runs: [['toolu_1', 'toolu_1', 'Listed the files']] })
   })
 
   test("two runs' replies settling in the reverse order leave both summaries in $.state and in the session's file", async () => {
@@ -836,7 +886,7 @@ describe('registerFolds: summaries', () => {
       shape: 1,
       runs: [{ first: 'toolu_1', last: 'toolu_1', summary: 'Listed the files' }, { first: 'toolu_3', last: 'toolu_3', summary: 'Ran the tests: 12 pass' }],
     })
-    expect(stored(h.files)).toEqual({ shape: 1, runs: [['toolu_1', 'toolu_1', 'Listed the files'], ['toolu_3', 'toolu_3', 'Ran the tests: 12 pass']] })
+    expect(stored(h.files)).toEqual({ shape: 2, runs: [['toolu_1', 'toolu_1', 'Listed the files'], ['toolu_3', 'toolu_3', 'Ran the tests: 12 pass']] })
   })
 
   test("a turn's end summarizes the open run, which the file keeps with the last row its summary covered; a late reply for an earlier generation changes nothing", async () => {
@@ -849,7 +899,7 @@ describe('registerFolds: summaries', () => {
     h.held[0]!.answer(answered('Listed the files'))
     await drain(h.settle)
     expect(h.kept.get('fold')).toEqual({ first: 'toolu_1', summary: 'Listed the files' })
-    expect(stored(h.files)).toEqual({ shape: 1, runs: [['toolu_1', 'toolu_1', 'Listed the files']] })
+    expect(stored(h.files)).toEqual({ shape: 2, runs: [['toolu_1', 'toolu_1', 'Listed the files']] })
 
     // The session works on: live again, the summary kept under the new call's line.
     await h.append(bash('a2', 'toolu_2', 'Run the tests'))
@@ -860,7 +910,7 @@ describe('registerFolds: summaries', () => {
     h.held[1]!.answer(answered('Ran the tests'))
     await drain(h.settle)
     expect(h.kept.get('fold')).toEqual({ first: 'toolu_1', line: 'Lint it', summary: 'Listed the files', isLive: true })
-    expect(stored(h.files)).toEqual({ shape: 1, runs: [['toolu_1', 'toolu_1', 'Listed the files']] })
+    expect(stored(h.files)).toEqual({ shape: 2, runs: [['toolu_1', 'toolu_1', 'Listed the files']] })
 
     // The close asks for the whole run.
     await h.append(result('u2', 'toolu_2'))
@@ -872,7 +922,7 @@ describe('registerFolds: summaries', () => {
     h.held[2]!.answer(answered('Listed the files, ran the tests and linted'))
     await drain(h.settle)
     expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_1', last: 'toolu_3', summary: 'Listed the files, ran the tests and linted' }] })
-    expect(stored(h.files)).toEqual({ shape: 1, runs: [['toolu_1', 'toolu_3', 'Listed the files, ran the tests and linted']] })
+    expect(stored(h.files)).toEqual({ shape: 2, runs: [['toolu_1', 'toolu_3', 'Listed the files, ran the tests and linted']] })
   })
 
   test("the file bounds the open run by the last row its summary covered, not the rows that joined after", async () => {
@@ -892,7 +942,7 @@ describe('registerFolds: summaries', () => {
     await h.append(bash('a5', 'toolu_5', 'Lint it'))
     h.held[0]!.answer(answered('Listed the files'))
     await drain(h.settle)
-    expect(stored(h.files)).toEqual({ shape: 1, runs: [['toolu_1', 'toolu_1', 'Listed the files'], ['toolu_3', 'a4', 'Ran the tests']] })
+    expect(stored(h.files)).toEqual({ shape: 2, runs: [['toolu_1', 'toolu_1', 'Listed the files'], ['toolu_3', 'a4', 'Ran the tests']] })
   })
 
   test("a result kept after the open run's turn-end summary makes it live again, and the next turn's end asks with it", async () => {
@@ -978,7 +1028,7 @@ describe('registerFolds: summaries', () => {
       else h.held[1]!.answer(outcome)
       await drain(h.settle)
       expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_1', last: 'toolu_2', summary: 'Listed the files' }] })
-      expect(stored(h.files)).toEqual({ shape: 1, runs: [['toolu_1', 'toolu_1', 'Listed the files']] })
+      expect(stored(h.files)).toEqual({ shape: 2, runs: [['toolu_1', 'toolu_1', 'Listed the files']] })
       expect(h.logs.some((line) => line.startsWith("to-human: a fold's summary"))).toBe(true)
     })
   }
@@ -986,7 +1036,7 @@ describe('registerFolds: summaries', () => {
   const gates: [string, HookOptions, boolean?][] = [
     ['before a mark', { isOn: () => false }],
     ['when not interactive', {}, false],
-    ['under MAWS', { env: { HOME: '/home/u', MAWS_NATIVE_TO_HUMAN: '8' } }],
+    ['under a MAWS below 8', { env: { HOME: '/home/u', MAWS_NATIVE_TO_HUMAN: '7' } }],
     ['under SMNS_INTERNAL', { env: { HOME: '/home/u', SMNS_INTERNAL: '1' } }],
   ]
   for (const [name, options, isInteractive = true] of gates) {
@@ -1032,6 +1082,86 @@ describe('registerFolds: summaries', () => {
     await h.turnEnd()
     await drain(h.settle)
     expect(h.held).toEqual([])
+  })
+
+  // Where a run's summary is asked for: a session someone reads the view or
+  // the folds file of (a terminal, or a client that advertises 8 or more: at 8
+  // it draws its own view from the file, from 9 it reads the view's drawing),
+  // and not where TO_HUMAN_FOLD_SUMMARIES is off or a sminos internal fork runs.
+  const table: [string, boolean, Record<string, string>, boolean][] = [
+    ['interactive, the advertisement unset', true, {}, true],
+    ['interactive, the advertisement empty', true, { MAWS_NATIVE_TO_HUMAN: '' }, true],
+    ['interactive, at 9', true, { MAWS_NATIVE_TO_HUMAN: '9' }, true],
+    ['headless, at 9', false, { MAWS_NATIVE_TO_HUMAN: '9' }, true],
+    ['headless, at 10', false, { MAWS_NATIVE_TO_HUMAN: '10' }, true],
+    ['interactive, at 8', true, { MAWS_NATIVE_TO_HUMAN: '8' }, true],
+    ['headless, at 8', false, { MAWS_NATIVE_TO_HUMAN: '8' }, true],
+    ['headless, at 7', false, { MAWS_NATIVE_TO_HUMAN: '7' }, false],
+    ['interactive, at 7', true, { MAWS_NATIVE_TO_HUMAN: '7' }, false],
+    ['interactive, at 1', true, { MAWS_NATIVE_TO_HUMAN: '1' }, false],
+    ['headless, at no number', false, { MAWS_NATIVE_TO_HUMAN: 'native' }, false],
+    ['interactive, at no number', true, { MAWS_NATIVE_TO_HUMAN: 'native' }, false],
+    ['headless, the advertisement unset', false, {}, false],
+    ['headless, the advertisement empty', false, { MAWS_NATIVE_TO_HUMAN: '' }, false],
+    ['interactive, summaries off', true, { TO_HUMAN_FOLD_SUMMARIES: 'off' }, false],
+    ...(['8', '9'] as const).flatMap((at): [string, boolean, Record<string, string>, boolean][] => [
+      [`headless at ${at}, summaries off`, false, { MAWS_NATIVE_TO_HUMAN: at, TO_HUMAN_FOLD_SUMMARIES: 'off' }, false],
+      [`headless at ${at}, in a sminos internal fork`, false, { MAWS_NATIVE_TO_HUMAN: at, SMNS_INTERNAL: '1' }, false],
+    ]),
+    ...(['OFF', '0', '', 'no'] as const).flatMap((value): [string, boolean, Record<string, string>, boolean][] => [
+      [`interactive, summaries "${value}" (not off)`, true, { TO_HUMAN_FOLD_SUMMARIES: value }, true],
+      [`headless at 8, summaries "${value}" (not off)`, false, { MAWS_NATIVE_TO_HUMAN: '8', TO_HUMAN_FOLD_SUMMARIES: value }, true],
+      [`headless at 9, summaries "${value}" (not off)`, false, { MAWS_NATIVE_TO_HUMAN: '9', TO_HUMAN_FOLD_SUMMARIES: value }, true],
+    ]),
+  ]
+  for (const [name, isInteractive, env, asks] of table) {
+    test(`${name}: a due run's summary is ${asks ? '' : 'not '}asked for`, async () => {
+      const h = trackerHooks(new Map(), { env: { HOME: '/home/u', ...env } })
+      await h.start(isInteractive)
+      await h.append(sent('a0', 'toolu_m0'))
+      await h.append(bash('a1', 'toolu_1', 'List the files'))
+      await h.append(result('u1', 'toolu_1'))
+      await h.append(sent('a2', 'toolu_m2'))
+      await drain(h.settle)
+      expect(h.held).toHaveLength(asks ? 1 : 0)
+      // Asked, the run stays live on its last call's line until the reply; not asked, it settles at once.
+      const run = asks ? { first: 'toolu_1', last: 'toolu_1', line: 'List the files', isLive: true } : { first: 'toolu_1', last: 'toolu_1' }
+      expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [run] })
+    })
+  }
+
+  test("headless at 8, where MAWS draws its own view and reads the file, the calls are a terminal's, and the summaries reach the file at shape 2", async () => {
+    // At 8 the view steps aside on MAWS's surface and never draws a mark: the tracker counts the marks it keeps.
+    const session = async (isInteractive: boolean, env: Record<string, string>) => {
+      const h = trackerHooks(new Map(), { isOn: () => false, env: { HOME: '/home/u', ...env } })
+      await h.start(isInteractive)
+      await h.append(sent('a0', 'toolu_m0'))
+      await h.append(bash('a1', 'toolu_1', 'List the files'))
+      await h.append(result('u1', 'toolu_1'))
+      await h.append(sent('a2', 'toolu_m2'))
+      await h.append(bash('a3', 'toolu_3', 'Run the tests'))
+      await h.append(result('u3', 'toolu_3'))
+      await h.append(sent('a4', 'toolu_m4'))
+      await h.turnEnd()
+      await drain(h.settle)
+      return h
+    }
+    const terminal = await session(true, {})
+    const maws = await session(false, { MAWS_NATIVE_TO_HUMAN: '8' })
+    expect(maws.held.map((ask) => ask.request)).toEqual(terminal.held.map((ask) => ask.request))
+    expect(maws.held).toHaveLength(2)
+    maws.held[0]!.answer(answered('Listed the files'))
+    maws.held[1]!.answer(answered('Ran the tests'))
+    await drain(maws.settle)
+    expect(stored(maws.files)).toEqual({ shape: 2, runs: [['toolu_1', 'toolu_1', 'Listed the files'], ['toolu_3', 'toolu_3', 'Ran the tests']] })
+  })
+
+  test('summaries off stops the asking and nothing else: a stored summary is still read', async () => {
+    const files = new Map([[FILE, JSON.stringify({ shape: 1, runs: [['toolu_9', 'a9', 'From the file']] })]])
+    const h = trackerHooks(new Map(), { files, env: { HOME: '/home/u', TO_HUMAN_FOLD_SUMMARIES: 'off' } })
+    await h.start()
+    await drain(h.settle)
+    expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [{ first: 'toolu_9', last: 'a9', summary: 'From the file' }] })
   })
 
   test('MAWS_NATIVE_TO_HUMAN set empty is no MAWS', async () => {
@@ -1082,6 +1212,107 @@ describe("registerFolds: the session's file", () => {
   const FOLDS_DIR = '/home/u/.claude/to-human/folds'
   const file = (...runs: [string, string, string][]) => JSON.stringify({ shape: 1, runs })
 
+  const file2 = (...runs: [string, string, string][]) => JSON.stringify({ shape: 2, runs })
+
+  test('the file is replaced in one step: a temporary beside it, then one mv over it, and a reader between the two reads the earlier file whole', async () => {
+    const files = new Map([[FILE, file2(['toolu_0', 'a0x', 'Earlier work'])]])
+    const h = trackerHooks(new Map(), { files, holdMove: true })
+    await h.start()
+    await h.append(sent('a0', 'toolu_m0'))
+    await h.append(bash('a1', 'toolu_1', 'List the files'))
+    await h.append(result('u1', 'toolu_1'))
+    await h.append(sent('a2', 'toolu_m'))
+    await drain(h.settle)
+    h.held[0]!.answer(answered('Listed the files'))
+    await drain(h.settle)
+    // The temporary is written; the file is the earlier one, whole, until the move.
+    const temporaries = [...files.keys()].filter((path) => path !== FILE)
+    expect(temporaries).toHaveLength(1)
+    expect(temporaries[0]!.startsWith(`${FILE}.`) && temporaries[0]!.endsWith('.tmp')).toBe(true)
+    expect(files.get(FILE)).toBe(file2(['toolu_0', 'a0x', 'Earlier work']))
+    expect(h.runs.at(-1)).toEqual(['mv', '-f', temporaries[0], FILE])
+    h.landMoves()
+    await drain(h.settle)
+    expect([...files.keys()]).toEqual([FILE])
+    expect(stored(files)).toEqual({ shape: 2, runs: [['toolu_0', 'a0x', 'Earlier work'], ['toolu_1', 'toolu_1', 'Listed the files']] })
+  })
+
+  test('a move that fails is logged, and leaves the file as it was', async () => {
+    const files = new Map([[FILE, file2(['toolu_0', 'a0x', 'Earlier work'])]])
+    const h = trackerHooks(new Map(), { files, failMove: true })
+    await asking(h)
+    await h.append(bash('a1', 'toolu_1', 'List the files'))
+    await h.append(result('u1', 'toolu_1'))
+    await h.append(sent('a2', 'toolu_m'))
+    await drain(h.settle)
+    h.held[0]!.answer(answered('Listed the files'))
+    await drain(h.settle)
+    expect(files.get(FILE)).toBe(file2(['toolu_0', 'a0x', 'Earlier work']))
+    expect(h.logs.some((line) => line.startsWith('to-human: the folds could not be kept'))).toBe(true)
+  })
+
+  for (const order of ['first, then second', 'second, then first'] as const) {
+    test(`two trackers on one session's file, writing ${order}, keep each other's runs; on a run both hold the last writer's wins`, async () => {
+      const files = new Map<string, string>()
+      const [first, second] = [trackerHooks(new Map(), { files }), trackerHooks(new Map(), { files })]
+      for (const h of [first, second]) {
+        await asking(h)
+        // A run both follow: the same rows, each process its own summary of it.
+        await h.append(bash('a1', 'toolu_s', 'Build it'))
+        await h.append(result('u1', 'toolu_s'))
+        await h.append(sent('a2', 'toolu_m2'))
+      }
+      // Then each a run of its own.
+      for (const [h, id] of [[first, 'toolu_x'], [second, 'toolu_y']] as const) {
+        await h.append(bash(`a_${id}`, id, 'Test it'))
+        await h.append(result(`u_${id}`, id))
+        await h.append(sent(`m_${id}`, `${id}_m`))
+      }
+      await drain(first.settle)
+      const writers = order === 'first, then second' ? [first, second] : [second, first]
+      for (const h of writers) {
+        const name = h === first ? 'first' : 'second'
+        h.held[0]!.answer(answered(`Built it (${name})`))
+        h.held[1]!.answer(answered(`Tested it (${name})`))
+        await drain(h.settle)
+      }
+      const last = order === 'first, then second' ? 'second' : 'first'
+      const runs: [string, string, string][] = stored(files).runs
+      expect(stored(files).shape).toBe(2)
+      expect(runs).toContainEqual(['toolu_s', 'toolu_s', `Built it (${last})`])
+      expect(runs).toContainEqual(['toolu_x', 'toolu_x', 'Tested it (first)'])
+      expect(runs).toContainEqual(['toolu_y', 'toolu_y', 'Tested it (second)'])
+      expect(runs).toHaveLength(3)
+      // The foreign run stands where the file had it, before the writer's own new one.
+      expect(runs[0]![0]).toBe('toolu_s')
+    })
+  }
+
+  test("a shape 1 file is taken up, and written back as shape 2 at the next summary", async () => {
+    const files = new Map([[FILE, file(['toolu_1', 'a2', 'Listed the files'])]])
+    const h = trackerHooks(new Map(), { files })
+    await asking(h)
+    await h.append(bash('a5', 'toolu_5', 'Lint it'))
+    await h.append(result('u5', 'toolu_5'))
+    await h.append(sent('a6', 'toolu_m6'))
+    await drain(h.settle)
+    h.held[0]!.answer(answered('Linted'))
+    await drain(h.settle)
+    expect(stored(files)).toEqual({ shape: 2, runs: [['toolu_1', 'a2', 'Listed the files'], ['toolu_5', 'toolu_5', 'Linted']] })
+  })
+
+  test("stored()'s output is the declared StoredFolds, and reads back as the runs it holds", () => {
+    const tracker = newTracker()
+    follow(tracker, stepsOf(bash('a1', 'toolu_1', 'List the files'), tracker.spawns))
+    follow(tracker, stepsOf(result('u1', 'toolu_1'), tracker.spawns))
+    follow(tracker, stepsOf(sent('a2', 'toolu_m'), tracker.spawns))
+    tracker.closed[0]!.summary = 'Listed the files'
+    const kept: StoredFolds = storedOf(tracker)
+    expect(kept).toEqual({ shape: 2, runs: [['toolu_1', 'toolu_1', 'Listed the files']] })
+    expect(storedRuns(JSON.stringify(kept))).toEqual([{ first: 'toolu_1', last: 'toolu_1', summary: 'Listed the files' }])
+    expect(storedRuns(JSON.stringify({ shape: 1, runs: kept.runs }))).toEqual([{ first: 'toolu_1', last: 'toolu_1', summary: 'Listed the files' }])
+  })
+
   test('a new process publishes its session\'s file as closed runs, and removes files older than 30 days', async () => {
     const files = new Map([[FILE, file(['toolu_1', 'a2', 'Listed the files'], ['toolu_3', 'toolu_4', 'Ran the tests'])]])
     const h = trackerHooks(new Map(), { files })
@@ -1091,7 +1322,8 @@ describe("registerFolds: the session's file", () => {
       shape: 1,
       runs: [{ first: 'toolu_1', last: 'a2', summary: 'Listed the files' }, { first: 'toolu_3', last: 'toolu_4', summary: 'Ran the tests' }],
     })
-    expect(h.runs).toEqual([['find', FOLDS_DIR, '-type', 'f', '-name', '*.json', '-mtime', '+30', '-delete']])
+    // A temporary a write that died left behind goes with the rest.
+    expect(h.runs).toEqual([['find', FOLDS_DIR, '-type', 'f', '(', '-name', '*.json', '-o', '-name', '*.json.*.tmp', ')', '-mtime', '+30', '-delete']])
     // Rows after it start a run of their own, which the next write keeps beside them.
     await h.append(bash('a5', 'toolu_5', 'Lint it'))
     await h.append(result('u5', 'toolu_5'))
@@ -1099,7 +1331,7 @@ describe("registerFolds: the session's file", () => {
     await drain(h.settle)
     h.held[0]!.answer(answered('Linted'))
     await drain(h.settle)
-    expect(stored(files)).toEqual({ shape: 1, runs: [['toolu_1', 'a2', 'Listed the files'], ['toolu_3', 'toolu_4', 'Ran the tests'], ['toolu_5', 'toolu_5', 'Linted']] })
+    expect(stored(files)).toEqual({ shape: 2, runs: [['toolu_1', 'a2', 'Listed the files'], ['toolu_3', 'toolu_4', 'Ran the tests'], ['toolu_5', 'toolu_5', 'Linted']] })
   })
 
   test("a switch away and back to a session whose summary is still being written reads its file once the write has landed", async () => {
@@ -1141,7 +1373,7 @@ describe("registerFolds: the session's file", () => {
   })
 
   test('a file of another shape, or none, publishes no runs', async () => {
-    for (const files of [new Map([[FILE, '{"shape":2}']]), new Map([[FILE, 'not json']]), new Map<string, string>()]) {
+    for (const files of [new Map([[FILE, '{"shape":2}']]), new Map([[FILE, '{"shape":3,"runs":[["a","b","c"]]}']]), new Map([[FILE, 'not json']]), new Map<string, string>()]) {
       const h = trackerHooks(new Map(), { files })
       await h.start()
       await drain(h.settle)
@@ -1180,7 +1412,7 @@ describe("registerFolds: the session's file", () => {
       await drain(h.settle)
       h.held.at(-1)!.answer(answered('Linted'))
       await drain(h.settle)
-      expect(stored(files, `${FOLDS_DIR}/s2.json`)).toEqual({ shape: 1, runs: [['toolu_7', 'a8', 'Resumed work'], ['toolu_9', 'toolu_9', 'Linted']] })
+      expect(stored(files, `${FOLDS_DIR}/s2.json`)).toEqual({ shape: 2, runs: [['toolu_7', 'a8', 'Resumed work'], ['toolu_9', 'toolu_9', 'Linted']] })
       expect(files.has(FILE)).toBe(false)
     })
   }
@@ -1362,6 +1594,24 @@ describe("the fold's button and its summary", () => {
     expect(asks).toHaveLength(1)
   })
 
+  test("a thought's fold drawn before its run's rows reads the run's summary once they draw", async ($, on) => {
+    await interactive($, on, () => answered('Listed the files'))
+    await keep($, sent('a0', 'toolu_m0'), result('u0', 'toolu_m0', MESSAGE_TOOL, 'sent'))
+    await sentRow($, 'toolu_m0')
+    // A response that thinks, then calls: the tracker follows the call, not the thought.
+    await keep($, response('a1', { type: 'thinking', thinking: 'Which files?' }, use('toolu_1', 'Bash', { command: 'ls', description: 'List the files' })), result('u1', 'toolu_1'))
+    await keep($, sent('a2', 'toolu_m'), result('u2', 'toolu_m', MESSAGE_TOOL, 'sent'))
+    await sentRow($, 'toolu_m')
+    const thought = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'a1', props: { text: 'Which files?', isFirstOfReply: true, isSummary: true } } as never)
+    await until(async () => (await button(thought)) !== undefined)
+    // Alone, the stretch ends at the thought: no run begins inside it yet.
+    expect(await button(thought)).toBe('› working record')
+    // The call's row draws: the stretch now holds the run, and the thought's fold reads its summary unasked.
+    await bashRow($, 'toolu_1', 'List the files')
+    await until(async () => (await button(thought)) === '› Listed the files')
+    expect(await button(thought)).toBe('› Listed the files')
+  })
+
   test("a turn that ends without a message leaves a fold that reads its summary (acceptance 3)", async ($, on) => {
     await interactive($, on, () => answered('Listed the files'))
     await keep($, sent('a0', 'toolu_m0'), result('u0', 'toolu_m0', MESSAGE_TOOL, 'sent'))
@@ -1405,5 +1655,219 @@ describe("the fold's button and its summary", () => {
     expect(await button(first)).toBe('› Waited for the build and read its output')
     expect(await button(second)).toBeUndefined()
     expect(asks).toHaveLength(1)
+  })
+})
+
+// A client asks a lone call as `ToolUse` under the call's id and, from the
+// run's second call on, the run as `ToolGroup` (`group:<first call>`), no
+// longer mounting the lone row; the terminal draws a group from its first
+// call, a group of one, under a new request id as it forms.
+describe('a call that joins a group', () => {
+  type Ask = { surface: 'desktop' | 'terminal'; env: Record<string, string>; isInteractive: boolean }
+  const session = async ($: Engine, on: On, { surface, env, isInteractive }: Ask) => {
+    mock.env(on, env)
+    mock.store(on)
+    engineDrawing(on)
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    on('turn.complete', () => ({ text: '' }))
+    on('session.id', () => ({ value: 's1' }))
+    on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    const asks: unknown[] = []
+    on('model.complete', (_, e) => (asks.push(e), { value: answered('Took the three steps') as never }))
+    await $.session.start({ cwd: '/w', surface, isInteractive })
+    await keep($, sent('a0', 'toolu_m0'), result('u0', 'toolu_m0', MESSAGE_TOOL, 'sent'))
+    await $.ui.mount({
+      plugin: PLUGIN, surface, component: 'ToolUse', requestId: 'toolu_m0',
+      props: { tool_use_id: 'toolu_m0', tool: MESSAGE_TOOL, input: { text: 'Update.' }, isRunning: false, isErrored: false, isInterrupted: false, output: 'sent' },
+    } as never)
+    return asks
+  }
+  const lone = ($: Engine, surface: Ask['surface'], id: string, description: string) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface, component: 'ToolUse', requestId: id,
+      props: { tool_use_id: id, tool: 'Bash', input: { command: 'true', description }, isRunning: true, isErrored: false, isInterrupted: false },
+    } as never)
+  const groupProps = (ids: string[]) => ({ calls: ids.map((id) => ({ tool_use_id: id, tool: 'Bash', input: { command: 'true' } })), isExpanded: false, isActive: true, isCallsOnly: true })
+  const group = ($: Engine, surface: Ask['surface'], requestId: string, ids: string[]) =>
+    $.ui.mount({ plugin: PLUGIN, surface, component: 'ToolGroup', requestId, props: groupProps(ids) } as never)
+  const until = async (isDone: () => Promise<boolean>) => {
+    for (let i = 0; i < 200 && !(await isDone()); i++) await Promise.resolve()
+  }
+  /** A session opened again: a new module whose only knowledge of the turns before is the transcript it searches, which lists `ids`. */
+  const reopened = async ($: Engine, on: On, { surface, env, isInteractive }: Ask, ids: string[]) => {
+    mock.env(on, env)
+    mock.store(on)
+    engineDrawing(on)
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    on('session.id', () => ({ value: 's1' }))
+    on('session.messages', () => ({ value: [{ role: 'assistant', text: '<message>Update.</message>', toolUses: [] }] }))
+    on('model.complete', () => ({ value: answered('Took the three steps') as never }))
+    const list = ids.map((id) => (id.startsWith('toolu_') ? `"type":"tool_use","id":"${id}"` : `"uuid":"${id}"`)).join('\n')
+    on('process.run', async (_, e) => {
+      const script = e.argv[2] ?? ''
+      const answer = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+      if (script.startsWith('mktemp')) return answer('/tmp/to-human-places.test\n')
+      if (script.startsWith('tail -c')) return answer(list.slice(Number(e.argv[5]) - 1))
+      return answer('')
+    })
+    on('classic.SessionStart', () => ({}))
+    await $.session.start({ cwd: '/w', surface, isInteractive })
+    await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl', session_id: 's1' } as never)
+    await $.ui.mount({
+      plugin: PLUGIN, surface, component: 'ToolUse', requestId: 'toolu_m0',
+      props: { tool_use_id: 'toolu_m0', tool: MESSAGE_TOOL, input: { text: 'Update.' }, isRunning: false, isErrored: false, isInterrupted: false, output: 'sent' },
+    } as never)
+  }
+  const ended = ($: Engine) => $.turn.complete({ turnId: 't1', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+  const closing = async ($: Engine, surface: Ask['surface']) => {
+    await keep($, result('u3', 'toolu_3'), sent('a4', 'toolu_m4'), result('u4', 'toolu_m4', MESSAGE_TOOL, 'sent'))
+    await $.ui.mount({
+      plugin: PLUGIN, surface, component: 'ToolUse', requestId: 'toolu_m4',
+      props: { tool_use_id: 'toolu_m4', tool: MESSAGE_TOOL, input: { text: 'Done.' }, isRunning: false, isErrored: false, isInterrupted: false, output: 'sent' },
+    } as never)
+  }
+
+  for (const [name, ask] of [
+    ['at 9', { surface: 'desktop', env: { MAWS_NATIVE_TO_HUMAN: '9' }, isInteractive: false }],
+    ['with no advertisement', { surface: 'desktop', env: {}, isInteractive: true }],
+  ] as const) {
+    test(`${name}, a client's lone call then its group: one instance answers the line at each step, the live call, then the summary`, async ($, on) => {
+      const asks = await session($, on, ask)
+      await keep($, call('a1', 'toolu_1', 'Step one'))
+      const first = await lone($, ask.surface, 'toolu_1', 'Step one')
+      expect(await button(first)).toBe('› Step one')
+
+      // The second call: the client asks the group, the lone row still mounted for a moment.
+      await keep($, result('u1', 'toolu_1'), call('a2', 'toolu_2', 'Step two'))
+      const run = await group($, ask.surface, 'group:toolu_1', ['toolu_1', 'toolu_2'])
+      expect(await button(run)).toBe('› Step two')
+      expect(await button(first)).toBeUndefined()
+      await first.unmount()
+
+      // The third call: the tracker's write reaches the group without its own redraw.
+      await keep($, result('u2', 'toolu_2'), call('a3', 'toolu_3', 'Step three'))
+      expect(await button(run)).toBe('› Step three')
+      await run.redraw(groupProps(['toolu_1', 'toolu_2', 'toolu_3']) as never)
+      expect(await button(run)).toBe('› Step three')
+
+      // The closing message: the summary settles on the group's line.
+      await closing($, ask.surface)
+      await until(async () => (await button(run)) === '› Took the three steps')
+      expect(await button(run)).toBe('› Took the three steps')
+      expect(asks).toHaveLength(1)
+    })
+
+    test(`${name}, a press on the lone call's button carries to the group: its run stays unfolded`, async ($, on) => {
+      await session($, on, ask)
+      await keep($, call('a1', 'toolu_1', 'Step one'))
+      const first = await lone($, ask.surface, 'toolu_1', 'Step one')
+      await first.press({ key: 'to-human-toggle' })
+      await keep($, result('u1', 'toolu_1'), call('a2', 'toolu_2', 'Step two'))
+      const run = await group($, ask.surface, 'group:toolu_1', ['toolu_1', 'toolu_2'])
+      expect(await run.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+      expect(await run.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    })
+
+    // A client asks a call alone in its stretch as a group of one, under
+    // `group:<call>`, from the call's first moment, and asks exactly that
+    // once the turn has ended and in a session opened again: the group's
+    // row is the stretch's record line, and the line opens the stretch.
+    test(`${name}, a client's group of one draws the stretch's line while the turn runs, and still opens it once the turn has ended`, async ($, on) => {
+      await session($, on, ask)
+      await keep($, call('a1', 'toolu_1', 'Step one'))
+      const run = await group($, ask.surface, 'group:toolu_1', ['toolu_1'])
+      expect(await button(run)).toBe('› Step one')
+
+      await keep($, result('u1', 'toolu_1'))
+      await ended($)
+      await run.redraw({ ...groupProps(['toolu_1']), isActive: false } as never)
+      // The turn's end has the run summarized: the line reads the summary (every summary the session's model answers reads so).
+      await until(async () => (await button(run)) === '› Took the three steps')
+      expect(await button(run)).toBe('› Took the three steps')
+
+      // Asked anew under the same id, as a row the client mounts again.
+      await run.unmount()
+      const again = await $.ui.mount({ plugin: PLUGIN, surface: ask.surface, component: 'ToolGroup', requestId: 'group:toolu_1', props: { ...groupProps(['toolu_1']), isActive: false } } as never)
+      expect(await button(again)).toBe('› Took the three steps')
+      await again.press({ key: 'to-human-toggle' })
+      expect(await again.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+      expect(await again.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    })
+
+    test(`${name}, a session opened again with no earlier state: a group of one of an ended turn draws the stretch's line, and it opens`, async ($, on) => {
+      await reopened($, on, ask, ['a0', 'toolu_m0', 'u0', 'a1', 'toolu_1', 'u1'])
+      const run = await $.ui.mount({ plugin: PLUGIN, surface: ask.surface, component: 'ToolGroup', requestId: 'group:toolu_1', props: { ...groupProps(['toolu_1']), isActive: false } } as never)
+      // No run of the tracker's holds the call (it kept no row of this module's): the line reads the default.
+      expect(await button(run)).toBe('› working record')
+      await run.press({ key: 'to-human-toggle' })
+      expect(await run.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+      expect(await run.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    })
+
+    test(`${name}, a second call joins a client's group of one under the same id: the line moves to it, then to the summary`, async ($, on) => {
+      const asks = await session($, on, ask)
+      await keep($, call('a1', 'toolu_1', 'Step one'))
+      const run = await group($, ask.surface, 'group:toolu_1', ['toolu_1'])
+      expect(await button(run)).toBe('› Step one')
+      await keep($, result('u1', 'toolu_1'), call('a2', 'toolu_2', 'Step two'))
+      await run.redraw(groupProps(['toolu_1', 'toolu_2']) as never)
+      expect(await button(run)).toBe('› Step two')
+      await keep($, result('u2', 'toolu_2'))
+      await ended($)
+      await until(async () => (await button(run)) === '› Took the three steps')
+      expect(await button(run)).toBe('› Took the three steps')
+      expect(asks).toHaveLength(1)
+    })
+
+    // For the record: the sequence the client no longer sends. Asked as
+    // `ToolUse` after its group of one, the call is a member of the group
+    // (`groupOf`), which draws the run's line: the call's row draws nothing
+    // folded and never opens, so a client that asked both would lose the
+    // line wherever it drew the call's row in the group's place.
+    test(`${name}, a group of one, then the same call asked as ToolUse (no longer sent by the client): the call answers as its group's member, with nothing that opens`, async ($, on) => {
+      await session($, on, ask)
+      await keep($, call('a1', 'toolu_1', 'Step one'))
+      const run = await group($, ask.surface, 'group:toolu_1', ['toolu_1'])
+      const alone = await lone($, ask.surface, 'toolu_1', 'Step one')
+      expect(await button(alone)).toBeUndefined()
+      expect(await alone.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+      expect((await alone.drawn()) as unknown).toMatchObject({ type: 'Box' })
+      expect(await button(run)).toBe('› Step one')
+    })
+  }
+
+  test('a call a group took up and then let go draws standalone again, its button its own run\'s', async ($, on) => {
+    await session($, on, { surface: 'desktop', env: {}, isInteractive: true })
+    await lone($, 'desktop', 'b1', 'Step one')
+    await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AssistantMessage', requestId: 'm1', props: { text: '<message>Between.</message>', isFirstOfReply: true } })
+    const second = await lone($, 'desktop', 'b2', 'Step two')
+    const run = await group($, 'desktop', 'group:b1', ['b1', 'b2'])
+    await run.redraw({ ...groupProps(['b1']), isExpanded: true } as never)
+    await second.redraw()
+    expect(await second.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    await second.press({ key: 'to-human-toggle' })
+    expect(await second.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+  })
+
+  test("the terminal's group, drawn from its first call under a new request id as it forms, draws as it did", async ($, on) => {
+    await session($, on, { surface: 'terminal', env: {}, isInteractive: true })
+    await keep($, call('a1', 'toolu_1', 'Step one'))
+    const one = await group($, 'terminal', 'grouped-1', ['toolu_1'])
+    expect(await button(one)).toBe('› Step one')
+    await keep($, result('u1', 'toolu_1'), call('a2', 'toolu_2', 'Step two'))
+    await one.unmount()
+    const two = await group($, 'terminal', 'grouped-2', ['toolu_1', 'toolu_2'])
+    expect(await button(two)).toBe('› Step two')
+    await keep($, result('u2', 'toolu_2'), call('a3', 'toolu_3', 'Step three'))
+    await two.unmount()
+    const three = await group($, 'terminal', 'grouped-3', ['toolu_1', 'toolu_2', 'toolu_3'])
+    expect(await button(three)).toBe('› Step three')
+    expect((await three.drawn()) as unknown).toMatchObject({ type: 'Box', props: { marginTop: 1 } })
+    await closing($, 'terminal')
+    await until(async () => (await button(three)) === '› Took the three steps')
+    expect(await button(three)).toBe('› Took the three steps')
+    // A press unfolds it as the engine draws a group, and ends the run beneath it.
+    await three.press({ key: 'to-human-toggle' })
+    expect(await three.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
   })
 })

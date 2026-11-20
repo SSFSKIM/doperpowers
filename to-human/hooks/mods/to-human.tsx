@@ -697,6 +697,13 @@ export type View = {
   deadline?: Timer
   /** Whether the view folds now: a mark has been seen and the whole transcript is not asked for. */
   isFolding: () => boolean
+  /**
+   * The folded runs whose button read its label from the run beginning
+   * inside its stretch (`labelOf`'s last clause), by their first rows, each
+   * with the stretch's last row it was read to: a row that moves that end
+   * asks for the button again (`see`).
+   */
+  endOf: Map<string, string>
 }
 
 export const newView = (isFolding: () => boolean): View => {
@@ -722,6 +729,7 @@ export const newView = (isFolding: () => boolean): View => {
     isWhole: false,
     isPastWait: false,
     isFolding,
+    endOf: new Map(),
   }
 }
 
@@ -745,9 +753,41 @@ function hasDrawn(view: View, id: string): boolean {
   return view.rowOf.has(id) || view.rowOf.has(GROUP + id) || view.order.some((row) => keyOf(row) === key)
 }
 
+/**
+ * A client asks a row the transcript holds no record of (a turn's closing
+ * line, a notice the client's host made) under `<anchor>~<tag>`, its anchor
+ * the nearest row before it that the file holds: the row the ask stands
+ * right after. Undefined for any other id.
+ */
+export function anchorOf(id: string): string | undefined {
+  const at = id.indexOf('~')
+  return at > 0 ? id.slice(0, at) : undefined
+}
+
+/**
+ * How far past its anchor's place an anchored ask stands: before whatever
+ * followed the anchor, the next row of the file (a step of 1) or the next
+ * call of a row appended live (a step of 1/1000, `placeAll`).
+ */
+const PAST_ANCHOR = 1 / 2000
+
+/**
+ * A row's place, where it is known: its own (`View.place`), or for an
+ * anchored ask (`anchorOf`) its anchor's and a little past it. A place only
+ * guessed is none.
+ */
+export function placeAt(view: View, id: string): number | undefined {
+  const anchor = anchorOf(id)
+  if (anchor === undefined) return view.place.get(keyOf(id))
+  const at = view.place.get(keyOf(anchor))
+  return at === undefined ? undefined : at + PAST_ANCHOR
+}
+
+/** Whether a drawn row is an ask anchored at the row `id`, whose place follows that row's. */
+const isAnchoredAt = (view: View, id: string) => view.order.some((row) => anchorOf(row) !== undefined && keyOf(anchorOf(row) as string) === keyOf(id))
+
 function placeOf(view: View, id: string): number {
-  const key = keyOf(id)
-  return view.place.get(key) ?? view.guess.get(key) ?? Infinity
+  return placeAt(view, id) ?? view.guess.get(keyOf(id)) ?? Infinity
 }
 
 /**
@@ -1031,7 +1071,7 @@ export function judgeUnkept(view: View, ids: readonly string[] = view.order): bo
   if (!view.isWhole) {
     return false
   }
-  const unkept = ids.filter((id) => !view.place.has(keyOf(id)) && !view.apart.has(keyOf(id)))
+  const unkept = ids.filter((id) => placeAt(view, id) === undefined && !view.apart.has(keyOf(id)))
   for (const id of unkept) {
     const key = keyOf(id)
     view.apart.set(key, true)
@@ -1098,6 +1138,57 @@ function adopt(view: View, requestId: string) {
 }
 
 /**
+ * Makes each call a group now holds that stands in the order as a row of its
+ * own one row with the group: a client asks a lone call as `ToolUse`, under
+ * the call's id, and its run as `ToolGroup` from the second call on, no
+ * longer mounting the lone row, which would otherwise head the run and keep
+ * its button. The group takes the earliest such row's slot (unless it already
+ * stands in the order) with what that row carried: its run's unfolding, where
+ * it stood in the window, the end its label was read to, and the controls
+ * drawn under it (`holderOf`); the others leave the order. A call the person
+ * reads (a message, a spawn, a question) keeps its own row. Whether any row
+ * joined.
+ */
+export function joinGroup(view: View, id: string, calls: readonly string[]): boolean {
+  const keys = new Set(calls.map(keyOf))
+  const own = view.order.filter((row) => !row.startsWith(GROUP) && keys.has(keyOf(row)) && view.rowOf.get(row) === 'record')
+  if (own.length === 0) {
+    return false
+  }
+  let isPlaced = view.order.includes(id)
+  for (const row of own) {
+    const at = view.order.indexOf(row)
+    if (isPlaced) {
+      view.order.splice(at, 1)
+    } else {
+      view.order[at] = id
+      view.rowOf.set(id, 'record')
+      isPlaced = true
+    }
+    view.rowOf.delete(row)
+    view.heldBy.set(row, id)
+    view.requestIds.delete(row)
+    if (view.unfolded.delete(row)) {
+      view.unfolded.add(id)
+    }
+    const shown = view.shown.get(row)
+    if (shown !== undefined && !view.shown.has(id)) {
+      view.shown.set(id, shown)
+    }
+    view.shown.delete(row)
+    const end = view.endOf.get(row)
+    if (end !== undefined && !view.endOf.has(id)) {
+      view.endOf.set(id, end)
+    }
+    view.endOf.delete(row)
+    if (view.folded === row) {
+      view.folded = id
+    }
+  }
+  return true
+}
+
+/**
  * Notes a row as it draws: its place among the rows drawn so far, and what it
  * is. A row that lands beside another, or turns into a kind that ends or joins
  * its run, can change what that neighbour draws (whether it opens its run and
@@ -1114,7 +1205,7 @@ function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
     return
   }
   const key = keyOf(requestId)
-  if (known === undefined && !view.place.has(key) && !view.guess.has(key)) {
+  if (known === undefined && placeAt(view, requestId) === undefined && !view.guess.has(key)) {
     view.guess.set(key, LIVE + view.appended + 0.5)
   }
   const at = known === undefined ? slotOf(view, requestId) : order.indexOf(requestId)
@@ -1125,7 +1216,10 @@ function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
   }
   rowOf.set(requestId, kind)
   const isAmong = known === undefined && at < order.length - 1 && view.unfolded.size > 0
-  if (view.isFolding() && (isAmong || neighbours.some((id, i) => shapeOf(view, id) !== shapes[i]))) {
+  const start = inRun(kind) ? runStart(order, rowOf, requestId) : undefined
+  const read = start === undefined ? undefined : view.endOf.get(start)
+  const isEndMoved = read !== undefined && read !== runEnd(order, rowOf, start as string)
+  if (view.isFolding() && (isAmong || isEndMoved || neighbours.some((id, i) => shapeOf(view, id) !== shapes[i]))) {
     $.ui.invalidate('ui.render')
   }
 }
@@ -1140,6 +1234,31 @@ function holderOf(view: View, id: string): string {
     id = held
   }
   return id
+}
+
+/**
+ * Whether a turn's line that takes the slot `at` in the drawn rows' order
+ * stands beside an unfolded run of its turn: the run it stands in (that of
+ * the row before it), or one that begins at or after it and before the next
+ * row of the person's. The turn is read forward from the line, so the
+ * contract with a client is that the line stands at the head of its turn's
+ * work: its anchor is the row that opens the turn (the prompt, or the last
+ * row before the turn's first). A line anchored after its turn's rows reads
+ * the rows that follow it, which are the next turn's.
+ */
+function isTurnOpen(view: View, at: number): boolean {
+  const { order, rowOf, unfolded } = view
+  const prior = order[at - 1]
+  if (prior !== undefined && inRun(rowOf.get(prior)) && unfolded.has(runStart(order, rowOf, prior))) {
+    return true
+  }
+  for (let i = at; i < order.length && rowOf.get(order[i] as string) !== 'user'; i += 1) {
+    const id = order[i] as string
+    if (inRun(rowOf.get(id)) && runStart(order, rowOf, id) === id && unfolded.has(id)) {
+      return true
+    }
+  }
+  return false
 }
 
 /** Unfolds the run or message `id` stands for, or folds it, noting the fold for the press's hook. */
@@ -1160,11 +1279,15 @@ function toggle(view: View, drawn: string) {
 const FOLDS_KEPT = { plugin: 'to-human', key: 'folds' } as const
 const OPEN_KEPT = { plugin: 'to-human', key: 'fold' } as const
 
-/** What the button of the run `id` stands in reads: its live line or summary, else `working record`. */
+/** What the button the row `id` draws for its run reads: the live line or summary of the run its stretch holds (`labelOf`), else `working record`. */
 async function foldLabel($: EngineInterface, view: View, id: string): Promise<string> {
   try {
     const [folds, open] = await Promise.all([$.state.get(FOLDS_KEPT), $.state.get(OPEN_KEPT)])
-    return labelOf(folds.value, open.value, view, id) ?? 'working record'
+    const end = runEnd(view.order, view.rowOf, id)
+    // No run holds the row: what it reads rests on where its stretch ends, which a row drawn later can move.
+    if (labelOf(folds.value, open.value, view, id) === undefined) view.endOf.set(id, end)
+    else view.endOf.delete(id)
+    return labelOf(folds.value, open.value, view, id, end) ?? 'working record'
   } catch {
     return 'working record'
   }
@@ -1447,12 +1570,31 @@ function spanRows<E extends RenderInput>($: EngineInterface, e: E, spans: readon
   )
 }
 
-// MAWS draws this channel itself when it advertises native support; the
-// terminal keeps this view. Every hook awaits the same read for this worker.
-let maws: Promise<boolean> | undefined
-const native = async ($: EngineInterface, e: object) =>
-  (await (maws ??= $.env.get('MAWS_NATIVE_TO_HUMAN').then((value) => value !== undefined && value !== ''))) &&
-  (!('surface' in e) || e.surface !== 'terminal')
+/**
+ * The MAWS contract version from which the client reads this view's drawing
+ * on its own surface. The plugin's `maws-surface.json` declares it to the
+ * client, which reads that file without running the plugin
+ * (`{ "toHumanView": { "drawsFrom": 9 } }`); the two must agree.
+ */
+export const MAWS_DRAWS_FROM = 9
+
+/**
+ * Whether MAWS draws this channel itself, by what it advertises in
+ * `MAWS_NATIVE_TO_HUMAN`: a non-empty value that is not a number of
+ * `MAWS_DRAWS_FROM` or more (8 and below, or no number). Unset or empty is no
+ * MAWS, and from 9 the client reads this view's drawing. The view steps aside
+ * off the terminal where this holds; the run tracker asks for summaries from 8
+ * on all the same, where MAWS puts them on its own fold lines
+ * (`MAWS_READS_FOLDS_FROM`, folds.tsx).
+ */
+export const isMawsDrawing = (value: string | undefined) => value !== undefined && value !== '' && !(Number(value) >= MAWS_DRAWS_FROM)
+
+/** The setting as one registration of the view read it: every hook awaits the same read. */
+type Setting = { maws?: Promise<boolean> }
+
+/** Whether the view steps aside for this event: MAWS draws (`isMawsDrawing`) and the surface is not the terminal, which keeps the view. */
+const native = async ($: EngineInterface, e: object, setting: Setting) =>
+  (await (setting.maws ??= $.env.get('MAWS_NATIVE_TO_HUMAN').then(isMawsDrawing))) && (!('surface' in e) || e.surface !== 'terminal')
 
 /** The slash command that writes the view's state to a file (`dumpView`). */
 export const DUMP_COMMAND = 'to-human-dump'
@@ -1475,7 +1617,7 @@ async function dumpView($: EngineInterface, view: View, state: { isFolding: bool
   const plugin = (JSON.parse(manifest) as { version?: string }).version
   const at = new Date().toISOString()
   const path = `${configured ?? `${home}/.claude`}/to-human/dumps/${at.replace(/[:.]/g, '-')}-${sessionId.slice(0, 8)}.json`
-  const placeKind = (id: string) => (view.place.has(keyOf(id)) ? 'placed' : view.guess.has(keyOf(id)) ? 'guessed' : 'none')
+  const placeKind = (id: string) => (placeAt(view, id) !== undefined ? 'placed' : view.guess.has(keyOf(id)) ? 'guessed' : 'none')
   const dump = {
     at,
     engine: engine?.version,
@@ -1516,6 +1658,9 @@ export function registerToHuman(on: On) {
     hasSeenMark = true
   }
 
+  // What MAWS advertises, read once for this registration (`native`).
+  const setting: Setting = {}
+
   // Each load of the module raises this, the first and every reload: the
   // start-up read (`started`) runs here, where no redraw of a row cuts it
   // short, unless it already finished under a row's draw.
@@ -1546,6 +1691,7 @@ export function registerToHuman(on: On) {
       view.drewAs.clear()
       view.unkept.clear()
       view.heldBy.clear()
+      view.endOf.clear()
       unfolded.clear()
       // A cleared conversation keeps no row yet; a resumed one's are listed by its file.
       view.isWhole = e.source === 'clear'
@@ -1589,7 +1735,7 @@ export function registerToHuman(on: On) {
         if (isError) {
           view.errors.add(keyOf(stored.uuid))
         }
-        const moved = ids.some((id) => hasDrawn(view, id)) && reorder(view)
+        const moved = ids.some((id) => hasDrawn(view, id) || isAnchoredAt(view, id)) && reorder(view)
         const isJudged = STEP_DOORS.has(e.door) && judgeUnkept(view)
         if ((moved || isRevoked || isJudged || (isError && hasDrawn(view, stored.uuid))) && isFolding()) {
           $.ui.invalidate('ui.render')
@@ -1613,7 +1759,7 @@ export function registerToHuman(on: On) {
 
   // `/to-human-dump`: the view's state as it stands, to a file, for a wrong fold seen live.
   on('command.run', { command: DUMP_COMMAND }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     try {
       const path = await dumpView($, view, { isFolding: isFolding(), isFullTranscript })
       $.ui.toast(`to-human: the view's state is in ${path}`)
@@ -1640,7 +1786,7 @@ export function registerToHuman(on: On) {
   // after it are two, as the person reads them. Agent messages and background
   // deliveries are working record, and stand in the run they fall in.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     const kind = promptRow(e.props, spawns)
     // A prompt row is kept before it draws (the person's own only now and
@@ -1670,10 +1816,22 @@ export function registerToHuman(on: On) {
   // full transcript shows it as the engine does. The row before it is the
   // drawn row placed last before it, or, while its place is unknown, the row
   // drawn last when it first drew.
+  //
+  // A client that draws its turns asks for their lines under `<anchor>~turn`
+  // (`anchorOf`), a line the transcript holds no record of, placed right
+  // after its anchor: the line stands for its turn, shown while a run of
+  // that turn is unfolded (`isTurnOpen`), the run it stands in included.
   const before = new Map<string, string | undefined>()
   on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
+    if (e.requestId.endsWith('~turn') && anchorOf(e.requestId) !== undefined) {
+      if (!isFolding() || isTurnOpen(view, slotOf(view, e.requestId))) {
+        return next(e)
+      }
+      const { Box } = $.ui.resolve(e)
+      return <Box />
+    }
     if (!before.has(e.requestId)) {
       before.set(e.requestId, view.order[view.order.length - 1])
     }
@@ -1698,7 +1856,7 @@ export function registerToHuman(on: On) {
   // from the file) and by its exact text, so a model that writes the same
   // sentence is drawn as ever.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     if (drawsApart(view, e.requestId, 'AssistantMessage', e.props.text)) return next(e)
     if (isMadeUp(e.requestId, e.props.text) || (view.unrequested.has(keyOf(e.requestId)) && e.props.text.trim() === FINAL_ANSWER)) {
@@ -1779,7 +1937,7 @@ export function registerToHuman(on: On) {
   // the pill, which draws it beneath itself: drawn by the row, the end would
   // stand between the row and its pill.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     // A call stands apart with the group it is drawn in: a group is set apart by its first call alone.
     const held = groupOf.get(e.requestId)
@@ -1835,9 +1993,12 @@ export function registerToHuman(on: On) {
   // the order late would land after rows that drew since, or stay in it
   // with no row to draw once the group collapses again. The last call
   // draws the run's end in the group's place, and when a call joins the
-  // group the row that drew it is asked for again.
+  // group the row that drew it is asked for again. A call that drew as a row
+  // of its own before a group held it (a client's lone call) is one row with
+  // the group from then on (`joinGroup`), and is asked again, to draw as the
+  // group's.
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = `${GROUP}${e.props.calls[0]?.tool_use_id ?? e.requestId}`
     if (drawsApart(view, id, 'ToolGroup', e.props.calls[0]?.tool ?? '')) return next(e)
@@ -1848,6 +2009,7 @@ export function registerToHuman(on: On) {
       expanded.delete(id)
     }
     note(view, id, e.props)
+    const isJoined = joinGroup(view, id, e.props.calls.flatMap((call) => (call.tool_use_id ? [call.tool_use_id] : [])))
     see($, view, id, 'record')
     // A group can let a call go: a resume's first frame groups every call of
     // a turn, a message's included, then draws the message as a row of its
@@ -1856,6 +2018,10 @@ export function registerToHuman(on: On) {
     for (const call of membersOf.get(id) ?? []) {
       if (!held.has(call) && groupOf.get(call) === id) {
         groupOf.delete(call)
+        // A call the group took up (`joinGroup`) is its own row again: its controls act on it.
+        if (view.heldBy.get(call) === id) {
+          view.heldBy.delete(call)
+        }
       }
     }
     membersOf.set(id, held)
@@ -1868,6 +2034,9 @@ export function registerToHuman(on: On) {
           spawns.add(call.tool_use_id)
         }
       }
+    }
+    if (isJoined && isFolding()) {
+      $.ui.invalidate('ui.render')
     }
     if (last !== undefined && lastOf.get(id) !== last) {
       const moved = lastOf.has(id)
@@ -1885,7 +2054,7 @@ export function registerToHuman(on: On) {
   // to draw again without it. An expanded group's last call draws its end.
   const pills = new Set<string>()
   on('ui.render', { component: 'ToolProgress' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = groupOf.get(e.props.tool_use_id) ?? e.props.tool_use_id
     if (drawsApart(view, e.props.tool_use_id, 'ToolProgress', e.props.hint) || drawsApart(view, id, 'ToolProgress', e.props.hint) || expanded.has(id)) {
@@ -1918,7 +2087,7 @@ export function registerToHuman(on: On) {
   // the run's button and this one draws nothing; unfolded, it is the last
   // of the two, and carries the run's end.
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     if (drawsApart(view, e.requestId, 'ToolResult', e.props.tool)) return next(e)
     if (isUnsent(e.props)) {
@@ -1939,7 +2108,7 @@ export function registerToHuman(on: On) {
   // what the hooks beneath draw there (the ask's open questions), which this
   // plugin's hooks sit outside of.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     if (!hasSeenMark || e.props.hasSurvey) {
       return next(e)
@@ -1979,7 +2148,7 @@ export function registerToHuman(on: On) {
   // window is left where it is: any reveal, even one that moves nothing, stops
   // the transcript following new output at its bottom.
   on('ui.press', { element: TOGGLE }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     view.folded = undefined
     const result = await next(e)
     $.ui.invalidate('ui.render')
@@ -1995,7 +2164,7 @@ export function registerToHuman(on: On) {
   })
 
   on('ui.press', { element: MODE }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
+    if (await native($, e, setting)) return next(e)
     const result = await next(e)
     $.ui.invalidate('ui.render')
     return result

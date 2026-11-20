@@ -39,6 +39,21 @@ export type OpenFold = FoldRun | null
  */
 export type OpenFoldLast = string | null
 
+/**
+ * The session's file, `to-human/folds/<session id>.json` in the
+ * configuration directory: every run with a summary, as
+ * `[first, last, summary]` (the ids as `FoldRun` gives them; the open run's
+ * bounded by the last row its summary covered), oldest first. A contract a
+ * client reads (MAWS): the mod writes the file by atomic replacement (a
+ * temporary file in the same directory, then a rename over the file), and
+ * before it writes it reads the file again and keeps every stored run its own
+ * tracker does not hold (its own runs win where both hold one, by the run's
+ * first id). A file kept so says `shape: 2`; releases before 0.9.0 wrote
+ * shape 1, whole and in place from one process's memory, which the mod still
+ * reads and a client does not.
+ */
+export type StoredFolds = { shape: 2; runs: [first: string, last: string, summary: string][] }
+
 declare module 'claude-code' {
   interface PluginState {
     'to-human': { folds: Folds; fold: OpenFold; foldLast: OpenFoldLast }
