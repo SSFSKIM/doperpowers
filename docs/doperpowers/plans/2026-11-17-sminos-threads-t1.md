@@ -38,6 +38,7 @@ the composite, run as Concrete Steps gives it.
 - [x] (2026-11-20) M4 — A thread ends, and returns (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `b32c3a77..56fc6d4f`)
 - [x] (2026-11-20) M5 — A thread that owns a VM is neither retired nor ended (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `2f324a19..e1be6e85`)
 - [x] (2026-11-20) M6 — What sessions are told, an older sminos beside this one, the shared vectors, and the acceptance run (three reviews, the owner's cap; the third approved, its two Minor findings fixed in a last wave the controller checked; `e55117c7..d492589f`)
+- [x] (2026-11-20) The branch review: one review of the whole range at b9c85c00 and two of its fix diffs (the owner's cap, applied to the branch), their fixes merged from `t1-fixes`; the held path verified alone. Its last wave is still to land (Interfaces §5's marked line).
 
 ## Words this document adds
 
@@ -1544,7 +1545,7 @@ Each file is one JSON object, mode 0600, written by atomic replace.
 |---|---|---|
 | `thread` | string | the thread id: a spawned thread's seat id; a human-opened thread's own UUID, minted when the record is made and never a session's id |
 | `opened` | `"spawned"` or `"human"` | fixed when the record is made |
-| `sessions` | list of strings | every session id the thread has had, oldest first; its last is `current` whenever there is one. Rebuilt at adoption for a thread from before this code (M1) |
+| `sessions` | list of strings | every session id the thread has had; its last is `current` whenever there is one, so an earlier occupant that comes back is moved to the end. Rebuilt at adoption for a thread from before this code (M1) |
 | `current` | string | the session that fills it now; `""` for a vacant spawned thread |
 | `alias` | string | a spawned thread's seat alias; for a human-opened one, the alias its latest `joined` or `renamed` carried: a copy for readers without the log, whose own events decide the alias |
 | `launch` | `{"cwd": string, "options": list of strings, "at": timestamp}` | the directory and the options of the engine process that last started `current`; `options` is option tokens in order, kept for `LAUNCH_OPTIONS` alone, and is absent when they could not be read |
@@ -1566,6 +1567,22 @@ One whose `status` is `retired` and that holds no `ended` (a seat retired
 before this code, or by an older copy) reads as ended at its `updated`.
 Timestamps are `sminos.now()`'s.
 
+**A seat whose `current` moved without its `sessions`.** An older copy's
+refill or `seat add`, and the board pipeline, write `current` and nothing
+else. An adopted seat whose `current` is not the last of its stored
+`sessions` is *moved* (`_moved`): a new occupant, or an earlier one back.
+Every read gives it `current` as the last of `sessions`, and does not read
+the seat's `ended`, `stopped` and `swept` (`OCCUPANT_MARKS`) as the new
+occupant's: they were its predecessor's. Every write to a moved seat's
+record repairs it first, under that write's own lock (`_change`): the
+occupant last, the three marks removed; a write whose guard refuses writes
+nothing. `ensure` then merges in the occupants the log names for the seat
+(`_seat_sessions`). A plain repoint to another session drops the same
+marks, and for a lane B session every thread key: its seat is no thread.
+A seat with no thread keys whose session's record cannot be read is no
+thread either, until the record reads (`records.unreadable`): its lane is
+not guessed.
+
 **The functions:**
 
     OPENED = ("spawned", "human")
@@ -1579,11 +1596,18 @@ Timestamps are `sminos.now()`'s.
         # thread whose current session it is, a human-opened one before a seat; one that had
         # it, those set aside included
     def stamp(session) -> str
-        # the thread id an event of this session carries; "" for a session that is no thread
+        # the thread id an event of this session carries: its thread's, only while the session
+        # is that thread's current one (an open entry's included); "" for a session that is no
+        # thread, and for one a thread only had (§4)
+    def choose(session, seat=None, project=None, events=None, peer=None, lock_until=None)
+            -> (dict | None, "join" | "return" | "hold")
+        # the one choice of the thread a session joins or returns under, for every join and
+        # adoption; (None, "join") is a join that carries no stamp; "hold" for a session whose
+        # record cannot be read (its lane unknown: nothing joined, no record made)
     def ensure(session, seat=None, project=None, events=None, lock_until=None) -> dict | None
         # the record of the thread the session fills, made when there is none (project and
-        # events: the log an adopted thread's sessions are rebuilt from); None for lane B and
-        # for a spawn's child that no seat holds yet
+        # events: the log an adopted thread's sessions are rebuilt from); None for lane B, for
+        # a spawn's child that no seat holds yet, and while the session's record is unreadable
     def update(thread_id, fields, remove=(), guard=None, lock_until=None) -> bool
         # a change that owes no event (the stop mark, `swept`, a launch noted, CH's channels):
         # a merge under the store's lock, applied only if guard(record) holds; it never
@@ -1601,6 +1625,24 @@ Timestamps are `sminos.now()`'s.
         # carries out the record's open entry from where it stands and clears it (§6); True
         # when the record has none left. Any process may call it, any number of times
     def note_launch(thread_id, cwd, options=None) -> bool
+    def note_alias(session, alias, lock_until=None, project=None) -> bool
+        # a human-opened thread's alias copied from its latest `joined` or `renamed`. With
+        # `project` (the log it was appended to): only while the session is still a member
+        # there and that alias is still the latest its own events there carry, read under the
+        # record's lock, so a copy that arrives late changes nothing
+    def claims_held(deadline=None)          # context manager
+        # both stores' locks in their order (`.metalock`, then `threads/.lock`); the log's
+        # locks are taken inside them, never the reverse. No record is made, claimed or
+        # changed for any session while it is held
+    def repoint_seat(seat_id, fields, deadline=None, expect=None) -> bool
+        # a seat given `fields["current"]` by a plain write that owes no event; False, nothing
+        # written, when another record holds the session, the seat has an open entry, the seat
+        # is gone, or (`expect`) it no longer holds the occupant the caller displaces
+    def returns(record, peer, known=None) -> bool
+        # whether the process of `peer` returns an ended thread (row 12). `known`: whether the
+        # end recorded its process, as a caller read it while the record still stood
+    def release_outlived(released, peer) -> bool
+    def owner_sessions(thread) -> list      # §7
     def record_ended(record) -> bool        # this machine's record says ended
     def hold_of(session) -> str             # §5
     def set_channels(thread_id, channels) -> bool          # CH's writer
@@ -1698,6 +1740,38 @@ On any machine, from the log as that machine may read it.
   sessions. An event with no stamp of its own belongs to the episode of
   its session that its time falls in. Owners are read along the
   continuation chain and nowhere else.
+- **Which stamp a session's own events take.** The thread whose current
+  session it is, and no other (`stamp`). A thread that only had the
+  session, because it went on in another, names it for a lookup
+  (`thread_of`) and never stamps what the session writes now; a journaled
+  transition of that thread stamps its own events. So a lane B session
+  that was a thread's former occupant joins unstamped, and its later
+  status and in-charge lines carry no stamp: `choose` answers no thread,
+  `join_on_sight` passes `thread=None`, and `lifecycle` writes an event
+  given `thread=None` unstamped instead of looking a stamp up.
+- **A legacy seat's id as a name.** `Member.named` is the thread a row's
+  name resolves through: its stamp, else the seat its unstamped `joined`
+  names. `former_ids` reads it, so a remote row whose machine runs an
+  older copy answers to its seat's id.
+- **A name that binds a session.** `alias#short`, a full session id that
+  is not the seat's own, and the eight-character short of the current
+  session or of any former or thread session bind the seat's current
+  session for the verb (`find_target`): a refill before the verb's lock
+  refuses it instead of redirecting it.
+- **A seat's id that is also a session outside it.** A seat's id is its
+  first session's. When that session runs again as a thread of its own
+  (§6, row 15) the id names that session, never the seat it left. While
+  its process runs and it is not a member yet, the id names neither:
+  `find_target` exits 4 and says to name the seat by `group/alias`. Once
+  it is a member the first rule applies; once its process ends, the id is
+  the seat's again.
+- **An ended thread its human opened** is named by its full session id or
+  its thread id for `retire --purge` and `remove` (`ended_target`), once
+  no member and no seat answers the name. Its row is the log's and
+  outlives its record, so the name answers only while that thread's record
+  is still this machine's, ended, with that session current; the verb acts
+  on that record alone (`retire_member(…, thread_id=)`) and exits 4 when
+  it is gone.
 
 ### §5. Whether a thread is held or woken (X3, the first values)
 
@@ -1717,6 +1791,44 @@ On any machine, from the log as that machine may read it.
 A sender's CLI reads it when it sends and says it with the machine the
 message waits on. With `None` (an older sminos on that machine) it says
 what it says today.
+
+**A hold is a recorded decision, per event.** The delivery record of the
+addressed session (`<project>/delivered/<session>.json`) keeps, in each
+writer's entry, `held`: the seqs of that writer's events this machine
+decided to hold for the session. It is written under
+`delivered/<session>.lock` and nowhere else (`delivered_held`), by:
+
+- the delivery pass and the two verdict paths, whenever the outcome is
+  `held:human` (`held_decided`);
+- a sender's own hold: `held_send`, for the send that holds the lock, and
+  `mark_held` (the lock taken, `hold_now` read afresh) for `hold_verb`
+  and `send_to_member`'s held branch.
+
+Every write of the entry carries it (a settle, a failed attempt, a noted
+push, a revocation), and a seq leaves it as the settled prefix passes it.
+Before an outcome is concluded, `held_owed` reads it: for an event marked
+held, `recorded` and any failure before the text reached the session's
+process become `held:` (owed, no attempt counted) while the session is the
+current one of a thread its human opened that has not ended
+(`human_owed`, the canonical record, whatever seat an older copy made over
+it) and is still a member of that project. Such a session is delivered to
+by its session alone, never through that seat. A successful push settles
+the event, and so does the thread's end; nothing else does, and the
+attempt limit never applies to it. No timestamp takes part: not the
+writer's clock, not the process's start. An event never marked held (first
+met while a process held the session) keeps the outcome it had before
+threads, so a message to a running session with no inbox still settles
+`recorded` and is read in chat. An older copy that rewrites the entry
+drops the mark, and a send queued for its writer's head has no seq to mark
+until it is appended.
+
+TODO-LANDING: held path, last wave
+
+The words a sender reads: for a stopped session, that it reads the message
+only if its human reopens the session before it ends (three days stopped,
+or a retire), and that otherwise the message stays in the log
+(`held_line`, `hold_verb`); for one that runs, that the daemon delivers it
+to its process. `hold_verb` records, starts nothing and exits 4 in both.
 
 ### §6. Transitions and the journal
 
@@ -1757,6 +1869,7 @@ nothing else. The entry:
                 "last": "aside" | "purge",  # end: what becomes of the record (absent for a seat that stays)
                 "other": <thread id>,       # absorb: the record deleted last
                 "carry": [<old>, <new>],    # advance out of `hand_off`: the reach to carry before any event
+                "carried": true,            # set once that carry is durable: a replay does not carry again
                 "was": {...}, "unset": [...],  # absorb: the advance's prior values, to undo a lost hold
                 "next": {"op", "project", "events", "fields", "remove", "other", "absorbs"}}
                                             # an operation queued behind this one (`threads.follow`): a
@@ -1780,8 +1893,11 @@ nothing else. The entry:
    its events (the reach, the cursor, the override) are run first, each of
    which is safe to repeat; the entry's `carry` names the reach to carry,
    whatever events it still owes, and no event is appended until the
-   job's record holds provenance no weaker than its predecessor's
-   (`carried`): until then the entry stays open.
+   job's record holds provenance no weaker than its predecessor's:
+   until then the entry stays open. Once it does, the entry is marked
+   `carried` in a write of its own, and a replay skips the carry: what a
+   later deliberate change undid (a `join --cwd` that removed the job's
+   override while an event was still owed) is not restored.
    An absorption's first step is its hold: under the absorbed record's own
    store lock, while that record is still absorbable, a `pending` of op
    `reserved` naming the absorbing entry. A reservation is an open entry to
@@ -1791,10 +1907,21 @@ nothing else. The entry:
    `unset` and nothing is appended, and a refill goes on without deleting
    it. A reservation whose absorbing entry is gone is released.
 3. *What follows the events:* for an end, what is held for `settle` is
-   settled.
+   settled; an event whose receipt the session's process admitted settles
+   as delivered (`holder_deliveries.admitted`), since its text reached the
+   model. A purge then makes the stop it owes (`purge_stop`): the process
+   its end recorded is stopped, only while that same process still holds
+   the session, by whichever process finishes the entry (the verb, a
+   reading verb, a tick), since the record that names the process is gone
+   after the next step. It is tried once a finish, under the record's
+   finisher lock and no store lock, and a stop that fails does not keep
+   the purge open.
 4. *The last step,* one write: `pending` is removed, and in that same
    write an end's record is moved aside or deleted as `last` says, after
-   its settlement has succeeded; for an absorption the other record is
+   its settlement has succeeded; a purge deletes the record only while its
+   `current` is still the session the entry settles, and otherwise clears
+   the entry and keeps the record (an older copy gave the seat another
+   session meanwhile); for an absorption the other record is
    deleted first, only while its reservation is this entry's. A queued
    `next` is begun in that same write and finished in the same call.
    Nothing deletes a rival record for its history: claims are exclusive
@@ -1825,7 +1952,14 @@ nothing else. The entry:
    absorbable holder); a seat's claim reads and writes under both locks.
    `seat add` never absorbs: a session another record holds exits 4; its
    plain repoint (no journal applies: a project not read here, a lane B
-   session) claims through `repoint_seat` under both locks too. A
+   session) claims through `repoint_seat` under both locks too, which
+   refuses a seat with an open entry and, given `expect`, one that no
+   longer holds the occupant the verb displaces. `seat add` finishes the
+   seat's open entry first and then reads the seat again: a seat its
+   replay purged exits 4, and the checks on the occupant it displaces
+   (`displace_refusal`) are made on what the seat holds after the replay.
+   Its journaled refill writes the seat's own fields in the advance itself
+   (`refill_seat(…, edit=)`), so a refused claim writes none. A
    fill finishes the seat's open entry before it launches and exits 4 when
    it cannot. `follow` holds the finisher lock and queues only behind its
    caller's own entry (a refill's launch passes that entry's id); `clear`
@@ -1836,6 +1970,79 @@ nothing else. The entry:
    and the seat still vacant. A fill whose preflight finished a purge of
    its seat refuses and launches nothing. `finish` returns the
    appends of the caller's project alone.
+   `refill_launch` has three answers: the id of the entry it began; `None`
+   when no journal applies (a seat whose session has no log here, or that
+   is no thread), and the caller writes the launch's fields as before
+   threads; `False` when it applies and was not begun, and the caller
+   writes nothing over the session the seat holds: it stops the session it
+   just launched and exits 1 naming the session the seat still holds.
+   A first spawn names its child through `repoint_seat`. While a record
+   the child's own hook made holds the session, the seat stays vacant
+   until its journaled absorption takes it, so the two never both claim
+   the child. The write that promotes the seat and the absorption's
+   `begin` are two writes: a launcher killed between them leaves a vacant
+   seat and a job read as human-opened, with no entry to replay
+   (`docs/doperpowers/TECH-DEBT.md`).
+9. *An end decided for a session no record tracks.* A retire that asked
+   devcloud nothing because no record tracks the session (a lane B
+   session, or a seat with no thread keys) decides and writes under
+   `claims_held`: it reads the seat and the record again there, checks
+   again that every session was asked about, and exits 4 when a record
+   was made for the session meanwhile. The log's append is made inside
+   those locks, and for a seat the record's write and its files' deletion
+   too.
+
+**An end's verbs, as built.**
+
+- *Which process a repeated end stops.* A verb stops the process its own
+  end recorded. When an end already stands, it stops only the process
+  that end recorded (`end_saw`, by `returns`), never one that reopened
+  the session since, which returns the thread instead. Before a purge
+  deletes the record, the verb reads whether that end recorded its
+  process and passes it on (`returns(…, known=)`), since the seat file it
+  would be read from is gone afterwards.
+- *A purge left open and replayed by another.* `remove` and `retire
+  --purge` note, before their lookup, the seats that hold an open purge.
+  When the lookup's reconciliation has finished one (`replayed_purge`),
+  the verb starts no purge of its own: with the seat gone it reports it
+  removed and exits 0, the stop having been the entry's; with the seat
+  holding another session it exits 4 and says the seat was not removed
+  (`purge_superseded`). The same check follows a purge that went through
+  a human-opened record over an older copy's seat (`end_human`).
+- *What `seat add --session` does not displace* (`displace_refusal`, exit
+  4): an occupant whose process runs, asked of the process afresh
+  (`running_now`) and not of its inbox; and an occupant its human opened,
+  which its record keeps.
+- *An older copy's seat brought in line.* `seat_over` and `project_seat`
+  take the id of the record that ends, and write the seat only while
+  that record's end still stands, read under both stores' locks.
+- *A hand-off refused* (row 5's guard failed) is said once on the machine:
+  a marker per pair of sessions, `$SMINOS_HOME/daemon/handoff-refused/<old>.<new>`,
+  made by whichever process says it first.
+
+**What exits 4, and with what words.** Exit 4 is the code for a target a
+verb cannot act on now; each of these writes nothing unless it says
+otherwise.
+
+| Verb | When | It says |
+|---|---|---|
+| any verb naming a member | a seat's id that is also a running session outside it, not a member yet | "is seat g/a's id and also session …, which runs outside it and is not a member yet: name the seat …" |
+| `seat add --session` | its occupant's process runs | "still holds a live session … retire or remove the seat first" |
+| `seat add --session` | its occupant is a session its human opened | "a session its human opened, which its record keeps: seat add does not displace it" |
+| `seat add --session` | the replay of the seat's open entry purged it | "was removed (a purge of it, left open, was finished): nothing was changed; run it again to add the seat anew" |
+| `seat add --session` | the seat changed between the replay and the write | "changed meanwhile (it holds … now): nothing was changed; run it again" |
+| `retire`, `remove` | a seat or session changed while its end was decided | "changed while its end was decided …: nothing was written; run it again" |
+| `retire --purge`, `remove` | the purge finished and the seat holds another session | "was not removed: it holds session … now …; the end of session … is recorded" |
+| `retire --purge`, `remove` by a thread or session id | that thread's record is gone, or holds another session | "has no record of this machine with session … any more …: nothing was removed" |
+| `retire` of an ended thread its human opened | no `--purge` | "was retired already; nothing more was recorded" |
+| `send` | the thread ended after the message was recorded | "has ended: … was recorded and is settled with its end, pushed nowhere" |
+| `send` | the same, the send still queued for its writer's head | "has ended: the message is queued, not in the log yet …; once appended it is settled with the end if the session is still ended, and delivered to it if it has returned" |
+| `send` to a seat | the seat's session, one its human opened, has ended | "seat …'s session has ended: … — it returns when its human reopens its session" |
+| `resume` | a seat an older copy made over an ended session its human opened | "session has ended: nothing was recorded for it — it returns when its human reopens its session" (nothing recorded) |
+| `resume`, `fill --resume`, `send --wait` | a session its human opened, stopped or running | "nothing was started: …" (the message recorded; §5) |
+
+A `seat add` that finds a transition begun meanwhile exits 1, as it did,
+and so does a fill whose launch could not be journaled.
 
 Rows 1 to 3, 7, 8, 14 and 15 are not journaled: each is finished by a rule
 that exists already (a record whose session has no `joined` in effect is
@@ -1852,6 +2059,13 @@ repaired.
 | an unstamped `retired` `retire`, in effect | not ended | an **end** that owes no event, with the event's `by`, `pid` and time: the settlement and the last step as for any end |
 | an unstamped `retired` `ended` after a stamped `joined` | not ended | nothing: it is passed by |
 | an unstamped `joined` and then an unstamped `retired` `ended`, in effect | not ended | until M3, with no process holding the session: an **end** with reason `ended` that owes no event. From M3: `joined` again, stamped, as adoption writes one |
+
+An older copy's seat over a session its human opened is never that
+session's authority (D7): the thread sweep ends only a session's canonical
+record (`thread_of`), checked where the due threads are listed, in
+`end_stopped`, and again in `end_by_rule` under the record's lock. An
+older copy's refill or `seat add` of an adopted seat is read and repaired
+as §1's moved seat.
 
 A thread ended by the first rule returns by row 12 like any other, and a
 return cut short is finished from its own entry: no rule reads an open
@@ -1871,6 +2085,17 @@ gets a thread of its own.
 
     def owned_by(shorts) -> Owned          # the one function that runs devcloud; no shorts: none, unasked
     def owned_vms(thread) -> Owned         # owned_by for the short ids of thread["sessions"]
+    def owner_sessions(thread) -> list     # every session the thread has had, for the question
+
+`owner_sessions` is the thread's `sessions` and `current`; for a seat,
+also the occupants its `history` names; for a seat not yet adopted or
+whose `current` moved, what adoption rebuilds (`_seat_sessions`); and for
+an adopted seat, every session whose `joined` in its project's log names
+the seat, one read of the joins. The last is what finds an occupant an
+older copy's `seat add` put there and displaced between two reads of this
+code (A, B, A leaves `sessions` as it was). It is read where a retirement
+or an end is decided (`retire`, `remove`, the three-day end), not at a
+tick. `owned_vms` asks about these.
 
 `owned_by` runs `devcloud vm owned-by <short>...` as M5 finds and reads
 it. The command's exact form and answer are X9's in the composite, read
@@ -1924,6 +2149,49 @@ reaping.
 - The hold's outcome from `deliver_next` and `push_member` is
   `"held:human"`.
 - `sminos retire <member> --owner-unknown`.
+- The join lock. `sminos join` holds `moving(session)`, a lock on
+  `<the session's override file>.lock`, from before its override is
+  written or removed until both memberships are; it reads the membership
+  it leaves inside the lock, and makes its "already in" and "no override"
+  checks there again. The file is never removed: every join of the
+  session locks the same one. A reconciliation's join declines while
+  another process holds it (`moving_elsewhere`, read after its recheck of
+  the override), and the hook's and the bridge's own membership write
+  (`export_live`, the record hook, through `_member_alias`) joins only
+  while the join override is what it was when the caller resolved the
+  project. So the `joined` of a `join` says `by: join`.
+- `S/sminos_control.py`: `push_live` binds the peer to its recipient
+  (`bound_peer`) before the first route and again before each route that
+  follows a declined bridge: the supervisor, then the inbox frame. A
+  `/clear` meanwhile leaves no route for the old session's text.
+- `close_questions(thread)` closes a question in the project it was asked
+  in, reading every project known here that holds the session's own
+  events, and only one positively the stopped thread's: its episode
+  marked with the thread's id (§4). An unmarked episode counts for the
+  current session alone, in the project it is in now. A question of an
+  episode stamped with another thread stays open.
+- A send's end, read after the record: `canonical_end(session, project)`
+  (the thread's record ended, or the session's membership in effect a
+  `retired` that ends), read afresh, decides it for a seat and for a
+  seat-less session alike, under the session's delivery lock where the
+  send holds one. `ended_after_record` and
+  `refuse_ended_seat` say what becomes of the message, and
+  `queued_after_end` says it for a send still queued for its writer's
+  head, which no end has settled yet.
+- `cleared_witness` also returns the engine record of the process the
+  `/clear` was witnessed in, and `release_alias(…, clearing=)` reads from
+  it whether an earlier release was outlived (`release_outlived`): at the
+  new session's hook that record names the new session, so a lookup by
+  the id it left finds nothing.
+- `S/sminos_records.py`: `unreadable(sid)`, a record file that is there
+  and cannot be read as a record. `choose` holds for it, `ensure` makes
+  nothing, and `_is_thread` answers no for a seat without thread keys
+  that holds it.
+- `S/sminos_holder_deliveries.py`: `admitted(project_id, session, event)`,
+  whether the event's receipt was admitted (§6, step 3).
+- `resume_session` refuses an ended session its human opened that an
+  older copy seated, and records nothing for it; on a fan-out its outcome
+  is `recorded`.
 - Environment, each read where its default is defined:
   `SMINOS_THREAD_END_AFTER` (seconds; default three days),
   `SMINOS_THREAD_END_EVERY` (seconds between ending passes; default 3600),
@@ -2139,6 +2407,52 @@ Found while executing:
   ended", exit 4). The fixture therefore adds a message from another
   machine's writer.
   Evidence: `test-older-cli.sh`.
+
+- Observation (the branch review): the whole range was reviewed once,
+  and each review after it read only the fixes; the fixes were where the
+  next defects were. The panel on the whole range confirmed 44 findings;
+  the review of the first fix diff (about 300 lines of code) found 13, the
+  review of the second (about 500) found 14. Most were in a path a fix had
+  just added, and several were the same guarantee failing in the next
+  window along. The tests of the first wave checked that a guard answered
+  rightly, not that the message reached the inbox or the process was
+  stopped.
+  Evidence: the three reviews' findings, kept with the holder; the tests
+  of `test_threads_branch_a.py` and `test_threads_branch_b.py`, which from
+  the second wave on run the whole verb to its end result.
+- Observation (the branch review): a hold inferred afterwards failed three
+  times, and a hold recorded when it was decided did not. Whether a
+  message had been held was first read from the inbox answering, then from
+  the process record's socket path, then from the writer's clock against
+  the process's start; each lost a held message in a window the one before
+  had not covered (a quiet inbox, a record with no socket yet, a seat an
+  older copy made over the session, a writer whose clock ran ahead, a
+  resume into a process older than the message). The decision written per
+  event in the delivery record (§5) holds through all of them.
+  Evidence: the verification of the held path at e45a16a8: each earlier
+  reproduction rerun by its own scenario, on one machine and across two
+  through a Git mirror.
+- Observation (the branch review): a test that failed once on CI and
+  passed on the rerun was a real window, not a flake.
+  `RemoveByFirstOccupant` reopened a seat's first occupant "now"; when its
+  process started in the same millisecond as the `replaced` that displaced
+  it, `retirement_holds` (which for a retirement that recorded no pid
+  decides by start time alone) took the process for the one that
+  retirement saw, the session was not joined, and `remove <its id>` purged
+  the seat it had left. The window is closed in `find_target` (§4), and
+  the tests start a reopened session strictly after its retirement.
+  Evidence: run 44692479144; the test
+  `test_before_it_joins_the_id_names_neither_and_the_seat_it_left_is_kept`.
+- Observation (the branch review): most findings trace to one condition,
+  that the store has no writer in charge. Every CLI call, each session's
+  hook and the daemon write the records directly, older copies among
+  them, so each transition T1 added multiplied the orders in which two
+  writers can meet, and a review of one milestone sees one transition.
+  The journal makes a transition recoverable; it does not make two of
+  them exclusive. For T2, which adds the wake as another writer: route
+  its record writes through one place.
+  Evidence: the lenses the findings came from (lock order and atomicity,
+  an older copy on the same store, interactions between milestones).
 
 ## Decision Log
 
@@ -2603,13 +2917,73 @@ Found while executing:
   - The fork line ends "…are not for you; you are its peer.", the holder's ruling. Three of three samples stayed clean.
   - `check_spent` in RL10's driver now waits, within a bound, for its daemon.log line as well as the position. The race predates T1.
 
+- 2026-11-19 to 11-20 — **The branch review, and what it changed.**
+  - *What ran.* One review of the whole range at b9c85c00, by the panel
+    on frontier models with five lenses the holder named (the code no
+    review had read again; lock order and atomicity across the stores; an
+    older copy on the same store; interactions between milestones; what
+    leaves the machine) beside its free sweep: 44 findings confirmed by
+    its verifier. Then two reviews of the fix diffs alone, 13 findings and
+    14. The owner's cap of three reviews, set for a milestone, was applied
+    to the branch: the third review's findings were fixed in one last
+    wave with no fourth review.
+  - *What was fixed.* The holder first set aside 14 of the 44 and 5 of
+    the 13 as debt: each needed an older copy to seat or repoint a session
+    at that instant, two commands on one seat together, or a launcher
+    killed between two journaled steps. The owner then said the findings
+    set aside as debt may be fixed too, and all were but one. That one
+    stays in `docs/doperpowers/TECH-DEBT.md`: a first spawn's promotion of
+    its seat and the absorption's `begin` are two writes, and closing the
+    gap means making the promotion itself the `begin` (a rename path
+    through `begin`), a redesign of that write and not a fix.
+  - *What was dismissed.* "A refused hand-off still changes the
+    destination's reach" contradicts the holder's ruling of 2026-11-19:
+    reach follows the conversation (`lineage_of`'s `predecessor`); a
+    refused hand-off calls no `ensure_record(…, former=[old])` and writes
+    no `continued`, and that is all "no reach carried" binds.
+  - *The holder's rulings in the waves.*
+    - The hold is an invariant, not a set of windows: for a thread its
+      human opened, a message that was held stays owed until it is pushed
+      to that thread's process or the thread ends. When the second fix
+      still inferred "was held" from clocks, the ruling became the design
+      of §5: the decision is recorded per event when it is made, and no
+      timestamp takes part.
+    - A purge's stop is its entry's, made by whoever finishes it, and a
+      verb that finds its purge replayed reports that entry's outcome and
+      starts no second one.
+    - Every fix's test runs the whole verb to its end result: the frame
+      in the inbox, the process stopped or not, the record there or not,
+      the exit code.
+    - A check that fails once on CI is diagnosed before it is rerun.
+  - *What it settled in the Interfaces.* §1's moved seat and the order of
+    `sessions`; §4's stamp for a session's own events, the names that
+    bind a session and the seat id that names neither; §5's recorded
+    hold; §6's `carried`, the purge's stop and its last step, rule 9, the
+    verbs' exits; §7's `owner_sessions`; §8's join lock and the rest.
+    This supersedes M3's "each in its session's own last project" for the
+    closing of questions (§8), and M4's "a retire stops only that
+    process" is now also true of a repeated retire and of a replayed
+    purge.
+  - *The verification of the held path.* With that guarantee failed in
+    three reviews, the owner chose to verify it alone before the merge
+    and to open no fourth general review. At e45a16a8 every earlier
+    reproduction holds, on one machine and across two, and what was never
+    held is unchanged. Seven further cases were found, each needing a
+    second fault or a forced window. Five are fixed in a last wave (§5's
+    marked line). Two are recorded as limits in the tech-debt file: a
+    `/clear` between the last check of the recipient and the frame's
+    write delivers the old session's text to the new one, which only the
+    receiving side can close; and a delivery record that cannot be read
+    is replaced as though it were empty, where deferring would stop every
+    delivery to that session on one bad file.
+
 ## Outcomes & Retrospective
 
-**2026-11-20, at M6's close.** T1 shipped as sminos 1.51.0 on `sminos-threads-t1`, all six milestones. It is not yet merged. The holder's branch review of b9c85c00 runs beside this, and its fix waves merge into this branch after M6.
+**2026-11-20, at M6's close.** T1 was built as sminos 1.51.0 on `sminos-threads-t1`, all six milestones. The holder's branch review of b9c85c00 ran beside M6's close, and its fix waves were merged into this branch after it (below).
 
 **What T1 delivers against its purpose.** Every member is now a thread, and a thread outlives the process that ran it:
 
-- A session its human opened, once closed, stays a stopped member under its name and its line. What is addressed to it is recorded and held, and its sender is told. Nothing starts a process for it. Its human reopening it brings it back as itself, and the held messages are pushed in order.
+- A session its human opened, once closed, stays a stopped member under its name and its line. What is addressed to it is recorded and held, and its sender is told. Nothing starts a process for it. Its human reopening it before it ends brings it back as itself, and the held messages are pushed in order.
 - A thread keeps its identity across its session ids: hand-off, refill, and the old session left by a `/clear`, which is a thread of its own. Any former id reaches the current session.
 - A thread ends after three days stopped, or by retirement, unless it owns a devcloud host or devcloud cannot tell. Its human reopening it, or a fill, returns it.
 - An older sminos running beside this code resumes nothing, and its `ended` changes nothing.
@@ -2629,3 +3003,17 @@ Each of the eleven acceptance items is mapped to its tests in M6's report. Items
 - The three-review cap held: M3, M4 and M5 each closed with a final wave the controller checked. Each final wave's fixes are listed for the branch review as fixed after the last review and not reviewed again.
 - Timing flakes in required suites cost reruns: `test-join.sh`'s RL10 join, a race in the base whose window the branch lengthened; `QuietTick`; RL10's `check_spent`, the base's; and `test-address.sh`'s alias case, seen once and not reproduced. A required check that fails by timing costs every PR, so each one diagnosed was fixed in its lock or its test driver rather than rerun away.
 - Live passes need a scratch `HOME` as well as `SMINOS_HOME`. The engine moved from 2.1.327 to 2.1.329 during T1, and its collision rename was found that way.
+
+**2026-11-20, after the branch review.** The outcome above stands, and the review changed what it rests on:
+
+- The hold is now a decision recorded per event (§5), not a reading of the process's state. That is what makes "the held messages are pushed" true through a quiet inbox, a seat an older copy made over the session, a skewed clock and a resume into an older process. Two limits are recorded with it.
+- A seat's verbs (`retire`, `remove`, `seat add`, a refill, a first spawn) hold against the writers that race them: a verb that lost exits 4 and writes nothing, a purge's stop and outcome are its entry's, and an older copy's repoint is read and repaired as a moved seat.
+- A session's own events take a stamp only from the thread it is current in; a push is bound to its recipient again before every fallback; a question is closed only in the stopped thread's own episode; `sminos join` and a tick no longer interleave.
+- One finding is left as debt (the first spawn's promotion write), and one was dismissed against the Decision Log.
+- The acceptance items were not run again on a real engine after the fixes: they rest on M6's live pass and on the tests added since.
+
+**What the branch review taught**, beside the Surprises it left:
+
+- Review the whole range more than once when the first pass finds this much. The second and third reviews read only the fixes, so the range as fixed has had one whole reading.
+- Rule the design when a guarantee fails twice. The hold was fixed three times as a narrower window before it was made a recorded decision; the ruling should have come at the second failure.
+- T1 without the wake put the branch's largest risk on a path T2 will leave for exceptions only. The hold was built because a stopped thread could not be woken yet; with the wake, most messages to a stopped thread never take it.
