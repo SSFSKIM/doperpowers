@@ -14193,9 +14193,9 @@ def cmd_retire(a):
     if a.owner_unknown and os.environ.get("CLAUDE_CODE_SESSION_ID"):
         die("--owner-unknown is for a person at a terminal, and this runs inside a session: nothing was retired. "
             "Report the refusal to your human instead", 1)
-    target = find_target(a.seat)
-    if target[0] == "none":
-        target = ended_target(a.seat) or target
+    target, bound = find_target(a.seat), None
+    if target[0] == "none" and (ended := ended_target(a.seat)) is not None:
+        target, bound = ended, ended[2].thread
     if target[0] == "none":
         die("no seat or member matching '%s'" % a.seat, EXIT_UNKNOWN)
     how = OwnerAsk(a.seat, "purge" if a.purge else "retire", a.owner_unknown)
@@ -14205,7 +14205,7 @@ def cmd_retire(a):
     project, m = target[1], target[2]
     if not m.local:
         die("%s is on %s" % (m.alias, m.machine), EXIT_UNKNOWN)
-    retire_member(project, m, a.purge, how=how)
+    retire_member(project, m, a.purge, how=how, thread_id=bound)
 
 
 def ended_target(q):
@@ -14214,11 +14214,20 @@ def ended_target(q):
     session's or the thread's own — as its ended row (View.ended) answers
     to: what `retire --purge` and `remove` reach once no member and no seat
     answers the name (find_target), the record set aside to purge. None
-    for none."""
+    for none. A row is the log's and outlives its record: only one whose
+    thread's record is still this machine's, ended, with that session
+    current, answers, and the verb acts on that thread's record alone
+    (retire_member's `thread_id`), never on another thread its session has
+    been since."""
     if not UUID_RE.fullmatch(q):
         return None
+    threads = threads_module()
+
+    def archived(m):
+        t = threads.get(m.thread) if m.thread else None
+        return t is not None and t["opened"] == "human" and t["current"] == m.session and threads.record_ended(t)
     hits = [(p, m) for p in known_projects() for m in view_of(p).ended
-            if m.local and m.opened == "human" and q in (m.session, m.thread)]
+            if m.local and m.opened == "human" and q in (m.session, m.thread) and archived(m)]
     if not hits:
         return None
     last = last_project(hits[0][1].session)
@@ -14267,7 +14276,7 @@ def owner_guard(how, records, label):
     return owned.asked
 
 
-def retire_member(project, m, purge, verb="retired", how=None):
+def retire_member(project, m, purge, verb="retired", how=None, thread_id=None):
     """The end of a member of this machine that holds no seat (`retire`,
     `retire --purge`, `remove`; Interfaces §6 rows 9 and 11). A thread its
     human opened ends by its record (end_human): `ended`, with the process
@@ -14280,9 +14289,14 @@ def retire_member(project, m, purge, verb="retired", how=None):
     interactive session has none, and runs on in its human's terminal. The
     end names the process it saw and holds for that process's life: only
     another process, or one started after it, returns it (its human
-    reopening it)."""
+    reopening it). `thread_id`: the thread the name named (ended_target),
+    whose record alone is acted on, refused when it is gone or no longer
+    has this session current."""
     threads = threads_module()
-    thread = threads.thread_of(m.session)
+    thread = threads.thread_of(m.session) if thread_id is None else threads.get(thread_id)
+    if thread_id is not None and (thread is None or thread["current"] != m.session):
+        die("thread %s has no record of this machine with session %s any more (purged, or its session is another "
+            "thread's now): nothing was %s" % (thread_id[:8], m.short, verb), EXIT_UNKNOWN)
     human = thread is not None and thread["opened"] == "human" and thread["current"] == m.session
     if purge and not human:
         die("%s holds no seat and no thread record of this machine: there is no record to purge" % m.alias)
@@ -14479,6 +14493,8 @@ def end_and_stop(s, purge, asked=None):
     threads = threads_module()
     thread = threads.thread_of(cur) if cur else None
     record = thread if thread is not None and thread["current"] == cur else threads.get(s["seat_id"])
+    # Whether the end that stands recorded its process, read while its record stands (a purge deletes it).
+    known = record is not None and (record["opened"] == "human" or threads.seat_ended(record))
     if record is not None and not threads.asked_all(record, asked):
         # Read under the seat's locks: a refill or a return since devcloud was asked (or since no question was
         # needed) put this seat in a state the question did not clear.
@@ -14495,22 +14511,26 @@ def end_and_stop(s, purge, asked=None):
         else:
             end_seat(s, purge, asked)
     finally:
-        if retired_in_log(project, cur) and end_saw(record, seen):
+        if retired_in_log(project, cur) and end_saw(record, seen, known):
             stop_seen_turn(s, seen, turn)
 
 
-def end_saw(before, seen):
+def end_saw(before, seen, known):
     """Whether the end that stands after a verb's end is one that saw
     `seen`, the process this verb saw, so that stopping it stops what that
     end ended: the verb's own end (the record, `before`, read under the
     seat's locks, had none; or no record tracks the seat), else an end that
     recorded that very process (sminos_threads.returns: a process an end did
-    not see returns its thread, and a repeated retire never stops it)."""
+    not see returns its thread, and a repeated retire never stops it).
+    `known`: whether that end's process is recorded, read with `before`,
+    before a purge deleted the record it is read from."""
     threads = threads_module()
     if before is None or not threads.record_ended(before):
         return True
     after = threads.get(before["thread"])
-    return seen is not None and not threads.returns(after if threads.record_ended(after) else before, seen)
+    if threads.record_ended(after):
+        return seen is not None and not threads.returns(after, seen)
+    return seen is not None and not threads.returns(before, seen, known=known)
 
 
 def stop_seen_turn(s, seen, turn):
@@ -14663,7 +14683,7 @@ def cmd_remove(a):
     # thread of its own (its first occupant, reopened) names that session, never the seat it left.
     found = find_target(a.seat)
     if found[0] == "none" and (ended := ended_target(a.seat)) is not None:
-        retire_member(ended[1], ended[2], True, verb="removed", how=how)
+        retire_member(ended[1], ended[2], True, verb="removed", how=how, thread_id=ended[2].thread)
         return
     s0, bound, opened = resolve_seat_or_opened(a.seat, "remove it", found=found)
     if opened is not None:

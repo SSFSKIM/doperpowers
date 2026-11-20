@@ -353,6 +353,81 @@ class ArchivedHuman(Base):
         self.assertIsNotNone(threads.get(tid))
 
 
+class ArchivedPurgeBound(Base):
+    """Review 2, item 3: an ended row is the log's and outlives its record;
+    a purge by a thread's id acts on that thread's record alone."""
+
+    def test_remove_by_a_purged_threads_id_deletes_no_later_thread_of_its_session(self):
+        sid = self.closed()
+        a = threads.stamp(sid)
+        code, out = self.cli("retire", "alpha", "--purge")
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(threads.get(a))
+        other = self.repo("other")
+        p2 = self.project_of(other)
+        _, proc = self.session(root=other, sid=sid, started=ms_ago(0), name="alpha")
+        self.peer_set(proc, nameSource="user")
+        self.transcript(sid)
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": sid}):
+            code, out = self.cli("join", p2.id, cwd=other)
+        self.assertEqual(code, 0, out)
+        self.reconcile(p2)
+        b = threads.stamp(sid)
+        self.assertTrue(b and b != a, "its session, run again, is a thread of its own")
+        self.end(proc)
+        code, out = self.cli("retire", sid, cwd=other)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(threads.record_ended(threads.get(b)))
+        code, out = self.cli("remove", a)
+        self.assertEqual(code, 4, out)
+        self.assertIsNotNone(threads.get(b), "the later thread's record is not purged")
+        code, out = self.cli("retire", a, "--purge")
+        self.assertEqual(code, 4, out)
+        self.assertIsNotNone(threads.get(b))
+
+
+class RepeatedPurgeStop(Base):
+    """Review 2, item 5: a purge of a seat whose end stands, the seat file
+    deleted by the time its stop is decided, stops only the process that end
+    recorded."""
+
+    def test_remove_does_not_stop_a_job_that_reopened_the_session_after_the_lookup(self):
+        sid, proc, seat_id = self.seated()
+        code, out = self.cli("retire", "g/w")
+        self.assertEqual(code, 0, out)
+        end = seat_raw(seat_id)["ended"]
+        self.assertEqual(end["pid"], proc.pid)
+        real = sminos.locked_fresh
+
+        def locked(*a, **k):
+            got = real(*a, **k)
+            # Past the lookup: another job of the session, started within the second of the end.
+            self.end(proc)
+            self.session(sid=sid, kind="bg", started=int(sminos._ts_epoch(end["at"]) * 1000))
+            sminos.agents_json.return_value = [{"id": "newjob01", "sessionId": sid, "state": "working",
+                                                "status": "busy"}]
+            return got
+        sminos.claude_stop.reset_mock()
+        with mock.patch.object(sminos, "locked_fresh", side_effect=locked):
+            code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(seat_raw(seat_id), "removed")
+        self.assertNotIn(mock.call("newjob01"), sminos.claude_stop.call_args_list)
+
+    def test_remove_still_stops_the_job_the_standing_end_saw(self):
+        sid, proc, seat_id = self.seated()
+        sminos.agents_json.return_value = [{"id": "job00001", "sessionId": sid, "state": "working",
+                                            "status": "busy"}]
+        with mock.patch.object(sminos, "claude_stop", return_value=False):   # the retire's stop did not take
+            code, out = self.cli("retire", "g/w")
+        self.assertEqual(code, 0, out)
+        sminos.claude_stop.reset_mock()
+        code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(seat_raw(seat_id))
+        self.assertIn(mock.call("job00001"), sminos.claude_stop.call_args_list)
+
+
 class SeatAddRefused(Base):
     """[scalpel-2#2] `seat add --session` whose claim is refused changes
     nothing of the seat."""

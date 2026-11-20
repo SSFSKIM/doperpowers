@@ -955,7 +955,7 @@ def awaits_seat(session, peer, own):
     return os.path.exists(records.pending_path(token)) or _young(peer)
 
 
-def returns(record, peer):
+def returns(record, peer, known=None):
     """Whether the process of `peer` (an engine record), holding an ended
     thread's session, returns it (§6, row 12): one the end did not see. An
     end that recorded no process (the rule, a retire of a stopped thread)
@@ -968,12 +968,16 @@ def returns(record, peer):
     seat_ended false) says nothing of what that retire saw, so only a
     process started after it returns it. "After" is at the end's own
     precision, whole seconds (sminos.now): a process started within the
-    second of its end is not after it."""
+    second of its end is not after it. `known`: whether the end's own
+    process is recorded (this code's end, not an older copy's), as a caller
+    read it while the record still stood (a purge deletes the seat file
+    seat_ended reads); read here otherwise."""
     ended = (record or {}).get("ended") or {}
     peer = peer or {}
     if not ended or not peer.get("pid"):
         return False
-    known = record["opened"] == "human" or seat_ended(record)
+    if known is None:
+        known = record["opened"] == "human" or seat_ended(record)
     if known and ended.get("pid") in (None, ""):
         return True
     if known and str(ended["pid"]) != str(peer.get("pid")):
