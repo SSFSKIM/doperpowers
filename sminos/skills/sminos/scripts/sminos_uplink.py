@@ -2098,12 +2098,20 @@ class Link:
         and each ask held from now until its answer or its deadline
         (WORDS_WAIT for a `words?`, REACH_WAIT for a `reach?`). An ask whose
         recipient this machine holds now (sminos.hold_now, read here, the
-        last step before it goes: T1's M3) is dropped, neither sent nor
-        held open; the pass that finds it reopened asks it."""
+        last step before it goes: T1's M3), or about an event held for a
+        thread whose record cannot be read (sminos.held_unreadable: T2's M3,
+        which no pass asks about either), is dropped, neither sent nor held
+        open; the pass that finds it deliverable asks it."""
         held_now = {}
         for sid in dict.fromkeys(frame["session"] for _, _, frame in batch):
             held_now[sid] = sminos.hold_now(sid)
-        batch = [(ask, held, frame) for ask, held, frame in batch if not held_now[frame["session"]]]
+
+        def deferred(held, sid):
+            e, project = held.get("event"), held.get("project")
+            return e is not None and project is not None \
+                and bool(sminos.held_unreadable(sminos.delivered_load(project, sid), e))
+        batch = [(ask, held, frame) for ask, held, frame in batch
+                 if not held_now[frame["session"]] and not deferred(held, frame["session"])]
         if not batch:
             return
         self.session_lane.send([frame for _, _, frame in batch])

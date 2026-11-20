@@ -1483,6 +1483,24 @@ class Held(WordsRig):
         self.assertEqual(sminos.deliver_reach(self.hp, member(S1), r, "refuse"), outcomes.REFUSED_REACH)
         self.assertEqual(self.settled(self.hp, S1, "hub/mem-1"), 2)
 
+    def test_a_late_peer_verdict_asks_nothing_for_an_event_marked_for_a_thread_whose_record_cannot_be_read(self):
+        """T2's M3: held `unknown` for its thread, which no pass asks about, so neither does the uplink's queue,
+        though a process holds S1 and no thread hold reads."""
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        threads = sminos.threads_module()
+        tid = threads.stamp(S1)
+        sminos.delivered_held(self.hp, S1, "hub/mem-1", 1, tid)
+        with open(threads._human_path(tid), "w") as f:
+            f.write("{")
+        self.session(self.hp, S1, inbox=True)
+        sminos.forget_caches()
+        self.assertEqual(sminos.hold_now(S1), "", "no thread hold reads")
+        self.assertEqual(sminos.words_due(self.hp, [member(S1)]), {}, "the words pass leaves it out")
+        link = self.link()
+        link.ask_peer({"key": (self.hp.id, S1, "hub/mem-1"), "project": self.hp, "member": member(S1), "event": e})
+        self.assertEqual(link.session_lane.take(), [], "and the queue asks no reach? for it")
+        self.assertEqual(self.bridge, [], "nothing pushed")
+
     def test_reopened_its_words_are_asked_and_delivered_on_the_verdict(self):
         e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A, text="while you were away")
         self.session(self.hp, S1, inbox=True)

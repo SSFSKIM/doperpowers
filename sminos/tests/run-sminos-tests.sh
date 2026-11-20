@@ -370,6 +370,17 @@ for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.05; done
 run() { # capture stdout+stderr and rc without aborting the suite
   set +e; OUT="$("$@" 2>&1)"; RC=$?; set -e
 }
+held_debt() {   # <session>: "<some event marked held> <attempts counted>" across its delivered records (T2's M3)
+  python3 - "$SMINOS_HOME" "$1" <<'PY_HELD_DEBT'
+import glob, json, os, sys
+ws = [w for p in glob.glob(os.path.join(sys.argv[1], "projects", "*", "delivered", sys.argv[2] + ".json"))
+      for w in json.load(open(p)).values() if isinstance(w, dict)]
+print(any(w.get("held") for w in ws), sum(w.get("attempts", 0) for w in ws))
+PY_HELD_DEBT
+}
+held_mark() {   # <delivered record> <writer> <seq>: "<attempts> <whether seq is marked held>" (T2's M3)
+  python3 -c 'import json,sys; w = json.load(open(sys.argv[1])).get(sys.argv[2], {}); print(w.get("attempts", 0), int(sys.argv[3]) in [int(x[0]) for x in w.get("held", [])])' "$1" "$2" "$3"
+}
 
 # ---- the suite's two parts ---------------------------------------------------
 # SMINOS_PART picks one, for a CI gate each: `core` is this file's own cases,
@@ -2505,17 +2516,6 @@ assert_rc 0 "$RC" "broadcast is recorded"
 assert_contains "$OUT" 'lead: sent' "@all reaches a live member"
 assert_not_contains "$OUT" 'b:' "a stopped member is not in the @all audience"
 assert_equals "$(python3 -c 'import json,sys; s = [json.loads(x)["seq"] for x in open(sys.argv[1])]; print(s == list(range(1, len(s) + 1)))' "$A_LOG")" 'True' "a writer's seq increases, its lifecycle and its messages in one sequence"
-held_debt() {   # <session>: "<some event marked held> <attempts counted>" across its delivered records (T2's M3)
-  python3 - "$SMINOS_HOME" "$1" <<'PY_HELD_DEBT'
-import glob, json, os, sys
-ws = [w for p in glob.glob(os.path.join(sys.argv[1], "projects", "*", "delivered", sys.argv[2] + ".json"))
-      for w in json.load(open(p)).values() if isinstance(w, dict)]
-print(any(w.get("held") for w in ws), sum(w.get("attempts", 0) for w in ws))
-PY_HELD_DEBT
-}
-held_mark() {   # <delivered record> <writer> <seq>: "<attempts> <whether seq is marked held>" (T2's M3)
-  python3 -c 'import json,sys; w = json.load(open(sys.argv[1])).get(sys.argv[2], {}); print(w.get("attempts", 0), int(sys.argv[3]) in [int(x[0]) for x in w.get("held", [])])' "$1" "$2" "$3"
-}
 last_seq() { tail -1 "$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["seq"])'; }
 # A live socket for b makes a later tag push.
 printf '{"pid":%s,"sessionId":"%s","name":"b","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$B" "$SOCK" > "$HOME/.claude/sessions/b.json"
