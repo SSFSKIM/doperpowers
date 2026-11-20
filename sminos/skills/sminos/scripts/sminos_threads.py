@@ -1734,10 +1734,16 @@ def asked_all(record, asked):
     return set(shorts_of(owner_sessions(record))) <= set(asked)
 
 
+def is_adopted(vm):
+    """Whether a census host is an adopted machine, which `devcloud vm down`
+    releases and leaves running, where it deletes a host devcloud made."""
+    return bool(vm.get("adopted") or vm.get("account") == "adopted")
+
+
 def host_words(vm):
     """One host as a person is told it: its name, with its provider and
     account, or as an adopted machine."""
-    if vm.get("adopted") or vm.get("account") == "adopted":
+    if is_adopted(vm):
         return "%s (an adopted machine)" % vm.get("name")
     return "%s (%s, account %s)" % (vm.get("name"), vm.get("provider"), vm.get("account"))
 
@@ -1756,12 +1762,17 @@ def owned_words(owned):
     and the way on, and what could not be asked."""
     parts = []
     if owned.vms:
-        # Whose call the deletion is, said where it is read (T1's M6, evaluated): "take each down first" had
-        # sessions asked only to retire delete the host themselves.
-        parts.append("it made hosts that still exist: %s; deleting a host is its owner's call: once nothing on it "
-                     "is needed, %s deletes it, and then it can be retired" % (
-                         ", ".join(host_words(v) for v in owned.vms),
-                         "; ".join("`devcloud vm down %s`" % v.get("name") for v in owned.vms)))
+        # Whose call taking a host down is, said where it is read (T1's M6, evaluated): "take each down first"
+        # had sessions asked only to retire delete the host themselves.
+        kinds = {is_adopted(v) for v in owned.vms}
+        made, act = (("made or adopted", "deleting or releasing") if len(kinds) == 2 else
+                     ("adopted", "releasing") if True in kinds else ("made", "deleting"))
+        parts.append("it %s hosts that still exist: %s; %s a host is its owner's call: once nothing on it is "
+                     "needed, %s, and then it can be retired" % (
+                         made, ", ".join(host_words(v) for v in owned.vms), act,
+                         "; ".join("`devcloud vm down %s` %s" % (v.get("name"), "releases it and leaves it running"
+                                                                 if is_adopted(v) else "deletes it")
+                                   for v in owned.vms)))
     if owned.unknown:
         parts.append("%sdevcloud could not tell whether it made a host that still exists: %s" % (
             "and " if parts else "", "; ".join(unknown_words(u) for u in owned.unknown)))
