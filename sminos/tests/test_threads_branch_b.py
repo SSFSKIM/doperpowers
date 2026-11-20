@@ -40,7 +40,9 @@ sys.path.insert(0, HERE)
 
 from test_threads import records, sminos, threads  # noqa: E402
 from test_threads_stopped import Rig  # noqa: E402
+import test_threads  # noqa: E402
 import test_threads_stopped  # noqa: E402 — its Clear rig, by module, so its own tests are not collected here
+import test_words  # noqa: E402 — its Held rig, likewise
 
 
 def ago(seconds):
@@ -301,6 +303,113 @@ class Wave2Join(Rig):
         self.assertNotIn("thread", joins[-1], "unstamped: the thread that only had it is not its stamp")
 
 
+class HeldAgain(Rig):
+    """The held guarantee against a second fault (the verifier's fifth wave):
+    each addressed event marked, the mark one step with the record, a
+    missing verdict no refusal, and a handed-off session's debt closed."""
+
+    def stopped(self):
+        sid, proc = self.opened()
+        self.end(proc)
+        self.reconcile()
+        return sid
+
+    def owed_any(self, sid):
+        sminos.forget_caches()
+        return sminos._owed(sminos.log_read(self.p, to_session=sid), sid, sminos.delivered_load(self.p, sid))
+
+    def test_a_writers_second_held_say_is_marked_and_kept_owed(self):
+        """A: the inbox goes away after the first frame lands, in the same pass."""
+        sid = self.stopped()
+        for text in ("first", "second"):
+            code, out = self.say("@alpha %s" % text)
+            self.assertIn("recorded and held", out)
+        _, proc = self.live(sid=sid, inbox=True)
+        real = sminos.send_frame
+
+        def first_then_gone(*a, **k):
+            real(*a, **k)
+            self.peer_set(proc, messagingSocketPath="")
+        with mock.patch.object(sminos, "send_frame", side_effect=first_then_gone):
+            self.tick()
+        self.assertEqual(len(self.owed_to(sid)), 1, "the second stays owed")
+        self.end(proc)
+        self.live(sid=sid, inbox=True)
+        self.tick()
+        self.assertTrue(any("@alpha second" in x for x in self.inbox(sid)), self.inbox(sid))
+
+    def test_a_held_sends_record_and_mark_are_one_step_against_a_pass(self):
+        """B: another process reopens the session and runs a pass between the
+        send's append and its mark."""
+        sid = self.stopped()
+        real, waiter = sminos.record_message, []
+        script = ("import sys; sys.path.insert(0, %r); import sminos; sminos.daemon_module().tick("
+                  "sminos.resolve_project(%r))" % (os.path.dirname(sminos.__file__), self.root))
+
+        def reopened_and_ticked(*a, **k):
+            got = real(*a, **k)
+            self.session(sid=sid, started=reopened_now())   # reopened, its inbox not published
+            proc = subprocess.Popen([sys.executable, "-B", "-c", script], cwd=self.root)
+            waiter.append(proc)
+            try:
+                proc.wait(3)   # a pass with no lock to wait on finishes here
+            except subprocess.TimeoutExpired:
+                pass
+            return got
+        with mock.patch.object(sminos, "record_message", side_effect=reopened_and_ticked):
+            code, out = self.cli("send", "alpha", "mid append")
+        waiter[0].wait(30)
+        self.assertEqual(code, 0, out)
+        self.assertIn("recorded and held", out)
+        self.assertEqual(len(self.owed_to(sid)), 1, "owed: the pass found it marked")
+        self.live(sid=sid, inbox=True)
+        self.tick()
+        self.assertTrue(any("mid append" in x for x in self.inbox(sid)), self.inbox(sid))
+
+    def test_a_handed_off_sessions_held_debt_is_closed(self):
+        """E: held for A, A reopened and handed off to a job before a pass;
+        A later runs again as a thread of its own."""
+        sid = self.stopped()
+        tid = threads.stamp(sid)
+        code, out = self.cli("send", "alpha", "held for alpha")
+        self.assertIn("recorded and held", out)
+        _, q = self.live(sid=sid)
+        job = str(uuidlib.uuid4())
+        test_threads.Sessions.handoff_transcript(self, sid, job)
+        self.live(sid=job, kind="bg", inbox=True)
+        self.reconcile()
+        self.end(q)
+        self.tick()
+        self.assertEqual(threads.get(tid)["current"], job)
+        self.assertEqual(self.owed_any(sid), [], "settled at the hand-off, as it goes on in the job")
+        self.live(sid=sid, inbox=True, started=int(time.time() * 1000) + 20)
+        self.transcript(sid)
+        self.reconcile()
+        self.assertNotEqual(threads.stamp(sid), tid)
+        self.tick()
+        self.assertEqual(self.inbox(sid), [], "nothing of the old thread pushed into the new one")
+
+
+class WordsHeld(test_words.Held):
+    """C: on a machine cut over to its endpoint, verdict asks that expire are
+    no refusal of a marked event."""
+    locals().update({n: None for n in dir(test_words.Held) if n.startswith("test_")})   # its own, not run here
+
+    def test_sixty_expired_asks_leave_a_held_event_owed(self):
+        p, m, w = self.hp, test_words.member(test_words.S1), "hub/mem-1"
+        e = self.arrive(p, w, 1, signer=test_words.DEV_A)
+        sminos.deliver_next(p, m)
+        self.assertIn(1, self.record(p, test_words.S1)[w].get("held", {}))
+        self.session(p, test_words.S1, inbox=True)
+        link, key = self.link(), (p.id, test_words.S1, w)
+        for i in range(sminos.DELIVERY_ATTEMPTS):
+            link.queue_asks([(i, {"key": key, "project": p, "member": m, "event": e, "t": "words?"},
+                              {"session": test_words.S1})])
+            link.expire_asks(link.asks[i]["deadline"] + 1)
+        self.assertEqual(self.record(p, test_words.S1)[w]["settled"], 0, "still owed: no verdict is no refusal")
+        self.assertEqual(sminos.deliver_verdict(p, m, e, "refuse"), "refused-words", "an explicit refusal settles it")
+
+
 class Stamp(Rig):
     def test_a_lane_b_predecessors_later_events_carry_no_successors_stamp(self):
         """Review 3, item 7: every lifecycle event, not only its `joined`."""
@@ -551,15 +660,15 @@ class Debt(Rig):
         self.assertIn("has ended", out)
         self.assertEqual(self.inbox(sid), [], "nothing pushed")
 
-    def retire_first(self):
-        real = sminos.record_message
+    def retire_first(self, step="record_message"):
+        real = getattr(sminos, step)
 
         def retired_first(*a, **k):
             with mock.patch.object(sminos, "claude_stop", return_value=True):
                 code, out = self.cli("retire", "alpha")
             self.assertEqual(code, 0, out)
             return real(*a, **k)
-        return mock.patch.object(sminos, "record_message", side_effect=retired_first)
+        return mock.patch.object(sminos, step, side_effect=retired_first)
 
     def test_a_queued_seatless_send_retired_after_lookup_says_it_is_queued(self):
         """Review 3, item 10."""
@@ -575,7 +684,7 @@ class Debt(Rig):
         sid, proc = self.opened()
         self.end(proc)
         self.reconcile()
-        with self.retire_first():
+        with self.retire_first("held_record"):   # between the lookup and the record (the delivery lock its own)
             code, out = self.cli("send", "alpha", "held after its retire")
         self.assertEqual(code, 4, out)
         self.assertIn("has ended", out)
