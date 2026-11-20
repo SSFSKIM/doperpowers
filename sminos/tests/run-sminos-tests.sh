@@ -1264,11 +1264,11 @@ run "$SMINOS" list work
 assert_contains "$OUT" "idle" "and the seat still reads idle rather than stopped"
 peer_with_procstart "Mon Jan  1 00:00:00 2001"
 run "$SMINOS" send orchestrator "procstart bogus"
-assert_rc 4 "$RC" "an unrelated procStart reads as a recycled pid and send refuses"
-assert_contains "$OUT" "is gone — no transcript for its session on this machine" "a seat with no live peer and no transcript is refused as gone"
-assert_contains "$OUT" 'sminos fill grp/orchestrator "<task>"' "the gone refusal points at a fresh fill"
-assert_contains "$OUT" "sminos retire grp/orchestrator" "and at retire"
-assert_equals "$(printf '%s' "$OUT" | wc -l | tr -d ' ')" "0" "the gone refusal is one line"
+assert_rc 0 "$RC" "an unrelated procStart reads as a recycled pid: the send is recorded and held (T2's §6)"
+assert_contains "$OUT" "recorded and held: the session is stopped and is not woken: no conversation of it is on that machine" "held for its thread, with no transcript for its session here (T2's §5)"
+assert_equals "$(printf '%s' "$OUT" | wc -l | tr -d ' ')" "0" "said in one line"
+assert_not_contains "$(cat "$RECEIVED")" "procstart bogus" "the recycled pid receives no frame"
+assert_equals "$(held_debt "$ORCH_UUID")" "True 0" "owed, marked for its thread, no attempt counted"
 assert_not_contains "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "procstart bogus" "no resume of a gone seat is attempted"
 printf '{"pid":%s,"sessionId":"%s","name":"my session","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$ORCH_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/$SOCK_PID.json"
@@ -1625,7 +1625,7 @@ assert_equals "$(field "$CXR_UUID" event_log)" "" "re-fill clears event_log"
 assert_file_exists "$TEST_ROOT/codexruns/cxr.rc" "re-fill leaves legacy scratch alone"
 "$SMINOS" remove work/cxr >/dev/null
 
-# A vanished cwd refuses a resume (exit 2) without launching anything.
+# A vanished cwd refuses a resume (exit 2) and holds a plain send, launching nothing.
 run "$SMINOS" spawn nocwd "N"
 "$SMINOS" meta set nocwd cwd "$TEST_ROOT/vanished" >/dev/null
 nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")
@@ -1633,7 +1633,8 @@ run "$SMINOS" resume nocwd "x"
 assert_rc 2 "$RC" "resume with a vanished cwd exits 2"
 assert_contains "$OUT" "cwd does not exist" "the vanished cwd is named"
 run "$SMINOS" send nocwd "x"
-assert_rc 2 "$RC" "a send that resumes, with a vanished cwd, exits 2"
+assert_rc 0 "$RC" "a plain send to a seat whose cwd vanished is recorded and held (T2's §6)"
+assert_contains "$OUT" "recorded and held: the session is stopped and is not woken: its directory is gone" "saying why (T2's §5)"
 assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "nothing is launched for a vanished cwd"
 "$SMINOS" meta set nocwd cwd "$WORK" >/dev/null; "$SMINOS" remove work/nocwd >/dev/null
 
@@ -2169,9 +2170,12 @@ for w in blocked unknown working "done" error failed; do
 done
 run "$SMINOS" tui st --headless --width 140 --height 40 --keys "a,!focus:st/s-stop,s"
 assert_contains "$OUT" "send → st/s-stop ▏" "s on a stopped seat opens the send line (the send resumes it)"
+nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log" || true)
 run "$SMINOS" send st/s-gone "hi"
-assert_rc 4 "$RC" "send to a gone seat is refused (exit 4)"
-assert_equals "$OUT" 'sminos: seat st/s-gone is gone — no transcript for its session on this machine; sminos fill st/s-gone "<task>" or sminos retire st/s-gone' "the gone refusal is one line pointing at fill and retire"
+assert_rc 0 "$RC" "a plain send to a gone seat is recorded and held (T2's §6)"
+assert_contains "$OUT" "for s-gone: recorded and held: the session is stopped and is not woken: no conversation of it is on that machine" "one line saying why (T2's §5)"
+assert_equals "$(held_debt "$ST_GONE")" "True 0" "owed, marked for its thread, no attempt counted"
+assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log" || true)" "$nb" "and nothing launched for it"
 run "$SMINOS" send st/s-ret "hi"
 assert_rc 4 "$RC" "send to a retired seat is refused even while its session answers"
 assert_contains "$OUT" "sminos fill st/s-ret" "pointing at fill"
@@ -2501,6 +2505,14 @@ assert_rc 0 "$RC" "broadcast is recorded"
 assert_contains "$OUT" 'lead: sent' "@all reaches a live member"
 assert_not_contains "$OUT" 'b:' "a stopped member is not in the @all audience"
 assert_equals "$(python3 -c 'import json,sys; s = [json.loads(x)["seq"] for x in open(sys.argv[1])]; print(s == list(range(1, len(s) + 1)))' "$A_LOG")" 'True' "a writer's seq increases, its lifecycle and its messages in one sequence"
+held_debt() {   # <session>: "<some event marked held> <attempts counted>" across its delivered records (T2's M3)
+  python3 - "$SMINOS_HOME" "$1" <<'PY_HELD_DEBT'
+import glob, json, os, sys
+ws = [w for p in glob.glob(os.path.join(sys.argv[1], "projects", "*", "delivered", sys.argv[2] + ".json"))
+      for w in json.load(open(p)).values() if isinstance(w, dict)]
+print(any(w.get("held") for w in ws), sum(w.get("attempts", 0) for w in ws))
+PY_HELD_DEBT
+}
 held_mark() {   # <delivered record> <writer> <seq>: "<attempts> <whether seq is marked held>" (T2's M3)
   python3 -c 'import json,sys; w = json.load(open(sys.argv[1])).get(sys.argv[2], {}); print(w.get("attempts", 0), int(sys.argv[3]) in [int(x[0]) for x in w.get("held", [])])' "$1" "$2" "$3"
 }
@@ -2546,8 +2558,8 @@ run "$SMINOS" list --json
 assert_contains "$OUT" '"alias": "lead"' "a member lists the project"
 assert_contains "$OUT" '"alias": "x"' "every member of it, whichever group its seat is in"
 run "$SMINOS" send other/x hi
-assert_rc 4 "$RC" "a send to a gone seat of the project is refused as gone, not as outside a family"
-assert_contains "$OUT" 'is gone' "naming why"
+assert_rc 0 "$RC" "a send to a gone seat of the project is recorded and held for it, not refused as outside a family"
+assert_contains "$OUT" 'for x: recorded and held: the session is stopped and is not woken: no conversation of it is on that machine' "naming why (T2's §5)"
 run "$SMINOS" say '@x hi'
 assert_rc 0 "$RC" "the project is a tag's reach: a seat of another group in the project is addressed"
 assert_contains "$OUT" 'x: recorded' "and recorded for it (no session of its runs here)"
@@ -4626,8 +4638,9 @@ run "$SMINOS" say "@quiet-seat are you there"
 assert_contains "$OUT" "quiet-seat: recorded" "a tagged say to it is recorded"
 assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and launches no claude --bg --resume of the running process"
 run "$SMINOS" send od-alpha/quiet-seat "are you there"
-assert_rc 4 "$RC" "send to a running seat whose inbox does not answer is refused (exit 4)"
-assert_contains "$OUT" "runs, but its inbox does not answer" "saying why"
+assert_rc 0 "$RC" "a plain send to a running seat whose inbox does not answer is recorded and held (T2's §6)"
+assert_contains "$OUT" "for quiet-seat: recorded: its process is starting, and the daemon delivers it" "saying the daemon delivers it once it answers (T2's §5)"
+assert_equals "$(held_debt "$OD_SEAT")" "True 0" "owed, marked for its thread, no attempt counted"
 assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and resumes nothing either"
 
 # The row: alias [short] always, kind, word, @machine, repo@branch, the

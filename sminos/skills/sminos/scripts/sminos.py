@@ -3689,8 +3689,23 @@ def stale_hold(record, session, e):
     pushed to no process of another thread (settled `recorded`, as the
     continuation rule settles what a session handed off was owed)."""
     thread = _delivery(record, e["writer"]).get("held", {}).get(e["seq"])
-    return thread is not None and thread != threads_module().stamp(session) \
-        and not threads_module().unreadable(thread)   # one that cannot be read is not known displaced
+    if thread is None:
+        return False
+    now = threads_module().stamp(session)
+    # Another thread positively holding the session settles it; with none, a marked thread whose record cannot be
+    # read is not known displaced (held_unreadable defers it).
+    return thread != now and (bool(now) or not threads_module().unreadable(thread))
+
+
+def held_unreadable(record, e):
+    """The thread an event's hold mark names when that thread's record is
+    there and cannot be read, else "": no binding of the session is known
+    (stale_hold settles it once another thread positively holds the
+    session), so it stays owed, held `unknown` for that thread, and is
+    pushed nothing, asked about nothing and counted nothing until the
+    record reads again."""
+    thread = _delivery(record, e["writer"]).get("held", {}).get(e["seq"])
+    return thread if thread and threads_module().unreadable(thread) else ""
 
 
 def stale_line():
@@ -3749,6 +3764,8 @@ def held_owed(project, session, record, e, outcome):
         return outcome
     if outcome != "recorded" and not outcome.startswith("failed"):
         return outcome
+    if (unknown := held_unreadable(record, e)):
+        return hold_outcome("unknown", unknown)   # its thread's record unreadable: owed, nothing counted
     if not thread_owed(session) or latest_membership(_own_events(project, session)) != "joined":
         return outcome
     return "held:not pushed to its process yet (%s)" % outcome
@@ -6764,6 +6781,8 @@ def deliver_next(project, member, due=False):
                         outcome = outcomes.READ_ONLY
                     elif stale_hold(record, session, e):
                         outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
+                    elif (unknown := held_unreadable(record, e)):
+                        outcome = hold_outcome("unknown", unknown)   # no binding known: deferred, pushed nothing
                     elif hold or hold is None and (hold := held_now(session, due)):
                         # Held (T2's §4): pushed nothing and asked nothing. An event for the live alone (an @all,
                         # a broadcast) settles as for a stopped member; an addressed one stays owed.
@@ -7295,6 +7314,8 @@ def deliver_verdict(project, member, event, verdict):
                     event_ref(e), project.name, session))
             elif stale_hold(delivered_load(project, session), session, e):
                 outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
+            elif (unknown := held_unreadable(delivered_load(project, session), e)):
+                outcome = hold_outcome("unknown", unknown)   # no binding known: deferred, pushed nothing
             elif (hold := hold_now(session)):
                 # Held since it was asked about: pushed nothing (T2's §4); an event for the live alone settles
                 # `recorded` as the pass settles it, never debt; an addressed one stays owed for its thread.
@@ -7361,7 +7382,8 @@ def words_due(project, members):
             firsts.setdefault(e["writer"], e)
         due = [e for w, e in sorted(firsts.items())
                if words_route(project, e) == "ask" and (_delivery(record, w).get("pushed") or [None])[0] != e["seq"]
-               and not (read_only and policy.outside_origin(e)) and not holder.exists(project.id, m.session, e)]
+               and not (read_only and policy.outside_origin(e)) and not holder.exists(project.id, m.session, e)
+               and not held_unreadable(record, e)]
         if due and not hold_for(m.session):   # a held session is asked about nothing (M3)
             out[m.session] = due
     return out
@@ -7401,7 +7423,7 @@ def reach_due(project, members):
         due = []
         for w, e in sorted(firsts.items()):
             if (_delivery(record, w).get("pushed") or [None])[0] == e["seq"] \
-                    or (read_only and policy.outside_origin(e)):
+                    or (read_only and policy.outside_origin(e)) or held_unreadable(record, e):
                 continue
             if holder.exists(project.id, m.session, e):
                 peer = peer_for_session(m.session)
@@ -7469,6 +7491,8 @@ def deliver_reach(project, member, event, verdict, reason=None):
                     event_ref(e), project.name, session[:8], reason or "no reason given"))
             elif stale_hold(delivered_load(project, session), session, e):
                 outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
+            elif (unknown := held_unreadable(delivered_load(project, session), e)):
+                outcome = hold_outcome("unknown", unknown)   # no binding known: deferred, pushed nothing
             elif (hold := hold_now(session)):
                 # Held since it was asked about: pushed nothing (T2's §4); an event for the live alone settles
                 # `recorded` as the pass settles it, never debt; an addressed one stays owed for its thread.
@@ -14549,7 +14573,8 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
         # plain send is delivered as every deliverer delivers (T2's M3: its record's own wake, or the hold); a
         # verb and a wait are held, recorded, pushed nothing (T1's M3, until M4).
         unlock(locks)
-        if not (wait or delivery is None or verb or isinstance(delivery, WaitingSend) or delivery.held):
+        if not (wait or delivery is None or verb or isinstance(delivery, WaitingSend)
+                or delivery.held and not hold_now(s["current"])):
             delivery.release()
             deliver_sent(delivery.project, s["current"], s["alias"], delivery)
             return
@@ -14557,6 +14582,13 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
         if wait or delivery is None or verb:
             # A verb that starts a process exits 4 for it, its message recorded and held (T1's M3).
             die("nothing was started: %s; no reply is waited for" % human_refusal(ref), EXIT_UNKNOWN)
+        return
+    if delivered and delivery is not None and delivery.held and hold_now(s["current"]):
+        # Held for its thread (T2's §4): the hold first, asking the endpoint nothing; the words and reach gates
+        # decide only a push, which a held thread is not given.
+        unlock(locks)
+        delivery.release()
+        deliver_sent(delivery.project, s["current"], s["alias"], delivery)
         return
     if delivery and (delivery.held or not delivery.queue):
         # A concurrent deliverer pushed it between the append and our lock, or

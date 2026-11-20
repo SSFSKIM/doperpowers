@@ -748,6 +748,42 @@ class Decided(Deliveries):
                 self.assertEqual(self.owed(sid), [])
 
 
+    def test_a_hold_for_an_unreadable_record_survives_a_words_timeout_and_is_not_asked_about(self):
+        tid, sid = self.human_thread()
+        member = self.member(sid)
+        with open(self.record_file(tid), "w") as f:
+            f.write("{")
+        sminos.forget_caches()
+        e = self.addressed(sid, "while unreadable")
+        got = sminos.deliver_next(self.p, member, due=True)
+        self.assertEqual([o for x, o in got["outcomes"] if x["seq"] == e["seq"]], ["held:unknown"])
+        for _ in range(sminos.DELIVERY_ATTEMPTS + 1):
+            self.assertEqual(sminos.words_unanswered(self.p, member, e, "no verdict"), 0, "no attempt counted")
+        self.assertEqual(self.owed(sid), ["while unreadable"], "still owed")
+        self.assertEqual(set(self.attempts(sid).values()) - {0}, set())
+        with mock.patch.object(sminos, "words_route", lambda project, x: "ask"):
+            self.assertEqual(sminos.words_due(self.p, [member]), {}, "the words pass asks nothing while it holds")
+        with mock.patch.object(sminos.audience_module(), "reach_capable", return_value=True):
+            self.assertEqual(sminos.reach_due(self.p, [member]), {}, "nor the reach pass")
+
+    def test_a_mark_for_an_unreadable_record_is_never_pushed_and_settles_once_another_thread_holds_the_session(self):
+        tid, sid = self.human_thread("plan")
+        code, out = self.say("@%s old debt" % sid[:8])
+        self.assertEqual(self.marked(sid), {(w, q): tid for (w, q) in self.marked(sid)}, "held for its thread")
+        with open(self.record_file(tid), "w") as f:
+            f.write("{")
+        received = self.terminal(sid)   # a process holds the session again: a live inbox
+        self.tick()
+        self.assertEqual(self.received(received), [], "an unknown binding pushes nothing")
+        self.assertEqual(self.owed(sid), ["old debt"], "and stays owed")
+        new = threads.ensure(sid)   # the same session under a new record: another thread positively holds it
+        sminos.forget_caches()
+        self.assertNotEqual(threads.stamp(sid), tid)
+        self.tick()
+        self.assertEqual(self.received(received), [], "the old thread's debt goes to no process of another")
+        self.assertEqual(self.owed(sid), [], "settled as stale")
+        self.assertIsNotNone(new)
+
 # ------------------------------------------------------------ what the hold reads (review round 1)
 
 

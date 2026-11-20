@@ -681,5 +681,30 @@ class Primitive(Rig):
         self.assertEqual(len(self.inbox(RECIP)), 1)
 
 
+
+# ------------------------------------------------------------- the thread's hold comes first (T2's §4)
+
+
+class ThreadHold(Rig):
+    def test_a_plain_send_to_a_seat_not_woken_is_held_for_its_thread_and_the_endpoint_is_asked_nothing(self):
+        """A seat with no transcript here is not woken (`transcript`): a plain send to it, a peer's that reach
+        would gate and an operator's that words would, is held and marked for its thread first, and no `reach?`
+        or `words?` is asked for it."""
+        self.live(SENDER, "sender")
+        ep = self.endpoint(reach_verdict="deliver")
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "hello")
+        for alias, sid, session in (("parked", SEATED, SENDER), ("idle-op", ELSEWHERE, None)):
+            with self.subTest(sender="a peer" if session else "the operator"):
+                self.seat(alias, sid, owners=ANOTHER)
+                out = self.cli("send", "crew/" + alias, "while away", session=session)
+                self.assertIn("recorded and held: the session is stopped and is not woken: no conversation of it is "
+                              "on that machine", out)
+                record = sminos.delivered_load(self.hp, sid)
+                self.assertTrue(any(w.get("held") for w in record.values()), record)
+        time.sleep(2.0)
+        self.assertEqual(self.reach_asks(ep), [])
+        self.assertEqual(ep.frames("words?"), [])
+
 if __name__ == "__main__":
     unittest.main()
