@@ -13439,6 +13439,33 @@ def canonical_end(session, project):
     return e if e is not None and e["kind"] == "retired" and e.get("reason") in END_REASONS else None
 
 
+def queued_after_end(waiting):
+    """What a sender is told of a send queued for its writer's head
+    (WaitingSend) to a session whose thread ended meanwhile: it is not in
+    the log yet, so no end has settled it; once appended it is settled with
+    the end if the end still stands, and delivered if the session has
+    returned by then."""
+    return ("the message is queued, not in the log yet (%s); once appended it is settled with the end if the "
+            "session is still ended, and delivered to it if it has returned" % waiting.held)
+
+
+def ended_after_record(project, alias, session, recorded):
+    """The end found after a send's record (canonical_end, read afresh; the
+    caller holds the session's delivery lock where `recorded` is a
+    SendDelivery): exit 4, saying what becomes of the message — settled with
+    the end, or for one still queued (WaitingSend) queued_after_end. Nothing
+    when the session has not ended."""
+    if not canonical_end(session, project):
+        return
+    if isinstance(recorded, WaitingSend):
+        die("%s has ended: %s" % (alias, queued_after_end(recorded)), EXIT_UNKNOWN)
+    event = recorded.event if isinstance(recorded, SendDelivery) else recorded
+    if isinstance(recorded, SendDelivery):
+        recorded.release()
+    die("%s has ended: %s was recorded and is settled with its end, pushed nowhere" % (alias, event_ref(event)),
+        EXIT_UNKNOWN)
+
+
 def refuse_ended_seat(s, ref, recorded=None, ended=False):
     """Exit 4 for a send to a seat whose session's thread has ended
     (canonical_end; `ended`: already decided by the caller), saying what
@@ -13452,7 +13479,7 @@ def refuse_ended_seat(s, ref, recorded=None, ended=False):
         if recorded is None:
             what = "nothing was recorded for it"
         elif isinstance(recorded, WaitingSend):
-            what = "the message %s, and is settled with its end, pushed nowhere" % recorded.held
+            what = queued_after_end(recorded)
         else:
             what = "%s was recorded and is settled with its end, pushed nowhere" % event_ref(recorded.event)
         die("seat %s's session has ended: %s — it returns when its human reopens its session" % (ref, what),
@@ -13975,6 +14002,7 @@ def send_to_member(project, m, sender, via, text, msg_id):
     if not peer and hold:
         # A stopped session its human opened (T1's M3): recorded and held, as a tagged say is.
         e = record_message(project, m.session, m.alias, sender, via, text, msg_id, deliver=False)
+        ended_after_record(project, m.alias, m.session, e)   # ended since it was looked up: said so, exit 4
         if isinstance(e, WaitingSend):
             e.recorded_owed(m.alias)
             return
@@ -13986,12 +14014,9 @@ def send_to_member(project, m, sender, via, text, msg_id):
         die("%s is not live (%s) — a session sminos did not spawn is reached only while it runs; "
             "sminos say records for it" % (m.alias, m.state), EXIT_UNKNOWN)
     delivery = record_message(project, m.session, m.alias, sender, via, text, msg_id)
-    if not isinstance(delivery, WaitingSend) and canonical_end(m.session, project):
-        # Ended since it was looked up (an end holds no lock this send holds before its settlement, which waits
-        # for this delivery lock): decided here, under it, so the end's settlement is what becomes of it.
-        delivery.release()
-        die("%s has ended: %s was recorded and is settled with its end, pushed nowhere" % (
-            m.alias, event_ref(delivery.event)), EXIT_UNKNOWN)
+    # Ended since it was looked up (an end holds no lock this send holds before its settlement, which waits for
+    # this delivery lock): decided here, under it, so the end's settlement is what becomes of it.
+    ended_after_record(project, m.alias, m.session, delivery)
     if not isinstance(delivery, WaitingSend) and hold_now(m.session):
         held_send(delivery, m.alias)   # the last hop, under the delivery lock: stopped since it was looked at
         return

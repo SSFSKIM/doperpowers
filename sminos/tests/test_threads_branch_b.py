@@ -383,6 +383,8 @@ class Send(Rig):
         self.assertEqual(code, 4, out)
         self.assertNotIn("Traceback", out)
         self.assertIn("it waits in", out)
+        self.assertNotIn("pushed nowhere", out, "a queued message is in no log an end has settled")
+        self.assertIn("delivered to it if it has returned", out)
         self.assertEqual(self.inbox(sid), [])
 
     def test_a_running_session_its_human_opened_is_not_told_it_is_stopped(self):
@@ -523,6 +525,36 @@ class Debt(Rig):
         self.assertEqual(code, 4, out)
         self.assertIn("has ended", out)
         self.assertEqual(self.inbox(sid), [], "nothing pushed")
+
+    def retire_first(self):
+        real = sminos.record_message
+
+        def retired_first(*a, **k):
+            with mock.patch.object(sminos, "claude_stop", return_value=True):
+                code, out = self.cli("retire", "alpha")
+            self.assertEqual(code, 0, out)
+            return real(*a, **k)
+        return mock.patch.object(sminos, "record_message", side_effect=retired_first)
+
+    def test_a_queued_seatless_send_retired_after_lookup_says_it_is_queued(self):
+        """Review 3, item 10."""
+        sid, _ = self.opened(inbox=True)
+        with self.retire_first(), mock.patch.object(sminos, "waits_for_head", return_value=True):
+            code, out = self.cli("send", "alpha", "queued after its retire")
+        self.assertEqual(code, 4, out)
+        self.assertIn("has ended: the message is queued", out)
+        self.assertEqual(self.inbox(sid), [])
+
+    def test_a_held_seatless_send_retired_after_lookup_says_it_ended(self):
+        """Review 3, item 10: the stopped branch decides after its record too."""
+        sid, proc = self.opened()
+        self.end(proc)
+        self.reconcile()
+        with self.retire_first():
+            code, out = self.cli("send", "alpha", "held after its retire")
+        self.assertEqual(code, 4, out)
+        self.assertIn("has ended", out)
+        self.assertNotIn("recorded and held", out)
 
     def test_the_records_export_waits_out_a_join_that_holds_the_move_lock(self):
         """[scalpel-1#13] The bridge's export, in another process, while a
