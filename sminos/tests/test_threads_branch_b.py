@@ -410,6 +410,71 @@ class WordsHeld(test_words.Held):
         self.assertEqual(sminos.deliver_verdict(p, m, e, "refuse"), "refused-words", "an explicit refusal settles it")
 
 
+class HeldRecord(Rig):
+    """The delivery record's two forms and the thread a hold names (the
+    held path's sixth wave)."""
+
+    def stopped(self, name="alpha"):
+        sid, proc = self.opened(name=name)
+        self.end(proc)
+        self.reconcile()
+        return sid
+
+    def test_two_writers_held_marks_both_survive_a_write(self):
+        """1: a write for one writer keeps every other writer's marks."""
+        sid = self.stopped()
+        beta, _ = self.opened(name="beta", charge="")
+        self.say("@alpha from the operator")
+        self.say("@alpha from beta", sender=beta)
+        _, quiet = self.session(sid=sid, started=reopened_now())
+        self.peer_set(quiet, nameSource="user")   # reopened, no inbox published yet
+        self.tick()
+        self.assertEqual(len(self.owed_to(sid)), 2, "both still owed")
+        self.end(quiet)
+        self.live(sid=sid, inbox=True)
+        self.tick()
+        got = " ".join(self.inbox(sid))
+        self.assertIn("from the operator", got)
+        self.assertIn("from beta", got)
+
+    def test_a_hold_names_the_thread_the_recipient_was_chosen_as(self):
+        """2: between the lookup and the record the session went on in a job
+        and its id became another thread's."""
+        sid = self.stopped()
+        tid = threads.stamp(sid)
+        job, real = str(uuidlib.uuid4()), sminos.held_record
+
+        def rebound(*a, **k):
+            _, q = self.live(sid=sid)
+            test_threads.Sessions.handoff_transcript(self, sid, job)
+            self.live(sid=job, kind="bg", inbox=True)
+            self.reconcile()
+            self.end(q)
+            self.tick()
+            self.live(sid=sid, inbox=True, started=int(time.time() * 1000) + 20)
+            self.transcript(sid)
+            self.reconcile()
+            self.assertNotEqual(threads.stamp(sid), tid)
+            return real(*a, **k)
+        with mock.patch.object(sminos, "held_record", side_effect=rebound):
+            code, out = self.cli("send", "alpha", "for the original thread")
+        self.assertEqual(code, 0, out)
+        self.assertIn("no longer fills the thread it was sent to", out)
+        self.tick()
+        self.assertEqual(self.inbox(sid), [], "nothing pushed into the id's new thread")
+
+    def test_an_integer_mark_is_no_mark(self):
+        """3: the pass decides the event afresh."""
+        sid = self.stopped()
+        sminos.log_append(self.p, "testhost/human", "human", **{
+            "from": "human", "to": [{"session": sid, "alias": "alpha"}], "text": "under an integer mark"})
+        path = sminos.project_path(self.p, "delivered", sminos.reader_key(sid) + ".json")
+        sminos.write_json(path, {"testhost/human": {"settled": 0, "pending": None, "attempts": 0, "held": [1]}})
+        self.live(sid=sid, inbox=True)
+        self.tick()
+        self.assertTrue(any("under an integer mark" in x for x in self.inbox(sid)), self.inbox(sid))
+
+
 class Stamp(Rig):
     def test_a_lane_b_predecessors_later_events_carry_no_successors_stamp(self):
         """Review 3, item 7: every lifecycle event, not only its `joined`."""

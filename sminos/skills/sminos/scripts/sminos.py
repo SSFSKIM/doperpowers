@@ -3561,10 +3561,10 @@ def delivered_load(project, session_uuid):
                 out[str(w)]["revoked"] = marked
             held = {}
             for x in v.get("held") if isinstance(v.get("held"), list) else ():
-                seq, thread = (x, "") if type(x) is int else tuple(x) if isinstance(x, list) and len(x) == 2 \
-                    else (None, None)
-                if type(seq) is int and seq > settled and isinstance(thread, str):
-                    held[seq] = thread
+                # [seq, thread] pairs, the one form written (_delivered_write); anything else is no mark
+                if isinstance(x, list) and len(x) == 2 and type(x[0]) is int and x[0] > settled \
+                        and isinstance(x[1], str):
+                    held[x[0]] = x[1]
             if held:
                 out[str(w)]["held"] = held   # {seq: the thread the hold was decided for}
     return out
@@ -3580,7 +3580,8 @@ def _entry(settled, pending=None, attempts=0, revoked=(), pushed=None, held=()):
     prefix moves over them in order), the rest kept; `revoked` only when it
     holds one, so a record with none is written as before; `held` ({seq:
     the thread the hold was decided for}, delivered_held) above the prefix
-    alone, likewise, written as [seq, thread] pairs."""
+    alone, likewise. The entry is in the form delivered_load gives, which
+    _delivered_write alone turns into the form on disk."""
     marked = sorted({s for s in revoked if s > settled})
     while marked and marked[0] == settled + 1 and marked[0] != pending:
         settled = marked.pop(0)
@@ -3589,7 +3590,7 @@ def _entry(settled, pending=None, attempts=0, revoked=(), pushed=None, held=()):
         w["pushed"] = pushed
     if marked:
         w["revoked"] = marked
-    held = sorted([s, t] for s, t in dict(held or {}).items() if s > settled)
+    held = {s: t for s, t in dict(held or {}).items() if s > settled}
     if held:
         w["held"] = held
     return w
@@ -3604,7 +3605,14 @@ def _next_check(record, writer, seq):
 
 
 def _delivered_write(project, session_uuid, record):
-    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+    """A delivery record, in delivered_load's form, written in the form on
+    disk: every writer's `held` ({seq: thread}) as sorted [seq, thread]
+    pairs, which JSON cannot key by int. The one place the forms meet, so
+    no writer's marks are written in the other form whichever writer a
+    caller changed (`revoked` and `pushed` are lists in both)."""
+    disk = {w: (dict(v, held=sorted([s, t] for s, t in v["held"].items())) if isinstance(v.get("held"), dict)
+                else v) for w, v in record.items()}
+    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), disk)
 
 
 def delivered_settle(project, session_uuid, writer, seq):
@@ -3671,21 +3679,32 @@ def stale_hold(record, session, e):
     return thread is not None and thread != threads_module().stamp(session)
 
 
-def held_record(project, session, alias, sender, via, text, msg_id):
+def stale_line():
+    """What a sender is told of a message whose recipient no longer fills
+    the thread it was chosen as by the time its hold was noted (it went on
+    in another session, its id another thread's now): the stale-hold case."""
+    return ("the session no longer fills the thread it was sent to (it went on in another session): pushed to no "
+            "one; it stays in the log")
+
+
+def held_record(project, session, alias, sender, via, text, msg_id, thread):
     """A sender's message to a session it found held, recorded and its hold
     noted in one step against the delivery pass: under the session's
     delivery lock, the append and the mark (delivered_held), so no pass
     settles the event between them, whatever process holds the session by
     then: the sender's decision is the hold, and the event is owed from it
-    until it is pushed to its thread's process or the thread ends. (the
-    event or WaitingSend, whether it is held): a WaitingSend has no seq yet,
+    until it is pushed to its thread's process or the thread ends. The mark
+    names `thread`, the thread the recipient was chosen as at the lookup:
+    one the session no longer fills by the time the lock is held is the
+    stale-hold case (stale_hold: pushed to no one). (the event or
+    WaitingSend, "held" | "stale" | "queued"): a WaitingSend has no seq yet,
     and the pass decides it once it is appended."""
     with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
         e = record_message(project, session, alias, sender, via, text, msg_id, deliver=False)
         if isinstance(e, WaitingSend):
-            return e, False
-        delivered_held(project, session, e["writer"], e["seq"])
-        return e, True
+            return e, "queued"
+        delivered_held(project, session, e["writer"], e["seq"], thread)
+        return e, "held" if threads_module().stamp(session) == thread else "stale"
 
 
 def held_decided(project, session, e, outcome):
@@ -6493,12 +6512,14 @@ def wake_of(member):
     return member.wake or None
 
 
-def held_send(delivery, alias, why=None):
+def held_send(delivery, alias, why=None, thread=None):
     """A send to a held session, recorded (its SendDelivery, or the
     WaitingSend of an append that waits for its writer's head, which has no
     seq yet and is said as it is): released, pushed nothing, the sender told
     it is held (`why`, a PushHeld that is not the human's hold, said
-    instead), and the daemon nudged."""
+    instead), and the daemon nudged. `thread`: the thread the recipient was
+    chosen as at the lookup, which the hold's mark names (held_record);
+    the session's thread now when none is given."""
     if delivery is None:
         return
     if isinstance(delivery, WaitingSend):
@@ -6512,8 +6533,9 @@ def held_send(delivery, alias, why=None):
         if seq <= _delivery(delivered_load(delivery.project, delivery.session), delivery.writer)["settled"]:
             said = "settled by a delivery pass between its record and this check"
         elif hold_now(delivery.session):
-            delivered_held(delivery.project, delivery.session, delivery.writer, seq)
-            said = held_line()
+            chosen = threads_module().stamp(delivery.session) if thread is None else thread
+            delivered_held(delivery.project, delivery.session, delivery.writer, seq, chosen)
+            said = held_line() if threads_module().stamp(delivery.session) == chosen else stale_line()
         else:
             said = "its session runs again, and the daemon delivers it to its process"
     delivery.release()
@@ -7936,7 +7958,7 @@ def human_owed(session):
     return t is not None and t["opened"] == "human" and t["current"] == session and not threads.record_ended(t)
 
 
-def hold_verb(project, session, alias, text, sender="", via="", machine=""):
+def hold_verb(project, session, alias, text, sender="", via="", machine="", thread=None):
     """What `resume`, `fill --resume` and `send --wait` do aimed at a
     session its human opened (T1's M3, D1): the message recorded as an
     addressed one, held as any is until its human reopens the session (or
@@ -7944,7 +7966,9 @@ def hold_verb(project, session, alias, text, sender="", via="", machine=""):
     target a verb cannot reach now, saying that nothing was started and
     why. `machine`: another machine that holds it (its published `wake`).
     One that runs here is said to run: the daemon delivers to its process,
-    and no reopening is waited for."""
+    and no reopening is waited for. `thread`: the thread the session was
+    chosen as (its stamp now, by default), which a hold's mark names."""
+    thread = threads_module().stamp(session) if thread is None else thread
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     sender = sender or ("human" if not sid else default_from(""))
     msg_id = uuidlib.uuid4().hex[:8]
@@ -7954,11 +7978,12 @@ def hold_verb(project, session, alias, text, sender="", via="", machine=""):
                                  deliver=False), bool(machine)
     else:
         # The record and its hold in one step against the delivery pass (held_record).
-        e, held = held_record(project, session, alias, sender, via or sender, text, msg_id)
+        e, held = held_record(project, session, alias, sender, via or sender, text, msg_id, thread)
     if isinstance(e, WaitingSend):
         e.recorded_owed(alias)
     else:
-        print("recorded %s for %s: %s" % (event_ref(e), alias, held_line(machine) if held else
+        print("recorded %s for %s: %s" % (event_ref(e), alias, stale_line() if held == "stale" else
+                                          held_line(machine) if held else
                                           "its session runs, and the daemon delivers it to its process"))
         nudge_daemon()
     die("nothing was started: %s; %s" % (human_refusal(alias), "it runs, and reads the message as it is delivered"
@@ -13701,6 +13726,7 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
     refuse_codex(s0)
     locks, s = locked_fresh(s0, "send", session)
     ref = "%s/%s" % (s["group"], s["alias"])
+    chosen = threads_module().stamp(s["current"])   # the thread its session is, as looked up: what a hold names
     try:
         refuse_codex(s)
         # ONE liveness probe (pid alive AND socket answers) decides both the word
@@ -13744,7 +13770,7 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         # peer this process read before a `/clear` moved its pid to another session is no route. Recorded,
         # pushed nothing, owed with no attempt counted.
         unlock(locks)
-        held_send(delivery, s["alias"])
+        held_send(delivery, s["alias"], thread=chosen)
         if wait or delivery is None:
             die("nothing was started: %s; no reply is waited for" % human_refusal(ref), EXIT_UNKNOWN)
         return
@@ -13802,7 +13828,7 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
             unlock(locks)
             if delivery is None:
                 die(e.message, EXIT_UNKNOWN)
-            held_send(delivery, s["alias"])
+            held_send(delivery, s["alias"], thread=chosen)
             if wait:
                 die("nothing was started: %s; no reply is waited for" % e.message, EXIT_UNKNOWN)
         except ResumeRefused:
@@ -13831,7 +13857,7 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         unlock(locks)
         if delivery is None:
             die("nothing was sent: %s" % e, EXIT_UNKNOWN)
-        held_send(delivery, s["alias"], e)
+        held_send(delivery, s["alias"], e, thread=chosen)
         if wait:
             die("nothing was started: %s; no reply is waited for" % e, EXIT_UNKNOWN)
         return
@@ -14090,16 +14116,17 @@ def send_to_member(project, m, sender, via, text, msg_id):
         nudge_daemon()
         return
     hold = hold_now(m.session)   # first: the engine's records read afresh for what follows (M3)
+    chosen = threads_module().stamp(m.session)   # the thread the recipient is, as looked up: what a hold names
     peer = peer_for_session(m.session)
     if not peer and hold:
         # A stopped session its human opened (T1's M3): recorded and held, as a tagged say is.
         # The record and the hold decided in one step against the delivery pass (held_record).
-        e, _ = held_record(project, m.session, m.alias, sender, via, text, msg_id)
+        e, held = held_record(project, m.session, m.alias, sender, via, text, msg_id, chosen)
         ended_after_record(project, m.alias, m.session, e)   # ended since it was looked up: said so, exit 4
         if isinstance(e, WaitingSend):
             e.recorded_owed(m.alias)
             return
-        print("recorded %s for %s: %s" % (event_ref(e), m.alias, held_line()))
+        print("recorded %s for %s: %s" % (event_ref(e), m.alias, stale_line() if held == "stale" else held_line()))
         nudge_daemon()
         return
     if not peer:
@@ -14110,7 +14137,7 @@ def send_to_member(project, m, sender, via, text, msg_id):
     # this delivery lock): decided here, under it, so the end's settlement is what becomes of it.
     ended_after_record(project, m.alias, m.session, delivery)
     if not isinstance(delivery, WaitingSend) and hold_now(m.session):
-        held_send(delivery, m.alias)   # the last hop, under the delivery lock: stopped since it was looked at
+        held_send(delivery, m.alias, thread=chosen)   # the last hop, under the delivery lock: stopped since looked at
         return
     if delivery.held:
         delivery.recorded_owed(m.alias)
@@ -14137,7 +14164,7 @@ def send_to_member(project, m, sender, via, text, msg_id):
         delivery.recorded_owed(m.alias)
         return
     except PushHeld as e:
-        held_send(delivery, m.alias, e)   # the last hop, bound afresh: nothing pushed, owed
+        held_send(delivery, m.alias, e, thread=chosen)   # the last hop, bound afresh: nothing pushed, owed
         return
     except SendFailed as e:
         if e.phase == "after":

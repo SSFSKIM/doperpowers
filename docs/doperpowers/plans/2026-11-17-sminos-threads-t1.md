@@ -1794,15 +1794,15 @@ what it says today.
 
 **A hold is a recorded decision, per event.** The delivery record of the
 addressed session (`<project>/delivered/<session>.json`) keeps, in each
-writer's entry, `held`: the seqs of that writer's events this machine
-decided to hold for the session. It is written under
-`delivered/<session>.lock` and nowhere else (`delivered_held`), by:
+writer's entry, `held`: that writer's events this machine decided to hold
+for the session, each with the thread it was decided for. It is written
+under `delivered/<session>.lock` and nowhere else (`delivered_held`), by:
 
 - the delivery pass and the two verdict paths, whenever the outcome is
   `held:human` (`held_decided`);
 - a sender's own hold: `held_send`, for the send that holds the lock, and
-  `mark_held` (the lock taken, `hold_now` read afresh) for `hold_verb`
-  and `send_to_member`'s held branch.
+  `held_record` (the append and the mark under one hold of the lock) for
+  `hold_verb` and `send_to_member`'s held branch.
 
 Every write of the entry carries it (a settle, a failed attempt, a noted
 push, a revocation), and a seq leaves it as the settled prefix passes it.
@@ -1822,7 +1822,7 @@ threads, so a message to a running session with no inbox still settles
 drops the mark, and a send queued for its writer's head has no seq to mark
 until it is appended.
 
-The decision's last form (the attack on this guarantee alone, at the branch review's end). Each mark is a pair, `[seq, thread]`: the event and the thread it was decided for. `held_decided` marks, in the pass that decides a writer's first owed event held, every addressed event of that writer behind it, so a second message promised held is held. A sender's own hold is one step against a delivery pass: `held_record` appends the event and writes its mark under one hold of `delivered/<session>.lock` (`send_to_member`'s held branch, `hold_verb`'s not-running branch); the seated send (`held_send`) reports what it found under that lock: held, settled by a pass meanwhile, or running again. `words_unanswered` counts no attempt for a marked event of a live thread its human opened: a verdict that never came is not a refusal, and an explicit refusal or a revoked signer settles it as before. A hand-off's advance carries `settle` for the session left, so what was held for it is settled by the journal as the continuation rule has it (the successor reads it through the carried cursor), and a pass that finds an event marked for a thread the session no longer fills settles it `recorded` without a push (`stale_hold`): a later reuse of the id as another thread is pushed nothing of the old one's. Not closed, and in the tech-debt tracker: a bridge that closes without reading the request (`sent?` settles the event; a retry could deliver twice), a `/clear` between the last binding check and the frame's write, and an unreadable delivery record.
+The decision's last form (the attack on this guarantee alone, at the branch review's end). Each mark is a pair, `[seq, thread]`, on disk: the event and the thread it was decided for; `delivered_load` reads every writer's marks into `{seq: thread}` and `_delivered_write` alone writes them back as pairs, so a write for one writer keeps every other writer's marks, and a mark in any other form is no mark (the event is decided afresh). A sender's mark names the thread the recipient was chosen as at its lookup, carried through the append (`held_record`, `held_send`, `hold_verb`): a session that no longer fills that thread by the time the lock is held is the stale-hold case, pushed to no one, and the sender is told so. `held_decided` marks, in the pass that decides a writer's first owed event held, every addressed event of that writer behind it, so a second message promised held is held. A sender's own hold is one step against a delivery pass: `held_record` appends the event and writes its mark under one hold of `delivered/<session>.lock` (`send_to_member`'s held branch, `hold_verb`'s not-running branch); the seated send (`held_send`) reports what it found under that lock: held, settled by a pass meanwhile, or running again. `words_unanswered` counts no attempt for a marked event of a live thread its human opened: a verdict that never came is not a refusal, and an explicit refusal or a revoked signer settles it as before. A hand-off's advance carries `settle` for the session left, so what was held for it is settled by the journal as the continuation rule has it (the successor reads it through the carried cursor), and a pass that finds an event marked for a thread the session no longer fills settles it `recorded` without a push (`stale_hold`): a later reuse of the id as another thread is pushed nothing of the old one's. Not closed, and in the tech-debt tracker: a bridge that closes without reading the request (`sent?` settles the event; a retry could deliver twice), a `/clear` between the last binding check and the frame's write, and an unreadable delivery record.
 
 The words a sender reads: for a stopped session, that it reads the message
 only if its human reopens the session before it ends (three days stopped,
@@ -3010,7 +3010,7 @@ Each of the eleven acceptance items is mapped to its tests in M6's report. Items
 
 **2026-11-20, after the branch review.** The outcome above stands, and the review changed what it rests on:
 
-- The hold is now a decision recorded per event (§5), not a reading of the process's state. That is what makes "the held messages are pushed" true through a quiet inbox, a seat an older copy made over the session, a skewed clock and a resume into an older process. Two limits are recorded with it.
+- The hold is now a decision recorded per event (§5), not a reading of the process's state. That is what makes "the held messages are pushed" true through a quiet inbox, a seat an older copy made over the session, a skewed clock and a resume into an older process. Three limits are recorded with it.
 - A seat's verbs (`retire`, `remove`, `seat add`, a refill, a first spawn) hold against the writers that race them: a verb that lost exits 4 and writes nothing, a purge's stop and outcome are its entry's, and an older copy's repoint is read and repaired as a moved seat.
 - A session's own events take a stamp only from the thread it is current in; a push is bound to its recipient again before every fallback; a question is closed only in the stopped thread's own episode; `sminos join` and a tick no longer interleave.
 - One finding is left as debt (the first spawn's promotion write), and one was dismissed against the Decision Log.
