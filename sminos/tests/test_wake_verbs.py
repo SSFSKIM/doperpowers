@@ -466,6 +466,18 @@ class Remote(Verbs):
         self.assertEqual(code, 0, out)
         self.assertIn("recorded and held on testhost: the session is stopped and is not woken: %s" % WORDS["mode"],
                       out)
+        # A spawned thread with no conversation here: `gone`, its hold published on that state and mirrored.
+        g = self.seat_in("g", repo)["current"]
+        os.unlink(sminos.transcript_now(g))
+        self.assertTrue(wait_for(lambda: (self.member(g, self.p) or self.member(g)).state == "gone"))
+        for _ in range(2):
+            code, out = self.cli("daemon", "tick", cwd=repo)
+            self.assertEqual(code, 0, out)
+        far("daemon", "tick")
+        code, out = far("say", "@%s from afar" % g[:8])
+        self.assertEqual(code, 0, out)
+        self.assertIn("recorded and held on testhost: the session is stopped and is not woken: %s"
+                      % WORDS["transcript"], out)
         policy = sminos.sibling_module("sminos_policy")
         with mock.patch.object(policy, "read_only", return_value=True):
             code, out = self.cli("daemon", "tick", cwd=repo)
