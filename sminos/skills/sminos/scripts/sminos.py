@@ -6628,13 +6628,13 @@ HOLD_WORDS = {
     "cwd": "its directory is gone",
     "protected": "its directory is in a folder macOS protects, where a background launch would stop at a prompt "
                  "for its human",
-    "mode": "it runs in a mode that asks for approval",
+    "mode": "a wake would run it in a mode that asks for approval",
     "failed": "waking it failed, and its machine tries again",
 }
-# `mode` when the machine's ceiling, not the thread's own mode, is the cause (the plan's Decision Log, "A first
-# wake's capped mode decides `mode`"): the owner's remedy named.
-CEILING_WORDS = ("the mode a first wake would run it in, lowered to this machine's ceiling, asks for approval (the "
-                 "ceiling is raised with sminos daemon policy --ceiling, or the user settings' defaultMode)")
+# `mode` on the thread's own machine when its ceiling, not the thread's own mode, is the cause (the plan's Decision
+# Log, "The `mode` words"): the ceiling's value and whose setting it is, never how to raise it.
+CEILING_WORDS = "this machine's ceiling (%s) would start it in a mode that asks for approval; the ceiling is its " \
+                "owner's setting (sminos daemon policy shows it)"
 PASSING_LINE = "recorded: its process is starting, and the daemon delivers it"
 
 
@@ -6649,7 +6649,7 @@ def held_line(why, machine="", session=""):
     if why == "mode" and session:
         t = threads_module().current_record(session, fresh=True)
         if t is not None and wake_module().mode_case(t, session) == "ceiling":
-            words = CEILING_WORDS
+            words = CEILING_WORDS % sibling_module("sminos_policy").machine_policy()["ceiling"]
     return ("recorded and held%s: the session is stopped and is not woken: %s; it is pushed when a process of it runs "
             "again before it ends (three days stopped, or a retire), else it stays in the log"
             % (" on %s" % machine if machine else "", words))

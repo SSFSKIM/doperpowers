@@ -335,8 +335,8 @@ class Hold(Rig):
         for sender in (other, None):
             code, out = self.say("@alpha are you there", sender=sender)
             self.assertEqual(code, 0, out)
-            self.assertIn("alpha: recorded and held: the session is stopped and is not woken: it runs in a mode that "
-                          "asks for approval; it is pushed when a process of it runs again before it ends", out)
+            self.assertIn("alpha: recorded and held: the session is stopped and is not woken: a wake would run it in a "
+                          "mode that asks for approval; it is pushed when a process of it runs again before it ends", out)
         for _ in range(sminos.DELIVERY_ATTEMPTS + 2):
             self.tick()
         self.assertEqual(len(self.owed_to(sid)), 2)

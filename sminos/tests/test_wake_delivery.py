@@ -57,7 +57,7 @@ WORDS = {
     "cwd": "its directory is gone",
     "protected": "its directory is in a folder macOS protects, where a background launch would stop at a prompt "
                  "for its human",
-    "mode": "it runs in a mode that asks for approval",
+    "mode": "a wake would run it in a mode that asks for approval",
     "failed": "waking it failed, and its machine tries again",
 }
 FLAGS = ["--permission-mode", "auto", "--model", "claude-term"]
@@ -434,8 +434,8 @@ class Held(Deliveries):
         code, out = self.say("@%s under the ceiling" % sid[:8])
         [said] = self.shown(out, sid)
         self.assertTrue(said.startswith(HEAD), said)
-        self.assertIn("ceiling", said, "the ceiling named as the cause")
-        self.assertIn("sminos daemon policy --ceiling", said, "and the owner's remedy")
+        self.assertIn("this machine's ceiling (default) would start it in a mode that asks for approval; the ceiling "
+                      "is its owner's setting (sminos daemon policy shows it)", said, "the ceiling named as the cause")
         self.assertEqual(threads.hold_of(sid), "mode")
         self.tick()
         self.assertEqual(self.resumes(sid), [])

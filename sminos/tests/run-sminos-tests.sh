@@ -1388,7 +1388,7 @@ sleep 0.4
 nb=$(grep -c -- '^--bg --resume' "$STUB_STATE/log/calls.log" || true)
 run "$SMINOS" send researcher "twin"
 assert_rc 0 "$RC" "a send while another wake is in flight is recorded, not refused"
-assert_contains "$OUT" "a wake of it is already in flight" "the wake in flight is explained"
+assert_contains "$OUT" "researcher: recorded: its process is starting, and the daemon delivers it" "the wake in flight is a hold that passes on its own (T2's §5)"
 assert_equals "$(grep -c -- '^--bg --resume' "$STUB_STATE/log/calls.log" || true)" "$nb" "and no second launch is made"
 kill "$LOCKER" 2>/dev/null || true; wait "$LOCKER" 2>/dev/null || true
 
@@ -2712,12 +2712,12 @@ assert_rc 0 "$RC" "one refused resume does not abort the fan-out"
 assert_contains "$OUT" "d1: recorded and held: the session is stopped and is not woken: its directory is gone" "a held earlier message holds the later one too"
 assert_contains "$OUT" 'd2: sent (woken)' "the later tagged member resumes"
 assert_contains "$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D2.json")" "\"testhost/$DUO\": {\"settled\": $(last_seq "$FAMLOG/testhost.$DUO.jsonl")" "fan-out settles the successful member"
-assert_equals "$(python3 -c 'import json,sys; w = json.load(open(sys.argv[1]))["testhost/"+sys.argv[2]]; print(w.get("attempts", 0), sorted(int(k) for k in w.get("held", {})))' "$SMINOS_HOME/projects/$FAMP/delivered/$D1.json" "$DUO")" \
+assert_equals "$(python3 -c 'import json,sys; w = json.load(open(sys.argv[1]))["testhost/"+sys.argv[2]]; print(w.get("attempts", 0), sorted(int(x[0]) for x in w.get("held", [])))' "$SMINOS_HOME/projects/$FAMP/delivered/$D1.json" "$DUO")" \
   "0 [$(( $(last_seq "$FAMLOG/testhost.$DUO.jsonl") - 1 )), $(last_seq "$FAMLOG/testhost.$DUO.jsonl")]" "and keeps both owed, held for its thread, no attempt counted"
 unset CLAUDE_CODE_SESSION_ID
-# A tagged member with no transcript on this machine (and no process) is gone: a
-# resume cannot work, so none is attempted — the message is recorded, the
-# sender is told to fill it, and the live member still gets the message.
+# A tagged member with no transcript on this machine (and no process) is not
+# woken (T2's §4): no resume is attempted, the message is held for its thread
+# and the sender told why, and the live member still gets the message.
 D4=4d4d4d4d-aaaa-4000-8000-0000000000d4
 "$SMINOS" seat add fam d4 --session "$D4" >/dev/null
 "$SMINOS" meta set fam/d4 cwd "$WORK" >/dev/null
@@ -2727,7 +2727,7 @@ printf '{"pid":%s,"sessionId":"%s","name":"d2","kind":"background","status":"idl
 CLAUDE_CODE_SESSION_ID="$DUO" run "$SMINOS" say '@d4 @d2 anyone there'
 assert_rc 0 "$RC" "a tagged gone member does not abort the chat"
 assert_contains "$OUT" 'd4: recorded' "a tagged gone member's message is recorded"
-assert_contains "$OUT" 'd4 is gone — no transcript for its session on this machine; fill it to reach it' "and the sender is told to fill it"
+assert_contains "$OUT" 'd4: recorded and held: the session is stopped and is not woken: no conversation of it is on that machine' "held for its thread, the sender told why (T2's §5)"
 assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "--resume $D4" "no resume of a gone member is attempted"
 assert_contains "$OUT" 'd2: sent' "and the fan-out still reaches the live member"
 rm -f "$HOME/.claude/sessions/fam-d2.json"
@@ -2746,7 +2746,7 @@ echo 3 > "$STUB_STATE/wake/late-process"   # its process appears after the wake'
 run "$SMINOS" say '@d3 check'
 rm -f "$STUB_STATE/wake/late-process"
 assert_rc 0 "$RC" "a wake whose process is not seen in time does not erase the message"
-assert_contains "$OUT" 'd3: held:starting' "it is held while its process starts, no attempt counted"
+assert_contains "$OUT" 'd3: recorded: its process is starting, and the daemon delivers it' "it is held while its process starts, no attempt counted"
 assert_not_contains "$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D3.json" 2>/dev/null)" "\"testhost/$D1\": {\"settled\": $(last_seq "$FAMLOG/testhost.$D1.jsonl")" "and not settled: the wake carried nothing"
 assert_equals "$(has_key "$D3" pending_short)" "False" "a wake writes no pending_short"
 unset CLAUDE_CODE_SESSION_ID
@@ -7379,7 +7379,7 @@ STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" daemon tick
 assert_contains "$OUT" "delivered 0" "a tick before its wake is due delivers nothing"
 STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" daemon tick
 assert_equals "$(grep -c -- "--resume $Y" "$MD/solo/stub/log/calls.log")" "$CALLS_BEFORE" "and launches nothing"
-assert_equals "$(python3 -c 'import json,sys; w = json.load(open(sys.argv[1]))["solo/human"]; s = int(sys.argv[2]); print(w.get("attempts", 0), s in [int(k) for k in w.get("held", {})], w["settled"] < s)' "$MD/solo/sminos/projects/$SOLOP/delivered/$Y.json" "$HELD_SEQ")" \
+assert_equals "$(python3 -c 'import json,sys; w = json.load(open(sys.argv[1]))["solo/human"]; s = int(sys.argv[2]); print(w.get("attempts", 0), s in [int(x[0]) for x in w.get("held", [])], w["settled"] < s)' "$MD/solo/sminos/projects/$SOLOP/delivered/$Y.json" "$HELD_SEQ")" \
   "0 True True" "held for its thread, owed, no attempt counted"
 assert_not_contains "$(cat "$MD/solo/sminos/daemon.log")" "gave up delivering solo/human:$HELD_SEQ" "never given up"
 md_peer solo y "$Y" idle bg "$LR2"
