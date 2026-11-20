@@ -832,9 +832,14 @@ class Engine(Wakes):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(wake_engine.stop_all, self.state)
+        self.addCleanup(self.no_violations)
         # Never the real engine: the stand-in first on PATH, or the test stops here.
         if shutil.which("claude") != exe:
             self.fail("the claude first on PATH is %s, not the test engine" % shutil.which("claude"))
+
+    def no_violations(self):
+        """Every test's teardown (T2's M2): no resume carried a message."""
+        self.assertEqual(wake_engine.violations(self.state), [], "a resume carried a message")
 
     def install(self, exe):
         os.symlink(ENGINE, exe)
@@ -935,15 +940,14 @@ class TwinCases:
         self.assertEqual(wake.last_turn(sid, whole=True), {"mode": "auto", "model": "haiku"})
         self.assertTrue(wait_for(lambda: self.job(sid[:8])["state"] == "done"))
 
-    def test_a_message_after_the_id_is_refused_where_a_test_asks(self):
+    def test_a_message_after_the_id_is_refused(self):
         sid = self.opened()
-        self.switch("refuse-message")
         for argv in (["do this"], ["--model", "haiku", "--", "x"]):
             with self.subTest(argv=argv):
                 code, out, err = self.wake_flags(sid, *argv)
                 self.assertEqual((code, out), (2, ""))
-        with open(os.path.join(self.state, "violations")) as f:
-            self.assertEqual(len([line for line in f if line.strip()]), 2)
+        self.assertEqual(len(wake_engine.violations(self.state)), 2)
+        os.unlink(os.path.join(self.state, "violations"))   # this test's own, which the teardown would fail on
         self.assertIsNone(self.record(sid), "nothing started")
         code, out, err = self.wake_flags(sid)
         self.assertEqual(code, 0, err)
@@ -1162,6 +1166,7 @@ class Twin(TwinCases, Engine):
         # helper exited and the pid went to another process): teardown must not SIGKILL it.
         other = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, "
                                   "signal.SIG_IGN); print(1, flush=True); time.sleep(60)"], stdout=subprocess.PIPE)
+        self.addCleanup(other.stdout.close)
         self.addCleanup(other.wait)
         self.addCleanup(other.kill)
         other.stdout.readline()
@@ -1269,6 +1274,7 @@ class Twin(TwinCases, Engine):
 
     def test_a_launch_with_a_message_runs_it_as_the_first_turn(self):
         sid = self.opened()
+        self.switch("accept-message")
         code, out, err = self.wake_flags(sid, "do this")
         self.assertEqual(code, 0, err)
         self.assertFalse(os.path.exists(os.path.join(self.state, "violations")))
@@ -1375,22 +1381,24 @@ class Stub(TwinCases, Engine):
         self.addCleanup(patcher.stop)
         self.stub = stub
 
-    def test_a_launch_with_a_message_is_still_the_stub_s_own(self):
+    def test_a_resume_with_a_message_is_the_engine_s_and_refused(self):
         sid = self.opened()
         code, out, err = self.claude("--bg", "--resume", sid, "hello there")
-        self.assertEqual(code, 0, err)
-        self.assertIsNone(self.record(sid), "the stub's own resume starts no process")
-        self.assertFalse(os.path.exists(os.path.join(self.state, "calls.log")))
-        with open(os.path.join(self.stub, "log", "calls.log")) as f:
-            self.assertIn("--bg --resume %s hello there" % sid, f.read())
+        self.assertEqual((code, out), (2, ""), err)
+        self.assertIsNone(self.record(sid), "nothing started")
+        self.assertEqual(len(wake_engine.violations(self.state)), 1, "the engine wrote it down")
+        os.unlink(os.path.join(self.state, "violations"))   # this test's own, which the teardown would fail on
 
     def test_the_job_list_holds_the_stub_s_jobs_and_the_twin_s(self):
-        sid = self.opened()
-        self.claude("--bg", "--resume", sid, "hello")
+        code, out, err = self.claude("--bg", "-n", "fresh", "a task")
+        self.assertEqual(code, 0, err)
+        short = re.search(r"backgrounded · \S*?([0-9a-f]{8})", out).group(1)
         other = self.opened()
         self.wake_flags(other)
         ids = {j["sessionId"] for j in self.jobs()}
-        self.assertEqual(ids, {sid, other})
+        self.assertEqual(ids, {short + "-e808-4cad-a7e0-c1e6447bad28", other})
+        row = wake.row_of(short + "-e808-4cad-a7e0-c1e6447bad28")
+        self.assertEqual(wake.row_options(row), ["-n", "fresh"], "a fresh launch writes its row (E8)")
         self.switch("agents-fail")
         code, out, err = self.claude("agents", "--json", "--all")
         self.assertEqual(code, 1)

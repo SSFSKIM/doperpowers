@@ -1359,7 +1359,7 @@ class Questions(Rig):
                 if releases:
                     self.assertEqual(len(launched), 1, "it took the lock and resumed")
                 else:
-                    self.assertIn("whose holder names none", out)
+                    self.assertIn("waits for the thread sweep", out, "a holder that names none is the sweep's moment")
                     self.assertEqual(launched, [])
                     self.assertTrue(self.owed_to(sid), "owed for the next pass")
 

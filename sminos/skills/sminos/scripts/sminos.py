@@ -4541,7 +4541,10 @@ def thread_transition(project, thread_id, op, events, required=False, began=None
     and the next reconciliation finishes the entry."""
     threads = threads_module()
     finish_thread(thread_id, project=project, lock_until=begin.get("lock_until"))
-    entry = threads.begin(thread_id, op, project, events, **begin)
+    try:
+        entry = threads.begin(thread_id, op, project, events, **begin)
+    finally:
+        release_wake(thread_id)   # a hold the caller took for its begin ends there: nothing is settled under it
     if entry is None:
         return []
     if began is not None:
@@ -7041,33 +7044,36 @@ class ReachGate:
         What every deliverer but the uplink leaves owed."""
         return self.applies(e, words) and not same_owner_local(e, session, self.home)
 
-    def held(self, e, session, words=None):
+    def held(self, e, session, words=None, keep=False):
         """None when the push may go; "owed" when it may not now — no permit
-        this process holds for exactly it (popped as it is checked), or a
-        recipient whose record cannot be read (D10: never asked about, owed
-        until it reads again). A refusal is settled where the answer comes
-        (deliver_reach), so the gate itself never answers "refused"."""
+        this process holds for exactly it (popped as it is checked, unless
+        `keep`: a wake's check ahead of the push that spends it, T2's M2),
+        or a recipient whose record cannot be read (D10: never asked about,
+        owed until it reads again). A refusal is settled where the answer
+        comes (deliver_reach), so the gate itself never answers "refused"."""
         if not self.needs(e, session, words):
             return None
         if records_module().unreadable(session):
             return "owed"
         key = reach_key(self.project, session, e)
         if key in _REACH_PERMITS:
-            _REACH_PERMITS.discard(key)
+            if not keep:
+                _REACH_PERMITS.discard(key)
             return None
         return "owed"
 
 
-def reach_hold(project, session, events, words=None):
+def reach_hold(project, session, events, words=None, keep=False):
     """The reach gate over every event a push carries: ReachHeld (nothing
-    handed over) when it holds any of them."""
+    handed over) when it holds any of them. `keep`: the permits checked are
+    left for the push that follows (a wake's check, which consumes nothing)."""
     events = [e for e in events if e is not None]
     if not events:
         return
     gate = ReachGate(project)
     if not gate.capable:
         return
-    held = [e for e in events if gate.held(e, session, words) is not None]
+    held = [e for e in events if gate.held(e, session, words, keep) is not None]
     if held:
         raise ReachHeld("owed", held, "%s to %s waits for its endpoint's word on its reach" % (
             ", ".join(event_ref(e) for e in held), session[:8]))
@@ -7874,52 +7880,140 @@ class ResumeRefused(Exception):
         self.code = code
 
 
-class ResumeBusy(ResumeRefused):
-    """resume_session met the thread sweep holding the seat's resume lock
-    past SWEEP_WAIT: nothing was stopped or launched, and it is no twin and
-    no failure. A delivery stays owed with no attempt counted (`held:`)."""
-
-    def __init__(self, message):
-        super().__init__(message, 1)
-
-
-# What the thread sweep writes in a resume lock it holds (sminos_daemon.resume_lock_out), so a resume that meets
-# it waits it out rather than refusing a twin; how long it waits.
+# What the thread sweep writes in a wake lock it holds (sminos_daemon.resume_lock_out), and a journaled transition
+# (TRANSITION_HOLD), so a wake that meets either waits it out rather than refusing; how long it waits. A launch
+# writes LAUNCH_HOLD's line: the one holder a wake that finds the lock busy past the wait reads as `in flight`.
 SWEEP_HOLD = "the thread sweep"
+TRANSITION_HOLD = "a transition of the thread"
+LAUNCH_HOLD = "pid %d since %s"
 SWEEP_WAIT = 5.0
 
 
-def resume_lock_taken(lf, ref):
-    """A seat's resume lock, met held, taken once it is free (resume_session):
-    polled until SWEEP_WAIT has passed. Its holder is a launch's (a send or
-    resume in flight: a twin, refused) only when the file names one other
-    than the sweep twice, a poll apart, while the lock stays held: a sweep
-    writes SWEEP_HOLD right after it locks, and empties the file right
-    before it unlocks, so a file that names no holder, or the previous
-    resume's for a moment, is the sweep's moment too. Past the wait,
-    ResumeBusy: retryable, no attempt counted."""
-    until = time.monotonic() + SWEEP_WAIT
-    named = None
-    while True:
-        try:
-            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+class LockBusy(Exception):
+    """A lock could not be had before a deadline."""
+
+
+class WakeBusy(LockBusy):
+    """A transition met a wake of its thread holding the wake lock past its
+    deadline (T2's M2): nothing was changed. A hook leaves it for the next
+    reconciliation (a LockBusy); a verb exits 1 saying so (main)."""
+
+    def __init__(self, thread_id):
+        super().__init__("a wake of %s is in flight: nothing was changed; run it again" % thread_id[:8])
+        self.message = str(self)
+
+
+_WAKE_HOLDS = {}   # (this process's thread, thread id) → its WakeHold: a hold is passed down, never taken twice
+
+
+class WakeHold:
+    """The wake lock of one thread (`<thread id>.resume.lock` at the root of
+    SMINOS_HOME, flock), held by this thread of this process: a wake for the
+    whole of its steps (§3), a transition while it opens its journal entry
+    and reads what that entry records of the thread's process, the sweep for
+    its decision. Registered while held, so a callee asked to take it
+    (sminos_threads.begin) uses the hold its caller has: flock on a second
+    descriptor of the same file would wait on its own process. Released by
+    whoever ends it first (release is idempotent): a transition's hold ends
+    at its begin, before anything is settled."""
+
+    def __init__(self, thread_id, f):
+        self.thread_id, self.f = thread_id, f
+        _WAKE_HOLDS[(threading.get_ident(), thread_id)] = self
+
+    def release(self):
+        key = (threading.get_ident(), self.thread_id)
+        if _WAKE_HOLDS.get(key) is self:
+            del _WAKE_HOLDS[key]
+        if self.f.closed:
             return
+        try:
+            self.f.seek(0)
+            self.f.truncate()   # emptied before it is let go: the next holder never reads this one's name
+            self.f.flush()
         except OSError:
             pass
-        lf.seek(0)
-        holder = lf.read().strip()
-        if holder and holder != SWEEP_HOLD:
-            if holder == named:
-                raise ResumeRefused("a send/resume of %s is already in flight (%s) — not starting a twin" % (
-                    ref, holder), 1)
-            named = holder
-        else:
-            named = None
-        if time.monotonic() >= until:
-            raise ResumeBusy("the resume of %s waits for %s: tried again later, nothing started" % (
-                ref, "the thread sweep, which holds its lock" if holder == SWEEP_HOLD else
-                "its lock, whose holder names none yet"))
+        self.f.close()
+
+
+def wake_lock_path(thread_id):
+    return os.path.join(root(), thread_id + ".resume.lock")
+
+
+def wake_held(thread_id):
+    """The hold this thread of this process has on the thread's wake lock, or None."""
+    hold = _WAKE_HOLDS.get((threading.get_ident(), thread_id))
+    return hold if hold is not None and not hold.f.closed else None
+
+
+def release_wake(thread_id):
+    """The hold this thread has on the thread's wake lock, ended (nothing when none)."""
+    hold = wake_held(thread_id)
+    if hold is not None:
+        hold.release()
+
+
+def wake_lock(thread_id, until=None, holder=TRANSITION_HOLD, create=True):
+    """The thread's wake lock, taken by a bounded poll until `until` (an
+    epoch; SWEEP_WAIT from now by default) and named `holder` in its file:
+    (WakeHold, "") once taken, or the one this thread holds already; (None,
+    why) when it stays busy, `why` "in flight" when a launch holds it (its
+    file names LAUNCH_HOLD's line twice, a poll apart) and else "sweep" (the
+    sweep's moment or a transition's: a file that names no holder, or the
+    previous holder's for a moment, is one of those). The file is created
+    when absent (`create`), whichever store the record is in, so the sweep
+    and a first wake meet on one file."""
+    held = wake_held(thread_id)
+    if held is not None:
+        return held, ""
+    path = wake_lock_path(thread_id)
+    try:
+        f = open(path, "a+" if create else "r+")
+    except OSError:
+        return None, "sweep"
+    until = time.time() + SWEEP_WAIT if until is None else until
+    named, why = None, "sweep"
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            pass
+        try:
+            f.seek(0)
+            now_holder = f.read().strip()
+        except OSError:
+            now_holder = ""
+        launch = now_holder.startswith("pid ")
+        why = "in flight" if launch and now_holder == named else "sweep"
+        named = now_holder if launch else None
+        if time.time() >= until:
+            f.close()
+            return None, why
         time.sleep(0.05)
+    try:
+        f.seek(0)
+        f.truncate()
+        f.write(holder)
+        f.flush()
+    except OSError:
+        pass
+    return WakeHold(thread_id, f), ""
+
+
+def transition_hold(thread_id, lock_until=None):
+    """The wake lock for a journaled transition of the thread (T2's M2:
+    an end, an advance, an absorption, a return): this thread's hold when it
+    has one, else taken until `lock_until` (SWEEP_WAIT by default). Returns
+    (hold, whether this call took it); WakeBusy when a wake holds it past
+    the deadline."""
+    held = wake_held(thread_id)
+    if held is not None:
+        return held, False
+    hold, _ = wake_lock(thread_id, lock_until)
+    if hold is None:
+        raise WakeBusy(thread_id)
+    return hold, True
 
 
 class ResumeHeld(ResumeRefused):
@@ -8085,17 +8179,34 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
         return "recorded"
     locks = []
     try:
-        # The lifecycle lock spans the recheck and the resume, so a concurrent
-        # retire either finishes first (and is seen) or waits for the resume.
+        # The lifecycle lock spans the recheck, the wake and the push, so a concurrent retire either finishes first
+        # (and is seen) or waits for them.
         locks = lock_seat(fresh, refusal=ResumeRefused)
         fresh = reload_seat(seat_id)
         if unreachable(fresh) or not fresh["current"]:
             return "recorded"
-        return resume_session(fresh, text, False, locks, quiet=True, event=event, project=project, words=words)
+        woke = resume_session(fresh, locks, quiet=True, event=event, project=project, words=words)
+        if isinstance(woke, str):
+            return woke
+        if not woke.live:
+            return wake_outcome(woke.why)
+        # The member read again, as a live delivery reads it at its start: a retire or a hand-off may have begun
+        # since the wake returned. Then the push a live session gets.
+        again = reload_seat(seat_id)
+        if unreachable(again) or again["current"] != fresh["current"] \
+                or canonical_end(again["current"], seat_project(again)):
+            return "recorded"
+        forget_caches()
+        peer = peer_for_session(again["current"])
+        if peer is None:
+            return "held:starting"   # its process runs and its inbox does not answer yet: owed, no attempt
+        control_module().push_live(peer, again["current"], text, event, project, **verdict)
+        seat_pushed(again)
+        return "woken"
     except PushHeld as e:
         return e.outcome()
-    except ResumeBusy as e:
-        return "held:%s" % e.message   # owed, no attempt counted: the next pass resumes it
+    except SendFailed as e:
+        return "sent?" if e.phase == "after" else "failed:%s" % e
     except ResumeRefused as e:
         return "failed:%s" % e.message
     finally:
@@ -9367,18 +9478,29 @@ def note_launch_of(session, peer):
     current session, from its own hook (`CLAUDE_PID`): the directory, and the
     options its argument vector holds (sminos_threads.launch_options) and the
     names of those it drops for their value (launch_dropped), read with
-    their exact boundaries; absent where the vector cannot be read, or
-    for one of the engine's pre-started background processes, whose
-    arguments are not the session's. A lock not had in time skips it."""
+    their exact boundaries; absent where the vector cannot be read. A
+    background process (the engine's record says `kind` `bg`: a wake's, or
+    one the engine pre-started, whose arguments are not the session's)
+    keeps the options and dropped names the record holds (T2's M2). A lock
+    not had in time skips it."""
     threads = threads_module()
     thread = threads.thread_of(session)
     if thread is None or thread["opened"] != "human" or thread["current"] != session:
         return
-    argv = None if str((peer or {}).get("kind") or "") == "bg" else threads.process_argv(os.environ.get("CLAUDE_PID"))
     cwd = launch_cwd(session, fallback=str((peer or {}).get("cwd") or ""))
+    if str((peer or {}).get("kind") or "") == "bg":
+        # A background process (a wake's, or one the engine pre-started): no launch its human made, so the
+        # record keeps its options and what they dropped, which the next first wake reads (T2's M2).
+        kept = thread.get("launch") if isinstance(thread.get("launch"), dict) else {}
+        options, dropped = kept.get("options"), kept.get("dropped")
+        options = list(options) if isinstance(options, list) else None
+        dropped = list(dropped) if isinstance(dropped, list) else None
+    else:
+        argv = threads.process_argv(os.environ.get("CLAUDE_PID"))
+        options = threads.launch_options(argv) if argv is not None else None
+        dropped = threads.launch_dropped(argv) if argv is not None else None
     try:
-        threads.note_launch(thread["thread"], cwd, threads.launch_options(argv) if argv is not None else None,
-                            threads.launch_dropped(argv) if argv is not None else None, lock_until=_RECORD_DEADLINE)
+        threads.note_launch(thread["thread"], cwd, options, dropped, lock_until=_RECORD_DEADLINE)
     except (OSError, LockBusy):
         pass
 
@@ -12264,10 +12386,6 @@ def set_aside(path, r):
     return aside
 
 
-class LockBusy(Exception):
-    """A lock could not be had before a deadline."""
-
-
 def flock_until(f, deadline, exclusive=True):
     """A flock on f, exclusive or shared; with a deadline, retried without
     blocking until it, then LockBusy. Without one, it waits as long as it takes."""
@@ -13293,12 +13411,22 @@ def cmd_fill(a):
         if not s["current"]:
             die("seat %s/%s has no session to resume — fill it fresh (without --resume)" % (s["group"], s["alias"]), EXIT_UNKNOWN)
         warn_resume_flags(a)
+        # The wake first, which returns a retired seat (its W8, journaled) once its process runs; then the task,
+        # recorded after the return's entry was begun (a return settles what was addressed before it) and
+        # delivered as `send` delivers it. A wake that does not make it live leaves it as it was, nothing recorded.
         try:
-            resume_session(s, a.task, a.wait, locks, verb="filled", returns=True)
+            woke = resume_session(s, locks, returns=True)
         except ResumeHeld as e:
             e.record(a.task)
         except ResumeRefused as e:
+            unlock(locks)
             die(e.message, e.code)
+        unlock(locks)
+        if not woke.live:
+            die("seat %s/%s was not woken: %s; nothing was recorded" % (s["group"], s["alias"], wake_words(woke.why)),
+                EXIT_UNKNOWN if woke.why in ("gone", "lane", "ended", "transcript") else
+                EXIT_USAGE if woke.why == "cwd" else 1)
+        deliver_verb(reload_seat(s["seat_id"]) or s, s["current"], a.task, a.wait, "filled")
         return
     settings = a.settings if a.settings is not None else (s["settings"] or os.environ.get("DAEMON_CLAUDE_SETTINGS", ""))
     effort = a.effort if a.effort is not None else (s["effort"] or os.environ.get("DAEMON_CLAUDE_EFFORT", ""))
@@ -13319,51 +13447,303 @@ def warn_resume_flags(a):
                          "--model/--settings/--effort ignored (use fill without --resume to change them)\n")
 
 
-def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_launched=None, event=None, project=None,
-                   carried=None, words=None, returns=False):
-    """Process-level continuation of a seat's session.
+# ------------------------------------------------------------ the wake (T2's M2, the plan's §3)
 
-    A live current turn is stopped first (`claude stop`, then a bounded wait
-    until the harness row is no longer running and no peer socket answers —
-    resuming while the old process still runs makes the harness start a copy,
-    so a stop that did not take is refused loudly). Then exactly
-    `claude --bg --resume <current> <msg>` runs the session in the background
-    under the same id, in the seat's recorded cwd (which must still exist — an
-    unattended worker is never launched somewhere else; `fill` fresh with a
-    valid --cwd is the recourse), with THIS process's environment (gateway
-    scrub applied per the seat's recorded route): the board pipeline prefixes
-    the call with its run credentials and needs a fresh process to carry them —
-    a socket frame cannot. NO other flag rides the resume: a background session
-    keeps its saved options (-n, --permission-mode, --model, --settings,
-    --effort), and any flag makes the harness start a COPY (observed live,
-    v2.1.257). ONE resume per seat at a time (flock, released when this process
-    dies). If the banner says a copy started, or the harness reports a
-    different session id, the copy is stopped, the record is left untouched,
-    and the command fails loudly.
 
-    `on_launched`, when given, is called once the message is in a launched
-    process — confirmed, or uncertain because no session id came back — and
-    before any wait: `send` settles its delivery record there. At the same
-    point a seat whose session was retired re-joins the project's family.
+class WakeResult(NamedTuple):
+    """What a wake answers (§3): `live`, a process holds the session now
+    (launched here or found); `why`, "" or why not; `short`, the job's short
+    when this call launched it."""
+    live: bool
+    why: str = ""
+    short: str = ""
+
+
+# The engine's three notes of a copy (E14).
+NOTE_OPEN = "is open in another Claude Code process"
+NOTE_RUNNING = "is already running in the background"
+NOTE_SAVED = "keeps its own saved options"
+COPY_RE = re.compile(r"started a copy as ([0-9a-f]+)")
+# A wake's answers that pass on their own: the caller holds what it brought, no attempt counted.
+WAKE_PASSING = ("sweep", "in flight", "starting", "pending")
+
+
+def job_holds(session):
+    """E5's second signal, the job list read afresh: True when it lists a
+    job of the session whose process runs, False when none, None when the
+    list cannot be read (a held session, never a free one)."""
+    rows = agents_refresh()
+    if rows is None:
+        return None
+    return any(isinstance(r, dict) and r.get("sessionId") == session and r.get("pid") and pid_alive(r.get("pid"))
+               for r in rows)
+
+
+def bridge_holds(session):
+    """E5's third signal: sminos's bridge socket for the session answers."""
+    return socket_ok(os.path.join(root(), "bridge", session + ".sock"))
+
+
+def process_holds(session):
+    """(held, readable): whether a process holds the session by E5's three
+    signals (the engine's record of a process, the job list, the bridge's
+    socket), each read afresh; `readable` False when one could not be read
+    (the job list failing) and none says held."""
+    if running_now(session) is not None or bridge_holds(session):
+        return True, True
+    job = job_holds(session)
+    return bool(job), job is not None
+
+
+def live_now(session):
+    """A process holds the session and its inbox answers, read afresh."""
+    forget_caches()
+    return peer_for_session(session) is not None
+
+
+def wake_line_for(peer, session):
+    """(thread id, line) when the record of the session's thread holds a
+    wake's line for it (`waking.line`, T2's §7) and the process that holds
+    it, `peer`, is a background one (its engine record's `kind` `bg`): the
+    frame pushed to it now opens with that line (push_live). A line met for
+    a process its human started (a terminal reopened the session) is
+    removed and not sent. None otherwise."""
+    threads = threads_module()
+    try:
+        t = threads.thread_of(session, ended=False)
+        line = threads.waking(t, session).get("line") if t is not None and t["current"] == session else None
+        if not isinstance(line, dict) or not line.get("id"):
+            return None
+        if str((peer or {}).get("kind") or "") != "bg":
+            threads.wake_line_sent(t["thread"], session, line["id"])
+            return None
+    except (OSError, LockBusy):
+        return None
+    return t["thread"], line
+
+
+def wake_line_pushed(thread_id, session, line):
+    """The line pushed (push_live): removed, only while it is still that wake's."""
+    try:
+        threads_module().wake_line_sent(thread_id, session, line["id"])
+    except (OSError, LockBusy) as e:
+        warn("the wake's line for %s was not cleared: %s" % (session[:8], e or "its lock is busy"))
+
+
+def remove_copy(short, cause):
+    """A copy the wake's launch made, removed (§3): `claude rm`, checked in
+    the job list; one that cannot be removed is stopped and said in
+    daemon.log. No other job is ever removed as a copy."""
+    try:
+        p = subprocess.run(["claude", "rm", short], capture_output=True, text=True, timeout=60)
+        removed = p.returncode == 0
+    except Exception:  # noqa: BLE001 — a removal that cannot run is one that failed
+        removed = False
+    agents_refresh()
+    if removed and agent_row(short=short) is None:
+        return True
+    claude_stop(short)
+    daemon_log("a wake's copy %s (%s) could not be removed; it was stopped" % (short, cause))
+    return False
+
+
+def stop_lingering(session, row):
+    """W3: the job the session's own row names, listed as running while no
+    process holds the session, stopped and waited for (wait_stopped).
+    True when nothing is in the way."""
+    if not isinstance(row, dict):
+        return True
+    for r in agents_refresh() or []:
+        if isinstance(r, dict) and r.get("sessionId") == session and r.get("id") \
+                and normalize_state(r) in ("working", "blocked"):
+            if not claude_stop(r["id"]) or not wait_stopped({"current": session, "short": ""}, r["id"], session):
+                return False
+    return True
+
+
+def own_failed_row(session, short):
+    """§3's one removable row: the session's row there now reads failed and
+    its `detail` begins `exit 1 before init` (E20), the job the banner named
+    reading failed (the caller read that, and that W4 found no row)."""
+    row = wake_module().row_of(session)
+    return isinstance(row, dict) and wake_module().row_failed(row) \
+        and str(row.get("detail") or "").startswith("exit 1 before init")
+
+
+def wake(record, session, due=False, returns=False, on_live=None):
+    """The wake (D2, the plan's §3): the one function that starts a process
+    for a stopped thread, either kind of record, and hands it nothing. Its
+    steps W1 to W8 under the thread's wake lock; what it found, as §3's
+    table says, in a WakeResult. Nothing is settled or pushed here: the
+    caller delivers to a session that is live, and holds what it brought
+    otherwise. `record`: the thread the caller chose (read again here by its
+    id); `due`: a sender's or a verb's own call, which no schedule holds
+    back; `returns`: `fill --resume` of the seat it names, the one caller
+    for which an ended record is woken; `on_live(short)`: called at W8,
+    under the lock and with its hold, for what the caller writes once the
+    process is live (a seat's fields, a retired seat's return)."""
+    tid = record["thread"]
+    hold, why = wake_lock(tid, holder=LAUNCH_HOLD % (os.getpid(), now()))
+    if hold is None:
+        return WakeResult(True) if live_now(session) else WakeResult(False, why)   # rows 1 and 2
+    try:
+        return _wake_held(tid, session, due, returns, on_live)
+    finally:
+        hold.release()
+
+
+def _wake_found(tid, session, due, returns, flagless):
+    """W2: what the wake reads again under its lock, in §3's order: (the
+    record, "") to go on, or (None, the result's `why`; "live" for row 7)."""
+    threads, wm = threads_module(), wake_module()
+    forget_caches()
+    try:
+        t = threads.get(tid)
+        if records_module().unreadable(session):
+            return None, "unknown"                                       # row 3
+        owner = threads.thread_of(session)
+    except (OSError, ValueError):
+        return None, "unknown"
+    if t is None or owner is None or owner["thread"] != tid or t["current"] != session or threads.reservation(t):
+        return None, "gone"                                              # row 3a
+    if threads.record_ended(t) and not returns:
+        return None, "ended"                                             # row 4
+    if t.get("pending"):
+        return None, "pending"                                           # row 5
+    if not threads.lane_a(session):
+        return None, "lane"                                              # row 6
+    held, readable = process_holds(session)
+    if held:
+        return None, "live"                                              # row 7
+    if not readable:
+        return None, "starting"                                          # row 8
+    reason = wm.not_woken(t, session, whole=True, flagless=flagless)
+    if reason:
+        return None, reason                                              # row 9
+    if not due and not wm.wake_due(t, session):
+        return None, "failed"                                            # row 10
+    return t, ""
+
+
+def _wake_held(tid, session, due, returns, on_live):
+    threads, wm = threads_module(), wake_module()
+    flagless = saved = False
+    while True:
+        t, why = _wake_found(tid, session, due, returns, flagless)
+        if t is None:
+            return WakeResult(why == "live", "" if why == "live" else why)
+        row = wm.row_of(session)
+        if not stop_lingering(session, row):                             # W3
+            return _wake_failed(tid, session, None, "its earlier job could not be stopped")
+        first = not flagless and wm.passes_flags(t, session, row)       # W4: row 12's retry passes none
+        flags, not_carried = wm.first_wake(t, session) if first else ([], [])
+        turn = wm.last_turn(session, whole=True)
+        note = wm.line_note(first, flags if first else wm.row_options(row) if isinstance(row, dict) else [], turn,
+                            not_carried)
+        threads.wake_line(tid, session, note)
+        seat = reload_seat(tid) if t["opened"] == "spawned" else None
+        settings = seat["settings"] if seat is not None else wm.option(flags, "--settings")
+        short, banner = run_claude_bg(wm.wake_argv(session, flags), wm.thread_cwd(t), settings)   # W5, W6
+        copy_short = (COPY_RE.search(banner) or [None, None])[1] if short else None
+        if not short:                                                    # row 14
+            if process_holds(session)[0]:
+                return WakeResult(True)
+            return _wake_failed(tid, session, note["id"], "the launch failed: %s" % " ".join(banner.split())[:200])
+        if copy_short:
+            if NOTE_OPEN in banner or NOTE_RUNNING in banner:            # row 11
+                remove_copy(copy_short, "the session was held")
+                threads.wake_line_sent(tid, session, note["id"])
+                return WakeResult(True) if process_holds(session)[0] else WakeResult(False, "starting")
+            if NOTE_SAVED in banner and flags and not flagless:          # row 12
+                remove_copy(copy_short, "the session keeps saved options")
+                flagless = saved = True
+                continue
+            remove_copy(copy_short, "the engine started a copy")         # row 13
+            return _wake_failed(tid, session, note["id"], "the engine started a copy")
+        got = _wake_wait(session, short)                                 # W7
+        if got == "copy":                                                # row 13: the banner's job is another's
+            remove_copy(short, "the banner's job names another session")
+            return _wake_failed(tid, session, note["id"], "the engine started a copy")
+        if got == "failed":                                              # row 15
+            if row is None and own_failed_row(session, short):
+                try:
+                    p = subprocess.run(["claude", "rm", short], capture_output=True, text=True, timeout=60)
+                    if p.returncode != 0:
+                        raise OSError(p.stderr.strip() or "exit %d" % p.returncode)
+                    threads.wake_forget(tid, session)
+                except Exception as e:  # noqa: BLE001 — said, and the next wake finds a row
+                    daemon_log("the failed first wake of %s left its row: claude rm %s: %s" % (session[:8], short, e))
+            return _wake_failed(tid, session, note["id"], "its worker failed before it started")
+        if got != "live":                                                # row 16
+            return WakeResult(False, "starting", short)
+        try:                                                             # W8, row 17
+            threads.wake_done(tid, session, saved=saved or None)
+            threads.stop_seen(session)
+        except (OSError, LockBusy) as e:
+            warn("the wake of %s was not noted: %s" % (session[:8], e or "its lock is busy"))
+        if on_live is not None:
+            on_live(short)
+        return WakeResult(True, "", short)
+
+
+def _wake_wait(session, short):
+    """W7, for poll_uuid's bound: "live" once the engine's record shows a
+    process holding the session; "failed" once the banner's job reads
+    failed and none does; "copy" when that job names another session; ""
+    when neither came."""
+    tries = int(os.environ.get("SMINOS_UUID_POLL") or os.environ.get("DAEMON_UUID_POLL") or "30")
+    for i in range(max(tries, 1)):
+        if running_now(session) is not None:
+            return "live"
+        agents_refresh()
+        row = next((r for r in agents_json() or [] if isinstance(r, dict) and r.get("id") == short), None)
+        if row is not None and row.get("sessionId") and row["sessionId"] != session:
+            return "copy"
+        if row is not None and normalize_state(row) == "failed" and running_now(session) is None:
+            return "failed"
+        if i + 1 < tries:
+            time.sleep(poll_interval())
+    return ""
+
+
+def _wake_failed(tid, session, line_id, what):
+    """§3's "failed": the failure counted in `waking`, this wake's line
+    removed, said in daemon.log; not live."""
+    try:
+        threads_module().wake_failed(tid, session, line_id)
+    except (OSError, LockBusy) as e:
+        warn("the failed wake of %s was not counted: %s" % (session[:8], e or "its lock is busy"))
+    daemon_log("the wake of %s failed: %s" % (session[:8], what))
+    return WakeResult(False, "failed")
+
+
+def resume_session(s, locks=None, quiet=False, event=None, project=None, carried=None, words=None, returns=False,
+                   stop_turn=False):
+    """A seat's wake (T2's M2): the seat's own steps ahead of it, then the
+    wake of its record (wake), which starts its session's process under the
+    same id and hands it nothing. The WakeResult; the caller pushes what it
+    brought to the process that runs, as to a live session, and writes the
+    seat's `turns` and `status` once it has pushed (seat_pushed). What is
+    the seat's alone happens here: its lifecycle lock (taken when `locks`
+    is None), the refusal of a codex record, a vacant seat, a retired one
+    for any caller but `fill --resume` (`returns`, which the wake's W8
+    returns, journaled, once the process runs), a session under another
+    config dir or a directory that is gone; with `stop_turn` (`sminos
+    resume`) the stop of a live background turn, as before; and at W8 the
+    seat's `short`, `host` and `boot_id` (on_live). No `pending_short` is
+    written.
 
     Message reach (P5 O18 D8), before anything is stopped or launched: a
-    message that carries log events (`event`, the last, in the log of the
-    project whose id is `project`; `carried`, every one, `[event]` by
-    default; `words` the verdict they go under, as push_live's) passes the
-    reach gate for each or raises ReachHeld; one that carries none (a
-    `resume`'s or a `fill --resume`'s task) goes only to a session whose
-    owners meet the sender's, else ResumeRefused (projectless_refusal).
+    caller that carries log events (`event`, the last, in the log of the
+    project whose id is `project`; `carried`, every one; `words` the verdict
+    they go under, as push_live's) passes the reach gate for each or raises
+    ReachHeld. The check consumes nothing: the push that follows spends it.
 
     A seat whose session a thread record its human opened names (an older
     copy seated it, D7) is held (T1's M3): checked under the seat's lock,
-    before any gate, nothing stopped or launched — HELD_HUMAN on a fan-out
-    (`quiet`), else ResumeHeld. T2 puts the wake here.
-
-    A retired seat (its thread ended) is resumed only by `fill --resume`
-    (`returns`), which returns it (T1's M4, D1: a fill, or its human
-    reopening its session, and nothing else); for any other caller it is
-    refused, naming the fill, with nothing stopped or launched.
-    """
+    before any gate, nothing stopped or launched — HELD_HUMAN (or
+    "recorded", for an ended one) on a fan-out (`quiet`), else ResumeHeld
+    (ResumeRefused for an ended one)."""
     if locks is not None and opened_by_human(s["current"]):
         if canonical_end(s["current"], seat_project(s)):
             # Ended (opened_by_human reads the records set aside too): nothing is recorded or held for it, since
@@ -13378,26 +13758,7 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
         unlock(locks)
         raise ResumeHeld(human_refusal("%s/%s" % (s["group"], s["alias"])), s)
     if event is not None:
-        reach_hold(project, s["current"], [event] if carried is None else carried, words)
-    elif msg and s["current"]:
-        refusal = projectless_refusal(s["current"], s["alias"])
-        if refusal:
-            raise ResumeRefused(refusal, EXIT_UNKNOWN)
-
-    def launched():
-        # The delivery settles first: a failed re-join (LogWriteFailed) must
-        # not leave a launched message owed, to be pushed again. On a fan-out
-        # (`quiet`, from deliver_next) the message is in a launched process, so
-        # the outcome stands and the fan-out goes on: the failure is a warning.
-        if on_launched:
-            on_launched()
-        try:
-            join_seat(s, by=caller_alias(), returns=returns)
-        except LogWriteFailed as e:
-            if not quiet:
-                raise
-            warn("%s/%s was resumed with the message, but %s" % (s["group"], s["alias"], e))
-
+        reach_hold(project, s["current"], [event] if carried is None else carried, words, keep=True)
     if s["engine"] == "codex":
         raise ResumeRefused(legacy_codex_refusal(s))
     if locks is None:
@@ -13429,121 +13790,105 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
     if not read_refused(cwd) and not os.path.isdir(cwd):   # one this process may not look at is taken on its word
         raise ResumeRefused("resume of %s/%s: cwd does not exist or is not a directory: %s" % (
             s["group"], s["alias"], cwd), EXIT_USAGE)
-    lock_path = os.path.join(root(), s["seat_id"] + ".resume.lock")
-    lf = open(lock_path, "a+")
-    # Free, or the thread sweep's moment under it (its stop decision and its append), no launch: waited out.
-    try:
-        resume_lock_taken(lf, "%s/%s" % (s["group"], s["alias"]))
-    except BaseException:
-        lf.close()   # never taken: nothing of it is held
-        raise
-    # The end and the journal read again under the resume lock, the canonical record's (T1's M4): the sweep ends
-    # a thread holding this lock out, so an end written between the first check and here is seen here.
-    t = threads_module().get(s["seat_id"])
-    ended = threads_module().record_ended(t) or (reload_seat(s["seat_id"]) or s)["status"] == "retired"
-    if (t or {}).get("pending") or ended and not returns:
-        lf.close()
-        if (t or {}).get("pending"):
-            raise ResumeRefused("%s/%s holds a transition not finished yet; the next reading verb finishes it"
-                                % (s["group"], s["alias"]), 1)
-        raise ResumeRefused(retired_seat_refusal(s), EXIT_UNKNOWN)
-    lf.seek(0)
-    lf.truncate()
-    lf.write("pid %d since %s" % (os.getpid(), now()))
-    lf.flush()
+    if stop_turn:
+        stop_live_turn(s)
+    seat_id = s["seat_id"]
+
+    def on_live(short):
+        # The seat's fields once its process runs (W8): the job's short and where it runs; `turns` and `status`
+        # wait for the push (seat_pushed). A retired seat returns here, journaled, with the wake's hold.
+        meta_set(seat_id, {"short": short, "host": host_name(), "boot_id": boot_id(), "updated": now()},
+                 remove=("pending_short",), create=False)
+        try:
+            join_seat(reload_seat(seat_id) or s, by=caller_alias(), returns=returns)
+        except LogWriteFailed as e:
+            if not quiet:
+                raise
+            warn("%s/%s was woken, but %s" % (s["group"], s["alias"], e))
+
+    woke = wake(threads_module().get(seat_id) or {"thread": seat_id}, s["current"], due=True, returns=returns,
+                on_live=on_live)
+    if woke.live and returns and ((threads_module().get(seat_id) or {}).get("pending") or {}).get("op") == "return":
+        # Nothing is written through an open entry (§6, 6): nothing is pushed until its return is finished.
+        raise ResumeRefused("%s/%s was woken and its session runs, but its return is not finished (its record holds "
+                            "it): its joined waits for the next reconciliation" % (s["group"], s["alias"]), 1)
+    return woke
+
+
+def stop_live_turn(s):
+    """`sminos resume`'s own step ahead of the wake (T2's M2): a live
+    background turn of the seat stopped (`claude stop`, then a bounded wait
+    until its row no longer runs and no engine record of the session names
+    a running process), so that the wake starts its process again; one that
+    runs with no turn sminos can stop is refused, as a launch beside it
+    would start a copy."""
     cur = s["current"]
     agents_refresh()
     row = harness_row(s)
     stop_short = ""
     if row and normalize_state(row) in ("working", "blocked", "done", "done-blocked") and row.get("id"):
-        # Release the live turn (idempotent — harmless if already stopped). A
-        # row is host-local by construction; only a RECORDED short is gated on
-        # the record's host identity, because shorts are reusable across boots.
+        # A row is host-local by construction; only a RECORDED short is gated on the record's host identity,
+        # because shorts are reusable across boots.
         stop_short = row["id"]
     elif not row and running_now(cur) and s["short"] and identity_local(s["host"], s["boot_id"], cur):
-        # Its process runs (the engine's record), whether or not its inbox
-        # answers: the recorded short is the turn to release.
         stop_short = s["short"]
     if stop_short:
         if not claude_stop(stop_short):
-            raise ResumeRefused("claude stop %s failed for %s/%s — not resuming over a turn that may still be running" % (
-                stop_short, s["group"], s["alias"]), 1)
+            raise ResumeRefused("claude stop %s failed for %s/%s — not resuming over a turn that may still be running"
+                                % (stop_short, s["group"], s["alias"]), 1)
         if not wait_stopped(s, stop_short, cur):
-            raise ResumeRefused("the current turn of %s/%s (%s) is still running %ss after claude stop — not launching a "
-                "resume (it would start a copy)" % (s["group"], s["alias"], stop_short,
-                                                    os.environ.get("SMINOS_STOP_TIMEOUT", "30")), 1)
+            raise ResumeRefused("the current turn of %s/%s (%s) is still running %ss after claude stop — not waking "
+                                "it (a launch would start a copy)" % (s["group"], s["alias"], stop_short,
+                                                                    os.environ.get("SMINOS_STOP_TIMEOUT", "30")), 1)
     elif running_now(cur):
         raise ResumeRefused("the session of %s/%s (%s) still runs, and there is no turn of it sminos can stop (no "
-                            "harness row, no recorded short) — not launching a resume (it would start a copy)"
+                            "harness row, no recorded short) — not waking it (a launch would start a copy)"
                             % (s["group"], s["alias"], cur[:8]), 1)
-    prev_status = s["status"]
-    short, banner = run_claude_bg(["--bg", "--resume", cur, msg], cwd, s["settings"])
-    if not short:
-        # Nothing launched: a retired seat stays one (its end stands; only a fill that launched returns it).
-        meta_set(s["seat_id"], {"status": "retired" if ended else "error", "updated": now()})
-        raise ResumeRefused("resume failed — did not launch or produced no background id: %s" % banner, 1)
 
-    def copy_started(copy_id):
-        claude_stop(short)
-        meta_set(s["seat_id"], {"status": prev_status, "updated": now()})
-        raise ResumeRefused("resume of %s/%s started a COPY (%s) — the session %s was still running or the harness refused "
-            "to continue it; the copy was stopped and the record left untouched. Use sminos send for a "
-            "live seat." % (s["group"], s["alias"], copy_id[:8], cur[:8]), 1)
 
-    m = re.search(r"started a copy as ([0-9a-f]+)", banner)
-    if m:
-        copy_started(m.group(1))
-    polled = poll_uuid(short)
-    if not polled:
-        # No process confirmed for its session: a retired seat stays one (no return is authorized on an unconfirmed
-        # launch; a reconciliation returns it once a process its end did not see holds the session).
-        meta_set(s["seat_id"], {"status": "retired" if ended else "error", "pending_short": short, "updated": now()})
-        if ended:
-            if on_launched:
-                on_launched()   # the message went into a launched process: delivery is uncertain, not failed
-        else:
-            launched()  # launched with the message: delivery is uncertain, not failed
-        if quiet:
-            unlock(locks)
-            return "woken?"
-        raise ResumeRefused("resume: session %s produced no usable session uuid; kept previous current (recover via "
-                            "pending_short)%s" % (short, "; the seat stays retired until a process holding its session "
-                                                  "is seen" if ended else ""), 1)
-    uuid, state, _cwd = polled
-    if uuid != cur:
-        copy_started(uuid)
-    launched()
-    if returns and ((threads_module().get(s["seat_id"]) or {}).get("pending") or {}).get("op") == "return":
-        # Nothing is written through an open entry (§6, 6): the seat's launch fields are left as they were.
-        raise ResumeRefused("%s/%s was launched with the message and its session runs, but its return is not finished "
-                            "(its record holds it): its joined waits for the next reconciliation" % (
-                                s["group"], s["alias"]), 1)
-    turns = int(s["turns"] or "0") + 1
-    # model/settings/effort stay as recorded at spawn/fill: the resumed session
-    # runs on its saved options, whatever this call was passed.
-    meta_set(s["seat_id"], {"current": cur, "short": short, "host": host_name(), "boot_id": boot_id(),
-                            "status": "working", "updated": now(), "turns": str(turns)}, remove=("pending_short",))
-    try:
-        threads_module().stop_seen(cur)   # the resumed process holds it: the rule's clock starts again (§6, row 8)
-    except (OSError, LockBusy) as e:
-        warn("the stop mark of %s/%s was not lifted: %s" % (s["group"], s["alias"], e or "its lock is busy"))
-    status = "working"
-    if state in TERMINAL:
-        status = status_for_state(state)
-        meta_set_if(s["seat_id"], {"status": status, "updated": now()}, same_gen(current_gen(s["seat_id"])),
-                    reply=(uuid, state, s["alias"]))
-    # Snapshot the generation while the lifecycle lock is still held, right
-    # after our writes; the watcher never re-reads it after the wait.
-    guard = same_gen(current_gen(s["seat_id"]))
-    unlock(locks)
-    if wait:
-        status = finish_turn(s["seat_id"], short, s["alias"], uuid, guard)
-    if quiet:
-        return "woken"
-    print("%s %s/%s  [%s / %s]  via --bg --resume  status=%s  turns=%d" % (
-        verb, s["group"], s["alias"], short, s["seat_id"], status, turns))
-    if wait:
-        print_reply_block(s["seat_id"])
+def seat_pushed(s):
+    """A seat's `turns` and `status` once a message was pushed to its woken
+    session (T2's M2), only while it still holds that session."""
+    fresh = reload_seat(s["seat_id"]) or s
+    meta_set_if(s["seat_id"], {"status": "working", "updated": now(), "turns": str(int(fresh["turns"] or "0") + 1)},
+                lambda d: str(d.get("current") or "") == s["current"])
+
+
+# What a sender or a verb is told of a wake that did not make the session live (WakeResult.why).
+WAKE_WORDS = {
+    "sweep": "its wake waits for the thread sweep or a transition of it, which holds its lock",
+    "in flight": "a wake of it is already in flight",
+    "starting": "its process was started and does not answer yet",
+    "pending": "it holds a transition not finished yet, which the next reading verb finishes",
+    "unknown": "its record or its lane cannot be read",
+    "gone": "its session no longer fills its thread",
+    "lane": "its session is one MAWS reopens, which sminos never wakes",
+    "ended": "it has ended",
+    "failed": "waking it failed",
+    "config": "it runs under another config dir",
+    "transcript": "no conversation of it is on this machine",
+    "cwd": "its directory is gone",
+    "protected": "its directory is in a folder macOS protects, where a background launch would stop at a prompt",
+    "mode": "it runs in a mode that asks for approval",
+}
+
+
+def wake_words(why):
+    return WAKE_WORDS.get(why, why)
+
+
+def wake_outcome(why):
+    """A delivery's outcome for a wake that did not make the session live
+    (T2's M2, for a seat): a session that no longer fills the thread, one
+    MAWS reopens, and an ended one `recorded`, as before; one that passes on
+    its own, or whose record cannot be read, `held:<why>`, owed with no
+    attempt counted; any other `failed:`, its attempt counted (M3 holds
+    them)."""
+    if why in ("gone", "lane", "ended"):
+        return "recorded"
+    if why in WAKE_PASSING or why == "unknown":
+        return "held:%s" % why
+    return "failed:%s" % wake_words(why)
 
 
 def canonical_end(session, project):
@@ -13620,17 +13965,28 @@ def retired_seat_refusal(s):
 
 
 def cmd_resume(a):
+    """`sminos resume <seat> <msg>`: a live background turn of the seat
+    stopped, the seat woken, and its message pushed to it (T2's M2). The
+    message is recorded first, as `send` records one (record_send), so it
+    is durable before anything is launched and has an id `--wait` looks
+    for; it is then delivered as `send` delivers it (send_to_seat)."""
     s0, bound, opened = resolve_seat_or_opened(a.seat, "resume it")
     warn_resume_flags(a)
     if opened is not None:
         hold_verb(opened[0], opened[1].session, opened[1].alias, a.msg)
-    locks, s = locked_fresh(s0, "resume", bound)
-    try:
-        resume_session(s, a.msg, a.wait, locks)
-    except ResumeHeld as e:
-        e.record(a.msg)
-    except ResumeRefused as e:
-        die(e.message, e.code)
+    deliver_verb(s0, bound, a.msg, a.wait, "resumed", stop_turn=True)
+
+
+def deliver_verb(s, bound, msg, wait, verb, stop_turn=False):
+    """A verb's message to a seat (`resume`, `fill --resume`), recorded and
+    delivered as `send` records and delivers one (T2's M2)."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    frm = default_from("")
+    sender = "human" if not sid else ((caller_seat() or {}).get("alias") or frm)
+    msg_id = uuidlib.uuid4().hex[:8]
+    send_to_seat(s, compose_frame(frm, msg_id, msg), msg_id, wait,
+                 record=lambda seat: record_send(seat, sender, frm, msg, msg_id), session=bound, sender=frm,
+                 verb=verb, stop_turn=stop_turn)
 
 
 def default_from(explicit):
@@ -13661,38 +14017,81 @@ def default_from(explicit):
     return held_alias(*held, peer, sid, shadowing(project, sid))[0] or "session:%s" % sid[:8]
 
 
-def wait_socket_turn(s, marker, was_idle, guard):
-    """After a socket delivery: wait (bounded) for EVIDENCE the message landed,
-    then wait for the turn to end. The evidence is the marker in the target's
-    transcript; a busy harness row counts ONLY if the seat was idle when we sent
-    (a fresh turn started) — if it was already busy, a busy row proves nothing
-    about OUR message, so we require the marker. No evidence within the bound is
-    a failed wait, not a silent one: nothing is printed as a reply."""
-    cur = s["current"]
-    deadline = time.time() + float(os.environ.get("SMINOS_ACK_TIMEOUT", "120"))
-    seen = False
-    while time.time() < deadline:
-        if transcript_contains(cur, marker):
-            seen = True
+def _prompt_text(row):
+    """A prompt row's text (a user row that is no tool result), else None."""
+    if row.get("type") != "user":
+        return None
+    c = (row.get("message") or {}).get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        texts = [b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text"]
+        return "".join(texts) if texts else None
+    return None
+
+
+def reply_to(session, msg_id):
+    """(found, the assistant text that follows the prompt holding the
+    message `msg_id`, up to the next prompt): what `--wait` prints (T2's
+    M2), whatever another sender's message got before or after it."""
+    rows = transcript_rows(session)
+    marker = "id=%s]" % msg_id
+    start = next((i for i, r in enumerate(rows) if marker in (_prompt_text(r) or "")), None)
+    if start is None:
+        return False, ""
+    results = {str(b.get("tool_use_id") or ""): b for r in rows if r.get("type") == "user"
+               for b in _blocks(r, "tool_result")}
+    said = []
+    for r in rows[start + 1:]:
+        if _prompt_text(r) is not None:
             break
-        if was_idle:
-            agents_refresh()
-            row = harness_row(s)
-            if row and normalize_state(row) in ("working", "blocked"):
-                seen = True
-                break
+        if r.get("type") == "assistant" and r.get("answeredWithoutRequest") is not True:
+            text = _said(r, results)
+            if text:
+                said.append(text)
+    return True, "\n\n".join(said)
+
+
+def wait_reply(s, msg_id, guard):
+    """`--wait` after a push to a seat (T2's M2): the message's id in its
+    session's transcript, waited for (SMINOS_ACK_TIMEOUT), then the turn
+    that holds it to its end — the engine's record of the process reading
+    `idle` with an answer after the prompt, or for a second look a poll
+    later, or no process left — then the reply to that message printed
+    (reply_to). A busy job alone is no evidence: an idle woken job is listed
+    before any turn. The seat's reply file and `status` are written under
+    `guard`, for `sminos reply` and the list; nothing is printed from that
+    shared file. No evidence, or a turn still running when the watcher
+    expires, exits 1."""
+    cur, ref = s["current"], "%s/%s" % (s["group"], s["alias"])
+    deadline = time.time() + float(os.environ.get("SMINOS_ACK_TIMEOUT", "120"))
+    while not reply_to(cur, msg_id)[0]:
+        if time.time() >= deadline:
+            sys.stderr.write("sminos: no evidence that %s received the message within the ack window (no transcript "
+                             "marker) — not waiting for a reply\n" % ref)
+            sys.exit(1)
         time.sleep(poll_interval())
-    if not seen:
-        sys.stderr.write("sminos: no evidence that %s/%s received the message within the ack window "
-                         "(no transcript marker%s) — not waiting for a reply\n" % (
-                             s["group"], s["alias"], "" if was_idle else ", and it was already busy at send time"))
-        sys.exit(1)
-    agents_refresh()
-    row = harness_row(s)
-    short = (row or {}).get("id") or s["short"]
-    if not short:
-        return "idle"
-    return finish_turn(s["seat_id"], short, s["alias"], cur, guard)
+    iterations, i, idle_before = watcher_iterations(), 0, False
+    while True:
+        rec = running_now(cur)
+        idle = rec is None or rec.get("status") == "idle"
+        rows = transcript_rows(cur)
+        marker = "id=%s]" % msg_id
+        at = next((k for k, r in enumerate(rows) if marker in (_prompt_text(r) or "")), len(rows))
+        answered = any(r.get("type") == "assistant" for r in rows[at + 1:])
+        if idle and (answered or idle_before or rec is None):
+            break
+        idle_before = idle
+        i += 1
+        if iterations and i >= iterations:
+            meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, guard)
+            sys.stderr.write("sminos: watcher expired; the turn of %s is still running (status=working). Read it "
+                             "later with: sminos reply %s\n" % (ref, s["alias"]))
+            sys.exit(1)
+        time.sleep(poll_interval())
+    meta_set_if(s["seat_id"], {"status": "idle", "updated": now()}, guard, reply=(cur, "done", s["alias"]))
+    print("--- reply ---")
+    print(reply_to(cur, msg_id)[1] or "(no reply yet)")
 
 
 WAKE_POINTER = 'wake was folded into send — sminos send <seat> "<msg>" [--wait] [--from F]'
@@ -13709,27 +14108,31 @@ def compose_frame(sender, msg_id, msg, label=""):
     return "[sminos message from %s%s id=%s]\n%s" % (frame_alias(sender), label, msg_id, msg)
 
 
-def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
+def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", verb="", stop_turn=False):
     """Deliver a frame to one seat under its lifecycle lock. The lock covers
-    target selection, the socket delivery, and the status write, so a
-    concurrent fill/resume/retire cannot slip between them. A live seat takes
-    the frame (push_live: the owner's through its bridge, a peer's through its
-    inbox socket) and is recorded
-    `working`; a stopped one is
-    resumed with the frame as its message; vacant, retired, and gone seats
-    are refused, pointing at the verb that can reach them. Given `session`,
-    the one the name bound (find_target), a seat that no longer holds it is
-    refused.
+    target selection, the wake, the socket delivery, and the status write,
+    so a concurrent fill/resume/retire cannot slip between them. A live seat
+    takes the frame (push_live: the owner's through its bridge, a peer's
+    through its inbox socket) and is recorded `working`; a stopped one is
+    woken (resume_session: its process started under the same id, with no
+    message) and then pushed the frame as a live one is (T2's M2); vacant,
+    retired, and gone seats are refused, pointing at the verb that can reach
+    them. Given `session`, the one the name bound (find_target), a seat that
+    no longer holds it is refused. `verb` ("resumed", "filled"): the verb
+    that sent it, named in what is printed; `stop_turn` (`sminos resume`): a
+    live background turn is stopped and the seat woken again before the
+    push.
 
     `record(seat)`, when given, appends the message to the seat's project log
     once the seat is known reachable and returns its SendDelivery (or None
     when the seat has no project): the push then carries every earlier event
     of the same writer still owed to the seat, in order, and the delivery
-    record is settled on sent, woken, or uncertain and noted as failed
-    otherwise — so a send that dies on the way is the daemon's to retry. A
-    held send (SendDelivery.held: on a cut-over machine an operator's, which
-    the uplink delivers on the endpoint's verdict, or one behind an event the
-    revocation set cannot clear) is recorded and pushed nothing."""
+    record is settled on sent or uncertain and noted as failed otherwise —
+    so a send that dies on the way is the daemon's to retry. A held send
+    (SendDelivery.held: on a cut-over machine an operator's, which the
+    uplink delivers on the endpoint's verdict, or one behind an event the
+    revocation set cannot clear) is recorded and pushed nothing. `--wait`
+    waits for the reply to this message (wait_reply)."""
     refuse_codex(s0)
     locks, s = locked_fresh(s0, "send", session)
     ref = "%s/%s" % (s["group"], s["alias"])
@@ -13738,19 +14141,21 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         refuse_codex(s)
         # ONE liveness probe (pid alive AND socket answers) decides both the word
         # and the route: a second probe could see a session come up and send a
-        # live seat to a resume, which stops and relaunches its turn.
+        # live seat to a wake.
         peer = peer_for_session(s["current"]) if needs_probe(s) else None
         st = seat_state(s, peer)
         # The end in effect decides, before the seat's own status (an older copy's seat over a thread its human
         # opened).
         refuse_ended_seat(s, ref)
+        if st == "retired" and verb:
+            die(retired_seat_refusal(s), EXIT_UNKNOWN)
         if st in ("vacant", "retired"):
             die('seat %s is %s — fill it with: sminos fill %s "<task>"' % (ref, st, ref), EXIT_UNKNOWN)
         if st == "gone":
             die('seat %s is gone — no transcript for its session on this machine; sminos fill %s "<task>" '
                 "or sminos retire %s" % (ref, ref, ref), EXIT_UNKNOWN)
-        if not peer and st in FILLED:
-            # Its process runs (the engine's record): a resume would start a copy
+        if not peer and st in FILLED and not stop_turn:
+            # Its process runs (the engine's record): a launch would start a copy
             # of the running session, so nothing is sent.
             die(quiet_inbox_refusal(ref), EXIT_UNKNOWN)
     except SystemExit:
@@ -13772,13 +14177,14 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         refuse_ended_seat(s, ref, recorded=delivery, ended=True)
     if opened_by_human(s["current"]) and (not peer or hold_now(s["current"])):
         # A session its human opened that an older copy seated (D7, T1's M3): held, resolved here under the
-        # seat's lock, after the append and before both the live route and the resume, the gates and the wait (a
+        # seat's lock, after the append and before both the live route and the wake, the gates and the wait (a
         # words or reach hold would wait for a reply no process will write). The fresh hold at this last hop: a
         # peer this process read before a `/clear` moved its pid to another session is no route. Recorded,
         # pushed nothing, owed with no attempt counted.
         unlock(locks)
         held_send(delivery, s["alias"], thread=chosen)
-        if wait or delivery is None:
+        if wait or delivery is None or verb:
+            # A verb that starts a process exits 4 for it, its message recorded and held (T1's M3).
             die("nothing was started: %s; no reply is waited for" % human_refusal(ref), EXIT_UNKNOWN)
         return
     if delivery and (delivery.held or not delivery.queue):
@@ -13786,9 +14192,6 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         # it is held (O12 M6: a person's words the uplink delivers on the
         # endpoint's verdict, or behind an event the revocation set cannot
         # clear): no push here, but --wait still waits on this message's id.
-        row = harness_row(s)
-        was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (
-            not peer or peer.get("status") != "busy")
         guard = same_gen(current_gen(s["seat_id"]))
         if delivery.held:
             delivery.recorded_owed(s["alias"])
@@ -13798,10 +14201,8 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         if not delivery.held:
             print("sent to %s (delivered by a concurrent delivery)" % ref, flush=True)
         if wait:
-            wait_socket_turn(s, msg_id, was_idle, guard)
-            print_reply_block(s["seat_id"])
+            wait_reply(s, msg_id, guard)
         return
-    settle = delivery.settle if delivery else None
 
     def reach_held():
         # The reach gate held the push (P5 O18 D8): nothing went, nothing was stopped; owed for the uplink.
@@ -13809,98 +14210,136 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         delivery.recorded_owed(s["alias"])
         unlock(locks)
 
-    def resume(locks):
+    def unsent():
+        # Nothing pushed: an attempt counted (the daemon's next pass delivers it), or for a queued send released.
+        if isinstance(delivery, SendDelivery):
+            delivery.fail()
+        elif delivery is not None:
+            delivery.release()
+
+    def woken_peer():
+        """The wake, then the peer the push goes to; None once a wake that
+        did not make the session live was handled (returned, or exited)."""
         try:
-            resume_session(s, delivery.payload(False) if delivery else text, wait, locks,
-                           verb="sent to", on_launched=settle,
-                           **({"event": delivery.queue[-1], "project": delivery.project.id,
-                               "carried": delivery.carried(False)} if delivery else {}))
+            woke = resume_session(s, locks, stop_turn=stop_turn,
+                                  **({"event": delivery.queue[-1], "project": delivery.project.id,
+                                      "carried": delivery.carried(False)} if delivery else {}))
         except ReachHeld:
             reach_held()
-        except ResumeBusy as e:
-            # The sweep's hold outlasted the wait: owed with no attempt counted, the daemon's next pass resumes it.
-            unlock(locks)
-            if delivery is None:
-                die(e.message, 1)
-            if isinstance(delivery, WaitingSend):
-                delivery.recorded_owed(s["alias"])
-            else:
-                delivery.release()
-                print("recorded %s for %s; %s" % (event_ref(delivery.event), s["alias"], e.message), flush=True)
-                nudge_daemon()
-            if wait:
-                die("not resumed now: %s" % e.message, 1)
+            return None
         except ResumeHeld as e:
             # The seat holds a session its human opened (T1's M3): the send stays owed, no attempt counted.
             unlock(locks)
             if delivery is None:
                 die(e.message, EXIT_UNKNOWN)
             held_send(delivery, s["alias"], thread=chosen)
-            if wait:
+            if wait or verb:
                 die("nothing was started: %s; no reply is waited for" % e.message, EXIT_UNKNOWN)
+            return None
         except ResumeRefused:
-            if delivery:
-                delivery.fail()
+            unsent()
+            unlock(locks)
             raise
+        if woke.live:
+            forget_caches()
+            got = peer_for_session(s["current"])
+            if got is not None:
+                return got
+            woke = WakeResult(False, "starting")
+        unlock(locks)
+        words = wake_words(woke.why)
+        if woke.why in WAKE_PASSING:
+            # It passes on its own (the sweep's moment, another wake, a process starting): owed with no attempt
+            # counted, the daemon's next pass delivers it.
+            if delivery is None:
+                die("%s was not woken now: %s" % (ref, words), 1)
+            if isinstance(delivery, WaitingSend):
+                delivery.recorded_owed(s["alias"])
+            else:
+                delivery.release()
+                print("recorded %s for %s; not woken now: %s — the daemon delivers it" % (
+                    event_ref(delivery.event), s["alias"], words), flush=True)
+                nudge_daemon()
+            if wait:
+                die("not woken now: %s; no reply is waited for" % words, 1)
+            return None
+        if woke.why == "ended":
+            if delivery is not None:
+                delivery.release()
+            refuse_ended_seat(s, ref, recorded=delivery, ended=True)
+        unsent()
+        die("%s was not woken: %s" % (ref, words), EXIT_UNKNOWN if woke.why in ("gone", "lane", "transcript") else
+            EXIT_USAGE if woke.why == "cwd" else 1)
 
-    if not peer:
-        resume(locks)
-        return
-    row = harness_row(s)
-    # Idle-at-send: from the harness row when there is one; with no row, from
-    # the peer record's own status — never from normalising an empty state.
-    was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (peer.get("status") != "busy")
-    try:
-        if delivery:
-            control_module().push_live(peer, s["current"], delivery.payload(True), delivery.queue[-1],
-                                       delivery.project.id, carried=delivery.carried(True))
-        else:
-            send_frame(socket_path_of(bound_peer(peer, s["current"])), text, sender)
-    except ReachHeld:
-        reach_held()
-        return
-    except PushHeld as e:
-        # The last hop, bound afresh, found the session held, gone or in another process: nothing pushed, owed.
-        unlock(locks)
-        if delivery is None:
-            die("nothing was sent: %s" % e, EXIT_UNKNOWN)
-        held_send(delivery, s["alias"], e, thread=chosen)
-        if wait:
-            die("nothing was started: %s; no reply is waited for" % e, EXIT_UNKNOWN)
-        return
-    except SendFailed as e:
-        if e.phase == "before":
-            # Nothing reached the peer. A session that exited between the
-            # liveness check and the write is resumed; one whose process
-            # still runs (its record, read again) is not: a resume would
-            # start a copy of it.
-            if running_now(s["current"]):
-                if delivery:
-                    delivery.fail()
-                unlock(locks)
-                die(quiet_inbox_refusal(ref), EXIT_UNKNOWN)
-            warn("inbox socket delivery to %s failed before the frame was written (%s); resuming instead" % (ref, e))
-            resume(locks)
+    woken = False
+    if not peer or stop_turn:
+        peer = woken_peer()
+        if peer is None:
             return
-        if delivery:
-            delivery.settle()  # uncertain after a write: never pushed again
-        unlock(locks)
-        die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s). Not "
-            "resuming and not re-sending id=%s; check the seat with sminos reply/attach before retrying." % (
-                ref, e, msg_id), 1)
+        woken = True
+    while True:
+        try:
+            if delivery:
+                control_module().push_live(peer, s["current"], delivery.payload(True), delivery.queue[-1],
+                                           delivery.project.id, carried=delivery.carried(True))
+            else:
+                send_frame(socket_path_of(bound_peer(peer, s["current"])), text, sender)
+            break
+        except ReachHeld:
+            reach_held()
+            return
+        except PushHeld as e:
+            # The last hop, bound afresh, found the session held, gone or in another process: nothing pushed, owed.
+            unlock(locks)
+            if delivery is None:
+                die("nothing was sent: %s" % e, EXIT_UNKNOWN)
+            held_send(delivery, s["alias"], e, thread=chosen)
+            if wait:
+                die("nothing was started: %s; no reply is waited for" % e, EXIT_UNKNOWN)
+            return
+        except SendFailed as e:
+            if e.phase == "before":
+                # Nothing reached the peer. A session that exited between the liveness check and the write is
+                # woken; one whose process still runs (its record, read again), or one just woken, is not: a
+                # launch would start a copy of it.
+                if woken or running_now(s["current"]):
+                    unsent()
+                    unlock(locks)
+                    die(quiet_inbox_refusal(ref), EXIT_UNKNOWN)
+                warn("inbox socket delivery to %s failed before the frame was written (%s); waking it instead"
+                     % (ref, e))
+                peer = woken_peer()
+                if peer is None:
+                    return
+                woken = True
+                continue
+            if delivery:
+                delivery.settle()  # uncertain after a write: never pushed again
+            unlock(locks)
+            die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s). Not "
+                "waking it and not re-sending id=%s; check the seat with sminos reply/attach before retrying." % (
+                    ref, e, msg_id), 1)
     if delivery:
         delivery.settle()
-    wrote = meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, same_gen(s["gen"]))
+    if woken:
+        seat_pushed(s)
+        wrote = True
+    else:
+        wrote = meta_set_if(s["seat_id"], {"status": "working", "updated": now()}, same_gen(s["gen"]))
     # The watcher's guard: the generation right after our write, read while
     # the lifecycle lock is still held.
     guard = same_gen(current_gen(s["seat_id"]))
     unlock(locks)
     if not wrote:
         warn("record of %s changed during delivery; status left as is" % ref)
-    print("sent to %s" % ref, flush=True)
+    if verb:
+        fresh = reload_seat(s["seat_id"]) or s
+        print("%s %s  [%s / %s]  via --bg --resume  status=working  turns=%s" % (
+            verb, ref, fresh["short"], s["seat_id"], fresh["turns"]), flush=True)
+    else:
+        print("sent to %s%s" % (ref, " (woken)" if woken else ""), flush=True)
     if wait:
-        wait_socket_turn(s, msg_id, was_idle, guard)
-        print_reply_block(s["seat_id"])
+        wait_reply(s, msg_id, guard)
 
 
 CODEX_PREFIX = "codex:"
@@ -14622,14 +15061,21 @@ def retire_member(project, m, purge, verb="retired", how=None, thread_id=None):
     else:
         asked = owner_guard(how or OwnerAsk(m.alias, "purge" if purge else "retire"), [thread],
                             "%s (session %s)" % (m.alias, m.short))
-    agents_refresh()
-    row = agent_row(session_id=m.session)
-    proc = session_running(m.session)
-    by, pid = caller_alias(), (proc.get("pid") if proc else None)
+    # The record's wake lock before the process is looked for, held through the end's begin (T2's M2): a wake
+    # cannot start a process between what the end records of it (`ended.pid`) and its write.
     if human:
-        if end_human(project, thread, m.session, by, pid, purge, asked) == "already":
+        transition_hold(thread["thread"])
+    try:
+        agents_refresh()
+        row = agent_row(session_id=m.session)
+        proc = running_now(m.session)
+        by, pid = caller_alias(), (proc.get("pid") if proc else None)
+        if human and end_human(project, thread, m.session, by, pid, purge, asked) == "already":
             die("%s was retired already; nothing more was recorded" % m.alias, EXIT_UNKNOWN)
-    else:
+    finally:
+        if human:
+            release_wake(thread["thread"])
+    if not human:
         # Decided and appended under both thread stores' locks, which every record made or claimed for a session
         # takes (sminos_threads.claims_held), the log's locks inside them: a session a reconciliation made a
         # thread since (lane A now) is no longer what was cleared, asked about or exempt (asked_all), and none is
@@ -14817,7 +15263,11 @@ def end_and_stop(s, purge, asked=None):
         die("seat %s/%s changed while its end was decided (it now holds %s): nothing was written; run it again"
             % (s["group"], s["alias"], cur[:8] or "no session"), EXIT_UNKNOWN)
     project = seat_project(s)
-    seen = session_running(cur) if cur else None   # the process the end sees, and records
+    if record is not None:
+        # The record's wake lock before the process is looked for, held through the end's begin (T2's M2): a wake
+        # cannot start a process between what the end records of it and its write.
+        transition_hold(record["thread"])
+    seen = running_now(cur) if cur else None   # the process the end sees, and records
     agents_refresh()
     turn = harness_row(s) if cur else None   # and the harness's turn of it, by its id
     try:
@@ -14829,6 +15279,8 @@ def end_and_stop(s, purge, asked=None):
         else:
             end_seat(s, purge, asked)
     finally:
+        if record is not None:
+            release_wake(record["thread"])
         if retired_in_log(project, cur) and end_saw(record, seen, known):
             stop_seen_turn(s, seen, turn)
 
@@ -16977,6 +17429,8 @@ def main(argv=None):
         a.fn(a)
     except LogWriteFailed as e:
         die("%s completed, but %s" % (a.cmd, e), 1)
+    except WakeBusy as e:
+        die(e.message, 1)
 
 
 if __name__ == "__main__":

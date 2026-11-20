@@ -113,6 +113,9 @@ def _option(tokens, name):
     return value
 
 
+option = _option   # the value of an option among argv tokens, for the wake's launch (sminos.wake)
+
+
 def options_mode(tokens):
     """The permission mode a list of options runs under, "" when it names none."""
     return _option(tokens, "--permission-mode") or (

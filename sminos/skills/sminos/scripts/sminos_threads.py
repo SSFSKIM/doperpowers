@@ -1157,12 +1157,25 @@ def stop_seen(session, lock_until=None):
     launch sees it before the sweep can: the stop mark of the thread whose
     current session it is, `stopped` and `swept`, removed, so the clock of
     the rule starts again at its next stop and never runs on a mark from
-    before. Nothing for a record with no mark, an ended one (its return
-    lifts the mark) or one with an open entry."""
+    before; a wake's failures (`waking.failed`, `at`) go with it. Nothing
+    for a record with no mark, an ended one (its return lifts the mark) or
+    one with an open entry."""
     t = thread_of(session, ended=False)
-    if t is None or t["current"] != session or not (t.get("stopped") or t.get("swept")) or record_ended(t):
+    if t is None or t["current"] != session or record_ended(t):
         return False
-    return update(t["thread"], {}, remove=("stopped", "swept"),
+    w = t.get("waking") if isinstance(t.get("waking"), dict) else {}
+    failure = bool(waking(t, session)) and ("failed" in w or "at" in w)
+    if not (t.get("stopped") or t.get("swept") or failure):
+        return False
+    fields, remove = {}, ["stopped", "swept"]
+    if failure:
+        # A wake's failures go with the stop mark (T2's §7): a process holds the session again.
+        kept = {k: v for k, v in w.items() if k not in ("failed", "at")}
+        if set(kept) - {"session"}:
+            fields["waking"] = kept
+        else:
+            remove.append("waking")
+    return update(t["thread"], fields, remove=remove,
                   guard=lambda r: r["current"] == session and not record_ended(r), lock_until=lock_until)
 
 
@@ -1186,7 +1199,12 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
     entry absorbs already passes; with `absorbs` (a session that may have
     made a record of its own first: a hand-off's job, a spawn's child), an
     absorbable one makes an advance an absorption of it; any other refuses
-    the change. The entry as written, None when nothing was."""
+    the change. The entry as written, None when nothing was. Every
+    operation but a release opens under the record's wake lock
+    (sminos.transition_hold: the hold the caller has, else one taken until
+    `lock_until`), so that no wake of the thread launches between what the
+    entry records and its write; WakeBusy when a wake holds it past the
+    deadline."""
     if op not in OPS:
         raise ValueError("not a journaled operation: %r" % (op,))
     owed = []
@@ -1212,8 +1230,16 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
         _apply(entry, view, raw, fields, remove)
         return "live" if op == "return" or more.get("last") == "purge" else True   # an open purge is read live
 
-    return entry if _change(thread_id, mutate, lock_until, bump=True,
-                            both=bool((fields or {}).get("current"))) else None
+    # Opened under the record's wake lock (T2's M2), the hold its caller has or one taken here: a wake sees the
+    # record before the entry or with it, never between. A release (a `/clear`) ends nothing and changes no
+    # occupant, and a hook that skipped it has nothing that replays it: it takes no wake lock.
+    hold, took = sminos.transition_hold(thread_id, lock_until) if op != "release" else (None, False)
+    try:
+        return entry if _change(thread_id, mutate, lock_until, bump=True,
+                                both=bool((fields or {}).get("current"))) else None
+    finally:
+        if took:
+            hold.release()
 
 
 def _holder(session, thread_id):
@@ -1558,7 +1584,17 @@ def _hold(thread_id, entry, session, deadline):
         got.append("held")
         return True
 
-    _change(entry["other"], hold, deadline)
+    # The reservation under the absorbed record's own wake lock (T2's M2), as the absorber's entry is under its
+    # own: a wake of that record in flight past the deadline is "busy", tried again by the next finish.
+    try:
+        lock, took = sminos.transition_hold(entry["other"], deadline)
+    except sminos.WakeBusy:
+        return "busy"
+    try:
+        _change(entry["other"], hold, deadline)
+    finally:
+        if took:
+            lock.release()
     return got[0] if got else "held"
 
 

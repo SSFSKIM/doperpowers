@@ -1566,47 +1566,45 @@ def stop_and_close(threads, tid, cur, stopped):
 
 @contextlib.contextmanager
 def resume_lock_out(thread_id):
-    """The thread's resume lock (`<id>.resume.lock`, which resume_session
-    holds for the whole of a resume) held for the block, without waiting:
-    yields whether it is held. The block is the sweep's decision and its
-    append alone (stop_and_close). While held the file names the sweep
-    (sminos.SWEEP_HOLD), so a resume that meets it waits it out — no twin,
-    no failed delivery — and finds it gone. A seat's lock file is made when
-    it has none; a record its human opened has a lock file only once
-    something resumes it (none does in M3: the hold), so with none there is
-    nothing to keep out."""
-    path = os.path.join(sminos.root(), thread_id + ".resume.lock")
-    seat = os.path.exists(sminos.meta_path(thread_id))
-    try:
-        f = open(path, "a+" if seat else "r+")
-    except OSError:
-        yield not seat
+    """The thread's wake lock (`<id>.resume.lock`, sminos.wake_lock, which a
+    wake holds for the whole of its steps) held for the block, without
+    waiting: yields whether it is held. The block is the sweep's decision
+    and its append (stop_and_close, end_stopped): an end begun in it uses
+    this hold (sminos.WakeHold), which ends at that begin, before anything
+    is settled. While held the file names the sweep (sminos.SWEEP_HOLD), so
+    a wake that meets it waits it out and finds it gone. The file is made
+    when absent, for a record its human opened as for a seat (T2's M2), so
+    that the sweep and a first wake meet on one file."""
+    if sminos.wake_held(thread_id) is not None:
+        yield True
         return
-    with f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-            return
-        try:
-            # Named as the sweep's, no launch's: a resume that meets it waits it out (sminos.SWEEP_HOLD).
-            f.seek(0)
-            f.truncate()
-            f.write(sminos.SWEEP_HOLD)
-            f.flush()
-            yield True
-        finally:
-            try:
-                f.seek(0)
-                f.truncate()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+    try:
+        f = open(sminos.wake_lock_path(thread_id), "a+")
+    except OSError:
+        yield False
+        return
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        yield False
+        return
+    # Named as the sweep's, no launch's: a wake that meets it waits it out (sminos.SWEEP_HOLD).
+    f.seek(0)
+    f.truncate()
+    f.write(sminos.SWEEP_HOLD)
+    f.flush()
+    hold = sminos.WakeHold(thread_id, f)
+    try:
+        yield True
+    finally:
+        hold.release()
 
 
 def resume_locked(thread_id):
-    """Whether a resume of the thread holds its lock now (a seat's
-    `<seat id>.resume.lock`, held for the whole of resume_session)."""
-    path = os.path.join(sminos.root(), thread_id + ".resume.lock")
+    """Whether a wake of the thread, or a transition, holds its wake lock
+    now (`<thread id>.resume.lock`, sminos.wake_lock)."""
+    path = sminos.wake_lock_path(thread_id)
     try:
         f = open(path)
     except OSError:

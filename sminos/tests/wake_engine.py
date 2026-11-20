@@ -11,8 +11,10 @@ removal of one of its jobs, so the two forms behave alike.
 Its state is `$WAKE_ENGINE_STATE`: `jobs/<short>.json` (the job list's
 entries, `claude agents --json --all`), `calls.log` (each call, `{argv,
 cwd}`), `launches` (a count of the `--bg` launches entered), `inputs/<id>`
-(every frame its inbox took, whole), `violations` (a launch that carried a
-message while `refuse-message` is set), `helpers/<pid>` (its processes, each
+(every frame its inbox took, whole), `violations` (a resume that carried a
+message, refused unless `accept-message` is set: from T2's M2 no launch
+sminos makes carries one, and every suite's teardown fails on a
+`violations` that is not empty), `helpers/<pid>` (its processes, each
 naming its spec), `owned/<id>` (the worker it started for a session, known
 from its start, before any public signal of it: its pid and spec, trusted
 only while that pid's command line still names the spec, and removed by the
@@ -34,7 +36,7 @@ eight>/state.json` (a session's row) and `projects/<dir>/<id>.jsonl`.
   the settings' defaults. A bypass mode without the user settings'
   `skipDangerousModePermissionPrompt` is refused (E22); `--output-style`
   fails the worker before it starts (E12, E20). A message after the id runs
-  as the first turn and renames the session (E17), unless `refuse-message`.
+  as the first turn and renames the session (E17), only under `accept-message`.
 - **A turn.** Each frame its inbox takes is a prompt row holding the
   frame's text (in the mode it runs under), the record `busy`, then an
   assistant row (`reply to <the frame's id=…>`, with its model and a
@@ -44,7 +46,7 @@ eight>/state.json` (a session's row) and `projects/<dir>/<id>.jsonl`.
   removes the row and the job, stopping a live helper.
 
 Switches, each a file in the state directory (its content a value where one
-is taken): `refuse-message`; `held` (`open` or `running`: either note, and a
+is taken): `accept-message`; `held` (`open` or `running`: either note, and a
 copy); `silent-copy`; `row-elsewhere` (the engine keeps its rows in the
 state directory, where sminos does not look); `fail-before-start`;
 `fail-job` (a job that fails otherwise, its row kept); `rm-refuses` (the
@@ -168,6 +170,15 @@ def launches(st, name="launches"):
             return int(f.read().strip() or 0)
     except (OSError, ValueError):
         return 0
+
+
+def violations(st):
+    """The resumes that carried a message (a suite's teardown fails on any)."""
+    try:
+        with open(os.path.join(st, "violations")) as f:
+            return [line for line in f if line.strip()]
+    except OSError:
+        return []
 
 
 def pid_alive(pid):
@@ -334,9 +345,24 @@ def held_by(sid):
         return "bg"
     for p in glob.glob(os.path.join(glob.escape(config()), "sessions", "*.json")):
         rec = read_json(p)
-        if isinstance(rec, dict) and rec.get("sessionId") == sid and pid_alive(rec.get("pid")):
+        if isinstance(rec, dict) and rec.get("sessionId") == sid and pid_alive(rec.get("pid")) \
+                and not recycled(rec):
             return str(rec.get("kind") or "interactive")
     return ""
+
+
+def recycled(rec):
+    """A record whose `procStart` is not its live pid's start (a suite's
+    recycled pid): the process it names is another, which holds nothing."""
+    start = " ".join(str(rec.get("procStart") or "").split())
+    if not start:
+        return False
+    try:
+        now = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(rec["pid"]))], capture_output=True, text=True,
+                             timeout=10, env=dict(os.environ, LC_ALL="C", LANG="C")).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return " ".join(now.split()) != start
 
 
 def title_of(path):
@@ -365,9 +391,9 @@ def launch(argv):
             time.sleep(0.01)
     resume, flags, positional = parse(argv)
     message = positional[-1] if positional else None
-    if positional and switch("refuse-message") is not None:
+    if positional and resume and switch("accept-message") is None:
         append(os.path.join(st, "violations"), json.dumps({"argv": argv, "cwd": os.getcwd()}))
-        print("wake_engine: a launch carried a message: %r" % positional, file=sys.stderr)
+        print("wake_engine: a resume carried a message: %r" % positional, file=sys.stderr)
         return 2
     cwd = os.getcwd()
     with locked(os.path.join(st, "launch.lock")):

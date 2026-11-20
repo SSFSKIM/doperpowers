@@ -96,7 +96,11 @@ class Ending(Rig):
             self.launched.append(args)
             if short == "":
                 return "", "no background id"
-            self.session(sid=sid, kind="bg", started=ms_ago(0))
+            if "--resume" in args:
+                # A wake (T2's M2): its process holds the session with an inbox, which the push then reaches.
+                self.live(sid=sid, name="w", inbox=True, kind="bg", started=ms_ago(0))
+            else:
+                self.session(sid=sid, kind="bg", started=ms_ago(0))
             return sid[:8], "banner"
 
         return mock.patch.object(sminos, "run_claude_bg", side_effect=start), \
@@ -636,16 +640,17 @@ class EndStands(Ending):
         sid, proc, seat_id = self.seated(alias="v")
         self.end(proc)
         self.reconcile()
-        real = sminos.resume_lock_taken
+        real = sminos.wake_lock
 
-        def ended_meanwhile(lf, label):
-            real(lf, label)   # the sweep's end, written while it held this lock out, is in the record now
+        def ended_meanwhile(tid, *a, **k):
+            got = real(tid, *a, **k)   # the sweep's end, written while it held this lock out, is in the record now
             at = sminos.now()
             sminos.meta_set(seat_id, {"status": "retired", "updated": at,
                                       "ended": {"at": at, "reason": "ended", "by": "", "pid": None}})
+            return got
         before = self.own(sid)
         start, poll = self.engine(sid)
-        with start, poll, mock.patch.object(sminos, "resume_lock_taken", side_effect=ended_meanwhile):
+        with start, poll, mock.patch.object(sminos, "wake_lock", side_effect=ended_meanwhile):
             code, out = self.cli("resume", "g/v", "go on")
         self.assertEqual(code, 4, out)
         self.assertIn("a fill returns it", out)
@@ -1219,15 +1224,19 @@ class Canonical(Ending):
         self.assertNotIn(mock.call("newjob01"), sminos.claude_stop.call_args_list)
 
     def test_an_unconfirmed_fill_resume_does_not_return_the_seat(self):
+        """A launch that printed its banner and no process of which holds the
+        session within the wake's wait (§3, row 16): not live, nothing
+        returned and nothing recorded."""
         sid, seat_id = EndStands.retired_seat(self)
-        start, _ = self.engine(sid)
-        with start, mock.patch.object(sminos, "poll_uuid", return_value=None):
+        with mock.patch.object(sminos, "run_claude_bg", return_value=(sid[:8], "backgrounded · %s" % sid[:8])), \
+                mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "2", "SMINOS_POLL_INTERVAL": "0.05"}):
             code, out = self.cli("fill", "g/w", "carry on", "--resume")
         self.assertEqual(code, 1, out)
         seat = sminos.load_seat(sminos.meta_path(seat_id))
         self.assertEqual((seat["status"], (seat.get("ended") or {}).get("reason")), ("retired", "retire"))
         self.assertFalse(self.is_member(sid))
-        self.assertIn("stays retired", out)
+        self.assertIn("does not answer yet; nothing was recorded", out)
+        self.assertFalse([e for e in sminos.log_read(self.p) if e.get("text") == "carry on"])
 
     def open_end(self, seat_id, sid):
         at = sminos.now()
