@@ -1502,7 +1502,10 @@ run live, below.
    short id with the in-charge line, with different `thread` values, and
    the old one's events hold no `retired`. From P,
    `sminos say "@<name>#<old short> again"` is held for the old one.
-   Resume the old id in a second pane: it is live under its short id.
+   Resume the old id in a second pane: it is live, under its short id or,
+   on an engine that renames a session whose name a live one holds (2.1.329
+   does, `nameSource: "collision"`), under the engine's name; either way
+   under its own `thread`, and the held message reaches it.
 6. Fork a session (the engine's own command for a copy). The copy's guide
    line carries the fork sentence, and `list --json` gives it a `thread`
    of its own.
@@ -2584,6 +2587,11 @@ Found while executing:
   - **`test-older-cli.sh`.** It asserts the exits and words 1.27.10
     prints, and that the stub `claude` logged no call at all, which is
     stronger than "no `--resume`".
+  - **Concrete Steps, live pass step 5.** The resumed old session may carry
+    the engine's collision name instead of its short id. The composite asks
+    only that the two sessions be told apart, and the engine's name does
+    that. M3's short-id expectation holds wherever the engine leaves the
+    name to sminos.
   - **Concrete Steps, live pass step 1.** Amended to require a scratch
     `HOME` as well as a scratch `SMINOS_HOME`; the reason is in Surprises.
 
