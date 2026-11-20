@@ -327,7 +327,7 @@ class Hold(Rig):
             code, out = self.say("@alpha are you there", sender=sender)
             self.assertEqual(code, 0, out)
             self.assertIn("alpha: recorded and held: the session is stopped, and a session its human opened is not "
-                          "woken; it reads this when its human reopens it", out)
+                          "woken; it is pushed only if its human reopens the session before it ends", out)
         for _ in range(sminos.DELIVERY_ATTEMPTS + 2):
             self.tick()
         self.assertEqual(len(self.owed_to(sid)), 2)

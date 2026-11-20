@@ -985,10 +985,22 @@ def closed(step):
 
 def check_restated(ci, si):
     """`restated` follows every line of its case's restatement on its
-    connection."""
+    connection. After the endpoint's restart (case 11), that restatement
+    holds S4 too: a thread stopped, not retired (T1's M3), its `member` as
+    lane A and `stopped`, which the fixture (from before threads) withdraws
+    in a scene the replay passes by."""
     conn, at = STEPS[(ci, si)]
     later = [k for k, (n, i) in STEPS.items() if k[0] == ci and n == conn and i > at and k != (ci, si)]
-    return not later, "the case's restatement is before restated%s" % (": not %r" % later if later else "")
+    if later:
+        return False, "the case's restatement is before restated: not %r" % later
+    if ci == 11:
+        s4 = subst("{{session:S4}}")
+        frames = CONNS["main"].frames[:at] if CONNS["main"].number == conn else []
+        rows = [f for f in frames if f.get("t") == "member" and f.get("session") == s4]
+        if not rows or (rows[-1].get("lane"), rows[-1].get("state")) != ("A", "stopped"):
+            return False, "the restatement before restated holds S4, lane A and stopped: sent %s" % (
+                json.dumps(rows)[:600] or "none")
+    return True, "the case's restatement is before restated"
 
 
 def run_deferred(conn_name):

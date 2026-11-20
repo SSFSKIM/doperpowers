@@ -385,8 +385,10 @@ def settle_ended(project, sid, lock_until=None, until=None, end=None):
                 outside = policy.outside_origin(e)
                 if outside and project.hub:
                     noted = sminos._delivery(record, e["writer"]).get("pushed")
+                    # An admitted receipt reached the model whatever the policy says since (holder_owed).
                     outcome, reason = (of_push(noted[1], None) if noted and noted[0] == e["seq"] else
-                                       (READ_ONLY, of_push(READ_ONLY, None)[1]) if policy.read_only() else
+                                       of_push("sent", None) if sminos.holder_module().admitted(project.id, sid, e)
+                                       else (READ_ONLY, of_push(READ_ONLY, None)[1]) if policy.read_only() else
                                        ("recorded", ENDED))
                     try:
                         Outbox(project).record(e, sid, outcome, reason)
