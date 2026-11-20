@@ -616,6 +616,10 @@ class QuietTick(unittest.TestCase):
                     sminos.log_append(project, "%s/%s" % (OTHER, uuid.uuid4()), "say",
                                       to=[{"session": sid, "alias": "past0"}], text="for a closed session")
             live_session(root)
+        # The live sessions' transcripts listed now: a tick reads the index as last listed, and a listing that
+        # some later tick's fresh look takes would show them to the tick after it, which writes their launch
+        # directories then (a stopped thread with no transcript asks fresh at every tick).
+        sminos.transcripts_now()
         for _ in range(3):   # joins the live sessions, publishes their words, reports what the closed sessions are owed
             quietly(daemon.tick_all, quiet=True)
 
