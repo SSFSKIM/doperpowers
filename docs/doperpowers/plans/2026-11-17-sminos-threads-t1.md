@@ -37,7 +37,7 @@ the composite, run as Concrete Steps gives it.
 - [x] (2026-11-19) M3 — A closed session stays: stopped, held, and its sender told (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `ef5a4cd0..dd83567f`)
 - [x] (2026-11-20) M4 — A thread ends, and returns (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `b32c3a77..56fc6d4f`)
 - [x] (2026-11-20) M5 — A thread that owns a VM is neither retired nor ended (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `2f324a19..e1be6e85`)
-- [ ] M6 — What sessions are told, an older sminos beside this one, the shared vectors, and the acceptance run
+- [x] (2026-11-20) M6 — What sessions are told, an older sminos beside this one, the shared vectors, and the acceptance run (three reviews, the owner's cap; the third approved, its two Minor findings fixed in a last wave the controller checked; `e55117c7..d492589f`)
 
 ## Words this document adds
 
@@ -2595,6 +2595,37 @@ Found while executing:
   - **Concrete Steps, live pass step 1.** Amended to require a scratch
     `HOME` as well as a scratch `SMINOS_HOME`; the reason is in Surprises.
 
+- 2026-11-20 — **M6's review waves.**
+  - Adoption is read from X9's own marker, never from an account's name, and `x9_reply` takes a host in exactly two forms: a provider named, with no `adopted`; or no provider, with `adopted: true`.
+  - The refusal says an adopted host is released and a provisioned one deleted. The host's name is quoted in the suggested command.
+  - Three days stopped ends only a thread that owns no host and has an answer from devcloud.
+  - What is held for a stopped session its human opened is pushed only if it is reopened before it ends. Otherwise it stays in the log.
+  - The fork line ends "…are not for you; you are its peer.", the holder's ruling. Three of three samples stayed clean.
+  - `check_spent` in RL10's driver now waits, within a bound, for its daemon.log line as well as the position. The race predates T1.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**2026-11-20, at M6's close.** T1 shipped as sminos 1.51.0 on `sminos-threads-t1`, all six milestones. It is not yet merged. The holder's branch review of b9c85c00 runs beside this, and its fix waves merge into this branch after M6.
+
+**What T1 delivers against its purpose.** Every member is now a thread, and a thread outlives the process that ran it:
+
+- A session its human opened, once closed, stays a stopped member under its name and its line. What is addressed to it is recorded and held, and its sender is told. Nothing starts a process for it. Its human reopening it brings it back as itself, and the held messages are pushed in order.
+- A thread keeps its identity across its session ids: hand-off, refill, and the old session left by a `/clear`, which is a thread of its own. Any former id reaches the current session.
+- A thread ends after three days stopped, or by retirement, unless it owns a devcloud host or devcloud cannot tell. Its human reopening it, or a fill, returns it.
+- An older sminos running beside this code resumes nothing, and its `ended` changes nothing.
+
+Each of the eleven acceptance items is mapped to its tests in M6's report. Items 1, 2 (the held line), 3 (`/clear`, fork, in-session `/resume`) and 7 (stamped events) were also seen on a real engine, 2.1.329.
+
+**Against the plan.**
+
+- The journal grew beyond §6 as first written: reservations, rules 7 and 8, `carry`/`was`/`unset`/`next`, and `follow` and `began`. Each addition is in the Decision Log, and the holder accepted them.
+- The VM refusal's guidance moved from SKILL.md into the verb's own words.
+- The fork line keeps main's peer statement and drops its task clause.
+- Live step 5 accepts the engine's collision name.
+
+**What the process taught.**
+
+- Per-milestone reviews caught each milestone's own defects. They could not see interleavings between two writers across milestones; most of the branch review's 44 findings (16 of them P1) were of that kind. A plan this concurrent wants a cross-milestone concurrency review at a frontier (after M3, say), not only at the end.
+- The three-review cap held: M3, M4 and M5 each closed with a final wave the controller checked. Each final wave's fixes are listed for the branch review as fixed after the last review and not reviewed again.
+- Timing flakes in required suites cost reruns: `test-join.sh`'s RL10 join, a race in the base whose window the branch lengthened; `QuietTick`; RL10's `check_spent`, the base's; and `test-address.sh`'s alias case, seen once and not reproduced. A required check that fails by timing costs every PR, so each one diagnosed was fixed in its lock or its test driver rather than rerun away.
+- Live passes need a scratch `HOME` as well as `SMINOS_HOME`. The engine moved from 2.1.327 to 2.1.329 during T1, and its collision rename was found that way.
