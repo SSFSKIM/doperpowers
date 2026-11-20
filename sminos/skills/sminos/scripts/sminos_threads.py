@@ -838,11 +838,12 @@ def wake_line(thread_id, session, line, lock_until=None):
 
 
 def wake_failed(thread_id, session, line_id, lock_until=None):
-    """A wake failed: `failed` counted, `at` now, and the line it wrote removed."""
+    """A wake failed: `failed` counted, `at` now, and the line it wrote removed
+    (`line_id` None: it wrote none, and another wake's line stays)."""
     def change(w):
         w["failed"] = (w["failed"] if isinstance(w.get("failed"), int) and w["failed"] > 0 else 0) + 1
         w["at"] = sminos.now(ms=True)
-        if (w.get("line") or {}).get("id") == line_id:
+        if line_id is not None and (w.get("line") or {}).get("id") == line_id:
             w.pop("line")
         return w
     return _waking_change(thread_id, session, change, lock_until)

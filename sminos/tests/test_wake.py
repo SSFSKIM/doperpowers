@@ -696,6 +696,19 @@ class Field(Wakes):
         self.assertNotIn("waking", threads.get(tid), "a field with nothing but its session is removed")
         self.assertFalse(threads.wake_forget(tid, sid))
 
+    def test_a_failure_before_any_line_was_written_is_counted(self):
+        # A wake that fails before its line (W3's stop that did not take) passes no line id: counted, `at` set.
+        sid, tid = self.opened_record()
+        self.assertTrue(threads.wake_failed(tid, sid, None))
+        w = threads.waking(threads.get(tid))
+        self.assertEqual((w["failed"], "line" in w), (1, False))
+        self.assertIsNotNone(sminos._ts_epoch(w["at"]))
+        line = {"id": "l1", "first": True, "mode": "auto", "model": "m", "turn_model": "m", "not_carried": None}
+        self.assertTrue(threads.wake_line(tid, sid, line))
+        self.assertTrue(threads.wake_failed(tid, sid, None))
+        w = threads.waking(threads.get(tid))
+        self.assertEqual((w["failed"], w["line"]["id"]), (2, "l1"), "a line of another wake stays")
+
     def test_a_writer_for_a_session_that_does_not_fill_the_thread_writes_nothing(self):
         sid, tid = self.opened_record()
         other = str(uuidlib.uuid4())
