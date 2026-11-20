@@ -622,9 +622,7 @@ class Round(Verbs):
         def handed(project, member, due=False, **kw):
             # As holder_carry hands a frame to a receipt's process: pushed, then awaiting its admission.
             got = real(project, member, due=due, **kw)
-            for e, _ in got["outcomes"]:
-                sminos.HANDED_OFF.add((project.id, member.session, e["writer"], e["seq"]))
-            return {**got, "outcomes": [(e, sminos.HOLDER_AWAITING) for e, _ in got["outcomes"]]}
+            return {**got, "outcomes": [(e, sminos.HandedOff()) for e, _ in got["outcomes"]]}
         with mock.patch.object(sminos, "deliver_next", handed):
             p = mock.patch.dict(os.environ, {"SMINOS_ACK_TIMEOUT": "20"})
             with p:
@@ -632,6 +630,9 @@ class Round(Verbs):
         self.assertEqual(code, 0, out)
         [event] = self.logged("handed over")
         self.assertIn("reply to %s" % event["msg_id"], out, "waited for its reply")
+        lines = out.splitlines()
+        self.assertLess(lines.index("owed: %s" % sid), lines.index("--- reply ---"),
+                        "owed until its admission: the line before the waiter")
 
     def test_a_hold_with_no_push_is_said_held_and_waits_for_nothing(self):
         tid, sid = self.human_thread()
@@ -880,7 +881,7 @@ class Round2(Verbs):
         self.assertEqual(code, 4, said)
         self.assertIn("returned", said)
         self.assertIn("refused", said)
-        self.assertNotIn("has not answered yet", said)
+        self.assertNotIn("are confirmed yet", said)
 
     def test_a_returned_seats_task_still_pending_starts_no_watcher(self):
         s = self.seat()
@@ -889,7 +890,7 @@ class Round2(Verbs):
         with mock.patch.dict(os.environ, {"SMINOS_VERDICT_WAIT": "1", "SMINOS_ACK_TIMEOUT": "1"}):
             code, out = self.cli("fill", "w", "waits for its verdict", "--resume", "--wait")
         self.assertEqual(code, 4, out)
-        self.assertIn("has not answered yet", out)
+        self.assertIn("no push of its task and no refusal of it are confirmed yet", out)
         self.assertTrue(self.owed_mark(out, sminos.reload_seat(s["seat_id"])["current"]), out)
         self.assertNotIn("no evidence", out, "no watcher")
         self.assertNotIn("--- reply ---", out)
@@ -925,6 +926,48 @@ class Round2(Verbs):
                 code, out = self.cli(*argv_of(verb, "%s#%s" % (alias, sid[:8]), "from elsewhere"), cwd=other)
                 self.assertEqual(code, 4, out)
                 self.assertIn("returns when its human reopens it", out)
+
+
+class Round3(Verbs):
+    """What the third review found: a hand-off not admitted by the deadline is owed, hand-off evidence is the call's
+    own outcome, a refusal is matched by the event's identity."""
+
+    def test_a_hand_off_not_admitted_by_the_deadline_is_said_owed(self):
+        tid, sid = self.human_thread()
+        self.say("@%s up" % sid[:8])
+
+        def handed_unadmitted(project, member, due=False, **kw):
+            # Handed to a receipt's process, its admission (and so its row in the conversation) yet to come.
+            return {"outcomes": [(e, sminos.HandedOff()) for e in sminos.owed(project, member)]}
+        with mock.patch.object(sminos, "deliver_next", handed_unadmitted), \
+                mock.patch.dict(os.environ, {"SMINOS_ACK_TIMEOUT": "1"}):
+            code, out = self.cli("send", sid[:8], "queued in the engine", "--wait")
+        self.assertEqual(code, 1, out)
+        self.assertTrue(self.owed_mark(out, sid), out)
+        self.assertIn("no evidence", out)
+
+    def test_hand_off_evidence_is_the_outcome_not_a_record_of_this_process(self):
+        self.assertFalse(hasattr(sminos, "HANDED_OFF"), "no process-wide history")
+        self.assertEqual(sminos.HandedOff(), sminos.HOLDER_AWAITING)
+        self.assertTrue(sminos.holder_waiting(sminos.HandedOff()), "owed until admitted, wherever it is compared")
+        self.assertTrue(json.loads(json.dumps(sminos.HandedOff())) == sminos.HOLDER_AWAITING)
+
+    def test_a_refusal_is_matched_by_the_events_identity_alone(self):
+        sid = str(uuidlib.uuid4())
+        other_sid = sid[:8] + str(uuidlib.uuid4())[8:]   # the same short
+        twin = self.p._replace(id=str(uuidlib.uuid4()))   # another project under the same name
+        e = {"writer": "testhost/human", "seq": 3}
+        for said in (sminos.WORDS_REFUSED_SAID % ("testhost/human:3", self.p.name, sid,
+                                                  sminos.refused_key(self.p, sid, e)),
+                     sminos.REACH_REFUSED_SAID % ("testhost/human:3", self.p.name, sid[:8], "no reason given",
+                                                  sminos.refused_key(self.p, sid, e))):
+            with self.subTest(said=said[:40]):
+                open(os.path.join(sminos.root(), "daemon.log"), "w").close()
+                sminos.daemon_log(said)
+                self.assertTrue(sminos.refusal_logged(self.p, sid, e))
+                self.assertFalse(sminos.refusal_logged(twin, sid, e), "another project of the same name")
+                self.assertFalse(sminos.refusal_logged(self.p, other_sid, e), "another session of the same short")
+                self.assertFalse(sminos.refusal_logged(self.p, sid, {**e, "seq": 4}), "another event")
 
 
 if __name__ == "__main__":

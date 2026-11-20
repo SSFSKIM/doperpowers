@@ -319,6 +319,16 @@ case "\${RESUME_OWED:-}" in
     echo "owed: \$1"
     echo "sminos: no evidence that w received the message within the ack window (no transcript marker) — not waiting for a reply" >&2
     exit 1 ;;
+  handoff)
+    echo "sent to w"
+    echo "owed: \$1"
+    echo "sminos: no evidence that w received the message within the ack window (no transcript marker) — not waiting for a reply" >&2
+    exit 1 ;;
+  receipt)
+    echo "recorded testhost/human:7 for w: awaiting-admission"
+    echo "owed: \$1"
+    echo "sminos: not pushed now: its receipt waits for its process; the daemon delivers it, and no reply is waited for" >&2
+    exit 4 ;;
   stopfail)
     echo "owed: \$1"
     echo "sminos: claude stop 1a2b3c4d failed for w — not resuming over a turn that may still be running" >&2
@@ -2092,6 +2102,14 @@ _owed_drill stopfail 99
 t  "a resume whose stop of the running turn was refused is read as owed" \
    "the task is recorded and owed to u-old"                   cat "$OUTOWED"
 nt "so no fresh worker is spawned beside the running one"    "SPAWN"  cat "$SPAWN_LOG"
+_owed_drill handoff 100
+t  "a hand-off whose admission has not come by the deadline is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside the handed one"     "SPAWN"  cat "$SPAWN_LOG"
+_owed_drill receipt 101
+t  "a receipt that handed nothing off is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside the pending one"    "SPAWN"  cat "$SPAWN_LOG"
 _owed_drill other 98
 nt "a line owing the task to another session is not read as owed" \
    "the task is recorded and owed to u-old"                   cat "$OUTOWED"

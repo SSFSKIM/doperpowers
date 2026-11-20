@@ -7035,9 +7035,15 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
 
 
 _HOLDER_SAID = {}   # session → why its deliveries are held, as last said in daemon.log
-# (project id, session, writer, seq) of each event this process handed to a receipt's process (holder_carry's push):
-# an `awaiting-admission` outcome is a push only for these, never for a receipt still pending (verb_delivered).
-HANDED_OFF = set()
+class HandedOff(str):
+    """HOLDER_AWAITING for a frame this push handed to a receipt's process
+    (holder_carry): equal to it wherever an outcome is compared or kept, and
+    `handed`, the evidence on the call's own outcome that a frame went
+    (verb_delivered); a receipt still pending is the plain string."""
+    handed = True
+
+    def __new__(cls):
+        return super().__new__(cls, HOLDER_AWAITING)
 
 
 def holder_carry(plan, project, member, session, e, events, cursor, peer):
@@ -7067,8 +7073,7 @@ def holder_carry(plan, project, member, session, e, events, cursor, peer):
         if err.phase == "before":
             return "failed:%s" % err
     holder_module().pushed(plan.receipt, plan.attempt)
-    HANDED_OFF.add((project.id, session, e["writer"], e["seq"]))
-    return HOLDER_AWAITING
+    return HandedOff()
 
 
 def holder_wake(project, e):
@@ -7409,7 +7414,7 @@ def deliver_verdict(project, member, event, verdict):
                 outcome = outcomes.READ_ONLY
             elif verdict == "refuse":
                 outcome = outcomes.REFUSED_WORDS
-                daemon_log(WORDS_REFUSED_SAID % (event_ref(e), project.name, session))
+                daemon_log(WORDS_REFUSED_SAID % (event_ref(e), project.name, session, refused_key(project, session, e)))
             elif stale_hold(delivered_load(project, session), session, e):
                 outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
             elif (unknown := held_unreadable(delivered_load(project, session), e)):
@@ -7430,14 +7435,22 @@ def deliver_verdict(project, member, event, verdict):
 # The daemon.log lines of the endpoint's refusals of an event (deliver_verdict's of a person's words,
 # deliver_reach's of a peer's reach): the one record of either here, which a returned seat's `fill --resume`
 # reads, by the event's identity, to say its task was refused (refusal_logged).
-WORDS_REFUSED_SAID = "the endpoint refused %s (%s) as words into %s: nothing delivered"
-REACH_REFUSED_SAID = "the endpoint refused %s (%s) reach into %s: %s; nothing delivered"
+# Each names the event by its identity, `refused_key`'s: the project's id, the writer whole, the seq and the
+# session's id whole, never a display label.
+WORDS_REFUSED_SAID = "the endpoint refused %s (%s) as words into %s: nothing delivered [%s]"
+REACH_REFUSED_SAID = "the endpoint refused %s (%s) reach into %s: %s; nothing delivered [%s]"
+
+
+def refused_key(project, session, e):
+    """The identity a refusal's daemon.log line carries (WORDS_REFUSED_SAID,
+    REACH_REFUSED_SAID) and refusal_logged matches."""
+    return "event %s %s:%d to %s" % (project.id, e["writer"], e["seq"], session)
 
 
 def refusal_logged(project, session, e):
     """Whether daemon.log says the endpoint refused event `e` to `session`,
-    as words (WORDS_REFUSED_SAID) or its reach (REACH_REFUSED_SAID), from
-    the log's last 256 KiB."""
+    as words or its reach, by the event's identity (refused_key), from the
+    log's last 256 KiB."""
     try:
         with open(os.path.join(root(), "daemon.log"), "rb") as f:
             f.seek(0, os.SEEK_END)
@@ -7445,9 +7458,8 @@ def refusal_logged(project, session, e):
             tail = f.read().decode("utf-8", "replace")
     except OSError:
         return False
-    words = " " + WORDS_REFUSED_SAID % (event_ref(e), project.name, session) + "\n"
-    reach = " " + REACH_REFUSED_SAID.split(": %s", 1)[0] % (event_ref(e), project.name, session[:8]) + ": "
-    return words in tail or reach in tail
+    return ("; nothing delivered [%s]\n" % refused_key(project, session, e)) in tail \
+        or (": nothing delivered [%s]\n" % refused_key(project, session, e)) in tail
 
 
 def words_unanswered(project, member, event, why):
@@ -7608,7 +7620,8 @@ def deliver_reach(project, member, event, verdict, reason=None):
                 outcome = outcomes.READ_ONLY
             elif verdict == "refuse":
                 outcome = outcomes.REFUSED_REACH
-                daemon_log(REACH_REFUSED_SAID % (event_ref(e), project.name, session[:8], reason or "no reason given"))
+                daemon_log(REACH_REFUSED_SAID % (event_ref(e), project.name, session[:8], reason or "no reason given",
+                                                 refused_key(project, session, e)))
             elif stale_hold(delivered_load(project, session), session, e):
                 outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
             elif (unknown := held_unreadable(delivered_load(project, session), e)):
@@ -8412,9 +8425,10 @@ def returned_task(delivery, session, ref, msg_id, wait=False):
     for M4): pushed (its id in the conversation), True, the one outcome
     whose reply `--wait` waits for; refused, as words or its reach
     (refusal_logged), exit 4, the seat returned and nothing pushed; else
-    still owed (OWED_LINE), the daemon delivering it on the answer, its
-    refusal said in daemon.log should it come: False, and with `wait` exit
-    4, no reply waited for."""
+    neither confirmed (an admitted task may still be queued before its
+    conversation shows it): still owed (OWED_LINE), the daemon delivering
+    it on the answer, a refusal said in daemon.log should it come: False,
+    and with `wait` exit 4, no reply waited for."""
     tail = TranscriptTail(session)
     deadline = time.time() + float(os.environ.get("SMINOS_VERDICT_WAIT", "30"))
     while True:
@@ -8426,8 +8440,8 @@ def returned_task(delivery, session, ref, msg_id, wait=False):
                 % ref, EXIT_UNKNOWN)
         if time.time() >= deadline:
             say_owed(session)
-            print("%s: the endpoint has not answered yet; the daemon delivers the task on its answer" % ref,
-                  flush=True)
+            print("%s: no push of its task and no refusal of it are confirmed yet; the daemon delivers it on the "
+                  "endpoint's answer" % ref, flush=True)
             if wait:
                 die("no reply is waited for: the task is not pushed yet", EXIT_UNKNOWN)
             return False
@@ -8516,9 +8530,12 @@ def verb_delivered(project, session, alias, delivery, msg_id, verb="", wait=Fals
     first = next((o for ev, o in got["outcomes"] if ev["writer"] == writer), "")
     entry = _delivery(delivered_load(project, session), writer)
     outcome = mine[0] if mine else ""
-    if outcome in PUSHED or outcome == HOLDER_AWAITING and (project.id, session, writer, seq) in HANDED_OFF:
-        # Pushed, or handed by this call to its process's inbox, whose admission settles it (a receipt): the frame
-        # is there. A receipt pending with no hand-off (no peer, a process yet to activate) is owed, below.
+    if outcome in PUSHED or getattr(outcome, "handed", False):
+        # Pushed, or handed by this call to its process's inbox (HandedOff), whose admission settles it (a
+        # receipt): the frame is there. A receipt pending with no hand-off (no peer, a process yet to activate) is
+        # owed, below; a handed one stays owed until its admission, so the owed line comes before any waiter.
+        if outcome == HOLDER_AWAITING:
+            say_owed(session)
         woken = outcome in ("woken", "woken?")
         said = "%s %s%s" % (verb or "sent to", alias, " (woken)" if woken else "")
         if terminal and stop_turn:
