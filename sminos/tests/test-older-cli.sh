@@ -148,10 +148,13 @@ assert_contains "$OUT" "keeper [${SID:0:8}]" "the session its human opened is a 
 THREAD="$(row thread)"
 assert_equals "$(row opened)" human "it is a thread its human opened"
 closed
-run "$SMINOS" daemon tick
-run "$SMINOS" daemon tick
+for sweep in 1 2; do
+  run "$SMINOS" daemon tick
+  assert_equals "$RC" 0 "this code's sweep $sweep runs"
+done
 assert_equals "$(row state)" stopped "two sweeps after its terminal closed it is stopped"
 run "$SMINOS" say "@keeper hello from this code"
+assert_equals "$RC" 0 "its say exits 0"
 assert_contains "$OUT" "recorded and held" "a message to it is recorded and held"
 # A person's words from another machine, as that machine's log reaches this one.
 printf '{"ts":"%s","writer":"beta/human","seq":1,"kind":"human","from":"human","to":[{"session":"%s","alias":"keeper"}],"text":"@keeper hello from beta"}\n' \
@@ -164,6 +167,7 @@ assert_equals "$BEFORE" "joined - stamped" "its one membership event is a stampe
 echo "the older CLI over the same store:"
 assert_equals "$(calls)" "" "this code asked the stub engine nothing"
 run "$OLDER" list
+assert_equals "$RC" 0 "its list runs"
 assert_contains "$OUT" "(no members in olderproj)" "its list shows no member: a closed session it does not know as a thread"
 assert_equals "$(own_events)" "$(printf 'joined - stamped\nretired ended unstamped')" \
   "its first reading verb reconciled the session to an unstamped ended"
@@ -202,8 +206,10 @@ run "$SMINOS" daemon owed
 assert_equals "$RC" 0 "daemon owed exits 0: what is held is no debt"
 assert_contains "$OUT" "closed sessions 2" "both messages are still held for it: the older tick settled nothing"
 run "$SMINOS" list
+assert_equals "$RC" 0 "this code's list runs"
 assert_equals "$(own_events)" "$BOUNDARY" "this code's reads wrote nothing over the older copy's ended: no repair joined"
 run "$SMINOS" daemon tick
+assert_equals "$RC" 0 "this code's tick runs"
 assert_equals "$(own_events)" "$BOUNDARY" "nor did its tick: the older ended is passed by"
 opened
 run "$SMINOS" list
