@@ -661,9 +661,10 @@ def check_present():
 
 def check_spent(p, writer, seq):
     def check():
-        got = wait_for(lambda: seq in spent(p).get(writer, set()), timeout=10)
+        # Both waited on: the spend saves the position before it writes its line.
         line = "%s:%d in %s" % (writer, seq, p.name)
-        return got and line in daemon_log(), "%s spent, said in daemon.log" % line
+        got = wait_for(lambda: seq in spent(p).get(writer, set()) and line in daemon_log(), timeout=10)
+        return got, "%s spent, said in daemon.log" % line
     return check
 
 
