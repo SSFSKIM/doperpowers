@@ -1074,7 +1074,7 @@ For a thread of either kind on this machine, unless a cell says otherwise.
 
 | The session is | `say` with a tag, `send` | `send --wait` | `resume` | `fill --resume` |
 |---|---|---|---|---|
-| live | push; exit 0 | push, wait for its reply | a background job: its turn stopped, wake, push (today's rule for a seat). In a terminal: push as `send` does, and say that a terminal holds it | refused as a filled seat is today, with today's exit code (2); a human-opened one in the same words |
+| live | push; exit 0 | push, wait for its reply | a background job: its turn stopped, wake, push (today's rule for a seat), unless a reason of `not_woken` holds, when the turn is left running and the message is held. In a terminal: push as `send` does, and say that a terminal holds it | refused as a filled seat is today, with today's exit code (4); a human-opened one in the same words |
 | stopped, woken | wake, push; exit 0 | wake, push, wait | wake, push; with `--wait`, wait | wake, push; a retired seat returns (§3, `returns`) |
 | stopped and not woken, or the wake failed | recorded and held, §5's line; exit 0 | recorded and held; `nothing was started: <reason>`; exit 4 | the same, exit 4 | the same, exit 4 |
 | held for a moment (`starting` and the like) | recorded, §5's line; exit 0 | recorded; no reply is waited for; exit 4 | the same, exit 4 | the same, exit 4 |
@@ -1424,6 +1424,12 @@ is read defensively (§1). devcloud is not touched.
   unknown binding defers. One deadline serves `wake_due` and the memory. The
   core suite's give-up at the 60th attempt now pins a wake that fails as
   held, never given up. `hold_verb`'s interim words stand until M4.
+
+- 2026-11-20 — **§6 corrected against the code** (M4). A filled seat's
+  refusal exits 4 (`EXIT_UNKNOWN`) today, not 2, so `fill --resume` of a live
+  thread exits 4. `resume` of a live background job stops its turn only when
+  no reason of `not_woken` holds: a turn whose session could not be started
+  again is never stopped, and the message is held.
 
 ## Outcomes & Retrospective
 
