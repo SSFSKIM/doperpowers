@@ -60,6 +60,13 @@ class Base(Ending):
     def retirements(self, sid):
         return [e for e in self.own(sid) if e["kind"] == "retired"]
 
+    def after_retirement(self, sid, p=None):
+        """A process start (ms) strictly after the session's latest
+        retirement: one its retirement did not see (retirement_holds reads a
+        start not after it as the process that ran then)."""
+        rt = [e for e in self.own(sid, p) if e["kind"] == "retired"]
+        return max(ms_ago(0), int(round(sminos._ts_epoch(rt[-1]["ts"]) * 1000)) + 1 if rt else 0)
+
 
 class NoThreadEnd(Base):
     """[scalpel-1#1] The end of a seat no record tracked, decided and written
@@ -299,7 +306,7 @@ class RemoveByFirstOccupant(Base):
     """[scalpel-3#2] `remove` of a seat's first occupant, reopened as a
     thread of its own, by its id, which is also the seat's."""
 
-    def test_it_removes_that_session_and_not_the_seat_it_left(self):
+    def left(self):
         first, proc = self.live(name="alpha")
         self.transcript(first)
         code, out = self.cli("seat", "add", "g", "w", "--session", first)
@@ -310,7 +317,24 @@ class RemoveByFirstOccupant(Base):
         code, out = self.cli("seat", "add", "g", "w", "--session", second)
         self.assertEqual(code, 0, out)
         self.assertEqual(seat_raw(first)["current"], second)
-        self.live(sid=first, name="alpha", started=ms_ago(0))   # its human reopens it: a thread of its own
+        return first, second
+
+    def test_before_it_joins_the_id_names_neither_and_the_seat_it_left_is_kept(self):
+        first, second = self.left()
+        # Started within the millisecond of its `replaced`: read as the process that ran then, not joined yet.
+        replaced = [e for e in self.retirements(first) if e["reason"] == "replaced"][-1]
+        self.live(sid=first, name="alpha", started=int(round(sminos._ts_epoch(replaced["ts"]) * 1000)))
+        self.reconcile()
+        self.assertFalse(self.is_member(first))
+        code, out = self.cli("remove", first)
+        self.assertEqual(code, 4, out)
+        self.assertIn("runs outside it", out)
+        self.assertEqual(seat_raw(first)["current"], second, "the seat it left keeps its session")
+        self.assertEqual(self.retirements(second), [])
+
+    def test_it_removes_that_session_and_not_the_seat_it_left(self):
+        first, second = self.left()
+        self.live(sid=first, name="alpha", started=self.after_retirement(first))   # reopened: a thread of its own
         self.reconcile()
         mine = threads.thread_of(first)
         self.assertEqual((mine["opened"], mine["current"]), ("human", first))
@@ -366,7 +390,7 @@ class ArchivedPurgeBound(Base):
         self.assertIsNone(threads.get(a))
         other = self.repo("other")
         p2 = self.project_of(other)
-        _, proc = self.session(root=other, sid=sid, started=ms_ago(0), name="alpha")
+        _, proc = self.session(root=other, sid=sid, started=self.after_retirement(sid), name="alpha")
         self.peer_set(proc, nameSource="user")
         self.transcript(sid)
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": sid}):
@@ -781,6 +805,175 @@ class RefusedOnce(Base):
                 return [line for line in f if needle in line]
         except OSError:
             return []
+
+
+
+# ------------------------------------------------------------ review 3: a purge's obligations, wherever it is replayed
+
+
+class PurgeReplayedElsewhere(Base):
+    """Review 3, items 2 and 3: a purge cut before its stop owes that stop
+    to whichever process finishes it, and a verb retried after it starts no
+    purge of its own."""
+
+    def cut_remove(self, sid):
+        sminos.agents_json.return_value = [{"id": "job00001", "sessionId": sid, "state": "working",
+                                            "status": "busy"}]
+        with cut_at_clear(), mock.patch.object(sminos, "stop_seen_turn", side_effect=Killed), \
+                self.assertRaises(Killed):
+            self.cli("remove", "g/w")   # the process dies at its stop
+        sminos.claude_stop.reset_mock()
+
+    def test_another_reader_replays_it_first_and_the_job_is_stopped(self):
+        sid, proc, seat_id = self.seated()
+        self.cut_remove(sid)
+        code, out = self.cli("list")
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(seat_raw(seat_id), "the reader's replay finished the purge")
+        self.assertIn(mock.call("job00001"), sminos.claude_stop.call_args_list, "and made its stop")
+        code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 4, out)
+        self.assertEqual([e["reason"] for e in self.retirements(sid)], ["retire"])
+
+    def test_the_tick_replays_it_and_the_job_is_stopped(self):
+        sid, proc, seat_id = self.seated()
+        self.cut_remove(sid)
+        self.tick()
+        self.assertIsNone(seat_raw(seat_id))
+        self.assertIn(mock.call("job00001"), sminos.claude_stop.call_args_list)
+
+    def test_an_older_copys_refill_during_the_retrys_lookup_is_superseded_not_purged(self):
+        sid, proc, seat_id = self.seated()
+        self.cut_remove(sid)
+        self.end(proc)
+        new, _ = self.session(kind="bg", started=ms_ago(0))
+        real = sminos.find_target
+
+        def lookup(*a, **k):
+            sminos.meta_set(seat_id, {"current": new, "status": "working"})   # 1.27.10's refill, as it looks up
+            return real(*a, **k)
+        with mock.patch.object(sminos, "find_target", side_effect=lookup):
+            code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 4, out)
+        self.assertIn("was not removed", out)
+        seat = seat_raw(seat_id)
+        self.assertEqual((seat["current"], seat.get("pending")), (new, None))
+        self.assertEqual(self.retirements(new), [], "the replacement is not retired")
+        self.assertEqual([e["reason"] for e in self.retirements(sid)], ["retire"])
+
+    def test_retire_purge_retried_after_its_lookup_replayed_it_is_done(self):
+        sid, proc, seat_id = self.seated()
+        sminos.agents_json.return_value = [{"id": "job00001", "sessionId": sid, "state": "working",
+                                            "status": "busy"}]
+        with cut_at_clear(), mock.patch.object(sminos, "stop_seen_turn", side_effect=Killed), \
+                self.assertRaises(Killed):
+            self.cli("retire", "g/w", "--purge")
+        sminos.claude_stop.reset_mock()
+        code, out = self.cli("retire", "g/w", "--purge")
+        self.assertEqual(code, 0, out)
+        self.assertIn("purged g/w", out)
+        self.assertIsNone(seat_raw(seat_id))
+        self.assertIn(mock.call("job00001"), sminos.claude_stop.call_args_list)
+        self.assertEqual([e["reason"] for e in self.retirements(sid)], ["retire"])
+
+    def test_a_job_that_reopened_the_session_since_is_not_stopped_by_the_replay(self):
+        sid, proc, seat_id = self.seated()
+        self.cut_remove(sid)
+        self.end(proc)
+        self.session(sid=sid, kind="bg", started=ms_ago(0))
+        sminos.agents_json.return_value = [{"id": "newjob01", "sessionId": sid, "state": "working",
+                                            "status": "busy"}]
+        self.cli("list")
+        self.assertIsNone(seat_raw(seat_id))
+        self.assertNotIn(mock.call("newjob01"), sminos.claude_stop.call_args_list)
+
+
+class ReplayedOccupantRuns(Base):
+    """Review 3, item 4: a replayed occupant whose process runs is not
+    displaced, whether or not its inbox answers yet."""
+
+    def test_a_running_job_with_no_inbox_yet_is_not_displaced(self):
+        old, proc, seat_id = self.seated()
+        self.end(proc)
+        new, _ = self.session(kind="bg", started=ms_ago(0))   # running, no inbox published
+        queued_refill(self, seat_id, old, new)
+        lane_b, _ = self.session()
+        records.establish(lane_b, records.default_provenance())
+        records.set_controller(lane_b, "B")
+        code, out = self.cli("seat", "add", "g", "w", "--session", lane_b)
+        self.assertEqual(code, 4, out)
+        self.assertIn("still holds a live session", out)
+        self.assertEqual(seat_raw(seat_id)["current"], new)
+        self.assertEqual(self.retirements(new), [])
+
+
+class FirstOccupantBackAsked(Base):
+    """Review 3, item 5: an adopted seat that went A, B, A between reads
+    (`sessions` as it was) still has B asked about."""
+
+    def test_the_intervening_occupants_host_keeps_the_seat_from_its_end(self):
+        a, pa, seat_id = self.seated()
+        self.end(pa)
+        b = str(uuidlib.uuid4())
+        for x in (b, a):   # older `seat add --session`s: b, then a again
+            sminos.meta_set(seat_id, {"current": x, "status": "idle"})
+            self.write_own(x, [self.old_joined(x, alias="w", seat=seat_id, session_kind="seat")])
+        with open(os.path.join(os.environ["HOME"], "devcloud-standin.json"), "w") as f:
+            json.dump({"hosts": [{"name": "dc-b-0001", "account": "main", "provider": "hetzner",
+                                  "creator": "@" + b[:8]}]}, f)
+        code, out = self.cli("retire", "g/w")
+        self.assertEqual(code, 1, out)
+        self.assertIn("dc-b-0001", out)
+        self.assertNotIn("ended", seat_raw(seat_id))
+        code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 1, out)
+        self.assertIsNotNone(seat_raw(seat_id))
+
+
+class MovedSeatMarks(Base):
+    """Review 3, item 8: a writer that meets a seat another writer moved
+    writes its mark on the occupant every reader reads."""
+
+    def test_the_sweeps_stop_mark_for_an_earlier_occupant_back_is_read(self):
+        a, pa, seat_id = self.seated()
+        self.end(pa)
+        b, pb = self.session(name="w")
+        code, out = self.cli("seat", "add", "g", "w", "--session", b)
+        self.assertEqual(code, 0, out)
+        self.end(pb)
+        sminos.meta_set(seat_id, {"current": a, "status": "idle"})   # 1.27.10's repoint back to a, stopped
+        for _ in range(3):
+            self.reconcile()
+            self.sweep()
+        t = threads.get(seat_id)
+        self.assertEqual(t["current"], a)
+        self.assertTrue(t.get("stopped"), "the stop mark of a, as every reader reads it")
+        raw = seat_raw(seat_id)
+        self.assertEqual(raw["sessions"][-1], a, "its tail repaired where the mark was written")
+
+
+class SupersededThroughHumanRecord(Base):
+    """Review 3, item 11: a purge through a thread its human opened, whose
+    older-copy seat holds another session by the time it is brought in
+    line, says the seat was not removed."""
+
+    def test_remove_says_so(self):
+        sid, proc = self.opened()
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})
+        self.reconcile()
+        other = str(uuidlib.uuid4())
+        real = threads._project_seat
+
+        def project(seat, *a, **k):
+            sminos.meta_set(seat_id, {"current": other})   # an older copy repoints it just before
+            return real(seat, *a, **k)
+        with mock.patch.object(threads, "_project_seat", side_effect=project):
+            code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 4, out)
+        self.assertIn("was not removed", out)
+        self.assertEqual(seat_raw(seat_id)["current"], other)
 
 
 if __name__ == "__main__":

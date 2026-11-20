@@ -38,7 +38,7 @@ the composite, run as Concrete Steps gives it.
 - [x] (2026-11-20) M4 — A thread ends, and returns (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `b32c3a77..56fc6d4f`)
 - [x] (2026-11-20) M5 — A thread that owns a VM is neither retired nor ended (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `2f324a19..e1be6e85`)
 - [x] (2026-11-20) M6 — What sessions are told, an older sminos beside this one, the shared vectors, and the acceptance run (three reviews, the owner's cap; the third approved, its two Minor findings fixed in a last wave the controller checked; `e55117c7..d492589f`)
-- [x] (2026-11-20) The branch review: one review of the whole range at b9c85c00 and two of its fix diffs (the owner's cap, applied to the branch), their fixes merged from `t1-fixes`; the held path verified alone. Its last wave is still to land (Interfaces §5's marked line).
+- [x] (2026-11-20) The branch review: one review of the whole range at b9c85c00 and two of its fix diffs (the owner's cap, applied to the branch), their fixes merged from `t1-fixes`; the held path verified alone, and that verification's findings fixed in a last wave (`t1-fix-b`, merged).
 
 ## Words this document adds
 
@@ -1822,7 +1822,7 @@ threads, so a message to a running session with no inbox still settles
 drops the mark, and a send queued for its writer's head has no seq to mark
 until it is appended.
 
-TODO-LANDING: held path, last wave
+The decision's last form (the attack on this guarantee alone, at the branch review's end). Each mark is a pair, `[seq, thread]`: the event and the thread it was decided for. `held_decided` marks, in the pass that decides a writer's first owed event held, every addressed event of that writer behind it, so a second message promised held is held. A sender's own hold is one step against a delivery pass: `held_record` appends the event and writes its mark under one hold of `delivered/<session>.lock` (`send_to_member`'s held branch, `hold_verb`'s not-running branch); the seated send (`held_send`) reports what it found under that lock: held, settled by a pass meanwhile, or running again. `words_unanswered` counts no attempt for a marked event of a live thread its human opened: a verdict that never came is not a refusal, and an explicit refusal or a revoked signer settles it as before. A hand-off's advance carries `settle` for the session left, so what was held for it is settled by the journal as the continuation rule has it (the successor reads it through the carried cursor), and a pass that finds an event marked for a thread the session no longer fills settles it `recorded` without a push (`stale_hold`): a later reuse of the id as another thread is pushed nothing of the old one's. Not closed, and in the tech-debt tracker: a bridge that closes without reading the request (`sent?` settles the event; a retry could deliver twice), a `/clear` between the last binding check and the frame's write, and an unreadable delivery record.
 
 The words a sender reads: for a stopped session, that it reads the message
 only if its human reopens the session before it ends (three days stopped,
@@ -2969,13 +2969,17 @@ Found while executing:
     and to open no fourth general review. At e45a16a8 every earlier
     reproduction holds, on one machine and across two, and what was never
     held is unchanged. Seven further cases were found, each needing a
-    second fault or a forced window. Five are fixed in a last wave (§5's
-    marked line). Two are recorded as limits in the tech-debt file: a
-    `/clear` between the last check of the recipient and the frame's
-    write delivers the old session's text to the new one, which only the
-    receiving side can close; and a delivery record that cannot be read
-    is replaced as though it were empty, where deferring would stop every
-    delivery to that session on one bad file.
+    second fault or a forced window. Four were fixed in a last wave (§5,
+    "The decision's last form"), and the verifier's own reproductions of
+    them run clean after it. Three are recorded as limits in the tech-debt
+    file: a bridge that takes the connection and closes without reading
+    the request settles a held event, since a retry could deliver the
+    text twice until the bridge can answer durably whether a key was
+    submitted; a `/clear` between the last check of the recipient and the
+    frame's write delivers the old session's text to the new one, which
+    only the receiving side can close; and a delivery record that cannot
+    be read is replaced as though it were empty, where deferring would
+    stop every delivery to that session on one bad file.
 
 ## Outcomes & Retrospective
 

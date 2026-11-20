@@ -308,8 +308,12 @@ def _is_thread(seat):
     session, or one whose session is lane A. A seat with no keys holding a
     lane B session (`seat add` made it for one; or one from before threads)
     is none, as a lane B session has no record (D1): no lookup of the
-    store answers it (all_threads, get, thread_of)."""
-    return "opened" in seat or not seat.get("current") or _lane_a(seat["current"])
+    store answers it (all_threads, get, thread_of). Nor, until its record
+    reads, one with no keys whose session's record cannot be read: its lane
+    is unknown, so it is neither adopted nor a stamp."""
+    if "opened" in seat or not seat.get("current"):
+        return True
+    return not sminos.records_module().unreadable(seat["current"]) and _lane_a(seat["current"])
 
 
 def _seat_threads():
@@ -429,8 +433,13 @@ def stamp(session):
     that is no thread. From the live stores and their open entries alone,
     never the records set aside: after an end, what a session's thread
     writes is the journal's (or a return's), each event naming its thread,
-    and a former session that runs again is another thread."""
-    return (thread_of(session, ended=False) or {}).get("thread", "")
+    and a former session that runs again is another thread. Only a thread
+    whose current session it is (an open entry's included) stamps it: one
+    that only had the session (it went on in another) names it for a lookup
+    (thread_of), never for the session's own events now, which a journaled
+    transition of that thread stamps itself."""
+    t = thread_of(session, ended=False)
+    return t["thread"] if t is not None and t["current"] == session else ""
 
 
 def _live_rule(session, live):
@@ -607,6 +616,13 @@ def _change(tid, mutate, deadline=None, bump=False, both=False):
             s = sminos.reload_seat(tid)
             if s is None or not isinstance(raw, dict):
                 return False
+            if _moved(raw):
+                # A `current` another writer moved: the record the change is made on is the one every reader reads
+                # (_of_seat), its occupant last and its predecessor's marks gone, so a mark written now is its own.
+                cur = str(raw["current"])
+                raw["sessions"] = [x for x in _stored_sessions(raw) if x != cur] + [cur]
+                for k in OCCUPANT_MARKS:
+                    raw.pop(k, None)
             where = mutate(_of_seat(s), raw)
             if where is False:
                 return False
@@ -711,9 +727,9 @@ def set_channels(thread_id, channels):
 def note_alias(session, alias, lock_until=None, project=None):
     """The alias a human-opened thread's latest `joined` or `renamed` carried,
     copied into its record for readers without the log (lifecycle). With
-    `project`, the log it was appended to, copied only while it is still the
-    latest the session's own events there carry, read under the record's
-    lock: two copies made in the other order than their appends leave the
+    `project`, the log it was appended to, copied only while the session is
+    still a member there and it is still the latest its own events there
+    carry, read under the record's lock: two copies made in the other order than their appends leave the
     later one."""
     t = thread_of(session, ended=False)
     if t is None or t["opened"] != "human" or t["current"] != session or t.get("alias") == alias:
@@ -724,8 +740,10 @@ def note_alias(session, alias, lock_until=None, project=None):
             return False
         if project is None:
             return True
-        named = [e for e in sminos._own_events(project, session) if e["kind"] in ("joined", "renamed")
-                 and e.get("alias")]
+        own = sminos._own_events(project, session)
+        if sminos.latest_membership(own) != "joined":
+            return False   # it has left that project (a move): what it publishes elsewhere is its name now
+        named = [e for e in own if e["kind"] in ("joined", "renamed") and e.get("alias")]
         last = sminos.latest_across_writers(named) if named else None
         return last is None or str(last["alias"]) == alias
     return update(t["thread"], {"alias": alias}, guard=latest, lock_until=lock_until)
@@ -781,6 +799,7 @@ def _ensure_seat(seat, project, events, deadline):
         return _of_seat(seat)
     project = project if project is not None else (sminos.seat_project(seat) if seat["current"] else None)
     rebuilt = _seat_sessions(seat, project if not sminos.guessed(project) else None, events)
+    moved = _moved(seat)
 
     def mutate(view, raw):
         if "opened" not in raw:
@@ -788,7 +807,7 @@ def _ensure_seat(seat, project, events, deadline):
             raw["sessions"] = rebuilt
             raw.setdefault("launch", {"cwd": str(raw.get("cwd") or "")})
             raw.setdefault("channels", [])
-        elif _moved(raw):
+        elif moved and view["current"] == seat["current"]:   # its tail and marks set by _change already
             cur = view["current"]
             had = [x for x in view["sessions"] if x != cur]
             raw["sessions"] = had + [x for x in rebuilt if x not in had and x != cur] + [cur]
@@ -1189,7 +1208,8 @@ def _owe(project, entry, event, appended, append):
     return bool(got) or _holds(project, session, kind, entry["id"])
 
 
-def finish(thread_id, appended=None, project=None, append=None, lock_until=None, before=None, settle=None):
+def finish(thread_id, appended=None, project=None, append=None, lock_until=None, before=None, settle=None,
+           stop=None):
     """Carries out the record's open entry from where it stands, and clears
     it (§6, steps 2 to 4): each event the log does not hold yet; then, in
     one write, the entry removed and an end's record set aside or deleted
@@ -1236,16 +1256,24 @@ def finish(thread_id, appended=None, project=None, append=None, lock_until=None,
     through the entry that holds it, or released when that entry is gone.
     An entry with an operation queued behind it (`next`: follow) begins
     that operation in the write that clears it, and it is finished in
-    turn."""
+    turn.
+
+    A purge's stop is its entry's too (`stop(record, entry)`, by default
+    sminos.purge_stop): after its events and its settlement, before the
+    record goes, the process its end recorded is stopped while that same
+    process still holds the session, whoever finishes the entry (a verb
+    cut before its own stop, a reading verb, a tick), since the record that
+    names the process is gone after it. No store lock is held through it:
+    only the record's finisher lock."""
     appended = [] if appended is None else appended
     if not (get(thread_id) or {}).get("pending"):
         return True
     with _finish_lock(thread_id, lock_until):
         return _finish(thread_id, appended, project, append or sminos.lifecycle, lock_until,
-                       before or sminos.carry_hand_offs, settle or sminos.settle_ended)
+                       before or sminos.carry_hand_offs, settle or sminos.settle_ended, stop or sminos.purge_stop)
 
 
-def _finish(thread_id, appended, project, append, deadline, before, settle):
+def _finish(thread_id, appended, project, append, deadline, before, settle, stop):
     home = project.id if project is not None else None
     while True:
         t = get(thread_id)
@@ -1255,7 +1283,7 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
         if entry.get("op") == RESERVED:
             holder = get(entry.get("by"))
             if ((holder or {}).get("pending") or {}).get("id") == entry["id"]:
-                finish(holder["thread"], appended, project, append, deadline, before, settle)
+                finish(holder["thread"], appended, project, append, deadline, before, settle, stop)
             else:
                 _change(thread_id, lambda view, raw: _release(view, raw, entry), deadline)
             return not (get(thread_id) or {}).get("pending")
@@ -1288,6 +1316,8 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
                 return False
         if not returning and entry.get("settle") and not settle(project, entry["settle"], deadline, None):
             return False   # what is held for it is settled before the record is set aside or deleted (§6, 3)
+        if entry.get("last") == "purge" and entry.get("settle"):
+            stop(t, entry)   # tried once a finish: a stop that fails does not keep the purge open
         if entry.get("seat") and not _project_seat(entry["seat"], deadline):
             return False   # the seat could not be read or written: the entry stays open for the replay
         if other:
@@ -1786,10 +1816,15 @@ def owner_sessions(thread):
     seat = sminos.reload_seat(thread["thread"]) if thread["opened"] == "spawned" else None
     if seat is not None:
         sessions += [str(h.get("current") or "") for h in seat.get("history") or [] if isinstance(h, dict)]
+        project = sminos.seat_project(seat)
+        project = project if project is not None and not sminos.guessed(project) else None
         if "opened" not in seat or _moved(seat):   # what adoption, or the repair of a moved `current`, rebuilds
-            project = sminos.seat_project(seat) if seat["current"] else None
-            sessions += _seat_sessions(seat, project if project is not None and not sminos.guessed(project) else None,
-                                       None)
+            sessions += _seat_sessions(seat, project if seat["current"] else None, None)
+        elif project is not None:
+            # An occupant an older copy's `seat add` put there and displaced between two reads of this code (A, B,
+            # A leaves `sessions` as it was): its `joined` naming the seat is the evidence, one read of the joins.
+            sessions += [str(e.get("session") or "") for e in sminos.log_read(project, kinds=("joined",))
+                         if e.get("seat") == seat["seat_id"]]
     return sessions
 
 
