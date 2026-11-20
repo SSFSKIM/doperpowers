@@ -719,9 +719,9 @@ def set_channels(thread_id, channels):
 def note_alias(session, alias, lock_until=None, project=None):
     """The alias a human-opened thread's latest `joined` or `renamed` carried,
     copied into its record for readers without the log (lifecycle). With
-    `project`, the log it was appended to, copied only while it is still the
-    latest the session's own events there carry, read under the record's
-    lock: two copies made in the other order than their appends leave the
+    `project`, the log it was appended to, copied only while the session is
+    still a member there and it is still the latest its own events there
+    carry, read under the record's lock: two copies made in the other order than their appends leave the
     later one."""
     t = thread_of(session, ended=False)
     if t is None or t["opened"] != "human" or t["current"] != session or t.get("alias") == alias:
@@ -732,8 +732,10 @@ def note_alias(session, alias, lock_until=None, project=None):
             return False
         if project is None:
             return True
-        named = [e for e in sminos._own_events(project, session) if e["kind"] in ("joined", "renamed")
-                 and e.get("alias")]
+        own = sminos._own_events(project, session)
+        if sminos.latest_membership(own) != "joined":
+            return False   # it has left that project (a move): what it publishes elsewhere is its name now
+        named = [e for e in own if e["kind"] in ("joined", "renamed") and e.get("alias")]
         last = sminos.latest_across_writers(named) if named else None
         return last is None or str(last["alias"]) == alias
     return update(t["thread"], {"alias": alias}, guard=latest, lock_until=lock_until)

@@ -614,6 +614,25 @@ class Debt(Rig):
         sminos.forget_caches()
         self.assertEqual(threads.get(tid)["alias"], "second")
 
+    def test_a_delayed_alias_copy_from_a_project_the_session_left_is_refused(self):
+        """Review 3, item 14."""
+        there = self.project_of(self.repo("there"))
+        sid, _ = self.opened(charge="")
+        tid = threads.thread_of(sid)["thread"]
+        copies, real = [], threads.note_alias
+        with mock.patch.object(threads, "note_alias", side_effect=lambda *a, **k: copies.append((a, k))):
+            sminos.lifecycle(self.p, sid, "renamed", alias="from-here", name_source="user")
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": sid}):
+            code, out = self.cli("join", there.name)
+        self.assertEqual(code, 0, out)
+        sminos.lifecycle(there, sid, "renamed", alias="from-there", name_source="user")
+        sminos.forget_caches()
+        self.assertEqual(threads.get(tid)["alias"], "from-there")
+        for a, k in copies:
+            real(*a, **k)   # the delayed copy from the project it left
+        sminos.forget_caches()
+        self.assertEqual(threads.get(tid)["alias"], "from-there")
+
     def test_a_remote_legacy_seats_id_reaches_its_session(self):
         """[scalpel-3#9]"""
         sid, seat = str(uuidlib.uuid4()), str(uuidlib.uuid4())
