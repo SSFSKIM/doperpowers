@@ -31,6 +31,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -410,10 +411,16 @@ class Line(Wakes):
         self.assertEqual(wake.opening_line(note), self.HEAD + (
             " You run in manual mode on opus. Your last turn ran on claude-sonnet-5; a background run keeps the"
             " options it last ran with in the background."))
-        same = wake.line_note(False, ["--model", "haiku", "--permission-mode", "auto"],
-                              {"mode": "auto", "model": "claude-haiku-5-5"})
-        self.assertEqual(wake.opening_line(same), self.HEAD + " You run in auto mode on haiku.",
-                         "an alias and the model it serves are one model")
+        same = wake.line_note(False, ["--model", "claude-haiku-4-5", "--permission-mode", "auto"],
+                              {"mode": "auto", "model": "CLAUDE-HAIKU-4-5"})
+        self.assertEqual(wake.opening_line(same), self.HEAD + " You run in auto mode on claude-haiku-4-5.")
+        # Measured (E10): a row saved as `haiku` woke on 5.5 after a terminal turn on 4.5; the alias is
+        # not resolved, so both names are said.
+        alias = wake.line_note(False, ["--model", "haiku", "--permission-mode", "auto"],
+                               {"mode": "auto", "model": "claude-haiku-4-5-20251001"})
+        self.assertEqual(wake.opening_line(alias), self.HEAD + (
+            " You run in auto mode on haiku. Your last turn ran on claude-haiku-4-5-20251001; a background run"
+            " keeps the options it last ran with in the background."))
         close = wake.line_note(False, ["--model", "claude-sonnet-4", "--permission-mode", "auto"],
                                {"model": "claude-sonnet-4-5"})
         self.assertIn(" Your last turn ran on claude-sonnet-4-5;", wake.opening_line(close))
@@ -426,9 +433,10 @@ class Line(Wakes):
 
 
 class SameModel(unittest.TestCase):
-    def test_ids_and_aliases(self):
-        for a, b, same in (("haiku", "claude-haiku-5-5", True), ("claude-haiku-5-5", "HAIKU", True),
-                           ("sonnet[1m]", "claude-sonnet-4-5", True), ("claude-opus-5[1m]", "claude-opus-5", True),
+    def test_one_name_once_case_and_a_window_are_set_aside(self):
+        for a, b, same in (("haiku", "claude-haiku-5-5", False), ("claude-haiku-5-5", "HAIKU", False),
+                           ("haiku", "claude-haiku-4-5-20251001", False), ("HAIKU", "haiku", True),
+                           ("sonnet[1m]", "claude-sonnet-4-5", False), ("claude-opus-5[1m]", "claude-opus-5", True),
                            ("claude-sonnet-4", "claude-sonnet-4-5", False), ("opus", "claude-sonnet-5", False),
                            ("claude-haiku-4-5-2025", "claude-haiku-5-5", False), ("op", "claude-opus-5", False),
                            ("haiku", "haiku-like-model", False), ("", "x", False), ("m", "m", True)):
@@ -571,6 +579,43 @@ class CappedMode(Wakes):
         self.assertEqual((wake.not_woken(rec, sid), wake.mode_case(rec, sid)), ("mode", "own"))
         self.ceiling("default")
         self.assertEqual(wake.mode_case(rec, sid), "own", "its own mode asks, whatever the ceiling")
+
+    def test_a_wake_that_passes_no_flag_is_not_capped(self):
+        rec, sid = self.thread("auto")
+        self.ceiling("default")
+        self.row(sid, raw="{not json")
+        self.assertEqual((wake.not_woken(rec, sid, flagless=True), wake.mode_case(rec, sid, flagless=True)),
+                         ("", ""), "the wake's retry with no flag, after the engine kept the saved options")
+        rec["waking"] = {"session": sid, "saved": True, "failed": 0, "at": 0, "line": None}
+        self.assertEqual((wake.not_woken(rec, sid), wake.mode_case(rec, sid)), ("", ""),
+                         "the engine said the session keeps its saved options")
+        self.assertEqual([wake.passes_flags(rec, sid, row) for row in (None, {"respawnFlags": []}, wake.UNREADABLE)],
+                         [True, False, False])
+        del rec["waking"]
+        self.assertEqual([wake.passes_flags(rec, sid, row) for row in (None, {"respawnFlags": []}, wake.UNREADABLE)],
+                         [True, False, True])
+
+    def test_a_launch_mode_that_asks_is_its_own_whatever_the_ceiling(self):
+        sid = str(uuidlib.uuid4())
+        self.transcript(sid, rows({"type": "summary"}))
+        rec = self.human(sid=sid, options=["--permission-mode", "plan"], dropped=[])
+        self.assertEqual((wake.not_woken(rec, sid), wake.mode_case(rec, sid)), ("mode", "own"),
+                         "no turn: the launch's plan asks; raising the ceiling cannot help")
+
+    def test_the_mode_check_touches_no_file_the_launch_names(self):
+        rec, sid = self.thread("auto")
+        settings = os.path.join(self.root, "launch-settings.json")
+        with open(settings, "w") as f:
+            f.write("{}")
+        rec["launch"]["options"], rec["launch"]["dropped"] = ["--settings", "launch-settings.json"], []
+        self.ceiling("default")
+        looked = []
+        real = os.path.isfile
+        with mock.patch.object(os.path, "isfile", lambda p: looked.append(os.path.abspath(p)) or real(p)):
+            self.assertEqual(wake.mode_case(rec, sid), "ceiling")
+            self.assertEqual(wake.first_mode(rec, wake.last_turn(sid), "default", True), ("auto", "default"))
+        self.assertNotIn(settings, looked)
+        self.assertIn("--settings", wake.first_wake(rec, sid)[0], "the launch reads it")
 
     def test_an_unknown_mode_beyond_the_bound_is_not_capped_until_the_whole_reading(self):
         sid = str(uuidlib.uuid4())
@@ -1091,6 +1136,47 @@ class Twin(TwinCases, Engine):
         self.assertFalse(sminos.socket_ok(sminos.socket_path_of(rec)), "its inbox answers later")
         self.assertTrue(wait_for(lambda: sminos.socket_ok(sminos.socket_path_of(rec))))
         self.assertGreaterEqual(time.monotonic() - start, 0.9)
+
+    def test_a_pid_the_engine_does_not_own_is_neither_held_nor_signalled(self):
+        other = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(other.wait)
+        self.addCleanup(other.kill)
+        os.makedirs(os.path.join(self.state, "owned"), exist_ok=True)
+        gone = os.path.join(self.state, "spec-gone.json")
+        for i, stale in enumerate((str(other.pid), "%d %s" % (other.pid, gone))):
+            with self.subTest(stale=stale):
+                sid = self.opened(name="t%d" % i)
+                with open(os.path.join(self.state, "owned", sid), "w") as f:
+                    f.write(stale)
+                self.assertEqual(wake_engine.held_by(sid), "", "a pid alone, or one whose command is not the spec's")
+                wake_engine.write_json(os.path.join(self.state, "jobs", sid[:8] + ".json"),
+                                       {"id": sid[:8], "sessionId": sid, "kind": "background", "name": "t",
+                                        "cwd": self.root, "state": "working", "pid": other.pid})
+                for verb in ("stop", "rm"):
+                    code, out, err = self.claude(verb, sid[:8])
+                    self.assertEqual(code, 0, err)
+                self.assertIsNone(other.poll(), "the job's public pid is evidence, never a target")
+
+    def test_a_helper_that_exits_takes_its_ownership_with_it(self):
+        sid = self.opened()
+        self.wake_flags(sid)
+        owned = os.path.join(self.state, "owned", sid)
+        self.assertTrue(os.path.exists(owned))
+        pid = self.record(sid)["pid"]
+        os.kill(pid, signal.SIGTERM)
+        self.assertTrue(wait_for(lambda: not sminos.pid_alive(pid)))
+        self.assertFalse(os.path.exists(owned))
+        self.assertEqual(wake_engine.held_by(sid), "")
+
+    def test_a_process_that_never_gets_ready_fails_the_launch(self):
+        sid = self.opened()
+        sessions = os.path.join(self.config(), "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        os.chmod(sessions, 0o500)
+        self.addCleanup(os.chmod, sessions, 0o700)
+        code, out, err = self.wake_flags(sid)
+        self.assertEqual((code, out), (1, ""), err)
+        self.assertIn("did not start", err)
 
     def test_a_late_process(self):
         sid = self.opened()

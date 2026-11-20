@@ -244,6 +244,29 @@ def _capped(mode, ceiling):
     return mode
 
 
+def _launch(record):
+    """(the record's launch, its options as recorded or None, those options' strings)."""
+    launch = record.get("launch") if isinstance(record.get("launch"), dict) else {}
+    options = launch.get("options") if isinstance(launch.get("options"), list) else None
+    return launch, options, [t for t in options or [] if isinstance(t, str)]
+
+
+def first_mode(record, turn, ceiling, accepted_bypass):
+    """(the mode a first wake would run the thread under before the cap,
+    the mode it passes): the last turn's, else the launch's recorded
+    `--permission-mode`; lowered to the ceiling; `bypassPermissions` then
+    lowered to `auto` unless the disclaimer was accepted (E22). ("", "")
+    when neither is known. Reads nothing but the record and the turn
+    given, so a check of eligibility touches no file the launch names."""
+    mode = turn.get("mode") or _option(_launch(record)[2], "--permission-mode")
+    if not mode:
+        return "", ""
+    passed = _capped(mode, ceiling)
+    if passed == "bypassPermissions" and not accepted_bypass:
+        passed = "auto"
+    return mode, passed
+
+
 def first_flags(record, turn, ceiling, accepted_bypass):
     """(flags, names not carried) for a first wake of the thread (§2):
     `--permission-mode` (the last turn's, else the launch's; capped by the
@@ -256,15 +279,10 @@ def first_flags(record, turn, ceiling, accepted_bypass):
     `launch.options` not passed and every name of `launch.dropped`; None
     when the record does not say what was dropped (no `options`, or a
     launch noted before T2)."""
-    launch = record.get("launch") if isinstance(record.get("launch"), dict) else {}
-    options = launch.get("options") if isinstance(launch.get("options"), list) else None
-    opts = [t for t in options or [] if isinstance(t, str)]
+    launch, options, opts = _launch(record)
     flags = []
-    mode = turn.get("mode") or _option(opts, "--permission-mode")
+    mode = first_mode(record, turn, ceiling, accepted_bypass)[1]
     if mode:
-        mode = _capped(mode, ceiling)
-        if mode == "bypassPermissions" and not accepted_bypass:
-            mode = "auto"
         flags += ["--permission-mode", mode_flag(mode)]
     model = turn.get("model") or _option(opts, "--model")
     if model:
@@ -301,6 +319,19 @@ def bypass_accepted(session):
     return isinstance(d, dict) and d.get("skipDangerousModePermissionPrompt") is True
 
 
+def passes_flags(record, session, row, flagless=False):
+    """Whether a wake passes a first wake's flags (§3, W4): with no row
+    (`None`) yes; with a readable one no; with one that cannot be read yes,
+    unless the engine said the session keeps saved options (the record's
+    `waking.saved`) or this is the pass after that answer (`flagless`, the
+    wake's own retry). The one decision not_woken and the launch share."""
+    if isinstance(row, dict):
+        return False
+    if row is None:
+        return True
+    return not flagless and not sminos.threads_module().waking(record, session).get("saved")
+
+
 def first_wake(record, session):
     """first_flags for the session as a wake about to launch reads it: its
     last turn read whole, the machine's ceiling (sminos_policy), and the
@@ -333,23 +364,15 @@ def line_note(first, options, turn, not_carried=None):
             "not_carried": (list(not_carried) if not_carried is not None else None) if first else []}
 
 
-MODEL_ALIASES = ("opus", "sonnet", "haiku")   # the engine's aliases of a family, served as `claude-<family>-…`
-
-
 def same_model(a, b):
-    """Whether two names are one model: the same id once lower-cased and a
-    `[…]` suffix (a context window) dropped, or one of them an alias of a
-    family (MODEL_ALIASES) and the other an id of that family; two ids that
-    differ are two models (`claude-sonnet-4`, `claude-sonnet-4-5`)."""
+    """Whether two names are one model as far as sminos can tell: the same
+    name once lower-cased and a `[…]` suffix (a context window) dropped.
+    An alias (`haiku`) is not resolved to the id it serves, which changes
+    with the engine (E10: a row saved as `haiku` woke on 5.5 after a
+    terminal turn on 4.5), so an alias and an id are two names, and the
+    line says both."""
     a, b = (re.sub(r"\[[^\]]*\]$", "", str(x).strip().lower()) for x in (a, b))
-    if not (a and b):
-        return False
-    if a == b:
-        return True
-    for alias, full in ((a, b), (b, a)):
-        if alias in MODEL_ALIASES and full.startswith("claude-") and alias in full.split("-"):
-            return True
-    return False
+    return bool(a) and a == b
 
 
 def opening_line(note):
@@ -388,7 +411,7 @@ def thread_cwd(record):
     return os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
 
 
-def not_woken(record, session, whole=False):
+def not_woken(record, session, whole=False, flagless=False):
     """Why the thread is not woken (D2, "Not woken"), the first of REASONS
     that holds, else "": `config` (the session runs under another config
     dir), `transcript` (no conversation of it here), `cwd` (its directory
@@ -397,7 +420,8 @@ def not_woken(record, session, whole=False):
     protected folder), `mode` (the mode its row runs it under, or its last
     turn's, asks for approval, or a first wake's lowered to the ceiling
     would: mode_case; a mode not found within the bound does not ask,
-    `whole` reads on). Reads the record given, the files it names and
+    `whole` reads on; `flagless`, the wake's retry with no flag, as
+    passes_flags). Reads the record given, the files it names and
     policy_inputs, never the engine's job list, and takes no lock."""
     if sminos.foreign_config(session):
         return "config"
@@ -409,24 +433,26 @@ def not_woken(record, session, whole=False):
         return "cwd"
     if sminos.TCC and record.get("opened") == "human" and sminos.protected_folder(cwd):
         return "protected"
-    case = _mode_case(record, session, path, whole)
+    case = _mode_case(record, session, path, whole, flagless)
     if case is None:
         return "transcript"   # gone since it was found
     return "mode" if case else ""
 
 
-def mode_case(record, session, whole=False):
+def mode_case(record, session, whole=False, flagless=False):
     """Which mode keeps the thread from being woken (`not_woken`'s `mode`):
-    "own" when the mode its row runs it under or its last turn's asks for
-    approval; "ceiling" when neither does but a first wake (no row, or one
-    that cannot be read) would pass the last turn's mode lowered to the
-    machine's ceiling, and that one asks (the plan's Decision Log, "A first
-    wake's capped mode decides `mode`"): the words a sender reads name the
-    owner's remedy then; "" for neither (or no transcript)."""
-    return _mode_case(record, session, transcript_file(session, whole), whole) or ""
+    "own" when a mode the thread would run under asks for approval of
+    itself (its row's, its last turn's, or a first wake's before the cap:
+    the launch's when no turn says one); "ceiling" when none does but the
+    mode a first wake passes, lowered to the machine's ceiling, asks (the
+    plan's Decision Log, "A first wake's capped mode decides `mode`"): the
+    words a sender reads name the owner's remedy then, which raising the
+    ceiling meets; "" for neither (or no transcript). A first wake is one
+    passes_flags answers yes for (`flagless`, the wake's retry)."""
+    return _mode_case(record, session, transcript_file(session, whole), whole, flagless) or ""
 
 
-def _mode_case(record, session, path, whole):
+def _mode_case(record, session, path, whole, flagless):
     turn = _turn_at(path, whole)
     if turn is None:
         return None
@@ -434,9 +460,12 @@ def _mode_case(record, session, path, whole):
     modes = [turn["mode"]] + ([options_mode(row_options(row))] if isinstance(row, dict) else [])
     if any(asks(m) for m in modes):
         return "own"
-    if not isinstance(row, dict) and turn["mode"] is not None:
-        capped = first_flags(record, turn, sminos.sibling_module("sminos_policy").machine_policy()["ceiling"], True)
-        if asks(options_mode(capped[0])):
+    if turn["mode"] is not None and passes_flags(record, session, row, flagless):
+        policy = sminos.sibling_module("sminos_policy").machine_policy()
+        own, passed = first_mode(record, turn, policy["ceiling"], True)
+        if asks(own):
+            return "own"
+        if asks(passed):
             return "ceiling"
     return ""
 

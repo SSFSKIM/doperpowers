@@ -12,9 +12,11 @@ Its state is `$WAKE_ENGINE_STATE`: `jobs/<short>.json` (the job list's
 entries, `claude agents --json --all`), `calls.log` (each call, `{argv,
 cwd}`), `launches` (a count of the `--bg` launches entered), `inputs/<id>`
 (every frame its inbox took, whole), `violations` (a launch that carried a
-message while `refuse-message` is set), `helpers/<pid>` (its processes),
-`owned/<id>` (the worker it started for a session, known from its start,
-before any public signal of it) and `ready/<pid>.<stage>` (a worker's
+message while `refuse-message` is set), `helpers/<pid>` (its processes, each
+naming its spec), `owned/<id>` (the worker it started for a session, known
+from its start, before any public signal of it: its pid and spec, trusted
+only while that pid's command line still names the spec, and removed by the
+worker as it exits) and `ready/<pid>.<stage>` (a worker's
 record and job written, its inbox listening).
 The engine's own files are under the config dir (`CLAUDE_CONFIG_DIR`, else
 `~/.claude`): `sessions/<pid>.json` (the record of a process), `jobs/<first
@@ -301,16 +303,29 @@ def owned_path(sid):
     return os.path.join(state(), "owned", sid)
 
 
+def helper_pid(pid, spec_path):
+    """`pid` while it is the helper this engine started on `spec_path` (its
+    command line names both), else 0: a pid alone may since have been reused
+    by any process of the machine, which a stop must never signal."""
+    try:
+        pid = int(pid)
+        args = subprocess.run(["ps", "-ww", "-o", "args=", "-p", str(pid)], capture_output=True,
+                              text=True, timeout=10).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 0
+    return pid if spec_path and "--helper" in args and spec_path in args else 0
+
+
 def owned_pid(sid):
     """The engine's own worker for the session, while it runs: known to the
     engine from its start (Popen), whatever its public signals (the record,
     the job's pid) show yet, as a late process holds them back."""
     try:
         with open(owned_path(sid)) as f:
-            pid = int(f.read().strip())
-    except (OSError, ValueError):
+            pid, _, spec_path = f.read().strip().partition(" ")
+    except OSError:
         return 0
-    return pid if pid_alive(pid) else 0
+    return helper_pid(pid, spec_path)
 
 
 def held_by(sid):
@@ -447,10 +462,12 @@ def start(sid, flags, run_with, cwd, path, message, row, note, defaults=False):
         proc = subprocess.Popen([sys.executable, "-B", HERE, "--helper", spec_path], cwd=row["cwd"],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
                                 start_new_session=True, close_fds=True)
-    os.makedirs(os.path.dirname(owned_path(sid)), exist_ok=True)
+    for d in ("owned", "helpers"):
+        os.makedirs(os.path.join(state(), d), exist_ok=True)
     with open(owned_path(sid), "w") as f:
-        f.write(str(proc.pid))
-    append(os.path.join(state(), "helpers", str(proc.pid)), sid)
+        f.write("%d %s" % (proc.pid, spec_path))
+    with open(os.path.join(state(), "helpers", str(proc.pid)), "w") as f:
+        f.write(spec_path)
     # The banner once the process is ready (E18): its record, its job's pid and its inbox listening; a late
     # switch breaks that order on purpose (late-inbox: the record only; late-process: nothing).
     stage = None if spec["late_process"] else ("record" if spec["late_inbox"] else "inbox")
@@ -459,6 +476,9 @@ def start(sid, flags, run_with, cwd, path, message, row, note, defaults=False):
         end = time.monotonic() + 15
         while not os.path.exists(mark) and time.monotonic() < end and proc.poll() is None:
             time.sleep(0.005)
+        if not os.path.exists(mark):
+            print("Error: the background session did not start", file=sys.stderr)
+            return 1
     hang = switch("no-banner")
     if hang is not None:
         time.sleep(float(hang) if hang else 600)
@@ -478,8 +498,9 @@ def record_path(pid):
 
 
 class Helper:
-    def __init__(self, spec):
+    def __init__(self, spec, spec_path):
         self.spec = spec
+        self.spec_path = spec_path
         self.sid = spec["sid"]
         self.pid = os.getpid()
         self.st = spec["state"]
@@ -513,6 +534,13 @@ class Helper:
         append(os.path.join(self.st, "ready", "%d.%s" % (self.pid, stage)), "")
 
     def cleanup(self, *_):
+        owned = os.path.join(self.st, "owned", self.sid)
+        try:
+            with open(owned) as f:
+                if f.read().strip() == "%d %s" % (self.pid, self.spec_path):
+                    os.unlink(owned)
+        except OSError:
+            pass
         for p in (self.record, self.sock, self.bridge, os.path.join(self.st, "helpers", str(self.pid)),
                   os.path.join(self.st, "ready", "%d.record" % self.pid),
                   os.path.join(self.st, "ready", "%d.inbox" % self.pid)):
@@ -679,8 +707,10 @@ def agents():
 
 
 def stop_helper(entry):
-    pid = owned_pid(str(entry.get("sessionId") or "")) or entry.get("pid")
-    if pid and pid_alive(pid):
+    """End the session's helper: only through the engine's private, verified
+    ownership; the job's public pid is evidence a test may fabricate."""
+    pid = owned_pid(str(entry.get("sessionId") or ""))
+    if pid:
         try:
             os.kill(int(pid), signal.SIGTERM)
         except OSError:
@@ -732,7 +762,10 @@ def stop_all(st):
     """Every process the engine of state directory `st` started, ended (a test's teardown)."""
     for p in glob.glob(os.path.join(glob.escape(st), "helpers", "*")):
         try:
-            pid = int(os.path.basename(p))
+            with open(p) as f:
+                pid = helper_pid(os.path.basename(p), f.read().strip())
+            if not pid:
+                continue
             os.kill(pid, signal.SIGTERM)
         except (ValueError, OSError):
             continue
@@ -748,7 +781,7 @@ def stop_all(st):
 
 def main(argv):
     if argv[:1] == ["--helper"]:
-        Helper(read_json(argv[1])).run()
+        Helper(read_json(argv[1]), argv[1]).run()
         return 0
     if argv[:1] == ["--has-positional"]:
         return 0 if has_positional(argv[1:]) else 1
