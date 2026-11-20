@@ -6,6 +6,8 @@ registry/harness inputs and external CLI process are stand-ins; no harness or
 runtime configuration is read. HOME and SMINOS_HOME are temporary throughout.
 """
 
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import os
 from pathlib import Path
 import subprocess

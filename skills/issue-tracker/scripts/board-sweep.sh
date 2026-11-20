@@ -141,6 +141,8 @@ SWEEP_LOG="${SWEEP_LOG:-$DAEMON_HOME/sweep.log}"
 STALL_MIN="${SWEEP_STALL_MINUTES:-45}"
 RECOVERY_CAP="${SWEEP_RECOVERY_CAP:-3}"
 
+# An inherited BOARD_REPO or the board.json `repo` (_binding.sh set it) wins;
+# `gh repo view` is only the fallback for a file that names none.
 if [ -z "${BOARD_REPO:-}" ]; then
   BOARD_REPO="$(cd "$LOCAL_REPO" && gh repo view --json nameWithOwner -q .nameWithOwner)"
 fi

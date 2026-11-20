@@ -7,6 +7,8 @@ a reconciliation deciding on a resolution older than a move does not undo
 the move (F3). Hermetic: HOME and SMINOS_HOME are temporary.
 """
 
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import errno
 import glob
 import json
@@ -578,6 +580,8 @@ class QuietTick(unittest.TestCase):
     quiet tick did 84 renames of project records changed only in their
     stamp, 193 failed mkdirs and 1100 opens."""
 
+    maxDiff = None  # a failure prints the whole write list
+
     @classmethod
     def setUpClass(cls):
         cls.env = mock.patch.dict(os.environ, {"SMINOS_DERIVE_EVERY": "300"})
@@ -612,6 +616,10 @@ class QuietTick(unittest.TestCase):
                     sminos.log_append(project, "%s/%s" % (OTHER, uuid.uuid4()), "say",
                                       to=[{"session": sid, "alias": "past0"}], text="for a closed session")
             live_session(root)
+        # The live sessions' transcripts listed now: a tick reads the index as last listed, and a listing that
+        # some later tick's fresh look takes would show them to the tick after it, which writes their launch
+        # directories then (a stopped thread with no transcript asks fresh at every tick).
+        sminos.transcripts_now()
         for _ in range(3):   # joins the live sessions, publishes their words, reports what the closed sessions are owed
             quietly(daemon.tick_all, quiet=True)
 

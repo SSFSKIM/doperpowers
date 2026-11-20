@@ -31,13 +31,15 @@ a crash between the push and the settlement pushes and records it again. The
 hub keeps the latest per event and recipient.
 
 One outcome comes without a settlement: an event owed to a closed terminal
-session (a seat-less session of this machine whose membership ended with its
-process) is reported `recorded` once, when it first becomes owed to it
+session (a stopped thread its human opened, which this machine holds, M3; or
+a seat-less session of this machine whose membership ended with its process)
+is reported `recorded` once, when it first becomes owed to it
 (report_closed), and stays owed; if the session comes back (Resume) and the
-event is delivered, `delivered` follows for the same key. A closed session is
-no member, so delivery never reaches it: on a read-only machine the report
-applies the policy itself, settling what is owed to it from outside
-undelivered as `refused-read-only`, as deliver_next would. What was reported
+event is delivered, `delivered` follows for the same key. Delivery pushes a
+held session nothing and leaves what it holds owed, and never reaches a
+session whose membership ended: on a read-only machine the report applies
+the policy itself, settling what is owed to it from outside undelivered as
+`refused-read-only`, as deliver_next would. What was reported
 is kept per session in the project's `recorded/<session>.json` ({writer: the
 last seq reported}).
 
@@ -55,6 +57,7 @@ The uplink drains the file: it sends each record as DX4 `delivery`
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
@@ -178,26 +181,32 @@ def record(project, e, session, push, member):
 CLOSED = "a terminal session that was closed: kept owed, and delivered if it comes back"
 
 
-def closed_sessions(view):
-    """The closed terminal sessions of this machine in a view: seat-less
-    sessions that joined from here whose membership ended with their process
-    (retired, reason `ended`; reconciliation retires a seat never so)."""
+def closed_sessions(view, held=True):
+    """The closed terminal sessions of this machine in a view: the members
+    it holds (sminos.hold_for: a stopped thread its human opened, M3; left
+    out with `held` False), and the seat-less sessions that joined from here
+    whose membership ended with their process (retired, reason `ended`: one
+    from before threads, or a lane B one; reconciliation retires a seat
+    never so)."""
     out = set()
     for sid, r in view.info.items():
         latest, joined = (r or {}).get("latest"), (r or {}).get("joined") or {}
-        if latest and latest["kind"] == "retired" and latest.get("reason") == "ended" and joined \
-                and sminos.is_self(str(joined.get("machine") or ""), sid):
+        if not (latest and joined and sminos.is_self(str(joined.get("machine") or ""), sid)):
+            continue
+        if latest["kind"] == "retired" and latest.get("reason") == "ended" \
+                or held and latest["kind"] == "joined" and sminos.hold_for(sid):
             out.add(sid)
     return out
 
 
-def report_one(project, box, sid, events):
+def report_one(project, box, sid, events, refuse=True):
     """report_closed for one session; its caller holds the session's
-    delivery lock."""
+    delivery lock. `refuse` False (a held member, report_held): no read-only
+    refusal here, deliver_next's own."""
     n = 0
     settled = sminos.delivered_load(project, sid)
     if sminos.sibling_module("sminos_policy").read_only():
-        return refuse_owed(project, sid, events, settled)
+        return refuse_owed(project, sid, events, settled) if refuse else 0
     if not project.hub:
         return 0
     path = sminos.project_path(project, "recorded", sminos.reader_key(sid) + ".json")
@@ -241,7 +250,7 @@ def unreported(events, reported, settled):
     return out
 
 
-def owes_report(project, sid, events):
+def owes_report(project, sid, events, refuse=True):
     """Whether report_one has anything to do for the session, looked at
     without its delivery lock: what is settled and what is reported only
     grow, so nothing to do now is nothing to do under the lock. The tick
@@ -249,7 +258,7 @@ def owes_report(project, sid, events):
     is no."""
     settled = sminos.delivered_load(project, sid)
     if sminos.sibling_module("sminos_policy").read_only():
-        return bool(sminos._owed(events, sid, settled))
+        return refuse and bool(sminos._owed(events, sid, settled))
     if not project.hub:
         return False
     reported = recorded_load(os.path.join(project.home, "recorded", sminos.reader_key(sid) + ".json"))
@@ -284,7 +293,8 @@ def report_closed(project, view):
     policy = sminos.sibling_module("sminos_policy")
     if not (project.hub or policy.read_only()):
         return 0
-    closed = closed_sessions(view)
+    # A held member is reported after its delivery pass (report_held): what settles without a push first.
+    closed = closed_sessions(view, held=False)
     if not closed:
         return 0
     # A copy is owed to no one (sminos.addressed_to), and addressees leaves it out.
@@ -301,6 +311,172 @@ def report_closed(project, view):
         with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock")):
             n += report_one(project, box, sid, events)
     return n
+
+
+def held_report_owed(project, sid, events):
+    """Whether report_held still owes a held member a report of `events`
+    (one it could not write, for its next pass): as report_held decides it,
+    without the lock."""
+    policy = sminos.sibling_module("sminos_policy")
+    if not project.hub or policy.read_only():
+        return False
+    events = [e for e in events if policy.outside_origin(e)]
+    return bool(events) and owes_report(project, sid, events, refuse=False)
+
+
+def report_held(project, sid, events):
+    """For a member this machine holds (M3), after its delivery pass:
+    `recorded` once for each outside-origin event of `events` (addressed to
+    it) still owed, as report_closed reports a nonmember's. What the pass
+    settled (a noted push, an admitted receipt, a revoked signer, a
+    broadcast for the live alone, the read-only refusal) is no longer owed,
+    so it is reported never. How many were reported."""
+    policy = sminos.sibling_module("sminos_policy")
+    if not project.hub or policy.read_only():
+        return 0
+    events = [e for e in events if policy.outside_origin(e)]
+    if not (events and owes_report(project, sid, events, refuse=False)):
+        return 0
+    with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock")):
+        return report_one(project, Outbox(project), sid, events, refuse=False)
+
+
+ENDED = ("the session's thread has ended (retired, or stopped past the period): it is pushed nothing, and reads "
+         "the log if it returns")
+
+
+def settle_ended(project, sid, lock_until=None, until=None, end=None):
+    """What is owed to the session of a thread that ended, settled as for a
+    retired target (T1's M4, D1): pushed nothing, each owed event settled,
+    each writer in seq order from its settled prefix; one from outside a hub
+    project with its outcome kept first — `recorded` (ENDED), a push the
+    record noted as made its own outcome, `refused-read-only` on a
+    read-only machine, as deliver_next would settle it — and one whose
+    outcome cannot be kept stops its writer. The events stay in the log,
+    which a returned thread reads at its next `chat`; nothing is delivered
+    again when it returns. Under the session's delivery lock, waited for
+    until `lock_until` (by default a few seconds: a verb may hold it while
+    it ends the thread it delivers to). Whether nothing is owed to it any
+    more: the journal's settlement (sminos_threads.finish) is done only
+    then. Bounded by the end it is for: a return's settlement (`until`, the
+    positions, each writer's seq, the events addressed to the session had
+    reached in the local log as the return began) settles only those; the
+    late pass's (`end`, the `retired` in effect it read) only while, read
+    afresh under the lock, that end still stands (end_stands), so what
+    reaches a thread after it returns is delivered to it."""
+    policy = sminos.sibling_module("sminos_policy")
+    wait = lock_until if lock_until is not None else time.time() + SETTLE_WAIT
+    try:
+        with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock"),
+                            lock_until=wait):
+            record = sminos.delivered_load(project, sid)
+            owed = sminos._owed(sorted(sminos.log_read(project, to_session=sid),
+                                       key=lambda e: (e["writer"], e["seq"])), sid, record)
+            # After the snapshot: a return that begins later sets its `until` after every event read here.
+            if end is not None and not end_stands(project, sid, end):
+                return False
+            stopped, past = set(), set()
+            for e in owed:
+                if e["writer"] in stopped or e["writer"] in past:
+                    continue
+                if until is not None and e["seq"] > int(until.get(e["writer"]) or 0):
+                    past.add(e["writer"])   # after the return began: the returned session's own, and not a failure
+                    continue
+                outside = policy.outside_origin(e)
+                if outside and project.hub:
+                    noted = sminos._delivery(record, e["writer"]).get("pushed")
+                    # An admitted receipt reached the model whatever the policy says since (holder_owed).
+                    outcome, reason = (of_push(noted[1], None) if noted and noted[0] == e["seq"] else
+                                       of_push("sent", None) if sminos.holder_module().admitted(project.id, sid, e)
+                                       else (READ_ONLY, of_push(READ_ONLY, None)[1]) if policy.read_only() else
+                                       ("recorded", ENDED))
+                    try:
+                        Outbox(project).record(e, sid, outcome, reason)
+                    except OSError as err:
+                        sminos.daemon_log("delivery: the outcome of %s for %s could not be recorded (%s): it stays "
+                                          "owed" % (sminos.event_ref(e), sid, err))
+                        stopped.add(e["writer"])
+                        continue
+                sminos.delivered_settle(project, sid, e["writer"], e["seq"])
+                sminos.holder_module().settled(project.id, sid, e)
+            return not stopped
+    except sminos.LockBusy:
+        return False
+
+
+SETTLE_WAIT = 5.0   # seconds settle_ended waits for a delivery lock when its caller set no deadline
+
+
+def end_stands(project, sid, end):
+    """Whether the end `end` (a `retired` event) still stands for the
+    session, read afresh: its membership in effect is still that event, and
+    its thread's record, where it still has the session, has no open entry
+    (a return under way settles its own) and, for an end this code
+    journaled (stamped), still says ended — the record read under its own
+    lock (sminos_threads.holds), which a return's begin holds while it sets
+    its `until`. Asked under the session's delivery lock after the
+    settlement's snapshot of the log: a return not begun by then sets its
+    `until` after every event the snapshot holds, so what is settled here is
+    the end's alone."""
+    threads = sminos.threads_module()
+    e = threads.in_effect(sminos._own_events(project, sid))
+    if e is None or (e.get("writer"), e.get("seq")) != (end.get("writer"), end.get("seq")):
+        return False
+    t = threads.thread_of(sid)
+    if t is None or t["current"] != sid:
+        return True
+    return threads.holds(t["thread"], lambda r: r["current"] != sid or not r.get("pending") and (
+        threads.record_ended(r) or not threads.stamped(end)), missing=True)
+
+
+def settle_ended_owed(project, view):
+    """For each session of this machine in the view whose thread has ended
+    (_ended_threads), what reached the log for it since — an event from
+    outside, an older sender's — settled the same way (settle_ended), only
+    while that end still stands. Asked again for a session only once the
+    events addressed to it moved, so a tick pays for ended threads the one
+    comparison. How many sessions were settled."""
+    ended = sminos.log_memo(view.events, "ended-threads", lambda _events: _ended_threads(view.info))
+    if not ended:
+        return 0
+    to = sminos.addressees(view.events)
+    n = 0
+    for sid, end in ended.items():
+        mine = to.get(sid)
+        if not mine:
+            continue
+        key, seen = (project.id, sid), (id(mine), len(mine))
+        if _SETTLED.get(key) == seen:
+            continue
+        if sminos._owed(mine, sid, sminos.delivered_load(project, sid)):
+            if not settle_ended(project, sid, end=end):
+                continue
+            n += 1
+        _SETTLED[key] = seen
+    return n
+
+
+_SETTLED = {}   # (project id, session) → the addressed events (their list's id and length) settled up to
+
+
+def _ended_threads(info):
+    """{session: the `retired` that ended it} for each session of this
+    machine whose thread has ended: its membership in effect a stamped
+    `retired`, reason `retire` or `ended` (an end this code journaled, whose
+    entry settled what was owed then), or an older copy's explicit `retire`
+    (unstamped) of a session a thread record still has as its current one.
+    An unstamped `ended` is a lane B session's, never a thread's end."""
+    threads = sminos.threads_module()
+    out = {}
+    for sid, r in info.items():
+        latest, joined = r["latest"], r["joined"] or {}
+        if not (latest and latest["kind"] == "retired" and sminos.is_self(str(joined.get("machine") or ""), sid)):
+            continue
+        reason = latest.get("reason")
+        if threads.stamped(latest) and reason in sminos.END_REASONS or \
+                reason == "retire" and (threads.thread_of(sid) or {}).get("current") == sid:
+            out[sid] = latest
+    return out
 
 
 REFUSED = "the session dropped it after taking it, so it never entered the conversation: %s"

@@ -19,6 +19,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # mismatch it.
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 SMINOS="$PLUGIN_ROOT/skills/sminos/scripts/sminos"
+# set_lane <session> <A|B>: the session's controller on its record. From T1's
+# M3 a thread (lane A) stays a member when its process ends; a test of an
+# ending turns its session lane B first.
+set_lane() {
+  python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import sminos_records as r
+sys.exit(0 if r.set_controller(sys.argv[2], sys.argv[3]) else 1)' "$PLUGIN_ROOT/skills/sminos/scripts" "$1" "$2"
+}
 # The root is the plugin's, not a repository's that holds it: its manifest says so.
 if [ "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("name"))' "$PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null)" != sminos ]; then
   echo "run-sminos-tests: $PLUGIN_ROOT is not the sminos plugin's root" >&2
@@ -117,6 +124,9 @@ export DAEMON_HOST="testhost"
 export SMINOS_NO_EXEC=1
 # The daemon's derivation (every five minutes) starts a child; only the cases that pin it turn it on.
 export SMINOS_DERIVE_EVERY=0
+# devcloud is a stand-in for every suite run from here (T1's M5), exported to each file it runs.
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$SCRIPT_DIR/devcloud-isolation.sh"
 WORK="$TEST_ROOT/work"
 mkdir -p "$HOME/.claude/sessions" "$WORK" "$STUB_STATE/agents" "$STUB_STATE/log"
 
@@ -354,6 +364,20 @@ run_suites() {
     fail "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; fi
   if python3 "$SCRIPT_DIR/test_list_fold.py"; then pass "stopped members fold only in text views (test_list_fold.py)"; else
     fail "stopped members fold only in text views (test_list_fold.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_threads.py"; then pass "every member a thread: its record, the stamp, the reader rule, the journal (test_threads.py)"; else
+    fail "every member a thread: its record, the stamp, the reader rule, the journal (test_threads.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_threads_stopped.py"; then pass "a closed session stays: stopped, held, its sender told, a /clear (test_threads_stopped.py)"; else
+    fail "a closed session stays: stopped, held, its sender told, a /clear (test_threads_stopped.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_threads_ended.py"; then pass "a thread ends, and returns: the three-day rule, a retire, the settlement, a fill (test_threads_ended.py)"; else
+    fail "a thread ends, and returns: the three-day rule, a retire, the settlement, a fill (test_threads_ended.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_threads_branch_b.py"; then pass "the branch review's interleavings: a push rebound, held kept owed, questions by episode and project, a send's end, the sweep's record, join's lock (test_threads_branch_b.py)"; else
+    fail "the branch review's interleavings: a push rebound, held kept owed, questions by episode and project, a send's end, the sweep's record, join's lock (test_threads_branch_b.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_threads_owner.py"; then pass "a thread that made a VM is neither retired nor ended: devcloud asked, the census (test_threads_owner.py)"; else
+    fail "a thread that made a VM is neither retired nor ended: devcloud asked, the census (test_threads_owner.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_threads_branch_a.py"; then pass "a seat's lifecycle verbs against the writers that race them (test_threads_branch_a.py)"; else
+    fail "a seat's lifecycle verbs against the writers that race them (test_threads_branch_a.py)"; fi
+  if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10 beside this code: no session its human opened resumed, its ended passed by (test-older-cli.sh)"; else
+    fail "sminos 1.27.10 beside this code: no session its human opened resumed, its ended passed by (test-older-cli.sh)"; fi
   if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else
     fail "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager.py"; then pass "the session manager's command: windows, pending, subscriptions (test_manager.py)"; else
@@ -423,10 +447,11 @@ run_suites() {
   if python3 "$SCRIPT_DIR/test_heads.py"; then pass "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; else
     fail "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; fi
   # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink
-  # (rl10_conformance.py): every line as written; an `amend` would mean a line sminos cannot send as written, and fails.
+  # (rl10_conformance.py): every line as written but those its AMENDMENTS name (sminos's threads), played as amended.
   while IFS= read -r line; do
     case "$line" in
       "ok "*) pass "rl10 conformance: ${line#ok }" ;;
+      "amend "*) pass "rl10 conformance (amended for threads): ${line#amend }" ;;
       *) fail "rl10 conformance: ${line#FAIL }" ;;
     esac
   done < <(python3 -B "$SCRIPT_DIR/rl10_conformance.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/rl10-conversation.json" 2>&1)
@@ -1629,7 +1654,10 @@ assert_equals "$(field "$SA_UUID" short)" "" "seat add --session clears a short 
 
 # One liveness probe both classifies a send and routes it. A second probe could
 # disagree with the first (the session came up, or went away, in between) and
-# route a live seat to a resume, which stops and relaunches its turn.
+# route a live seat to a resume, which stops and relaunches its turn. The push
+# reads it once more, at its last hop, only to bind the frame to the process
+# that runs the session (sminos.bound_peer): it never reroutes, and one that
+# finds it gone is a socket that vanished before the write (below).
 PROBE_UUID="0f0f1212-abab-4000-8000-0000000f1212"
 "$SMINOS" seat add grp probed --session "$PROBE_UUID" >/dev/null
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$PROBE_UUID.jsonl"
@@ -1644,7 +1672,7 @@ for first_live in (True, False):
     probes, actions = [], []
     def probe(cur, first_live=first_live):
         probes.append(cur)
-        return live if (len(probes) == 1) == first_live else None
+        return live if first_live or len(probes) > 1 else None   # dead-first: up only after the route
     sminos.peer_for_session = probe
     sminos.send_frame = lambda path, text, sender="": actions.append("socket")
     sminos.resume_session = lambda *a, **k: actions.append("resume")
@@ -1655,7 +1683,7 @@ for first_live in (True, False):
 print(" ".join(out))
 PY
 )"
-assert_equals "$PROBE_OUT" "live-first:1:socket dead-first:1:resume" "a send probes its seat once and routes on that probe"
+assert_equals "$PROBE_OUT" "live-first:2:socket dead-first:1:resume" "a send routes on its one probe; the push binds it once more"
 rm -f "$HOME/.claude/projects/fake-proj/$PROBE_UUID.jsonl"; "$SMINOS" remove grp/probed >/dev/null
 
 # A session's transcript sits directly in a project dir; the newest copy wins
@@ -1767,11 +1795,13 @@ printf '{"pid":%s,"sessionId":"%s","name":"prevocc","kind":"bg","status":"idle",
 run "$SMINOS" spawn prevocc "again"
 assert_rc 4 "$RC" "re-spawn is refused while the previous occupant still answers"
 assert_contains "$OUT" "previous occupant" "the live previous occupant is named"
-assert_contains "$OUT" "use sminos resume, or stop it first" "the hint names resume"
+assert_contains "$OUT" "still answers — stop it first" "the hint says to stop it"
+assert_not_contains "$OUT" "sminos resume" "and not resume, which refuses a retired seat (T1's M4)"
 assert_not_contains "$OUT" "sminos send" "and not send, which refuses a retired seat"
 run "$SMINOS" fill work/prevocc "again"
 assert_rc 4 "$RC" "fresh fill is refused while the previous occupant still answers"
-assert_contains "$OUT" "use sminos resume, or stop it" "fill's hint names resume"
+assert_contains "$OUT" "still answers — stop it first" "fill's hint says to stop it"
+assert_not_contains "$OUT" "sminos resume" "and not resume"
 assert_not_contains "$OUT" "sminos send" "and not send"
 rm -f "$HOME/.claude/sessions/prevocc.json"; "$SMINOS" remove work/prevocc >/dev/null
 
@@ -3876,25 +3906,26 @@ assert_contains "$OUT" "· now: reading the schema" "list shows a member's statu
 # A status set in one home reaching the other's list is pinned through the
 # real mirror, in "the mirror and the daemon".
 
-# A seat-less member's membership ends with its process, as it began with it:
-# the next reading verb retires it (reason ended) and it re-joins when it runs
-# again. Only interactive and bg sessions are members on sight.
+# A seat-less member that its human opened (a thread, T1) stays a member when
+# its process ends: stopped, folded out of a plain list, and what is addressed
+# to it is recorded and held for its reopening (T1's M3). Only interactive and
+# bg sessions are members on sight.
 IE=2d00000d-0000-4000-8000-00000000002d
 pf_peer closer "$IE" idle user
 run "$SMINOS" list
 assert_contains "$OUT" "closer" "a live interactive session lists"
 rm -f "$HOME/.claude/sessions/pf-closer.json"   # its session exits
 run "$SMINOS" list
-assert_not_contains "$OUT" "closer" "once its session exits, the next reading verb ends its membership"
-assert_equals "$(events_of "$IE")" "joined retired:ended " "recording retired, reason ended, in its own file"
-assert_contains "$(tail -1 "$PFLOG/testhost.$IE.jsonl")" '"by": "", "reason": "ended"' "by no one"
+assert_not_contains "$OUT" "closer" "once its session exits, a plain list folds it"
+assert_equals "$(events_of "$IE")" "joined " "and nothing retires it: it is stopped"
 run "$SMINOS" say "@closer are you there"
-assert_rc 4 "$RC" "a tag to it while it is closed is refused"
-assert_contains "$OUT" "@closer: closer's session ended; say it untagged to leave a note" "saying its session ended and how to leave it a note"
+assert_rc 0 "$RC" "a tag to it while it is closed is recorded"
+assert_contains "$OUT" "closer: recorded and held: the session is stopped, and a session its human opened is not woken" \
+  "saying it is held for its human to reopen"
 pf_peer closer "$IE" idle user                  # resumed outside sminos
 run "$SMINOS" list
 assert_contains "$OUT" "closer" "when it runs again it lists again"
-assert_equals "$(events_of "$IE")" "joined retired:ended joined " "re-joined under the same uuid"
+assert_equals "$(events_of "$IE")" "joined " "the same membership, under the same uuid"
 rm -f "$HOME/.claude/sessions/pf-closer.json"
 HL=2e00000e-0000-4000-8000-00000000002e
 start_inbox headless
@@ -3986,7 +4017,7 @@ handoff_tx "$LO" "$LN"
 rm -f "$HOME/.claude/sessions/pf-tardy.json"
 run "$SMINOS" list
 assert_equals "$(events_of "$LO")" "joined retired:continued " "the exit is read as the hand-off, not an end"
-assert_equals "$(events_of "$LN")" "joined renamed " "the job is renamed to the alias it carries on"
+assert_equals "$(events_of "$LN")" "joined joined " "the job is joined again under the thread it carries on, and its alias"
 assert_equals "$(json_row tardy session)" "$LN" "and is the member"
 assert_not_contains "$OUT" "tardyjob" "no longer listed under its title"
 rm -f "$HOME/.claude/sessions/pf-tardyjob.json"
@@ -4161,7 +4192,7 @@ rm -f "$HOME/.claude/sessions/pf-drifter.json"
 run "$SMINOS" list
 pf_peer drifter-3f "$RS" idle derived   # resumed: the harness drew its name again
 run "$SMINOS" list
-assert_equals "$(events_of "$RS")" "joined retired:ended joined " "a resumed session re-joins"
+assert_equals "$(events_of "$RS")" "joined " "a resumed session is the member it was (stopped meanwhile, T1's M3)"
 assert_contains "$(tail -1 "$PFLOG/testhost.$RS.jsonl")" '"alias": "drifter"' "under the alias it held, not the name drawn again"
 assert_equals "$(json_row drifter session)" "$RS" "and lists under it"
 CLAUDE_CODE_SESSION_ID="$RS" run "$SMINOS" say "back again"
@@ -6351,8 +6382,10 @@ assert_equals "$(renamed_to "$CA" desk-uplink-owner)" "1 user" "the daemon's tic
 assert_equals "$(other_row desk-uplink-owner machine)|$(other_row desk-uplink-owner local)" "testhost|false" "(the other machine reads the member as testhost's)"
 assert_equals "$(other_row desk-uplink-owner name_source)|$(other_row desk-uplink-owner charge_source)" "user|derived" \
   "another machine reads the same label and the same line"
+set_lane "$CA" B   # a session that ends (a thread would stay, stopped)
 rm -f "$(cn_record "$CA")"
 run "$SMINOS" list   # the session ends: retired
+set_lane "$CA" A
 cn_peer desk-uplink-owner "$CA" user   # and is resumed under the name it restored
 run "$SMINOS" list
 assert_equals "$(last_joined_source "$CA")" "user" "a resumed session joins again under the engine's label"
@@ -6465,10 +6498,12 @@ CT=0c00000a-0000-4000-8000-0000000000ca
 cn_member cnseat-engine "$CT" derived
 "$SMINOS" seat add cn-repo cnseat --session "$CT" >/dev/null
 not_named cnseat "$CT" "a seat"
-# A member that stopped after its row was read.
+# A member that stopped after its row was read: a session its human opened,
+# stopped, is not forked (T1's M3), so no line and no name.
 CZ=0c00000b-0000-4000-8000-0000000000cb
 cn_member cnrepo-z0 "$CZ" derived
 run "$SMINOS" list
+rm -f "$FORK_PROMPT"
 set +e
 OUT="$(STUB_FORK_RESULT=$'Runs the thing.\nname: some-fresh-name' python3 - "$SMINOS_PY" "$CNP" "$CZ" "$(cn_record "$CZ")" 2>&1 <<'PY'
 import importlib.util, os, sys
@@ -6480,8 +6515,9 @@ mod.derive_member(p, m)
 PY
 )"
 set -e
-assert_equals "$(cat "$FORK_PROMPT")" "$DERIVE_PROMPT_TODAY" "a stopped member: the fork is asked today's question, verbatim"
-assert_equals "$(cn_charge "$CZ")" "derived|Runs the thing.|<none>" "a stopped member: the line is recorded with no name"
+assert_equals "$(cat "$FORK_PROMPT" 2>/dev/null)" "" "a stopped member: no fork is started"
+assert_contains "$OUT" "its human opened it" "a stopped member: saying why"
+assert_equals "$(cn_charge "$CZ")" "||<none>" "a stopped member: no line is recorded"
 assert_equals "$(pending "$CZ" name)" "<none>" "a stopped member: and no pending file"
 # The owner renames the session while its fork runs.
 CR=0c00000c-0000-4000-8000-0000000000cc
@@ -6537,7 +6573,17 @@ cn_member cnrepo-q7 "$CQ" derived
 STUB_FORK_RESULT=$'Owns the seated work.\nname: seated-later-name' run "$SMINOS" derive cnrepo-q7
 run "$SMINOS" name-due --session "$CQ"
 assert_equals "$RC|$OUT" "0|seated-later-name" "(a proposal for a seat-less session is due)"
-"$SMINOS" seat add cn-repo cnseatq --session "$CQ" >/dev/null
+# This code refuses `seat add --session` for a session its human opened that is a member (its thread
+# record keeps it); an older sminos still gives one a seat, as its seat record says (older_seat).
+older_seat() { # group alias session cwd — a seat record as an older sminos's `seat add --session` writes it
+  printf '{"uuid":"%s","current":"%s","name":"%s","alias":"%s","group":"%s","status":"idle","cwd":"%s","history":[]}' \
+    "$3" "$3" "$2" "$2" "$1" "$4" > "$SMINOS_HOME/$3.json"
+  chmod 600 "$SMINOS_HOME/$3.json"
+}
+run "$SMINOS" seat add cn-repo cnseatq --session "$CQ"
+assert_rc 4 "$RC" "seat add --session is refused for a member its human opened"
+assert_contains "$OUT" "its record already keeps it" "saying its record keeps it"
+older_seat cn-repo cnseatq "$CQ" "$R4"
 run "$SMINOS" name-due --session "$CQ"
 assert_equals "$RC|$OUT" "0|" "nor once the session took a seat"
 
@@ -6547,7 +6593,7 @@ assert_equals "$RC|$OUT" "0|" "nor once the session took a seat"
 CW=0c000012-0000-4000-8000-0000000000d2
 cn_member cnrepo-w1 "$CW" derived
 run "$SMINOS" list
-"$SMINOS" seat add cn-repo cnseatw --session "$CW" >/dev/null
+older_seat cn-repo cnseatw "$CW" "$R4"
 bound_by() { # name → find_target's kind and the session it binds
   python3 - "$SMINOS_PY" "$1" 2>/dev/null <<'PY'
 import importlib.util, sys
@@ -6692,6 +6738,7 @@ assert_contains "$(inbox fa-u)" "to the holder" "and reaches the member that hol
 assert_equals "$(inbox fa-t)" "" "not the one that held it before"
 run "$SMINOS" status oldname "the holder"
 assert_contains "$(tail -1 "$FALOG/testhost.$FU.jsonl")" '"text": "the holder"' "find_target too takes the current holder"
+set_lane "$FU" B   # a session that ends (a thread would stay, stopped, holding the name)
 rm -f "$HOME/.claude/sessions/fa-fa-u.json"
 run "$SMINOS" list   # it ends: retired
 # Two members held a name before: the more recent holder gets it.
@@ -6731,6 +6778,7 @@ assert_rc 4 "$RC" "two members that last held it at the same time are refused as
 assert_contains "$OUT" "why-now#${FY:0:8}" "naming the one"
 assert_contains "$OUT" "zed-now#${FZ:0:8}" "and the other"
 # A retired member's former alias reaches nothing.
+set_lane "$FT" B   # a session that ends (a thread would stay, stopped)
 rm -f "$HOME/.claude/sessions/fa-fa-t.json"
 run "$SMINOS" list   # it ends: retired
 CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@oldname are you there"
@@ -6741,7 +6789,7 @@ assert_not_contains "$OUT" "note:" "and tells of no rename"
 FQ=0fa00009-0000-4000-8000-0000000000f9
 fa_peer seatless-old "$FQ" "$FAR" fa-q
 run "$SMINOS" list
-"$SMINOS" seat add fa-repo fa-seat --session "$FQ" >/dev/null
+older_seat fa-repo fa-seat "$FQ" "$FAR"   # a member its human opened takes a seat only from an older sminos
 run "$SMINOS" status seatless-old "seated"
 assert_contains "$OUT" "note: @seatless-old is now @fa-seat#${FQ:0:8}" "(seated, its alias before the seat's reaches it)"
 run "$SMINOS" retire fa-seat

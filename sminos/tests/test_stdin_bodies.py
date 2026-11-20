@@ -5,6 +5,8 @@ Each verb in STDIN_BODIES takes its text from stdin when it is given as `-`: the
 backticks, `$`, quotes and lines kept, less the one line ending a heredoc adds; a terminal or an empty stdin is
 refused with a usage error. Through main() with each handler replaced, so the parse is the real one and nothing
 runs. Then `bin/sminos`, the plugin's bin/ entry, runs the CLI: from another directory, and through a symlink."""
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import io
 import os
 import subprocess

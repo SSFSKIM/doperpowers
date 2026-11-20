@@ -88,8 +88,9 @@ export SMINOS_MIGRATED
 # shellcheck source=_binding.sh
 . "$BOARD_SCRIPTS/_binding.sh"
 
-# The target repo (owner/name) — gh mode only: $BOARD_REPO wins, else the
-# checkout's repo. Fail-loud when gh is missing/unauthenticated/offline.
+# The target repo (owner/name) — gh mode only: $BOARD_REPO wins, then the
+# board.json `repo` (_binding.sh sets it), else the checkout's repo as
+# `gh repo view` answers it. Fail-loud when gh is missing/unauthenticated/offline.
 if [ "$BOARD_BINDING" = gh ] && [ -z "${BOARD_REPO:-}" ]; then
   command -v gh >/dev/null 2>&1 || die "\`gh\` not found — the board lives on GitHub"
   BOARD_REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" \

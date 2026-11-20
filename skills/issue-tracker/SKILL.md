@@ -163,8 +163,14 @@ repo resolves the same board (a linked worktree checked out at a head that
 predates the file resolves the binding from its main checkout):
 
 ```json
+{ "binding": "gh", "repo": "owner/name" }
 { "binding": "api", "url": "https://…", "repo": "doperpowers" }
 ```
+
+On the gh binding `repo` is the GitHub repository, `owner/name`. Without it the
+scripts take whatever `gh repo view` answers, and in a fork carrying an
+`upstream` remote with no `gh repo set-default` that is the upstream project,
+so a fork names itself.
 
 `repo` is the name the **board service** knows this repository by. One service
 serves several repositories out of one ticket namespace, and a request that
@@ -178,8 +184,8 @@ tickets as its own).
 
 `$BOARD_REPO` overrides the file, and means a different thing per binding: on
 the **api** binding it is the board's repo key (a bare name); on the **gh**
-binding it is `owner/name`, which `_lib.sh` resolves from the checkout when
-unset. It is the value the Toolkit table below calls the target repo.
+binding it is `owner/name`, the file's `repo` when it names one, else what
+`gh repo view` answers in the checkout. It is the value the Toolkit table below calls the target repo.
 
 Credentials never live in the repo. The client reads
 `~/.arkho-board/<main-checkout-dirname>.env` (the *main* checkout's directory

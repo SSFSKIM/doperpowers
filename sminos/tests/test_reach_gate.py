@@ -19,6 +19,8 @@ with inboxes served by inbox_standin.py; `say` and `send` run as the CLI.
 Run: python3 -B sminos/tests/test_reach_gate.py
 """
 
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import argparse
 import contextlib
 import io

@@ -370,7 +370,7 @@ t  "nor is one whose mark was cleared"           "0"                        wake
 # stop taking new items without one) and a registry of its own, so the
 # candidate cannot be confused with the drills above.
 # =========================================================================
-t  "the phase is named in the usage line"        "review-recover"           bash -c "$SCRIPTS/_sweep_api.sh nonsense 2>&1 || true"
+t  "the phase is named in the usage line"        "review-recover"           bash -c "cd '$r' && $SCRIPTS/_sweep_api.sh nonsense 2>&1 || true"
 
 DH2="$TDIR/registry-all"; mkdir -p "$DH2"
 NUDGES2="$TDIR/nudges-all.log"; : > "$NUDGES2"

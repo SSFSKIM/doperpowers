@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # The bridge's control verbs and delivery (DC2 M2, DX5): `sminos steer`,
 # `interrupt`, `model`, `compact`, `read`, `command` through a session's

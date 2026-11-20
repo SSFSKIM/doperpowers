@@ -2,17 +2,19 @@
 # _binding.sh — per-repo board-binding resolution (A2). Side-effect-free:
 # sourceable from ANY entry point BEFORE gh-mode initialization. Defines
 # BOARD_BINDING, BOARD_API_URL, BOARD_CREDENTIALS_FILE, BOARD_ROOT, _api_py,
-# and — in api mode only — BOARD_REPO.
+# and BOARD_REPO — always in api mode, in gh mode when the file names one.
 # BOARD_ROOT, BOARD_API_URL, BOARD_CREDENTIALS_FILE and BOARD_REPO are honored
 # if the sourcing shell already set them (that is how _lib.sh hands over its own
 # root, same process, and how a user overrides any of the values) but none of
 # the four is exported here — see the export note below.
 # .doperpowers/board.json selects the substrate: absent or {"binding":"gh"}
-# -> gh mode, byte-identical to pre-A2; {"binding":"api","url":...,"repo":...}
-# -> the toolkit speaks the Arkho board API, for the named repo, and gh is
-# neither required nor invoked. BOARD_REPO means different things per binding:
-# in api mode it is the BOARD's repo key (a bare name the service registered),
-# in gh mode it is owner/name and _lib.sh resolves it.
+# -> gh mode, byte-identical to pre-A2; {"binding":"gh","repo":"owner/name"}
+# -> gh mode on the named GitHub repository; {"binding":"api","url":...,
+# "repo":...} -> the toolkit speaks the Arkho board API, for the named repo,
+# and gh is neither required nor invoked. BOARD_REPO means different things per
+# binding: in api mode it is the BOARD's repo key (a bare name the service
+# registered), in gh mode it is owner/name — the file's `repo`, else _lib.sh
+# (and each dispatcher) resolves it with `gh repo view`.
 BOARD_BINDING=gh
 BOARD_API_URL="${BOARD_API_URL:-}"
 # This file's own directory, so non-board entry points (dispatch scripts) get
@@ -108,7 +110,22 @@ PY
          [ -n "$BOARD_REPO" ] || BOARD_REPO="$(_repo_from_own_seat)"
          [ -n "$BOARD_REPO" ] || { echo "error: .doperpowers/board.json names binding=api but no repo" >&2
                                    return 1 2>/dev/null || exit 1; } ;;
-    gh) : ;;
+    # THE gh BINDING NAMES ITS REPOSITORY WHEN IT CAN. Without a `repo` the
+    # target is whatever `gh repo view` answers, and in a fork carrying an
+    # `upstream` remote with no `gh repo set-default`, that is the UPSTREAM
+    # project — exit 0, no warning — so a board write files its ticket on
+    # somebody else's public tracker. An inherited BOARD_REPO still wins, as it
+    # did before the key existed, untouched (not trimmed: a blank one fails at
+    # gh, as it always has, rather than falling back to gh's guess). A file
+    # value must be exactly owner/name: an api `repo` left behind on a binding
+    # switch, or a host-qualified HOST/owner/name that `gh -R` would aim at
+    # another host, is refused here rather than handed to gh.
+    gh) if [ -z "${BOARD_REPO:-}" ] && [ -n "${_binding_rest#*|}" ]; then
+          BOARD_REPO="${_binding_rest#*|}"
+          printf '%s' "$BOARD_REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
+            || { echo "error: .doperpowers/board.json: a gh binding's repo is owner/name, not \"$BOARD_REPO\"" >&2
+                 return 1 2>/dev/null || exit 1; }
+        fi ;;
     # AN UNKNOWN BINDING IS A CONFIGURATION ERROR, NOT A DEFAULT. Falling
     # through left BOARD_BINDING=gh, so a typo (`"api "`, `"API"`, `"arkho"`)
     # silently sent every read and every mutation to GitHub — against a repo

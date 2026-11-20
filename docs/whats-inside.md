@@ -86,6 +86,7 @@ The project family, standalone: nothing of doperpowers' is needed for it to run.
 | ask tool | `mcp__sminos__AskUserQuestion`: the built-in question tool plus `async`, so a session asks and keeps working |
 | address | Ends every commit and PR a session writes with its `Sminos-Session:` line, which `sminos who` reads back |
 | backtick guard | Refuses a Bash call that would hand `sminos` a backtick the shell runs (a code span in a double-quoted message), and says how to send the text verbatim on stdin |
+| clear | Records the session a `/clear` left, so the new session takes its alias and the one left goes by its short id |
 | names | Renames a session with a generated name after what it is in charge of, its line derived again every third compaction |
 | daemon | Syncs a project's log across machines, through a git mirror or the desk hub (over RL10, through the machine's MAWS endpoint) |
 

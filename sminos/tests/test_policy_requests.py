@@ -29,6 +29,8 @@ nothing reaches beyond 127.0.0.1, this directory and a Unix socket under
 /tmp.
 """
 
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import json
 import os
 import queue
@@ -350,7 +352,12 @@ class Delivery(unittest.TestCase):
             project = project_of(self.root)
             sminos.reconcile(project)
             snapshot = member_of(project, gone.sid)  # taken while it ran
+            # A lane B session, its end reconciled: a thread stays a member when its process ends, and is
+            # held (T1's M3).
+            self.assertTrue(sminos.records_module().set_controller(gone.sid, "B"))
             gone.end()
+            sminos.forget_caches()
+            sminos.reconcile(project)
             sminos.forget_caches()
             e = sminos.log_append(project, self.far, "say",
                                   **{"from": "far", "to": [{"session": gone.sid, "alias": snapshot.alias}],
@@ -387,10 +394,11 @@ class Delivery(unittest.TestCase):
                         "a peer's frame, in the engine's peer envelope")
 
     def test_a_closed_terminal_session_is_reported_recorded_until_it_is_back(self):
-        """A session whose process ended is no member: an event sent to it
-        is reported `recorded` once, stays owed, and when the session comes
-        back (Resume, M4; here its process again) is delivered, `delivered`
-        following for the same key."""
+        """A terminal session whose process ended stays a member, stopped
+        and held (T1's M3): an outside event sent to it is reported
+        `recorded` once, stays owed, and when the session comes back (here
+        its process again) is delivered, `delivered` following for the same
+        key."""
         import sminos_daemon as daemon
         gone = Session(self.root)
         sid = gone.sid
@@ -401,7 +409,8 @@ class Delivery(unittest.TestCase):
             gone.end()
             sminos.forget_caches()
             view = sminos.view_of(project, titles=False)
-            self.assertNotIn(sid, [m.session for m in view.members], "its membership ended with its process")
+            self.assertIn(sid, [m.session for m in view.members], "a member still")
+            self.assertEqual(sminos.hold_for(sid), "human", "and held")
             e = sminos.log_append(project, self.far, "say",
                                   **{"from": "far", "to": [{"session": sid, "alias": alias}],
                                      "text": "to a closed terminal session"})
@@ -486,6 +495,9 @@ class Delivery(unittest.TestCase):
             project = project_of(self.root)
             sminos.reconcile(project)
             alias = member_of(project, sid).alias
+            # A closed session that is no member (lane B, its end reconciled): a stopped thread is reported after
+            # its delivery pass instead (T1's M3, sminos_outcomes.report_held).
+            self.assertTrue(sminos.records_module().set_controller(sid, "B"))
             gone.end()
             sminos.forget_caches()
             view = sminos.view_of(project, titles=False)

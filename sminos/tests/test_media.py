@@ -6,6 +6,8 @@ nowhere here for a day.
 
 Hermetic: HOME and SMINOS_HOME are temporary (test_session_plane's)."""
 
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import base64
 import json
 import os
