@@ -469,7 +469,7 @@ describe('transcript order', () => {
 
   // On a --resume start the engine draws the history before the module
   // loads, then asks it about every row; its first answer must already fold
-  // (board #105: what stays raw is the terminal's scrollback, which
+  // (#539: what stays raw is the terminal's scrollback, which
   // live-resume-check.py pins).
   test("a resumed history's marked row folds from the module's first answer", async ($, on) => {
     mock.env(on, {})

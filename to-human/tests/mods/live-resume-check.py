@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live check of how a resumed session's marked history draws (board #105).
+"""Live check of how a resumed session's marked history draws (#539).
 
 What only a running engine shows, pinned so a release that changes it is
 seen. On a `claude --resume` start the engine draws the resumed transcript
@@ -220,9 +220,9 @@ class Live:
                    "the short message draws under its label")
         head = frame[:frame.find("got it short")]  # the short prompt follows the long reply
         changed = first_raw is not None and RAW not in head
-        self.check("main: the scrollback keeps the first frame (the engine's, board #105)", RAW in head,
+        self.check("main: the scrollback keeps the first frame (the engine's, #539)", RAW in head,
                    "raw head in scrollback" if RAW in head else
-                   "CHANGED: the scrollback came out folded; the engine now repaints it, so #105 can close and this"
+                   "CHANGED: the scrollback came out folded; the engine now repaints it, so #539 can close and this"
                    " check change" if changed else
                    "no raw frame was seen at all: the engine may now load the modules first; read the frames")
         self.stop()

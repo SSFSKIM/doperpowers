@@ -217,6 +217,8 @@ if [ "$BOARD_BINDING" = api ]; then
   fi
 else
   command -v gh >/dev/null 2>&1 || die "gh not found — install/auth the GitHub CLI"
+  # An inherited BOARD_REPO or the board.json `repo` (_binding.sh set it) wins;
+  # `gh repo view` is only the fallback for a file that names none.
   if [ -z "${BOARD_REPO:-}" ]; then
     BOARD_REPO="$(cd "$LOCAL_REPO" && gh repo view --json nameWithOwner -q .nameWithOwner)"
   fi
