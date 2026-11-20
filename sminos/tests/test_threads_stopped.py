@@ -696,6 +696,46 @@ class Hold(Rig):
         self.assertEqual([(r["session"], r["outcome"]) for r in rows], [(sid, "recorded")], "once")
         self.assertEqual(len(sminos.owed(hub, self.member(sid, hub))), 1, "and still owed")
 
+    def test_what_is_reported_of_a_held_member_says_why_it_is_held(self):
+        """report_held's reason is the thread's hold in §5's words, whichever kind of thread it is, never a closed
+        terminal's: one with no conversation here, then the same thread once a wake of it failed."""
+        hub, sid = self.hub_stopped()
+        tail = "; kept owed, and delivered when a process of it runs again"
+
+        def reported(text):
+            e = sminos.log_append(hub, "othermachine/human", "human", **{
+                "from": "human", "to": [{"session": sid, "alias": "alpha"}], "text": text})
+            sminos.forget_caches()
+            self.daemon.deliver_owed(hub, sminos.view_of(hub, titles=False))
+            return [(r["outcome"], r["reason"]) for r in self.outbox(hub) if r["event"] == {"writer": e["writer"],
+                                                                                         "seq": e["seq"]}]
+        self.assertEqual(threads.hold_of(sid), "transcript")
+        self.assertEqual(reported("no conversation"), [("recorded", "the session is stopped and is not woken: no "
+                                                        "conversation of it is on that machine" + tail)])
+        self.transcript(sid, "auto")
+        tid = threads.stamp(sid)
+        path = threads._human_path(tid)
+        with open(path) as f:
+            sminos.write_json(path, dict(json.load(f), launch={"cwd": self.root, "at": sminos.now()}))
+        threads.wake_failed(tid, sid, "x")
+        sminos.forget_caches()
+        self.assertEqual(threads.hold_of(sid), "failed")
+        self.assertEqual(reported("after a failed wake"), [("recorded", "the session is stopped and is not woken: "
+                                                            "waking it failed, and its machine tries again" + tail)])
+
+    def test_a_woken_thread_s_delivery_says_its_session_was_woken(self):
+        """A wake's push is a stopped session woken with the message, a seat's or a thread its human opened, which
+        has none (of_push's `woken`)."""
+        outcomes = sminos.sibling_module("sminos_outcomes")
+        for seat in (None, {"seat_id": "s"}):
+            with self.subTest(seat=seat):
+                member = mock.Mock(seat=seat)
+                self.assertEqual(outcomes.of_push("woken", member), ("delivered", "the stopped session was woken "
+                                                                                  "with it"))
+                self.assertEqual(outcomes.of_push("woken?", member),
+                                 ("uncertain", "uncertain: the stopped session was woken and took the message, and "
+                                               "its answer never came"))
+
 
 # ------------------------------------------------------------ X3: whether its machine wakes it
 

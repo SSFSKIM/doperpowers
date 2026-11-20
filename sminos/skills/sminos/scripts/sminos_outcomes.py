@@ -34,7 +34,8 @@ One outcome comes without a settlement: an event owed to a closed terminal
 session (a stopped thread this machine holds, T2's §4; or
 a seat-less session of this machine whose membership ended with its process)
 is reported `recorded` once, when it first becomes owed to it
-(report_closed), and stays owed; if the session comes back (Resume) and the
+(report_closed; a held thread's after its delivery pass, report_held, the
+reason its hold in T2's §5 words), and stays owed; if the session comes back (Resume) and the
 event is delivered, `delivered` follows for the same key. Delivery pushes a
 held session nothing and leaves what it holds owed, and never reaches a
 session whose membership ended: on a read-only machine the report applies
@@ -68,7 +69,7 @@ REFUSED_WORDS = "refused-words"       # the endpoint's verdict on a person's wor
 REFUSED_REVOKED = "refused-revoked"   # signed by a key, device or member since revoked (O12 M6)
 REFUSED_REACH = "refused-reach"       # the endpoint's `reach` answer: refuse (P5 O18 D3); settled here, never reported
 UNCERTAIN = {"sent?": "uncertain: the session took the message and its answer never came",
-             "woken?": "uncertain: the stopped seat was resumed with it and reported no session id"}
+             "woken?": "uncertain: the stopped session was woken and took the message, and its answer never came"}
 
 
 def of_push(push, member):
@@ -83,7 +84,7 @@ def of_push(push, member):
     if push == "sent":
         return "delivered", "pushed to the live session"
     if push == "woken":
-        return "delivered", "the stopped seat was resumed with it"
+        return "delivered", "the stopped session was woken with it"   # a seat's or one its human opened (T2's §4)
     if push in UNCERTAIN:
         return "uncertain", UNCERTAIN[push]
     if push.startswith("failed"):
@@ -179,6 +180,18 @@ def record(project, e, session, push, member):
 
 
 CLOSED = "a terminal session that was closed: kept owed, and delivered if it comes back"
+HELD = "the session is stopped and is not woken: %s; kept owed, and delivered when a process of it runs again"
+HELD_PASSING = "the session is stopped and not woken yet: kept owed, and delivered when a process of it runs"
+
+
+def held_reason(sid):
+    """Why what is owed to a member this machine holds is not delivered, as
+    report_held sends it up: its hold now (sminos.hold_for) in the words a
+    sender reads (T2's §5, HOLD_WORDS), a hold that passes on its own in
+    general ones. Of either kind of thread: a spawned one was never a
+    terminal's."""
+    why = str(sminos.hold_for(sid) or "")
+    return HELD % sminos.HOLD_WORDS[why] if why in sminos.HOLD_WORDS else HELD_PASSING
 
 
 def closed_sessions(view, held=True):
@@ -199,10 +212,10 @@ def closed_sessions(view, held=True):
     return out
 
 
-def report_one(project, box, sid, events, refuse=True):
+def report_one(project, box, sid, events, refuse=True, reason=CLOSED):
     """report_closed for one session; its caller holds the session's
     delivery lock. `refuse` False (a held member, report_held): no read-only
-    refusal here, deliver_next's own."""
+    refusal here, deliver_next's own. `reason` what each `recorded` says."""
     n = 0
     settled = sminos.delivered_load(project, sid)
     if sminos.sibling_module("sminos_policy").read_only():
@@ -215,7 +228,7 @@ def report_one(project, box, sid, events, refuse=True):
     for e in unreported(events, reported, settled):
         w = e["writer"]
         try:
-            box.record(e, sid, "recorded", CLOSED)
+            box.record(e, sid, "recorded", reason)
         except OSError as err:
             sminos.daemon_log("delivery: the outcome of %s for %s could not be recorded (%s): reported later"
                               % (sminos.event_ref(e), sid, err))
@@ -327,7 +340,8 @@ def held_report_owed(project, sid, events):
 def report_held(project, sid, events):
     """For a member this machine holds (M3), after its delivery pass:
     `recorded` once for each outside-origin event of `events` (addressed to
-    it) still owed, as report_closed reports a nonmember's. What the pass
+    it) still owed, as report_closed reports a nonmember's, saying why it is
+    held (held_reason). What the pass
     settled (a noted push, an admitted receipt, a revoked signer, a
     broadcast for the live alone, the read-only refusal) is no longer owed,
     so it is reported never. How many were reported."""
@@ -338,7 +352,7 @@ def report_held(project, sid, events):
     if not (events and owes_report(project, sid, events, refuse=False)):
         return 0
     with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock")):
-        return report_one(project, Outbox(project), sid, events, refuse=False)
+        return report_one(project, Outbox(project), sid, events, refuse=False, reason=held_reason(sid))
 
 
 ENDED = ("the session's thread has ended (retired, or stopped past the period): it is pushed nothing, and reads "
