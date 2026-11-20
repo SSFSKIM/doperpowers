@@ -1056,7 +1056,7 @@ retire), else it stays in the log`.
 | `transcript` | `no conversation of it is on that machine` |
 | `cwd` | `its directory is gone` |
 | `protected` | `its directory is in a folder macOS protects, where a background launch would stop at a prompt for its human` |
-| `mode` | `it runs in a mode that asks for approval` |
+| `mode` | `a wake would run it in a mode that asks for approval`; on the thread's own machine, when the ceiling and not the thread's own mode is the cause (`mode_case` answers `ceiling`): `this machine's ceiling (<ceiling>) would start it in a mode that asks for approval; the ceiling is its owner's setting (sminos daemon policy shows it)` |
 | `failed` | `waking it failed, and its machine tries again` |
 
 For `read-only` the whole line is `recorded: <M> admits nothing from
@@ -1378,6 +1378,17 @@ is read defensively (§1). devcloud is not touched.
   general rule behind M2's last fix: whatever a verb must write once the
   process is live is checked writable before the launch (a retired seat
   whose project cannot be read is refused, not returned).
+
+- 2026-11-20 — **The `mode` words** (the holder, on M3's draft). §5's `mode`
+  reason reads `a wake would run it in a mode that asks for approval`, true
+  whether the thread's own mode or the ceiling is the cause, since X3
+  publishes `mode` alone and a remote reader cannot tell the two apart. On
+  the thread's own machine (the sender's line there, and `list` there) the
+  ceiling case names the ceiling's value and whose setting it is, never how
+  to raise it: its reader is usually a session, and the policy is the
+  owner's to change. `hold_verb`'s interim words in M3 stand until M4
+  replaces the verb; M4 checks that T1's "only if its human reopens" phrase
+  is gone from the tree.
 
 ## Outcomes & Retrospective
 
