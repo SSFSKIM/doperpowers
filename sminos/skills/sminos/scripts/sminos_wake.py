@@ -534,6 +534,19 @@ def hold_reason(record, session):
     return reason
 
 
+def published_reason(record, session):
+    """hold_reason as the thread's machine publishes it (X3's `why`): a
+    bounded reading that found no mode is read on to the transcript's
+    start, once (kept by the file's stat, so no later tick reads it again),
+    so that what is published is what a wake, which reads it whole, would
+    decide (the sweep reads it so as it marks the thread stopped)."""
+    reason = hold_reason(record, session)
+    if not reason and (_turn_at(transcript_file(session), False) or {}).get("mode", "") is None:
+        last_turn(session, whole=True)
+        reason = hold_reason(record, session)
+    return reason
+
+
 def hold_key(record, session):
     """What hold_reason's answer rests on, as one value: its inputs and the
     thread's directory's key (_dir_key). Equal keys, the same answer (the

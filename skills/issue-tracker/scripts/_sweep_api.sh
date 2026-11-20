@@ -3087,6 +3087,16 @@ PY
   done
 }
 
+# Whether `sminos resume`'s output (exit 4) says it recorded the message and
+# left it owed: its first line is a held one (`recorded and held`, T2's §5) or
+# a hold that passes on its own (the daemon delivers it).
+_resume_owed() {  # <resume stdout>
+  case "${1%%$'\n'*}" in
+    *"recorded and held"*|*"and the daemon delivers it"*) return 0 ;;
+  esac
+  return 1
+}
+
 _resume_one() {
   local tid="$1" nonce="${2:-}" dir exports ids text prompt transcript delivered=""
   local pre_pending="" post_pending="" lane="" role=""
@@ -3230,11 +3240,19 @@ PY
   # credentials ride the invocation or the worker can write nothing. The wait
   # is bounded for the same reason phase 2 bounds it: this tick holds the
   # whole-tick lock throughout, and `sminos resume` defaults to hours.
-  if [ -n "$C_SESS" ] && BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
+  # What the resume printed is kept to be read below (and passed on as it was):
+  # its first line says whether the task was recorded and held.
+  local rout="" rrc=1
+  if [ -n "$C_SESS" ]; then
+    rrc=0
+    rout="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
        BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
        BOARD_REPO="$BOARD_REPO" \
        DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
-       "$SMINOS_CLI" resume --wait "$C_SESS" "$prompt"; then
+       "$SMINOS_CLI" resume --wait "$C_SESS" "$prompt")" || rrc=$?
+    [ -z "$rout" ] || printf '%s\n' "$rout"
+  fi
+  if [ -n "$C_SESS" ] && [ "$rrc" = 0 ]; then
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → resumed session $C_SESS"
   elif [ -n "$C_SESS" ] && transcript="$(_transcript_for_uuid "$C_SESS")" \
@@ -3248,6 +3266,15 @@ PY
     # transcript is the marker, exactly as in phase 2.
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → the resume wait expired but the delivery landed in $C_SESS"
+  elif [ -n "$C_SESS" ] && [ "$rrc" = 4 ] && _resume_owed "$rout"; then
+    # A RECORDED RESUME IS NOT A FAILED ONE. `sminos resume` records its message
+    # in the session's log before it wakes anything; one it could not wake now
+    # (held for a reason its machine publishes, or a wake that is still
+    # starting) exits 4 with the task owed, and its machine's daemon pushes it
+    # to the session when a process of it runs. A fresh worker here would be a
+    # second one on the same run, the task arriving at both.
+    delivered="$C_SESS"
+    echo "resume: #$tid run $C_RUN → the task is recorded and owed to $C_SESS, which its machine delivers when a process of it runs; no fresh worker"
   else
     # AN AMBIGUOUS RESUME IS NOT A FAILED ONE. `sminos resume` has a third
     # outcome beside delivered and failed: the fork LAUNCHED, but its session

@@ -412,6 +412,8 @@ run_suites() {
     fail "the wake against the sweep, a retire, a hand-off, a return, a /clear (test_wake_transitions.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_wake_delivery.py"; then pass "delivery wakes every stopped thread, and holds what it cannot push (test_wake_delivery.py)"; else
     fail "delivery wakes every stopped thread, and holds what it cannot push (test_wake_delivery.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_wake_verbs.py"; then pass "the verbs, what a sender is told on any machine, and the direct send (test_wake_verbs.py)"; else
+    fail "the verbs, what a sender is told on any machine, and the direct send (test_wake_verbs.py)"; fi
   if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10 beside this code: no session its human opened resumed, its ended passed by (test-older-cli.sh)"; else
     fail "sminos 1.27.10 beside this code: no session its human opened resumed, its ended passed by (test-older-cli.sh)"; fi
   if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else
@@ -1636,13 +1638,14 @@ assert_equals "$(field "$CXR_UUID" event_log)" "" "re-fill clears event_log"
 assert_file_exists "$TEST_ROOT/codexruns/cxr.rc" "re-fill leaves legacy scratch alone"
 "$SMINOS" remove work/cxr >/dev/null
 
-# A vanished cwd refuses a resume (exit 2) and holds a plain send, launching nothing.
+# A vanished cwd holds a resume (recorded, nothing started, exit 4) and a plain send, launching nothing.
 run "$SMINOS" spawn nocwd "N"
 "$SMINOS" meta set nocwd cwd "$TEST_ROOT/vanished" >/dev/null
 nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")
 run "$SMINOS" resume nocwd "x"
-assert_rc 2 "$RC" "resume with a vanished cwd exits 2"
-assert_contains "$OUT" "cwd does not exist" "the vanished cwd is named"
+assert_rc 4 "$RC" "resume with a vanished cwd records its message, starts nothing and exits 4 (T2's §6)"
+assert_contains "$(printf '%s\n' "$OUT" | head -1)" "recorded and held: the session is stopped and is not woken: its directory is gone" "its first line saying it is recorded and held, and why (T2's §5)"
+assert_contains "$OUT" "nothing was started: its directory is gone" "and that nothing was started"
 run "$SMINOS" send nocwd "x"
 assert_rc 0 "$RC" "a plain send to a seat whose cwd vanished is recorded and held (T2's §6)"
 assert_contains "$OUT" "recorded and held: the session is stopped and is not woken: its directory is gone" "saying why (T2's §5)"
@@ -3987,8 +3990,10 @@ assert_contains "$(inbox ib)" "[sminos message from human id=" "with send's own 
 assert_contains "$(tail -1 "$PFLOG/testhost.human.jsonl")" "\"session\": \"$IB\"" "recorded to its session"
 assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["testhost/human"]["settled"])' "$SMINOS_HOME/projects/$PF/delivered/$IB.json")" \
   "$(tail -1 "$PFLOG/testhost.human.jsonl" | python3 -c 'import json,sys; print(json.load(sys.stdin)["seq"])')" "and settled in its delivery record"
-run "$SMINOS" send ib "x" --wait
-assert_rc 2 "$RC" "send --wait to a seat-less member is refused: there is no record to watch"
+SMINOS_ACK_TIMEOUT=0.4 run "$SMINOS" send ib "waited for" --wait
+assert_rc 1 "$RC" "send --wait to a seat-less member pushes and waits for its reply by the message's id (T2's §6): none here"
+assert_contains "$OUT" "no evidence that ib received the message" "the waiter looked for the message's id in its transcript"
+assert_contains "$(inbox ib)" "waited for" "the message was pushed to its process"
 CLAUDE_CODE_SESSION_ID="$IB" run "$SMINOS" status ib "reading the schema"
 assert_rc 0 "$RC" "a seat-less member sets its status"
 assert_contains "$(tail -1 "$PFLOG/testhost.$IB.jsonl")" '"kind": "status"' "as a status event in its own file"

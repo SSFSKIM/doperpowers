@@ -594,16 +594,23 @@ class Send(Rig):
         self.assertEqual(self.inbox(sid), [])
 
     def test_a_running_session_its_human_opened_is_not_told_it_is_stopped(self):
+        """T2's §6: `resume` of one a terminal holds pushes to it and says so; `fill --resume` of a live one is
+        refused as a filled seat is, nothing recorded."""
         sid, _ = self.opened(inbox=True)
-        for argv in (("resume", "alpha", "x"), ("fill", "alpha", "x", "--resume")):
-            with self.subTest(argv=argv), mock.patch.object(sminos, "run_claude_bg") as launched:
-                code, out = self.cli(*argv)
-                self.assertEqual(code, 4, out)
-                launched.assert_not_called()
-                self.assertIn("nothing was started", out)
-                self.assertNotIn("stopped", out)
-                self.assertNotIn("reopens", out)
-                self.assertIn("its session runs", out)
+        with mock.patch.object(sminos, "run_claude_bg") as launched, \
+                mock.patch.object(sminos, "claude_stop") as stopped:
+            code, out = self.cli("resume", "alpha", "x")
+            self.assertEqual(code, 0, out)
+            self.assertIn("a terminal holds it", out)
+            self.assertNotIn("stopped", out)
+            self.assertNotIn("reopens", out)
+            self.assertEqual(len(self.inbox(sid)), 1, "pushed to the process that runs")
+            code, out = self.cli("fill", "alpha", "y", "--resume")
+            self.assertEqual(code, 4, out)
+            self.assertIn("is filled", out)
+            launched.assert_not_called()
+            stopped.assert_not_called()
+        self.assertEqual(len(self.inbox(sid)), 1, "the refused fill pushed nothing")
 
 
 class Canonical(Rig):

@@ -297,6 +297,13 @@ json.dump(m, open(sys.argv[1], "w"), indent=2)' "\$DHOME/u-old.json" "\$RESUME_P
   exit 1
 fi
 [ -n "\${RESUME_MUST_FAIL:-}" ] && exit 1
+# The resume recorded its message and could not wake the session now (T2's
+# §6): its first line says it is recorded and held, nothing was started, exit 4.
+if [ -n "\${RESUME_HELD:-}" ]; then
+  echo "recorded testhost/human:7 for w: recorded and held: the session is stopped and is not woken: its directory is gone; it is pushed when a process of it runs again before it ends (three days stopped, or a retire), else it stays in the log"
+  echo "sminos: nothing was started: its directory is gone" >&2
+  exit 4
+fi
 # A REAL transcript line: the delivery proof reads user-role JSONL entries whose
 # content is a plain string (a delivered prompt), never the raw bytes.
 T_P="$TRANSCRIPT" T_C="\$2" python3 - <<'PYX'
@@ -1982,6 +1989,44 @@ t  "the commits are still named for the successor"  "$PB_HEAD"       cat "$SPAWN
 t  "by way of the local worktree"                   "$PB_WT"         cat "$SPAWN_LOG"
 
 unset RESUME_MUST_FAIL
+
+# =========================================================================
+# A RECORDED RESUME IS NOT A FAILED ONE (T2's M4). `sminos resume` records its
+# message before it wakes anything; one aimed at a session its machine holds
+# (or whose wake is still starting) exits 4 saying the task is recorded and
+# held, and the daemon pushes it when a process of the session runs. A fresh
+# worker beside it would be a second one on the same run.
+# =========================================================================
+RHFIX="$TDIR/fix-resume-held.json"
+cat > "$RHFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
+  "body":{"runId":95,"ticketId":12,"fence":4,"bearer":"tok-held","predecessorRun":41,
+          "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
+          "plan":null,"parentPin":null,"body":"work on"}},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"body":[]},
+ {"method":"POST","path":"/runs/95/bind","status":200,"body":{"bound":true}},
+ {"method":"POST","path":"/runs/95/end","status":200,"body":{"ended":true}},
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]}
+]
+JSON
+rboard "$RHFIX"
+RHDH="$TDIR/dh-resume-held"; mkdir -p "$RHDH"
+printf '%s\n' '{"uuid":"u-old","current":"u-old","status":"idle","run_id":41,
+ "fence":3,"lane":"implementer","role":"IMPLEMENT","bind_confirmed":true,"ticket":"12"}' > "$RHDH/u-old.json"
+chmod 600 "$RHDH/u-old.json"
+: > "$SPAWN_LOG"
+OUTRH="$TDIR/resume-held.out"
+RESUME_HELD=1 RSW "$RHDH" > "$OUTRH" 2>&1 || true
+t  "a resume that recorded and held its task is read as owed" \
+   "the task is recorded and owed to u-old"                 cat "$OUTRH"
+t  "what the resume printed is passed on"  "recorded and held"  cat "$OUTRH"
+nt "so no fresh worker is spawned beside it"               "SPAWN"  cat "$SPAWN_LOG"
+t  "and the successor is bound to the session it is owed to" '"path": "/runs/95/bind"' cat "$RLOG"
+nt "and the run is not released"                          '"path": "/runs/95/end"' cat "$RLOG"
+nt "and no recovery cycle is charged"                     "recovery cycle" cat "$OUTRH"
 
 # The rboard mocks hold this suite's stdout open, so they go LAST — after every
 # board any drill above needed. One left running keeps a piped reader waiting

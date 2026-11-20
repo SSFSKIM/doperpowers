@@ -733,12 +733,12 @@ class Wake(Rig):
         view = sminos.view_of(self.p, titles=False)
         self.daemon.publish_state(self.p, view, record)
         self.assertEqual(self.own(sid)[-1].get("wake"), "held")
-        with mock.patch.object(sminos, "hold_for", return_value=""):
+        with mock.patch.object(sminos, "wake_published", return_value=("woken", "")):
             sminos.forget_caches()
             n = self.daemon.publish_state(self.p, sminos.view_of(self.p, titles=False), record)
         self.assertEqual((n, self.own(sid)[-1].get("state"), self.own(sid)[-1].get("wake")), (1, "stopped", "woken"))
         sminos.forget_caches()
-        with mock.patch.object(sminos, "hold_for", return_value=""):
+        with mock.patch.object(sminos, "wake_published", return_value=("woken", "")):
             self.assertEqual(self.daemon.publish_state(self.p, sminos.view_of(self.p, titles=False), record), 0)
 
     def test_an_adopted_seat_stopped_before_its_adoption_gets_its_value_once(self):
@@ -1034,10 +1034,12 @@ class Clear(Rig):
 
 
 class Verbs(Rig):
-    """No verb starts a process for a session its human opened (D1): `send`
-    is held as a tagged say is; `resume`, `fill --resume` and `send --wait`
-    record their message, start nothing and exit 4; a fresh `fill` and a
-    `spawn` onto its alias are refused and record nothing."""
+    """A session its human opened that is held (here for `mode`, the rig's
+    last turn being `plan`): `send` is held as a tagged say is; `resume`,
+    `fill --resume` and `send --wait` record their message, start nothing,
+    say why and exit 4 (T2's §6; the verbs that wake one are
+    test_wake_verbs.py's); a fresh `fill` and a `spawn` onto its alias are
+    refused and record nothing."""
 
     def setUp(self):
         super().setUp()
@@ -1068,7 +1070,8 @@ class Verbs(Rig):
             with self.subTest(argv=argv):
                 code, out = self.cli(*argv)
                 self.assertEqual(code, 4, out)
-                self.assertIn("nothing was started: alpha is a session its human opened", out)
+                self.assertIn("recorded and held", out.splitlines()[0])
+                self.assertIn("nothing was started: a wake would run it in a mode that asks for approval", out)
                 self.assertEqual(self.owed_texts()[-1], text)
         self.assertEqual(len(self.owed_texts()), 3)
         self.assertEqual(self.launched, [], "no claude call")
