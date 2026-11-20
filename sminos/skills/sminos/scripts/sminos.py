@@ -6987,6 +6987,13 @@ def holder_owed(project, member, session, e, events, cursor):
         return None
     if plan.kind in ("push", "legacy"):
         return HOLDER_RETRY
+    if plan.kind == "awaiting" and peer is None and threads_module().lane_a(session) \
+            and threads_module().current_record(session, fresh=True) is not None:
+        # Handed to a process that is gone, never admitted, and its session now the current one of a lane A thread
+        # (a lane B process's receipt, the session since reopened as lane A and closed): its next step is a push
+        # to the process a wake starts, as for any event owed to a stopped thread (T1's limit: at most one copy
+        # more), never a wait that keeps the thread from being woken.
+        return HOLDER_RETRY
     return holder_carry(plan, project, member, session, e, events, cursor, peer)
 
 
@@ -7006,7 +7013,8 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
     `due` as deliver_next's. The caller holds the session's delivery lock."""
     peer = peer_for_session(session)
     locks = None
-    if not retry and peer is None and not e.get("wake"):
+    if peer is None and not e.get("wake"):
+        # A retry wakes too: a receipt whose process is gone is pushed to the one the wake starts (holder_owed).
         got, locks = wake_member(project, member, session, e, words, due)
         if got and got != "woken":
             return got

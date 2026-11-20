@@ -32,6 +32,7 @@ Run: python3 -B sminos/tests/test_wake_delivery.py
 """
 import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
+import json
 import os
 import re
 import shutil
@@ -39,6 +40,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid as uuidlib
 import unittest
 from unittest import mock
 
@@ -427,6 +429,54 @@ class Unpushed(Deliveries):
                 self.tick()
                 self.assertTrue(wait_for(lambda: sum(f.count("first one") for f in self.frames(sid)) == 1))
                 self.assertFalse(self.owes(sid, "first one"))
+
+
+class Awaiting(Deliveries):
+    def awaiting(self, sid, text):
+        """An addressed event recorded for the session with a receipt handed to an earlier process and never
+        admitted (a lane B process's, the session since reopened as lane A and closed): the event."""
+        e = sminos.record_message(self.p, sid, self.member(sid).alias, "human", "testhost", text,
+                                  uuidlib.uuid4().hex[:8], deliver=False)
+        hd = sminos.holder_module()
+        keyhash = hd.key_hash(self.p.id, sid, e["writer"], e["seq"])
+        with open(hd._receipt_path(keyhash), "w") as f:
+            json.dump({"v": 1, "id": "%s.%s" % (keyhash, "0" * 16),
+                       "key": {"project": self.p.id, "session": sid, "writer": e["writer"], "seq": e["seq"]},
+                       "hash": sminos.event_hash(e), "words": None, "created": sminos.now(ms=True),
+                       "attempt": {"n": 1, "pid": 1, "start": 1, "launch": "l", "body": "full", "state": "pushed",
+                                   "at": sminos.now(ms=True)},
+                       "released": None, "admitted": None, "handed": True}, f)
+        self.assertTrue(hd.exists(self.p.id, sid, e))
+        return e
+
+    def test_a_receipt_left_awaiting_does_not_keep_a_stopped_thread_from_being_woken(self):
+        # frontier review, scalpel-3#3: the receipt and what its writer has behind it are pushed again to the
+        # process the wake starts (T1's limit: one duplicate at most).
+        for n in (1, 3):
+            with self.subTest(messages=n):
+                tid, sid = self.human_thread()
+                self.awaiting(sid, "handed before")
+                later = ["then %d" % i for i in range(n)]
+                for text in later:
+                    sminos.record_message(self.p, sid, self.member(sid).alias, "human", "testhost", text,
+                                          uuidlib.uuid4().hex[:8], deliver=False)
+                self.tick()
+                self.assertTrue(wait_for(lambda: all(any(t in f for f in self.frames(sid))
+                                                     for t in ["handed before"] + later)), self.frames(sid))
+                self.assertEqual(self.launches_of(sid), 1, "woken once")
+                for text in ["handed before"] + later:
+                    self.assertEqual(sum(f.count(text) for f in self.frames(sid)), 1, text)
+
+    def test_a_receipt_left_awaiting_for_a_held_thread_is_held_for_it(self):
+        tid, sid = self.human_thread("plan")
+        e = self.awaiting(sid, "handed before")
+        self.tick()
+        self.assertEqual(self.launches_of(sid), 0, "not woken: it is held for mode")
+        self.assertEqual(self.marked(sid), {(e["writer"], e["seq"]): tid})
+        self.assertTrue(self.owes(sid, "handed before"))
+
+    def launches_of(self, sid):
+        return len(self.resumes(sid))
 
 
 class Held(Deliveries):
