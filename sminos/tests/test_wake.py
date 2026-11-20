@@ -639,6 +639,22 @@ class CappedMode(Wakes):
         self.assertEqual([wake.passes_flags(rec, sid, row) for row in (None, {"respawnFlags": []}, wake.UNREADABLE)],
                          [True, False, True])
 
+    def test_the_kept_reason_moves_with_what_row_of_reads(self):
+        """A `jobs` directory made where there was none turns an unreadable row into no row (row_of), which a
+        first wake's flags follow (passes_flags): the kept answer and the daemon's key move with it."""
+        rec, sid = self.thread("auto")
+        self.ceiling("default")
+        rec["waking"] = {"session": sid, "saved": True, "failed": 0, "at": 0, "line": None}
+        self.assertIs(wake.row_of(sid), wake.UNREADABLE, "no jobs directory")
+        self.assertEqual((wake.hold_reason(rec, sid), wake.published_reason(rec, sid)), ("", ""),
+                         "the engine keeps its saved options: no flag passed, nothing capped")
+        key = wake.hold_key(rec, sid)
+        os.makedirs(os.path.join(self.config(), "jobs"))
+        self.assertIsNone(wake.row_of(sid))
+        self.assertEqual(wake.not_woken(rec, sid), "mode", "no row: a first wake, capped by the ceiling")
+        self.assertNotEqual(wake.hold_key(rec, sid), key)
+        self.assertEqual((wake.hold_reason(rec, sid), wake.published_reason(rec, sid)), ("mode", "mode"))
+
     def test_a_launch_mode_that_asks_is_its_own_whatever_the_ceiling(self):
         sid = str(uuidlib.uuid4())
         self.transcript(sid, rows({"type": "summary"}))

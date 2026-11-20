@@ -516,12 +516,16 @@ def _inputs(record, session):
     """Every input not_woken reads but the thread's directory itself, as one
     value: the record, the config dir the session runs under, its
     transcript and that file's stat, a seat's file (where its directory is
-    read), the engine's row, and the files the ceiling is read from."""
+    read), the engine's row as row_of reads it (the row file's stat, and
+    with no file whether its `jobs` directory is there: no row is None in
+    one and UNREADABLE without it, which passes_flags tells apart), and the
+    files the ceiling is read from."""
     path = transcript_file(session)
     seat = sminos.meta_path(record["thread"]) if record.get("opened") == "spawned" else ""
-    row = os.path.join(sminos.session_config_dir(session), "jobs", str(session)[:8], "state.json")
+    jobs = os.path.join(sminos.session_config_dir(session), "jobs")
+    row = os.path.join(jobs, str(session)[:8], "state.json")
     return (json.dumps(record, sort_keys=True, default=str), sminos.foreign_config(session), path, _stat(path),
-            _stat(seat), _stat(row), tuple(_stat(f) for f in policy_inputs()))
+            _stat(seat), _stat(row) or os.path.isdir(jobs), tuple(_stat(f) for f in policy_inputs()))
 
 
 def hold_reason(record, session):
