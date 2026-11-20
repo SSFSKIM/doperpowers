@@ -33,7 +33,7 @@ composite (G2, eleven items), proved as Concrete Steps maps it.
 - [x] (2026-11-20 12:20Z) M1 — What a wake reads and says, the record's field, and a test engine that can be woken. Commits `94b98e29`..`2ac241c3`; three reviews, the last item read by the controller; gates GREEN on `2ac241c3`.
 - [x] (2026-11-20 14:55Z) M2 — The wake: `resume_session` starts a process and pushes to it; transitions take the wake's lock. Commits `d52f01b0`..`e2fe7c64`; three reviews, the last fix read by the controller; gates GREEN on `e2fe7c64`.
 - [x] (2026-11-20 19:35Z) M3 — Delivery wakes every stopped thread, and holds what it cannot push. Commits `ca38e7f7`..`b482b4ce`; three reviews, the last fix read by the controller; gates GREEN on `b482b4ce`.
-- [ ] M4 — The verbs, what a sender is told on any machine, and the direct send.
+- [x] (2026-11-21 00:10Z) M4 — The verbs, what a sender is told on any machine, and the direct send. Commits `eb5ef1ca`..`18dcfeb2`; three reviews, the last fix read by the controller; gates GREEN on `2d98a842`, and on `18dcfeb2` RED 1/8 on one teardown timeout of `test_manager.py`'s bridge stand-in, which M4 does not touch and which passed six concurrent local runs (reported to the holder).
 - [ ] The frontier review of M1 to M4 as one range, by the composite's holder, and its fixes.
 - [ ] M5 — What sessions are told, older copies, several senders, and the acceptance on a real engine.
 
@@ -1212,6 +1212,16 @@ is read defensively (§1). devcloud is not touched.
 - Observation: `test_threads_ended.py` reuses `test_threads_stopped.Rig`, so
   a fixture default in one changes the other.
 
+- Observation: the sweep's stop (`stop_and_close`) never made the whole
+  last-turn reading M1 assumed, so a `mode` beyond the tail's bound was
+  never published; M4 makes it, and `published_reason` reads again when the
+  bounded reading cannot place the mode.
+- Observation: the gate on `18dcfeb2` failed once in `test_manager.py`'s
+  `test_bridge_offers`: `sminos bridge --session …` did not exit within 10 s
+  of its stand-in's stop. M4 touches none of the bridge, fork or manager
+  files; the suite passed on the three heads before it, and six concurrent
+  local runs of the file passed.
+
 ## Decision Log
 
 - 2026-11-20 — **Verification.** The plan is reviewed before it is handed
@@ -1432,6 +1442,45 @@ is read defensively (§1). devcloud is not touched.
   again is never stopped, and the message is pushed to the running process
   (live first, §4), with no wake. (Corrected the same day: this entry first
   said "held".)
+
+- 2026-11-20 — **M4 as built, and what its reviews moved.** `resume`,
+  `fill --resume` and `send --wait` aimed at a stopped thread of either kind
+  go through one path (`verb_to_thread`, `verb_delivered`): record, then §4's
+  delivery with `due`, which wakes through §3; `hold_verb` is gone, and T1's
+  "only if its human reopens" survives only in `held_line_151`, the words a
+  1.51 machine's `held` keeps. A seat's config-dir and cwd refusals became
+  holds (`foreign_refusal` removed); `derive` alone still refuses another
+  config dir. The thread's hold is decided before the endpoint's gate on
+  every verb path, as M3 made it for a plain send. A verb whose event cannot
+  be recorded (no readable project) is refused before any stop or wake, and
+  so is a `send --wait` that would wake a stopped projectless seat; a live
+  projectless seat keeps D8's owner-checked push for a plain send. A verb
+  never stops a turn once another deliverer took its event, and says
+  delivered and waits only on evidence of a push (the message's id in the
+  conversation, or a frame actually handed to a receipt's process, carried
+  on that call's outcome as `HandedOff`, never in process-wide state). A
+  verb or `--wait` that leaves its message owed and unpushed prints the
+  fixed line `owed: <session id>` on stdout whatever it exits (held, behind
+  an earlier message, waiting for the endpoint, a stop refused, a hand-off
+  not yet admitted, ...); the board's `_resume_owed` reads that line for its
+  own session, falling back to exit 4 and the held prose for an older
+  sminos, and starts no fresh worker beside an owed task. A returned seat
+  whose task the endpoint decides waits up to `SMINOS_VERDICT_WAIT` (30 s)
+  for the verdict and reports both facts on a refusal, read from daemon.log
+  by the event's whole identity (`refused_key`: project id, writer, seq,
+  session); past the bound it says what it saw and prints the owed line. A
+  plain send held behind the revocation set keeps "owed behind an earlier
+  message (pending)": the revocation check comes first in §4 and that event
+  is not marked held. A remote `held` with a `why` this code does not know
+  reads as 1.51's line. A remote `send --wait` to a held thread exits 4,
+  waiting for nothing. `wake_published` answers `woken` while a process runs.
+  A stopped spawned thread with no transcript keeps the `state` value `gone`
+  (X5) and carries `wake: held, why: transcript` while it is the current
+  session of an unended thread; this code's reader reads `why` on `gone` as
+  on `stopped`, never for a retired machine. `ended_or_gone` reads `send`'s
+  lookup tiers, so an ended target named any way exits 4 with the end's
+  words. The direct send's reach pre-check asks only about the events it
+  carries.
 
 ## Outcomes & Retrospective
 
