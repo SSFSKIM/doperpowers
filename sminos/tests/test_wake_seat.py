@@ -364,6 +364,22 @@ class Human(Wakers):
         self.assertEqual((got.live, got.why), (False, "unknown"))
         self.assertEqual(self.launches(), 0, "nothing launched")
 
+    def test_a_ceiling_lowered_after_w2_holds_the_launch_for_mode(self):
+        # Eligibility read the ceiling at W2; the flags read it again: a launch whose own mode flag asks for
+        # approval is not made (held, `mode`), whatever W2 read.
+        tid, sid = self.human_thread()
+        self.ceiling("auto")
+        real = sminos.stop_lingering
+
+        def lowered(session, row):
+            self.ceiling("default")
+            return real(session, row)
+        with mock.patch.object(sminos, "stop_lingering", lowered):
+            got = self.wake(sid)
+        self.assertEqual((got.live, got.why), (False, "mode"))
+        self.assertEqual(self.launches(), 0, "nothing launched")
+        self.assertNotIn("failed", self.waking(tid, sid), "nothing counted")
+
     def test_a_process_late_to_publish_is_starting_then_live(self):
         tid, sid = self.human_thread()
         self.switch("late-process", 1.5)

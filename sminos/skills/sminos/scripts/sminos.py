@@ -14251,6 +14251,10 @@ def _wake_held(tid, session, due, returns, on_live):
             return _wake_failed(tid, session, None, "its earlier job could not be stopped")
         first = not flagless and wm.passes_flags(t, session, row)       # W4: row 12's retry passes none
         flags, not_carried = wm.first_wake(t, session) if first else ([], [])
+        if first and wm.asks(wm.options_mode(flags)):
+            # The launch checks its own flags: W2 read the policy and the row once, the flags read them again (a
+            # ceiling lowered, a row gone since), and a launch is never made in a mode that asks for approval.
+            return WakeResult(False, "mode")
         turn = wm.last_turn(session, whole=True)
         note = wm.line_note(first, flags if first else wm.row_options(row) if isinstance(row, dict) else [], turn,
                             not_carried)
