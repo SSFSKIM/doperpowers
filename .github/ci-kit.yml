@@ -47,12 +47,12 @@ gates:
   - name: sminos
     run: SMINOS_PART=core bash sminos/tests/run-sminos-tests.sh
     timeout: 20
-    paths: ["sminos/**", ".github/**"]
+    paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: sminos-suites
     run: SMINOS_PART=suites bash sminos/tests/run-sminos-tests.sh
     timeout: 30
-    paths: ["sminos/**", ".github/**"]
+    paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   # The idle uplink's cost on a machine of the owner's MacBook's shape, judged by its calls a second under a profiler
   # (bench_scale.py's idle gate): a count holds on a loaded runner, where a CPU share does not. About 3 minutes.
@@ -70,21 +70,25 @@ gates:
       done
       bash sminos/tests/mods/run.sh
     timeout: 15
-    paths: ["sminos/**", ".github/**"]
+    paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: issue-tracker
     run: |
       for f in tests/issue-tracker/test-*.sh; do echo "== $f"; bash "$f"; done
       python3 tests/issue-tracker/meta-grammar-fuzz.py
     timeout: 25
-    # sminos/**: the board scripts call the sminos CLI.
-    paths: ["skills/**", "agents/**", "application-agents/**", "sminos/**", "tests/issue-tracker/**", ".github/**"]
+    # The board's own code and tests, and the sminos CLI its scripts call (sminos/skills/sminos/scripts). Until
+    # 2026-11-20 it ran on any change under skills/, agents/, application-agents/ or sminos/: 342 attempts in four
+    # weeks, about 7 minutes each, no red (the gate ledger's W47 report), while the board's dispatch is dormant. The
+    # owner narrowed it; what it no longer catches is another skill's or agent's edit breaking
+    # test-protocol-content.sh's cross-references. `ci-gate --gates issue-tracker` still runs it on any tree.
+    paths: ["skills/issue-tracker/**", "tests/issue-tracker/**", "sminos/skills/sminos/scripts/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: board-api
     run: |
       for f in tests/claude-code/board-api/test-*.sh; do echo "== $f"; bash "$f"; done
     timeout: 25
-    paths: ["skills/issue-tracker/**", "sminos/**", "tests/claude-code/board-api/**", ".github/**"]
+    paths: ["skills/issue-tracker/**", "sminos/**", "tests/claude-code/board-api/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: claude-code
     # The hermetic tier of tests/claude-code; the rest of run-skill-tests.sh's
@@ -94,7 +98,7 @@ gates:
         echo "== $f"; bash "tests/claude-code/$f.sh"
       done
     timeout: 10
-    paths: ["hooks/**", "skills/**", "scripts/**", "tests/claude-code/*", ".github/**"]
+    paths: ["hooks/**", "skills/**", "scripts/**", "tests/claude-code/*", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: mods
     run: |
@@ -105,7 +109,7 @@ gates:
       bash tests/mods/run-mods-tests.sh
     timeout: 15
     # appeal's and reload's tests read the snapshot the sminos ask writes, by its contract.
-    paths: ["hooks/**", "tests/mods/**", "sminos/types/**", "sminos/hooks/mods/ask.tsx", ".github/**"]
+    paths: ["hooks/**", "tests/mods/**", "sminos/types/**", "sminos/hooks/mods/ask.tsx", ".github/ci-kit.yml", ".github/workflows/**"]
 
   # The devcloud plugin's mods (its secrets guard), installed as the mods gate is.
   - name: devcloud-mods
@@ -118,7 +122,7 @@ gates:
       [ -x /bin/zsh ] || sudo apt-get install -y -qq zsh >/dev/null
       bash devcloud/tests/mods/run.sh
     timeout: 15
-    paths: ["devcloud/**", ".github/**"]
+    paths: ["devcloud/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   # The to-human plugin's mods (the report view), installed as the mods gate is.
   - name: to-human-mods
@@ -129,7 +133,7 @@ gates:
       done
       bash to-human/tests/mods/run.sh
     timeout: 15
-    paths: ["to-human/**", ".github/**"]
+    paths: ["to-human/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   # The web plugin: the clipper's tests, the check that the committed bundle is
   # what its source builds, and the mod's tests. Rendering is off here
@@ -145,7 +149,7 @@ gates:
       done
       WEB_CHROME=none bash web/tests/run.sh
     timeout: 15
-    paths: ["web/**", ".github/**"]
+    paths: ["web/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   # Every plugin's mods and their tests typechecked (tsc) against the
   # declarations the installed engine lays as it loads each plugin.
@@ -157,7 +161,7 @@ gates:
       done
       bash tests/mods/typecheck.sh --lay
     timeout: 10
-    paths: [".claude-plugin/**", "hooks/**", "tests/mods/**", "sminos/.claude-plugin/**", "sminos/hooks/**", "sminos/types/**", "sminos/tests/mods/**", "to-human/.claude-plugin/**", "to-human/hooks/**", "to-human/types/**", "to-human/tests/mods/**", "devcloud/.claude-plugin/**", "devcloud/hooks/**", "devcloud/types/**", "devcloud/tests/mods/**", "web/.claude-plugin/**", "web/hooks/**", "web/tests/mods/**", ".github/**"]
+    paths: [".claude-plugin/**", "hooks/**", "tests/mods/**", "sminos/.claude-plugin/**", "sminos/hooks/**", "sminos/types/**", "sminos/tests/mods/**", "to-human/.claude-plugin/**", "to-human/hooks/**", "to-human/types/**", "to-human/tests/mods/**", "devcloud/.claude-plugin/**", "devcloud/hooks/**", "devcloud/types/**", "devcloud/tests/mods/**", "web/.claude-plugin/**", "web/hooks/**", "web/tests/mods/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   # The devcloud host in four parts, run side by side (DEVCLOUD_PART in
   # devcloud/tests/run.sh; about 8.5 min serial): the unit tests, and the
@@ -173,7 +177,7 @@ gates:
       done
       DEVCLOUD_PART=unit bash devcloud/tests/run.sh
     timeout: 15
-    paths: ["devcloud/**", "devenv/**", ".github/**"]
+    paths: ["devcloud/**", "devenv/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: devcloud-image
     build_cache: gha
@@ -184,24 +188,24 @@ gates:
       done
       DEVCLOUD_PART=image bash devcloud/tests/run.sh
     timeout: 30
-    paths: ["devcloud/**", "devenv/**", ".github/**"]
+    paths: ["devcloud/**", "devenv/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: devcloud-host
     build_cache: gha
     run: DEVCLOUD_PART=host bash devcloud/tests/run.sh
     timeout: 30
-    paths: ["devcloud/**", "devenv/**", ".github/**"]
+    paths: ["devcloud/**", "devenv/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: devcloud-systemd
     build_cache: gha
     run: DEVCLOUD_PART=systemd bash devcloud/tests/run.sh
     timeout: 30
-    paths: ["devcloud/**", "devenv/**", ".github/**"]
+    paths: ["devcloud/**", "devenv/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: triaging-feedback
     run: cd application-agents/triaging-feedback && npm ci && npm test
     timeout: 10
-    paths: ["application-agents/triaging-feedback/**", ".github/**"]
+    paths: ["application-agents/triaging-feedback/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   # query-transcript against a stand-in claude (no model calls); its live
   # check, tests/query-transcript/live-check.py, needs a transcript on the MacBook.
@@ -209,7 +213,7 @@ gates:
     setup: false
     run: python3 tests/query-transcript/test_query_transcript.py -v
     timeout: 5
-    paths: ["skills/query-transcript/**", "bin/**", "tests/query-transcript/**", ".github/**"]
+    paths: ["skills/query-transcript/**", "bin/**", "tests/query-transcript/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: repo-checks
     # Fast checks of the repo as a whole: the lint script's own test, doc
