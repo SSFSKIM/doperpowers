@@ -47,9 +47,11 @@ matching member. `chart` also accepts `--stopped` and `--all`; in the TUI, `a`
 shows or hides all three states. Inside a session `list` says who you are
 and ends with how many of your own subagents run.
 States: `busy` (its turn runs), `idle`,
-`waiting` (on a question or a permission prompt), `stopped` (no process;
-`send` resumes a seat), `gone` (no transcript here, or its machine
-retired), `vacant` (a seat with no session), `retired`.
+`waiting` (on a question or a permission prompt), `stopped` (no process:
+a message resumes a seat; a session its human opened waits for them to
+reopen it), `gone` (no transcript here, or its machine retired), `vacant`
+(a seat with no session), `retired` (by `sminos retire`, or after three
+days stopped; reopening the session, or filling a seat, returns it).
 
 ## Speaking
 
@@ -78,7 +80,7 @@ text is text.
 | message | recorded | delivered |
 | --- | --- | --- |
 | untagged | for everyone | to no one: read at a member's next `chat` |
-| `@alias …` | addressed | an idle member starts a turn, a busy one reads it at its next tool round, a stopped seat is resumed |
+| `@alias …` | addressed | an idle member starts a turn, a busy one reads it at its next tool round, a stopped seat is resumed, a stopped session its human opened reads it when reopened |
 | `@all …` | addressed to the members live now | every one of them starts a turn or reads it; no stopped one is resumed |
 | a selector: `--org`, `--project P,..`, `--machine M,..`, `--here`, `--state W,..` | in each project it reaches, with a copy in yours | as `@all`, to every live session `list` shows with the same flags, you left out |
 
@@ -94,8 +96,7 @@ members elsewhere. `@short` (a session's first eight hex digits) and
 member is also `@<project>/<alias>`, and a session no `.smns` claims is
 `@<machine>/<alias>`. A message into another project lands in its log,
 with a copy in yours marked `→ <project>`. `@all` is refused in a
-machine's own project. A closed interactive session cannot be tagged:
-say it untagged, and it reads it when resumed.
+machine's own project.
 
 Messages reach you on their own as a `[sminos chat …]` frame with a
 reply line to run; the same id twice is one message (delivery is at
@@ -171,9 +172,10 @@ comes first settles it, once, and the other is told who did. A command
 its bridge cannot place yet (a reloaded session whose turn state is
 unknown) is refused: retry shortly.
 
-`send` to a stopped seat resumes it; to a seat-less session that is not
-live it is refused (resuming the human's interactive session in the
-background would be wrong). `send --wait` (a seat only) prints the
+`send` to a stopped seat resumes it; to a stopped session its human
+opened it is held, as a tag is, and no verb starts a process for such a
+session (`resume`, `fill` and `send --wait` say so). `send --wait` (a
+seat only) prints the
 turn's reply; `reply <seat>` its latest, a pending question included.
 For a working seat prefer `send` to `resume`, which stops its live turn.
 `attach`, `fill [--resume]` and `retire [--purge]` are in `sminos help`.

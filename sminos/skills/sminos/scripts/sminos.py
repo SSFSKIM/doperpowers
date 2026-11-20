@@ -15394,10 +15394,11 @@ def guide_text(session, launch, source="", title=""):
         where = "the project of your launch directory, %s" % launch
     join = [] if seat else ["  %s join <project>  when your directory files you in the wrong project (a scratch copy)"
                             " or your standing work belongs to another; once, not per repository you visit" % cli]
-    # The fork line (T1's M2 pins it; its final words are M6's, with an evaluation).
+    # The fork line (T1's M2 and M6, evaluated: a closing "with the task you were forked for" sent forks
+    # looking for a task their context does not name).
     fork = (" You are a fork of another session: a copy, with a session id and a name of your own. Every sminos"
             " line above this one was written for the session you were copied from, and messages addressed to it"
-            " are not for you; you are its peer, with the task you were forked for.") if source == "fork" else ""
+            " are not for you.") if source == "fork" else ""
     return "\n".join([
         "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project.%s"
         % (who, project.name, enrollment()["machine"], where, fork),

@@ -246,6 +246,7 @@ class Owned(Owner):
         self.assertIn("dc-a-0001 (hetzner, account main)", out)
         self.assertIn("lab-box (an adopted machine)", out)
         self.assertIn("devcloud vm down dc-a-0001", out)
+        self.assertIn("deleting a host is its owner's call", out, "the deletion left to the host's owner (M6's evaluation)")
         self.assertNotIn("dc-z-0009", out, "another thread's host")
         self.assertTrue(self.is_member(sid))
         self.assertFalse(self.ended(threads.stamp(sid)))

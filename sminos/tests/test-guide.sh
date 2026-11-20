@@ -355,6 +355,8 @@ assert_contains "$(head -1 <<<"$OUT")" "Every sminos line above this one was wri
   "whose sminos lines above were written for the session it was copied from"
 assert_contains "$(head -1 <<<"$OUT")" "messages addressed to it are not for you" \
   "and whose messages are not for it"
+assert_not_contains "$(head -1 <<<"$OUT")" "the task you were forked for" \
+  "and names no task it was forked for, which its context may not hold (M6's evaluation)"
 guide "$(payload "$S10" "$REPO" "$T/none.jsonl")"
 assert_not_contains "$OUT" "You are a fork" "a session that is no fork is not told so"
 

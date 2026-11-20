@@ -1756,9 +1756,12 @@ def owned_words(owned):
     and the way on, and what could not be asked."""
     parts = []
     if owned.vms:
-        parts.append("it made hosts that still exist: %s; take each down first (%s)" % (
-            ", ".join(host_words(v) for v in owned.vms),
-            "; ".join("devcloud vm down %s" % v.get("name") for v in owned.vms)))
+        # Whose call the deletion is, said where it is read (T1's M6, evaluated): "take each down first" had
+        # sessions asked only to retire delete the host themselves.
+        parts.append("it made hosts that still exist: %s; deleting a host is its owner's call: once nothing on it "
+                     "is needed, %s deletes it, and then it can be retired" % (
+                         ", ".join(host_words(v) for v in owned.vms),
+                         "; ".join("`devcloud vm down %s`" % v.get("name") for v in owned.vms)))
     if owned.unknown:
         parts.append("%sdevcloud could not tell whether it made a host that still exists: %s" % (
             "and " if parts else "", "; ".join(unknown_words(u) for u in owned.unknown)))
