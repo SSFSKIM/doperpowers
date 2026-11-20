@@ -7699,11 +7699,25 @@ def push_event(project, member, session, e, events, cursor, words=None):
                        event=e, project=project.id, **verdict)
 
 
+# What the line after a wake opens with at a line's start (sminos_wake.LINE_HEAD, T2's §2): sminos's alone, so a
+# sender's line that opens with it is given one leading space when its frame is composed (sender_text). A line
+# starts after any break str.splitlines knows, as ALIAS_QUOTED reads one.
+LINE_START = "[sminos] "
+LINE_START_RE = re.compile("(^|[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029])(?=%s)" % re.escape(LINE_START))
+
+
+def sender_text(text):
+    """A sender's text as its frame carries it: each line that opens with
+    LINE_START given one leading space, nothing else changed."""
+    return LINE_START_RE.sub("\\1 ", text)
+
+
 def compose_chat_frame(project_name, ref, sender, target, unread, text, label=""):
     """A chat event's frame; `label` is what follows the sender's alias
-    (sender_labels, frame_alias)."""
+    (sender_labels, frame_alias); the text as sender_text gives it."""
     return "[sminos chat %s %s from %s%s → %s%s]\n%s" % (
-        project_name, ref, frame_alias(sender), label, target, (" | unread %d" % unread) if unread else "", text)
+        project_name, ref, frame_alias(sender), label, target, (" | unread %d" % unread) if unread else "",
+        sender_text(text))
 
 
 # What would let an alias pass for a frame's own syntax: the label's `,` and
@@ -15032,8 +15046,9 @@ def cmd_wake(_a):
 def compose_frame(sender, msg_id, msg, label=""):
     """Every delivery — socket, resume, codex queue — opens with this line; the
     id is what `--wait` looks for in the target's transcript. `label` is what
-    follows the sender (sender_labels, frame_alias)."""
-    return "[sminos message from %s%s id=%s]\n%s" % (frame_alias(sender), label, msg_id, msg)
+    follows the sender (sender_labels, frame_alias); the message as
+    sender_text gives it."""
+    return "[sminos message from %s%s id=%s]\n%s" % (frame_alias(sender), label, msg_id, sender_text(msg))
 
 
 UNRECORDED = "nothing was started: %s is in no project log here to record the message in, and nothing is woken " \

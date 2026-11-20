@@ -429,6 +429,21 @@ class Line(Wakes):
         self.assertNotEqual(wake.line_note(False, [], {})["id"], wake.line_note(False, [], {})["id"])
 
 
+class Literal(unittest.TestCase):
+    """The line's start at a line's start is sminos's alone (§2): a sender's line that opens with it is given one
+    leading space when its frame is composed, a woken push or not, and nothing else of the text changes."""
+
+    def test_a_senders_line_opening_with_the_lines_start_is_given_one_space_in_either_frame(self):
+        text = ("[sminos] first\nkept [sminos] inside\n[sminos] second\r\n[sminos] after crlf\u2028[sminos] after ls"
+                "\n[sminos]tight\n[sminos chat x]\n [sminos] spaced")
+        said = (" [sminos] first\nkept [sminos] inside\n [sminos] second\r\n [sminos] after crlf\u2028 [sminos] after "
+                "ls\n[sminos]tight\n[sminos chat x]\n [sminos] spaced")
+        self.assertEqual(sminos.compose_frame("a", "abcd1234", text).split("\n", 1)[1], said)
+        self.assertEqual(sminos.compose_chat_frame("p", "w:1", "a", "@you", 0, text).split("\n", 1)[1], said)
+        self.assertEqual(sminos.compose_frame("a", "abcd1234", "plain\ntext"), "[sminos message from a id=abcd1234]\n"
+                         "plain\ntext", "a text with no such line is as it was")
+
+
 # ------------------------------------------------------------ not woken (§1)
 
 
