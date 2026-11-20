@@ -99,7 +99,7 @@ class Rig(Machine):
             open(self.inboxes[sid], "a").close()
             server = subprocess.Popen([sys.executable, "-B", INBOX, sock, self.inboxes[sid]])
             self.addCleanup(lambda: (server.kill(), server.wait()))
-            wait_for(lambda: os.path.exists(sock))
+            wait_for(lambda: sminos.socket_ok(sock))   # listening, not just bound: a connect is answered
             fields["messagingSocketPath"] = sock
         self.peer_set(proc, **fields)
         return sid, proc
