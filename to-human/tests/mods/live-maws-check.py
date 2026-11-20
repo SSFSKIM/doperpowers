@@ -193,6 +193,7 @@ class Maws(final.Final):
     def run(self):
         self.setup()
         self.start()
+        self.refuse_locked_copies()
         result = self.turn(PROMPT, 0)
         time.sleep(2)
         rows = self.rows()
