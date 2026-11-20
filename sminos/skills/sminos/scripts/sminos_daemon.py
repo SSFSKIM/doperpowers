@@ -1412,8 +1412,9 @@ def sweep_threads():
                 if remove:
                     threads.update(tid, {}, remove=remove, guard=lambda r, cur=cur: r["current"] == cur)
                 continue
-            if ending_pass and t.get("stopped") and now - (sminos._ts_epoch(t["stopped"]) or now) > after:
-                due.append((tid, cur, t["stopped"]))
+            if ending_pass and t.get("stopped") and now - (sminos._ts_epoch(t["stopped"]) or now) > after \
+                    and (threads.thread_of(cur) or {}).get("thread") == tid:
+                due.append((tid, cur, t["stopped"]))   # the session's canonical record alone is ended (thread_of)
             if t.get("stopped") and t.get("swept") == t["stopped"]:
                 continue
             if not t.get("stopped") and before.get(tid) != cur:
@@ -1531,7 +1532,8 @@ def end_stopped(threads, tid, cur, stopped, asked=None):
     (`asked`; sminos_threads.asked_all). The events appended."""
     t = threads.get(tid)
     if t is None or t["current"] != cur or t.get("pending") or threads.record_ended(t) \
-            or t.get("stopped") != stopped or not threads.asked_all(t, asked) or sminos.running_now(cur):
+            or t.get("stopped") != stopped or not threads.asked_all(t, asked) or sminos.running_now(cur) \
+            or (threads.thread_of(cur) or {}).get("thread") != tid:
         return []
     return sminos.end_by_rule(t, stopped, asked)
 

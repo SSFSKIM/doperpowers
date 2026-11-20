@@ -65,6 +65,8 @@ RESERVED = "reserved"
 JOURNALED = ("current", "sessions", "ended", "released", "pending")
 # What a seat record gains; its `thread`, `current` and `alias` are its own.
 SEAT_KEYS = ("opened", "sessions", "launch", "channels", "stopped", "swept", "ended", "released", "pending")
+# A seat's marks that belong to the occupant they were written for: a seat that takes another session drops them.
+OCCUPANT_MARKS = ("ended", "stopped", "swept")
 
 # The engine's options `launch.options` keeps, in the order the process was
 # given them: those a first background resume may carry (T2 reads them, and
@@ -263,13 +265,17 @@ def _of_seat(s):
     lacks read with defaults, `sessions` repaired when `current` moved
     without it (an older CLI's refill, the board pipeline), and a seat whose
     `status` is `retired` that holds no `ended` read as ended at its
-    `updated`."""
-    sessions = [x for x in s.get("sessions") if isinstance(x, str) and x] if isinstance(s.get("sessions"), list) \
-        else []
+    `updated`. A `current` that moved without `sessions` (one that is not
+    their last: a new occupant, or an earlier one back) is another
+    occupant's: it is read as the last of `sessions`, and the end and stop
+    marks the seat holds (`ended`, `stopped`, `swept`) were its
+    predecessor's, not read as its own."""
+    sessions = _stored_sessions(s)
     cur = str(s.get("current") or "")
-    if cur and cur not in sessions:
-        sessions.append(cur)
-    ended = s.get("ended") if isinstance(s.get("ended"), dict) else None
+    moved = _moved(s)
+    if cur and sessions[-1:] != [cur]:
+        sessions = [x for x in sessions if x != cur] + [cur]
+    ended = s.get("ended") if isinstance(s.get("ended"), dict) and not moved else None
     if ended is None and s.get("status") == "retired":
         ended = {"at": str(s.get("updated") or ""), "reason": "retire", "by": "", "pid": None}
     launch = s.get("launch") if isinstance(s.get("launch"), dict) else {"cwd": str(s.get("cwd") or "")}
@@ -278,11 +284,23 @@ def _of_seat(s):
            "channels": [c for c in s.get("channels") if isinstance(c, str)] if isinstance(s.get("channels"), list)
            else [], "created": str(s.get("created") or ""), "updated": str(s.get("updated") or "")}
     for k in ("stopped", "swept", "released", "pending"):
-        if s.get(k):
+        if s.get(k) and not (moved and k in OCCUPANT_MARKS):
             rec[k] = copy.deepcopy(s[k])
     if ended is not None:
         rec["ended"] = dict(ended)
     return rec
+
+
+def _stored_sessions(s):
+    return [x for x in s.get("sessions") if isinstance(x, str) and x] if isinstance(s.get("sessions"), list) else []
+
+
+def _moved(s):
+    """Whether an adopted seat's `current` moved without its `sessions` (an
+    older copy's refill or `seat add`, the board pipeline): it is not their
+    last."""
+    cur = str(s.get("current") or "")
+    return bool(cur) and "opened" in s and _stored_sessions(s)[-1:] != [cur]
 
 
 def _is_thread(seat):
@@ -690,13 +708,27 @@ def set_channels(thread_id, channels):
     return update(thread_id, {"channels": [str(c) for c in channels]})
 
 
-def note_alias(session, alias, lock_until=None):
+def note_alias(session, alias, lock_until=None, project=None):
     """The alias a human-opened thread's latest `joined` or `renamed` carried,
-    copied into its record for readers without the log (lifecycle)."""
+    copied into its record for readers without the log (lifecycle). With
+    `project`, the log it was appended to, copied only while it is still the
+    latest the session's own events there carry, read under the record's
+    lock: two copies made in the other order than their appends leave the
+    later one."""
     t = thread_of(session, ended=False)
     if t is None or t["opened"] != "human" or t["current"] != session or t.get("alias") == alias:
         return False
-    return update(t["thread"], {"alias": alias}, guard=lambda r: r["current"] == session, lock_until=lock_until)
+
+    def latest(r):
+        if r["current"] != session:
+            return False
+        if project is None:
+            return True
+        named = [e for e in sminos._own_events(project, session) if e["kind"] in ("joined", "renamed")
+                 and e.get("alias")]
+        last = sminos.latest_across_writers(named) if named else None
+        return last is None or str(last["alias"]) == alias
+    return update(t["thread"], {"alias": alias}, guard=latest, lock_until=lock_until)
 
 
 # ------------------------------------------------------------ making a record
@@ -741,22 +773,27 @@ def _seat_sessions(seat, project, events):
 def _ensure_seat(seat, project, events, deadline):
     """A seat's thread keys, added when it has none (a seat from before
     threads, adopted; or one just made), and `current` added to `sessions`
-    when it moved without it."""
+    when it moved without it: last, with the occupants the log shows it
+    had meanwhile (an older copy's `seat add` writes their `joined` and no
+    `history`), and without its predecessor's marks."""
     tid = seat["seat_id"]
-    if "opened" in seat and seat["current"] in (seat.get("sessions") or []):
+    if "opened" in seat and not _moved(seat):
         return _of_seat(seat)
     project = project if project is not None else (sminos.seat_project(seat) if seat["current"] else None)
-    rebuilt = None if "opened" in seat else _seat_sessions(seat, project if not sminos.guessed(project) else None,
-                                                           events)
+    rebuilt = _seat_sessions(seat, project if not sminos.guessed(project) else None, events)
 
     def mutate(view, raw):
         if "opened" not in raw:
             raw["opened"] = "spawned"
-            raw["sessions"] = rebuilt if rebuilt is not None else view["sessions"]
+            raw["sessions"] = rebuilt
             raw.setdefault("launch", {"cwd": str(raw.get("cwd") or "")})
             raw.setdefault("channels", [])
-        elif view["current"] and view["current"] not in (raw.get("sessions") or []):
-            raw["sessions"] = view["sessions"]
+        elif _moved(raw):
+            cur = view["current"]
+            had = [x for x in view["sessions"] if x != cur]
+            raw["sessions"] = had + [x for x in rebuilt if x not in had and x != cur] + [cur]
+            for k in OCCUPANT_MARKS:   # its predecessor's (_of_seat)
+                raw.pop(k, None)
         else:
             return False
         return True
@@ -805,12 +842,18 @@ def claim_seat(seat_id, record, deadline=None):
         return True
 
 
-def repoint_seat(seat_id, fields, deadline=None):
+def repoint_seat(seat_id, fields, deadline=None, expect=None):
     """An existing seat given `fields["current"]` by a plain write (no event
-    owed: `seat add --session` where no journal applies), under both stores'
-    locks only while no other record holds that session (_holder), as every
-    claim; its lifecycle generation moved. False, nothing written, when one
-    does or the seat is gone."""
+    owed: `seat add --session` where no journal applies; a first spawn's
+    seat naming its child), under both stores' locks only while no other
+    record holds that session (_holder), as every claim, and while the seat
+    has no open entry (§6, 6: nothing writes through one); its lifecycle
+    generation moved. A seat that takes another session drops what was its
+    predecessor's: its end and stop marks (OCCUPANT_MARKS) and, for a lane
+    B session, the thread keys, since a lane B session's seat is no thread
+    (D1; _is_thread). False, nothing written, when another record holds the
+    session, an entry is open, the seat is gone, or (`expect`) it no longer
+    holds the occupant the caller displaces."""
     session = fields["current"]
     with _seat_lock(deadline), _human_lock(deadline):
         path = sminos.meta_path(seat_id)
@@ -819,8 +862,15 @@ def repoint_seat(seat_id, fields, deadline=None):
                 raw = json.load(f)
         except (OSError, ValueError):
             return False
-        if not isinstance(raw, dict) or _holder(session, seat_id) is not None:
+        if not isinstance(raw, dict) or raw.get("pending") or _holder(session, seat_id) is not None:
             return False
+        if expect is not None and str(raw.get("current", seat_id) or "") != expect:
+            return False
+        if str(raw.get("current") or "") != session:
+            for k in OCCUPANT_MARKS if _lane_a(session) else SEAT_KEYS:
+                raw.pop(k, None)
+            if "opened" in raw:
+                raw["sessions"] = [x for x in _stored_sessions(raw) if x != session] + [session]
         raw.update(fields)
         raw["gen"] = int(raw.get("gen") or 0) + 1
         sminos._write_record(path, raw)
@@ -844,8 +894,9 @@ def ensure(session, seat=None, project=None, events=None, lock_until=None):
         if not _is_thread(seat):
             return None
         return _ensure_seat(seat, project, events, lock_until)
-    if not _lane_a(session):
-        # A lane B session is never made a thread, nor returned: only a live record it has is its own.
+    if not _lane_a(session) or sminos.records_module().unreadable(session):
+        # A lane B session is never made a thread, nor returned: only a live record it has is its own. Nor one
+        # whose record cannot be read, whose lane is unknown until it can be.
         return thread_of(session, ended=False)
     have = thread_of(session)
     if have is not None and have["current"] == session:
@@ -871,16 +922,22 @@ def choose(session, seat=None, project=None, events=None, peer=None, lock_until=
     joined: an ended record the process does not return, which for a seat
     a fill may still return).
 
-    A lane B session revives no thread: it keeps a live record it has (its
-    end stamped, row 13), never one set aside, and makes none. A lane A
+    A session whose record cannot be read is held: its lane is unknown, and
+    an adoption is not undone. A lane B session revives no thread: it keeps a live record whose
+    current session it is (its end stamped, row 13), never one set aside
+    nor one that only had it, and makes none. A lane A
     session's thread is §1's: a human-opened record whose current session
     it is, set aside or not, before a seat (an older copy can have seated
     such a session; the seat is then left as it is); else ensure()'s, which
     makes the record when there is none. An ended thread, of either kind,
     returns by a process its end did not see (returns). LockBusy past
     `lock_until`."""
+    if sminos.records_module().unreadable(session):
+        return None, "hold"   # its lane unknown until its record reads: nothing joined, no record made
     if not _lane_a(session):
         t = thread_of(session, ended=False)
+        if t is not None and t["current"] != session:
+            t = None   # a thread that only had the session (it went on in another): not this session's to stamp
         return (t, "hold") if t is not None and record_ended(t) else (t, "join")
     t = thread_of(session)
     if t is None or t["opened"] != "human" or t["current"] != session:
@@ -938,7 +995,7 @@ def awaits_seat(session, peer, own):
     return os.path.exists(records.pending_path(token)) or _young(peer)
 
 
-def returns(record, peer):
+def returns(record, peer, known=None):
     """Whether the process of `peer` (an engine record), holding an ended
     thread's session, returns it (§6, row 12): one the end did not see. An
     end that recorded no process (the rule, a retire of a stopped thread)
@@ -951,12 +1008,16 @@ def returns(record, peer):
     seat_ended false) says nothing of what that retire saw, so only a
     process started after it returns it. "After" is at the end's own
     precision, whole seconds (sminos.now): a process started within the
-    second of its end is not after it."""
+    second of its end is not after it. `known`: whether the end's own
+    process is recorded (this code's end, not an older copy's), as a caller
+    read it while the record still stood (a purge deletes the seat file
+    seat_ended reads); read here otherwise."""
     ended = (record or {}).get("ended") or {}
     peer = peer or {}
     if not ended or not peer.get("pid"):
         return False
-    known = record["opened"] == "human" or seat_ended(record)
+    if known is None:
+        known = record["opened"] == "human" or seat_ended(record)
     if known and ended.get("pid") in (None, ""):
         return True
     if known and str(ended["pid"]) != str(peer.get("pid")):
@@ -1076,9 +1137,9 @@ def _apply(entry, view, raw, fields, remove):
     for k in remove:
         raw.pop(k, None)
     current = str(raw.get("current") or "")
-    if current and current not in view["sessions"]:
-        # An advance or an absorption names its new session: `sessions` gains it, last.
-        raw["sessions"] = view["sessions"] + [current]
+    if current and view["sessions"][-1:] != [current]:
+        # An advance or an absorption names its new session: it is the last of `sessions` (an earlier one back too).
+        raw["sessions"] = [x for x in view["sessions"] if x != current] + [current]
     raw["pending"] = entry
 
 
@@ -1213,8 +1274,12 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
                 return False
             if held == "lost" and entry.get("carry"):
                 return _undo(thread_id, entry, deadline)
-        if entry.get("carry") and not before(project, entry):
-            return False
+        if entry.get("carry") and not entry.get("carried"):
+            if not before(project, entry):
+                return False
+            # Carried once: a replay does not carry again what a later deliberate change undid (a `join --cwd`
+            # that removed the job's override after the copy, while an event was still owed).
+            _change(thread_id, lambda view, raw: _mark_carried(view, raw, entry), deadline)
         returning = entry.get("op") == "return"
         if returning and entry.get("settle") and not settle(project, entry["settle"], deadline, entry.get("until")):
             return False   # what reached it while it was ended is settled before it is a member again
@@ -1250,6 +1315,10 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
                 chained.append(nxt)
                 return True
             last = entry.get("last")
+            if last == "purge" and entry.get("settle") and view["current"] != entry["settle"]:
+                # Another occupant since (an older copy's refill merged its `current` past the entry): the purge
+                # was of the session it settled, and deletes no record that now holds another.
+                return True
             if last == "purge":
                 return "delete"
             if last == "aside" and view["opened"] == "human":
@@ -1261,7 +1330,7 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
             return not (get(thread_id) or {}).get("pending")
 
 
-def _project_seat(seat, deadline):
+def _project_seat(seat, deadline, holds=None):
     """The seat an older copy gave a thread its human opened, brought in
     line with that record by the record's own entry (`seat`: its id, the
     session, and `to`, "retired", "idle" or "purge"), before the entry is
@@ -1274,7 +1343,7 @@ def _project_seat(seat, deadline):
 
     def mutate(view, raw):
         seen.append(view["current"] == seat["session"])
-        if not seen[-1]:
+        if not seen[-1] or (holds is not None and not holds()):
             return False
         if seat["to"] == "purge":
             return "delete"
@@ -1282,7 +1351,7 @@ def _project_seat(seat, deadline):
         raw["updated"] = sminos.now()
         return True
     try:
-        _change(seat["id"], mutate, deadline, bump=True)
+        _change(seat["id"], mutate, deadline, bump=True, both=holds is not None)
     except OSError:
         return False
     if seen:
@@ -1290,10 +1359,13 @@ def _project_seat(seat, deadline):
     return not os.path.exists(sminos.meta_path(seat["id"]))   # gone is done; unreadable is not
 
 
-def project_seat(seat, deadline=None):
+def project_seat(seat, thread_id, deadline=None):
     """_project_seat outside an entry: for an end found in place already
-    (a verb that met it), the older copy's seat brought in line once more."""
-    return _project_seat(seat, deadline)
+    (a verb that met it), the older copy's seat brought in line once more,
+    only while that end of the record `thread_id` still stands, read under
+    both stores' locks (a return finished since brought the seat back to
+    idle, and nothing journals a write over it)."""
+    return _project_seat(seat, deadline, holds=lambda: record_ended(get(thread_id)))
 
 
 def _queued_entry(thread_id, queued):
@@ -1308,6 +1380,13 @@ def _queued_entry(thread_id, queued):
     rest = {k: v for k, v in queued.items() if k not in ("op", "project", "events", "fields", "remove", "absorbs")}
     return {"id": uuid.uuid4().hex, "op": queued["op"], "at": sminos.now(), "project": queued["project"],
             "events": owed, **rest}
+
+
+def _mark_carried(view, raw, entry):
+    if (view.get("pending") or {}).get("id") != entry["id"]:
+        return False
+    raw["pending"]["carried"] = True
+    return True
 
 
 def _release(view, raw, mark):
@@ -1377,6 +1456,8 @@ def launch_options(argv):
     while i < len(args):
         tok = args[i]
         i += 1
+        if tok == "--":
+            break   # the end of the options: what follows is positional, whatever it is spelled like
         name, eq, inline = tok.partition("=") if tok.startswith("--") else (tok, "", "")
         if name not in LAUNCH_OPTIONS:
             continue
@@ -1705,7 +1786,7 @@ def owner_sessions(thread):
     seat = sminos.reload_seat(thread["thread"]) if thread["opened"] == "spawned" else None
     if seat is not None:
         sessions += [str(h.get("current") or "") for h in seat.get("history") or [] if isinstance(h, dict)]
-        if "opened" not in seat:
+        if "opened" not in seat or _moved(seat):   # what adoption, or the repair of a moved `current`, rebuilds
             project = sminos.seat_project(seat) if seat["current"] else None
             sessions += _seat_sessions(seat, project if project is not None and not sminos.guessed(project) else None,
                                        None)
