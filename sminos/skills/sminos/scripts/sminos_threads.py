@@ -64,6 +64,8 @@ RESERVED = "reserved"
 JOURNALED = ("current", "sessions", "ended", "released", "pending")
 # What a seat record gains; its `thread`, `current` and `alias` are its own.
 SEAT_KEYS = ("opened", "sessions", "launch", "channels", "stopped", "swept", "ended", "released", "pending")
+# A seat's marks that belong to the occupant they were written for: a seat that takes another session drops them.
+OCCUPANT_MARKS = ("ended", "stopped", "swept")
 
 # The engine's options `launch.options` keeps, in the order the process was
 # given them: those a first background resume may carry (T2 reads them, and
@@ -262,13 +264,16 @@ def _of_seat(s):
     lacks read with defaults, `sessions` repaired when `current` moved
     without it (an older CLI's refill, the board pipeline), and a seat whose
     `status` is `retired` that holds no `ended` read as ended at its
-    `updated`."""
+    `updated`. A `current` that moved without `sessions` is another
+    occupant's: the end and stop marks it found (`ended`, `stopped`,
+    `swept`) were its predecessor's, and are not read as its own."""
     sessions = [x for x in s.get("sessions") if isinstance(x, str) and x] if isinstance(s.get("sessions"), list) \
         else []
     cur = str(s.get("current") or "")
+    moved = bool(cur) and "opened" in s and cur not in sessions
     if cur and cur not in sessions:
         sessions.append(cur)
-    ended = s.get("ended") if isinstance(s.get("ended"), dict) else None
+    ended = s.get("ended") if isinstance(s.get("ended"), dict) and not moved else None
     if ended is None and s.get("status") == "retired":
         ended = {"at": str(s.get("updated") or ""), "reason": "retire", "by": "", "pid": None}
     launch = s.get("launch") if isinstance(s.get("launch"), dict) else {"cwd": str(s.get("cwd") or "")}
@@ -277,7 +282,7 @@ def _of_seat(s):
            "channels": [c for c in s.get("channels") if isinstance(c, str)] if isinstance(s.get("channels"), list)
            else [], "created": str(s.get("created") or ""), "updated": str(s.get("updated") or "")}
     for k in ("stopped", "swept", "released", "pending"):
-        if s.get(k):
+        if s.get(k) and not (moved and k in OCCUPANT_MARKS):
             rec[k] = copy.deepcopy(s[k])
     if ended is not None:
         rec["ended"] = dict(ended)
@@ -756,6 +761,8 @@ def _ensure_seat(seat, project, events, deadline):
             raw.setdefault("channels", [])
         elif view["current"] and view["current"] not in (raw.get("sessions") or []):
             raw["sessions"] = view["sessions"]
+            for k in OCCUPANT_MARKS:   # its predecessor's (_of_seat)
+                raw.pop(k, None)
         else:
             return False
         return True
@@ -806,10 +813,15 @@ def claim_seat(seat_id, record, deadline=None):
 
 def repoint_seat(seat_id, fields, deadline=None):
     """An existing seat given `fields["current"]` by a plain write (no event
-    owed: `seat add --session` where no journal applies), under both stores'
-    locks only while no other record holds that session (_holder), as every
-    claim; its lifecycle generation moved. False, nothing written, when one
-    does or the seat is gone."""
+    owed: `seat add --session` where no journal applies; a first spawn's
+    seat naming its child), under both stores' locks only while no other
+    record holds that session (_holder), as every claim, and while the seat
+    has no open entry (§6, 6: nothing writes through one); its lifecycle
+    generation moved. A seat that takes another session drops what was its
+    predecessor's: its end and stop marks (OCCUPANT_MARKS) and, for a lane
+    B session, the thread keys, since a lane B session's seat is no thread
+    (D1; _is_thread). False, nothing written, when another record holds the
+    session, an entry is open, or the seat is gone."""
     session = fields["current"]
     with _seat_lock(deadline), _human_lock(deadline):
         path = sminos.meta_path(seat_id)
@@ -818,8 +830,11 @@ def repoint_seat(seat_id, fields, deadline=None):
                 raw = json.load(f)
         except (OSError, ValueError):
             return False
-        if not isinstance(raw, dict) or _holder(session, seat_id) is not None:
+        if not isinstance(raw, dict) or raw.get("pending") or _holder(session, seat_id) is not None:
             return False
+        if str(raw.get("current") or "") != session:
+            for k in OCCUPANT_MARKS if _lane_a(session) else SEAT_KEYS:
+                raw.pop(k, None)
         raw.update(fields)
         raw["gen"] = int(raw.get("gen") or 0) + 1
         sminos._write_record(path, raw)
@@ -1249,6 +1264,10 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
                 chained.append(nxt)
                 return True
             last = entry.get("last")
+            if last == "purge" and entry.get("settle") and view["current"] != entry["settle"]:
+                # Another occupant since (an older copy's refill merged its `current` past the entry): the purge
+                # was of the session it settled, and deletes no record that now holds another.
+                return True
             if last == "purge":
                 return "delete"
             if last == "aside" and view["opened"] == "human":
