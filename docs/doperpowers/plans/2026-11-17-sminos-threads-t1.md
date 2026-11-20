@@ -2508,6 +2508,15 @@ Found while executing:
   - every runnable test file loads a shared isolation helper by its own
     path first (`devcloud_isolation.py`, `devcloud-isolation.sh`): the
     stand-in in `SMINOS_DEVCLOUD`, every `DEVCLOUD_*` unset.
+- 2026-11-20 — **The holder's diagnosis of the two suite reds,
+  cherry-picked at M6's start** (`bcbe614c`, `ed8b479c`, from
+  `t1-flake-diag`): `cmd_join` holds the session file's lock across the
+  override and both memberships, and a reconciliation's join declines while
+  another process holds it (the race was the base's; the branch lengthened
+  its window for a new session); `QuietTick` lists its live sessions'
+  transcripts before it settles. A successor job that never starts stays a
+  stopped member until the three-day end: §6 row 4's `joined` under one
+  stamp makes it so, and it is no defect.
 
 ## Outcomes & Retrospective
 
