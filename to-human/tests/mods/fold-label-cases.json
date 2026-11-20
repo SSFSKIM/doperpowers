@@ -1,0 +1,260 @@
+{
+  "about": "Which run a fold line reads: the cases the to-human mod (labelOf, folds.tsx) and any client that draws the same lines from the session's folds file must answer alike. Each case gives the rows in order (id, class as the view sorts it, whether it has a place, and for a call its line and whether its result has come), the closed runs as the session's file keeps them, the open run if any (its first row, its summary, the last row that summary covered), whether the turn is running, and for each stretch's first row the label expected, null for working record. All text is invented. A change of the rule is a change of this file first; its sha256 is pinned beside every copy.",
+  "cases": [
+    {
+      "name": "a run found by both bounds",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "m1", "class": "marked", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Read notes.md", "done": true}},
+        {"id": "toolu_b", "class": "record", "placed": true, "call": {"line": "Search \"TODO\"", "done": true}},
+        {"id": "m2", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_b", "summary": "Read the notes and found two open items"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"toolu_a": "Read the notes and found two open items"}
+    },
+    {
+      "name": "a stretch that opens with a thought",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "t1", "class": "record", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Run the tests", "done": true}},
+        {"id": "m1", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_a", "summary": "Ran the tests: 14 passed"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"t1": "Ran the tests: 14 passed"}
+    },
+    {
+      "name": "a run whose first bound is in a page not loaded",
+      "rows": [
+        {"id": "n2", "class": "record", "placed": true},
+        {"id": "toolu_b", "class": "record", "placed": true, "call": {"line": "Check the links", "done": true}},
+        {"id": "m1", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_b", "summary": "Built the site and checked its links"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"n2": null}
+    },
+    {
+      "name": "a run whose first bound is in a page now loaded",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Build the site", "done": true}},
+        {"id": "n2", "class": "record", "placed": true},
+        {"id": "toolu_b", "class": "record", "placed": true, "call": {"line": "Check the links", "done": true}},
+        {"id": "m1", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_b", "summary": "Built the site and checked its links"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"toolu_a": "Built the site and checked its links"}
+    },
+    {
+      "name": "a run whose last bound is not found",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Edit fixtures.ts", "done": true}},
+        {"id": "toolu_b", "class": "record", "placed": true, "call": {"line": "Write index.ts", "done": true}},
+        {"id": "m1", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_c", "summary": "Moved the fixtures into their own folder"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"toolu_a": null}
+    },
+    {
+      "name": "a run whose last bound is drawn without a place",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Edit fixtures.ts", "done": true}},
+        {"id": "toolu_b", "class": "record", "placed": false, "call": {"line": "Write index.ts", "done": true}},
+        {"id": "m1", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_b", "summary": "Moved the fixtures into their own folder"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"toolu_a": null}
+    },
+    {
+      "name": "two runs in one stretch: the line reads the run its first row stands in",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Read config.toml", "done": true}},
+        {"id": "toolu_b", "class": "record", "placed": true, "call": {"line": "Edit config.toml", "done": true}},
+        {"id": "toolu_c", "class": "record", "placed": true, "call": {"line": "Restart the server", "done": true}},
+        {"id": "m1", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_a", "summary": "Read the config"},
+        {"first": "toolu_b", "last": "toolu_c", "summary": "Changed the port and restarted the server"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"toolu_a": "Read the config"}
+    },
+    {
+      "name": "a thought before two runs reads the nearer",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "t1", "class": "record", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Read config.toml", "done": true}},
+        {"id": "toolu_b", "class": "record", "placed": true, "call": {"line": "Edit config.toml", "done": true}},
+        {"id": "m1", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_a", "summary": "Read the config"},
+        {"first": "toolu_b", "last": "toolu_b", "summary": "Changed the port"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"t1": "Read the config"}
+    },
+    {
+      "name": "a run that begins past the stretch's last row is not that stretch's",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "t1", "class": "record", "placed": true},
+        {"id": "m1", "class": "marked", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Run the linter", "done": true}},
+        {"id": "m2", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_a", "summary": "Ran the linter: no warnings"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"t1": null, "toolu_a": "Ran the linter: no warnings"}
+    },
+    {
+      "name": "overlapping runs: the newest that holds the row",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Read parse.ts", "done": true}},
+        {"id": "toolu_b", "class": "record", "placed": true, "call": {"line": "Edit parse.ts", "done": true}},
+        {"id": "m1", "class": "marked", "placed": true},
+        {"id": "toolu_c", "class": "record", "placed": true, "call": {"line": "Run the tests", "done": true}},
+        {"id": "toolu_d", "class": "record", "placed": true, "call": {"line": "Edit parse.test.ts", "done": true}},
+        {"id": "m2", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_c", "summary": "Fixed the date parser"},
+        {"first": "toolu_b", "last": "toolu_d", "summary": "Fixed the date parser and its tests"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"toolu_a": "Fixed the date parser", "toolu_c": "Fixed the date parser and its tests"}
+    },
+    {
+      "name": "one run over two stretches",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Edit app.ts", "done": true}},
+        {"id": "m1", "class": "marked", "placed": true},
+        {"id": "toolu_b", "class": "record", "placed": true, "call": {"line": "Edit cli.ts", "done": true}},
+        {"id": "m2", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_b", "summary": "Renamed the setting in two files"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"toolu_a": "Renamed the setting in two files", "toolu_b": "Renamed the setting in two files"}
+    },
+    {
+      "name": "an open run with a line",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Read app.ts", "done": true}},
+        {"id": "toolu_b", "class": "record", "placed": true, "call": {"line": "Run the build", "done": false}}
+      ],
+      "closed": [],
+      "open": {"first": "toolu_a"},
+      "running": true,
+      "labels": {"toolu_a": "Run the build"}
+    },
+    {
+      "name": "an open run with a summary and no new call",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Read server.log", "done": true}},
+        {"id": "n1", "class": "record", "placed": true}
+      ],
+      "closed": [],
+      "open": {"first": "toolu_a", "summary": "Checked the logs: no errors", "covered": "toolu_a"},
+      "running": true,
+      "labels": {"toolu_a": "Checked the logs: no errors"}
+    },
+    {
+      "name": "an open run with a summary and a newer call",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Read settings.json", "done": true}},
+        {"id": "toolu_b", "class": "record", "placed": true, "call": {"line": "Run the linter", "done": false}}
+      ],
+      "closed": [],
+      "open": {"first": "toolu_a", "summary": "Read the settings", "covered": "toolu_a"},
+      "running": true,
+      "labels": {"toolu_a": "Run the linter"}
+    },
+    {
+      "name": "an open run with neither",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "n1", "class": "record", "placed": true},
+        {"id": "n2", "class": "record", "placed": true}
+      ],
+      "closed": [],
+      "open": {"first": "n1"},
+      "running": true,
+      "labels": {"n1": null}
+    },
+    {
+      "name": "a row drawn under its block's derived id",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "c0ffee00-1111-4222-8333-000000000001", "class": "record", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Read cache.ts", "done": true}},
+        {"id": "m1", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "c0ffee00-1111-4222-8333-444444444444", "last": "toolu_a", "summary": "Looked up the cache settings"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"c0ffee00-1111-4222-8333-000000000001": "Looked up the cache settings"}
+    },
+    {
+      "name": "a stretch opened by a notice a client's host made, asked under its anchor",
+      "rows": [
+        {"id": "p1", "class": "user", "placed": true},
+        {"id": "m1", "class": "marked", "placed": true},
+        {"id": "m1~trigger-1", "class": "record", "placed": true},
+        {"id": "toolu_a", "class": "record", "placed": true, "call": {"line": "Fetch report.csv", "done": true}},
+        {"id": "m2", "class": "marked", "placed": true}
+      ],
+      "closed": [
+        {"first": "toolu_a", "last": "toolu_a", "summary": "Pulled the nightly report"}
+      ],
+      "open": null,
+      "running": false,
+      "labels": {"m1~trigger-1": "Pulled the nightly report"}
+    }
+  ]
+}

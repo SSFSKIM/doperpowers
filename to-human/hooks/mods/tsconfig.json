@@ -7,5 +7,5 @@
     "jsx": "react", "jsxFactory": "h", "jsxFragmentFactory": "Fragment"
   },
   "include": ["../../.claude-plugin/types", ".", "../../types", "../../tests/mods"],
-  "exclude": ["../../tests/mods/session-places.ts"]
+  "exclude": ["../../tests/mods/session-places.ts", "../../tests/mods/maws-surface.ts", "../../tests/mods/fold-label-cases.ts"]
 }

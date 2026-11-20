@@ -345,6 +345,22 @@ class Live:
                        len(sub_uses), [r and self.result_text(r)[:80] for r in refused], drawn, notified, exported))
         return all(ok for _, ok in self.results)
 
+    def refuse_locked_copies(self, seconds=60):
+        """Stops the check before any model call where the engine ignored a
+        copy of a plugin this check loads (`--plugin-dir`): a host whose
+        managed settings lock the plugin (a devcloud host pins its doperpowers
+        marketplace's, and seats them first through its own prependPlugins)
+        runs the installed release instead, so every item would judge the
+        wrong code and the probe would not stand outermost."""
+        text = lambda: open(self.debug).read() if os.path.exists(self.debug) else ""
+        wait_for("the plugins' load in the debug log", seconds,
+                 lambda: re.search(r"hooks module \S+ loaded", text()))
+        locked = sorted(set(re.findall(r'Plugin "([^"]+)" from --plugin-dir is blocked by managed settings', text()) +
+                            re.findall(r'--plugin-dir copy of "([^"]+)" ignored', text())))
+        if locked:
+            sys.exit("managed settings lock %s on this machine: the engine ignored this check's copies and runs the "
+                     "installed release. Run the check where no managed policy names these plugins." % ", ".join(locked))
+
     def cleanup(self):
         # The keys first: nothing after this may keep them on disk.
         if os.path.exists(self.envfile):
