@@ -5,9 +5,9 @@ names or values, or local paths, here or in the diff.
 -->
 
 ## What and why
-<!-- The problem, and what this changes. Name a board ticket as "board ticket N":
-     a bare #N links the GitHub issue or PR of that number, and a closing keyword
-     would close it. Tickets are closed on the board after the merge. -->
+<!-- The problem, and what this changes. A board ticket is a GitHub issue of
+     this repository: put "Closes #N" here, and finalize it with
+     board-transition.sh N done after the merge. -->
 
 ## Evidence
 <!-- What shows it works: tests that failed before the change and pass after it,
