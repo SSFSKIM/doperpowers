@@ -1683,27 +1683,47 @@ def _census_run():
     return d if isinstance(d, dict) else {}
 
 
-def _same_process(rec):
+def _start_now(pid):
+    """A process's start as sminos.read_proc_start gives it, never waiting:
+    read from the kernel's table (macOS) or /proc (Linux) alone; "" for no
+    such process; None when that cannot tell, where read_proc_start would
+    run ps. What a tick reads."""
+    started = sminos._darwin_start(pid) if sys.platform == "darwin" else sminos._linux_start(pid)
+    if started is None:
+        return None
+    return sminos._lstart_text(started) if started else ""
+
+
+def _identity(rec, start_of=_start_now):
     """Whether the process a record names ({pid, start}) is that very
-    process now: alive, started when it says."""
+    process now: True; False when it is not (no such process, another
+    started at that pid, a record naming none: a pid that is no positive
+    integer, no start); None when it cannot be told without waiting (on a
+    tick: left to the next)."""
     pid = rec.get("pid") if isinstance(rec, dict) else None
-    return bool(pid) and isinstance(pid, int) and sminos.pid_alive(pid) \
-        and sminos.read_proc_start(pid) == rec.get("start")
+    start = rec.get("start") if isinstance(rec, dict) else None
+    if not (isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 and isinstance(start, str) and start):
+        return False
+    if not sminos.pid_alive(pid):
+        return False
+    now = start_of(pid)
+    return None if now is None else now == start
 
 
 def census_running(d):
-    """Whether the census recorded in `d` (census-run.json) still runs: the
-    handle this process holds when it names the same pid, else the process
-    the record names, its start read afresh (a zombie of this process's
-    reaped as derive_running reaps one)."""
+    """Whether the census recorded in `d` (census-run.json) still runs, never
+    waiting: the handle this process holds when it names the same pid, else
+    the process the record names (_identity; a zombie of this process's
+    reaped as derive_running reaps one); None when that cannot be told now."""
     global _CENSUS
     if _CENSUS is not None and _CENSUS.pid == d.get("pid"):
         if _CENSUS.poll() is None:
             return True
         _CENSUS = None
         return False
-    if not _same_process(d):
-        return False
+    same = _identity(d)
+    if not same:
+        return same
     try:
         return os.waitpid(int(d["pid"]), os.WNOHANG)[0] == 0
     except ChildProcessError:
@@ -1712,38 +1732,50 @@ def census_running(d):
         return False
 
 
+_UNREAPED = []   # run files this process could not remove, said once each
+
+
 def census_supervise():
     """The recorded run, looked at without waiting: the census lock taken
-    only if free (another process at it: left to the next tick). A run
-    that has ended is reaped (its record removed, as the reaping is the
-    one other writer of it): True, a census landed. A run still going past
-    twice the bound on its question is handed to a reaper child (`daemon
-    census --reap`), said once in daemon.log and started again only once
-    another bound has passed: reading the process table and the grace
-    before the kill are its, never a tick's."""
+    only if free, and a process whose identity cannot be told now left to
+    the next tick. A run that has ended is reaped (its record removed, as
+    the reaping is the one other writer of it): True, a census landed, only
+    when this pass removed it. A run still going past twice the bound on its
+    question is handed to a reaper child bound to that very run (`daemon
+    census --reap <pid> <start>`), said once in daemon.log and started again
+    only once another bound has passed: reading the process table and the
+    grace before the kill are its, never a tick's."""
     global _REAPER
     try:
         with sminos.flocked(daemon_path(CENSUS_LOCK), lock_until=time.time()):
             d = _census_run()
-            if not census_running(d):   # ended, or a record naming no process: reaped
+            running = census_running(d)
+            if running is None:
+                return False
+            if not running:   # ended, or a record naming no process: reaped
                 try:
                     os.unlink(_run_path())
-                except OSError:
-                    pass
+                except FileNotFoundError:
+                    return False   # reaped by another process meanwhile: its landing
+                except OSError as e:
+                    if _run_path() not in _UNREAPED:
+                        _UNREAPED.append(_run_path())
+                        sminos.daemon_log("the census's ended run could not be removed (%s): %s" % (_run_path(), e))
+                    return False
                 return True
             threads = sminos.threads_module()
             now, bound = time.time(), 2 * threads.devcloud_timeout()
             reaper = d.get("reaper") if isinstance(d.get("reaper"), dict) else {}
-            if now - _ts_float(d.get("started")) <= bound or _same_process(reaper) \
+            if now - _ts_float(d.get("started")) <= bound or _identity(reaper) is not False \
                     or now - _ts_float(reaper.get("at")) <= bound:
                 return False   # within its bound, or a reaper at it now or lately
             with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
                 _REAPER = subprocess.Popen([sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "daemon",
-                                            "census", "--reap"],
+                                            "census", "--reap", str(d["pid"]), d["start"]],
                                            stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                            start_new_session=True)
             sminos.write_json(_run_path(), {**d, "reaper": {"pid": _REAPER.pid, "at": now,
-                                                            "start": sminos.read_proc_start(_REAPER.pid)}})
+                                                            "start": _start_now(_REAPER.pid) or ""}})
             if not reaper:
                 sminos.daemon_log("the census (pid %d) ran past twice its bound of %gs: stopping it; nothing ends by "
                                   "the three-day rule until a census answers" % (d["pid"], threads.devcloud_timeout()))
@@ -1774,7 +1806,9 @@ def census_answer(threads, census, tid, cur, stopped):
         if isinstance(x, dict) and x.get("thread") == tid and x.get("current") == cur \
                 and x.get("stopped") == stopped and isinstance(x.get("shorts"), list) \
                 and all(isinstance(s, str) and s for s in x["shorts"]):
-            if threads.x9_reply(census, ours=True) is None:
+            asked = [y for z in census["threads"] if isinstance(z, dict) and isinstance(z.get("shorts"), list)
+                     for y in z["shorts"]]
+            if threads.x9_reply(census, asked, ours=True) is None:
                 return threads.no_answer(x["shorts"], "the census's answer (daemon/census.json) is malformed")
             reply = threads.Owned(census["answer"], census["vms"], census["unknown"], [])
             return threads.owned_among(reply, x["shorts"])
@@ -1793,16 +1827,19 @@ def start_census(thread_ids):
     global _CENSUS
     try:
         with sminos.flocked(daemon_path(CENSUS_LOCK), lock_until=time.time()):
-            if census_running(_census_run()):
-                return
+            if census_running(_census_run()) is not False:
+                return   # one in flight, or one whose identity cannot be told now
             with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
                 proc = subprocess.Popen([sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "daemon",
                                          "census"] + list(thread_ids),
                                         stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                         start_new_session=True)
             _CENSUS = proc
-            sminos.write_json(_run_path(), {"pid": proc.pid, "start": sminos.read_proc_start(proc.pid),
-                                            "started": time.time()})
+            start = _start_now(proc.pid)
+            if not start:   # its identity cannot be published without waiting: it asks nothing, and is reaped
+                proc.kill()
+                return
+            sminos.write_json(_run_path(), {"pid": proc.pid, "start": start, "started": time.time()})
     except sminos.LockBusy:
         return
 
@@ -1822,24 +1859,33 @@ def census_published():
         time.sleep(0.05)
 
 
-def census_reap():
-    """`daemon census --reap`, the reaper a tick starts for a census past
-    twice its bound (census_supervise): stopped as a question is
-    (sminos_threads.stop_tree), every signal sent only while the run's
-    record still names that very process (its pid and start): SIGTERM, the
-    grace, then a kill of it and of every process descended from it, read
-    from the process table before the kill."""
+def census_reap(pid, start):
+    """`daemon census --reap <pid> <start>`, the reaper a tick starts for
+    the run that was past twice its bound (census_supervise), bound to that
+    very run: stopped as a question is (sminos_threads.stop_tree), every
+    signal sent only while census-run.json still publishes that pid and
+    start, the process there is still it, and it is past twice its bound
+    (overdue): SIGTERM, the grace, then a kill of it and of every process
+    descended from it, read from the process table before the kill."""
     threads = sminos.threads_module()
-    d = _census_run()
-    if not _same_process(d):
+    if not overdue(pid, start):
         return
-    pid = d["pid"]
     os.kill(pid, signal.SIGTERM)
     end = time.monotonic() + threads.DEVCLOUD_GRACE
-    while time.monotonic() < end and _same_process(d) and not _zombie(pid):
+    while time.monotonic() < end and overdue(pid, start) and not _zombie(pid):
         time.sleep(0.1)
-    if _same_process(d) and not _zombie(pid):
-        threads.kill_tree(pid, lambda: _same_process(d))
+    if overdue(pid, start) and not _zombie(pid):
+        threads.kill_tree(pid, lambda: overdue(pid, start))
+
+
+def overdue(pid, start):
+    """Whether the run the reaper was given is the one published now, its
+    process still it (read as long as it takes: the reaper is no tick), and
+    past twice its bound."""
+    d = _census_run()
+    return isinstance(pid, int) and pid > 0 and bool(start) and d.get("pid") == pid and d.get("start") == start \
+        and _identity(d, sminos.read_proc_start) is True \
+        and time.time() - _ts_float(d.get("started")) > 2 * sminos.threads_module().devcloud_timeout()
 
 
 def _zombie(pid):
@@ -1857,7 +1903,11 @@ def cmd_census(a):
     reaper of one past its bound (census_reap). A SIGTERM stops its
     question as its bound does."""
     if a.reap:
-        census_reap()
+        try:
+            pid, start = int(a.threads[0]), " ".join(a.threads[1:])
+        except (IndexError, ValueError):
+            return
+        census_reap(pid, start)
         return
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     if not census_published():

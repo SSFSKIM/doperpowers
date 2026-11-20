@@ -1599,7 +1599,7 @@ def owned_by(shorts):
                  "it printed nothing")
     if code != 0:
         return no_answer(shorts, "devcloud vm owned-by exited %d: %s" % (code, first[:300]))
-    reply = _reply(printed[0])
+    reply = _reply(printed[0], shorts)
     if reply is None:
         return no_answer(shorts, "devcloud vm owned-by exited 0 without a well-formed answer (a malformed answer): %s"
                          % first[:300])
@@ -1611,49 +1611,59 @@ def _text(f, limit=1 << 20):
     return f.read(limit).decode("utf-8", "replace")
 
 
-def _reply(stdout):
-    """devcloud's answer object (X9) from what it printed, or None when it
-    is not one (x9_reply)."""
+def _reply(stdout, shorts):
+    """devcloud's answer object (X9) about `shorts` from what it printed,
+    or None when it is not one (x9_reply)."""
     try:
         d = json.loads(stdout)
     except ValueError:
         return None
-    return x9_reply(d)
+    return x9_reply(d, shorts)
 
 
-def _text_or_none(v):
-    return v is None or isinstance(v, str)
+def x9_reply(d, shorts, ours=False):
+    """`d` when it is an answer of X9's form to a question about `shorts`
+    (short ids), else None; never an exception. `answer` one of the three;
+    each of `vms` a host with its `name`, `account`, `provider` (null only
+    for an adopted machine, `adopted` true) and a `creator` that is `@` and
+    one of the short ids asked (devcloud matches nothing else, and a host
+    naming another would drop out of the match and leave a none); each of
+    `unknown` an `account`, a `provider`, `failed` ("account" or "listing";
+    with `ours`, the census's own file, also sminos's "query", the one with
+    no account) and a `reason`; `listed`, the accounts listed in full, on
+    devcloud's own reply; and the answer consistent with them: owned with a
+    host, none with neither hosts nor anything unknown, unknown with no host
+    and something unknown."""
+    try:
+        return d if _x9_whole(d, {"@" + x for x in shorts}, ours) else None
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
 
 
-def x9_reply(d, ours=False):
-    """`d` when it is an answer of X9's form, else None: `answer` one of the
-    three; each of `vms` a host with its `name`, `account`, `creator`
-    (`@<short>`) and `provider` (null only for an adopted machine, `adopted`
-    true); each of `unknown` an `account`, a `provider`, `failed`
-    ("account" or "listing"; with `ours`, the census's own file, also
-    sminos's "query") and a `reason`; and the answer consistent with them:
-    owned with a host, none with neither hosts nor anything unknown,
-    unknown with no host and something unknown. A host with no creator
-    would otherwise drop out of the match and leave a none."""
+def _x9_whole(d, tags, ours):
     if not (isinstance(d, dict) and d.get("answer") in ANSWERS and isinstance(d.get("vms"), list)
             and isinstance(d.get("unknown"), list)):
-        return None
+        return False
+    if not ours and not (isinstance(d.get("listed"), list) and all(isinstance(a, str) for a in d["listed"])):
+        return False
     for v in d["vms"]:
         if not (isinstance(v, dict) and isinstance(v.get("name"), str) and v["name"]
-                and isinstance(v.get("account"), str) and v["account"]
-                and isinstance(v.get("creator"), str) and re.fullmatch(r"@\S+", v["creator"])
+                and isinstance(v.get("account"), str) and v["account"] and v.get("creator") in tags
                 and (isinstance(v.get("provider"), str) and v["provider"]
                      or v.get("provider") is None and v.get("adopted") is True)):
-            return None
+            return False
     failed = ("account", "listing", "query") if ours else ("account", "listing")
     for u in d["unknown"]:
         if not (isinstance(u, dict) and _text_or_none(u.get("account")) and _text_or_none(u.get("provider"))
                 and u.get("failed") in failed and isinstance(u.get("reason"), str)
-                and (u["account"] is not None or u["failed"] == "query")):
-            return None
-    shape = {"owned": bool(d["vms"]), "none": not d["vms"] and not d["unknown"],
-             "unknown": not d["vms"] and bool(d["unknown"])}
-    return d if shape[d["answer"]] else None
+                and (isinstance(u.get("account"), str) or u.get("failed") == "query")):
+            return False
+    return {"owned": bool(d["vms"]), "none": not d["vms"] and not d["unknown"],
+            "unknown": not d["vms"] and bool(d["unknown"])}[d["answer"]]
+
+
+def _text_or_none(v):
+    return v is None or isinstance(v, str)
 
 
 def owned_among(reply, shorts):
