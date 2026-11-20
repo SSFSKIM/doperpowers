@@ -1625,6 +1625,31 @@ class HandOff(Sessions):
                              [(job, "handy", "owns the hand-off", tid, (old,))], "the same from the log alone")
             self.assertEqual(rows[0].owners, ("m-ann",))
 
+    def test_a_successor_that_never_starts_joins_in_its_predecessors_directory_and_by_whom_it_was(self):
+        """A job the engine named and never ran has no transcript and no
+        process: its `joined` takes the directory and the `by` of the session
+        it continues, so a thread stopped in it can be woken in place (T2)."""
+        for seat in (False, True):
+            with self.subTest(seat=seat):
+                self.fresh()
+                if seat:
+                    old, tid = self.seated(alias="keeper")
+                else:
+                    old, oproc, tid = self.member()
+                    self.end(oproc)
+                last = self.joins(old)[-1]   # joined again by someone: its `by` is what the successor carries
+                sminos.lifecycle(self.p, old, "joined", **{**{k: v for k, v in last.items() if k in (
+                    "alias", "name_source", "machine", "cwd", "worktree", "role", "seat", "session_kind")},
+                    "by": "a-joiner"})
+                before = self.joins(old)[-1]
+                self.assertTrue(before["cwd"] and before["by"], before)
+                job = str(uuidlib.uuid4())
+                self.handoff_transcript(old, job)
+                self.reconcile()
+                self.assertEqual(threads.get(tid)["current"], job)
+                j = self.joins(job)[-1]
+                self.assertEqual((j["thread"], j["cwd"], j["by"]), (tid, before["cwd"], before["by"]))
+
     def test_the_process_that_handed_it_off_still_running_writes_nothing_and_a_new_process_is_a_thread_of_its_own(
             self):
         old, oproc, tid = self.member()

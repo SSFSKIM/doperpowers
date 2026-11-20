@@ -5473,19 +5473,23 @@ def hand_off(project, old, new, old_peer=None):
         refuse_hand_off(old, new, other)
         return []
     fields, seat = {"current": new}, None
+    # What `new` cannot say for itself until it runs (a job the engine named and never started has no transcript
+    # and no process) it takes from the `joined` of the session it continues: its directory, and who joined it.
+    before = next((e for e in reversed(own) if e["kind"] == "joined"), {})
+    by = str(before.get("by") or "")
     if thread["opened"] == "spawned":
         seat = reload_seat(thread["thread"])
         if seat is None:
             return []
         joined = joined_fields(seat["alias"], "seat", seat_cwd(seat, fresh=True), seat["worktree"], seat["role"],
-                               seat["seat_id"], "", "seat", session=new)
+                               seat["seat_id"], by, "seat", session=new)
         fields.update(short=str((agent_row(session_id=new) or {}).get("id") or ""), updated=now())
     else:
         peer = session_running(new) or {}
         alias, source = held_alias(*own_alias(own, old), peer, new, shadowing(project, new))
         joined = joined_fields(alias or new[:8], source or "derived",
-                               launch_cwd(new, fallback=str(peer.get("cwd") or ""), fresh=True),
-                               session_kind=str(peer.get("kind") or "bg"), session=new)
+                               launch_cwd(new, fallback=str(peer.get("cwd") or before.get("cwd") or ""), fresh=True),
+                               by=by, session_kind=str(peer.get("kind") or "bg"), session=new)
     other_id = other["thread"] if other is not None else None
 
     def guard(t):
