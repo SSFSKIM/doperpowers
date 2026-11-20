@@ -24,6 +24,7 @@ Hermetic, as test_threads.py. Run: python3 -B sminos/tests/test_threads_branch_a
 """
 import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
+import json
 import os
 import sys
 import unittest
@@ -33,7 +34,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_threads import Killed, SpawnsChild, ms_ago, records, sminos, threads  # noqa: E402
+from test_threads import Killed, Sessions, SpawnsChild, ms_ago, records, sminos, threads  # noqa: E402
 from test_threads_ended import Ending  # noqa: E402
 
 
@@ -505,6 +506,281 @@ class FirstSpawnClaim(SpawnsChild):
         child = human["current"]
         self.assertNotEqual(sminos.load_seat(path)["current"], child, "the seat claims it only by its absorption")
         self.assertEqual(threads.thread_of(child)["thread"], human["thread"])
+
+
+# ------------------------------------------------------------ the debt, fixed (group-DEBT, review 2 items 4, 6, 9, 11)
+
+
+def queued_refill(case, seat_id, old, new):
+    """A refill of `seat_id` cut with its launch's entry open (owing `old`'s
+    `replaced`) and its poll's advance to `new` queued behind it."""
+    with mock.patch.object(sminos, "_append", side_effect=OSError("disk full")):
+        entry = threads.begin(seat_id, "advance", case.p,
+                              [{"kind": "retired", "session": old, "by": "", "reason": "replaced"}],
+                              fields={"current": ""}, guard=lambda t: t["current"] == old)
+    joined = sminos.joined_fields("w", "seat", case.root, "", "", seat_id, "", "seat", session=new)
+    case.assertTrue(threads.follow(seat_id, entry["id"], "advance", case.p,
+                                   [{"kind": "joined", "session": new, **joined}],
+                                   fields={"current": new}, absorbs=True))
+
+
+def cut_at_clear():
+    real = threads._change
+
+    def change(tid, mutate, *a, **k):
+        if mutate.__name__ == "clear":
+            raise Killed()
+        return real(tid, mutate, *a, **k)
+    return mock.patch.object(threads, "_change", side_effect=change)
+
+
+class FormerShortBinds(Base):
+    """[scalpel-4#8] A thread's former session named by its short binds the
+    session the seat holds: a refill before the verb's lock is refused."""
+
+    def test_a_retire_by_a_former_short_is_refused_after_a_refill_in_between(self):
+        code, out = self.cli("seat", "add", "g", "w")
+        self.assertEqual(code, 0, out)
+        seat_id = next(s["seat_id"] for s in sminos.seats())
+        first, p1 = self.session(name="w")
+        code, out = self.cli("seat", "add", "g", "w", "--session", first)
+        self.assertEqual(code, 0, out)
+        self.end(p1)
+        second, p2 = self.session(name="w")
+        code, out = self.cli("seat", "add", "g", "w", "--session", second)
+        self.assertEqual(code, 0, out)
+        self.end(p2)
+        real = sminos.locked_fresh
+
+        def locked(*a, **k):
+            third, _ = self.session(name="w")
+            code, out = self.cli("seat", "add", "g", "w", "--session", third)   # a refill, after the lookup
+            self.assertEqual(code, 0, out)
+            return real(*a, **k)
+        with mock.patch.object(sminos, "locked_fresh", side_effect=locked):
+            code, out = self.cli("retire", first[:8])
+        self.assertEqual(code, 4, out)
+        self.assertIn("left seat", out)
+        self.assertNotIn("ended", seat_raw(seat_id), "the session the refill put there is not retired")
+
+
+class HumanOccupantKept(Base):
+    """[scalpel-4#5] `seat add` does not displace a stopped session its human
+    opened that an older copy seated."""
+
+    def test_seat_add_over_it_is_refused(self):
+        sid = self.closed()
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})   # the older CLI's seat
+        other, _ = self.session()
+        code, out = self.cli("seat", "add", "g", "w", "--session", other)
+        self.assertEqual(code, 4, out)
+        self.assertIn("its human opened", out)
+        self.assertEqual(seat_raw(seat_id)["current"], sid)
+        self.assertEqual(self.retirements(sid), [])
+
+
+class SeatAddAfterReplay(Base):
+    """Review 2, item 6: `seat add` acts on the seat its preflight's replay
+    left, not on the occupant it read before."""
+
+    def test_a_live_replacement_a_queued_refill_installs_is_not_displaced(self):
+        old, proc, seat_id = self.seated()
+        self.end(proc)
+        new, _ = self.live(kind="bg", inbox=True, started=ms_ago(0), name="w")
+        queued_refill(self, seat_id, old, new)
+        lane_b, _ = self.session()
+        records.establish(lane_b, records.default_provenance())
+        records.set_controller(lane_b, "B")
+        code, out = self.cli("seat", "add", "g", "w", "--session", lane_b)
+        self.assertEqual(code, 4, out)
+        self.assertIn("still holds a live session", out)
+        self.assertEqual(seat_raw(seat_id)["current"], new)
+        self.assertEqual(self.retirements(new), [])
+
+    def test_a_seat_whose_purge_the_replay_finished_is_not_refilled(self):
+        old, proc, seat_id = self.seated()
+        with cut_at_clear(), self.assertRaises(Killed):
+            self.cli("remove", "g/w")
+        self.end(proc)
+        new, _ = self.session()
+        code, out = self.cli("seat", "add", "g", "w", "--session", new)
+        self.assertEqual(code, 4, out)
+        self.assertIn("was removed", out)
+        self.assertIsNone(seat_raw(seat_id))
+
+
+class SupersededPurge(Base):
+    """Review 2, item 9: a purge whose seat an older copy refilled before
+    its last step says the seat was not removed."""
+
+    def test_remove_says_the_seat_was_not_removed(self):
+        old, proc, seat_id = self.seated()
+        new, _ = self.session(kind="bg", started=ms_ago(0))
+        real = threads._change
+
+        def change(tid, mutate, *a, **k):
+            if mutate.__name__ == "clear" and tid == seat_id and seat_raw(seat_id)["current"] == old:
+                sminos.meta_set(seat_id, {"current": new, "status": "working"})   # 1.27.10's refill, just before
+            return real(tid, mutate, *a, **k)
+        with mock.patch.object(threads, "_change", side_effect=change):
+            code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 4, out)
+        self.assertIn("was not removed", out)
+        seat = seat_raw(seat_id)
+        self.assertEqual((seat["current"], seat.get("pending")), (new, None))
+        self.assertEqual([e["reason"] for e in self.retirements(old)], ["retire"])
+
+
+class ReplayedPurgeStops(Base):
+    """Review 2, item 4: a remove retried after its purge was cut before its
+    stop stops what that end saw."""
+
+    def test_the_retry_stops_the_job_the_cut_purge_saw(self):
+        sid, proc, seat_id = self.seated()
+        sminos.agents_json.return_value = [{"id": "job00001", "sessionId": sid, "state": "working",
+                                            "status": "busy"}]
+        with cut_at_clear(), mock.patch.object(sminos, "stop_seen_turn", side_effect=Killed), \
+                self.assertRaises(Killed):
+            self.cli("remove", "g/w")   # the process dies before its stop
+        self.assertEqual(seat_raw(seat_id)["pending"]["last"], "purge")
+        sminos.claude_stop.reset_mock()
+        code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 0, out)
+        self.assertIn("removed g/w", out)
+        self.assertIsNone(seat_raw(seat_id))
+        self.assertIn(mock.call("job00001"), sminos.claude_stop.call_args_list)
+
+    def test_nor_a_job_that_reopened_it_since(self):
+        sid, proc, seat_id = self.seated()
+        with cut_at_clear(), mock.patch.object(sminos, "stop_seen_turn", side_effect=Killed), \
+                self.assertRaises(Killed):
+            self.cli("remove", "g/w")
+        self.end(proc)
+        self.session(sid=sid, kind="bg", started=ms_ago(0))
+        sminos.agents_json.return_value = [{"id": "newjob01", "sessionId": sid, "state": "working",
+                                            "status": "busy"}]
+        sminos.claude_stop.reset_mock()
+        code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn(mock.call("newjob01"), sminos.claude_stop.call_args_list)
+
+
+class OlderRefillBack(Base):
+    """Review 2, item 11: an older copy's refill back to an earlier
+    occupant."""
+
+    def test_the_earlier_occupant_is_current_last_and_not_ended_by_its_successors_end(self):
+        a, pa, seat_id = self.seated()
+        self.end(pa)
+        b, pb = self.session(name="w")
+        code, out = self.cli("seat", "add", "g", "w", "--session", b)
+        self.assertEqual(code, 0, out)
+        self.end(pb)
+        code, out = self.cli("retire", "g/w")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(seat_raw(seat_id)["sessions"], [a, b])
+        sminos.meta_set(seat_id, {"current": a, "status": "idle"})   # 1.27.10's `seat add --session` back to a
+        t = threads.get(seat_id)
+        self.assertEqual((t["current"], t["sessions"][-1]), (a, a))
+        self.assertNotIn("ended", t, "b's end is not a's")
+        self.session(sid=a, kind="bg", started=ms_ago(0), name="w")   # the older copy started it
+        self.reconcile()
+        seat = seat_raw(seat_id)
+        self.assertEqual(seat["sessions"][-1], a)
+        self.assertNotIn("ended", seat)
+
+
+class OlderSeatAddsAsked(Base):
+    """[scalpel-3#4] Occupants an older copy's `seat add` displaced without
+    writing `history` are asked about too."""
+
+    def test_an_intermediate_occupants_host_keeps_the_seat_from_its_end(self):
+        a, pa, seat_id = self.seated()
+        self.end(pa)
+        b, c = str(uuidlib.uuid4()), str(uuidlib.uuid4())
+        for x in (b, c):   # two older `seat add --session`s between reads: `current`, a `joined`, no history
+            sminos.meta_set(seat_id, {"current": x, "status": "idle"})
+            self.write_own(x, [self.old_joined(x, alias="w", seat=seat_id, session_kind="seat")])
+        with open(os.path.join(os.environ["HOME"], "devcloud-standin.json"), "w") as f:
+            json.dump({"hosts": [{"name": "dc-b-0001", "account": "main", "provider": "hetzner",
+                                  "creator": "@" + b[:8]}]}, f)
+        code, out = self.cli("retire", "g/w")
+        self.assertEqual(code, 1, out)
+        self.assertIn("dc-b-0001", out)
+        self.assertNotIn("ended", seat_raw(seat_id))
+        self.assertIn(b, seat_raw(seat_id)["sessions"], "and its repair keeps it")
+
+
+class OlderSeatRepair(Base):
+    """[scalpel-1#10] The repair of an older copy's seat of a thread its
+    human opened, made by a retire that met the end in place, does not undo
+    a return finished meanwhile."""
+
+    def test_a_return_finished_before_the_repair_keeps_the_seat_idle(self):
+        sid, proc = self.opened()
+        tid = threads.stamp(sid)
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})
+        self.reconcile()
+        code, out = self.cli("retire", "g/w")
+        self.assertEqual(code, 0, out)
+        self.end(proc)
+        self.assertEqual(seat_raw(seat_id)["status"], "retired")
+        real = threads.project_seat
+
+        def project_seat(*a, **k):
+            self.live(sid=sid, name="alpha", started=ms_ago(0))   # its human reopens it: returned meanwhile
+            self.reconcile()
+            self.assertFalse(threads.record_ended(threads.get(tid)))
+            self.assertEqual(seat_raw(seat_id)["status"], "idle")
+            return real(*a, **k)
+        with mock.patch.object(threads, "project_seat", side_effect=project_seat):
+            self.cli("retire", "g/w")
+        self.assertEqual(seat_raw(seat_id)["status"], "idle", "the stale repair writes nothing over the return")
+
+
+class CarriedOnce(Sessions):
+    """[scalpel-2#6] A hand-off's carry, once done, is not done again by a
+    replay over a deliberate change since."""
+
+    def test_an_override_removed_after_the_copy_is_not_restored(self):
+        old, oproc, tid = self.member()
+        sminos.write_override(old, self.p.id)
+        job, _ = self.job(old)
+        self.end(oproc)
+        with mock.patch.object(sminos, "_append", side_effect=OSError("disk full")), \
+                mock.patch.object(sys, "stderr"):
+            self.reconcile()
+        self.assertEqual(threads.get(tid)["pending"]["carry"], [old, job], "open, an event owed")
+        self.assertTrue(sminos.override_of(job), "the override copied")
+        os.unlink(sminos.override_path(job))   # `join --cwd` removed it, deliberately
+        sminos.forget_caches()
+        self.reconcile()
+        self.assertIsNone(threads.get(tid).get("pending"))
+        self.assertFalse(sminos.override_of(job), "not copied again")
+
+
+class RefusedOnce(Base):
+    """The plan's residue: a refused absorption is said once on the machine,
+    not once per process."""
+
+    def test_a_second_process_says_nothing(self):
+        old, new = str(uuidlib.uuid4()), str(uuidlib.uuid4())
+        other = {"ended": {"at": sminos.now(), "reason": "ended", "by": "", "pid": None}}
+        for _ in range(2):
+            sminos._HANDOFF_REFUSED.clear()   # another process
+            sminos.refuse_hand_off(old, new, other)
+        self.assertEqual(len(self.logged("cannot be absorbed")), 1)
+
+    def logged(self, needle):
+        try:
+            with open(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")) as f:
+                return [line for line in f if needle in line]
+        except OSError:
+            return []
 
 
 if __name__ == "__main__":

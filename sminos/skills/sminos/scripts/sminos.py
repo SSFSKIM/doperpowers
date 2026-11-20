@@ -5530,6 +5530,14 @@ def refuse_hand_off(old, new, other):
     if (old, new) in _HANDOFF_REFUSED:
         return
     _HANDOFF_REFUSED.add((old, new))
+    try:   # once on this machine, not once per process: a marker per pair, made by whichever process says it first
+        d = os.path.join(root(), "daemon", "handoff-refused")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        os.close(os.open(os.path.join(d, "%s.%s" % (old, new)), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        return
+    except OSError:
+        pass
     why = ("it has ended" if threads_module().record_ended(other) else
            "its entry is open" if other.get("pending") else "it holds another session")
     try:
@@ -10459,7 +10467,9 @@ def find_target(q):
     note_former(name, short, project, m, scope)
     # A name that bound the session, not the seat — its short, an id, or an
     # alias the session held before the seat took it — binds that session.
-    bound = short or name in (m.session,) + m.former + m.thread_sessions or alias_reach(m, name) == "former"
+    # An id binds in full or by its short (id_reach reads both), the seat's own id (its thread's) alone not.
+    bound = short or any(name in (x, x[:8]) for x in (m.session,) + m.former + m.thread_sessions if x) \
+        or alias_reach(m, name) == "former"
     return ("seat", m.seat, m.session if bound else "") if m.seat else ("member", project, m)
 
 
@@ -12846,18 +12856,9 @@ def cmd_seat_add(a):
             die("session %s is a session its human opened, and its record already keeps it: it takes no seat"
                 % session[:8], EXIT_UNKNOWN)
     existing = [s for s in seats(a.group) if s["alias"] == a.alias]
-    if existing and session and session != existing[0]["current"]:
-        # Repointing a seat is how a record forgets which process it describes.
-        # If the current occupant is still live, that process would keep
-        # running with nothing in the fleet naming it — unstoppable by
-        # retire/remove and invisible to every view.
-        peer = peer_for_session(existing[0]["current"])
-        if peer:
-            unlock(locks)
-            die("seat %s/%s still holds a live session (%s, pid %s) — repointing it would strand "
-                "that process outside the fleet; retire or remove the seat first"
-                % (a.group, a.alias, existing[0]["current"][:8], peer.get("pid")),
-                EXIT_UNKNOWN)
+    if existing and (why := displace_refusal(existing[0], session)):
+        unlock(locks)
+        die(why, EXIT_UNKNOWN)
     # A registered session's short is whatever the harness shows for it right
     # now (a `seat add --session` seat was never spawned by sminos, so nothing
     # else records it); absent a row it is cleared, never left stale.
@@ -12871,6 +12872,16 @@ def cmd_seat_add(a):
             unlock(locks)
             die("seat %s/%s holds a transition not finished yet (its events or settlement could not be completed "
                 "now): nothing was changed, and the next reading verb finishes it" % (a.group, a.alias), 1)
+        # What the replay left is what is displaced: its occupant read again, and checked again.
+        s = reload_seat(seat_id)
+        if s is None:
+            unlock(locks)
+            die("seat %s/%s was removed (a purge of it, left open, was finished): nothing was changed; run it again "
+                "to add the seat anew" % (a.group, a.alias), EXIT_UNKNOWN)
+        if (why := displace_refusal(s, session)):
+            unlock(locks)
+            die(why, EXIT_UNKNOWN)
+        existing = [s]
         fields = {"role": a.role if a.role is not None else s["role"],
                   "brief": a.brief if a.brief is not None else s["brief"], "updated": now()}
         if session:
@@ -12885,11 +12896,15 @@ def cmd_seat_add(a):
                 # one finished above (sminos_threads.repoint_seat). The displaced session's retirement keeps the
                 # stamp it had, though a lane B session's seat is no thread once it takes it.
                 displaced_stamp = threads_module().stamp(s["current"]) if s["current"] else ""
-                if not threads_module().repoint_seat(seat_id, {**fields, "current": session}):
+                if not threads_module().repoint_seat(seat_id, {**fields, "current": session}, expect=s["current"]):
                     unlock(locks)
-                    if (reload_seat(seat_id) or {}).get("pending"):
+                    now_ = reload_seat(seat_id) or {}
+                    if now_.get("pending"):
                         die("seat %s/%s holds a transition begun meanwhile: nothing was changed, and the next "
                             "reading verb finishes it" % (a.group, a.alias), 1)
+                    if now_.get("current") != s["current"]:
+                        die("seat %s/%s changed meanwhile (it holds %s now): nothing was changed; run it again"
+                            % (a.group, a.alias, str(now_.get("current") or "no session")[:8]), EXIT_UNKNOWN)
                     die("session %s is another thread's (a record its human opened, or another seat, holds it): it "
                         "takes no seat" % session[:8], EXIT_UNKNOWN)
                 fields = None
@@ -12937,6 +12952,26 @@ def cmd_seat_add(a):
     print("seat %s/%s %s (%s)%s" % (a.group, a.alias, "updated" if existing else "added",
                                     ("session: " + session) if session else "vacant",
                                     "; it stays retired: a fill returns it" if retired else ""))
+
+
+def displace_refusal(s, session):
+    """Why `seat add --session` may not put `session` in seat `s`'s place,
+    or "": its occupant still runs (repointing a seat is how a record
+    forgets which process it describes: that process would run on with
+    nothing in the fleet naming it), or is a session its human opened,
+    which its record keeps (D7: an older copy's seat of it is never its
+    authority)."""
+    cur = s["current"]
+    if not session or not cur or session == cur:
+        return ""
+    peer = peer_for_session(cur)
+    if peer:
+        return ("seat %s/%s still holds a live session (%s, pid %s) — repointing it would strand that process "
+                "outside the fleet; retire or remove the seat first" % (s["group"], s["alias"], cur[:8], peer.get("pid")))
+    if opened_by_human(cur):
+        return ("seat %s/%s holds session %s, a session its human opened, which its record keeps: seat add does not "
+                "displace it" % (s["group"], s["alias"], cur[:8]))
+    return ""
 
 
 def refill_launch(seat, fields, remove, by, failed):
@@ -14375,7 +14410,7 @@ def end_human(project, thread, sid, by, pid, purge, asked=None):
             "nothing was written" % sid[:8], EXIT_UNKNOWN)
     if not purge:
         if seat is not None:
-            threads.project_seat(seat)   # an end made before its seat followed it: in line now
+            threads.project_seat(seat, tid)   # an end made before its seat followed it: in line now
         return "already"
     member = latest_membership(_own_events(project, sid)) == "joined"
     thread_transition(project, tid, "end", [{"kind": "retired", "session": sid, **fields}] if member else [],
@@ -14628,6 +14663,8 @@ def end_seat(s, purge, asked=None):
                     guard=lambda t: t["current"] == cur and not threads.seat_ended(t) and threads.asked_all(t, asked),
                     settle=cur, last="purge" if purge else None)
                 fresh = reload_seat(s["seat_id"])
+                if began and purge:
+                    purge_superseded(s, cur)
                 if began or fresh is None:
                     return   # ended by its record, or purged by a replay meanwhile
                 if fresh["current"] != cur or not isinstance(fresh.get("ended"), dict):
@@ -14642,6 +14679,8 @@ def end_seat(s, purge, asked=None):
                 if not began and reload_seat(s["seat_id"]) is not None:
                     die("the purge of seat %s/%s could not begin (its record changed meanwhile): nothing was "
                         "deleted" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+                if began:
+                    purge_superseded(s, cur)
             return
     # Decided and written under both thread stores' locks, which every record made or claimed for a session takes
     # (sminos_threads.claims_held), the log's locks inside them: a seat a reconciliation made a thread since (its
@@ -14675,10 +14714,41 @@ def end_seat(s, purge, asked=None):
         lifecycle(project, cur, "retired", by=by, reason="retire", **({"pid": pid} if pid else {}))
 
 
+def stop_ended(snap):
+    """The stop a purge's verb owed and did not make (cut after its record's
+    write), for `snap`, the seat as it stood with that entry open: the
+    process its end recorded, while that process still holds the session and
+    its retirement is in the log (end_and_stop's rule), and nothing else."""
+    if snap is None or not snap["current"]:
+        return
+    ended, cur = snap.get("ended") if isinstance(snap.get("ended"), dict) else {}, snap["current"]
+    seen = running_now(cur)
+    if not ended.get("pid") or not seen or str(seen.get("pid")) != str(ended["pid"]):
+        return
+    if threads_module().returns({"opened": "spawned", "ended": ended}, seen, known=True):
+        return
+    if retired_in_log(seat_project(snap), cur):
+        stop_seen_turn(snap, seen, None)
+
+
+def purge_superseded(s, cur):
+    """A purge of seat `s` whose session `cur` the seat no longer holds once
+    the purge finished (an older sminos refilled it meanwhile: the entry's
+    last step deletes no record that holds another session): exit 4 saying
+    the seat was not removed, the end of `cur` recorded."""
+    fresh = reload_seat(s["seat_id"])
+    if fresh is not None and fresh["current"] != cur:
+        die("seat %s/%s was not removed: it holds session %s now (another sminos gave it that session while it was "
+            "purged); the end of session %s is recorded — retire or remove the seat again for the session it holds"
+            % (s["group"], s["alias"], fresh["current"][:8] or "none", cur[:8]), EXIT_UNKNOWN)
+
+
 def cmd_remove(a):
     """A seat's end and its record deleted, or a thread's its human opened
     (D1: the verbs that only manage a record apply to every thread)."""
     how = OwnerAsk(a.seat, "remove")
+    # A purge left open (its verb cut before its stop), as it stands before the lookup's reconciliation finishes it.
+    purging = {x["seat_id"]: x for x in seats() if (x.get("pending") or {}).get("last") == "purge"}
     # find_target's precedence, as retire's: a full id that is a seat's own and also the current session of a
     # thread of its own (its first occupant, reopened) names that session, never the seat it left.
     found = find_target(a.seat)
@@ -14690,7 +14760,9 @@ def cmd_remove(a):
         retire_member(opened[0], opened[1], True, verb="removed", how=how)
         return
     if found[0] == "seat" and reload_seat(s0["seat_id"]) is None:
-        # The lookup's reconciliation finished a purge of it left open: removed, its end recorded.
+        # The lookup's reconciliation finished a purge of it left open: removed, its end recorded, and what that
+        # end saw stopped as the verb that began it would have.
+        stop_ended(purging.get(s0["seat_id"]))
         print("removed %s/%s [%s] (chat history kept)%s" % (s0["group"], s0["alias"], s0["seat_id"], worktree_note(s0)))
         return
     asked = seat_owner_guard(s0, True, how)
