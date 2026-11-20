@@ -672,6 +672,26 @@ class Debt(Rig):
         self.assertEqual(self.human_files(), [], "no thread minted while its lane cannot be read")
         self.assertEqual([e.get("thread") for e in self.joins(sid)], [], "and nothing joined")
 
+    def test_a_seat_added_over_an_unreadable_lane_b_record_is_no_thread(self):
+        """Review 3, item 13."""
+        donor, _ = self.session()
+        self.reconcile()
+        with open(records.record_path(donor)) as f:
+            rec = json.load(f)
+        sid, _ = self.session()
+        good = json.dumps(dict(rec, controller={"lane": "B", "since": sminos.now()}))
+        path = records.record_path(sid)
+        with open(path, "w") as f:
+            f.write("{not json")
+        code, out = self.cli("seat", "add", "g", "w", "--session", sid)
+        self.assertEqual(code, 0, out)
+        with open(path, "w") as f:
+            f.write(good)
+        sminos.forget_caches()
+        self.assertEqual(records.lane_of(records.read(sid)), "B")
+        self.assertIsNone(threads.thread_of(sid), "no thread minted while its lane was unknown")
+        self.assertEqual([e.get("thread") for e in self.joins(sid)], [None] * len(self.joins(sid)), "nor stamped")
+
     def test_a_refused_send_leaves_no_seat_lock_held(self):
         """The older residue: a `send` refusal path left its name lock open."""
         code, out = self.cli("seat", "add", "g", "w", "--session", str(uuidlib.uuid4()))

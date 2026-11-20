@@ -307,8 +307,12 @@ def _is_thread(seat):
     session, or one whose session is lane A. A seat with no keys holding a
     lane B session (`seat add` made it for one; or one from before threads)
     is none, as a lane B session has no record (D1): no lookup of the
-    store answers it (all_threads, get, thread_of)."""
-    return "opened" in seat or not seat.get("current") or _lane_a(seat["current"])
+    store answers it (all_threads, get, thread_of). Nor, until its record
+    reads, one with no keys whose session's record cannot be read: its lane
+    is unknown, so it is neither adopted nor a stamp."""
+    if "opened" in seat or not seat.get("current"):
+        return True
+    return not sminos.records_module().unreadable(seat["current"]) and _lane_a(seat["current"])
 
 
 def _seat_threads():
