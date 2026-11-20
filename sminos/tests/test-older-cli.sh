@@ -121,7 +121,8 @@ opened() { # the session run by a process of its human's terminal (a `sleep`), n
     "$!" "$SID" "$REPO" > "$HOME/.claude/sessions/keeper.json"
 }
 closed() { # its terminal closed
-  kill "${PIDS[-1]}"; wait "${PIDS[-1]}" 2>/dev/null || true
+  local last="${PIDS[$((${#PIDS[@]} - 1))]}"   # bash 3.2, macOS's /bin/bash, has no negative subscript
+  kill "$last"; wait "$last" 2>/dev/null || true
   rm -f "$HOME/.claude/sessions/keeper.json"
 }
 # The session's own events, one line each: writer seq kind reason stamped
