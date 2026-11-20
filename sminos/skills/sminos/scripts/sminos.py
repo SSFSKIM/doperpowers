@@ -10528,8 +10528,14 @@ def find_target(q):
         kind, res = find_seat(q)
         # A seat named by its id whose first session runs on as a thread of its own (§6, row 15): the id is that
         # session's, a current one, before the seat's (current_first, below).
-        if not (kind == "ok" and res["seat_id"] == q and res["current"] != q
-                and any(m.session == q for p in known_projects() for m in members(p))):
+        left = kind == "ok" and res["seat_id"] == q and res["current"] != q
+        if not (left and any(m.session == q for p in known_projects() for m in members(p))):
+            if left and running_now(q):
+                # Its process runs, not joined yet (one its retirement may still have seen, retirement_holds): the
+                # id names that session as much as the seat, and is never taken for the seat it left.
+                die("'%s' is seat %s/%s's id and also session %s, which runs outside it and is not a member yet: "
+                    "name the seat (%s/%s) to reach whoever holds it, or the session once it joins"
+                    % (q, res["group"], res["alias"], q[:8], res["group"], res["alias"]), EXIT_UNKNOWN)
             hit = exact(kind, res)
             if hit:
                 return hit
