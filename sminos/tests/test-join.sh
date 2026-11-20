@@ -544,7 +544,9 @@ run_in "$CR" in_session "$S18" "$SMINOS" say "@tuned are you there"
 assert_contains "$OUT" "tuned: recorded" "a message to it is recorded for it, not pushed"
 assert_not_contains "$(cat "$STUB_STATE/calls")" "--resume $S19" "the delivery resumes nothing either"
 run_in "$CR" env CLAUDE_CONFIG_DIR="$CFG" "$SMINOS" resume crew/tuned "go on"
-assert_contains "$(cat "$STUB_STATE/calls")" "--bg --resume $S19" "a process under its own config dir resumes it"
+# From T2's M2 a resume's message is recorded and delivered as a send's: on this machine, cut over, an operator's
+# is the endpoint's to decide, so the verb records it and wakes nothing itself.
+assert_contains "$OUT" "the endpoint decides its delivery" "a process under its own config dir is not refused: its message is recorded"
 S20=1a000020-0000-4000-8000-000000000020   # running under CFG, its engine yet to write a transcript
 live_pid
 S20_PID=$LIVE_PID

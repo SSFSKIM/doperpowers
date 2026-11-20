@@ -13784,9 +13784,7 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
         raise ResumeRefused(retired_seat_refusal(s), EXIT_UNKNOWN)
     foreign = foreign_config(s["current"])
     if foreign:
-        raise ResumeRefused("the session of %s/%s runs under %s, not this process's config dir (%s): resume it "
-                            "from a process under its own (CLAUDE_CONFIG_DIR=%s)" % (
-                                s["group"], s["alias"], foreign, config_dir(), shlex.quote(foreign)), 1)
+        raise ResumeRefused(foreign_refusal(s, foreign), 1)
     # Where the engine keeps its session now (a /cd or EnterWorktree moved it), else where it was spawned.
     cwd = os.path.abspath(os.path.expanduser(seat_cwd(s)))
     if not read_refused(cwd) and not os.path.isdir(cwd):   # one this process may not look at is taken on its word
@@ -13815,6 +13813,11 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
         raise ResumeRefused("%s/%s was woken and its session runs, but its return is not finished (its record holds "
                             "it): its joined waits for the next reconciliation" % (s["group"], s["alias"]), 1)
     return woke
+
+
+def foreign_refusal(s, foreign):
+    return ("the session of %s/%s runs under %s, not this process's config dir (%s): resume it from a process under "
+            "its own (CLAUDE_CONFIG_DIR=%s)" % (s["group"], s["alias"], foreign, config_dir(), shlex.quote(foreign)))
 
 
 def stop_live_turn(s):
@@ -14154,6 +14157,10 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
         refuse_ended_seat(s, ref)
         if st == "retired" and verb:
             die(retired_seat_refusal(s), EXIT_UNKNOWN)
+        if verb and foreign_config(s["current"]):
+            # A verb's own refusal, ahead of its message's record as before (T2's M2): no wake from this process
+            # can start the session, whose engine runs under another config dir.
+            die(foreign_refusal(s, foreign_config(s["current"])), 1)
         if st in ("vacant", "retired"):
             die('seat %s is %s — fill it with: sminos fill %s "<task>"' % (ref, st, ref), EXIT_UNKNOWN)
         if st == "gone":
