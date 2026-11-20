@@ -58,8 +58,8 @@ WORDS = {
     "config": "it runs under another config dir",
     "transcript": "no conversation of it is on that machine",
     "cwd": "its directory is gone",
-    "protected": "its directory is in a folder macOS protects, where a background launch would stop at a prompt "
-                 "for its human",
+    "protected": "its directory is in, or holds, a folder macOS protects, where a background launch would stop at "
+                 "a prompt for its human",
     "mode": "a wake would run it in a mode that asks for approval",
     "failed": "waking it failed, and its machine tries again",
 }

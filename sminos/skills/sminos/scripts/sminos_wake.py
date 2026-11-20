@@ -429,7 +429,8 @@ def not_woken(record, session, whole=False, flagless=False):
     dir), `transcript` (no conversation of it here), `cwd` (its directory
     missing or not a directory; one this process may not look at is taken
     on its word), `protected` (on macOS, a thread its human opened in a
-    protected folder), `mode` (the mode its row runs it under, or its last
+    protected folder or in a directory that holds one: protected), `mode`
+    (the mode its row runs it under, or its last
     turn's, asks for approval, or a first wake's lowered to the ceiling
     would: mode_case; a mode not found within the bound does not ask,
     `whole` reads on; `flagless`, the wake's retry with no flag, as
@@ -443,12 +444,23 @@ def not_woken(record, session, whole=False, flagless=False):
     cwd = thread_cwd(record)
     if not cwd or (not sminos.read_refused(cwd) and not os.path.isdir(cwd)):
         return "cwd"
-    if sminos.TCC and record.get("opened") == "human" and sminos.protected_folder(cwd):
+    if protected(record, cwd):
         return "protected"
     case = _mode_case(record, session, path, whole, flagless)
     if case is None:
         return "transcript"   # gone since it was found
     return "mode" if case else ""
+
+
+def protected(record, cwd):
+    """Whether a background launch of the thread in its directory `cwd`
+    would stop at a prompt for its human (not_woken's `protected`): on
+    macOS, a thread its human opened whose directory is in a protected
+    folder (sminos.protected_folder) or holds one (sminos.protected_held,
+    launch_refused's rule), whichever process asks. A spawned thread is
+    resumed there as before T2. Decided from the path's string alone."""
+    return sminos.TCC and record.get("opened") == "human" and bool(
+        sminos.protected_folder(cwd) or sminos.protected_held(cwd))
 
 
 def mode_case(record, session, whole=False, flagless=False):
@@ -504,11 +516,12 @@ def _stat(path):
 def _dir_key(record, cwd):
     """The thread's directory as the memory keys it: its stat, or, for one
     not_woken does not look into (a path this process may not read, and a
-    thread its human opened in a protected folder, held `protected`), the
-    path and the guard's answer alone, never a look inside."""
-    if cwd and (sminos.withheld(cwd)
-                or sminos.TCC and record.get("opened") == "human" and sminos.protected_folder(cwd)):
-        return ("guarded",)
+    thread held `protected`: protected), the path and the guard's answer,
+    with what not_woken looks at of it, whether it is a directory, only
+    where this process may look; never a look inside, nor its stat, which
+    any file written in $HOME moves."""
+    if cwd and (sminos.withheld(cwd) or protected(record, cwd)):
+        return ("guarded", None if sminos.withheld(cwd) else os.path.isdir(cwd))
     return _stat(cwd)
 
 

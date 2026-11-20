@@ -856,8 +856,16 @@ def launch_refused(d):
     if folder:
         return "" if here and _under(here, folder) else \
             "its directory is in %s, which macOS asks the person about before anyone reads it" % folder
-    held = next((f for f in protected_folders() + ["/Volumes"] if _under(f, d)), "")
+    held = protected_held(d)
     return "its directory holds %s, which macOS asks the person about before anyone reads it" % held if held else ""
+
+
+def protected_held(d):
+    """The protected folder an absolute directory holds, or "": $HOME,
+    /Users, / and a folder's other ancestors hold one, /Volumes its
+    volumes. A launch there reaches into it, since the engine's startup
+    scans its directory's children."""
+    return next((f for f in protected_folders() + ["/Volumes"] if _under(f, d)), "")
 
 
 def _common_git_dir_fs(d):
@@ -6724,8 +6732,8 @@ HOLD_WORDS = {
     "config": "it runs under another config dir",
     "transcript": "no conversation of it is on that machine",
     "cwd": "its directory is gone",
-    "protected": "its directory is in a folder macOS protects, where a background launch would stop at a prompt "
-                 "for its human",
+    "protected": "its directory is in, or holds, a folder macOS protects, where a background launch would stop at "
+                 "a prompt for its human",
     "mode": "a wake would run it in a mode that asks for approval",
     "failed": "waking it failed, and its machine tries again",
 }
@@ -14748,7 +14756,8 @@ WAKE_WORDS = {
     "config": "it runs under another config dir",
     "transcript": "no conversation of it is on this machine",
     "cwd": "its directory is gone",
-    "protected": "its directory is in a folder macOS protects, where a background launch would stop at a prompt",
+    "protected": "its directory is in, or holds, a folder macOS protects, where a background launch would stop at a "
+                 "prompt",
     "mode": "a wake would run it in a mode that asks for approval",
 }
 

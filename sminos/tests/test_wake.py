@@ -544,6 +544,47 @@ class NotWoken(Wakes):
         with mock.patch.object(sminos, "TCC", False):
             self.assertEqual(wake.not_woken(rec, sid), "mode", "off macOS no folder is protected")
 
+    def test_protected_for_a_directory_that_holds_a_protected_folder(self):
+        """The engine's startup scans its directory's children, so a launch in $HOME (or any folder above a
+        protected one, / and /Volumes among them) reaches into ~/Downloads: launch_refused's rule, whichever process
+        asks, its own working directory there or not."""
+        sid = str(uuidlib.uuid4())
+        self.transcript(sid, rows(prompt("auto"), answer("m")))
+        home = os.environ["HOME"]
+        with mock.patch.object(sminos, "TCC", True):
+            for where in (home, os.path.dirname(home), "/", "/Volumes"):
+                for here in (self.root, where):
+                    with self.subTest(where=where, here=here), mock.patch.object(sminos, "_own_cwd", lambda: here):
+                        self.assertEqual(wake.not_woken(self.human(sid=sid, cwd=where), sid), "protected")
+            self.assertEqual(wake.not_woken(self.human(sid=sid), sid), "", "a directory beside them holds none")
+            with mock.patch.object(sminos, "reload_seat", lambda tid: None):
+                self.assertEqual(wake.not_woken(dict(self.human(sid=sid, cwd=home), opened="spawned"), sid), "",
+                                 "a spawned thread there is resumed")
+        with mock.patch.object(sminos, "TCC", False):
+            self.assertEqual(wake.not_woken(self.human(sid=sid, cwd=home), sid), "")
+
+    def test_the_kept_answer_for_a_directory_that_holds_one_is_its_path_s(self):
+        """hold_reason keeps `protected` for $HOME by the guard's answer and whether the directory is there, not
+        by its stat, which any file written in $HOME moves."""
+        sid = str(uuidlib.uuid4())
+        self.transcript(sid, rows(prompt("auto"), answer("m")))
+        home = os.environ["HOME"]
+        rec = self.human(sid=sid, cwd=home)
+        with mock.patch.object(sminos, "TCC", True), mock.patch.object(sminos, "_own_cwd", lambda: self.root):
+            self.assertEqual(wake.hold_reason(rec, sid), "protected")
+            key = wake.hold_key(rec, sid)
+            with open(os.path.join(home, ".history"), "w") as f:
+                f.write("a file written in $HOME")
+            self.assertEqual(wake.hold_key(rec, sid), key)
+            self.assertEqual(wake.hold_reason(rec, sid), "protected")
+            gone = os.path.join(self.home, "elsewhere", "h")
+            os.makedirs(os.path.join(gone, "Desktop"))
+            rec = self.human(sid=sid, cwd=os.path.dirname(gone))
+            with mock.patch.object(sminos, "protected_folders", lambda: [os.path.join(gone, "Desktop")]):
+                self.assertEqual(wake.hold_reason(rec, sid), "protected")
+                shutil.rmtree(os.path.dirname(gone))
+                self.assertEqual(wake.hold_reason(rec, sid), "cwd", "the directory gone: the key moved with it")
+
     def test_a_directory_this_process_may_not_look_at_is_taken_on_its_word(self):
         sid = str(uuidlib.uuid4())
         self.transcript(sid, rows(prompt("auto"), answer("m")))
