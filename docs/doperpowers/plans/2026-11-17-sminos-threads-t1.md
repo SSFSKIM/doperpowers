@@ -38,7 +38,7 @@ the composite, run as Concrete Steps gives it.
 - [x] (2026-11-20) M4 — A thread ends, and returns (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `b32c3a77..56fc6d4f`)
 - [x] (2026-11-20) M5 — A thread that owns a VM is neither retired nor ended (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `2f324a19..e1be6e85`)
 - [x] (2026-11-20) M6 — What sessions are told, an older sminos beside this one, the shared vectors, and the acceptance run (three reviews, the owner's cap; the third approved, its two Minor findings fixed in a last wave the controller checked; `e55117c7..d492589f`)
-- [x] (2026-11-20) The branch review: one review of the whole range at b9c85c00 and two of its fix diffs (the owner's cap, applied to the branch), their fixes merged from `t1-fixes`; the held path verified alone, and that verification's findings fixed in a last wave (`t1-fix-b`, merged).
+- [x] (2026-11-20) The branch review: one review of the whole range at b9c85c00 and two of its fix diffs (the owner's cap, applied to the branch), their fixes merged from `t1-fixes`; the held path verified alone in three rounds, each round's findings fixed in a wave (`t1-fix-b`, merged) or recorded as limits.
 
 ## Words this document adds
 
@@ -2980,6 +2980,30 @@ Found while executing:
     only the receiving side can close; and a delivery record that cannot
     be read is replaced as though it were empty, where deferring would
     stop every delivery to that session on one bad file.
+    The verifier's second round, at 72a15570, found that last wave's own
+    defect in ordinary use: the record was loaded with each writer's marks
+    as a mapping and written back with only the changed writer's turned
+    into pairs, so one sender's write dropped every other sender's marks
+    and both messages settled undelivered. It also found a mark bound to
+    whatever thread the session id named when the mark was written, and an
+    integer form of the mark that only a build of this branch had written.
+    All three were closed at 8963e99b: `_delivered_write` is the one place
+    the two forms meet, a hold names the thread the recipient was chosen
+    as at its lookup, and the integer form is no longer read. The third
+    round, at e16715ef, ran every reproduction again, with up to five
+    writers over the three send paths, and each held. It found one more
+    case, recorded as a limit and not fixed: a direct send gathers every
+    event its writer still owes the session into one frame without
+    reading the marks, so in the seconds between a hold going stale and
+    the daemon's next pass it carries the stale text into the thread the
+    session now fills. Asked whether an older copy can write a stopped
+    session's delivery record, it found three shapes in which one does (a
+    seat an older copy made over the session; a read-only policy with an
+    outside event owed; an older daemon's pass after the reopening), each
+    dropping marks the older copy does not know; recorded as a limit too.
+    The loop stops here by my call: three rounds, the last without a loss
+    or a wrong delivery in ordinary use, and what remains is reworked by
+    the wake (T2).
 
 ## Outcomes & Retrospective
 
@@ -3010,7 +3034,7 @@ Each of the eleven acceptance items is mapped to its tests in M6's report. Items
 
 **2026-11-20, after the branch review.** The outcome above stands, and the review changed what it rests on:
 
-- The hold is now a decision recorded per event (§5), not a reading of the process's state. That is what makes "the held messages are pushed" true through a quiet inbox, a seat an older copy made over the session, a skewed clock and a resume into an older process. Three limits are recorded with it.
+- The hold is now a decision recorded per event (§5), not a reading of the process's state. That is what makes "the held messages are pushed" true through a quiet inbox, a seat an older copy made over the session, a skewed clock and a resume into an older process. Five limits are recorded with it.
 - A seat's verbs (`retire`, `remove`, `seat add`, a refill, a first spawn) hold against the writers that race them: a verb that lost exits 4 and writes nothing, a purge's stop and outcome are its entry's, and an older copy's repoint is read and repaired as a moved seat.
 - A session's own events take a stamp only from the thread it is current in; a push is bound to its recipient again before every fallback; a question is closed only in the stopped thread's own episode; `sminos join` and a tick no longer interleave.
 - One finding is left as debt (the first spawn's promotion write), and one was dismissed against the Decision Log.
