@@ -1309,6 +1309,17 @@ assert_contains "$(cat "$TEST_ROOT/ack.out")" "ACKED $ACK_ID" "acknowledged send
 # Wake branch (T2's M2): 'researcher' has a session but no live peer → its process started again with
 # `--bg --resume <id>` and no message, then the frame pushed to it as to a live session.
 wake_inputs() { cat "$STUB_STATE/wake/inputs/$1" 2>/dev/null || true; }
+# bg_row <session> <cwd>: the engine's row of a background session as a spawn under `auto` leaves it (E8), for a
+# seat added over a made-up session: its wakes pass no flag and its turns run in that mode, as a spawned seat's do
+# (with none, a wake runs it in the default mode, which asks, and the next wake is refused for it).
+bg_row() {
+  python3 - "$HOME/.claude/jobs/${1:0:8}/state.json" "$1" "$2" <<'PY_ROW'
+import json, os, sys
+os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
+json.dump({"sessionId": sys.argv[2], "cwd": sys.argv[3], "respawnFlags": ["--permission-mode", "auto"],
+           "state": "done"}, open(sys.argv[1], "w"))
+PY_ROW
+}
 run "$SMINOS" send researcher "again please"
 assert_rc 0 "$RC" "send to a stopped seat exits 0"
 assert_contains "$OUT" "sent to work/researcher (woken)" "a send to a stopped seat wakes it and says so"
@@ -2633,6 +2644,9 @@ assert_contains "$OUT" '"alias": "x"' "a pipeline worker lists the project"
 run "$SMINOS" spawn pipeline-child t
 assert_rc 0 "$RC" "a pipeline worker spawns"
 assert_equals "$(field "$(seat_id_of pipeline-child)" parent)" '' "what it spawns records no parent"
+X_SID=44444444-aaaa-4000-8000-000000000004
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$X_SID.jsonl"   # a conversation to wake
+bg_row "$X_SID" "$(field "$(seat_id_of x)" cwd)"
 run "$SMINOS" resume other/x 'pipeline resume'
 assert_rc 0 "$RC" "a pipeline worker can resume another seat"
 unset CLAUDE_CODE_SESSION_ID
@@ -2669,6 +2683,7 @@ printf 'short=dddd0001\nuuid=%s\nname=d1\nstate=stopped\n' "$D1" > "$STUB_STATE/
 printf 'short=dddd0002\nuuid=%s\nname=d2\nstate=stopped\n' "$D2" > "$STUB_STATE/agents/dddd0002"
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$D1.jsonl"
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$D2.jsonl"
+bg_row "$D1" "$WORK"; bg_row "$D2" "$WORK"
 python3 - "$SMINOS_HOME/$D1.json" "$SMINOS_HOME/$D2.json" "$WORK" <<'PY_FIX_CWD'
 import json, sys
 for path, cwd in ((sys.argv[1], sys.argv[3] + '/no-such-sminos-cwd'), (sys.argv[2], sys.argv[3])):
@@ -3895,6 +3910,7 @@ printf '{"uuid":"%s","current":"%s","alias":"hk","group":"pf-repo","status":"idl
   "$HK" "$HK" "$R" > "$SMINOS_HOME/$HK.json"
 chmod 600 "$SMINOS_HOME/$HK.json"
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/pl-proj/$HK.jsonl"
+bg_row "$HK" "$R"
 hook_run SessionStart "$HK" "$R" "$HOME/.claude/projects/pl-proj/$HK.jsonl" startup
 assert_equals "$(events_of "$HK")" "joined " "the hook joins a seat's session at its start, at the real time"
 CLOCK="$(python3 - "$SMINOS_PY" "$PF" "$HK" 2>&1 <<'PY_CLOCK'

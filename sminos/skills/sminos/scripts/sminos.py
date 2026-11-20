@@ -14292,8 +14292,9 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
     while True:
         try:
             if delivery:
-                control_module().push_live(peer, s["current"], delivery.payload(True), delivery.queue[-1],
-                                           delivery.project.id, carried=delivery.carried(True))
+                # An @all reaches only the live: to a session this send woke it is settled by passing (payload).
+                control_module().push_live(peer, s["current"], delivery.payload(not woken), delivery.queue[-1],
+                                           delivery.project.id, carried=delivery.carried(not woken))
             else:
                 send_frame(socket_path_of(bound_peer(peer, s["current"])), text, sender)
             break
