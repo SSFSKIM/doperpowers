@@ -1074,7 +1074,7 @@ For a thread of either kind on this machine, unless a cell says otherwise.
 
 | The session is | `say` with a tag, `send` | `send --wait` | `resume` | `fill --resume` |
 |---|---|---|---|---|
-| live | push; exit 0 | push, wait for its reply | a background job: its turn stopped, wake, push (today's rule for a seat), unless a reason of `not_woken` holds, when the turn is left running and the message is held. In a terminal: push as `send` does, and say that a terminal holds it | refused as a filled seat is today, with today's exit code (4); a human-opened one in the same words |
+| live | push; exit 0 | push, wait for its reply | a background job: its turn stopped, wake, push (today's rule for a seat), unless a reason of `not_woken` holds, when the turn is left running and the message is pushed to that running process as `send` pushes, with no wake. In a terminal: push as `send` does, and say that a terminal holds it | refused as a filled seat is today, with today's exit code (4); a human-opened one in the same words |
 | stopped, woken | wake, push; exit 0 | wake, push, wait | wake, push; with `--wait`, wait | wake, push; a retired seat returns (§3, `returns`) |
 | stopped and not woken, or the wake failed | recorded and held, §5's line; exit 0 | recorded and held; `nothing was started: <reason>`; exit 4 | the same, exit 4 | the same, exit 4 |
 | held for a moment (`starting` and the like) | recorded, §5's line; exit 0 | recorded; no reply is waited for; exit 4 | the same, exit 4 | the same, exit 4 |
@@ -1429,7 +1429,12 @@ is read defensively (§1). devcloud is not touched.
   refusal exits 4 (`EXIT_UNKNOWN`) today, not 2, so `fill --resume` of a live
   thread exits 4. `resume` of a live background job stops its turn only when
   no reason of `not_woken` holds: a turn whose session could not be started
-  again is never stopped, and the message is held.
+  again is never stopped, and the message is pushed to the running process
+  (live first, §4), with no wake. (Corrected the same day: this entry first
+  said "held".) The remote line for `transcript` on a `gone` state is pinned
+  by the local publication test and the remote reader's test, not by the
+  second-registry mirror, which reads through `say` and would need an engine
+  in the mirrored repository; `mode` and `read-only` go through the mirror.
 
 ## Outcomes & Retrospective
 
