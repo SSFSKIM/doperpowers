@@ -399,6 +399,12 @@ t  "a gh binding without repo asks gh, as before" "gh|upstream/project" probe_up
 r12="$(mkrepo)"; mkdir -p "$r12/.doperpowers"
 printf '{"binding":"gh","repo":"doperpowers"}' > "$r12/.doperpowers/board.json"
 t  "a gh repo that is not owner/name dies"        "a gh binding's repo is owner/name" probe_up "$r12"
+r13="$(mkrepo)"; mkdir -p "$r13/.doperpowers"
+printf '{"binding":"gh","repo":"github.example/fork/project"}' > "$r13/.doperpowers/board.json"
+t  "a host-qualified gh repo dies too"            "a gh binding's repo is owner/name" probe_up "$r13"
+# An inherited BOARD_REPO is taken as given, as before the key existed: a blank
+# one is not trimmed into "no declaration" and a fallback to gh's guess.
+nt "a blank env BOARD_REPO never falls back to gh" "upstream/project" probe_up "$r3" "BOARD_REPO= "
 rm -rf "$UP"
 
 finish

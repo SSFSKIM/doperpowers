@@ -114,18 +114,17 @@ PY
     # target is whatever `gh repo view` answers, and in a fork carrying an
     # `upstream` remote with no `gh repo set-default`, that is the UPSTREAM
     # project — exit 0, no warning — so a board write files its ticket on
-    # somebody else's public tracker. An inherited BOARD_REPO still wins, as in
-    # api mode; a file value that is not owner/name (an api `repo` left behind
-    # on a binding switch) is refused here rather than handed to gh.
-    gh) BOARD_REPO="$(printf '%s' "${BOARD_REPO:-}" \
-          | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-        if [ -z "$BOARD_REPO" ] && [ -n "${_binding_rest#*|}" ]; then
+    # somebody else's public tracker. An inherited BOARD_REPO still wins, as it
+    # did before the key existed, untouched (not trimmed: a blank one fails at
+    # gh, as it always has, rather than falling back to gh's guess). A file
+    # value must be exactly owner/name: an api `repo` left behind on a binding
+    # switch, or a host-qualified HOST/owner/name that `gh -R` would aim at
+    # another host, is refused here rather than handed to gh.
+    gh) if [ -z "${BOARD_REPO:-}" ] && [ -n "${_binding_rest#*|}" ]; then
           BOARD_REPO="${_binding_rest#*|}"
-          case "$BOARD_REPO" in
-            */*) ;;
-            *) echo "error: .doperpowers/board.json: a gh binding's repo is owner/name, not \"$BOARD_REPO\"" >&2
-               return 1 2>/dev/null || exit 1 ;;
-          esac
+          printf '%s' "$BOARD_REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
+            || { echo "error: .doperpowers/board.json: a gh binding's repo is owner/name, not \"$BOARD_REPO\"" >&2
+                 return 1 2>/dev/null || exit 1; }
         fi ;;
     # AN UNKNOWN BINDING IS A CONFIGURATION ERROR, NOT A DEFAULT. Falling
     # through left BOARD_BINDING=gh, so a typo (`"api "`, `"API"`, `"arkho"`)
