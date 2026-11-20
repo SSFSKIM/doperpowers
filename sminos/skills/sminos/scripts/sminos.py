@@ -9106,7 +9106,7 @@ def host_order(events):
                             key=lambda e: (e["ts"], e["writer"])))
 
 
-def record_session(project, session, tpath, event, last_message="", source=""):
+def record_session(project, session, tpath, event, last_message="", source="", override=None):
     """The hook's work for one session (§4). Membership on sight, as
     reconciliation decides it: a seat whose record is not retired, or a
     session the harness records as `interactive` or `bg` (an SDK run only
@@ -9151,7 +9151,7 @@ def record_session(project, session, tpath, event, last_message="", source=""):
                 release_alias(where, left, given_up)   # in the project the session left is a member of
             except (OSError, LockBusy, LogWriteFailed) as e:
                 daemon_log("record: the alias of %s was not released to %s: %s" % (left[:8], session[:8], e))
-    alias = _member_alias(project, session, seat, peer, marked, evidence)
+    alias = _member_alias(project, session, seat, peer, marked, evidence, override)
     if event == "SessionStart" and alias is not None:
         # Its process holds the session again (§6, row 8), maybe before any sweep sees it: the stop mark goes, so
         # the rule's clock never runs on a mark from before this process (T1's M4).
@@ -9267,17 +9267,20 @@ def _on_sight(project, session):
     return seat, peer
 
 
-def _member_alias(project, session, seat, peer, marked=False, evidence=None):
+def _member_alias(project, session, seat, peer, marked=False, evidence=None, override=None):
     """Joins a joinable session the log does not hold as a member yet (a live
     process is evidence of activation), and returns the alias its messages to
     the host carry: its seat's, else the one it goes by (held_alias over the
-    last name the log gave it). None when it is no member."""
+    last name the log gave it). None when it is no member. `override`: the
+    session's join override (override_of) as it was when the caller resolved
+    `project`, read here when not given. The join is the `join` verb's to
+    write while one moves the session (moving_elsewhere), and none is written
+    once the override has changed since (a `join` that moved it)."""
+    held = override_of(session) if override is None else override
     own = _own_events(project, session)
     if latest_membership(own) != "joined":
-        # As a reconciliation joins: the project rechecked under the writer's lock, and a `join` moving the
-        # session left to write its own joined (moving_elsewhere).
         join_on_sight(project, session, seat, peer, True, marked=marked, evidence=evidence, own=True,
-                      recheck=lambda: here_now(project, {"seat": seat, "peer": peer}))
+                      recheck=lambda: project if override_of(session) == held else None)
         own = _own_events(project, session)
     if latest_membership(own) != "joined":
         return None
@@ -9303,6 +9306,7 @@ def export_live(cwd, session, records):
     what the session started in as the bridge heard it, only until its
     transcript names one. Returns the events appended."""
     forget_caches()
+    override = override_of(session)   # as the project is resolved: a `join` after it changes it (_member_alias)
     project = session_project(session, launch_cwd(session, fallback=cwd))
     if project is None:
         return []
@@ -9312,7 +9316,7 @@ def export_live(cwd, session, records):
         return []
     evidence, former = session_evidence(session, seen[0], marked)
     ensure_record(project, session, *seen, evidence, former)
-    alias = _member_alias(project, session, *seen, marked, evidence)
+    alias = _member_alias(project, session, *seen, marked, evidence, override)
     events = host_events(records, alias) if alias is not None else []
     return append_host(project, session, events) if events else []
 
@@ -9467,10 +9471,11 @@ def cmd_record(_a, payload=None):
     try:
         # The payload's cwd is where the session's shell is now; its project
         # is its launch directory's, which the transcript names (§1c).
+        override = override_of(session)   # as the project is resolved (_member_alias)
         project = session_project(session, launch_cwd(session, tpath, fallback=cwd))
         if project is not None:
             record_session(project, session, tpath, event, str(payload.get("last_assistant_message") or ""),
-                           str(payload.get("source") or ""))
+                           str(payload.get("source") or ""), override=override)
     except Exception as e:  # noqa: BLE001 — a logging failure must never fail the turn
         try:
             daemon_log("record %s %s: %s: %s" % (event, session[:8], type(e).__name__, e))
