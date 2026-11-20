@@ -36,7 +36,7 @@ the composite, run as Concrete Steps gives it.
 - [x] (2026-11-19) M2 — One thread across its session ids: hand-off, refill, and what is another thread (reviewed: four fix waves, the last checked by the controller; `3bb026ec..a5b8c5fc`)
 - [x] (2026-11-19) M3 — A closed session stays: stopped, held, and its sender told (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `ef5a4cd0..dd83567f`)
 - [x] (2026-11-20) M4 — A thread ends, and returns (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `b32c3a77..56fc6d4f`)
-- [ ] M5 — A thread that owns a VM is neither retired nor ended
+- [x] (2026-11-20) M5 — A thread that owns a VM is neither retired nor ended (three reviews, the owner's cap; the third's findings fixed in a last wave the controller checked; `2f324a19..e1be6e85`)
 - [ ] M6 — What sessions are told, an older sminos beside this one, the shared vectors, and the acceptance run
 
 ## Words this document adds
@@ -2465,6 +2465,49 @@ Found while executing:
   56fc6d4f (runs 44624490754, 44627757301; 44631166073 green), neither
   reproduced locally. Every recurrence through M5 and M6 is counted in the
   ledger; a third of either is diagnosed to its cause.
+- 2026-11-20 — **M5 as built** (the executor's decisions and its three
+  reviews' fixes, accepted by the holder; detail in its report):
+  - the census takes the due thread ids as arguments (`sminos daemon
+    census <thread>...`); only a pass on its spacing starts one, and its
+    spacing markers move only when a run was published or one was in
+    flight; otherwise a retry from 60 s (`CENSUS_BACKOFF`), doubling, capped
+    at one spacing, with one line in `daemon.log` after three failures in a
+    row; an answer is taken up no older than one spacing, and its `at` is
+    when it asked;
+  - the run file (the child's pid and start) is published before the child
+    asks anything; the tick takes the census lock only if free, never waits
+    on the process table, sends no signal, and starts a reaper child
+    (`daemon census --reap <pid> <start>`) for a run past twice the bound;
+    the reaper rechecks that exact run before it signals; any tick that
+    finds `census-run.json` supervises it, so a daemon restarted in place
+    reattaches; a landing is the run's reaping, taken once;
+  - every reply is checked whole against X9 (`x9_reply`): its fields, the
+    answer against its rows, every creator among the names asked, `listed`
+    on devcloud's own reply; anything else is unknown, named "a malformed
+    answer"; the census file is read back through the same check, against
+    the union of its rows' names, and a malformed envelope is no answer;
+  - a devcloud copy older than 0.17.2, or with no readable manifest, is not
+    run and reads as unknown; the names asked are the short ids of every
+    session the thread has had, its seat's `history` included, and what
+    adoption would rebuild for a seat not yet adopted;
+  - "no question needed" is its own value (`Exempt("ended" | "no-thread")`),
+    proved again where the end writes; under the record's lock an end
+    checks that every session the thread has had was asked about; the
+    exempt retire of a session with no thread decides and appends under
+    both stores' locks (`claims_held`: `.metalock`, then `threads/.lock`,
+    the log's locks inside them, never the reverse), and a session that is
+    a thread by then exits 4;
+  - `--owner-unknown` is refused inside a session before devcloud is asked;
+    `remove` takes no flag and its refusal names `retire --purge
+    --owner-unknown`; a refusal exits 1, a seat that changed while devcloud
+    was asked exits 4; a retire of a thread already ended, without
+    `--purge`, asks nothing, and lane B sessions are never asked;
+  - `confirmed` gains `prompt=` and `none=`; `marketplace_clone()` is shared
+    with `installed_cli`; while stopping a driver sminos holds off SIGTERM
+    and SIGINT to itself;
+  - every runnable test file loads a shared isolation helper by its own
+    path first (`devcloud_isolation.py`, `devcloud-isolation.sh`): the
+    stand-in in `SMINOS_DEVCLOUD`, every `DEVCLOUD_*` unset.
 
 ## Outcomes & Retrospective
 
