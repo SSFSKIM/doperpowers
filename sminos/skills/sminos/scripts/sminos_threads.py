@@ -307,8 +307,12 @@ def _is_thread(seat):
     session, or one whose session is lane A. A seat with no keys holding a
     lane B session (`seat add` made it for one; or one from before threads)
     is none, as a lane B session has no record (D1): no lookup of the
-    store answers it (all_threads, get, thread_of)."""
-    return "opened" in seat or not seat.get("current") or _lane_a(seat["current"])
+    store answers it (all_threads, get, thread_of). Nor, until its record
+    reads, one with no keys whose session's record cannot be read: its lane
+    is unknown, so it is neither adopted nor a stamp."""
+    if "opened" in seat or not seat.get("current"):
+        return True
+    return not sminos.records_module().unreadable(seat["current"]) and _lane_a(seat["current"])
 
 
 def _seat_threads():
@@ -428,8 +432,13 @@ def stamp(session):
     that is no thread. From the live stores and their open entries alone,
     never the records set aside: after an end, what a session's thread
     writes is the journal's (or a return's), each event naming its thread,
-    and a former session that runs again is another thread."""
-    return (thread_of(session, ended=False) or {}).get("thread", "")
+    and a former session that runs again is another thread. Only a thread
+    whose current session it is (an open entry's included) stamps it: one
+    that only had the session (it went on in another) names it for a lookup
+    (thread_of), never for the session's own events now, which a journaled
+    transition of that thread stamps itself."""
+    t = thread_of(session, ended=False)
+    return t["thread"] if t is not None and t["current"] == session else ""
 
 
 def _live_rule(session, live):
@@ -717,9 +726,9 @@ def set_channels(thread_id, channels):
 def note_alias(session, alias, lock_until=None, project=None):
     """The alias a human-opened thread's latest `joined` or `renamed` carried,
     copied into its record for readers without the log (lifecycle). With
-    `project`, the log it was appended to, copied only while it is still the
-    latest the session's own events there carry, read under the record's
-    lock: two copies made in the other order than their appends leave the
+    `project`, the log it was appended to, copied only while the session is
+    still a member there and it is still the latest its own events there
+    carry, read under the record's lock: two copies made in the other order than their appends leave the
     later one."""
     t = thread_of(session, ended=False)
     if t is None or t["opened"] != "human" or t["current"] != session or t.get("alias") == alias:
@@ -730,8 +739,10 @@ def note_alias(session, alias, lock_until=None, project=None):
             return False
         if project is None:
             return True
-        named = [e for e in sminos._own_events(project, session) if e["kind"] in ("joined", "renamed")
-                 and e.get("alias")]
+        own = sminos._own_events(project, session)
+        if sminos.latest_membership(own) != "joined":
+            return False   # it has left that project (a move): what it publishes elsewhere is its name now
+        named = [e for e in own if e["kind"] in ("joined", "renamed") and e.get("alias")]
         last = sminos.latest_across_writers(named) if named else None
         return last is None or str(last["alias"]) == alias
     return update(t["thread"], {"alias": alias}, guard=latest, lock_until=lock_until)

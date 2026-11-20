@@ -40,6 +40,7 @@ sys.path.insert(0, HERE)
 
 from test_threads import records, sminos, threads  # noqa: E402
 from test_threads_stopped import Rig  # noqa: E402
+import test_threads_stopped  # noqa: E402 — its Clear rig, by module, so its own tests are not collected here
 
 
 def ago(seconds):
@@ -142,6 +143,7 @@ class Wave2Push(Rig):
         sminos.forget_caches()
         self.assertEqual(len(self.owed_to(sid)), 1)
         self.assertIsNotNone(self.member(sid).seat, "the seat branch delivers it")
+        self.tick()   # the hold decided for it, while no process holds the session
         _, quiet = self.session(sid=sid, started=reopened_now())
         self.peer_set(quiet, nameSource="user", messagingSocketPath=os.path.join(self.home, "none.sock"))
         with mock.patch.object(sminos, "run_claude_bg") as launched:
@@ -167,6 +169,118 @@ class Wave2Push(Rig):
         self.assertEqual(self.inbox(sid), [])
 
 
+class Held(Rig):
+    """Review 3, items 1 and 6: the hold is a decision kept for the event
+    (the delivery record's `held`), never inferred from clocks."""
+
+    def stopped(self):
+        sid, proc = self.opened()
+        self.end(proc)
+        self.reconcile()
+        return sid
+
+    def foreign(self, sid, ahead):
+        """A say to the session from another machine's writer whose clock runs `ahead` seconds."""
+        writer = "othermachine/%s" % uuidlib.uuid4()
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + ahead)) + ".000Z"
+        path = sminos.writer_path(self.p, writer)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps({"ts": ts, "writer": writer, "seq": 1, "kind": "say", "from": "far",
+                                "to": [{"session": sid, "alias": "alpha"}], "text": "from a fast clock"}) + "\n")
+        sminos.forget_caches()
+
+    def quiet(self, sid, started):
+        _, proc = self.session(sid=sid, started=started)
+        self.peer_set(proc, nameSource="user", messagingSocketPath=os.path.join(self.home, "none.sock"))
+        return proc
+
+    def owed_then_pushed(self, sid, proc, text, attempts=None):
+        for _ in range(attempts or 3):
+            self.tick()
+        self.assertEqual(len(self.owed_to(sid)), 1, "not pushed yet: owed")
+        self.end(proc)
+        self.live(sid=sid, inbox=True)
+        self.tick()
+        self.assertEqual(self.owed_to(sid), [])
+        self.assertTrue(any(text in x for x in self.inbox(sid)), self.inbox(sid))
+
+    def test_a_writer_whose_clock_runs_two_minutes_ahead(self):
+        sid = self.stopped()
+        self.foreign(sid, 120)
+        self.tick()   # decided held
+        proc = self.quiet(sid, reopened_now())
+        self.owed_then_pushed(sid, proc, "from a fast clock")
+
+    def test_a_resume_into_a_process_older_than_the_message(self):
+        sid = self.stopped()
+        code, out = self.say("@alpha while you were away")
+        self.assertEqual(code, 0, out)
+        proc = self.quiet(sid, int((time.time() - 3600) * 1000))   # an in-session /resume in an hour-old process
+        self.owed_then_pushed(sid, proc, "while you were away")
+
+    def test_a_failure_before_the_receipts_text_reaches_the_socket(self):
+        sid = self.stopped()
+        code, out = self.say("@alpha while you were away")
+        self.assertEqual(code, 0, out)
+        _, proc = self.live(sid=sid, inbox=True)
+        self.assertEqual(sminos.holder_module().activate(proc.pid, "launch-1", sid)["mode"], "gate")
+        with mock.patch.object(sminos, "DELIVERY_ATTEMPTS", 3), \
+                mock.patch.object(sminos, "send_frame", side_effect=sminos.SendFailed("before", "no listener")):
+            for _ in range(5):
+                self.tick()
+        self.assertEqual(len(self.owed_to(sid)), 1, "owed: no settlement past the attempts")
+        self.assertEqual(self.inbox(sid), [])
+        self.tick()
+        self.assertTrue(any("while you were away" in x for x in self.inbox(sid)), self.inbox(sid))
+
+    def test_a_message_never_held_to_a_running_socketless_session_is_recorded(self):
+        sid, _ = self.opened()
+        code, out = self.say("@alpha while you run")
+        self.assertEqual(code, 0, out)
+        self.tick()
+        self.assertEqual(self.owed_to(sid), [], "recorded: it reads it in the chat")
+        self.assertEqual(set(self.attempts(sid).values()) - {0}, set())
+
+    def test_a_held_message_to_a_thread_that_ends_is_settled_by_the_end(self):
+        sid = self.stopped()
+        code, out = self.say("@alpha while you were away")
+        self.assertEqual(code, 0, out)
+        self.tick()
+        code, out = self.cli("retire", "alpha")
+        self.assertEqual(code, 0, out)
+        self.tick()
+        self.assertEqual(self.owed_any(sid), [])
+
+    def owed_any(self, sid):
+        sminos.forget_caches()
+        return sminos._owed(sminos.log_read(self.p, to_session=sid), sid, sminos.delivered_load(self.p, sid))
+
+
+class SecondClear(test_threads_stopped.Clear):
+    """Review 3, item 12: two witnessed clears, the session left reopened
+    under another name between them and no sweep."""
+
+    NEW2 = "22222222-3333-4444-8555-666666666666"
+    locals().update({n: None for n in dir(test_threads_stopped.Clear) if n.startswith("test_")})   # its own, not run here
+
+    def test_the_second_clear_releases_the_reopened_alias(self):
+        self.note()
+        self.start()
+        self.assertEqual(threads.get(self.tid)["released"]["alias"], "alpha")
+        time.sleep(1.1)
+        sid, proc = self.live(sid=self.old, name="gamma", started=int(time.time() * 1000))   # reopened, named
+        self.reconcile()
+        sminos.lifecycle(self.p, self.old, "renamed", alias="gamma", name_source="user")   # its rename, published
+        self.assertEqual(self.member(self.old).alias, "gamma")
+        self.note(pid=proc.pid)
+        self.peer_set(proc, sessionId=self.NEW2)
+        self.hook(self.NEW2, source="clear", env={"CLAUDE_PID": str(proc.pid), "CLAUDE_CODE_SESSION_ID": self.NEW2})
+        self.assertEqual(threads.get(self.tid)["released"]["alias"], "gamma")
+        self.assertEqual(self.member(self.NEW2).alias, "gamma", "the alias went with the process")
+        self.assertEqual(self.member(self.old).alias, self.old[:8])
+
+
 class Wave2Join(Rig):
     def test_a_reopened_lane_b_predecessors_joined_carries_no_successors_stamp(self):
         old, proc = self.opened()
@@ -185,6 +299,29 @@ class Wave2Join(Rig):
         joins = self.joins(old)
         self.assertGreater(len(joins), 1, "it joined again")
         self.assertNotIn("thread", joins[-1], "unstamped: the thread that only had it is not its stamp")
+
+
+class Stamp(Rig):
+    def test_a_lane_b_predecessors_later_events_carry_no_successors_stamp(self):
+        """Review 3, item 7: every lifecycle event, not only its `joined`."""
+        old, proc = self.opened()
+        tid = threads.thread_of(old)["thread"]
+        new = str(uuidlib.uuid4())
+        self.write_own(old, [{"kind": "retired", "by": "", "reason": "continued", "to": new, "thread": tid}])
+        path = os.path.join(threads.store_dir(), tid + ".json")
+        with open(path) as f:
+            raw = json.load(f)
+        sminos.write_json(path, dict(raw, current=new, sessions=[old, new]))
+        self.end(proc)
+        records.set_controller(old, "B")
+        time.sleep(1.1)
+        self.session(sid=old, started=int(time.time() * 1000))
+        self.reconcile()
+        sminos.lifecycle(self.p, old, "status", text="unrelated work")
+        sminos.lifecycle(self.p, old, "in-charge", text="its own thing", source="set")
+        latest = [e for e in self.own(old) if e["kind"] in ("status", "in-charge")]
+        self.assertEqual([e.get("thread") for e in latest[-2:]], [None, None])
+        self.assertEqual(threads.thread_of(old)["thread"], tid, "the former name still finds the thread")
 
 
 class Wave2Questions(Rig):
@@ -271,6 +408,8 @@ class Send(Rig):
         self.assertEqual(code, 4, out)
         self.assertNotIn("Traceback", out)
         self.assertIn("it waits in", out)
+        self.assertNotIn("pushed nowhere", out, "a queued message is in no log an end has settled")
+        self.assertIn("delivered to it if it has returned", out)
         self.assertEqual(self.inbox(sid), [])
 
     def test_a_running_session_its_human_opened_is_not_told_it_is_stopped(self):
@@ -412,6 +551,36 @@ class Debt(Rig):
         self.assertIn("has ended", out)
         self.assertEqual(self.inbox(sid), [], "nothing pushed")
 
+    def retire_first(self):
+        real = sminos.record_message
+
+        def retired_first(*a, **k):
+            with mock.patch.object(sminos, "claude_stop", return_value=True):
+                code, out = self.cli("retire", "alpha")
+            self.assertEqual(code, 0, out)
+            return real(*a, **k)
+        return mock.patch.object(sminos, "record_message", side_effect=retired_first)
+
+    def test_a_queued_seatless_send_retired_after_lookup_says_it_is_queued(self):
+        """Review 3, item 10."""
+        sid, _ = self.opened(inbox=True)
+        with self.retire_first(), mock.patch.object(sminos, "waits_for_head", return_value=True):
+            code, out = self.cli("send", "alpha", "queued after its retire")
+        self.assertEqual(code, 4, out)
+        self.assertIn("has ended: the message is queued", out)
+        self.assertEqual(self.inbox(sid), [])
+
+    def test_a_held_seatless_send_retired_after_lookup_says_it_ended(self):
+        """Review 3, item 10: the stopped branch decides after its record too."""
+        sid, proc = self.opened()
+        self.end(proc)
+        self.reconcile()
+        with self.retire_first():
+            code, out = self.cli("send", "alpha", "held after its retire")
+        self.assertEqual(code, 4, out)
+        self.assertIn("has ended", out)
+        self.assertNotIn("recorded and held", out)
+
     def test_the_records_export_waits_out_a_join_that_holds_the_move_lock(self):
         """[scalpel-1#13] The bridge's export, in another process, while a
         `join` holds the move lock, its override written: the join's own
@@ -444,6 +613,25 @@ class Debt(Rig):
             real(*a, **k)
         sminos.forget_caches()
         self.assertEqual(threads.get(tid)["alias"], "second")
+
+    def test_a_delayed_alias_copy_from_a_project_the_session_left_is_refused(self):
+        """Review 3, item 14."""
+        there = self.project_of(self.repo("there"))
+        sid, _ = self.opened(charge="")
+        tid = threads.thread_of(sid)["thread"]
+        copies, real = [], threads.note_alias
+        with mock.patch.object(threads, "note_alias", side_effect=lambda *a, **k: copies.append((a, k))):
+            sminos.lifecycle(self.p, sid, "renamed", alias="from-here", name_source="user")
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": sid}):
+            code, out = self.cli("join", there.name)
+        self.assertEqual(code, 0, out)
+        sminos.lifecycle(there, sid, "renamed", alias="from-there", name_source="user")
+        sminos.forget_caches()
+        self.assertEqual(threads.get(tid)["alias"], "from-there")
+        for a, k in copies:
+            real(*a, **k)   # the delayed copy from the project it left
+        sminos.forget_caches()
+        self.assertEqual(threads.get(tid)["alias"], "from-there")
 
     def test_a_remote_legacy_seats_id_reaches_its_session(self):
         """[scalpel-3#9]"""
@@ -502,6 +690,26 @@ class Debt(Rig):
         self.reconcile()
         self.assertEqual(self.human_files(), [], "no thread minted while its lane cannot be read")
         self.assertEqual([e.get("thread") for e in self.joins(sid)], [], "and nothing joined")
+
+    def test_a_seat_added_over_an_unreadable_lane_b_record_is_no_thread(self):
+        """Review 3, item 13."""
+        donor, _ = self.session()
+        self.reconcile()
+        with open(records.record_path(donor)) as f:
+            rec = json.load(f)
+        sid, _ = self.session()
+        good = json.dumps(dict(rec, controller={"lane": "B", "since": sminos.now()}))
+        path = records.record_path(sid)
+        with open(path, "w") as f:
+            f.write("{not json")
+        code, out = self.cli("seat", "add", "g", "w", "--session", sid)
+        self.assertEqual(code, 0, out)
+        with open(path, "w") as f:
+            f.write(good)
+        sminos.forget_caches()
+        self.assertEqual(records.lane_of(records.read(sid)), "B")
+        self.assertIsNone(threads.thread_of(sid), "no thread minted while its lane was unknown")
+        self.assertEqual([e.get("thread") for e in self.joins(sid)], [None] * len(self.joins(sid)), "nor stamped")
 
     def test_a_refused_send_leaves_no_seat_lock_held(self):
         """The older residue: a `send` refusal path left its name lock open."""

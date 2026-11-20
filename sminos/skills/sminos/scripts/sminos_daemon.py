@@ -959,7 +959,9 @@ def deliver_owed(project, view):
             # pass's; kept only for a pass that settled nothing and left no outside report owed (one whose write
             # failed is tried again).
             if all_held(result, owed) and not outcomes.held_report_owed(project, m.session, to[m.session]):
-                _HELD_PASSES[key] = reads
+                # The delivery record as the pass left it: its own write is the hold it decided (delivered_held),
+                # which settles nothing and owes no new pass.
+                _HELD_PASSES[key] = reads[:1] + held_reads(project, view, m.session)[1:2] + reads[2:]
         got = result["delivered"]
         if got:
             total += got
