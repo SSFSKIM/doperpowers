@@ -4324,6 +4324,8 @@ def lifecycle(log_project, session, kind, guard=None, required=True, **fields):
         thread = threads_module().stamp(session)
         if thread:
             fields["thread"] = thread
+    elif fields["thread"] is None:
+        del fields["thread"]   # the caller's choice of no thread: written unstamped, no stamp looked up
     if kind == "state" and fields.get("state") == "stopped" and "wake" not in fields and fields.get("thread"):
         # X3: a stopped thread's state says whether its machine wakes it, whichever of its writers writes it.
         fields["wake"] = "held" if hold_for(session) else "woken"
@@ -5150,9 +5152,11 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
         fields = joined_fields(alias or sid[:8], source or "derived",
                                launch_cwd(sid, fallback=str(peer.get("cwd") or ""), fresh=True), by=by,
                                session_kind=str(peer.get("kind") or ""), session=sid)
+    chosen = True   # choose answered: its None is a join stamped with no thread, never a stamp looked up
     try:
         thread, action = threads.choose(sid, seat, peer=peer, lock_until=_RECORD_DEADLINE)
     except LockBusy:
+        chosen = False
         thread, action = None, "join"
         try:
             daemon_log("record: the thread record of %s waits for its lock: the next reconciliation makes it"
@@ -5160,7 +5164,7 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
         except OSError:
             pass
     except OSError as e:
-        thread, action = None, "join"
+        thread, action, chosen = None, "join", False
         warn("the thread record of %s could not be written: %s" % (sid[:8], e))
     if thread is not None and thread.get("pending"):
         # An open entry is its record's until it is finished (§6, 6): never a join around it. The hook,
@@ -5172,6 +5176,8 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
         return out
     if thread is not None:
         fields["thread"] = thread["thread"]   # the event names the thread chosen here, whatever stamp() reads
+    elif chosen:
+        fields["thread"] = None   # no thread chosen (a lane B session a thread only had): none looked up either
     if action == "return":
         returning.append(True)
         if not guard(_own_events(project, sid)):
@@ -7754,17 +7760,17 @@ def human_refusal(alias):
             % alias)
 
 
-def reopening(session):
-    """Whether a session its human opened (its thread live, not ended, the
-    session its current one) runs in a process whose inbox does not answer
-    yet: the window of a reopening between the engine's record, which lifts
-    the hold, and the inbox's first answer. What is addressed to it then
-    stays owed, as it was while held, for the pass that finds the inbox."""
-    t = threads_module().thread_of(session, ended=False)
-    if t is None or t["opened"] != "human" or t["current"] != session or threads_module().record_ended(t):
-        return False
-    rec = running_now(session)
-    return rec is not None and bool(socket_path_of(rec))
+def human_owed(session):
+    """Whether what is addressed to the session is owed until it is pushed
+    to its process or its thread ends (T1's M3): its canonical record
+    (thread_of, the live stores) a thread its human opened, not ended, whose
+    current session it is, whatever seat an older copy made over it. For
+    such a session no "not pushed" is a settlement: a process with no inbox
+    yet, an inbox that does not answer, or a push that failed before it
+    reached leave the message owed, no attempt counted."""
+    threads = threads_module()
+    t = threads.thread_of(session, ended=False) if session else None
+    return t is not None and t["opened"] == "human" and t["current"] == session and not threads.record_ended(t)
 
 
 def hold_verb(project, session, alias, text, sender="", via="", machine=""):
@@ -7808,16 +7814,19 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
     `held:reach …`, owed with no attempt counted."""
     session = session or member.session
     verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
-    if member.seat is None:
+    owed = tagged and human_owed(session)
+    if member.seat is None or owed:
         # First, afresh (M3): a process's record that names another session now (a `/clear`) is no peer of this one.
+        # A session its human opened is reached by its session alone, whatever seat an older copy made over it.
         hold = hold_now(session)
         peer = None if hold else peer_for_session(session)
         if not peer:
-            # A stopped thread its human opened is held (M3): an addressed message stays owed for its reopening.
-            if tagged and hold:
+            # A stopped thread its human opened is held (M3): an addressed message stays owed for its reopening, and
+            # stays owed through a reopening whose inbox is not published or does not answer yet.
+            if hold and tagged:
                 return HELD_HUMAN
-            if tagged and reopening(session):
-                return "held:session %s's process runs and its inbox does not answer yet" % session[:8]
+            if owed:
+                return "held:session %s's process has no inbox that answers yet" % session[:8]
             return "recorded"
         try:
             control_module().push_live(peer, session, text, event, project, **verdict)
@@ -7825,7 +7834,9 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
         except PushHeld as e:
             return e.outcome()
         except SendFailed as e:
-            return "sent?" if e.phase == "after" else "failed:%s" % e
+            if e.phase == "after":
+                return "sent?"
+            return "held:%s" % e if owed else "failed:%s" % e
     seat_id = member.seat["seat_id"]
 
     def unreachable(s):
@@ -8975,14 +8986,19 @@ def close_questions(thread):
     stamped with another thread (a former session that runs on as a thread
     of its own) is that thread's, and stays open. Every project known here
     that holds the session's own events is read: a session that joined
-    elsewhere after asking left its question where it asked it. The events
-    appended."""
-    out, tid = [], thread["thread"]
-    projects = known_projects()
-    for sid in dict.fromkeys(thread["sessions"] + [thread["current"]]):
+    elsewhere after asking left its question where it asked it. Only a
+    question positively the thread's (its episode marked with the thread's
+    id) is closed, but for the current session in the project it is in now,
+    where a question of an unmarked episode (from before threads) is its own
+    too: an unmarked episode of a former session, or elsewhere, may be
+    another conversation's. The events appended."""
+    out, tid, cur = [], thread["thread"], thread["current"]
+    projects, home = known_projects(), last_project(cur)
+    for sid in dict.fromkeys(thread["sessions"] + [cur]):
         if not sid:
             continue
         for project in projects:
+            marks = ("", tid) if sid == cur and home is not None and project.id == home.id else (tid,)
             log = _own_events(project, sid)
             own = log + _own_events(project, sid, HOST_STORE)
             asked = [q for q in own if q["kind"] == "question" and q.get("src")]
@@ -8992,7 +9008,7 @@ def close_questions(thread):
             answered = {e.get("src") for e in own if e["kind"] == "answered"}
             closing = [{"kind": "answered", "from": str(q.get("from") or ""), "src": q["src"],
                         "text": QUESTION_CLOSED, "closed": "stopped"}
-                       for q in asked if q["src"] not in answered and (episode_mark(r, q) if r else "") in ("", tid)]
+                       for q in asked if q["src"] not in answered and (episode_mark(r, q) if r else "") in marks]
             if closing:
                 out += append_host(project, sid, list({e["src"]: e for e in closing}.values()))
     return out
@@ -13267,13 +13283,18 @@ def refuse_ended_seat(s, ref, recorded=None, ended=False):
     """Exit 4 for a send to a seat whose session's thread has ended
     (canonical_end; `ended`: already decided by the caller), saying what
     returns it: a fill, or for a thread its human opened (an older copy
-    seated it), its human reopening it. `recorded`: the event the send
-    appended before the end was found, which the end settles."""
+    seated it), its human reopening it. `recorded`: the send's delivery
+    (SendDelivery, or a WaitingSend whose append waits for its writer's
+    head) made before the end was found, which the end settles."""
     if not ended and not canonical_end(s["current"], seat_project(s)):
         return
     if opened_by_human(s["current"]):
-        what = "nothing was recorded for it" if recorded is None else \
-            "%s was recorded and is settled with its end, pushed nowhere" % event_ref(recorded)
+        if recorded is None:
+            what = "nothing was recorded for it"
+        elif isinstance(recorded, WaitingSend):
+            what = "the message %s, and is settled with its end, pushed nowhere" % recorded.held
+        else:
+            what = "%s was recorded and is settled with its end, pushed nowhere" % event_ref(recorded.event)
         die("seat %s's session has ended: %s — it returns when its human reopens its session" % (ref, what),
             EXIT_UNKNOWN)
     die(retired_seat_refusal(s), EXIT_UNKNOWN)
@@ -13431,8 +13452,7 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         unlock(locks)
         if delivery is not None:
             delivery.release()
-        refuse_ended_seat(s, ref, recorded=getattr(delivery, "event", None) if delivery is not None else None,
-                          ended=True)
+        refuse_ended_seat(s, ref, recorded=delivery, ended=True)
     if opened_by_human(s["current"]) and (not peer or hold_now(s["current"])):
         # A session its human opened that an older copy seated (D7, T1's M3): held, resolved here under the
         # seat's lock, after the append and before both the live route and the resume, the gates and the wait (a

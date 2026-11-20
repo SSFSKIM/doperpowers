@@ -87,6 +87,112 @@ class Push(Rig):
         self.assertTrue(any("while you were away" in x for x in self.inbox(sid)), self.inbox(sid))
 
 
+class Wave2Push(Rig):
+    """The invariant (review 2, items 2 and 8): for a thread its human
+    opened, an addressed message that was held stays owed until it is pushed
+    to that thread's process or the thread ends."""
+
+    def held_then_reopened(self, socket_path):
+        sid, proc = self.opened()
+        self.end(proc)
+        self.reconcile()
+        code, out = self.say("@alpha while you were away")
+        self.assertEqual(code, 0, out)
+        _, quiet = self.session(sid=sid)
+        fields = {"nameSource": "user"}
+        if socket_path:
+            fields["messagingSocketPath"] = socket_path
+        self.peer_set(quiet, **fields)
+        return sid, quiet
+
+    def assert_owed_then_pushed(self, sid, quiet):
+        for _ in range(sminos.DELIVERY_ATTEMPTS + 1):
+            self.tick()
+        self.assertEqual(len(self.owed_to(sid)), 1, "not pushed yet: still owed")
+        self.assertEqual(set(self.attempts(sid).values()) - {0}, set(), "no attempt counted")
+        self.end(quiet)
+        self.live(sid=sid, inbox=True)
+        self.tick()
+        self.assertEqual(self.owed_to(sid), [])
+        self.assertTrue(any("while you were away" in x for x in self.inbox(sid)), self.inbox(sid))
+
+    def test_a_reopened_process_whose_record_names_no_socket_yet(self):
+        self.assert_owed_then_pushed(*self.held_then_reopened(None))
+
+    def test_a_reopened_process_whose_inbox_does_not_answer_yet(self):
+        self.assert_owed_then_pushed(*self.held_then_reopened(os.path.join(self.home, "none.sock")))
+
+    def test_through_a_seat_an_older_copy_made_over_the_session(self):
+        sid, proc = self.opened()
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "alpha", "group": "g",
+                                  "cwd": self.root, "status": "idle"})
+        sminos.forget_caches()
+        self.end(proc)
+        self.reconcile()
+        sminos.lifecycle(self.p, str(uuidlib.uuid4()), "say", **{
+            "from": "human", "to": [{"session": sid, "alias": "alpha"}], "text": "while you were away"})
+        sminos.forget_caches()
+        self.assertEqual(len(self.owed_to(sid)), 1)
+        self.assertIsNotNone(self.member(sid).seat, "the seat branch delivers it")
+        _, quiet = self.session(sid=sid)
+        self.peer_set(quiet, nameSource="user", messagingSocketPath=os.path.join(self.home, "none.sock"))
+        with mock.patch.object(sminos, "run_claude_bg") as launched:
+            self.assert_owed_then_pushed(sid, quiet)
+        launched.assert_not_called()
+
+    def test_the_supervisor_is_not_handed_a_job_a_clear_moved(self):
+        sid, proc = self.opened(inbox=True)
+        self.peer_set(proc, kind="bg", jobId="ab12cd34")
+        e = sminos.log_append(self.p, "testhost/human", "human", **{
+            "from": "human", "to": [{"session": sid, "alias": "alpha"}], "text": "for alpha"})
+        control = sminos.control_module()
+        peer = sminos.peer_for_session(sid)
+
+        def declined_meanwhile_cleared(*_a):
+            self.peer_set(proc, sessionId=str(uuidlib.uuid4()))   # the /clear: the same pid, job and socket
+            return None
+        with mock.patch.object(control, "deliver", side_effect=declined_meanwhile_cleared), \
+                mock.patch.object(control, "supervisor_reply", return_value=True) as supervisor:
+            with self.assertRaises(sminos.SendFailed):
+                control.push_live(peer, sid, "for alpha", e, self.p.id, words=True)
+        supervisor.assert_not_called()
+        self.assertEqual(self.inbox(sid), [])
+
+
+class Wave2Join(Rig):
+    def test_a_reopened_lane_b_predecessors_joined_carries_no_successors_stamp(self):
+        old, proc = self.opened()
+        tid = threads.thread_of(old)["thread"]
+        new = str(uuidlib.uuid4())
+        self.write_own(old, [{"kind": "retired", "by": "", "reason": "continued", "to": new, "thread": tid}])
+        path = os.path.join(threads.store_dir(), tid + ".json")
+        with open(path) as f:
+            raw = json.load(f)
+        sminos.write_json(path, dict(raw, current=new, sessions=[old, new]))   # handed off to `new`
+        self.end(proc)
+        records.set_controller(old, "B")
+        time.sleep(1.1)
+        self.session(sid=old, started=int(time.time() * 1000))   # reopened, lane B
+        self.reconcile()
+        joins = self.joins(old)
+        self.assertGreater(len(joins), 1, "it joined again")
+        self.assertNotIn("thread", joins[-1], "unstamped: the thread that only had it is not its stamp")
+
+
+class Wave2Questions(Rig):
+    def test_a_former_sessions_unmarked_question_elsewhere_stays_open(self):
+        there = self.project_of(self.repo("there"))
+        old, new, tid = (str(uuidlib.uuid4()) for _ in range(3))
+        self.write_own(old, [self.old_joined(old, alias="alpha", thread=tid),
+                             {"kind": "retired", "by": "", "reason": "continued", "to": new, "thread": tid}])
+        self.write_own(old, [self.old_joined(old, alias="alpha"), question("q-there")], p=there)   # an older hook
+        self.write_own(new, [self.old_joined(new, alias="alpha", thread=tid), question("q-mine")])
+        got = sminos.close_questions({"thread": tid, "sessions": [old, new], "current": new})
+        self.assertEqual([e["src"] for e in got], ["q-mine"])
+        self.assertEqual([e for e in self.own(old, there) if e["kind"] == "answered"], [])
+
+
 class Questions(Rig):
     def closed_srcs(self, sid, p=None):
         return sorted(e["src"] for e in self.own(sid, p) if e["kind"] == "answered" and e.get("closed"))
@@ -145,6 +251,20 @@ class Send(Rig):
         self.assertEqual(code, 4, out)
         self.assertNotIn("nothing was recorded", out)
         self.assertIn("was recorded and is settled with its end", out)
+
+    def test_a_waiting_send_whose_seat_ended_says_it_waits(self):
+        sid, _ = self.opened(inbox=True)
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})
+        sminos.forget_caches()
+        with self.ended_after_the_append({"at": sminos.now(), "reason": "retire", "by": "", "pid": None}), \
+                mock.patch.object(sminos, "waits_for_head", return_value=True):
+            code, out = self.cli("send", "g/w", "after its end")
+        self.assertEqual(code, 4, out)
+        self.assertNotIn("Traceback", out)
+        self.assertIn("it waits in", out)
+        self.assertEqual(self.inbox(sid), [])
 
     def test_a_running_session_its_human_opened_is_not_told_it_is_stopped(self):
         sid, _ = self.opened(inbox=True)
