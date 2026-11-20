@@ -39,6 +39,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -146,7 +147,7 @@ class Owner(Ending):
     def take_up(self):
         """A pass on its spacing that takes up the census's answer as it
         stands, its own census held back: the mock of start_census."""
-        with mock.patch.object(self.daemon, "start_census") as start:
+        with mock.patch.object(self.daemon, "start_census", return_value="in flight") as start:
             self.pass_()
         return start
 
@@ -395,6 +396,47 @@ class Owned(Owner):
         self.assertIn("changed while its end was decided", out)
         self.assertTrue(self.is_member(sid))
         self.assertEqual(self.calls(), [], "no question was asked")
+
+    def test_a_thread_made_for_it_while_its_exempt_retire_decides_and_appends_waits_for_the_retirement(self):
+        """The exempt retire's recheck and its append, and a reconciliation
+        adopting the session as a thread between them: the adoption waits
+        until the retirement is in the log, so no thread is made for the
+        session that the retire, asking nothing, then ends."""
+        sid, proc = self.session()
+        records.establish(sid, records.default_provenance())
+        records.set_controller(sid, "B")
+        self.reconcile()
+        self.assertIsNone(threads.thread_of(sid))
+        self.standin(hosts=[host("dc-a-0001", sid[:8])])
+        refresh, thread_of = sminos.agents_refresh, threads.thread_of
+        state = {"refreshed": False, "adoption": None, "member_then": None, "made": None}
+
+        def refreshed(*a, **k):
+            state["refreshed"] = True
+            return refresh(*a, **k)
+
+        def adopt():
+            state["made"] = threads.ensure(sid)
+            state["member_then"] = self.is_member(sid)
+
+        def recheck(session, *a, **k):
+            got = thread_of(session, *a, **k)
+            if state["refreshed"] and session == sid and not k and state["adoption"] is None:
+                records.set_controller(sid, "A")   # lane A now: a reconciliation's adoption, meanwhile
+                self.transcript(sid)
+                state["adoption"] = threading.Thread(target=adopt)
+                state["adoption"].start()
+                state["adoption"].join(2)
+            return got
+
+        with mock.patch.object(sminos, "agents_refresh", refreshed), mock.patch.object(threads, "thread_of", recheck):
+            code, out = self.cli("retire", sid)
+        state["adoption"].join(30)
+        self.assertFalse(state["adoption"].is_alive())
+        self.assertIsNotNone(state["made"], "the adoption made its thread")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(state["member_then"], "made only once the retirement was in the log")
+        self.assertEqual(self.calls(), [])
 
 
 # ------------------------------------------------------------ unknown
@@ -910,6 +952,61 @@ class Census(Owner):
             self.assertTrue(os.path.exists(self.run_path()), "a run published with its start, read without waiting")
             self.census_done()
         self.assertEqual(len(self.calls()), 1)
+
+    def test_a_census_that_could_not_be_published_spends_no_spacing_and_is_retried_after_a_backoff(self):
+        """Through the sweep: the pass on its spacing whose census could not
+        be published leaves its thread due, tried again a backoff later (not
+        at every tick), said once when it keeps failing; once one is
+        published, the spacing moves on and the answer ends the thread."""
+        sid, tid, _ = self.due()
+        start = self.daemon.start_census
+        tries = []
+
+        def counted(ids):
+            tries.append(ids)
+            return start(ids)
+
+        def ending():
+            with open(os.path.join(os.environ["SMINOS_HOME"], "daemon", "threads.json")) as f:
+                return json.load(f).get("ending")
+
+        with mock.patch.object(self.daemon, "start_census", counted), \
+                mock.patch.object(self.daemon, "CENSUS_BACKOFF", 0.3):
+            with mock.patch.object(sminos, "_darwin_start", return_value=None), \
+                    mock.patch.object(sminos, "_linux_start", return_value=None):
+                self.pass_()
+                self.assertEqual(len(tries), 1)
+                self.assertFalse(os.path.exists(self.run_path()), "nothing published")
+                self.assertIsNone(ending(), "the spacing is not spent")
+                self.pass_(spaced=False)
+                self.assertEqual(len(tries), 1, "not at every tick")
+                for n in (2, 3):
+                    time.sleep(0.3 * 2 ** (n - 2) + 0.05)
+                    self.pass_(spaced=False)
+                    self.assertEqual(len(tries), n, "tried again after its backoff")
+                said = self.logged("could not be published 3 times in a row")
+                self.assertEqual(len(said), 1, said)
+                self.assertIn("its child's start could not be read", said[0])
+            self.assertEqual(self.calls(), [], "nothing was asked")
+            time.sleep(1.25)
+            self.pass_(spaced=False)
+            self.assertEqual(len(tries), 4)
+            self.assertIsNotNone(ending(), "a census published: the spacing moves on")
+            self.census_done()
+            self.pass_(spaced=False)
+        self.assertTrue(self.ended(tid))
+        self.assertEqual(len(self.logged("could not be published")), 1)
+
+    def test_a_census_answer_of_no_usable_shape_is_no_answer_and_the_thread_is_asked_about(self):
+        sid, tid, at = self.due()
+        for threads_ in ({"thread": tid}, [[tid]], [7, {"thread": tid, "current": sid, "stopped": at,
+                                                         "shorts": [sid[:8]]}]):
+            sminos.write_json(self.daemon.daemon_path("census.json"), {
+                "at": ago(1), "threads": threads_, "answer": "none", "vms": [], "unknown": []})
+            start = self.take_up()
+            self.assertFalse(self.ended(tid), threads_)
+            self.assertTrue(start.called, "asked again: %r" % (threads_,))
+        self.assertEqual(self.logged("stopped and not ended"), [])
 
     def test_a_landing_is_reported_only_by_the_pass_that_removed_the_ended_run(self):
         done = subprocess.Popen(["true"])

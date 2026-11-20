@@ -1396,7 +1396,7 @@ def sweep_threads():
     noted = held.get("noted") if isinstance(held.get("noted"), dict) else {}
     ending = _ts_float(held.get("ending"))
     now, after = time.time(), thread_end_after()
-    spaced = now - max(_ENDING[0], ending) >= thread_end_every()
+    spaced = now - max(_ENDING[0], ending) >= thread_end_every() and now >= _CENSUS_RETRY["at"]
     landed = census_tick()   # a quiet tick's one stat; a recorded run supervised, a landing taken once
     ending_pass = spaced or landed
     candidates, due = {}, []
@@ -1427,14 +1427,15 @@ def sweep_threads():
             sminos.daemon_log("the thread sweep could not mark %s: %s" % (tid, e or "its lock is busy"))
     said = noted
     if ending_pass:
-        if spaced:
-            _ENDING[0] = now
+        asked = True
         if due:
-            if spaced:
-                ending = now   # kept for the next process (daemon tick): a pass with nothing due writes nothing
-            said = end_due(threads, due, noted, ask=spaced)
+            said, asked = end_due(threads, due, noted, ask=spaced)
         elif noted:
             said = {}
+        if spaced and asked:   # a census that could not be published spends no spacing: retried after a backoff
+            _ENDING[0] = now
+            if due:
+                ending = now   # kept for the next process (daemon tick): a pass with nothing due writes nothing
     if candidates != before or ending != _ts_float(held.get("ending")) or said != noted:
         try:
             sminos.write_json(daemon_path(THREAD_SWEEP), {"candidates": candidates,
@@ -1459,7 +1460,10 @@ def end_due(threads, due, noted, ask=True):
     answer is asked about. With `ask` (a pass on its spacing, not one a
     landed census started) a census is started for every due thread not
     ended here, when none is in flight: one question for them all, which
-    this pass does not wait for. Returns what is said now."""
+    this pass does not wait for. Returns what is said now, and whether the
+    pass did its asking (nothing left to ask, a census published or one in
+    flight): one that could not publish a census leaves its threads due,
+    asked again after a backoff (census_retry)."""
     census = census_read()
     said, left = {}, []
     for tid, cur, stopped in due:
@@ -1477,12 +1481,30 @@ def end_due(threads, due, noted, ask=True):
                     end_stopped(threads, tid, cur, stopped, owned.asked)
         except (OSError, sminos.LockBusy, sminos.LogWriteFailed) as e:
             sminos.daemon_log("the thread sweep could not end %s: %s" % (tid, e or "its lock is busy"))
-    if left and ask:
-        try:
-            start_census(left)
-        except OSError as e:
-            sminos.daemon_log("the thread sweep could not start its census: %s" % e)
-    return said
+    if not (left and ask):
+        return said, True
+    try:
+        started = start_census(left)
+    except OSError as e:
+        started = "it could not be started: %s" % e
+    return said, census_retry(started)
+
+
+def census_retry(started):
+    """What start_census answered, kept for the next try: True when a census
+    is published or in flight; else False, the next try a backoff away
+    (CENSUS_BACKOFF, doubled at each failure in a row, to one spacing), and
+    the failures said once in daemon.log when they reach CENSUS_STUCK."""
+    if started in ("published", "in flight"):
+        _CENSUS_RETRY.update(at=0.0, fails=0)
+        return True
+    fails = _CENSUS_RETRY["fails"] + 1
+    wait = min(CENSUS_BACKOFF * 2 ** (fails - 1), thread_end_every())
+    _CENSUS_RETRY.update(at=time.time() + wait, fails=fails)
+    if fails == CENSUS_STUCK:
+        sminos.daemon_log("the thread sweep's census could not be published %d times in a row (last: %s): the "
+                          "threads due stay stopped, asked about again in %gs" % (fails, started, wait))
+    return False
 
 
 def holding(threads, tid, cur, owned, before):
@@ -1650,6 +1672,9 @@ CENSUS_LOCK = "census.lock"      # under daemon/: one census in flight on the ma
 CENSUS_WAIT = 10                 # seconds a census child waits for its run to be published before giving up
 _CENSUS = None                   # the census child this process started (its Popen), until reaped
 _REAPER = None                   # the reaper child this process started (its Popen), until reaped
+CENSUS_BACKOFF = 60              # seconds before a census that could not be published is tried again, doubled each
+CENSUS_STUCK = 3                 # time to one spacing; failures in a row said once in daemon.log
+_CENSUS_RETRY = {"at": 0.0, "fails": 0}   # this process's next try and its failures in a row
 
 
 def _run_path():
@@ -1802,12 +1827,13 @@ def census_answer(threads, census, tid, cur, stopped):
     at = sminos._ts_epoch(census.get("at"))
     if at is None or time.time() - at > thread_end_every():
         return None
-    for x in census.get("threads") or []:
-        if isinstance(x, dict) and x.get("thread") == tid and x.get("current") == cur \
+    if not (isinstance(census.get("threads"), list) and all(isinstance(z, dict) for z in census["threads"])):
+        return None   # no usable answer: asked again
+    for x in census["threads"]:
+        if x.get("thread") == tid and x.get("current") == cur \
                 and x.get("stopped") == stopped and isinstance(x.get("shorts"), list) \
                 and all(isinstance(s, str) and s for s in x["shorts"]):
-            asked = [y for z in census["threads"] if isinstance(z, dict) and isinstance(z.get("shorts"), list)
-                     for y in z["shorts"]]
+            asked = [y for z in census["threads"] if isinstance(z.get("shorts"), list) for y in z["shorts"]]
             if threads.x9_reply(census, asked, ours=True) is None:
                 return threads.no_answer(x["shorts"], "the census's answer (daemon/census.json) is malformed")
             reply = threads.Owned(census["answer"], census["vms"], census["unknown"], [])
@@ -1823,12 +1849,15 @@ def start_census(thread_ids):
     (census-run.json: the child's pid and start, read from it as soon as it
     exists) are one step, and the child asks nothing until it finds that
     record naming itself (census_published). The child does not inherit
-    the lock."""
+    the lock. Returns "published", "in flight", or why neither."""
     global _CENSUS
     try:
         with sminos.flocked(daemon_path(CENSUS_LOCK), lock_until=time.time()):
-            if census_running(_census_run()) is not False:
-                return   # one in flight, or one whose identity cannot be told now
+            running = census_running(_census_run())
+            if running:
+                return "in flight"
+            if running is None:
+                return "the recorded run's process could not be told without waiting"
             with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
                 proc = subprocess.Popen([sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "daemon",
                                          "census"] + list(thread_ids),
@@ -1838,10 +1867,11 @@ def start_census(thread_ids):
             start = _start_now(proc.pid)
             if not start:   # its identity cannot be published without waiting: it asks nothing, and is reaped
                 proc.kill()
-                return
+                return "its child's start could not be read without waiting"
             sminos.write_json(_run_path(), {"pid": proc.pid, "start": start, "started": time.time()})
+            return "published"
     except sminos.LockBusy:
-        return
+        return "the census lock was busy"
 
 
 def census_published():

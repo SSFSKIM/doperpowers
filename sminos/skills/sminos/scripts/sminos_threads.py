@@ -187,6 +187,17 @@ def _seat_lock(deadline=None):
 # record made for it (_create_human) each read the other store under both.
 
 
+@contextlib.contextmanager
+def claims_held(deadline=None):
+    """Both stores' locks, in their order: no record is made, claimed or
+    changed for any session while they are held (_create_human, claim_seat,
+    every _change). What a writer that must know a session is still no
+    thread decides and appends under (sminos.retire_member's exempt retire);
+    the log's locks are taken inside them, never the reverse."""
+    with _seat_lock(deadline), _human_lock(deadline):
+        yield
+
+
 def _finish_lock(thread_id, deadline=None):
     """The record's own finisher lock (finish): one finisher of a record at a
     time, whichever store the record is in; beside the thread store's lock,

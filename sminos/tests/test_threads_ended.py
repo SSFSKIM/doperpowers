@@ -60,6 +60,7 @@ class Ending(Rig):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.daemon._ENDING[0] = 0.0
+        self.daemon._CENSUS_RETRY.update(at=0.0, fails=0)
         self.daemon._CENSUS = None
         self.daemon._REAPER = None
         self.addCleanup(self.census_gone)

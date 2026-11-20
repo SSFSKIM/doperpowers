@@ -14157,16 +14157,17 @@ def retire_member(project, m, purge, verb="retired", how=None):
         if end_human(project, thread, m.session, by, pid, purge, asked) == "already":
             die("%s was retired already; nothing more was recorded" % m.alias, EXIT_UNKNOWN)
     else:
-        def still_cleared(_evs):
-            # Under the writer file's lock, the thread view read afresh: a session a reconciliation made a thread
-            # since (lane A now) is no longer what was cleared, asked about or exempt (sminos_threads.asked_all).
+        # Decided and appended under both thread stores' locks, which every record made or claimed for a session
+        # takes (sminos_threads.claims_held), the log's locks inside them: a session a reconciliation made a
+        # thread since (lane A now) is no longer what was cleared, asked about or exempt (asked_all), and none is
+        # made for it before the retirement is in the log.
+        with threads.claims_held():
             forget_caches()
             t = threads.thread_of(m.session)
-            return t is None or t["current"] != m.session or threads.asked_all(t, asked)
-        if not lifecycle(project, m.session, "retired", guard=still_cleared, by=by, reason="retire",
-                         **({"pid": pid} if proc else {})):
-            die("%s changed while its end was decided (it is a thread of this machine now): nothing was written; run "
-                "it again" % m.alias, EXIT_UNKNOWN)
+            if not (t is None or t["current"] != m.session or threads.asked_all(t, asked)):
+                die("%s changed while its end was decided (it is a thread of this machine now): nothing was written; "
+                    "run it again" % m.alias, EXIT_UNKNOWN)
+            lifecycle(project, m.session, "retired", by=by, reason="retire", **({"pid": pid} if proc else {}))
     # The turn the end saw (its row then), never a process started since (still_seen).
     stopped = bool(row and row.get("id")) and (proc is None or still_seen(proc, m.session)) \
         and retired_in_log(project, m.session) and claude_stop(row["id"])
