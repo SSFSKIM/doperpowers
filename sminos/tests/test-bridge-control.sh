@@ -98,6 +98,10 @@ for line in open(sys.argv[1]):
 print(n)' "$@"
 }
 kept_rpc() { python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["rpcs"].get(sys.argv[2])))' "$KEPT" "$1"; }
+# The child relays an op's end as it applies it and writes the kept file at the end of that batch, so
+# a watcher can hold the end a moment before the file does: what reads the kept end waits for it.
+kept_end() { python3 -c 'import json, sys
+sys.exit(0 if ((json.load(open(sys.argv[1]))["rpcs"].get(sys.argv[2]) or {}).get("end")) else 1)' "$KEPT" "$1" 2>/dev/null; }
 count_op() { python3 -c 'import json, sys; print(sum(1 for l in open(sys.argv[1]) if json.loads(l).get("op") == sys.argv[2]))' "$1" "$2"; }
 
 unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME MAWS_LANE CLAUDE_CONFIG_DIR
@@ -522,6 +526,7 @@ assert_equals "$(field_of "${OUTC#* }" result.queued)" "true" "the child answers
 until_true 100 has_event "$WATCHD" run end "$CID" || true
 assert_equals "$(field_of "$(event_of "$WATCHD" run start "$CID")" rpc)" "nonce-q1" "its run's start, relayed, carries the RPC's nonce"
 assert_equals "$(field_of "$(event_of "$WATCHD" run end "$CID")" rpc)" "nonce-q1" "and so does its end"
+until_true 100 kept_end nonce-q1 || true
 KR="$(kept_rpc nonce-q1)"
 assert_equals "$(field_of "$KR" ok)/$(field_of "$KR" result.queued)/$(field_of "$KR" end.readback.how)" "true/true/row" \
   "the answer kept under the nonce, and the end beside it once it came"
@@ -545,6 +550,7 @@ assert_equals "$(field_of "${OUTB#* }" result.started)" "true" "the child answer
 until_true 100 has_event "$WATCHD" btw end "$BID" || true
 assert_equals "$(field_of "$(event_of "$WATCHD" btw start "$BID")" rpc)" "nonce-b1" "its start, relayed, carries the RPC's nonce"
 assert_equals "$(field_of "$(event_of "$WATCHD" btw end "$BID")" rpc)" "nonce-b1" "and so does its end"
+until_true 100 kept_end nonce-b1 || true
 KB="$(kept_rpc nonce-b1)"
 assert_equals "$(field_of "$KB" result.started)/$(field_of "$KB" end.usage.output)/$(field_of "$KB" end.truncated)" "true/34/true" \
   "the answer kept under the nonce, and the end beside it, its text cut and said to be"
@@ -573,6 +579,7 @@ assert_equals "$(field_of "$(event_of "$WATCHD" media start up-m1)" rpc)/$(field
   "an attachment's read, relayed, carries the upload as the RPC's nonce"
 assert_equals "$(field_of "$(event_of "$WATCHD" media end up-m1)" rpc)/$(field_of "$(event_of "$WATCHD" media end up-m1)" index)" "up-m1/0" \
   "and so does the upload's end, its index the attachment's"
+until_true 100 kept_end up-m1 || true
 KM="$(kept_rpc up-m1)"
 assert_equals "$(field_of "$KM" op)/$(field_of "$KM" result.queued)/$(field_of "$KM" end.state)/$(field_of "$KM" end.phase)" "media/true/forwarded/end" \
   "the answer kept under the nonce, and the upload's end beside it"
@@ -595,6 +602,7 @@ CID="$(field_of "${OUTC#* }" id)"
 until_true 100 has_event "$WATCHD" run end "$CID" || true
 assert_equals "$(field_of "$(event_of "$WATCHD" run start "$CID")" child)" "$WANT" "the surviving reload uses the same child"
 assert_equals "$(field_of "$(event_of "$WATCHD" run end "$CID")" rpc)" "nonce-reload-text" "the reload's text end carries its nonce"
+until_true 100 kept_end nonce-reload-text || true
 KR="$(kept_rpc nonce-reload-text)"
 assert_equals "$(field_of "$KR" end.readback.how)/$(field_of "$KR" end.settled.ok)" "text/true" "the surviving reload's text is kept for daemon recovery"
 assert_contains "$(field_of "$KR" end.readback.text)" "Reloaded: 10 plugins" "the engine's line is kept verbatim"
