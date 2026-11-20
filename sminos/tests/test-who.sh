@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # A session's address in what it writes, and `sminos who`, which reads it
 # back. `who` alone (`--session`, the address mod's call) prints the line a
@@ -8,7 +10,7 @@
 # reads the commit's trailer and says who that session is now: its alias
 # (the current one when renamed), project, machine and state; the session it
 # went on as when it went to the background (a hand-off), stopped too once
-# that one ended; the project it moved to, when known here; how to reach
+# that one ended, and the seat's session now for a seat's former occupant; the project it moved to, when known here; how to reach
 # it, or to resume it once stopped. An address no session known here answers to
 # is still said as the line says it. A commit without the line exits 4.
 # Hermetic: HOME and SMINOS_HOME are temporary; the enrollment is a file
@@ -181,6 +183,21 @@ who "$H_SHA"
 assert_contains "$OUT" "went on as handy#3c000003 (bg), teamproj on alpha: stopped" "the ended successor, stopped"
 assert_contains "$OUT" "claude --resume $S3" "resume the successor by its id"
 assert_not_contains "$OUT" "no session 2b000002" "not said as unknown"
+
+echo "a seat refilled: its former occupant's line names the session the seat went on as"
+R1=9e000009-0000-4000-8000-000000000009
+R2=af00000a-0000-4000-8000-00000000000a
+transcript "$R1" "$REPO"
+(cd "$REPO" && "$SMINOS" seat add teamproj keeper --session "$R1" >/dev/null 2>&1)
+who --session "$R1"
+LINER="$OUT"
+assert_equals "$LINER" "Sminos-Session: keeper#9e000009 (teamproj on alpha)" "the seat's occupant's line"
+commit_with "$(printf 'keep\n\n%s' "$LINER")"
+transcript "$R2" "$REPO"
+(cd "$REPO" && "$SMINOS" seat add teamproj keeper --session "$R2" >/dev/null 2>&1)   # the refill: R1 replaced
+who "$SHA"
+assert_contains "$OUT" "went on as keeper#af00000a" "the seat's session now, the thread its occupant was in"
+assert_not_contains "$OUT" "its session replaced" "not the replaced session as itself"
 
 echo "moved to a project known here, and ended there: found there"
 REPO2="$T/repo2"

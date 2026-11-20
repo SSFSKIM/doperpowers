@@ -5,6 +5,8 @@ the last thing it said, the message's text where the turn ended on a final messa
 response of its own (`answeredWithoutRequest`, no request made) that says nothing of the session's; and that response
 ends the turn for the readers of its end. Through the real CLI in a temp home; the rows are shaped as the engine
 writes them (2.1.312, read off a live to-human final message)."""
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import json
 import os
 import subprocess

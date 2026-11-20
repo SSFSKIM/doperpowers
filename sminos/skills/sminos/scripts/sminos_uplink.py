@@ -692,11 +692,8 @@ def member_frame(pid, m, launch=None, visibility=False):
     they never ride a log event."""
     rec = m.record or {}
     origin = rec.get("origin") if isinstance(rec.get("origin"), dict) else dict(sminos.DEFAULT_ORIGIN)
-    controller = rec.get("controller") if isinstance(rec.get("controller"), dict) else None
-    lane = "B" if (controller or {}).get("lane") == "B" or (controller is None and origin.get("kind") == "maws") \
-        else "A"
-    frame = {"t": "member", "session": m.session, "alias": m.alias, "project": pid, "lane": lane,
-             "state": m.state}
+    frame = {"t": "member", "session": m.session, "alias": m.alias, "project": pid,
+             "lane": sminos.records_module().lane_of(m.record), "state": m.state}
     if m.title:
         frame["title"] = m.title
     frame["cwd"] = m.cwd
@@ -1037,7 +1034,9 @@ class Link:
         push asks `reach?`, whatever admitted it before): the same event,
         remembered as the words pass's, under a new id. With the lane full
         nothing is asked now, and the event, still owed, is asked `words?`
-        again by a later pass."""
+        again by a later pass. A session that stopped while its words were
+        asked about, and that this machine now holds (M3: queue_asks drops
+        it), is asked nothing more: the event stays owed for its reopening."""
         if self.session_lane.queued() >= UPLOAD_AHEAD:
             return
         e, project = held["event"], held["project"]
@@ -1843,7 +1842,16 @@ class Link:
                     current[sid] = frame
         if len(self.frames) > len(seen):
             self.frames = {sid: held for sid, held in self.frames.items() if sid in seen}   # those of rows gone
-        frames = [f for sid, f in current.items() if self.members_sent.get(sid) != f]
+        frames = []
+        for sid, f in current.items():
+            sent = self.members_sent.get(sid)
+            if sent == f:
+                continue
+            if sent is not None and sent.get("lane") != f.get("lane"):
+                # The endpoint withdraws the old listing before it takes the new one (D1: a thread MAWS
+                # reopens as lane B is not listed twice).
+                frames.append({"t": "member", "session": sid, "gone": True})
+            frames.append(f)
         frames += [{"t": "member", "session": sid, "gone": True} for sid in self.members_sent if sid not in current]
         batch, size, unsent = [], 0, set()
         for f in frames:
@@ -2043,7 +2051,7 @@ class Link:
                     return
                 for sid, e, kind in owed:
                     key = (pid, sid, e["writer"])
-                    if key in self.asked:
+                    if key in self.asked or sminos.hold_for(sid):   # held (M3); queue_asks asks it last, afresh
                         continue
                     if isinstance(e.get("verified"), dict) and (revoked is None or rl10.event_revoked(e, revoked)):
                         if revoked is not None:
@@ -2087,7 +2095,16 @@ class Link:
     def queue_asks(self, batch):
         """One entry of the words pass, [(id, what it asks, frame)], queued,
         and each ask held from now until its answer or its deadline
-        (WORDS_WAIT for a `words?`, REACH_WAIT for a `reach?`)."""
+        (WORDS_WAIT for a `words?`, REACH_WAIT for a `reach?`). An ask whose
+        recipient this machine holds now (sminos.hold_now, read here, the
+        last step before it goes: T1's M3) is dropped, neither sent nor
+        held open; the pass that finds it reopened asks it."""
+        held_now = {}
+        for sid in dict.fromkeys(frame["session"] for _, _, frame in batch):
+            held_now[sid] = sminos.hold_now(sid)
+        batch = [(ask, held, frame) for ask, held, frame in batch if not held_now[frame["session"]]]
+        if not batch:
+            return
         self.session_lane.send([frame for _, _, frame in batch])
         now = time.monotonic()
         for ask, held, _ in batch:

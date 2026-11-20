@@ -210,8 +210,17 @@ def push_live(peer, session, text, event=None, project=None, words=None, marker=
     log event the text carries (`carried`, every event of a batch; `[event]`
     by default) that goes as a peer frame must be one the uplink holds the
     endpoint's `deliver` for (S.ReachGate), else S.ReachHeld — a
-    SendFailed("before") — is raised before anything is handed over."""
+    SendFailed("before") — is raised before anything is handed over.
+
+    Then the peer is bound to its recipient (S.bound_peer: the session, the
+    pid and the socket read afresh together, and the process the caller
+    looked at), and every route below goes through that peer, bound again
+    before each route that follows a declined bridge (the supervisor, the
+    inbox frame);
+    S.PushHeld when the session is held or another process runs it,
+    SendFailed("before") when none does."""
     S.reach_hold(project, session, [event] if carried is None else carried, words)
+    peer = S.bound_peer(peer, session)
     if marker is not None:
         text = "%s\n%s" % (marker, text)
     else:
@@ -227,10 +236,15 @@ def push_live(peer, session, text, event=None, project=None, words=None, marker=
         owner = words if words is not None else event is not None and S.owner_event(event)
         if owner and deliver(session, project, event, text):
             return
+        # The bridge declined, which can take seconds: each route after it is bound again, so a `/clear` meanwhile
+        # (the same pid, job and socket, another session) is no route for this session's text.
+        if owner:
+            peer = S.bound_peer(peer, session)
         if owner and bg_job(peer):
             took = supervisor_reply(bg_job(peer), text, session)
             if took is True:
                 return
+            peer = S.bound_peer(peer, session)
     sender = str(event.get("via") or event.get("from") or "") if event is not None else ""
     # from_project arrives in synced events and lands in a shell argument: only an id-shaped one is used
     origin = event.get("from_project") if event is not None else None

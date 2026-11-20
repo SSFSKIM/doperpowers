@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # The bridge's session endpoint (DC2 M1, DX5): `sminos bridge --session <id>`,
 # the child the bridge mod spawns for a session's life, and `sminos watch`, the

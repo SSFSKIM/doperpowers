@@ -10,6 +10,8 @@ Pure: sminos_jobs opens nothing; HOME and SMINOS_HOME are made temporary anyway,
 as for every run of sminos code here.
 """
 
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import atexit
 import json
 import os

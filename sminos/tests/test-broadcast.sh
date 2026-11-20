@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # Scoped broadcast (§5a of the sminos org directory,
 # docs/doperpowers/specs/2026-10-18-smns-org-directory-design.md): `say` with

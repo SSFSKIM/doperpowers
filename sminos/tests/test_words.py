@@ -19,7 +19,11 @@ one temporary directory; nothing listens beyond a Unix socket there.
 Run: python3 -B sminos/tests/test_words.py
 """
 
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import base64
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -30,6 +34,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid as uuidlib
 from pathlib import Path
 from unittest import mock
 
@@ -662,6 +667,8 @@ class Members(Machine):
         changed = link.session_lane.take()
         self.assertEqual([(f["session"], f.get("title")) for f in changed], [(S1, "a new title")],
                          "a changed title sent alone")
+        # A thread stays a member when its process ends (T1's M3); a lane B session's membership ends with it.
+        self.assertTrue(sminos.records_module().set_controller(S2, "B"))
         end2()
         sminos.forget_caches()
         link.plane.live = link.plane.records.scan()   # the plane's look at the engine's records (PRESENCE_EVERY)
@@ -771,8 +778,9 @@ class MembersFirst(Machine):
         frames = link.session_lane.take()
         events = self.first(frames, lambda f: self.carries(f, "testhost/" + S1))
         self.assertIsNotNone(events, "its event went up")
+        # A `maws` origin makes it lane B: a `gone` (no owners) goes before its new frame.
         changed = self.first(frames, lambda f: f["t"] == "member" and f["session"] == S1
-                             and f["owners"] == ["mem-1"])
+                             and f.get("owners") == ["mem-1"])
         self.assertIsNotNone(changed, "the record as it is now was published")
         self.assertLess(changed, events)
         link.next_upload = 0.0
@@ -1398,7 +1406,9 @@ class Deliverers(WordsRig):
     def test_push_live_never_decides_a_persons_words_by_the_writer(self):
         e = {"ts": "2026-10-27T01:00:01.000Z", "writer": "hub/mem-1", "seq": 1, "kind": "human", "from": "alice",
              "to": [{"session": S1, "alias": "m"}], "text": "x"}
-        peer = {"sessionId": S1, "messagingSocketPath": "/nonexistent"}
+        self.session(self.hp, S1, inbox=True)   # every push is bound to the process that runs its session
+        sminos.forget_caches()
+        peer = sminos.peer_for_session(S1)
         with self.assertRaises(sminos.SendFailed) as raised:
             control.push_live(peer, S1, "x", e, self.hp.id)
         self.assertEqual(raised.exception.phase, "before")
@@ -1428,6 +1438,206 @@ class Deliverers(WordsRig):
         self.assertEqual(sorted(self.bridged()), [("hub/mem-1", 1), ("othermachine/human", 1)],
                          "the owner's words by their writer, through the bridge")
 
+
+class Held(WordsRig):
+    """A stopped thread its human opened, on a cut-over machine (T1's M3):
+    the hold comes before the words and reach gates, on every path that
+    asks. Its words are never asked about and never counted a failed
+    attempt; an ask out when it stopped counts nothing; a late verdict that
+    calls for a push pushes nothing, asks nothing more and leaves the event
+    owed; a refusal settles as today; reopened, it is asked and delivered."""
+
+    def setUp(self):
+        super().setUp()
+        sminos.threads_module().ensure(S1)   # its record; no process holds S1
+        sminos.lifecycle(self.hp, S1, "joined", alias="m", name_source="user", machine="testhost",
+                         cwd=self.hp.root, worktree="", role="", seat="", by="", session_kind="interactive")
+        sminos.forget_caches()
+        self.assertEqual(sminos.hold_for(S1), "human")
+
+    def test_its_words_are_never_asked_and_never_counted(self):
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        self.assertEqual(sminos.words_due(self.hp, [member(S1)]), {})
+        for _ in range(sminos.DELIVERY_ATTEMPTS + 2):
+            self.assertEqual(sminos.words_unanswered(self.hp, member(S1), e, "no verdict"), 0)
+            result = sminos.deliver_next(self.hp, member(S1))
+            self.assertEqual([o for _, o in result["outcomes"]], [sminos.HELD_HUMAN])
+        w = self.record(self.hp, S1).get("hub/mem-1") or {}
+        self.assertEqual((w.get("settled", 0), w.get("attempts", 0)), (0, 0), "owed, no attempt counted")
+
+    def test_a_late_verdict_that_calls_for_a_push_pushes_nothing_and_a_refusal_settles(self):
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        for verdict in ("words", "peer"):
+            self.assertEqual(sminos.deliver_verdict(self.hp, member(S1), e, verdict), sminos.HELD_HUMAN)
+        self.assertEqual(sminos.deliver_reach(self.hp, member(S1), e, "deliver"), sminos.HELD_HUMAN)
+        self.assertEqual(self.bridge, [], "nothing pushed")
+        self.assertEqual(self.settled(self.hp, S1, "hub/mem-1"), 0)
+        link = self.link()
+        held = {"key": (self.hp.id, S1, "hub/mem-1"), "project": self.hp, "member": member(S1), "event": e}
+        link.ask_peer(held)
+        self.assertEqual(link.session_lane.take(), [], "a late peer verdict asks no reach?")
+        self.assertEqual(sminos.deliver_verdict(self.hp, member(S1), e, "refuse"), outcomes.REFUSED_WORDS)
+        self.assertEqual(self.settled(self.hp, S1, "hub/mem-1"), 1)
+        r = self.arrive(self.hp, "hub/mem-1", 2, signer=DEV_A)
+        self.assertEqual(sminos.deliver_reach(self.hp, member(S1), r, "refuse"), outcomes.REFUSED_REACH)
+        self.assertEqual(self.settled(self.hp, S1, "hub/mem-1"), 2)
+
+    def test_reopened_its_words_are_asked_and_delivered_on_the_verdict(self):
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A, text="while you were away")
+        self.session(self.hp, S1, inbox=True)
+        self.assertEqual(sminos.hold_for(S1), "")
+        self.assertEqual([x["seq"] for x in sminos.words_due(self.hp, [member(S1)])[S1]], [1])
+        sminos.deliver_verdict(self.hp, member(S1), e, "words")
+        self.assertEqual(self.bridged(), [("hub/mem-1", 1)])
+
+
+    def test_a_clear_in_the_same_process_is_held_at_every_push_and_ask(self):
+        """The process that ran S1 runs another session after a `/clear`
+        while this process's copy of the engine's records still names S1
+        running: each boundary that would push or ask reads them afresh and
+        holds, pushing and asking nothing."""
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        self.session(self.hp, S1, inbox=True)
+        d = os.path.join(os.environ["HOME"], ".claude", "sessions")
+        path = next(os.path.join(d, n) for n in os.listdir(d) if json.loads(Path(d, n).read_text())["sessionId"] == S1)
+        rec = json.loads(Path(path).read_text())
+        link = self.link()
+
+        def stale():
+            Path(path).write_text(json.dumps(rec))
+            sminos.forget_caches()
+            sminos.peer_records()
+            self.assertEqual(sminos.hold_for(S1), "", "this process's copy: S1 runs")
+            Path(path).write_text(json.dumps(dict(rec, sessionId=S3)))   # the /clear: the same pid, another id
+        for name, call in (("words verdict", lambda: sminos.deliver_verdict(self.hp, member(S1), e, "words")),
+                           ("peer verdict", lambda: sminos.deliver_verdict(self.hp, member(S1), e, "peer")),
+                           ("reach verdict", lambda: sminos.deliver_reach(self.hp, member(S1), e, "deliver")),
+                           ("the delivery pass", lambda: [o for _, o in sminos.deliver_next(
+                               self.hp, member(S1))["outcomes"]][0]),
+                           ("a push", lambda: sminos.push_member(member(S1), "x", True))):
+            with self.subTest(name):
+                stale()
+                self.assertEqual(call(), sminos.HELD_HUMAN)
+        stale()
+        link.ask_peer({"key": (self.hp.id, S1, "hub/mem-1"), "project": self.hp, "member": member(S1), "event": e})
+        self.assertEqual(link.session_lane.take(), [], "no reach? asked")
+        self.assertEqual(self.bridge, [], "nothing pushed")
+        self.assertEqual(self.inbox(S1), [])
+
+    def test_an_ask_whose_recipient_stopped_after_the_pass_checked_it_is_neither_sent_nor_held_open(self):
+        """Two recipients' words in one batch; the first's engine row switches
+        (a `/clear`) after the pass checked it and before the batch is
+        queued: only the second's ask goes out and is registered."""
+        self.session(self.hp, S1, inbox=True)
+        self.session(self.hp, S2, inbox=True)
+        self.arrive(self.hp, "hub/mem-1", 1, to=(S1, S2), signer=DEV_A)
+        path = self.engine_record(S1)
+        rec = json.loads(Path(path).read_text())
+        link = self.link()
+        link.plane = mock.Mock(member_rows={self.hp.id: {S1: member(S1), S2: member(S2)}})
+        enqueue = link.queue_asks
+
+        def switched_then_queued(batch):
+            self.assertEqual(sorted(h["member"].session for _, h, _ in batch), [S1, S2], "both checked and batched")
+            Path(path).write_text(json.dumps(dict(rec, sessionId=S3)))
+            return enqueue(batch)
+        with mock.patch.object(link, "queue_asks", side_effect=switched_then_queued), \
+                mock.patch.object(link, "members_before", return_value=True):   # their member frames, not asked here
+            link.ask_words({self.hp.id: self.hp})
+        self.assertEqual([f["session"] for f in link.session_lane.take() if f["t"] == "words?"], [S2])
+        self.assertEqual(sorted(h["member"].session for h in link.asks.values()), [S2])
+        self.assertEqual(sorted(k[1] for k in link.asked), [S2])
+
+    def test_a_seated_one_on_send_wait_is_recorded_and_exits_4_without_waiting(self):
+        """An older copy's seat holding the stopped S1 (D7): an operator's
+        `send --wait` on this cut-over machine, whose words the gate holds,
+        is recorded and owed, waits for nothing and exits 4."""
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": S1, "alias": "w", "group": "g", "cwd": self.hp.root,
+                                  "status": "idle"})
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        r = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "send", "g/w", "while away", "--wait"],
+                           cwd=self.hp.root, env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn("recorded and held", r.stdout)
+        self.assertIn("nothing was started", r.stderr)
+        sminos.forget_caches()
+        self.assertEqual([x["text"] for x in sminos.owed(self.hp, member(S1))], ["while away"])
+        self.assertEqual(self.bridge, [])
+
+    def engine_record(self, sid):
+        d = os.path.join(os.environ["HOME"], ".claude", "sessions")
+        return next(os.path.join(d, n) for n in os.listdir(d) if json.loads(Path(d, n).read_text())["sessionId"] == sid)
+
+    def stale_after_clear(self, path, rec):
+        """This process's copy of the engine's records names S1 running; then the same pid's record names
+        another session, its socket kept (a `/clear`)."""
+        Path(path).write_text(json.dumps(rec))
+        sminos.forget_caches()
+        sminos.peer_records()
+        self.assertEqual(sminos.hold_for(S1), "", "this process's copy: S1 runs")
+        Path(path).write_text(json.dumps(dict(rec, sessionId=S3)))
+
+    def seat_it(self):
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": S1, "alias": "w", "group": "g", "cwd": self.hp.root,
+                                  "status": "idle"})
+        return sminos.load_seat(sminos.meta_path(seat_id))
+
+    def test_a_seated_send_after_a_clear_pushes_nothing_through_the_inbox_the_pid_kept(self):
+        self.session(self.hp, S1, inbox=True)
+        path = self.engine_record(S1)
+        rec = json.loads(Path(path).read_text())
+        seat = self.seat_it()
+        self.stale_after_clear(path, rec)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            sminos.send_to_seat(seat, "to the old session", "m1", False,
+                                record=lambda s: sminos.record_send(s, "human", "human", "to the old session", "m1"))
+        self.assertIn("recorded and held", out.getvalue())
+        self.assertEqual(self.inbox(S1), [], "nothing reached the socket the pid kept")
+        self.assertEqual(self.bridge, [])
+        sminos.forget_caches()
+        self.assertEqual([x["text"] for x in sminos.owed(self.hp, member(S1))], ["to the old session"])
+
+    def test_an_expired_verdict_after_a_clear_counts_no_attempt(self):
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        self.session(self.hp, S1, inbox=True)
+        path = self.engine_record(S1)
+        self.stale_after_clear(path, json.loads(Path(path).read_text()))
+        self.assertEqual(sminos.words_unanswered(self.hp, member(S1), e, "no verdict"), 0)
+        w = self.record(self.hp, S1).get("hub/mem-1") or {}
+        self.assertEqual(w.get("attempts", 0), 0)
+
+    def test_a_seated_send_whose_append_waits_for_its_writers_head(self):
+        """The operator's writer waiting for the upstream's head (a new
+        enrolment): the append is queued with no seq. A plain send says so
+        and exits 0; with --wait it exits 4, waiting for nothing."""
+        self.seat_it()
+        real = sminos.waits_for_head
+
+        def queued(project, writer):
+            return sminos.writer_base(writer) == sminos.writer_id() or real(project, writer)
+        for argv, want in ((["send", "g/w", "queued note"], 0), (["send", "g/w", "queued wait", "--wait"], 4)):
+            with self.subTest(argv=argv), mock.patch.object(sminos, "waits_for_head", side_effect=queued), \
+                    mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+                out, here = io.StringIO(), os.getcwd()
+                os.chdir(self.hp.root)
+                try:
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                        try:
+                            sminos.main(argv)
+                            code = 0
+                        except SystemExit as x:
+                            code = x.code or 0
+                finally:
+                    os.chdir(here)
+                    sminos.forget_caches()
+                self.assertEqual(code, want, out.getvalue())
+                self.assertNotIn("Traceback", out.getvalue())
+                self.assertIn("for w:", out.getvalue())
+        self.assertEqual(self.bridge, [])
 
 class Sends(WordsRig):
     """A session's `send` is a peer's and is pushed at once, with every

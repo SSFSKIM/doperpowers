@@ -26,6 +26,8 @@ test_policy_requests.EndpointHome); nothing reaches beyond 127.0.0.1, this
 directory and a Unix socket under /tmp.
 """
 
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import base64
 import hashlib
 import json
@@ -3351,6 +3353,8 @@ class CopyNames(unittest.TestCase):
     def test_c_a_name_no_live_identity_holds_is_taken(self):
         gone = self.session("was-here")
         self.tick()
+        # A lane B session: a thread stays a member when its process ends (T1's M3).
+        self.assertTrue(sminos.records_module().set_controller(gone.sid, "B"))
         gone.end()
         self.sessions.remove(gone)
         self.tick()

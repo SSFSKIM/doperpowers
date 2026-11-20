@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # Sync of hub projects (DC4 M3 of the desk), on machines cut over to their
 # endpoints (endpoint_standin.py), never enrolled at a hub and holding no
@@ -344,11 +346,9 @@ rl_writers_here() { find "$RLOG" -name "$1.*.jsonl" | wc -l | tr -d ' '; }
 BETAOLD_WRITERS="$(rl_writers_here betaold)"
 kill "$RNB_PID"
 set +e; wait "$RNB_PID" 2>/dev/null; set -e
-rl_nb_retired() { grep -q '"reason": "ended"' "$RLOG/beta.$RNB.jsonl" 2>/dev/null; }
 (cd "$RR" && "$SMINOS" list --all --json >/dev/null)
-until_true 200 rl_nb_retired || true
-assert_equals "$(rl_nb_retired && echo retired)" retired \
-  "RL10: a session that joined as betaold and ended is retired as this machine's own, under beta"
+assert_equals "$(membership "$RLOG/beta.$RNB.jsonl" | cut -d' ' -f1)" joined \
+  "RL10: a session that joined as betaold and ended stays this machine's member under beta, stopped (T1's M3)"
 assert_not_contains "$(cat "$RLOG/betaold.$RNB.jsonl")" '"retired"' "RL10: and nothing is written under the former name"
 "$SMINOS" say "said as beta" >/dev/null
 assert_contains "$(cat "$RLOG/beta.human.jsonl")" "said as beta" "RL10: new events are written under beta"
@@ -900,19 +900,19 @@ y_ma_ends_renamed "cua_repl, wrapped up"
 until_true 200 y_titles_are '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up"]' || true
 assert_equals "$(y_titles)" '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up"]' \
   "RL10: ma renamed and closed between two ticks: alpha publishes the name it ended under, and its endpoint takes it"
-until_true 200 y_relayed membership_is "$YBLOG/alpha.$YMA.jsonl" "retired:ended ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up']" || true
+until_true 200 y_relayed membership_is "$YBLOG/alpha.$YMA.jsonl" "joined ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up']" || true
 assert_equals "$(membership "$YBLOG/alpha.$YMA.jsonl")" \
-  "retired:ended ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up']" \
-  "RL10: and beta holds it beside ma's retirement, for a view of ended sessions to name it by"
+  "joined ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up']" \
+  "RL10: and beta holds it beside ma's membership, which its process's end leaves (stopped, T1's M3), to name it by"
 printf '%s\n' "$YMA_REC" > "$HOME/.claude/sessions/ma.json"
 until_true 200 membership_is "$YALOG/alpha.$YMA.jsonl" "joined ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up']" || true
 y_ma_ends_renamed "cua_repl, round two"
 until_true 200 y_titles_are '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up", "cua_repl, round two"]' || true
 assert_equals "$(y_titles)" '["Codex native Computer Use internals", "cua_repl", "cua_repl, wrapped up", "cua_repl, round two"]' \
   "RL10: resumed, renamed and closed again between two ticks: that name is published too"
-until_true 200 y_relayed membership_is "$YBLOG/alpha.$YMA.jsonl" "retired:ended ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up', 'cua_repl, round two']" || true
+until_true 200 y_relayed membership_is "$YBLOG/alpha.$YMA.jsonl" "joined ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up', 'cua_repl, round two']" || true
 assert_equals "$(membership "$YBLOG/alpha.$YMA.jsonl")" \
-  "retired:ended ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up', 'cua_repl, round two']" \
+  "joined ['Codex native Computer Use internals', 'cua_repl', 'cua_repl, wrapped up', 'cua_repl, round two']" \
   "RL10: and beta holds that one too"
 y_settle "after titles"
 
@@ -943,10 +943,10 @@ y_took_ea() { [ "$(rl10_q "$YEPA" "any(e['kind'] == 'titled' and e['writer'] == 
 until_true 200 y_took_ea || true
 y_took_ea && pass "RL10: alpha's endpoint takes the title of a session that ended before alpha's daemon started" \
   || fail "RL10: alpha's endpoint takes the title of a session that ended before alpha's daemon started"
-until_true 200 y_relayed membership_is "$YBLOG/alpha.$YEA.jsonl" "retired:ended ['Desk sidebar for ended sessions']" || true
+until_true 200 y_relayed membership_is "$YBLOG/alpha.$YEA.jsonl" "joined ['Desk sidebar for ended sessions']" || true
 y_settle "after alpha's daemon restarts"
-assert_equals "$(membership "$YBLOG/alpha.$YEA.jsonl")" "retired:ended ['Desk sidebar for ended sessions']" \
-  "RL10: and beta holds it"
+assert_equals "$(membership "$YBLOG/alpha.$YEA.jsonl")" "joined ['Desk sidebar for ended sessions']" \
+  "RL10: and beta holds it, a member still (stopped, T1's M3)"
 assert_equals "$(grep -c "beta while alpha's daemon is down" <<<"$(cat "$YALOG/"beta.*.jsonl)")" 5 \
   "RL10: what beta said while alpha's daemon was down reaches alpha on its new connection, each once"
 

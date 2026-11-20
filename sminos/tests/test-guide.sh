@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # `sminos guide` (M7 of the sminos org directory,
 # docs/doperpowers/specs/2026-10-18-smns-org-directory-design.md §9): the text
@@ -347,6 +349,14 @@ record forked "$S10" "$REPO"
 guide "$(payload "$S10" "$REPO" "$T/none.jsonl" | sed 's/"startup"/"fork"/')"
 assert_contains "$(head -1 <<<"$OUT")" "forked [0a00000a]" "the fork is named"
 assert_contains "$(head -1 <<<"$OUT")" "You are a fork" "and told it is one"
+assert_contains "$(head -1 <<<"$OUT")" "a copy, with a session id and a name of your own" \
+  "a copy with an identity of its own"
+assert_contains "$(head -1 <<<"$OUT")" "Every sminos line above this one was written for the session you were copied from" \
+  "whose sminos lines above were written for the session it was copied from"
+assert_contains "$(head -1 <<<"$OUT")" "messages addressed to it are not for you; you are its peer." \
+  "and whose messages are not for it: it is its origin's peer"
+assert_not_contains "$(head -1 <<<"$OUT")" "the task you were forked for" \
+  "and names no task it was forked for, which its context may not hold (M6's evaluation)"
 guide "$(payload "$S10" "$REPO" "$T/none.jsonl")"
 assert_not_contains "$OUT" "You are a fork" "a session that is no fork is not told so"
 

@@ -1,0 +1,65 @@
+{
+  "about": "sminos's declared channels and threads as MAWS and sminos both read them (the design: the doperpowers repository, docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md, D3's id and D7's reader rule; its contracts X4 and X7). `ids`: `id` is a declared channel's id exactly when `channel` is true; the string is tested as written, never trimmed and never folded to lower case. `retired`: each case is one session's own lifecycle events in log order, and each step says whether the session is a member of the project once its event is read. An event shows only what the rule reads (`kind`, `reason`, `thread`); a harness adds what its implementation needs to take the events as one session's, from that session's own writer, authenticated. An event is stamped when its `thread` is a non-empty string. The file changes only by the sync rule of MAWS docs/doperpowers/plans/2026-11-18-mw-sminos-channels.md, Interfaces §B.",
+  "version": 1,
+  "ids": [
+    {"id": "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c", "channel": true, "why": "version 8, variant 9"},
+    {"id": "00000000-0000-8000-8000-000000000000", "channel": true, "why": "version 8, variant 8, every other digit zero"},
+    {"id": "0123abcd-4567-8abc-a123-456789abcdef", "channel": true, "why": "version 8, variant a"},
+    {"id": "ffffffff-ffff-8fff-bfff-ffffffffffff", "channel": true, "why": "version 8, variant b, every other digit f"},
+    {"id": "7d2b9c40-1f3e-4a6b-8c5d-9e0f1a2b3c4d", "channel": false, "why": "version 4: a minted project id"},
+    {"id": "2ed02f3c-5d7b-5e0a-9b1f-6a4c8d2e0f13", "channel": false, "why": "version 5: a project id derived from a remote or a machine's name"},
+    {"id": "c232ab00-9414-11ec-b3c8-9f6bdeced846", "channel": false, "why": "version 1"},
+    {"id": "018f4d2a-6b3c-7e1d-8a9b-0c1d2e3f4a5b", "channel": false, "why": "version 7"},
+    {"id": "5c2a9e10-8b3d-4f41-9a6c-2d4e6f8a0b1c", "channel": false, "why": "version 4 with an 8 opening the second group: the version is the third group's first digit"},
+    {"id": "5c2a9e10-7b3d-8f41-7a6c-2d4e6f8a0b1c", "channel": false, "why": "version 8, variant digit 7: not RFC 9562's variant"},
+    {"id": "5c2a9e10-7b3d-8f41-0a6c-2d4e6f8a0b1c", "channel": false, "why": "version 8, variant digit 0"},
+    {"id": "5c2a9e10-7b3d-8f41-ca6c-2d4e6f8a0b1c", "channel": false, "why": "version 8, variant digit c"},
+    {"id": "5c2a9e10-7b3d-8f41-fa6c-2d4e6f8a0b1c", "channel": false, "why": "version 8, variant digit f"},
+    {"id": "00000000-0000-0000-0000-000000000000", "channel": false, "why": "the nil UUID"},
+    {"id": "ffffffff-ffff-ffff-ffff-ffffffffffff", "channel": false, "why": "the max UUID"},
+    {"id": "5C2A9E10-7B3D-8F41-9A6C-2D4E6F8A0B1C", "channel": false, "why": "upper case: an id is lower case, and is never folded before the test"},
+    {"id": "5c2a9e10-7b3d-8F41-9a6c-2d4e6f8a0b1c", "channel": false, "why": "one upper-case digit"},
+    {"id": "5c2a9e107b3d8f419a6c2d4e6f8a0b1c", "channel": false, "why": "no hyphens"},
+    {"id": "{5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c}", "channel": false, "why": "braces"},
+    {"id": "urn:uuid:5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c", "channel": false, "why": "a URN"},
+    {"id": "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c\n", "channel": false, "why": "a trailing newline: the whole string is the id (a pattern's `$` must not pass it)"},
+    {"id": " 5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c", "channel": false, "why": "a leading space"},
+    {"id": "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c ", "channel": false, "why": "a trailing space"},
+    {"id": "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1", "channel": false, "why": "one digit short"},
+    {"id": "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c0", "channel": false, "why": "one digit long"},
+    {"id": "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1g", "channel": false, "why": "a digit that is not hexadecimal"},
+    {"id": "５c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c", "channel": false, "why": "a full-width digit: ASCII digits alone count"},
+    {"id": "desk-integration", "channel": false, "why": "a name"},
+    {"id": "", "channel": false, "why": "the empty string"}
+  ],
+  "retired": [
+    { "name": "a stamped joined, then an unstamped ended: still a member",
+      "steps": [
+        {"event": {"kind": "joined", "thread": "11111111-1111-4111-8111-111111111111"}, "member": true},
+        {"event": {"kind": "retired", "reason": "ended"}, "member": true}
+      ] },
+    { "name": "then an unstamped moved: a member no more",
+      "steps": [
+        {"event": {"kind": "joined", "thread": "11111111-1111-4111-8111-111111111111"}, "member": true},
+        {"event": {"kind": "retired", "reason": "ended"}, "member": true},
+        {"event": {"kind": "retired", "reason": "moved"}, "member": false}
+      ] },
+    { "name": "a stamped ended after the unstamped one: a member no more",
+      "steps": [
+        {"event": {"kind": "joined", "thread": "11111111-1111-4111-8111-111111111111"}, "member": true},
+        {"event": {"kind": "retired", "reason": "ended"}, "member": true},
+        {"event": {"kind": "retired", "reason": "ended", "thread": "11111111-1111-4111-8111-111111111111"}, "member": false}
+      ] },
+    { "name": "an unstamped joined, then an unstamped ended: a member no more",
+      "steps": [
+        {"event": {"kind": "joined"}, "member": true},
+        {"event": {"kind": "retired", "reason": "ended"}, "member": false}
+      ] },
+    { "name": "a stamped joined, then an unstamped moved, then an unstamped ended: a member no more",
+      "steps": [
+        {"event": {"kind": "joined", "thread": "11111111-1111-4111-8111-111111111111"}, "member": true},
+        {"event": {"kind": "retired", "reason": "moved"}, "member": false},
+        {"event": {"kind": "retired", "reason": "ended"}, "member": false}
+      ] }
+  ]
+}

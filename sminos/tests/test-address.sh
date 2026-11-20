@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # Addressing across the org and the copy in the sender's log (M5 of the
 # sminos org directory, docs/doperpowers/specs/2026-10-18-smns-org-directory-design.md

@@ -14,6 +14,8 @@ directly as the endpoint's frame would leave it, no git run, no daemon.
 Run: python3 -B -I sminos/tests/test_declared.py
 """
 
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import json
 import os
 import shutil
