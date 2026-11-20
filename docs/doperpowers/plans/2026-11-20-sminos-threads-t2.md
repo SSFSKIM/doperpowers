@@ -30,7 +30,7 @@ composite (G2, eleven items), proved as Concrete Steps maps it.
 
 - [x] (2026-11-20) The direction ruled by the owner (one wake path) and folded into the composite (PR #574).
 - [x] (2026-11-20) The engine read again on 2.1.329 (`wake-spike-2.md`, E17 to E24) and this plan's first draft reviewed twice; the composite's D2 revised (the wake carries no message, PR #575) and this plan rewritten on it.
-- [ ] M1 — What a wake reads and says, the record's field, and a test engine that can be woken.
+- [x] (2026-11-20 12:20Z) M1 — What a wake reads and says, the record's field, and a test engine that can be woken. Commits `94b98e29`..`2ac241c3`; three reviews, the last item read by the controller; gates GREEN on `2ac241c3`.
 - [ ] M2 — The wake: `resume_session` starts a process and pushes to it; transitions take the wake's lock.
 - [ ] M3 — Delivery wakes every stopped thread, and holds what it cannot push.
 - [ ] M4 — The verbs, what a sender is told on any machine, and the direct send.
@@ -1296,6 +1296,24 @@ is read defensively (§1). devcloud is not touched.
   directory, so a daemon sees them; the shell stub hands a wake with no
   message to the Python twin, and `test_wake.py` runs the shared cases
   against both forms.
+
+- 2026-11-20 — **M1's reviews, and what they moved.** `row_of` checks the
+  row's `sessionId` on every lookup (its cache is keyed by a path that ids
+  sharing a first eight share). A transcript the index found that is gone is
+  looked up again, and no file reads as `transcript`, never as a turn
+  unknown. `waking` is dropped whenever this code changes a record's
+  `current` (`_apply`, `REPLACED_DROPS`, `OCCUPANT_MARKS`), so an earlier
+  occupant given the thread again finds none of its old field. Model names
+  are one model only when their whole ids match; a family alias (`haiku`)
+  against an id is shown as both names (E10's measured case), never assumed
+  the same. One function decides whether a wake passes flags, for both the
+  `mode` reason and the launch, and W2 tells it when it is row 12's flagless
+  retry or `waking.saved` is set; the `mode` check reads the mode alone and
+  never probes a `--settings` path. `mode_case` answers `own` or `ceiling`
+  for the sender's words (M3, M4), and `policy_inputs` the files the ceiling
+  is read from (M3's memory key). An unknown ceiling is read as `default`.
+  The test engine signals only a helper whose command line it verifies as
+  its own, at every signal.
 
 ## Outcomes & Retrospective
 
