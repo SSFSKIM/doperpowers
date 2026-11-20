@@ -254,6 +254,14 @@ class Owned(Owner):
         self.assertFalse(self.ended(threads.stamp(sid)))
         self.assertEqual(self.asked(), [[sid[:8]]])
 
+    def test_the_command_it_suggests_quotes_a_host_name_the_shell_would_split(self):
+        sid, _ = self.opened()
+        self.standin(hosts=[host("dc a-0001", sid[:8]), adopted("lab;box", sid[:8])])
+        code, out = self.cli("retire", "alpha")
+        self.assertEqual(code, 1, out)
+        self.assertIn("`devcloud vm down 'dc a-0001'` deletes it", out)
+        self.assertIn("`devcloud vm down 'lab;box'` releases it", out)
+
     def test_purge_and_remove_are_refused_too_for_a_seat_and_for_a_session_its_human_opened(self):
         sid, _ = self.opened()
         wsid, _, seat_id = self.seated()

@@ -37,6 +37,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import struct
@@ -1770,9 +1771,10 @@ def owned_words(owned):
         parts.append("it %s hosts that still exist: %s; %s a host is its owner's call: once nothing on it is "
                      "needed, %s, and then it can be retired" % (
                          made, ", ".join(host_words(v) for v in owned.vms), act,
-                         "; ".join("`devcloud vm down %s` %s" % (v.get("name"), "releases it and leaves it running"
-                                                                 if is_adopted(v) else "deletes it")
-                                   for v in owned.vms)))
+                         "; ".join("`devcloud vm down %s` %s" % (
+                             shlex.quote(str(v.get("name"))),
+                             "releases it and leaves it running" if is_adopted(v) else "deletes it")
+                             for v in owned.vms)))
     if owned.unknown:
         parts.append("%sdevcloud could not tell whether it made a host that still exists: %s" % (
             "and " if parts else "", "; ".join(unknown_words(u) for u in owned.unknown)))
