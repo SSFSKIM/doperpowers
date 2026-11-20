@@ -32,7 +32,7 @@ composite (G2, eleven items), proved as Concrete Steps maps it.
 - [x] (2026-11-20) The engine read again on 2.1.329 (`wake-spike-2.md`, E17 to E24) and this plan's first draft reviewed twice; the composite's D2 revised (the wake carries no message, PR #575) and this plan rewritten on it.
 - [x] (2026-11-20 12:20Z) M1 — What a wake reads and says, the record's field, and a test engine that can be woken. Commits `94b98e29`..`2ac241c3`; three reviews, the last item read by the controller; gates GREEN on `2ac241c3`.
 - [x] (2026-11-20 14:55Z) M2 — The wake: `resume_session` starts a process and pushes to it; transitions take the wake's lock. Commits `d52f01b0`..`e2fe7c64`; three reviews, the last fix read by the controller; gates GREEN on `e2fe7c64`.
-- [ ] M3 — Delivery wakes every stopped thread, and holds what it cannot push.
+- [x] (2026-11-20 19:35Z) M3 — Delivery wakes every stopped thread, and holds what it cannot push. Commits `ca38e7f7`..`b482b4ce`; three reviews, the last fix read by the controller; gates GREEN on `b482b4ce`.
 - [ ] M4 — The verbs, what a sender is told on any machine, and the direct send.
 - [ ] The frontier review of M1 to M4 as one range, by the composite's holder, and its fixes.
 - [ ] M5 — What sessions are told, older copies, several senders, and the acceptance on a real engine.
@@ -1203,6 +1203,15 @@ is read defensively (§1). devcloud is not touched.
   runs there; the first wake still passes flags, and the next reads the
   row the engine made.
 
+- Observation: from M2 a wake reads the engine's job list on every call, and
+  one rig that patched only the launch (`test_reach_gate.py`) let it run the
+  real `claude agents` (under the test's temporary `HOME`; nothing
+  launched). From M3 the preamble every Python suite runs
+  (`devcloud_isolation.py`) puts `sminos/tests/no-engine/claude` first on
+  `PATH`; a suite with its own engine puts that first and checks it.
+- Observation: `test_threads_ended.py` reuses `test_threads_stopped.Rig`, so
+  a fixture default in one changes the other.
+
 ## Decision Log
 
 - 2026-11-20 — **Verification.** The plan is reviewed before it is handed
@@ -1389,6 +1398,32 @@ is read defensively (§1). devcloud is not touched.
   owner's to change. `hold_verb`'s interim words in M3 stand until M4
   replaces the verb; M4 checks that T1's "only if its human reopens" phrase
   is gone from the tree.
+
+- 2026-11-20 — **M3 as built, and what its reviews moved.** A hold of
+  either kind of thread is one answer, `hold_of`, carrying the thread it
+  was decided for (`Hold`, a `str` with `.thread`); every mark names that
+  thread, never a stamp read again after the decision. `derive` keeps T1's
+  rule by its own predicate (`stopped_human`). A plain `send` to a current
+  thread with no answering peer is recorded and delivered as `say`'s
+  (`deliver_sent`, `deliver_next(due=True)`), the thread's hold decided
+  before any endpoint gate (words, reach) on a cut-over machine too; a
+  recipient this machine already holds keeps T1's atomic `held_record`. A
+  delivery's wake of a seat skips `resume_session`'s own config-dir and cwd
+  refusals: the wake's `not_woken` decides them as holds. Every `held:`
+  outcome marks, the passing ones (`starting`, `in flight`, `sweep`,
+  `pending`, `unknown`, `busy`) included; the daemon remembers only the
+  facts and `failed`, the latter until due, and its memory's key names a
+  guarded directory (withheld, or a human-opened thread's in a protected
+  folder) by path and answer, never by a stat inside it. A bounded reading
+  that found no mode is no definitive answer: it is asked again until a
+  whole reading answers. An event for the live alone settles `recorded` at
+  the endpoint's late verdicts too. A thread whose own record is there and
+  unreadable is `held:unknown` for that thread id: owed through a words
+  timeout, asked of no endpoint, pushed nowhere; a stale mark settles
+  `recorded` only when another thread positively holds the session, and an
+  unknown binding defers. One deadline serves `wake_due` and the memory. The
+  core suite's give-up at the 60th attempt now pins a wake that fails as
+  held, never given up. `hold_verb`'s interim words stand until M4.
 
 ## Outcomes & Retrospective
 
