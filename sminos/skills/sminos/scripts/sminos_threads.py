@@ -487,6 +487,17 @@ def current_record(session, fresh=False):
     return t
 
 
+class Hold(str):
+    """A hold's reason (hold_of), carrying the thread it was decided for
+    (`thread`, None when unknown): the thread a held event's mark names
+    (sminos.held_decided), whatever the session's stamp reads by then."""
+
+    def __new__(cls, reason, thread=None):
+        h = super().__new__(cls, reason)
+        h.thread = thread
+        return h
+
+
 def hold_of(session, fresh=False):
     """Whether this machine holds delivery for a session (T2's §4): "" when
     it delivers to the session or would wake it now; else the reason it
@@ -507,10 +518,8 @@ def hold_of(session, fresh=False):
     if t is None or (sminos.running_now if fresh else sminos.session_running)(session):
         return ""
     wake = sminos.wake_module()
-    reason = wake.hold_reason(t, session)
-    if reason:
-        return reason
-    return "" if wake.wake_due(t, session) else "failed"
+    reason = wake.hold_reason(t, session) or ("" if wake.wake_due(t, session) else "failed")
+    return Hold(reason, t["thread"]) if reason else ""
 
 
 def hold_now(session):

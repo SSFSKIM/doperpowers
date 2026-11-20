@@ -2501,6 +2501,9 @@ assert_rc 0 "$RC" "broadcast is recorded"
 assert_contains "$OUT" 'lead: sent' "@all reaches a live member"
 assert_not_contains "$OUT" 'b:' "a stopped member is not in the @all audience"
 assert_equals "$(python3 -c 'import json,sys; s = [json.loads(x)["seq"] for x in open(sys.argv[1])]; print(s == list(range(1, len(s) + 1)))' "$A_LOG")" 'True' "a writer's seq increases, its lifecycle and its messages in one sequence"
+held_mark() {   # <delivered record> <writer> <seq>: "<attempts> <whether seq is marked held>" (T2's M3)
+  python3 -c 'import json,sys; w = json.load(open(sys.argv[1])).get(sys.argv[2], {}); print(w.get("attempts", 0), int(sys.argv[3]) in [int(x[0]) for x in w.get("held", [])])' "$1" "$2" "$3"
+}
 last_seq() { tail -1 "$1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["seq"])'; }
 # A live socket for b makes a later tag push.
 printf '{"pid":%s,"sessionId":"%s","name":"b","status":"idle","messagingSocketPath":"%s"}\n' "$SOCK_PID" "$B" "$SOCK" > "$HOME/.claude/sessions/b.json"
@@ -2728,6 +2731,8 @@ CLAUDE_CODE_SESSION_ID="$DUO" run "$SMINOS" say '@d4 @d2 anyone there'
 assert_rc 0 "$RC" "a tagged gone member does not abort the chat"
 assert_contains "$OUT" 'd4: recorded' "a tagged gone member's message is recorded"
 assert_contains "$OUT" 'd4: recorded and held: the session is stopped and is not woken: no conversation of it is on that machine' "held for its thread, the sender told why (T2's §5)"
+assert_equals "$(held_mark "$SMINOS_HOME/projects/$FAMP/delivered/$D4.json" "testhost/$DUO" "$(last_seq "$FAMLOG/testhost.$DUO.jsonl")")" \
+  "0 True" "owed, marked for its thread, no attempt counted"
 assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "--resume $D4" "no resume of a gone member is attempted"
 assert_contains "$OUT" 'd2: sent' "and the fan-out still reaches the live member"
 rm -f "$HOME/.claude/sessions/fam-d2.json"
@@ -2747,6 +2752,8 @@ run "$SMINOS" say '@d3 check'
 rm -f "$STUB_STATE/wake/late-process"
 assert_rc 0 "$RC" "a wake whose process is not seen in time does not erase the message"
 assert_contains "$OUT" 'd3: recorded: its process is starting, and the daemon delivers it' "it is held while its process starts, no attempt counted"
+assert_equals "$(held_mark "$SMINOS_HOME/projects/$FAMP/delivered/$D3.json" "testhost/$D1" "$(last_seq "$FAMLOG/testhost.$D1.jsonl")")" \
+  "0 True" "owed and marked for its thread"
 assert_not_contains "$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D3.json" 2>/dev/null)" "\"testhost/$D1\": {\"settled\": $(last_seq "$FAMLOG/testhost.$D1.jsonl")" "and not settled: the wake carried nothing"
 assert_equals "$(has_key "$D3" pending_short)" "False" "a wake writes no pending_short"
 unset CLAUDE_CODE_SESSION_ID

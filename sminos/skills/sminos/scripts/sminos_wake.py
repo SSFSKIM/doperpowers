@@ -481,7 +481,7 @@ def policy_inputs():
             os.path.join(sminos.home_dir(), ".claude", "settings.json")]
 
 
-_KEPT = {}   # session → (its inputs' key but the directory's, the directory, its stat, the reason)
+_KEPT = {}   # session → (its inputs' key but the directory's, the directory, its key, the reason, whether it is sure)
 
 
 def _stat(path):
@@ -490,6 +490,17 @@ def _stat(path):
     except OSError:
         return None
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_mode) if st else None
+
+
+def _dir_key(record, cwd):
+    """The thread's directory as the memory keys it: its stat, or, for one
+    not_woken does not look into (a path this process may not read, and a
+    thread its human opened in a protected folder, held `protected`), the
+    path and the guard's answer alone, never a look inside."""
+    if cwd and (sminos.withheld(cwd)
+                or sminos.TCC and record.get("opened") == "human" and sminos.protected_folder(cwd)):
+        return ("guarded",)
+    return _stat(cwd)
 
 
 def _inputs(record, session):
@@ -507,25 +518,30 @@ def _inputs(record, session):
 def hold_reason(record, session):
     """not_woken as a view or a tick reads it (the bounded reading), kept by
     the stat of every input it reads (hold_key): a stopped thread asked
-    about every tick reads nothing again until a file it rests on moved."""
+    about every tick reads nothing again until a file it rests on moved.
+    An answer of "" whose last turn's mode was not found within the bound
+    is not sure, and is asked again each time (from the turns kept, so it
+    costs no reading): a wake's whole reading of the same transcript
+    (W2) answers it from then on."""
     key = _inputs(record, session)
     held = _KEPT.get(session)
-    if held is not None and held[0] == key and held[2] == _stat(held[1]):
+    if held is not None and held[0] == key and held[4] and held[2] == _dir_key(record, held[1]):
         return held[3]
     reason = not_woken(record, session)
     cwd = thread_cwd(record)
-    _KEPT[session] = (key, cwd, _stat(cwd), reason)
+    sure = bool(reason) or (_turn_at(transcript_file(session), False) or {}).get("mode") is not None
+    _KEPT[session] = (key, cwd, _dir_key(record, cwd), reason, sure)
     return reason
 
 
 def hold_key(record, session):
     """What hold_reason's answer rests on, as one value: its inputs and the
-    thread's directory's stat. Equal keys, the same answer (the daemon's
-    memory of a pass that held, sminos_daemon.deliver_owed)."""
+    thread's directory's key (_dir_key). Equal keys, the same answer (the
+    daemon's memory of a pass that held, sminos_daemon.deliver_owed)."""
     key = _inputs(record, session)
     held = _KEPT.get(session)
     cwd = held[1] if held is not None and held[0] == key else thread_cwd(record)
-    return key + (cwd, _stat(cwd))
+    return key + (cwd, _dir_key(record, cwd))
 
 
 def _seconds(name, default):
@@ -536,32 +552,31 @@ def _seconds(name, default):
     return v if v >= 0 else float(default)
 
 
-def wake_due(record, session, now=None):
-    """Whether a wake of the session is due (§4): its record's `waking`
-    names no failure for it, or WAKE_RETRY * 2 ** (failed - 1) seconds, at
-    most WAKE_RETRY_MAX (SMINOS_WAKE_RETRY, SMINOS_WAKE_RETRY_MAX), have
-    passed since the last one. A failure whose time cannot be read holds
-    nothing back."""
+def deadline(record, session):
+    """When a wake of the session falls due again (§4), in epoch seconds:
+    WAKE_RETRY * 2 ** (failed - 1) seconds, at most WAKE_RETRY_MAX
+    (SMINOS_WAKE_RETRY, SMINOS_WAKE_RETRY_MAX), after the last failure its
+    record's `waking` names for it; None when it names none, or a failure
+    whose time cannot be read (which holds nothing back)."""
     w = sminos.threads_module().waking(record, session)
     failed = w.get("failed")
     if type(failed) is not int or failed <= 0:
-        return True
+        return None
     at = sminos._ts_epoch(w.get("at"))
     if at is None:
-        return True
-    wait = min(_seconds("WAKE_RETRY", WAKE_RETRY) * 2.0 ** min(failed - 1, 64),
-               _seconds("WAKE_RETRY_MAX", WAKE_RETRY_MAX))
-    return (time.time() if now is None else now) >= at + wait
+        return None
+    return at + min(_seconds("WAKE_RETRY", WAKE_RETRY) * 2.0 ** min(failed - 1, 64),
+                    _seconds("WAKE_RETRY_MAX", WAKE_RETRY_MAX))
+
+
+def wake_due(record, session, now=None):
+    """Whether a wake of the session is due (§4): no deadline, or past it."""
+    due = deadline(record, session)
+    return due is None or (time.time() if now is None else now) >= due
 
 
 def due_at(record, session):
-    """When a wake of the session falls due (wake_due), in epoch seconds;
-    None when it is due now or nothing holds it back."""
-    w = sminos.threads_module().waking(record, session)
-    failed = w.get("failed")
-    at = sminos._ts_epoch(w.get("at")) if type(failed) is int and failed > 0 else None
-    if at is None:
-        return None
-    wait = min(_seconds("WAKE_RETRY", WAKE_RETRY) * 2.0 ** min(failed - 1, 64),
-               _seconds("WAKE_RETRY_MAX", WAKE_RETRY_MAX))
-    return at + wait if time.time() < at + wait else None
+    """The deadline while it is ahead (the daemon's memory of a held pass
+    keeps it); None when a wake is due now."""
+    due = deadline(record, session)
+    return due if due is not None and time.time() < due else None

@@ -44,7 +44,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_wake import wait_for  # noqa: E402
+from test_wake import rows, wait_for  # noqa: E402
 from test_wake_seat import INBOX, SCRIPT, Wakers, records, sminos, threads, wake  # noqa: E402
 
 TAIL = "; it is pushed when a process of it runs again before it ends (three days stopped, or a retire), else it " \
@@ -650,6 +650,149 @@ class Elsewhere(Deliveries):
         self.daemon.tick(self.p)
         self.assertEqual(self.calls()[before:], [], "no claude call of any kind")
 
+
+
+# ------------------------------------------------------------ a plain send, as a tagged say (review round 1)
+
+
+class PlainSend(Deliveries):
+    """A plain `send` to a spawned thread no process answers for is recorded, then woken or held as a tagged
+    `say` is; the verbs and `--wait` are M4's."""
+
+    def test_a_plain_send_to_a_seat_held_for_each_reason_is_recorded_held_and_marked(self):
+        other = os.path.join(self.home, "other-config")
+        for why in ("transcript", "cwd", "config"):
+            with self.subTest(why=why):
+                where = os.path.join(self.root, "sub-p-" + why)
+                s = self.seat_in("p-" + why, where)
+                sid = s["current"]
+                if why == "transcript":
+                    os.unlink(sminos.transcript_now(sid))
+                elif why == "cwd":
+                    shutil.rmtree(where)
+                sminos.forget_caches()
+                launched = self.launches()
+                with mock.patch.object(sminos, "foreign_config", lambda x: other if why == "config" and x == sid
+                                       else ""):
+                    code, out = self.send("p-" + why, "while away")
+                self.assertEqual(code, 0, out)
+                self.assertIn(line(why), out)
+                self.assertEqual(self.launches(), launched, "nothing launched")
+                self.assertEqual(self.owed(sid), ["while away"])
+                self.assertEqual(set(self.marked(sid).values()), {s["seat_id"]})
+                self.assertEqual(set(self.attempts(sid).values()) - {0}, set(), "no attempt counted")
+
+    def test_a_plain_send_to_a_seat_whose_process_has_no_inbox_yet_is_held_while_it_starts(self):
+        s = self.seat()
+        sid = s["current"]
+        _, proc = self.session(sid=sid, kind="bg", name="w")
+        self.peer_set(proc, messagingSocketPath=os.path.join(self.home, "late-w.sock"))   # named, not served
+        code, out = self.send("w", "for when it answers")
+        self.assertEqual(code, 0, out)
+        self.assertIn(STARTING, out)
+        self.assertEqual(self.owed(sid), ["for when it answers"])
+        self.assertTrue(self.marked(sid), "held with its mark")
+        self.assertEqual(set(self.attempts(sid).values()) - {0}, set(), "no attempt counted")
+
+
+# ------------------------------------------------------------ what decides a hold, and for which thread (review round 1)
+
+
+class Decided(Deliveries):
+    def addressed(self, sid, text, writer="testhost/human"):
+        return sminos.log_append(self.p, writer, "human", **{
+            "from": "human", "to": [{"session": sid, "alias": "x"}], "text": text})
+
+    def test_a_thread_whose_own_record_cannot_be_read_holds_its_message_marked_for_it(self):
+        tid, sid = self.human_thread()
+        member = self.member(sid)
+        with open(self.record_file(tid), "w") as f:
+            f.write("{")
+        sminos.forget_caches()
+        e = self.addressed(sid, "to an unreadable thread")
+        for _ in range(2):
+            got = sminos.deliver_next(self.p, member, due=True)
+            self.assertEqual([o for x, o in got["outcomes"] if x["seq"] == e["seq"]], ["held:unknown"])
+        self.assertEqual(self.owed(sid), ["to an unreadable thread"], "held, never settled")
+        self.assertEqual(set(self.marked(sid).values()), {tid}, "marked for the thread its member is stamped with")
+        self.assertEqual(self.resumes(sid), [])
+
+    def test_the_mark_names_the_thread_the_hold_was_decided_for_whatever_the_stamp_reads_after(self):
+        def held_with(make, due):
+            tid, sid = self.human_thread(make)
+            member = self.member(sid)
+            first, second = self.addressed(sid, "one"), self.addressed(sid, "two")
+            real = threads.stamp
+            with mock.patch.object(threads, "stamp", lambda x: "another-thread" if x == sid else real(x)):
+                got = sminos.deliver_next(self.p, member, due=due)
+            self.assertTrue(all(o.startswith("held:") for _, o in got["outcomes"]), got["outcomes"])
+            self.assertEqual(self.marked(sid), {("testhost/human", first["seq"]): tid,
+                                                ("testhost/human", second["seq"]): tid})
+        with self.subTest("held before a wake"):
+            held_with("plan", False)
+        with self.subTest("held by a wake"):
+            self.switch("fail-job")
+            held_with("auto", True)
+
+    def test_a_late_verdict_for_an_event_for_the_live_alone_settles_it_recorded_and_marks_nothing(self):
+        tid, sid = self.human_thread("plan")
+        writer = "othermachine/aaaa1111-0000-4000-8000-000000000002"
+        for name, call in (("reach", lambda e: sminos.deliver_reach(self.p, self.member(sid), e, "deliver")),
+                           ("words", lambda e: sminos.deliver_verdict(self.p, self.member(sid), e, "peer"))):
+            with self.subTest(name):
+                e = sminos.log_append(self.p, writer, "say", **{
+                    "from": "elsewhere", "to": [{"session": sid, "alias": "x"}], "wake": True, "scope": "all",
+                    "text": "standup " + name})
+                self.assertEqual(call(e), "recorded")
+                self.assertEqual(self.marked(sid), {}, "no debt for the live alone")
+                self.assertEqual(self.owed(sid), [])
+
+
+# ------------------------------------------------------------ what the hold reads (review round 1)
+
+
+class Reads(Deliveries):
+    def test_a_mode_beyond_the_ticks_bound_found_by_a_wake_holds_the_next_passes_with_no_job_list(self):
+        tid, sid = self.human_thread("plan")
+        self.transcript(sid, rows(*[{"type": "system", "content": "x" * 1000}] * (wake.TAIL_BOUND // 1000 + 64)))
+        self.assertEqual(threads.hold_of(sid), "", "the tick's bounded reading finds no mode")
+        code, out = self.say("@%s far back" % sid[:8])
+        self.assertEqual(self.shown(out, sid), [line("mode")], "the wake's whole reading finds it")
+        sminos.forget_caches()
+        self.assertEqual(threads.hold_of(sid), "mode", "and the hold reads it from then on")
+        before = len(self.calls())
+        self.tick()
+        self.tick()
+        self.assertEqual([c["argv"] for c in self.calls()[before:]], [], "no job list, no launch")
+        self.assertEqual(self.owed(sid), ["far back"])
+
+    def test_the_hold_looks_into_no_protected_folder_the_wake_does_not(self):
+        where = self.vault()
+        tid, sid = self.human_thread()
+        self.edit(tid, launch={"cwd": where, "at": sminos.now()})
+        s = self.seat_in("v", os.path.join(where, "seat"))
+        looked = []
+        real = wake._stat
+        with mock.patch.object(wake, "_stat", lambda path: looked.append(path) or real(path)):
+            self.assertEqual(threads.hold_of(sid), "protected")
+            self.assertEqual(threads.hold_of(sid), "protected", "kept")
+            self.assertEqual(threads.hold_of(s["current"]), "")
+            wake.hold_key(threads.get(tid), sid)
+            wake.hold_key(threads.get(s["seat_id"]), s["current"])
+        self.assertEqual([p for p in looked if p and os.path.realpath(p).startswith(where)], [])
+
+    def test_the_schedule_has_one_deadline(self):
+        tid, sid = self.human_thread()
+        with mock.patch.dict(os.environ, {"SMINOS_WAKE_RETRY": "60", "SMINOS_WAKE_RETRY_MAX": "3600"}):
+            at = time.time() - 100
+            self.edit(tid, waking={"session": sid, "failed": 2, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                                                     time.gmtime(at))})
+            t = threads.get(tid)
+            due = wake.due_at(t, sid)
+            self.assertAlmostEqual(due, int(at) + 120, delta=1)
+            self.assertFalse(wake.wake_due(t, sid, now=due - 1))
+            self.assertTrue(wake.wake_due(t, sid, now=due))
+            self.assertEqual(wake.deadline(t, sid), due)
 
 if __name__ == "__main__":
     unittest.main()
