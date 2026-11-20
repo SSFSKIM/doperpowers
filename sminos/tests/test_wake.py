@@ -552,7 +552,8 @@ class NotWoken(Wakes):
         self.transcript(sid, rows(prompt("auto"), answer("m")))
         home = os.environ["HOME"]
         with mock.patch.object(sminos, "TCC", True):
-            for where in (home, os.path.dirname(home), "/", "/Volumes"):
+            # /Volumes where the machine has one: on Linux it is gone, which `cwd` answers first.
+            for where in (home, os.path.dirname(home), "/") + (("/Volumes",) if os.path.isdir("/Volumes") else ()):
                 for here in (self.root, where):
                     with self.subTest(where=where, here=here), mock.patch.object(sminos, "_own_cwd", lambda: here):
                         self.assertEqual(wake.not_woken(self.human(sid=sid, cwd=where), sid), "protected")
