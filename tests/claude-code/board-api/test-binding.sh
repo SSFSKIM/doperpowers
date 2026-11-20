@@ -40,7 +40,7 @@ nt "api mode never invokes gh" "GH_INVOKED" probe "$r2"
 # its writes in the SERVER's founding repo and reads every repo's tickets —
 # which is how a register run from a neighbouring checkout filed into this one.
 # In api mode BOARD_REPO is the board's repo KEY (in gh mode it stays
-# owner/name, resolved by _lib.sh).
+# owner/name: the file's `repo`, else resolved by _lib.sh).
 t "api binding carries the repo it speaks for" \
   "api|https://b.example|$(basename "$r2").env|alpha" probe "$r2"
 t "env BOARD_REPO wins over the file" "|beta" probe "$r2" BOARD_REPO=beta
@@ -368,5 +368,43 @@ t "a gh binding keys off gh:<owner/name>" "$GH_DIGEST" digest "$r1" BOARD_REPO=a
 nt "and never collides with an api binding of the same repo name" \
   "$API_DIGEST" digest "$r1" BOARD_REPO=alpha
 rm -rf "$DH_D"
+
+
+# A gh BINDING THAT NAMES ITS REPOSITORY TARGETS IT, whatever `gh` would say. In
+# a fork that carries an `upstream` remote and no `gh repo set-default`,
+# `gh repo view` answers the UPSTREAM project with exit 0 — so a board that
+# falls back to it files its tickets on somebody else's tracker. This gh stub
+# answers like that checkout: a different repository, successfully.
+UP="$(mktemp -d)"
+cat > "$UP/gh" <<'EOF'
+#!/usr/bin/env bash
+echo GH_INVOKED >> "$GH_STUB_MARKER"
+[ "$1 $2" = "repo view" ] && { echo upstream/project; exit 0; }
+exit 1
+EOF
+chmod +x "$UP/gh"
+probe_up() { local d="$1"; shift
+  : > "$MARKER"
+  ( cd "$d" && env -u BOARD_REPO PATH="$UP:$PATH" GH_STUB_MARKER="$MARKER" "$@" bash -c \
+      ". '$SCRIPTS/_lib.sh'; echo \"\$BOARD_BINDING|\${BOARD_REPO:-}\"" ) || :
+  cat "$MARKER"
+}
+r11="$(mkrepo)"; mkdir -p "$r11/.doperpowers"
+printf '{"binding":"gh","repo":"fork/project"}' > "$r11/.doperpowers/board.json"
+t  "a gh binding's repo is the target"            "gh|fork/project"     probe_up "$r11"
+nt "...not what gh repo view answers"             "upstream/project"    probe_up "$r11"
+nt "...and gh is never asked"                     "GH_INVOKED"          probe_up "$r11"
+t  "env BOARD_REPO still wins over the file"      "gh|other/repo"       probe_up "$r11" BOARD_REPO=other/repo
+t  "a gh binding without repo asks gh, as before" "gh|upstream/project" probe_up "$r3"
+r12="$(mkrepo)"; mkdir -p "$r12/.doperpowers"
+printf '{"binding":"gh","repo":"doperpowers"}' > "$r12/.doperpowers/board.json"
+t  "a gh repo that is not owner/name dies"        "a gh binding's repo is owner/name" probe_up "$r12"
+r13="$(mkrepo)"; mkdir -p "$r13/.doperpowers"
+printf '{"binding":"gh","repo":"github.example/fork/project"}' > "$r13/.doperpowers/board.json"
+t  "a host-qualified gh repo dies too"            "a gh binding's repo is owner/name" probe_up "$r13"
+# An inherited BOARD_REPO is taken as given, as before the key existed: a blank
+# one is not trimmed into "no declaration" and a fallback to gh's guess.
+nt "a blank env BOARD_REPO never falls back to gh" "upstream/project" probe_up "$r3" "BOARD_REPO= "
+rm -rf "$UP"
 
 finish

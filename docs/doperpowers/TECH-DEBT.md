@@ -2,8 +2,9 @@
 
 > **Why this doc exists.** The 2026-07-11 live shakedown
 > (`2026-07-10-codex-workers-shakedown.md`) fixed every defect it surfaced
-> (FU-3…FU-7) but left a residue of known, accepted frictions. GitHub Issues
-> are disabled on this fork, so this file is the tracker. Each item carries a
+> (FU-3…FU-7) but left a residue of known, accepted frictions. This file
+> was written as their tracker while GitHub Issues were disabled on this fork,
+> and it still tracks them. Each item carries a
 > **tier** (how much it matters) and a **trigger** (the event that promotes
 > it from "accepted" to "fix now"). Update in place; strike items when fixed.
 >

@@ -75,6 +75,10 @@ archived (`archive/qa-loop/`) and no longer registers. If board-driven
 spawning returns, it is expected to run that attended workflow on a
 trigger, not to re-arm this doctrine as written.
 
+The board is this repository's GitHub issues; a `board #<n>` (or `board ticket
+<n>`, `dp#<n>`) in older code, docs and commits names a ticket of the retired
+board service, mapped to its issue in `docs/doperpowers/board-service-tickets.md`.
+
 ## Repo map
 
 Each row orients; a part's detail is in the `CLAUDE.md` nearest its code,
