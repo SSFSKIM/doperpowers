@@ -1583,7 +1583,9 @@ export const MAWS_DRAWS_FROM = 9
  * `MAWS_NATIVE_TO_HUMAN`: a non-empty value that is not a number of
  * `MAWS_DRAWS_FROM` or more (8 and below, or no number). Unset or empty is no
  * MAWS, and from 9 the client reads this view's drawing. The view steps aside
- * off the terminal where this holds, and the run tracker asks for no summary.
+ * off the terminal where this holds; the run tracker asks for summaries from 8
+ * on all the same, where MAWS puts them on its own fold lines
+ * (`MAWS_READS_FOLDS_FROM`, folds.tsx).
  */
 export const isMawsDrawing = (value: string | undefined) => value !== undefined && value !== '' && !(Number(value) >= MAWS_DRAWS_FROM)
 

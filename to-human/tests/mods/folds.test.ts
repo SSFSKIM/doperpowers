@@ -1036,7 +1036,7 @@ describe('registerFolds: summaries', () => {
   const gates: [string, HookOptions, boolean?][] = [
     ['before a mark', { isOn: () => false }],
     ['when not interactive', {}, false],
-    ['under MAWS', { env: { HOME: '/home/u', MAWS_NATIVE_TO_HUMAN: '8' } }],
+    ['under a MAWS below 8', { env: { HOME: '/home/u', MAWS_NATIVE_TO_HUMAN: '7' } }],
     ['under SMNS_INTERNAL', { env: { HOME: '/home/u', SMNS_INTERNAL: '1' } }],
   ]
   for (const [name, options, isInteractive = true] of gates) {
@@ -1084,28 +1084,33 @@ describe('registerFolds: summaries', () => {
     expect(h.held).toEqual([])
   })
 
-  // Where a run's summary is asked for: a session someone reads the view of
-  // (a terminal, or a client that advertises 9 or more and reads the view's
-  // drawing), and not where TO_HUMAN_FOLD_SUMMARIES is off or a sminos
-  // internal fork runs.
+  // Where a run's summary is asked for: a session someone reads the view or
+  // the folds file of (a terminal, or a client that advertises 8 or more: at 8
+  // it draws its own view from the file, from 9 it reads the view's drawing),
+  // and not where TO_HUMAN_FOLD_SUMMARIES is off or a sminos internal fork runs.
   const table: [string, boolean, Record<string, string>, boolean][] = [
     ['interactive, the advertisement unset', true, {}, true],
     ['interactive, the advertisement empty', true, { MAWS_NATIVE_TO_HUMAN: '' }, true],
     ['interactive, at 9', true, { MAWS_NATIVE_TO_HUMAN: '9' }, true],
     ['headless, at 9', false, { MAWS_NATIVE_TO_HUMAN: '9' }, true],
     ['headless, at 10', false, { MAWS_NATIVE_TO_HUMAN: '10' }, true],
-    ['interactive, at 8', true, { MAWS_NATIVE_TO_HUMAN: '8' }, false],
-    ['headless, at 8', false, { MAWS_NATIVE_TO_HUMAN: '8' }, false],
+    ['interactive, at 8', true, { MAWS_NATIVE_TO_HUMAN: '8' }, true],
+    ['headless, at 8', false, { MAWS_NATIVE_TO_HUMAN: '8' }, true],
+    ['headless, at 7', false, { MAWS_NATIVE_TO_HUMAN: '7' }, false],
+    ['interactive, at 7', true, { MAWS_NATIVE_TO_HUMAN: '7' }, false],
     ['interactive, at 1', true, { MAWS_NATIVE_TO_HUMAN: '1' }, false],
     ['headless, at no number', false, { MAWS_NATIVE_TO_HUMAN: 'native' }, false],
     ['interactive, at no number', true, { MAWS_NATIVE_TO_HUMAN: 'native' }, false],
     ['headless, the advertisement unset', false, {}, false],
     ['headless, the advertisement empty', false, { MAWS_NATIVE_TO_HUMAN: '' }, false],
     ['interactive, summaries off', true, { TO_HUMAN_FOLD_SUMMARIES: 'off' }, false],
-    ['headless at 9, summaries off', false, { MAWS_NATIVE_TO_HUMAN: '9', TO_HUMAN_FOLD_SUMMARIES: 'off' }, false],
-    ['headless at 9, in a sminos internal fork', false, { MAWS_NATIVE_TO_HUMAN: '9', SMNS_INTERNAL: '1' }, false],
+    ...(['8', '9'] as const).flatMap((at): [string, boolean, Record<string, string>, boolean][] => [
+      [`headless at ${at}, summaries off`, false, { MAWS_NATIVE_TO_HUMAN: at, TO_HUMAN_FOLD_SUMMARIES: 'off' }, false],
+      [`headless at ${at}, in a sminos internal fork`, false, { MAWS_NATIVE_TO_HUMAN: at, SMNS_INTERNAL: '1' }, false],
+    ]),
     ...(['OFF', '0', '', 'no'] as const).flatMap((value): [string, boolean, Record<string, string>, boolean][] => [
       [`interactive, summaries "${value}" (not off)`, true, { TO_HUMAN_FOLD_SUMMARIES: value }, true],
+      [`headless at 8, summaries "${value}" (not off)`, false, { MAWS_NATIVE_TO_HUMAN: '8', TO_HUMAN_FOLD_SUMMARIES: value }, true],
       [`headless at 9, summaries "${value}" (not off)`, false, { MAWS_NATIVE_TO_HUMAN: '9', TO_HUMAN_FOLD_SUMMARIES: value }, true],
     ]),
   ]
@@ -1124,6 +1129,32 @@ describe('registerFolds: summaries', () => {
       expect(h.kept.get('folds')).toEqual({ shape: 1, runs: [run] })
     })
   }
+
+  test("headless at 8, where MAWS draws its own view and reads the file, the calls are a terminal's, and the summaries reach the file at shape 2", async () => {
+    // At 8 the view steps aside on MAWS's surface and never draws a mark: the tracker counts the marks it keeps.
+    const session = async (isInteractive: boolean, env: Record<string, string>) => {
+      const h = trackerHooks(new Map(), { isOn: () => false, env: { HOME: '/home/u', ...env } })
+      await h.start(isInteractive)
+      await h.append(sent('a0', 'toolu_m0'))
+      await h.append(bash('a1', 'toolu_1', 'List the files'))
+      await h.append(result('u1', 'toolu_1'))
+      await h.append(sent('a2', 'toolu_m2'))
+      await h.append(bash('a3', 'toolu_3', 'Run the tests'))
+      await h.append(result('u3', 'toolu_3'))
+      await h.append(sent('a4', 'toolu_m4'))
+      await h.turnEnd()
+      await drain(h.settle)
+      return h
+    }
+    const terminal = await session(true, {})
+    const maws = await session(false, { MAWS_NATIVE_TO_HUMAN: '8' })
+    expect(maws.held.map((ask) => ask.request)).toEqual(terminal.held.map((ask) => ask.request))
+    expect(maws.held).toHaveLength(2)
+    maws.held[0]!.answer(answered('Listed the files'))
+    maws.held[1]!.answer(answered('Ran the tests'))
+    await drain(maws.settle)
+    expect(stored(maws.files)).toEqual({ shape: 2, runs: [['toolu_1', 'toolu_1', 'Listed the files'], ['toolu_3', 'toolu_3', 'Ran the tests']] })
+  })
 
   test('summaries off stops the asking and nothing else: a stored summary is still read', async () => {
     const files = new Map([[FILE, JSON.stringify({ shape: 1, runs: [['toolu_9', 'a9', 'From the file']] })]])

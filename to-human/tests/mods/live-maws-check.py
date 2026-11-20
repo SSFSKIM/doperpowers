@@ -9,8 +9,8 @@ offers no message tool of its own (MAWS's Decision Log 92), and its sessions
 send through this plugin's; from 9 on MAWS reads this plugin's view on its
 own surface (the plugin's maws-surface.json declares the number). This check
 launches one so, with the `doperpowers:to-human` style and the `default`
-permission mode, three times: with `MAWS_NATIVE_TO_HUMAN=8`, with 9, and with
-9 and `TO_HUMAN_FOLD_SUMMARIES=off` in the settings env. In each, one turn
+permission mode, four times: with `MAWS_NATIVE_TO_HUMAN=8` and with 9, each
+also with `TO_HUMAN_FOLD_SUMMARIES=off` in the settings env. In each, one turn
 asks the model to send a message with `final: true` and do nothing else. A
 probe plugin, outermost, records each step (whether a request was made) and
 each prompt the engine submits.
@@ -25,14 +25,17 @@ It prints PASS or FAIL for each item, in each launch:
 4. the transcript keeps the made-up response as the turn's last assistant
    row, with the engine's `answeredWithoutRequest` flag and no request id;
 5. no notification was raised: a MAWS session's notification surface is MAWS.
-In the launches at 9 a second turn runs one command and then sends a final
-message, which closes a run of working record, and the check prints:
-6. at 9: the run's summary is asked for (the probe sees the call, which makes
-   item 8's absence of one evidence) and kept within the call's limit: the
-   session's folds file (`to-human/folds/<session id>.json` in the config
-   dir) holds a run whose first row is the command's call, with a summary;
-7. at 9: that file is kept as the contract a client reads, at `shape: 2`;
-8. at 9 with TO_HUMAN_FOLD_SUMMARIES=off: the command ran (a run was due its
+In each launch a second turn runs one command and then sends a final
+message, which closes a run of working record, and the check prints (MAWS
+reads the summaries from 8: at 8 it puts the file on its own fold lines):
+6. with summaries on: the run's summary is asked for (the probe sees the
+   call, which makes item 8's absence of one evidence) and kept within the
+   call's limit: the session's folds file (`to-human/folds/<session id>.json`
+   in the config dir) holds a run whose first row is the command's call, with
+   a summary;
+7. with summaries on: that file is kept as the contract a client reads, at
+   `shape: 2`;
+8. with TO_HUMAN_FOLD_SUMMARIES=off: the command ran (a run was due its
    summary) and none was asked for in that time: the probe saw no summary
    call, whatever such a call would have come to, and no folds file.
 It also prints, for MAWS's live normalizer, every stdout frame from the
@@ -42,7 +45,7 @@ keys at its top level), whether the made-up response came out as an
 and whether the engine submitted the turn's prompt through `prompt.submit`,
 the event the reminder rides.
 
-It spends model calls (about eight across the three launches, the summary's
+It spends model calls (about twelve across the four launches, the summary's
 among them, haiku unless --model says otherwise), so
 no suite runs it: run it by hand with the model gateway's keys in the
 environment. It is built on live-message-check.py's isolated config and
@@ -196,8 +199,7 @@ class Maws(final.Final):
         steps = [r for r in self.probe() if r["ev"] == "step" and r["agentId"] is None]
         prompts = [r for r in self.probe() if r["ev"] == "prompt"]
         frames = list(self.frames)
-        if self.advertise == "9":
-            self.summary()
+        self.summary()
         self.stop()
         with open(os.path.join(self.root, "frames.jsonl"), "w") as f:
             f.writelines(json.dumps(fr) + "\n" for fr in self.frames)
@@ -260,7 +262,7 @@ class Maws(final.Final):
         return all(ok for _, ok in self.results)
 
     def summary(self):
-        """At 9: a run of working record closed by a message, and what the tracker keeps of it."""
+        """A run of working record closed by a message, and what the tracker keeps of it."""
         self.turn(STRETCH, 1)
         calls = [b.get("id") for _, b in self.blocks(self.rows(), "tool_use") if b.get("name") == "Bash"]
         asked = lambda: [r for r in self.probe() if r["ev"] == "model" and r["system"].startswith(LABEL_OPENING)]
@@ -293,7 +295,7 @@ def main():
     for sig in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, lambda *_: sys.exit(1))
     ok = True
-    for advertise, summaries_off in (("8", False), ("9", False), ("9", True)):
+    for advertise, summaries_off in (("8", False), ("8", True), ("9", False), ("9", True)):
         live = Maws(args.keep, args.model, advertise, summaries_off)
         try:
             ok = live.run() and ok

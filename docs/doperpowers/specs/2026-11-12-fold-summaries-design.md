@@ -446,6 +446,14 @@ where MAWS draws its own report (`isMawsDrawing`, the view's gate). A fourth:
 engine's settings env and MAWS in a launch's; it stops the asking and nothing
 else, a stored summary still being read.
 
+Amended 2026-11-20 (to-human 0.9.0): the advertisement that counts is a number
+of 8 or more (`MAWS_READS_FOLDS_FROM`). At 8 MAWS draws its own view and puts
+on its fold lines what the session's file holds, so a headless launch at 8
+asks as one at 9 does; a non-empty value below 8, or no number, stays quiet.
+`TO_HUMAN_FOLD_SUMMARIES=off`, the value MAWS writes into a launch while its
+switch is off, and `SMNS_INTERNAL` still stop the asking at every value, and
+a headless session with no advertisement still asks for none.
+
 ## Evidence
 
 The census: every main-conversation row of the 13 to-human sessions this
@@ -1012,6 +1020,19 @@ dependency.
   serves both, and the file has to be a coherent snapshot for a reader that is
   not the process that wrote it.
   Date/Author: 2026-11-15, the branch `to-human-maws-surface`.
+
+- Decision: MAWS launches at 8 get summaries (2026-11-20, to-human 0.9.0).
+  The tracker asks for a due run's summary where `MAWS_NATIVE_TO_HUMAN` is a
+  number of 8 or more, not only 9 or more; the other gates stand (a mark seen
+  or kept, `SMNS_INTERNAL`, `TO_HUMAN_FOLD_SUMMARIES=off`, nothing in a
+  headless session with no advertisement), and so do the file's contract and
+  the calls a run makes. Amended in place under "Where it runs".
+  Rationale: MAWS's owner ruled that the sessions MAWS launches get fold
+  summaries. Every MAWS launch so far advertises 8, where MAWS draws its own
+  view and reads the summaries from the session's file, so under the gate at
+  9 its fold lines always read `working record`. This supersedes the MAWS
+  design's "at 8 it makes none".
+  Date/Author: 2026-11-20, the branch `to-human-maws-surface`.
 
 ## Outcomes & Retrospective
 

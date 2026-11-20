@@ -571,13 +571,25 @@ const OPEN_LAST = { plugin: 'to-human', key: 'foldLast' } as const
 
 /**
  * What a session reads once: the summaries' model, whether summaries are
- * asked for in it at all (`isQuiet` where not), whether a client reads the
- * view's drawing of it (it advertises 9 or more), and the files' folder.
+ * asked for in it at all (`isQuiet` where not), whether a client reads its
+ * summaries (it advertises `MAWS_READS_FOLDS_FROM` or more), and the files'
+ * folder.
  */
 type Settings = { model: string; isQuiet: boolean; isClientRead: boolean; dir?: string }
 
 /** The value of `TO_HUMAN_FOLD_SUMMARIES` that turns the asking off: exactly this, anything else leaving summaries on. */
 export const SUMMARIES_OFF = 'off'
+
+/**
+ * The MAWS contract version from which MAWS reads a session's summaries: at 8
+ * it draws its own view and puts on its fold lines what the session's file
+ * holds, from 9 it reads this view's drawing (`MAWS_DRAWS_FROM`). A headless
+ * session that advertises it asks for summaries as a terminal does.
+ */
+export const MAWS_READS_FOLDS_FROM = 8
+
+/** Whether a client reads this session's summaries, by `MAWS_NATIVE_TO_HUMAN`: a number of `MAWS_READS_FOLDS_FROM` or more. */
+const isFoldsReader = (value: string | undefined) => value !== undefined && value !== '' && Number(value) >= MAWS_READS_FOLDS_FROM
 
 /** What one registration of the tracker keeps between its hooks. */
 type Following = {
@@ -611,9 +623,9 @@ type Following = {
  * Whether a run due its summary is asked for: a to-human reader (a mark the
  * view drew, or one the tracker followed, so the message that closes a
  * session's first run counts for that run though it has not drawn yet) who
- * reads the view, at this terminal or through a client that advertises 9 or
- * more; not where MAWS draws its own view, in a sminos internal fork, or
- * with summaries off (`isQuiet`).
+ * reads the summaries, at this terminal or through a client that advertises
+ * 8 or more; not under a MAWS below 8 (or a value that is no number), in a
+ * sminos internal fork, or with summaries off (`isQuiet`).
  */
 const isAsking = (following: Following) =>
   (following.isOn() || following.hasKeptMark) &&
@@ -645,8 +657,8 @@ function readSettings($: EngineInterface, following: Following): Promise<Setting
       const config = configured || (home ? `${home}/.claude` : undefined)
       following.settings = {
         model: model || 'haiku',
-        isQuiet: isMawsDrawing(maws) || internal !== undefined || summaries === SUMMARIES_OFF,
-        isClientRead: maws !== undefined && maws !== '' && !isMawsDrawing(maws),
+        isQuiet: (isMawsDrawing(maws) && !isFoldsReader(maws)) || internal !== undefined || summaries === SUMMARIES_OFF,
+        isClientRead: isFoldsReader(maws),
         ...(config !== undefined && { dir: `${config}/to-human/folds` }),
       }
       return following.settings
