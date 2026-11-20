@@ -169,9 +169,10 @@ PY
   stop|rm)
     if [ -n "${WAKE_ENGINE:-}" ] && [ -f "$WAKE_ENGINE_STATE/jobs/${2:-}.json" ]; then exec python3 -B "$WAKE_ENGINE" "$@"; fi ;;
 esac
-# A wake (`--bg --resume <id>` with no message after it) is the test engine's.
+# A wake (`--bg --resume <id>` with no message after it) is the test engine's, and so is every resume while
+# its `refuse-message` switch is set, which a launch that carries a message then fails.
 if [ -n "${WAKE_ENGINE:-}" ] && [[ " $* " == *" --bg "* ]] && [[ " $* " == *" --resume "* ]] \
-    && ! python3 -B "$WAKE_ENGINE" --has-positional "$@"; then
+    && { [ -e "$WAKE_ENGINE_STATE/refuse-message" ] || ! python3 -B "$WAKE_ENGINE" --has-positional "$@"; }; then
   exec python3 -B "$WAKE_ENGINE" "$@"
 fi
 

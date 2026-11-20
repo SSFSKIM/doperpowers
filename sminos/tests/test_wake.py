@@ -82,7 +82,23 @@ def hook_row(model):
 
 
 class Wakes(Machine):
-    """A machine whose sessions have transcripts and, when a test writes one, an engine row."""
+    """A machine whose sessions have transcripts and, when a test writes one, an engine row; its
+    policy's ceiling `bypassPermissions` unless a test sets another (ceiling)."""
+
+    def setUp(self):
+        super().setUp()
+        self.ceiling("bypassPermissions")
+
+    def ceiling(self, mode=None):
+        """The machine's policy file naming `mode` as its ceiling; None: no policy file."""
+        path = sminos_policy.policy_path()
+        if mode is None:
+            if os.path.exists(path):
+                os.unlink(path)
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"ceiling": mode}, f)
 
     def config(self):
         return os.path.join(os.environ["HOME"], ".claude")
@@ -137,6 +153,16 @@ class Row(Wakes):
         self.assertIs(wake.row_of(sid), wake.UNREADABLE, "a row of another session under its first eight")
         self.row(sid, raw=json.dumps(["a", "list"]))
         self.assertIs(wake.row_of(sid), wake.UNREADABLE, "a file that is no object")
+
+    def test_a_row_is_its_own_session_s_in_either_order_of_lookups(self):
+        sid = str(uuidlib.uuid4())
+        other = sid[:8] + str(uuidlib.uuid4())[8:]
+        self.row(sid, {"respawnFlags": ["--model", "a"]})
+        self.assertEqual(wake.row_options(wake.row_of(sid)), ["--model", "a"])
+        self.assertIs(wake.row_of(other), wake.UNREADABLE, "the owner looked up first")
+        wake._ROWS.clear()
+        self.assertIs(wake.row_of(other), wake.UNREADABLE)
+        self.assertEqual(wake.row_options(wake.row_of(sid)), ["--model", "a"], "the other id looked up first")
 
     def test_a_row_without_flags_or_state(self):
         sid = str(uuidlib.uuid4())
@@ -208,6 +234,26 @@ class LastTurn(Wakes):
         with mock.patch("builtins.open", side_effect=AssertionError("read again")):
             self.assertEqual(wake.last_turn(sid)["mode"], "auto")
 
+    def test_a_transcript_deleted_or_moved_after_it_was_found(self):
+        sid = str(uuidlib.uuid4())
+        path = self.transcript(sid, rows(prompt("auto"), answer("m")))
+        rec = self.human(sid=sid)
+        self.assertEqual((wake.not_woken(rec, sid), wake.not_woken(rec, sid, whole=True)), ("", ""))
+        moved = os.path.join(self.config(), "projects", "elsewhere", sid + ".jsonl")
+        os.makedirs(os.path.dirname(moved))
+        os.rename(path, moved)
+        self.assertEqual(sminos.transcript_path(sid), path, "the index still names the old path")
+        for whole in (False, True):
+            self.assertEqual(wake.transcript_file(sid, whole), moved)
+            self.assertEqual(wake.not_woken(rec, sid, whole=whole), "")
+            self.assertEqual(wake.last_turn(sid, whole=whole), {"mode": "auto", "model": "m"})
+        os.unlink(moved)
+        for whole in (False, True):
+            with self.subTest(whole=whole):
+                self.assertEqual(wake.transcript_file(sid, whole), "")
+                self.assertEqual(wake.not_woken(rec, sid, whole=whole), "transcript")
+                self.assertEqual(wake.mode_case(rec, sid, whole=whole), "")
+
     def test_a_transcript_with_no_turn_and_none_at_all(self):
         sid = str(uuidlib.uuid4())
         self.transcript(sid, rows({"type": "summary"}, hook_row("claude-hook"),
@@ -264,7 +310,7 @@ class Flags(Wakes):
         for mode, ceiling, flag in (("bypassPermissions", "auto", "auto"), ("dontAsk", "acceptEdits", "acceptEdits"),
                                     ("auto", "default", "manual"), ("auto", "manual", "manual"),
                                     ("plan", "auto", "plan"), ("default", "auto", "manual"),
-                                    ("newMode", "plan", "newMode"), ("auto", "newCeiling", "auto")):
+                                    ("newMode", "plan", "newMode"), ("auto", "newCeiling", "manual")):
             with self.subTest(mode=mode, ceiling=ceiling):
                 self.assertEqual(wake.first_flags(rec, {"mode": mode, "model": ""}, ceiling, True)[0],
                                  ["--permission-mode", flag])
@@ -368,12 +414,26 @@ class Line(Wakes):
                               {"mode": "auto", "model": "claude-haiku-5-5"})
         self.assertEqual(wake.opening_line(same), self.HEAD + " You run in auto mode on haiku.",
                          "an alias and the model it serves are one model")
+        close = wake.line_note(False, ["--model", "claude-sonnet-4", "--permission-mode", "auto"],
+                               {"model": "claude-sonnet-4-5"})
+        self.assertIn(" Your last turn ran on claude-sonnet-4-5;", wake.opening_line(close))
         self.assertEqual(wake.opening_line(wake.line_note(False, [], {"mode": "", "model": "m"})),
                          self.HEAD + " You run under your saved options.")
         self.assertNotEqual(wake.line_note(False, [], {})["id"], wake.line_note(False, [], {})["id"])
 
 
 # ------------------------------------------------------------ not woken (§1)
+
+
+class SameModel(unittest.TestCase):
+    def test_ids_and_aliases(self):
+        for a, b, same in (("haiku", "claude-haiku-5-5", True), ("claude-haiku-5-5", "HAIKU", True),
+                           ("sonnet[1m]", "claude-sonnet-4-5", True), ("claude-opus-5[1m]", "claude-opus-5", True),
+                           ("claude-sonnet-4", "claude-sonnet-4-5", False), ("opus", "claude-sonnet-5", False),
+                           ("claude-haiku-4-5-2025", "claude-haiku-5-5", False), ("op", "claude-opus-5", False),
+                           ("haiku", "haiku-like-model", False), ("", "x", False), ("m", "m", True)):
+            with self.subTest(a=a, b=b):
+                self.assertIs(wake.same_model(a, b), same)
 
 
 class NotWoken(Wakes):
@@ -472,6 +532,61 @@ class NotWoken(Wakes):
         self.assertEqual(wake.not_woken(threads.get(seat_id), sid), "cwd")
 
 
+class CappedMode(Wakes):
+    """The plan's Decision Log, "A first wake's capped mode decides `mode`"."""
+
+    def thread(self, turn_mode="auto"):
+        sid = str(uuidlib.uuid4())
+        self.transcript(sid, rows(prompt(turn_mode), answer("m")))
+        return self.human(sid=sid), sid
+
+    def test_a_ceiling_that_asks_holds_a_first_wake_for_mode(self):
+        rec, sid = self.thread("auto")
+        self.ceiling("default")
+        self.assertEqual((wake.not_woken(rec, sid), wake.mode_case(rec, sid)), ("mode", "ceiling"))
+        self.assertEqual(wake.not_woken(rec, sid, whole=True), "mode")
+        self.ceiling(None)
+        self.assertEqual(wake.mode_case(rec, sid), "ceiling", "no policy file: the settings' defaultMode, else default")
+        with open(os.path.join(self.config(), "settings.json"), "w") as f:
+            json.dump({"permissions": {"defaultMode": "auto"}}, f)
+        self.assertEqual((wake.not_woken(rec, sid), wake.mode_case(rec, sid)), ("", ""), "the settings' ceiling raised")
+        self.ceiling("plan")
+        self.assertEqual(wake.mode_case(rec, sid), "ceiling", "a policy's ceiling is read before the settings'")
+
+    def test_a_readable_row_is_not_capped(self):
+        rec, sid = self.thread("auto")
+        self.ceiling("default")
+        self.row(sid, {"respawnFlags": ["--permission-mode", "auto"]})
+        self.assertEqual((wake.not_woken(rec, sid), wake.mode_case(rec, sid)), ("", ""))
+        self.row(sid, raw="{not json")
+        self.assertEqual((wake.not_woken(rec, sid), wake.mode_case(rec, sid)), ("mode", "ceiling"),
+                         "an unreadable row: a first wake would pass flags")
+
+    def test_a_raised_ceiling_wakes_and_the_turn_s_own_mode_is_its_own_case(self):
+        rec, sid = self.thread("auto")
+        self.ceiling("auto")
+        self.assertEqual(wake.not_woken(rec, sid), "")
+        rec, sid = self.thread("plan")
+        self.ceiling("bypassPermissions")
+        self.assertEqual((wake.not_woken(rec, sid), wake.mode_case(rec, sid)), ("mode", "own"))
+        self.ceiling("default")
+        self.assertEqual(wake.mode_case(rec, sid), "own", "its own mode asks, whatever the ceiling")
+
+    def test_an_unknown_mode_beyond_the_bound_is_not_capped_until_the_whole_reading(self):
+        sid = str(uuidlib.uuid4())
+        self.transcript(sid, rows(prompt("auto")) + rows(*({"type": "progress", "data": "x" * 200}
+                                                           for _ in range(40))))
+        rec = self.human(sid=sid)
+        self.ceiling("default")
+        with mock.patch.object(wake, "TAIL_BOUND", 2048):
+            self.assertEqual(wake.not_woken(rec, sid), "")
+            self.assertEqual(wake.not_woken(rec, sid, whole=True), "mode")
+
+    def test_the_files_it_reads_beyond_the_record(self):
+        self.assertEqual(wake.policy_inputs(), [sminos_policy.policy_path(),
+                                                os.path.join(os.environ["HOME"], ".claude", "settings.json")])
+
+
 # ------------------------------------------------------------ the schedule and the field (§4, §7)
 
 
@@ -554,6 +669,57 @@ class Field(Wakes):
             json.dump(raw, f)
         self.assertTrue(threads.wake_failed(tid, sid, "x"))
         self.assertEqual(threads.waking(threads.get(tid))["failed"], 1)
+
+    def advance(self, tid, to):
+        self.assertIsNotNone(threads.begin(tid, "advance", self.p, [], fields={"current": to}))
+        self.assertTrue(threads.finish(tid))
+
+    def test_an_earlier_occupant_back_finds_none_of_its_old_field(self):
+        sid, tid = self.opened_record()
+        other = str(uuidlib.uuid4())
+        threads.wake_failed(tid, sid, "x")
+        threads.wake_done(tid, sid, saved=True)
+        threads.wake_line(tid, sid, {"id": "l1"})
+        self.assertTrue(threads.waking(threads.get(tid)))
+        self.advance(tid, other)
+        self.assertNotIn("waking", threads.get(tid), "dropped when another session fills the thread")
+        self.advance(tid, sid)
+        self.assertEqual((threads.get(tid)["current"], threads.waking(threads.get(tid))), (sid, {}))
+
+    def test_a_seat_refilled_and_given_its_occupant_again(self):
+        old, proc = self.session()
+        code, out = self.cli("seat", "add", "g", "w", "--session", old)
+        self.assertEqual(code, 0, out)
+        seat_id = next(s["seat_id"] for s in sminos.seats())
+        threads.wake_failed(seat_id, old, "x")
+        threads.wake_done(seat_id, old, saved=True)
+        self.end(proc)
+        seat = sminos.reload_seat(seat_id)
+        new, nproc = self.session()
+        self.assertTrue(sminos.refill_seat(self.p, seat, old, new, ""))
+        self.assertNotIn("waking", sminos.load_seat(sminos.meta_path(seat_id)), "a refill drops it")
+        threads.wake_failed(seat_id, new, "y")
+        self.end(nproc)
+        self.assertTrue(sminos.refill_seat(self.p, sminos.reload_seat(seat_id), new, old, ""))
+        self.assertEqual(threads.waking(threads.get(seat_id)), {}, "the old occupant back reads nothing of before")
+
+    def test_an_older_copy_s_move_of_a_seat_drops_it(self):
+        old, proc = self.session()
+        code, out = self.cli("seat", "add", "g", "w", "--session", old)
+        self.assertEqual(code, 0, out)
+        seat_id = next(s["seat_id"] for s in sminos.seats())
+        threads.wake_failed(seat_id, old, "x")
+        other = str(uuidlib.uuid4())
+        path = sminos.meta_path(seat_id)
+        with open(path) as f:
+            raw = json.load(f)
+        raw["current"] = other   # an older copy's refill writes `current` and nothing else
+        with open(path, "w") as f:
+            json.dump(raw, f)
+        sminos.forget_caches()
+        self.assertNotIn("waking", threads.get(seat_id))
+        threads.note_launch(seat_id, self.root)   # a write repairs the moved seat under its lock
+        self.assertNotIn("waking", sminos.load_seat(path))
 
     def test_no_write_through_an_open_entry(self):
         sid, tid = self.opened_record()
@@ -722,7 +888,21 @@ class TwinCases:
         self.assertEqual((reply["message"]["model"], bool(reply["requestId"])), ("haiku", True))
         self.assertTrue(wait_for(lambda: self.record(sid)["status"] == "idle"))
         self.assertEqual(wake.last_turn(sid, whole=True), {"mode": "auto", "model": "haiku"})
-        self.assertEqual(self.job(sid[:8])["state"], "done")
+        self.assertTrue(wait_for(lambda: self.job(sid[:8])["state"] == "done"))
+
+    def test_a_message_after_the_id_is_refused_where_a_test_asks(self):
+        sid = self.opened()
+        self.switch("refuse-message")
+        for argv in (["do this"], ["--model", "haiku", "--", "x"]):
+            with self.subTest(argv=argv):
+                code, out, err = self.wake_flags(sid, *argv)
+                self.assertEqual((code, out), (2, ""))
+        with open(os.path.join(self.state, "violations")) as f:
+            self.assertEqual(len([line for line in f if line.strip()]), 2)
+        self.assertIsNone(self.record(sid), "nothing started")
+        code, out, err = self.wake_flags(sid)
+        self.assertEqual(code, 0, err)
+        self.assertIsNotNone(self.record(sid), "a wake with no message is not refused")
 
     def test_stop_ends_the_process_and_a_later_wake_runs_under_the_row(self):
         sid = self.opened()
@@ -922,6 +1102,39 @@ class Twin(TwinCases, Engine):
         self.assertIsNotNone(wait_for(lambda: self.record(sid)))
         self.assertTrue(wait_for(lambda: "pid" in self.job(sid[:8])))
 
+    def test_a_late_process_removed_before_it_publishes_never_appears(self):
+        sid = self.opened()
+        self.switch("late-process", 1.0)
+        self.wake_flags(sid)
+        code, out, err = self.claude("rm", sid[:8])
+        self.assertEqual((code, out.strip()), (0, "removed " + sid[:8]), err)
+        time.sleep(1.5)
+        self.assertIsNone(self.record(sid), "its process ended with the removal")
+        self.assertIsNone(self.job(sid[:8]))
+        self.assertIsNone(wake.row_of(sid))
+
+    def test_a_second_launch_before_the_first_process_publishes_is_a_copy(self):
+        sid = self.opened()
+        self.switch("late-process", 1.0)
+        self.wake_flags(sid)
+        os.unlink(os.path.join(self.state, "late-process"))
+        code, out, err = self.wake_flags(sid)
+        self.assertIn("is already running in the background", err)
+        self.assertNotIn(" %s " % sid[:8], out)
+        self.assertIsNotNone(wait_for(lambda: self.record(sid)))
+        sminos.forget_caches()
+        self.assertEqual(len([r for r in sminos.peer_records() if r.get("sessionId") == sid]), 1)
+
+    def test_a_stop_before_the_process_publishes(self):
+        sid = self.opened()
+        self.switch("late-process", 1.0)
+        self.wake_flags(sid)
+        code, out, err = self.claude("stop", sid[:8])
+        self.assertEqual(code, 0, err)
+        time.sleep(1.5)
+        self.assertIsNone(self.record(sid))
+        self.assertEqual(self.job(sid[:8])["state"], "stopped")
+
     def test_the_job_list_failing(self):
         self.switch("agents-fail")
         code, out, err = self.claude("agents", "--json", "--all")
@@ -951,7 +1164,7 @@ class Twin(TwinCases, Engine):
         self.assertEqual(len(notes), 1, "one wakes the session, the other is a copy (E13 at 0.1 s)")
         self.assertEqual(wake_engine.launches(self.state), 2)
 
-    def test_a_message_after_the_id_is_refused_only_where_a_test_asks(self):
+    def test_a_launch_with_a_message_runs_it_as_the_first_turn(self):
         sid = self.opened()
         code, out, err = self.wake_flags(sid, "do this")
         self.assertEqual(code, 0, err)
@@ -959,14 +1172,9 @@ class Twin(TwinCases, Engine):
         self.assertTrue(wait_for(lambda: any(r.get("type") == "assistant" and "do this" in json.dumps(r)
                                              for r in self.turns(sid))), "it runs as the first turn")
         self.assertEqual(self.record(sid)["nameSource"], "auto", "a launch with a message renames (E17)")
-        self.claude("stop", sid[:8])
-        self.switch("refuse-message")
-        for argv in (["do this"], ["--model", "haiku", "--", "x"]):
-            with self.subTest(argv=argv):
-                code, out, err = self.wake_flags(sid, *argv)
-                self.assertEqual((code, out), (2, ""))
-        with open(os.path.join(self.state, "violations")) as f:
-            self.assertEqual(len([line for line in f if line.strip()]), 2)
+
+    def test_what_is_a_message_after_the_id(self):
+        sid = str(uuidlib.uuid4())
         # A word after a variadic option is one more of its values, as the engine reads it (E22): no message.
         self.assertFalse(wake_engine.has_positional(["--bg", "--resume", sid, "--add-dir", "/a", "msg-as-dir"]))
         self.assertTrue(wake_engine.has_positional(["--bg", "--resume", sid, "x"]))
@@ -992,9 +1200,12 @@ class Twin(TwinCases, Engine):
         self.push(sid, sminos.compose_frame("bee", "first001", "x"))
         self.push(sid, sminos.compose_frame("cee", "second01", "y"))
         self.assertTrue(self.replied(sid, "first001"))
-        answers = [r for r in self.turns(sid) if r.get("type") == "assistant"]
-        order = [m for r in answers for m in ("first001", "second01") if m in json.dumps(r)]
-        self.assertEqual(order[-2:], ["second01", "first001"])
+        tail = [r for r in self.turns(sid) if r.get("type") in ("user", "assistant")][-4:]
+        said = [(r["type"], m) for r in tail for m in ("first001", "second01") if m in json.dumps(r)]
+        self.assertEqual(said, [("user", "second01"), ("assistant", "second01"), ("user", "first001"),
+                                ("assistant", "first001")], "each reply right after its own prompt")
+        arrived = [m for f in self.inputs(sid)[-2:] for m in ("first001", "second01") if m in json.dumps(f)]
+        self.assertEqual(arrived, ["first001", "second01"], "inputs/ keeps the order they came in")
 
     def test_a_frame_for_another_session_is_refused(self):
         sid = self.opened()

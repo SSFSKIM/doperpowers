@@ -299,9 +299,9 @@ HIDDEN = ("stopped", "retired", "gone")
 # The reasons of a `retired` that ends a thread (T1's M4), whoever wrote it: an explicit retire, and the end by
 # the rule (and a lane B session's with its process). A session whose membership in effect is one has ended.
 END_REASONS = ("retire", "ended")
-# What a seat's record loses when its occupant is replaced (a refill): an end, and the stop mark of the session
-# that left (its clock is not the new session's: §6, row 8).
-REPLACED_DROPS = ("ended", "stopped", "swept")
+# What a seat's record loses when its occupant is replaced (a refill): an end, the stop mark of the session
+# that left (its clock is not the new session's: §6, row 8), and what its wakes kept (`waking`, T2's §7).
+REPLACED_DROPS = ("ended", "stopped", "swept", "waking")
 TERMINAL = ("done", "done-blocked", "blocked", "failed", "stopped", "error")
 # Model-visible surfaces never carry a credential: the pipeline colonizes the
 # record with run_bearer and friends, and a seat's JSON is read by agents.

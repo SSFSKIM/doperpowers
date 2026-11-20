@@ -67,7 +67,8 @@ JOURNALED = ("current", "sessions", "ended", "released", "pending")
 SEAT_KEYS = ("opened", "sessions", "launch", "channels", "stopped", "swept", "ended", "released", "pending",
              "waking")
 # A seat's marks that belong to the occupant they were written for: a seat that takes another session drops them.
-OCCUPANT_MARKS = ("ended", "stopped", "swept")
+# `waking` (T2) is one too: an earlier occupant back (A, B, A) never finds its old line or failures valid again.
+OCCUPANT_MARKS = ("ended", "stopped", "swept", "waking")
 
 # The engine's options `launch.options` keeps, in the order the process was
 # given them: those a first background resume may carry (T2 reads them, and
@@ -287,8 +288,8 @@ def _of_seat(s):
     for k in ("stopped", "swept", "released", "pending"):
         if s.get(k) and not (moved and k in OCCUPANT_MARKS):
             rec[k] = copy.deepcopy(s[k])
-    if isinstance(s.get("waking"), dict):
-        rec["waking"] = copy.deepcopy(s["waking"])   # its reader checks the session it names (waking)
+    if isinstance(s.get("waking"), dict) and not moved:
+        rec["waking"] = copy.deepcopy(s["waking"])   # its reader checks the session it names too (waking)
     if ended is not None:
         rec["ended"] = dict(ended)
     return rec
@@ -974,7 +975,7 @@ def repoint_seat(seat_id, fields, deadline=None, expect=None):
     record holds that session (_holder), as every claim, and while the seat
     has no open entry (§6, 6: nothing writes through one); its lifecycle
     generation moved. A seat that takes another session drops what was its
-    predecessor's: its end and stop marks (OCCUPANT_MARKS) and, for a lane
+    predecessor's: its end, stop and wake marks (OCCUPANT_MARKS) and, for a lane
     B session, the thread keys, since a lane B session's seat is no thread
     (D1; _is_thread). False, nothing written, when another record holds the
     session, an entry is open, the seat is gone, or (`expect`) it no longer
@@ -1252,7 +1253,11 @@ def _claimed(thread_id, entry, view, fields, absorbs):
 def _apply(entry, view, raw, fields, remove):
     """An entry's change made in `raw`, the entry written in it: `fields`
     merged, `remove` dropped, a `current` it sets added to `sessions`, last;
-    an absorption's prior values kept in the entry (`was`, `unset`)."""
+    an absorption's prior values kept in the entry (`was`, `unset`). A
+    change of occupant drops `waking`: it was written for the session the
+    change replaces."""
+    if "current" in (fields or {}) and str(fields["current"] or "") != str(raw.get("current") or ""):
+        remove = tuple(remove) + ("waking",)
     if entry["op"] == "absorb":
         keys = [*(fields or {}), *remove, "sessions"]
         entry["was"] = {k: copy.deepcopy(raw[k]) for k in keys if k in raw}

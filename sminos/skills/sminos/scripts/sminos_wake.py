@@ -50,7 +50,7 @@ TAIL_BOUND = 4 << 20      # how far back from its end a tick reads a transcript 
 WAKE_RETRY = 60           # seconds after a first failed wake before the next; doubled per failure (§4)
 WAKE_RETRY_MAX = 3600     # the most it waits
 _CHUNK = 1 << 16
-_ROWS = {}                # row path → (its stat key, the row read there)
+_ROWS = {}                # row path → (its stat key, what it parsed to: any JSON value, or UNREADABLE)
 _TURNS = {}               # transcript path → (its stat key, {"bounded": turn, "whole": turn})
 
 
@@ -81,13 +81,15 @@ def row_of(session):
     if held is None or held[0] != key:
         try:
             with open(path, encoding="utf-8") as f:
-                row = json.load(f)
+                parsed = json.load(f)
         except (OSError, ValueError):
-            row = UNREADABLE
-        if not isinstance(row, dict) or row.get("sessionId") != session:
-            row = UNREADABLE
-        held = _ROWS[path] = (key, row)
-    return json.loads(json.dumps(held[1])) if isinstance(held[1], dict) else held[1]
+            parsed = UNREADABLE
+        held = _ROWS[path] = (key, parsed)
+    # The file is every session's whose id begins with these eight: whose it is, is asked at each lookup.
+    row = held[1]
+    if not isinstance(row, dict) or row.get("sessionId") != session:
+        return UNREADABLE
+    return json.loads(json.dumps(row))
 
 
 def row_options(row):
@@ -130,17 +132,29 @@ def last_turn(session, whole=False):
     transcript); None when not found within TAIL_BOUND, never with
     `whole`. Each reading is kept by the transcript's stat, so a tick reads
     a transcript only once it changed, and only its tail."""
+    return _turn_at(transcript_file(session, whole), whole) or {"mode": "", "model": ""}
+
+
+def transcript_file(session, whole=False):
+    """The session's transcript on this machine as it is now, or "": the
+    index's path (sminos.transcript_path; `whole`, a miss looked for again,
+    transcript_now), and a path whose file has gone since it was indexed
+    (the engine moved it, or it was deleted) looked for again in a fresh
+    listing, never taken for a conversation."""
     path = sminos.transcript_now(session) if whole else sminos.transcript_path(session)
-    return _turn_at(path, whole)
+    if path and not os.path.isfile(path):
+        path = sminos._transcript(session, 0.0)
+    return path if path and os.path.isfile(path) else ""
 
 
 def _turn_at(path, whole):
+    """The last turn read from the transcript at `path`; None when there is no file there now."""
     if not path:
-        return {"mode": "", "model": ""}
+        return None
     try:
         st = os.stat(path)
     except OSError:
-        return {"mode": "", "model": ""}
+        return None
     key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
     held = _TURNS.get(path)
     if held is None or held[0] != key:
@@ -152,7 +166,7 @@ def _turn_at(path, whole):
         return dict(got["bounded"])
     turn = _read_turn(path, None if whole else TAIL_BOUND)
     if turn is None:
-        return {"mode": "", "model": ""}
+        return None
     got["whole" if whole or None not in turn.values() else "bounded"] = turn
     return dict(turn)
 
@@ -219,12 +233,13 @@ def mode_flag(mode):
 
 def _capped(mode, ceiling):
     """The mode, lowered to the ceiling when above it in sminos.PERMISSION_MODES'
-    order (`manual` read as `default`); a mode or a ceiling outside that order is
-    not compared."""
+    order (`manual` read as `default`); a mode outside that order is passed as
+    it is, and a ceiling outside it is read as `default`, never as no cap (a
+    spawn is refused under one, sminos_rpc.admit_spawn)."""
     order = sminos.PERMISSION_MODES
     m = "default" if mode == "manual" else mode
-    c = "default" if ceiling == "manual" else ceiling
-    if m in order and c in order and order.index(m) > order.index(c):
+    c = "default" if ceiling == "manual" or ceiling not in order else ceiling
+    if m in order and order.index(m) > order.index(c):
         return c
     return mode
 
@@ -318,11 +333,23 @@ def line_note(first, options, turn, not_carried=None):
             "not_carried": (list(not_carried) if not_carried is not None else None) if first else []}
 
 
+MODEL_ALIASES = ("opus", "sonnet", "haiku")   # the engine's aliases of a family, served as `claude-<family>-…`
+
+
 def same_model(a, b):
-    """Whether two names are one model: an alias and the model it serves
-    (`haiku`, `claude-haiku-5-5`) are; a `[…]` suffix is no difference."""
-    a, b = (re.sub(r"\[.*\]$", "", str(x).strip().lower()) for x in (a, b))
-    return bool(a and b) and (a == b or a in b or b in a)
+    """Whether two names are one model: the same id once lower-cased and a
+    `[…]` suffix (a context window) dropped, or one of them an alias of a
+    family (MODEL_ALIASES) and the other an id of that family; two ids that
+    differ are two models (`claude-sonnet-4`, `claude-sonnet-4-5`)."""
+    a, b = (re.sub(r"\[[^\]]*\]$", "", str(x).strip().lower()) for x in (a, b))
+    if not (a and b):
+        return False
+    if a == b:
+        return True
+    for alias, full in ((a, b), (b, a)):
+        if alias in MODEL_ALIASES and full.startswith("claude-") and alias in full.split("-"):
+            return True
+    return False
 
 
 def opening_line(note):
@@ -368,12 +395,13 @@ def not_woken(record, session, whole=False):
     missing or not a directory; one this process may not look at is taken
     on its word), `protected` (on macOS, a thread its human opened in a
     protected folder), `mode` (the mode its row runs it under, or its last
-    turn's, asks for approval; a mode not found within the bound does not
-    ask, `whole` reads on). Reads the record given and the files it names,
-    never the engine's job list, and takes no lock."""
+    turn's, asks for approval, or a first wake's lowered to the ceiling
+    would: mode_case; a mode not found within the bound does not ask,
+    `whole` reads on). Reads the record given, the files it names and
+    policy_inputs, never the engine's job list, and takes no lock."""
     if sminos.foreign_config(session):
         return "config"
-    path = sminos.transcript_now(session) if whole else sminos.transcript_path(session)
+    path = transcript_file(session, whole)
     if not path:
         return "transcript"
     cwd = thread_cwd(record)
@@ -381,11 +409,44 @@ def not_woken(record, session, whole=False):
         return "cwd"
     if sminos.TCC and record.get("opened") == "human" and sminos.protected_folder(cwd):
         return "protected"
+    case = _mode_case(record, session, path, whole)
+    if case is None:
+        return "transcript"   # gone since it was found
+    return "mode" if case else ""
+
+
+def mode_case(record, session, whole=False):
+    """Which mode keeps the thread from being woken (`not_woken`'s `mode`):
+    "own" when the mode its row runs it under or its last turn's asks for
+    approval; "ceiling" when neither does but a first wake (no row, or one
+    that cannot be read) would pass the last turn's mode lowered to the
+    machine's ceiling, and that one asks (the plan's Decision Log, "A first
+    wake's capped mode decides `mode`"): the words a sender reads name the
+    owner's remedy then; "" for neither (or no transcript)."""
+    return _mode_case(record, session, transcript_file(session, whole), whole) or ""
+
+
+def _mode_case(record, session, path, whole):
+    turn = _turn_at(path, whole)
+    if turn is None:
+        return None
     row = row_of(session)
-    modes = [_turn_at(path, whole)["mode"]] + ([options_mode(row_options(row))] if isinstance(row, dict) else [])
+    modes = [turn["mode"]] + ([options_mode(row_options(row))] if isinstance(row, dict) else [])
     if any(asks(m) for m in modes):
-        return "mode"
+        return "own"
+    if not isinstance(row, dict) and turn["mode"] is not None:
+        capped = first_flags(record, turn, sminos.sibling_module("sminos_policy").machine_policy()["ceiling"], True)
+        if asks(options_mode(capped[0])):
+            return "ceiling"
     return ""
+
+
+def policy_inputs():
+    """The files `not_woken` reads beyond the record's own (the machine's
+    policy and the user settings whose `defaultMode` is its ceiling when it
+    names none): what a memory of its answers is keyed on with them."""
+    return [sminos.sibling_module("sminos_policy").policy_path(),
+            os.path.join(sminos.home_dir(), ".claude", "settings.json")]
 
 
 def _seconds(name, default):

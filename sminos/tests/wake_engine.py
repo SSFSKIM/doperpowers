@@ -12,7 +12,10 @@ Its state is `$WAKE_ENGINE_STATE`: `jobs/<short>.json` (the job list's
 entries, `claude agents --json --all`), `calls.log` (each call, `{argv,
 cwd}`), `launches` (a count of the `--bg` launches entered), `inputs/<id>`
 (every frame its inbox took, whole), `violations` (a launch that carried a
-message while `refuse-message` is set), `helpers/<pid>` (its processes).
+message while `refuse-message` is set), `helpers/<pid>` (its processes),
+`owned/<id>` (the worker it started for a session, known from its start,
+before any public signal of it) and `ready/<pid>.<stage>` (a worker's
+record and job written, its inbox listening).
 The engine's own files are under the config dir (`CLAUDE_CONFIG_DIR`, else
 `~/.claude`): `sessions/<pid>.json` (the record of a process), `jobs/<first
 eight>/state.json` (a session's row) and `projects/<dir>/<id>.jsonl`.
@@ -47,8 +50,8 @@ shorts it names, every one when empty); `late-inbox` and `late-process`
 (seconds); `agents-fail`; `no-banner` (seconds the launch sleeps, its
 process started, before it exits with nothing printed); `barrier` (each
 launch waits until the file is removed; `launches` counts those entered);
-`no-reply`, `reply-delay` (seconds), `reply-reversed` (a second frame
-answered before the first); `bridge` (the helper serves sminos's bridge
+`no-reply`, `reply-delay` (seconds), `reply-reversed` (two frames' whole
+turns run the second first: its prompt and reply, then the first's); `bridge` (the helper serves sminos's bridge
 socket for the session, a signal of E5's beside its record and its job).
 """
 import contextlib
@@ -294,8 +297,26 @@ def bypass(flags):
 # ------------------------------------------------------------ the launch
 
 
+def owned_path(sid):
+    return os.path.join(state(), "owned", sid)
+
+
+def owned_pid(sid):
+    """The engine's own worker for the session, while it runs: known to the
+    engine from its start (Popen), whatever its public signals (the record,
+    the job's pid) show yet, as a late process holds them back."""
+    try:
+        with open(owned_path(sid)) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
+    return pid if pid_alive(pid) else 0
+
+
 def held_by(sid):
     """The kind of a live process that holds the session ("interactive" or "bg"), else ""."""
+    if owned_pid(sid):
+        return "bg"
     for p in glob.glob(os.path.join(glob.escape(config()), "sessions", "*.json")):
         rec = read_json(p)
         if isinstance(rec, dict) and rec.get("sessionId") == sid and pid_alive(rec.get("pid")):
@@ -426,9 +447,17 @@ def start(sid, flags, run_with, cwd, path, message, row, note, defaults=False):
         proc = subprocess.Popen([sys.executable, "-B", HERE, "--helper", spec_path], cwd=row["cwd"],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
                                 start_new_session=True, close_fds=True)
-    if not spec["late_process"]:
+    os.makedirs(os.path.dirname(owned_path(sid)), exist_ok=True)
+    with open(owned_path(sid), "w") as f:
+        f.write(str(proc.pid))
+    append(os.path.join(state(), "helpers", str(proc.pid)), sid)
+    # The banner once the process is ready (E18): its record, its job's pid and its inbox listening; a late
+    # switch breaks that order on purpose (late-inbox: the record only; late-process: nothing).
+    stage = None if spec["late_process"] else ("record" if spec["late_inbox"] else "inbox")
+    if stage:
+        mark = os.path.join(state(), "ready", "%d.%s" % (proc.pid, stage))
         end = time.monotonic() + 15
-        while not os.path.exists(record_path(proc.pid)) and time.monotonic() < end and proc.poll() is None:
+        while not os.path.exists(mark) and time.monotonic() < end and proc.poll() is None:
             time.sleep(0.005)
     hang = switch("no-banner")
     if hang is not None:
@@ -480,8 +509,13 @@ class Helper:
                 rec["status"] = status
                 write_json(self.record, rec)
 
+    def ready(self, stage):
+        append(os.path.join(self.st, "ready", "%d.%s" % (self.pid, stage)), "")
+
     def cleanup(self, *_):
-        for p in (self.record, self.sock, self.bridge, os.path.join(self.st, "helpers", str(self.pid))):
+        for p in (self.record, self.sock, self.bridge, os.path.join(self.st, "helpers", str(self.pid)),
+                  os.path.join(self.st, "ready", "%d.record" % self.pid),
+                  os.path.join(self.st, "ready", "%d.inbox" % self.pid)):
             try:
                 if p != self.bridge or self.spec.get("bridge"):
                     os.unlink(p)
@@ -491,7 +525,6 @@ class Helper:
 
     def run(self):
         signal.signal(signal.SIGTERM, self.cleanup)
-        append(os.path.join(self.st, "helpers", str(self.pid)), self.sid)
         late = self.spec.get("late_process") or 0
         if late:
             time.sleep(late)
@@ -500,6 +533,7 @@ class Helper:
                                  "messagingSocketPath": self.sock, "status": "idle", "jobId": self.spec["short"],
                                  "startedAt": int(time.time() * 1000), "version": "wake-engine"})
         self.entry(pid=self.pid, state="blocked", status="idle")
+        self.ready("record")
         threading.Thread(target=self.turns, daemon=True).start()
         if self.spec.get("message") is not None:
             self.frames.put({"type": "user", "message": {"role": "user", "content": self.spec["message"]},
@@ -508,7 +542,9 @@ class Helper:
             self.serve_bridge()
         if self.spec.get("late_inbox"):
             time.sleep(self.spec["late_inbox"])
-        self.serve()
+        srv = self.listener(self.sock)
+        self.ready("inbox")
+        self.serve(srv)
 
     def listener(self, path):
         try:
@@ -535,8 +571,7 @@ class Helper:
                 c.close()
         threading.Thread(target=accept, daemon=True).start()
 
-    def serve(self):
-        srv = self.listener(self.sock)
+    def serve(self, srv):
         srv.settimeout(0.5)
         born = time.monotonic()
         life = float(os.environ.get("WAKE_ENGINE_MAX_LIFE") or 900)
@@ -607,17 +642,20 @@ class Helper:
             frame = self.frames.get()
             self.status("busy")
             self.entry(state="working", status="busy")
-            text = self.prompt(frame)
-            if switch("no-reply", self.st) is not None:
-                pass
-            elif switch("reply-reversed", self.st) is not None:
+            if switch("reply-reversed", self.st) is not None:
                 try:
                     second = self.frames.get(timeout=10)
                 except queue.Empty:
                     second = None
                 if second is not None:
                     self.reply(self.prompt(second))
-                self.reply(text)
+                self.reply(self.prompt(frame))
+                self.status("idle")
+                self.entry(state="done", status="idle")
+                continue
+            text = self.prompt(frame)
+            if switch("no-reply", self.st) is not None:
+                pass
             else:
                 delay = switch("reply-delay", self.st)
                 if delay:
@@ -641,7 +679,7 @@ def agents():
 
 
 def stop_helper(entry):
-    pid = entry.get("pid")
+    pid = owned_pid(str(entry.get("sessionId") or "")) or entry.get("pid")
     if pid and pid_alive(pid):
         try:
             os.kill(int(pid), signal.SIGTERM)
@@ -650,6 +688,10 @@ def stop_helper(entry):
         end = time.monotonic() + 10
         while pid_alive(pid) and time.monotonic() < end:
             time.sleep(0.01)
+    try:
+        os.unlink(owned_path(str(entry.get("sessionId") or "")))
+    except OSError:
+        pass
 
 
 def stop(short):
