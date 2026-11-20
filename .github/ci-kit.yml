@@ -77,8 +77,12 @@ gates:
       for f in tests/issue-tracker/test-*.sh; do echo "== $f"; bash "$f"; done
       python3 tests/issue-tracker/meta-grammar-fuzz.py
     timeout: 25
-    # sminos/**: the board scripts call the sminos CLI.
-    paths: ["skills/**", "agents/**", "application-agents/**", "sminos/**", "tests/issue-tracker/**", ".github/ci-kit.yml", ".github/workflows/**"]
+    # The board's own code and tests, and the sminos CLI its scripts call (sminos/skills/sminos/scripts). Until
+    # 2026-11-20 it ran on any change under skills/, agents/, application-agents/ or sminos/: 342 attempts in four
+    # weeks, about 7 minutes each, no red (the gate ledger's W47 report), while the board's dispatch is dormant. The
+    # owner narrowed it; what it no longer catches is another skill's or agent's edit breaking
+    # test-protocol-content.sh's cross-references. `ci-gate --gates issue-tracker` still runs it on any tree.
+    paths: ["skills/issue-tracker/**", "tests/issue-tracker/**", "sminos/skills/sminos/scripts/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: board-api
     run: |
