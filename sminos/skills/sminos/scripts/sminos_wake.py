@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""sminos_wake — what a wake of a stopped thread reads and says, with no
+effect of its own (T2 of
+docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md, D2;
+Interfaces §1 and §2 of docs/doperpowers/plans/2026-11-20-sminos-threads-t2.md).
+
+- The engine's row of a session (row_of): its saved options, read with no
+  lock and believed only for the moment; a row that cannot be read is
+  UNREADABLE, never "no row", since the difference decides whether a first
+  wake's flags may meet the engine's copy answer.
+- The last turn's mode and model (last_turn), read backwards from the
+  transcript's tail within TAIL_BOUND for a daemon's tick, or whole for a
+  wake about to launch, each reading kept by the transcript's stat.
+- The flags of a first wake (first_flags, first_wake), the names of what it
+  does not carry, and the opening line a woken session reads first
+  (line_note, opening_line).
+- Why a thread is not woken (not_woken), and whether a wake that failed is
+  due again (wake_due), from the record's `waking` (sminos_threads, §7).
+
+Nothing here launches, signals, locks or writes; the wake itself is
+`sminos.resume_session`.
+"""
+import json
+import os
+import re
+import sys
+import time
+import uuid
+
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+import sminos  # noqa: E402
+
+
+class _Unreadable:
+    def __repr__(self):
+        return "UNREADABLE"
+
+    def __bool__(self):
+        return False
+
+
+UNREADABLE = _Unreadable()
+# The modes that ask for approval (D2, "Not woken"); any other value, an unknown one included, does not (the owner).
+ASKING = ("default", "manual", "plan", "acceptEdits")
+REASONS = ("config", "transcript", "cwd", "protected", "mode")
+TAIL_BOUND = 4 << 20      # how far back from its end a tick reads a transcript for the last turn
+WAKE_RETRY = 60           # seconds after a first failed wake before the next; doubled per failure (§4)
+WAKE_RETRY_MAX = 3600     # the most it waits
+_CHUNK = 1 << 16
+_ROWS = {}                # row path → (its stat key, the row read there)
+_TURNS = {}               # transcript path → (its stat key, {"bounded": turn, "whole": turn})
+
+
+# ------------------------------------------------------------ the row
+
+
+def row_of(session):
+    """The engine's row of the session (E8): `jobs/<first eight>/state.json`
+    under the session's config dir, as a dict whose `sessionId` is the
+    session. None: a `jobs` directory exists and holds no row for it.
+    UNREADABLE: a file that does not parse or is no object, one whose
+    `sessionId` is another session's, or a config dir with no `jobs`
+    directory (an engine that keeps its rows elsewhere)."""
+    session = str(session or "")
+    if not sminos.UUID_RE.fullmatch(session):
+        return UNREADABLE
+    jobs = os.path.join(sminos.session_config_dir(session), "jobs")
+    path = os.path.join(jobs, session[:8], "state.json")
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        _ROWS.pop(path, None)
+        return None if os.path.isdir(jobs) else UNREADABLE
+    except OSError:
+        return UNREADABLE
+    key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    held = _ROWS.get(path)
+    if held is None or held[0] != key:
+        try:
+            with open(path, encoding="utf-8") as f:
+                row = json.load(f)
+        except (OSError, ValueError):
+            row = UNREADABLE
+        if not isinstance(row, dict) or row.get("sessionId") != session:
+            row = UNREADABLE
+        held = _ROWS[path] = (key, row)
+    return json.loads(json.dumps(held[1])) if isinstance(held[1], dict) else held[1]
+
+
+def row_options(row):
+    """The row's `respawnFlags`, [] when it has none (or none of strings)."""
+    flags = row.get("respawnFlags") if isinstance(row, dict) else None
+    return list(flags) if isinstance(flags, list) and all(isinstance(t, str) for t in flags) else []
+
+
+def row_failed(row):
+    return isinstance(row, dict) and row.get("state") == "failed"
+
+
+def _option(tokens, name):
+    """The value of the last `name` among option tokens (`--name value` or `--name=value`), else ""."""
+    value = ""
+    for i, tok in enumerate(tokens):
+        if tok == name and i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+            value = tokens[i + 1]
+        elif tok.startswith(name + "="):
+            value = tok[len(name) + 1:]
+    return value
+
+
+def options_mode(tokens):
+    """The permission mode a list of options runs under, "" when it names none."""
+    return _option(tokens, "--permission-mode") or (
+        "bypassPermissions" if "--dangerously-skip-permissions" in tokens else "")
+
+
+# ------------------------------------------------------------ the last turn
+
+
+def last_turn(session, whole=False):
+    """The mode and the model the session's last turn ran under (E14):
+    `permissionMode` on its last prompt row (never a `permission-mode`
+    metadata row: stale at a process's start), and `message.model` on its
+    last assistant row whose `requestId` is set (a hook's row, `msg_hook_`,
+    is no turn), sidechains aside. Each is the value; "" when the
+    transcript was read to its start and holds none (or there is no
+    transcript); None when not found within TAIL_BOUND, never with
+    `whole`. Each reading is kept by the transcript's stat, so a tick reads
+    a transcript only once it changed, and only its tail."""
+    path = sminos.transcript_now(session) if whole else sminos.transcript_path(session)
+    return _turn_at(path, whole)
+
+
+def _turn_at(path, whole):
+    if not path:
+        return {"mode": "", "model": ""}
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {"mode": "", "model": ""}
+    key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    held = _TURNS.get(path)
+    if held is None or held[0] != key:
+        held = _TURNS[path] = (key, {})
+    got = held[1]
+    if "whole" in got:
+        return dict(got["whole"])
+    if not whole and "bounded" in got:
+        return dict(got["bounded"])
+    turn = _read_turn(path, None if whole else TAIL_BOUND)
+    if turn is None:
+        return {"mode": "", "model": ""}
+    got["whole" if whole or None not in turn.values() else "bounded"] = turn
+    return dict(turn)
+
+
+def _read_turn(path, budget):
+    mode = model = None
+    try:
+        with open(path, "rb") as f:
+            end = f.seek(0, os.SEEK_END)
+            pos, head = end, b""
+            while pos > 0 and (budget is None or end - pos < budget) and (mode is None or model is None):
+                size = min(_CHUNK, pos) if budget is None else min(_CHUNK, pos, budget - (end - pos))
+                pos -= size
+                f.seek(pos)
+                parts = (f.read(size) + head).split(b"\n")
+                head = parts[0]
+                for line in reversed(parts[1:]):
+                    mode, model = _row_turn(line, mode, model)
+                    if mode is not None and model is not None:
+                        break
+            if pos == 0 and (mode is None or model is None):
+                mode, model = _row_turn(head, mode, model)
+    except OSError:
+        return None
+    start = pos == 0
+    return {"mode": mode if mode is not None else ("" if start else None),
+            "model": model if model is not None else ("" if start else None)}
+
+
+def _row_turn(line, mode, model):
+    if not line or (mode is not None or b'"permissionMode"' not in line) and (
+            model is not None or b'"assistant"' not in line):
+        return mode, model
+    try:
+        r = json.loads(line)
+    except ValueError:
+        return mode, model   # a partial last line, or no row
+    if not isinstance(r, dict) or r.get("isSidechain"):
+        return mode, model
+    if mode is None and r.get("type") == "user" and isinstance(r.get("permissionMode"), str) and r["permissionMode"]:
+        mode = r["permissionMode"]
+    msg = r.get("message")
+    if model is None and r.get("type") == "assistant" and r.get("requestId") and isinstance(msg, dict) \
+            and isinstance(msg.get("model"), str) and msg["model"] and msg["model"] != "<synthetic>" \
+            and not str(msg.get("id") or "").startswith("msg_hook_"):
+        model = msg["model"]
+    return mode, model
+
+
+# ------------------------------------------------------------ the flags
+
+
+def asks(mode):
+    """Whether a mode asks for approval: default, manual, plan, acceptEdits."""
+    return mode in ASKING
+
+
+def mode_flag(mode):
+    """The `--permission-mode` value for a mode as a transcript or a row
+    writes it: the mode itself, but `default`, which is passed as `manual`
+    (E24)."""
+    return "manual" if mode == "default" else mode
+
+
+def _capped(mode, ceiling):
+    """The mode, lowered to the ceiling when above it in sminos.PERMISSION_MODES'
+    order (`manual` read as `default`); a mode or a ceiling outside that order is
+    not compared."""
+    order = sminos.PERMISSION_MODES
+    m = "default" if mode == "manual" else mode
+    c = "default" if ceiling == "manual" else ceiling
+    if m in order and c in order and order.index(m) > order.index(c):
+        return c
+    return mode
+
+
+def first_flags(record, turn, ceiling, accepted_bypass):
+    """(flags, names not carried) for a first wake of the thread (§2):
+    `--permission-mode` (the last turn's, else the launch's; capped by the
+    machine's ceiling; `bypassPermissions` lowered to `auto` unless the
+    engine's disclaimer was accepted, E22), `--model` (the last turn's,
+    else the launch's), `--effort` and `--settings` (the launch's; a
+    settings file that is gone is not passed, a relative one is read
+    against the launch's directory), in that order. Never `--add-dir`,
+    `--output-style` or a name. Not carried: every option of
+    `launch.options` not passed and every name of `launch.dropped`; None
+    when the record does not say what was dropped (no `options`, or a
+    launch noted before T2)."""
+    launch = record.get("launch") if isinstance(record.get("launch"), dict) else {}
+    options = launch.get("options") if isinstance(launch.get("options"), list) else None
+    opts = [t for t in options or [] if isinstance(t, str)]
+    flags = []
+    mode = turn.get("mode") or _option(opts, "--permission-mode")
+    if mode:
+        mode = _capped(mode, ceiling)
+        if mode == "bypassPermissions" and not accepted_bypass:
+            mode = "auto"
+        flags += ["--permission-mode", mode_flag(mode)]
+    model = turn.get("model") or _option(opts, "--model")
+    if model:
+        flags += ["--model", model]
+    effort = _option(opts, "--effort")
+    if effort:
+        flags += ["--effort", effort]
+    settings = _option(opts, "--settings")
+    cwd = str(launch.get("cwd") or "")
+    if settings and (os.path.isabs(os.path.expanduser(settings)) or cwd):
+        path = os.path.join(cwd, os.path.expanduser(settings))
+        if os.path.isfile(path):
+            flags += ["--settings", os.path.abspath(path)]
+    dropped = launch.get("dropped")
+    if options is None or not isinstance(dropped, list):
+        return flags, None
+    names = sminos.threads_module().LAUNCH_OPTIONS
+    passed = set(flags[::2])
+    missing = []
+    for name in [t for t in opts if t in names and t not in passed] + [d for d in dropped if isinstance(d, str)]:
+        if name not in missing:
+            missing.append(name)
+    return flags, missing
+
+
+def bypass_accepted(session):
+    """Whether the user's settings in the session's config dir hold the
+    engine's accepted bypass disclaimer (`skipDangerousModePermissionPrompt`,
+    E22), without which a background launch in that mode is refused."""
+    try:
+        d = sminos.json_at(os.path.join(sminos.session_config_dir(session), "settings.json"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(d, dict) and d.get("skipDangerousModePermissionPrompt") is True
+
+
+def first_wake(record, session):
+    """first_flags for the session as a wake about to launch reads it: its
+    last turn read whole, the machine's ceiling (sminos_policy), and the
+    disclaimer of its config dir."""
+    policy = sminos.sibling_module("sminos_policy").machine_policy()
+    return first_flags(record, last_turn(session, whole=True), policy["ceiling"], bypass_accepted(session))
+
+
+def wake_argv(session, flags):
+    """The engine's arguments for a wake: never a positional after them (D2)."""
+    return ["--bg", "--resume", session] + list(flags)
+
+
+# ------------------------------------------------------------ the opening line
+
+
+LINE_HEAD = ("[sminos] A note from sminos on this machine, not from the sender below: you were woken in the "
+             "background by this message, and your human is not watching this session unless they have attached "
+             "to it since.")
+
+
+def line_note(first, options, turn, not_carried=None):
+    """What `waking.line` holds for a wake about to launch (§7): `first`
+    whether it is a first wake; `options` what it runs under (a first
+    wake's flags, a later one's row options); the last turn's model beside
+    them; for a first wake the names not carried (None: not known)."""
+    options = [t for t in options or [] if isinstance(t, str)]
+    return {"id": uuid.uuid4().hex[:12], "first": bool(first), "mode": options_mode(options),
+            "model": _option(options, "--model"), "turn_model": str((turn or {}).get("model") or ""),
+            "not_carried": (list(not_carried) if not_carried is not None else None) if first else []}
+
+
+def same_model(a, b):
+    """Whether two names are one model: an alias and the model it serves
+    (`haiku`, `claude-haiku-5-5`) are; a `[…]` suffix is no difference."""
+    a, b = (re.sub(r"\[.*\]$", "", str(x).strip().lower()) for x in (a, b))
+    return bool(a and b) and (a == b or a in b or b in a)
+
+
+def opening_line(note):
+    """The one paragraph of sminos's own that opens the first frame pushed
+    after a wake (D2, step 3), from its note (line_note)."""
+    mode, model = str(note.get("mode") or ""), str(note.get("model") or "")
+    line = LINE_HEAD + (" You run in %s mode on %s." % (mode_flag(mode), model) if mode and model
+                        else " You run under your saved options.")
+    turn_model = str(note.get("turn_model") or "")
+    if not note.get("first") and model and turn_model and not same_model(model, turn_model):
+        line += (" Your last turn ran on %s; a background run keeps the options it last ran with in the "
+                 "background." % turn_model)
+    if note.get("first"):
+        line += (" This is your first run outside the terminal you were opened in: the environment variables of "
+                 "that terminal are not set here.")
+        missing = note.get("not_carried")
+        if missing is None:
+            line += " Other options of its launch may not be carried."
+        elif missing:
+            line += " Not carried from its launch: %s." % ", ".join(missing)
+    return line
+
+
+# ------------------------------------------------------------ not woken, and the schedule
+
+
+def thread_cwd(record):
+    """The thread's directory, absolute: a seat's where its session runs
+    (sminos.seat_cwd), a thread its human opened its launch's; "" for none."""
+    cwd = ""
+    if record.get("opened") == "spawned":
+        seat = sminos.reload_seat(record["thread"])
+        cwd = sminos.seat_cwd(seat) if seat else ""
+    if not cwd:
+        cwd = str((record.get("launch") or {}).get("cwd") or "")
+    return os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
+
+
+def not_woken(record, session, whole=False):
+    """Why the thread is not woken (D2, "Not woken"), the first of REASONS
+    that holds, else "": `config` (the session runs under another config
+    dir), `transcript` (no conversation of it here), `cwd` (its directory
+    missing or not a directory; one this process may not look at is taken
+    on its word), `protected` (on macOS, a thread its human opened in a
+    protected folder), `mode` (the mode its row runs it under, or its last
+    turn's, asks for approval; a mode not found within the bound does not
+    ask, `whole` reads on). Reads the record given and the files it names,
+    never the engine's job list, and takes no lock."""
+    if sminos.foreign_config(session):
+        return "config"
+    path = sminos.transcript_now(session) if whole else sminos.transcript_path(session)
+    if not path:
+        return "transcript"
+    cwd = thread_cwd(record)
+    if not cwd or (not sminos.read_refused(cwd) and not os.path.isdir(cwd)):
+        return "cwd"
+    if sminos.TCC and record.get("opened") == "human" and sminos.protected_folder(cwd):
+        return "protected"
+    row = row_of(session)
+    modes = [_turn_at(path, whole)["mode"]] + ([options_mode(row_options(row))] if isinstance(row, dict) else [])
+    if any(asks(m) for m in modes):
+        return "mode"
+    return ""
+
+
+def _seconds(name, default):
+    try:
+        v = float(os.environ.get("SMINOS_" + name, default))
+    except ValueError:
+        return float(default)
+    return v if v >= 0 else float(default)
+
+
+def wake_due(record, session, now=None):
+    """Whether a wake of the session is due (§4): its record's `waking`
+    names no failure for it, or WAKE_RETRY * 2 ** (failed - 1) seconds, at
+    most WAKE_RETRY_MAX (SMINOS_WAKE_RETRY, SMINOS_WAKE_RETRY_MAX), have
+    passed since the last one. A failure whose time cannot be read holds
+    nothing back."""
+    w = sminos.threads_module().waking(record, session)
+    failed = w.get("failed")
+    if type(failed) is not int or failed <= 0:
+        return True
+    at = sminos._ts_epoch(w.get("at"))
+    if at is None:
+        return True
+    wait = min(_seconds("WAKE_RETRY", WAKE_RETRY) * 2.0 ** min(failed - 1, 64),
+               _seconds("WAKE_RETRY_MAX", WAKE_RETRY_MAX))
+    return (time.time() if now is None else now) >= at + wait

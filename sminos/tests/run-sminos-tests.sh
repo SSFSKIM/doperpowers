@@ -138,12 +138,16 @@ cat > "$STUB_BIN/claude" <<'STUB'
 set -euo pipefail
 mkdir -p "$STUB_STATE/agents" "$STUB_STATE/log"
 echo "$*" >> "$STUB_STATE/log/calls.log"
+# The test engine (wake_engine.py, T2's §8) takes a wake with no message, and
+# the stop or removal of a job it started; its jobs are listed beside the stub's.
+export WAKE_ENGINE_STATE="${WAKE_ENGINE_STATE:-$STUB_STATE/wake}"
 
 case "${1:-}" in
   agents)
     # STUB_AGENTS_FAIL=1: the harness itself fails (distinct from an empty fleet).
     [ "${STUB_AGENTS_FAIL:-0}" = "1" ] && { echo "stub: agents unavailable" >&2; exit 1; }
-    python3 - "$STUB_STATE/agents" <<'PY'
+    [ -e "$WAKE_ENGINE_STATE/agents-fail" ] && { echo "stub: agents unavailable" >&2; exit 1; }
+    python3 - "$STUB_STATE/agents" "$WAKE_ENGINE_STATE/jobs" <<'PY'
 import glob, json, os, sys
 out = []
 for f in glob.glob(os.path.join(sys.argv[1], '*')):
@@ -154,9 +158,24 @@ for f in glob.glob(os.path.join(sys.argv[1], '*')):
     if m.get("pid"):
         row["pid"] = int(m["pid"])
     out.append(row)
+for f in sorted(glob.glob(os.path.join(glob.escape(sys.argv[2]), '*.json'))):
+    try:
+        out.append(json.load(open(f)))
+    except (OSError, ValueError):
+        pass
 print(json.dumps(out))
 PY
     exit 0 ;;
+  stop|rm)
+    if [ -n "${WAKE_ENGINE:-}" ] && [ -f "$WAKE_ENGINE_STATE/jobs/${2:-}.json" ]; then exec python3 -B "$WAKE_ENGINE" "$@"; fi ;;
+esac
+# A wake (`--bg --resume <id>` with no message after it) is the test engine's.
+if [ -n "${WAKE_ENGINE:-}" ] && [[ " $* " == *" --bg "* ]] && [[ " $* " == *" --resume "* ]] \
+    && ! python3 -B "$WAKE_ENGINE" --has-positional "$@"; then
+  exec python3 -B "$WAKE_ENGINE" "$@"
+fi
+
+case "${1:-}" in
   stop)
     # STUB_STOP_FAIL=1: the supervisor refuses. STUB_STOP_NOOP=1: it accepts
     # but the turn keeps running (the row never leaves state=working).
@@ -338,6 +357,8 @@ chmod +x "$CODEX_BIN/codex"
 export PATH="$STUB_BIN:$CODEX_BIN:$PATH"
 # What the stub's derive fork runs: the hook, and the CLI itself.
 export STUB_PLUGIN_ROOT="$PLUGIN_ROOT" STUB_SMINOS="$SMINOS"
+# The test engine the stub hands a wake to (T2's §8).
+export WAKE_ENGINE="$SCRIPT_DIR/wake_engine.py"
 
 # A stand-in for a live session's inbox socket (inbox_standin.py): appends
 # every frame it receives to inbox.received, one connection at a time,
@@ -376,6 +397,8 @@ run_suites() {
     fail "a thread that made a VM is neither retired nor ended: devcloud asked, the census (test_threads_owner.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_threads_branch_a.py"; then pass "a seat's lifecycle verbs against the writers that race them (test_threads_branch_a.py)"; else
     fail "a seat's lifecycle verbs against the writers that race them (test_threads_branch_a.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_wake.py"; then pass "what a wake reads and says, the record's field, the test engine (test_wake.py)"; else
+    fail "what a wake reads and says, the record's field, the test engine (test_wake.py)"; fi
   if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10 beside this code: no session its human opened resumed, its ended passed by (test-older-cli.sh)"; else
     fail "sminos 1.27.10 beside this code: no session its human opened resumed, its ended passed by (test-older-cli.sh)"; fi
   if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else

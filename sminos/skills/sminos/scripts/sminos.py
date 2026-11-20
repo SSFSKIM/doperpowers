@@ -3997,6 +3997,11 @@ def records_module():
 _THREADS = []   # sminos_threads, once imported: the reducer is asked for every membership read
 
 
+def wake_module():
+    """What a wake reads and says (sminos_wake; T2)."""
+    return sibling_module("sminos_wake")
+
+
 def threads_module():
     if not _THREADS:
         _THREADS.append(sibling_module("sminos_threads"))
@@ -9360,8 +9365,9 @@ def entry_open(session):
 def note_launch_of(session, peer):
     """The launch of the process that started a human-opened thread's
     current session, from its own hook (`CLAUDE_PID`): the directory, and the
-    options its argument vector holds (sminos_threads.launch_options), read
-    with their exact boundaries; absent where the vector cannot be read, or
+    options its argument vector holds (sminos_threads.launch_options) and the
+    names of those it drops for their value (launch_dropped), read with
+    their exact boundaries; absent where the vector cannot be read, or
     for one of the engine's pre-started background processes, whose
     arguments are not the session's. A lock not had in time skips it."""
     threads = threads_module()
@@ -9372,7 +9378,7 @@ def note_launch_of(session, peer):
     cwd = launch_cwd(session, fallback=str((peer or {}).get("cwd") or ""))
     try:
         threads.note_launch(thread["thread"], cwd, threads.launch_options(argv) if argv is not None else None,
-                            lock_until=_RECORD_DEADLINE)
+                            threads.launch_dropped(argv) if argv is not None else None, lock_until=_RECORD_DEADLINE)
     except (OSError, LockBusy):
         pass
 
@@ -12882,8 +12888,9 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         record("the displaced session %s stays a member until a reading verb finds it no longer runs"
                % displaced[:8], seat_project(prev), displaced, "retired", by=by, reason="replaced")
     fields = joined_fields(alias, "seat", runcwd or cwd, worktree or "", role or "", rec_id, by, "seat", session=uuid)
-    launched = threads.launch_of(runcwd or cwd, threads.launch_options(
-        ["claude"] + claude_args(alias, model, merged, effort, worktree, permission_mode)))
+    launch_argv = ["claude"] + claude_args(alias, model, merged, effort, worktree, permission_mode)
+    launched = threads.launch_of(runcwd or cwd, threads.launch_options(launch_argv),
+                                 threads.launch_dropped(launch_argv))
     if journaled and (seat_id is not None or other is not None or not claimed):
         # A refill (Interfaces §6, row 6): the thread keeps its id, alias and
         # in-charge line, and takes its new session by a journaled write that

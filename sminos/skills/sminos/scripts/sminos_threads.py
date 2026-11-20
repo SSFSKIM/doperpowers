@@ -63,8 +63,9 @@ OPS = ("advance", "absorb", "end", "return", "release")
 RESERVED = "reserved"
 # The keys only a journaled operation writes (begin); update() refuses them.
 JOURNALED = ("current", "sessions", "ended", "released", "pending")
-# What a seat record gains; its `thread`, `current` and `alias` are its own.
-SEAT_KEYS = ("opened", "sessions", "launch", "channels", "stopped", "swept", "ended", "released", "pending")
+# What a seat record gains; its `thread`, `current` and `alias` are its own. `waking` is T2's (its plan's §7).
+SEAT_KEYS = ("opened", "sessions", "launch", "channels", "stopped", "swept", "ended", "released", "pending",
+             "waking")
 # A seat's marks that belong to the occupant they were written for: a seat that takes another session drops them.
 OCCUPANT_MARKS = ("ended", "stopped", "swept")
 
@@ -286,6 +287,8 @@ def _of_seat(s):
     for k in ("stopped", "swept", "released", "pending"):
         if s.get(k) and not (moved and k in OCCUPANT_MARKS):
             rec[k] = copy.deepcopy(s[k])
+    if isinstance(s.get("waking"), dict):
+        rec["waking"] = copy.deepcopy(s["waking"])   # its reader checks the session it names (waking)
     if ended is not None:
         rec["ended"] = dict(ended)
     return rec
@@ -704,24 +707,127 @@ def update(thread_id, fields, remove=(), guard=None, lock_until=None):
     return _change(thread_id, mutate, lock_until)
 
 
-def launch_of(cwd, options=None):
+def launch_of(cwd, options=None, dropped=None):
     """A record's `launch`: the directory of the engine process that last
     started the thread's current session and, when they could be read, its
-    options (launch_options); `options` absent means unknown, never none."""
+    options (launch_options) and the names of those dropped for their value
+    (launch_dropped); `options` absent means unknown, never none, and a
+    launch written before T2 has no `dropped`."""
     launch = {"cwd": str(cwd or ""), "at": sminos.now()}
     if options is not None:
         launch["options"] = list(options)
+    if dropped is not None:
+        launch["dropped"] = list(dropped)
     return launch
 
 
-def note_launch(thread_id, cwd, options=None, lock_until=None):
+def note_launch(thread_id, cwd, options=None, dropped=None, lock_until=None):
     """The launch noted on its own (launch_of), a change that owes no event."""
-    return update(thread_id, {"launch": launch_of(cwd, options)}, lock_until=lock_until)
+    return update(thread_id, {"launch": launch_of(cwd, options, dropped)}, lock_until=lock_until)
 
 
 def set_channels(thread_id, channels):
     """CH's writer of the declared channels."""
     return update(thread_id, {"channels": [str(c) for c in channels]})
+
+
+# ------------------------------------------------------------ the wake's field (T2's plan, §7)
+
+
+def waking(record, session=None):
+    """The record's `waking` (T2's §7), only as written for the session that
+    fills it now (and is `session`, when given): {} otherwise, so a field an
+    older copy carried over to another occupant, or one left for a session
+    the thread has since left, is never read."""
+    w = (record or {}).get("waking")
+    if not isinstance(w, dict) or not w.get("session") or w["session"] != (record or {}).get("current"):
+        return {}
+    if session is not None and w["session"] != session:
+        return {}
+    return copy.deepcopy(w)
+
+
+def _waking_change(thread_id, session, change, lock_until=None):
+    """change(field) on the `waking` written for `session`, made through
+    update() only while the record's current session is `session` and the
+    field is still what it was read as; the field removed when nothing but
+    its session is left. change answers the new field, or None for no
+    write. A write that lost the field to another writer reads it again;
+    one refused for another reason (an open entry, another occupant) writes
+    nothing."""
+    for _ in range(3):
+        rec = get(thread_id)
+        if rec is None or rec["current"] != session or not session:
+            return False
+        before = rec.get("waking")
+        new = change(waking(rec, session) or {"session": session})
+        if new is None:
+            return False
+        new["session"] = session
+
+        def same(r, before=before):
+            return r["current"] == session and r.get("waking") == before
+        if set(new) - {"session"}:
+            done = update(thread_id, {"waking": new}, guard=same, lock_until=lock_until)
+        else:
+            done = update(thread_id, {}, remove=("waking",), guard=same, lock_until=lock_until)
+        if done:
+            return True
+        now = get(thread_id)
+        if now is None or now["current"] != session or now.get("pending") or now.get("waking") == before:
+            return False
+    return False
+
+
+def wake_line(thread_id, session, line, lock_until=None):
+    """`waking.line` set for the wake about to launch (§2, §7)."""
+    def change(w):
+        w["line"] = copy.deepcopy(line)
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_failed(thread_id, session, line_id, lock_until=None):
+    """A wake failed: `failed` counted, `at` now, and the line it wrote removed."""
+    def change(w):
+        w["failed"] = (w["failed"] if isinstance(w.get("failed"), int) and w["failed"] > 0 else 0) + 1
+        w["at"] = sminos.now(ms=True)
+        if (w.get("line") or {}).get("id") == line_id:
+            w.pop("line")
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_done(thread_id, session, saved=None, lock_until=None):
+    """A wake made the session live: the failures forgotten, and `saved` set
+    when given (the engine said the session keeps saved options, §3 row 12)."""
+    def change(w):
+        w.pop("failed", None)
+        w.pop("at", None)
+        if saved:
+            w["saved"] = True
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_line_sent(thread_id, session, line_id, lock_until=None):
+    """The line pushed: removed, only while it is still the one of `line_id`."""
+    def change(w):
+        if (w.get("line") or {}).get("id") != line_id:
+            return None
+        w.pop("line")
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_forget(thread_id, session, lock_until=None):
+    """`saved` removed: sminos removed the session's row (§3), so the next wake is a first one."""
+    def change(w):
+        if "saved" not in w:
+            return None
+        w.pop("saved")
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
 
 
 def note_alias(session, alias, lock_until=None, project=None):
@@ -1482,7 +1588,23 @@ def launch_options(argv):
     """The option tokens of an engine's argument vector that `launch.options`
     keeps (LAUNCH_OPTIONS), in order, each `--name=value` as two tokens; an
     option whose value is inline JSON, or names a session, is dropped whole."""
-    out, i, args = [], 1, list(argv or [])
+    return _launch_tokens(argv)[0]
+
+
+def launch_dropped(argv):
+    """The names of the options of LAUNCH_OPTIONS that launch_options drops
+    for their value (inline JSON, or a session named), in order, each once:
+    `launch.dropped`, which a first wake reports as not carried (T2)."""
+    out = []
+    for name in _launch_tokens(argv)[1]:
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def _launch_tokens(argv):
+    """(the tokens kept, the names of the options dropped for their value)."""
+    out, dropped, i, args = [], [], 1, list(argv or [])
     while i < len(args):
         tok = args[i]
         i += 1
@@ -1502,10 +1624,13 @@ def launch_options(argv):
                 i += 1
                 if name not in _MANY:
                     break
-        if not values or any(_secretive(v) for v in values):
+        if not values:
+            continue
+        if any(_secretive(v) for v in values):
+            dropped.append(name)
             continue
         out += [name] + values
-    return out
+    return out, dropped
 
 
 def _secretive(value):
