@@ -6,8 +6,8 @@ names or values, or local paths, here or in the diff.
 
 ## What and why
 <!-- The problem, and what this changes. A board ticket is a GitHub issue of
-     this repository: put "Closes #N" here, and finalize it with
-     board-transition.sh N done after the merge. -->
+     this repository: put "Closes #N" here, and after the merge finalize it
+     with board-transition.sh N done, run from an up-to-date main checkout. -->
 
 ## Evidence
 <!-- What shows it works: tests that failed before the change and pass after it,
