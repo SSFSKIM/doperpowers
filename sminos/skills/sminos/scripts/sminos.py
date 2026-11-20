@@ -6628,6 +6628,12 @@ def wake_published(session):
     schedule."""
     if sibling_module("sminos_policy").read_only():
         return "held", "read-only"
+    return wake_here(session)
+
+
+def wake_here(session):
+    """wake_published but for `read-only`, which refuses only what comes
+    from another machine: what a sender on this machine meets."""
     t = threads_module().current_record(session)
     if t is None:
         return ("held", "") if hold_for(session) else ("woken", "")
@@ -17963,13 +17969,21 @@ def who_lines(addr):
         elif m.state != "gone" or not m.local:
             where = "here" if m.local else "on %s" % m.machine
             out.append("  resume it %s: cd %s && claude --resume %s" % (where, shlex.quote(m.cwd or "."), m.session))
-            wakes = wake_of(m) if m.thread and m.state == "stopped" else None
-            if wakes == "woken":
+            # What its machine published (on a `gone` state too, state_wake); a sender here meets this machine's
+            # hold, which `read-only` is not: it refuses only what comes from another machine.
+            wakes = wake_of(m) if m.thread and m.state in HELD_STATES else None
+            why = why_of(m) if wakes == "held" else ""
+            if m.local and why == "read-only":
+                wakes, why = wake_here(m.session)
+            if wakes == "woken" and m.state == "stopped":
                 # A stopped thread its machine wakes (T2): an addressed message starts it again.
                 out.append('  or message it, which wakes it: sminos say "@%s ..."' % m.short)
+            elif why == "read-only":
+                # Its machine refuses what this one sends it (T2's §5): nothing to leave it from here.
+                out.append("  no message from here reaches it: %s admits nothing from another machine, and refuses "
+                           "it there" % m.machine)
             elif wakes == "held":
                 # One its machine holds: an addressed message waits for a process of it (T1's M3, T2's §5).
-                why = why_of(m)
                 out.append('  or leave it a message, held until a process of it runs%s: sminos say "@%s ..."' % (
                     " (%s)" % (hold_words(why) if why in HOLD_WORDS else why) if why else "", m.short))
             else:

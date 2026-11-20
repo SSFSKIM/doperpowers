@@ -587,6 +587,35 @@ class Remote(Verbs):
                 self.assertEqual(code, 0, out)
                 self.assertIn("for far: " + said, out)
 
+    def hint(self, sid):
+        """`who`'s lines for the session, from the line its commits carry."""
+        m = self.member(sid)
+        return "\n".join(sminos.who_lines({"line": "Sminos-Session: %s#%s (work on %s)" % (m.alias, sid[:8], m.machine),
+                                           "short": sid[:8], "alias": m.alias, "project": "work",
+                                           "machine": m.machine}))
+
+    def test_who_says_what_a_message_from_here_meets(self):
+        """`who`'s hint is §5's: a hold waits for a process of the thread, but a read-only machine refuses what
+        comes from another machine, and a thread whose hold its machine publishes on `gone` is held too."""
+        out = self.hint(self.remote("held", "read-only"))
+        self.assertIn("no message from here reaches it: elsewhere admits nothing from another machine, and refuses "
+                      "it there", out)
+        self.assertNotIn("leave it a message", out)
+        out = self.hint(self.remote("held", "transcript"))
+        self.assertIn("or leave it a message, held until a process of it runs (%s)" % WORDS["transcript"], out)
+        sid = self.remote("held", "transcript")
+        sminos.log_append(self.p, "elsewhere/%s" % sid, "state", session=sid, state="gone", machine="elsewhere",
+                          wake="held", why="transcript")
+        self.assertIn("or leave it a message, held until a process of it runs (%s)" % WORDS["transcript"],
+                      self.hint(sid), "published on `gone`")
+        self.assertIn("or message it, which wakes it", self.hint(self.remote("woken")))
+        tid, sid = self.human_thread()
+        policy = sminos.sibling_module("sminos_policy")
+        with mock.patch.object(policy, "read_only", return_value=True):
+            out = self.hint(sid)
+        self.assertIn("or message it, which wakes it", out, "this machine refuses only what comes from another")
+        self.assertNotIn("admits nothing", out)
+
     def test_over_a_git_mirror_a_second_registry_reads_what_this_machine_published(self):
         bare = os.path.join(self.home, "remote.git")
         subprocess.run(["git", "init", "-q", "--bare", bare], check=True)
