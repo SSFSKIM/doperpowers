@@ -1431,10 +1431,7 @@ is read defensively (§1). devcloud is not touched.
   no reason of `not_woken` holds: a turn whose session could not be started
   again is never stopped, and the message is pushed to the running process
   (live first, §4), with no wake. (Corrected the same day: this entry first
-  said "held".) The remote line for `transcript` on a `gone` state is pinned
-  by the local publication test and the remote reader's test, not by the
-  second-registry mirror, which reads through `say` and would need an engine
-  in the mirrored repository; `mode` and `read-only` go through the mirror.
+  said "held".)
 
 ## Outcomes & Retrospective
 
