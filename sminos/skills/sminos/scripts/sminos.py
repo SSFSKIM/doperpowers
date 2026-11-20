@@ -12366,18 +12366,56 @@ def run_claude_bg(args, cwd, settings):
     launched in unlooked-at."""
     if not (cwd and (read_refused(cwd) or os.path.isdir(cwd))):
         die("launch cwd does not exist or is not a directory: %s" % cwd, EXIT_USAGE)
+    timeout = float(os.environ.get("SMINOS_LAUNCH_TIMEOUT") or 300)
     try:
         p = subprocess.run(["claude"] + args, cwd=cwd, env=launch_env(settings),
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, text=True,
-                           timeout=float(os.environ.get("SMINOS_LAUNCH_TIMEOUT") or 300))
-        banner = ANSI_RE.sub("", p.stdout or "")
+                           stderr=subprocess.STDOUT, text=True, timeout=timeout)
+        banner = LaunchOutput(ANSI_RE.sub("", p.stdout or ""), status=p.returncode)
         if p.returncode != 0:
             return "", banner
+    except subprocess.TimeoutExpired as e:
+        return "", LaunchOutput(str(e), timeout=timeout)
     except Exception as e:  # noqa: BLE001 — any launch failure is a failure
-        return "", str(e)
+        return "", LaunchOutput(str(e))
     m = BANNER_RE.search(banner)   # the engine's banner line, never a title's words
     return (m.group(1) if m else ""), banner
+
+
+class LaunchOutput(str):
+    """What a launch printed (run_claude_bg), as text, with how it ended:
+    `status` its exit status (None when it did not run to an end), `timeout`
+    the bound it was stopped at (None when it was not)."""
+
+    def __new__(cls, text, status=None, timeout=None):
+        out = super().__new__(cls, text)
+        out.status, out.timeout = status, timeout
+        return out
+
+
+# A path inside a message (the engine's, an exception's): the text from a `/` or `~/` that starts a word or follows a
+# quote, a bracket, `=` or `:` to the next space or quote.
+PATH_IN_TEXT_RE = re.compile(r"(?<![^\s'\"(\[=:,])~?/[^\s'\"),\]]*")
+
+
+def engine_said(text, limit=200):
+    """A message from the engine as daemon.log carries it: one line, every
+    path in it written `<path>`, at most `limit` characters."""
+    return PATH_IN_TEXT_RE.sub("<path>", " ".join(str(text or "").split()))[:limit]
+
+
+def launch_failed(flags, out):
+    """What daemon.log says of a launch that failed (run_claude_bg's
+    output): the names of the options it passed, never their values or the
+    argument vector; its exit status or the bound it timed out at; and the
+    engine's message with every path removed (none for a timeout, whose
+    text is the argument vector)."""
+    names = [t for t in flags if t.startswith("-")]
+    how = "timed out after %gs" % out.timeout if getattr(out, "timeout", None) is not None else \
+        "exit %d" % out.status if getattr(out, "status", None) is not None else "it did not run"
+    said = "" if getattr(out, "timeout", None) is not None else engine_said(out)
+    return "the launch failed (%s; %s)%s" % ("options " + ", ".join(names) if names else "no option", how,
+                                             ": " + said if said else "")
 
 
 def claude_stop(short):
@@ -14128,8 +14166,11 @@ def remove_copy(short, cause):
     readable, entry = job_of(short)
     if removed and readable and entry is None:
         return True
-    claude_stop(short)
-    daemon_log("a wake's copy %s (%s) could not be removed; it was stopped" % (short, cause))
+    if claude_stop(short):
+        daemon_log("a wake's copy %s (%s) could not be removed; it was stopped" % (short, cause))
+    else:
+        daemon_log("a wake's copy %s (%s) could not be removed, and claude stop failed: it may still run"
+                   % (short, cause))
     return False
 
 
@@ -14278,7 +14319,7 @@ def _wake_held(tid, session, due, returns, on_live):
                 return _wake_live(tid, session, saved, on_live, str(rec.get("jobId") or ""))
             if rec is not None or process_holds(session)[0]:
                 return WakeResult(True)   # held by a process this launch did not start: live, nothing of W8
-            return _wake_failed(tid, session, note["id"], "the launch failed: %s" % " ".join(banner.split())[:200])
+            return _wake_failed(tid, session, note["id"], launch_failed(flags, banner))
         noted = copy_note(banner, session, short)
         if noted is not None:
             if noted[0] in ("open", "running"):                          # row 11
@@ -14304,10 +14345,16 @@ def _wake_held(tid, session, due, returns, on_live):
                 try:
                     p = subprocess.run(["claude", "rm", short], capture_output=True, text=True, timeout=60)
                     if p.returncode != 0:
-                        raise OSError(p.stderr.strip() or "exit %d" % p.returncode)
+                        raise OSError("exit %d%s" % (p.returncode, ": " + engine_said(p.stderr) if p.stderr.strip()
+                                                     else ""))
                     threads.wake_forget(tid, session)
+                except subprocess.TimeoutExpired as e:
+                    daemon_log("the failed first wake of %s left its row: claude rm %s timed out after %gs"
+                               % (session[:8], short, e.timeout))
                 except Exception as e:  # noqa: BLE001 — said, and the next wake finds a row
-                    daemon_log("the failed first wake of %s left its row: claude rm %s: %s" % (session[:8], short, e))
+                    daemon_log("the failed first wake of %s left its row: claude rm %s: %s"
+                               % (session[:8], short, e if isinstance(e, OSError) and not e.errno
+                                  else engine_said(e)))
             return _wake_failed(tid, session, note["id"], "its worker failed before it started")
         if got != "live":                                                # row 16
             return WakeResult(False, "starting", short)

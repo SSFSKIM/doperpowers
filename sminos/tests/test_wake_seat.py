@@ -270,6 +270,45 @@ class Human(Wakers):
         self.assertIn("a wake's copy %s (the session was held) could not be removed; it was stopped" % copy,
                       self.daemon_log())
 
+    def test_a_copy_that_can_be_neither_removed_nor_stopped_is_said_as_one_that_may_still_run(self):
+        tid, sid = self.human_thread()
+        self.switch("held", "open")
+        self.switch("rm-refuses")
+        with mock.patch.object(sminos, "claude_stop", lambda short: False):
+            self.wake(sid)
+        [copy] = self.removals()
+        log = self.daemon_log()
+        self.assertIn("a wake's copy %s (the session was held) could not be removed, and claude stop failed: it may "
+                      "still run" % copy, log)
+        self.assertNotIn("it was stopped", log)
+
+    def test_a_failed_launch_is_said_with_its_option_names_and_no_value_or_argument_vector(self):
+        tid, sid = self.human_thread()
+        settings = os.path.join(self.home, "kept-settings.json")
+        with open(settings, "w") as f:
+            json.dump({}, f)
+        self.edit(tid, launch=dict(threads.get(tid).get("launch") or {}, options=["--settings", settings]))
+        self.switch("barrier")   # the launch blocks: it times out with no process of the session
+        try:
+            with mock.patch.dict(os.environ, {"SMINOS_LAUNCH_TIMEOUT": "1"}):
+                got = self.wake(sid)
+        finally:
+            os.unlink(os.path.join(self.state, "barrier"))
+        self.assertEqual((got.live, got.why), (False, "failed"))
+        log = self.daemon_log()
+        self.assertIn("the wake of %s failed: the launch failed (options --permission-mode, --model, --settings; "
+                      "timed out after 1s)" % sid[:8], log)
+        for leaked in (settings, self.home, "--resume", sid, "Command"):
+            self.assertNotIn(leaked, log)
+
+    def test_the_engine_s_message_is_said_with_its_paths_removed(self):
+        self.assertEqual(sminos.engine_said("Error: cannot read /a/b/settings.json (see ~/.claude/x.log): "
+                                            "path='/c d' and/or x"),
+                         "Error: cannot read <path> (see <path>): path='<path> d' and/or x")
+        out = sminos.LaunchOutput("No conversation found in /a/b", status=1)
+        self.assertEqual(sminos.launch_failed(["--model", "m"], out),
+                         "the launch failed (options --model; exit 1): No conversation found in <path>")
+
     def test_an_unexpected_copy_is_removed_and_counted(self):
         tid, sid = self.human_thread()
         self.switch("silent-copy")
