@@ -1636,9 +1636,10 @@ def _reply(stdout, shorts):
 def x9_reply(d, shorts, ours=False):
     """`d` when it is an answer of X9's form to a question about `shorts`
     (short ids), else None; never an exception. `answer` one of the three;
-    each of `vms` a host with its `name`, `account`, `provider` (null only
-    for an adopted machine, `adopted` true) and a `creator` that is `@` and
-    one of the short ids asked (devcloud matches nothing else, and a host
+    each of `vms` a host with its `name`, `account`, `provider` (null
+    exactly for an adopted machine, whose `adopted` is true, and no other
+    host's is) and a `creator` that is `@` and one of the short ids asked
+    (devcloud matches nothing else, and a host
     naming another would drop out of the match and leave a none); each of
     `unknown` an `account`, a `provider`, `failed` ("account" or "listing";
     with `ours`, the census's own file, also sminos's "query", the one with
@@ -1661,7 +1662,7 @@ def _x9_whole(d, tags, ours):
     for v in d["vms"]:
         if not (isinstance(v, dict) and isinstance(v.get("name"), str) and v["name"]
                 and isinstance(v.get("account"), str) and v["account"] and v.get("creator") in tags
-                and (isinstance(v.get("provider"), str) and v["provider"]
+                and (isinstance(v.get("provider"), str) and v["provider"] and v.get("adopted") is not True
                      or v.get("provider") is None and v.get("adopted") is True)):
             return False
     failed = ("account", "listing", "query") if ours else ("account", "listing")
@@ -1738,9 +1739,9 @@ def asked_all(record, asked):
 def is_adopted(vm):
     """Whether a census host is an adopted machine, which `devcloud vm down`
     releases and leaves running, where it deletes a host devcloud made. X9's
-    own marker decides (`adopted` true, its provider null; x9_reply holds
-    every row to one form or the other), never the account's name: a
-    provider's account may be named `adopted`."""
+    own marker decides, never the account's name (a provider's account may
+    be named `adopted`): x9_reply passes `adopted` true only with a null
+    provider, and a null provider only with `adopted` true."""
     return vm.get("adopted") is True
 
 

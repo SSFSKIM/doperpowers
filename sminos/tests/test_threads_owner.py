@@ -568,6 +568,17 @@ class Unknown(Owner):
                 self.assertEqual(len(said), 1, said)
                 self.assertIn(named, said[0])
 
+    def test_a_host_is_of_one_form_a_provider_s_or_an_adopted_machine_with_none(self):
+        def reply(**vm):
+            row = dict({"name": "dc-a-0001", "account": "main", "creator": "@abcd1234"}, **vm)
+            return threads.x9_reply({"answer": "owned", "vms": [row], "unknown": [], "listed": ["main"]},
+                                    ["abcd1234"])
+        self.assertIsNotNone(reply(provider="hetzner"), "a provider's host")
+        self.assertIsNotNone(reply(provider=None, adopted=True, account="adopted"), "an adopted machine")
+        self.assertIsNone(reply(provider="hetzner", adopted=True), "an adopted machine that names a provider")
+        self.assertIsNone(reply(provider=None), "no provider, and no adopted machine")
+        self.assertIsNone(reply(provider=None, adopted="yes"), "adopted only as true")
+
     def test_a_copy_older_than_0_17_2_is_not_run_and_its_version_and_place_are_named(self):
         layout = os.path.join(self.home, "layout")
         beside = os.path.join(layout, "devcloud", "bin", "devcloud")
