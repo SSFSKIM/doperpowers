@@ -319,6 +319,10 @@ case "\${RESUME_OWED:-}" in
     echo "owed: \$1"
     echo "sminos: no evidence that w received the message within the ack window (no transcript marker) — not waiting for a reply" >&2
     exit 1 ;;
+  stopfail)
+    echo "owed: \$1"
+    echo "sminos: claude stop 1a2b3c4d failed for w — not resuming over a turn that may still be running" >&2
+    exit 1 ;;
   other)
     echo "owed: someone-else"
     exit 1 ;;
@@ -2084,6 +2088,10 @@ _owed_drill gated 97
 t  "an endpoint-gated resume whose wait expired is read as owed" \
    "the task is recorded and owed to u-old"                   cat "$OUTOWED"
 nt "so no fresh worker is spawned beside that one either"    "SPAWN"  cat "$SPAWN_LOG"
+_owed_drill stopfail 99
+t  "a resume whose stop of the running turn was refused is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside the running one"    "SPAWN"  cat "$SPAWN_LOG"
 _owed_drill other 98
 nt "a line owing the task to another session is not read as owed" \
    "the task is recorded and owed to u-old"                   cat "$OUTOWED"

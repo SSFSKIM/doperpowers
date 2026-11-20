@@ -7035,6 +7035,9 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
 
 
 _HOLDER_SAID = {}   # session → why its deliveries are held, as last said in daemon.log
+# (project id, session, writer, seq) of each event this process handed to a receipt's process (holder_carry's push):
+# an `awaiting-admission` outcome is a push only for these, never for a receipt still pending (verb_delivered).
+HANDED_OFF = set()
 
 
 def holder_carry(plan, project, member, session, e, events, cursor, peer):
@@ -7064,6 +7067,7 @@ def holder_carry(plan, project, member, session, e, events, cursor, peer):
         if err.phase == "before":
             return "failed:%s" % err
     holder_module().pushed(plan.receipt, plan.attempt)
+    HANDED_OFF.add((project.id, session, e["writer"], e["seq"]))
     return HOLDER_AWAITING
 
 
@@ -7423,14 +7427,17 @@ def deliver_verdict(project, member, event, verdict):
         return outcome
 
 
-# The daemon.log line of the endpoint's refusal of a person's words (deliver_verdict): the one record of it here,
-# which a returned seat's `fill --resume` reads to say its task was refused (refusal_logged).
+# The daemon.log lines of the endpoint's refusals of an event (deliver_verdict's of a person's words,
+# deliver_reach's of a peer's reach): the one record of either here, which a returned seat's `fill --resume`
+# reads, by the event's identity, to say its task was refused (refusal_logged).
 WORDS_REFUSED_SAID = "the endpoint refused %s (%s) as words into %s: nothing delivered"
+REACH_REFUSED_SAID = "the endpoint refused %s (%s) reach into %s: %s; nothing delivered"
 
 
 def refusal_logged(project, session, e):
-    """Whether daemon.log says the endpoint refused event `e` as words into
-    `session` (WORDS_REFUSED_SAID), from the log's last 256 KiB."""
+    """Whether daemon.log says the endpoint refused event `e` to `session`,
+    as words (WORDS_REFUSED_SAID) or its reach (REACH_REFUSED_SAID), from
+    the log's last 256 KiB."""
     try:
         with open(os.path.join(root(), "daemon.log"), "rb") as f:
             f.seek(0, os.SEEK_END)
@@ -7438,8 +7445,9 @@ def refusal_logged(project, session, e):
             tail = f.read().decode("utf-8", "replace")
     except OSError:
         return False
-    said = " " + WORDS_REFUSED_SAID % (event_ref(e), project.name, session) + "\n"
-    return said in tail
+    words = " " + WORDS_REFUSED_SAID % (event_ref(e), project.name, session) + "\n"
+    reach = " " + REACH_REFUSED_SAID.split(": %s", 1)[0] % (event_ref(e), project.name, session[:8]) + ": "
+    return words in tail or reach in tail
 
 
 def words_unanswered(project, member, event, why):
@@ -7600,8 +7608,7 @@ def deliver_reach(project, member, event, verdict, reason=None):
                 outcome = outcomes.READ_ONLY
             elif verdict == "refuse":
                 outcome = outcomes.REFUSED_REACH
-                daemon_log("the endpoint refused %s (%s) reach into %s: %s; nothing delivered" % (
-                    event_ref(e), project.name, session[:8], reason or "no reason given"))
+                daemon_log(REACH_REFUSED_SAID % (event_ref(e), project.name, session[:8], reason or "no reason given"))
             elif stale_hold(delivered_load(project, session), session, e):
                 outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
             elif (unknown := held_unreadable(delivered_load(project, session), e)):
@@ -8398,19 +8405,22 @@ def landed(session, msg_id):
     return True
 
 
-def returned_task(delivery, session, ref, msg_id):
+def returned_task(delivery, session, ref, msg_id, wait=False):
     """A returned seat's task held for the endpoint's verdict (`fill
     --resume` of a retired seat on a cut-over machine), waited for within
     SMINOS_VERDICT_WAIT (30 s) and said with the return (the holder's ruling
-    for M4): pushed (its id in the conversation); refused (refusal_logged),
-    exit 4, the seat returned and nothing pushed; else still owed
-    (OWED_LINE), the daemon delivering it on the answer."""
+    for M4): pushed (its id in the conversation), True, the one outcome
+    whose reply `--wait` waits for; refused, as words or its reach
+    (refusal_logged), exit 4, the seat returned and nothing pushed; else
+    still owed (OWED_LINE), the daemon delivering it on the answer, its
+    refusal said in daemon.log should it come: False, and with `wait` exit
+    4, no reply waited for."""
     tail = TranscriptTail(session)
     deadline = time.time() + float(os.environ.get("SMINOS_VERDICT_WAIT", "30"))
     while True:
         if reply_to(session, msg_id, tail.read())[0]:
             print("%s: the endpoint admitted its task, and it was pushed to the returned session" % ref, flush=True)
-            return
+            return True
         if refusal_logged(delivery.project, session, delivery.event):
             die("%s returned and its session runs, and the endpoint refused its task: nothing was pushed to it"
                 % ref, EXIT_UNKNOWN)
@@ -8418,7 +8428,9 @@ def returned_task(delivery, session, ref, msg_id):
             say_owed(session)
             print("%s: the endpoint has not answered yet; the daemon delivers the task on its answer" % ref,
                   flush=True)
-            return
+            if wait:
+                die("no reply is waited for: the task is not pushed yet", EXIT_UNKNOWN)
+            return False
         time.sleep(poll_interval())
 
 
@@ -8504,8 +8516,9 @@ def verb_delivered(project, session, alias, delivery, msg_id, verb="", wait=Fals
     first = next((o for ev, o in got["outcomes"] if ev["writer"] == writer), "")
     entry = _delivery(delivered_load(project, session), writer)
     outcome = mine[0] if mine else ""
-    if outcome in PUSHED or outcome == HOLDER_AWAITING:
-        # Pushed, or handed to its process's inbox, whose admission settles it (a receipt): the frame is there.
+    if outcome in PUSHED or outcome == HOLDER_AWAITING and (project.id, session, writer, seq) in HANDED_OFF:
+        # Pushed, or handed by this call to its process's inbox, whose admission settles it (a receipt): the frame
+        # is there. A receipt pending with no hand-off (no peer, a process yet to activate) is owed, below.
         woken = outcome in ("woken", "woken?")
         said = "%s %s%s" % (verb or "sent to", alias, " (woken)" if woken else "")
         if terminal and stop_turn:
@@ -8537,7 +8550,8 @@ def verb_delivered(project, session, alias, delivery, msg_id, verb="", wait=Fals
     say_owed(session)
     if holder_waiting(outcome):
         # Not handed to its process (its mode cannot be read): owed with no attempt counted, nothing pushed.
-        die("not pushed now: %s; the daemon delivers it, and no reply is waited for" % outcome[len("held:"):],
+        die("not pushed now: %s; the daemon delivers it, and no reply is waited for" % (
+            outcome[len("held:"):] if outcome.startswith("held:") else "its receipt waits for its process"),
             EXIT_UNKNOWN)
     die("not pushed now (%s): the daemon tries it again" % outcome, 1)
 
@@ -11175,9 +11189,11 @@ def ended_or_gone(q):
     elif UUID_RE.fullmatch(q.lower()):
         hint = unreachable_hint(q, q.lower(), "", org_scope(), "", ids_only=True)
     else:
+        # As the live lookup reads it: `alias#short` in every project known here, a bare name in the caller's
+        # project and then the org as an id.
         scope = caller_scope()
         hint = scope is not None and unreachable_hint(q, name, short, [scope], "") \
-            or not short and unreachable_hint(q, name, short, org_scope(), "", ids_only=True)
+            or unreachable_hint(q, name, short, org_scope(), "", ids_only=not short)
     if hint:
         die(hint, EXIT_UNKNOWN)
 
@@ -14814,6 +14830,10 @@ def compose_frame(sender, msg_id, msg, label=""):
     return "[sminos message from %s%s id=%s]\n%s" % (frame_alias(sender), label, msg_id, msg)
 
 
+UNRECORDED = "nothing was started: %s is in no project log here to record the message in, and nothing is woken " \
+             "for a message no log holds"
+
+
 def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", verb="", stop_turn=False, woke=False):
     """Deliver a frame to one seat under its lifecycle lock. The lock covers
     target selection, the wake, the socket delivery, and the status write,
@@ -14883,11 +14903,13 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
         # No log event to ask the endpoint about (P5 O18 D8): only the recipient's owners' sessions reach it.
         unlock(locks)
         die(refusal, EXIT_UNKNOWN)
-    if delivery is None and record is not None and (verb or stop_turn) and not woke:
-        # A verb's message is a logged event (T2's M2): whatever a verb must write is writable before it stops or
-        # wakes anything. (A retired seat's return has refused this before its launch.)
+    if delivery is None and record is not None and (verb or stop_turn or not peer) and not woke:
+        # A verb's message is a logged event, and a wake is made only for a recorded message (T2's §6; the
+        # holder: whatever must be written is writable before the launch): with no log here, nothing is stopped
+        # or woken. A live seat still takes a plain send by the owner-checked projectless push (D8). (A retired
+        # seat's return has refused this before its launch.)
         unlock(locks)
-        die("nothing was started: %s is in no project log here to record its message in" % ref, EXIT_UNKNOWN)
+        die(UNRECORDED % ref, EXIT_UNKNOWN)
     if canonical_end(s["current"], seat_project(s)):
         # Ended since the check above (an end, which settles what is owed to it, holds no seat lock): its event is
         # the end's to settle, and nothing is pushed. Decided here, under the locks: a return after they are
@@ -14954,8 +14976,10 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
                 print("sent to %s (delivered by a concurrent delivery)" % ref, flush=True)
             return
         if woke:
-            returned_task(delivery, s["current"], ref, msg_id)
-        elif verb or wait:
+            if returned_task(delivery, s["current"], ref, msg_id, wait) and waiter is not None:
+                waiter()
+            return
+        if verb or wait:
             say_owed(s["current"])
         if waiter is not None:
             waiter()
@@ -15006,6 +15030,8 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
         except ResumeRefused:
             unsent()
             unlock(locks)
+            if (verb or wait) and isinstance(delivery, SendDelivery) and thread_owed(s["current"]):
+                say_owed(s["current"])   # an attempt counted: the daemon's next pass delivers it
             raise
         if woke.live:
             forget_caches()
@@ -15043,9 +15069,15 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
             EXIT_USAGE if woke.why == "cwd" else 1)
 
     woken = woke and peer is not None
-    # A terminal's process is never stopped (W3): `resume` pushes to it as `send` does, and says so.
+    # A terminal's process is never stopped (W3): `resume` pushes to it as `send` does, and says so. Nor is a live
+    # background job's turn when a wake would not start it again (not_woken): the message goes to the process that
+    # runs, with no wake (T2's §6).
     terminal = peer is not None and str(peer.get("kind") or "bg") != "bg"
-    if not peer or (stop_turn and not woken and not terminal):
+    kept = ""
+    if peer is not None and stop_turn and not woken and not terminal:
+        t = threads_module().get(s["seat_id"])
+        kept = wake_module().not_woken(t, s["current"], whole=True) if t is not None else ""
+    if not peer or (stop_turn and not woken and not terminal and not kept):
         peer = woken_peer()
         if peer is None:
             return
@@ -15084,6 +15116,9 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
                     if (verb or wait) and isinstance(delivery, SendDelivery) and thread_owed(s["current"]):
                         say_owed(s["current"])
                     die(quiet_inbox_refusal(ref), EXIT_UNKNOWN)
+                if delivery is None:
+                    unlock(locks)
+                    die(UNRECORDED % ref, EXIT_UNKNOWN)   # gone mid-send: no wake for an unrecorded message
                 warn("inbox socket delivery to %s failed before the frame was written (%s); waking it instead"
                      % (ref, e))
                 peer = woken_peer()
@@ -15112,6 +15147,9 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
         warn("record of %s changed during delivery; status left as is" % ref)
     if verb and terminal and not woken:
         print("%s %s: a terminal holds it, so its turn runs on; the message went to it" % (verb, ref), flush=True)
+    elif verb and kept and not woken:
+        print("%s %s: its turn was not stopped, since a wake would not start it again (%s); the message went to the "
+              "process that runs" % (verb, ref, hold_words(kept, s["current"])), flush=True)
     elif verb:
         fresh = reload_seat(s["seat_id"]) or s
         print("%s %s  [%s / %s]  via --bg --resume  status=working  turns=%s" % (
