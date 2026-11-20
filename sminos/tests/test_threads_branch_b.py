@@ -40,6 +40,7 @@ sys.path.insert(0, HERE)
 
 from test_threads import records, sminos, threads  # noqa: E402
 from test_threads_stopped import Rig  # noqa: E402
+import test_threads_stopped  # noqa: E402 — its Clear rig, by module, so its own tests are not collected here
 
 
 def ago(seconds):
@@ -254,6 +255,30 @@ class Held(Rig):
     def owed_any(self, sid):
         sminos.forget_caches()
         return sminos._owed(sminos.log_read(self.p, to_session=sid), sid, sminos.delivered_load(self.p, sid))
+
+
+class SecondClear(test_threads_stopped.Clear):
+    """Review 3, item 12: two witnessed clears, the session left reopened
+    under another name between them and no sweep."""
+
+    NEW2 = "22222222-3333-4444-8555-666666666666"
+    locals().update({n: None for n in dir(test_threads_stopped.Clear) if n.startswith("test_")})   # its own, not run here
+
+    def test_the_second_clear_releases_the_reopened_alias(self):
+        self.note()
+        self.start()
+        self.assertEqual(threads.get(self.tid)["released"]["alias"], "alpha")
+        time.sleep(1.1)
+        sid, proc = self.live(sid=self.old, name="gamma", started=int(time.time() * 1000))   # reopened, named
+        self.reconcile()
+        sminos.lifecycle(self.p, self.old, "renamed", alias="gamma", name_source="user")   # its rename, published
+        self.assertEqual(self.member(self.old).alias, "gamma")
+        self.note(pid=proc.pid)
+        self.peer_set(proc, sessionId=self.NEW2)
+        self.hook(self.NEW2, source="clear", env={"CLAUDE_PID": str(proc.pid), "CLAUDE_CODE_SESSION_ID": self.NEW2})
+        self.assertEqual(threads.get(self.tid)["released"]["alias"], "gamma")
+        self.assertEqual(self.member(self.NEW2).alias, "gamma", "the alias went with the process")
+        self.assertEqual(self.member(self.old).alias, self.old[:8])
 
 
 class Wave2Join(Rig):

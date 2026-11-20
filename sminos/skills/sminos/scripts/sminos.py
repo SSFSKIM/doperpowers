@@ -9209,10 +9209,11 @@ def record_session(project, session, tpath, event, last_message="", source="", o
         return   # a spawn's child: its seat joins it once its launcher learns its id
     if event == "SessionStart" and source == "clear" and seat is None:
         # At a `/clear` the alias goes with the process (M3): the session left gives it up first.
-        left, given_up, where = cleared_witness(session, source)
+        left, given_up, where, clearing = cleared_witness(session, source)
         if left:
             try:
-                release_alias(where, left, given_up)   # in the project the session left is a member of
+                # In the project the session left is a member of, against the process the /clear was witnessed in.
+                release_alias(where, left, given_up, clearing)
             except (OSError, LockBusy, LogWriteFailed) as e:
                 daemon_log("record: the alias of %s was not released to %s: %s" % (left[:8], session[:8], e))
     alias = _member_alias(project, session, seat, peer, marked, evidence, override)
@@ -15704,36 +15705,40 @@ def cleared_witness(session, source):
     (last_project, through the fold), wherever that is: a `join` of the
     session left is not the new session's, which goes by its own launch —
     whose alias is the engine's name for the process (its record, by
-    CLAUDE_PID): ("", "", None) otherwise. What both hooks act on, the
-    record hook's release and the guide's first line (§6, row 16)."""
+    CLAUDE_PID), and that process's engine record: ("", "", None, None)
+    otherwise. What both hooks act on, the record hook's release and the
+    guide's first line (§6, row 16)."""
     left = cleared_from(session, source)
+    none = "", "", None, None
     if not left:
-        return "", "", None
+        return none
     t = threads_module().thread_of(left, ended=False)
     if t is None or t["opened"] != "human" or t["current"] != left or threads_module().record_ended(t):
-        return "", "", None
+        return none
     where = last_project(left)
     own = _own_events(where, left) if where is not None else []
     joined = next((e for e in reversed(own) if e["kind"] == "joined"), {})
     if latest_membership(own) != "joined" or not is_self(str(joined.get("machine") or ""), left):
-        return "", "", None
+        return none
     pid = os.environ.get("CLAUDE_PID", "")
     rec = next((r for r in peer_records() if str(r.get("pid")) == pid and peer_running(r)), None)
     alias = own_alias(own, left)[0]
     if rec is None or not alias or str(rec.get("name") or "") != alias:
-        return "", "", None
-    return left, alias, where
+        return none
+    return left, alias, where, rec
 
 
-def release_alias(project, left, alias):
+def release_alias(project, left, alias, clearing=None):
     """The release at a `/clear` (§6, row 16): on the thread of the session
     left, `released` (the alias, and when) and the `renamed` to its short id
     it owes, in one journaled operation, the event in `project`, the one the
     session left is a member of (cleared_witness); the next joins take the
     name by today's rule, and nothing of the session left (its project, its
     reach) moves to the new one. A release a process started after it has
-    outlived (the session reopened, not swept yet) is replaced. The events
-    appended."""
+    outlived (the session reopened, not swept yet) is replaced: outlived by
+    `clearing`, the engine record of the process the `/clear` was witnessed
+    in (cleared_witness), which names the new session by now; without one,
+    the process that runs the session left. The events appended."""
     threads = threads_module()
     t = threads.thread_of(left, ended=False)
     if t is None:
@@ -15743,7 +15748,8 @@ def release_alias(project, left, alias):
         [{"kind": "renamed", "session": left, "alias": left[:8], "name_source": "derived"}],
         fields={"released": {"alias": alias, "at": now()}},
         guard=lambda r: r["opened"] == "human" and r["current"] == left and not threads.record_ended(r)
-        and (not r.get("released") or threads.release_outlived(r["released"], running_now(left))),
+        and (not r.get("released") or threads.release_outlived(
+            r["released"], clearing if clearing is not None else running_now(left))),
         lock_until=_RECORD_DEADLINE)
 
 
