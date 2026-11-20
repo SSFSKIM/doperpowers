@@ -400,25 +400,29 @@ class Return(Transitions):
         self.assertIn("ended", threads.get(seat_id))
         self.assertFalse([e for e in self.log() if e.get("text") == "never sent"])
 
-    def test_a_seat_in_no_readable_project_returns_and_takes_its_task_by_the_projectless_push(self):
-        """A seat whose project cannot be read has no log to record its task in: the owner-checked projectless
-        push (D8) delivers it, as `send` does."""
+    def test_a_seat_whose_project_cannot_be_read_is_refused_its_return_and_nothing_starts(self):
+        """Its return is journaled in its project's log (join_seat at W8): with none read, no process starts."""
         s = self.seat()
         sid, seat_id = s["current"], s["seat_id"]
         self.cli("retire", "w")
-        real = sminos.seat_project
+        launched = self.launches()
+        with mock.patch.object(sminos, "seat_project", return_value=None):
+            code, out = self.cli("fill", seat_id, "never sent", "--resume")
+        self.assertEqual(code, sminos.EXIT_UNKNOWN, out)
+        self.assertIn("cannot return from here: its project cannot be read", out)
+        self.assertEqual((self.resumes(sid), self.launches()), ([], launched), "nothing launched")
+        self.assertEqual(sminos.reload_seat(seat_id)["status"], "retired")
+        self.assertIn("ended", threads.get(seat_id))
+        self.assertFalse([e for e in self.log() if e.get("text") == "never sent"])
 
-        def unreadable_to_the_task(seat, fresh=False):
-            # The seat is still found by name (its lookup reads it as before); the verb's task sees no project.
-            caller = sys._getframe(1)
-            while caller.f_code.co_filename == mock.__file__:
-                caller = caller.f_back
-            return None if caller.f_code.co_name in ("cmd_fill", "record_send") else real(seat, fresh)
-        with mock.patch.object(sminos, "seat_project", side_effect=unreadable_to_the_task):
-            code, out = self.cli("fill", "w", "no log to hold it", "--resume")
+    def test_a_stopped_seat_whose_project_cannot_be_read_takes_its_task_by_the_projectless_push(self):
+        """No log to record its task in: the owner-checked projectless push (D8) delivers it, as `send` does."""
+        s = self.seat()
+        sid, seat_id = s["current"], s["seat_id"]
+        with mock.patch.object(sminos, "seat_project", return_value=None):
+            code, out = self.cli("fill", seat_id, "no log to hold it", "--resume")
         self.assertEqual(code, 0, out)
         self.assertNotIn("Traceback", out)
-        self.assertNotEqual(sminos.reload_seat(seat_id)["status"], "retired")
         self.assertIn("no log to hold it", self.inputs(sid)[-1]["message"]["content"])
         self.assertFalse([e for e in self.log() if e.get("text") == "no log to hold it"], "nothing recorded")
 

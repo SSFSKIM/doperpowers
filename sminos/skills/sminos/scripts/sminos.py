@@ -11924,17 +11924,19 @@ def wait_stopped(s, short, cur):
     engine record of the session names a running process (running_now: its
     process, whether or not its inbox answers). Resuming while the old
     process still runs makes the harness start a copy; a stop that did not
-    take is refused loudly rather than papered over. True iff the turn is
-    confirmed down."""
+    take is refused loudly rather than papered over. "stopped" once the
+    turn is confirmed down, by a job list that reads; at the bound,
+    "unknown" when the last listing did not read (a row missing from no
+    listing is no confirmation), else "running"."""
     deadline = time.time() + float(os.environ.get("SMINOS_STOP_TIMEOUT", "30"))
     while True:
-        agents_refresh()
+        listed = agents_refresh() is not None
         row = agent_row(short=short) if short else harness_row(s)
         running = bool(row) and normalize_state(row) in ("working", "blocked")
-        if not running and running_now(cur) is None:
-            return True
+        if listed and not running and running_now(cur) is None:
+            return "stopped"
         if time.time() >= deadline:
-            return False
+            return "running" if listed else "unknown"
         time.sleep(poll_interval())
 
 
@@ -13475,16 +13477,14 @@ def cmd_fill(a):
         # A retired seat returns: the wake first, which returns it (its W8, journaled) once its process runs; then
         # the task, recorded after the return's entry was begun (a return settles what was addressed before it)
         # and delivered as `send` delivers it, counted as the woken push it is. What can refuse the task without
-        # asking anyone is checked before anything starts (a projectless seat's reach, D8); a wake that does not
-        # make it live leaves it retired, nothing recorded.
-        project = seat_project(s)
-        if project is None:   # a projectless seat's reach (D8)
-            refusal = projectless_refusal(s["current"], s["alias"])
-            refusal = (refusal, EXIT_UNKNOWN) if refusal else None
-        else:   # the stream the task's event would go under (D4, D10): chosen here, appended after the return
-            refusal = stream_choice(project, os.environ.get("CLAUDE_CODE_SESSION_ID", ""),
-                                    [{"session": s["current"], "alias": s["alias"]}],
-                                    "send not delivered: it could not be recorded in %s's log" % project.name)[1]
+        # asking anyone is checked before anything starts (its stream; a seat whose project is not read here, where
+        # no return could be journaled); a wake that does not make it live leaves it retired, nothing recorded.
+        project = seat_project(s)   # none read here: resume_session refuses the return, which nothing could record
+        # The stream the task's event would go under (D4, D10): chosen here, appended after the return.
+        refusal = stream_choice(project, os.environ.get("CLAUDE_CODE_SESSION_ID", ""),
+                                [{"session": s["current"], "alias": s["alias"]}],
+                                "send not delivered: it could not be recorded in %s's log" % project.name)[1] \
+            if project is not None and not guessed(project) else None
         if refusal:
             unlock(locks)
             die(*refusal)
@@ -13668,9 +13668,10 @@ def stop_lingering(session, row):
     list shows working or blocked while no process holds the session,
     stopped and waited for (wait_stopped); only when the session's own row
     is there. "" when nothing is in the way; "starting" when the job list
-    does not read (the latest job signal unknown: nothing is launched on
-    it); "live" when a process holds the session again since W2 (nothing is
-    stopped under it); "failed" when the job could not be stopped."""
+    does not read, here or through the stop's confirmation (the latest job
+    signal unknown: nothing is launched on it); "live" when a process holds
+    the session again since W2 (nothing is stopped under it); "failed" when
+    the job could not be stopped."""
     if not isinstance(row, dict):
         return ""
     rows = agents_refresh()
@@ -13680,8 +13681,11 @@ def stop_lingering(session, row):
         if background_job(r, session) and normalize_state(r) in ("working", "blocked"):
             if running_now(session) is not None:
                 return "live"
-            if not claude_stop(r["id"]) or not wait_stopped({"current": session, "short": ""}, r["id"], session):
+            if not claude_stop(r["id"]):
                 return "failed"
+            stopped = wait_stopped({"current": session, "short": ""}, r["id"], session)
+            if stopped != "stopped":
+                return "starting" if stopped == "unknown" else "failed"
     return ""
 
 
@@ -13933,6 +13937,14 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
             s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
     if s["status"] == "retired" and not returns:
         raise ResumeRefused(retired_seat_refusal(s), EXIT_UNKNOWN)
+    if returns:
+        home = seat_project(s)
+        if home is None or guessed(home):
+            # The return is journaled in the seat's project (join_seat, W8): with none read here, a process
+            # started would run under a seat left retired.
+            raise ResumeRefused("seat %s/%s cannot return from here: its project cannot be read, and its return is "
+                                "recorded in that project's log — nothing was started" % (s["group"], s["alias"]),
+                                EXIT_UNKNOWN)
     foreign = foreign_config(s["current"])
     if foreign:
         raise ResumeRefused(foreign_refusal(s, foreign), 1)
@@ -14000,7 +14012,12 @@ def stop_live_turn(s):
         if not claude_stop(job["id"]):
             raise ResumeRefused("claude stop %s failed for %s/%s — not resuming over a turn that may still be running"
                                 % (job["id"], s["group"], s["alias"]), 1)
-        if not wait_stopped(s, job["id"], cur):
+        stopped = wait_stopped(s, job["id"], cur)
+        if stopped == "unknown":
+            raise ResumeRefused("the job list could not be read to confirm that the turn of %s/%s (%s) stopped after "
+                                "claude stop — not waking it (a launch would start a copy if it still runs)"
+                                % (s["group"], s["alias"], job["id"]), 1)
+        if stopped != "stopped":
             raise ResumeRefused("the current turn of %s/%s (%s) is still running %ss after claude stop — not waking "
                                 "it (a launch would start a copy)" % (s["group"], s["alias"], job["id"],
                                                                     os.environ.get("SMINOS_STOP_TIMEOUT", "30")), 1)

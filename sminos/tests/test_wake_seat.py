@@ -409,6 +409,31 @@ class Human(Wakers):
         got = self.lingering(lambda sid: self.session(sid=sid, kind="bg"))
         self.assertEqual((got.live, got.why, got.short), (True, "", ""))
 
+    def test_a_stop_whose_confirmation_cannot_be_read_is_starting_and_launches_nothing(self):
+        """W3's stop confirmed only by a job list that reads: one that stops reading right after `claude stop`
+        is row 8 (starting), no launch and no attempt spent."""
+        tid, sid = self.human_thread()
+        self.assertTrue(self.wake(sid).live)
+        self.stop(sid)
+        path = os.path.join(self.state, "jobs", sid[:8] + ".json")
+        with open(path) as f:
+            entry = json.load(f)
+        with open(path, "w") as f:
+            json.dump(dict(entry, state="working"), f)   # a lingering job: working, no process
+        real, seen = sminos.claude_stop, []
+
+        def stop_then_unlisted(short):
+            ok = real(short)
+            self.switch("agents-fail")
+            return ok
+        with mock.patch.object(sminos, "claude_stop", side_effect=stop_then_unlisted), \
+                mock.patch.dict(os.environ, {"SMINOS_STOP_TIMEOUT": "1", "SMINOS_POLL_INTERVAL": "0.2"}):
+            got = self.wake(sid, on_live=seen.append)
+        self.assertEqual((got.live, got.why), (False, "starting"))
+        self.assertEqual(self.resumes(sid), [["--permission-mode", "auto", "--model", "claude-term"]], "no launch")
+        self.assertEqual(seen, [])
+        self.assertNotIn("failed", self.waking(tid, sid), "nothing counted")
+
     def test_a_second_wake_while_the_first_holds_the_lock_launches_nothing(self):
         tid, sid = self.human_thread()
         self.switch("barrier")
