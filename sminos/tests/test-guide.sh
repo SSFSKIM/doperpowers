@@ -353,8 +353,8 @@ assert_contains "$(head -1 <<<"$OUT")" "a copy, with a session id and a name of 
   "a copy with an identity of its own"
 assert_contains "$(head -1 <<<"$OUT")" "Every sminos line above this one was written for the session you were copied from" \
   "whose sminos lines above were written for the session it was copied from"
-assert_contains "$(head -1 <<<"$OUT")" "messages addressed to it are not for you" \
-  "and whose messages are not for it"
+assert_contains "$(head -1 <<<"$OUT")" "messages addressed to it are not for you; you are its peer." \
+  "and whose messages are not for it: it is its origin's peer"
 assert_not_contains "$(head -1 <<<"$OUT")" "the task you were forked for" \
   "and names no task it was forked for, which its context may not hold (M6's evaluation)"
 guide "$(payload "$S10" "$REPO" "$T/none.jsonl")"
