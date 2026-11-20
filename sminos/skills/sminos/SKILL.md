@@ -81,7 +81,7 @@ text is text.
 | message | recorded | delivered |
 | --- | --- | --- |
 | untagged | for everyone | to no one: read at a member's next `chat` |
-| `@alias …` | addressed | an idle member starts a turn, a busy one reads it at its next tool round, a stopped seat is resumed, for a stopped session its human opened it is recorded and held, read if its human reopens it before it retires |
+| `@alias …` | addressed | an idle member starts a turn, a busy one reads it at its next tool round, a stopped seat is resumed, for a stopped session its human opened it is recorded and held, read if its human reopens it before it ends |
 | `@all …` | addressed to the members live now | every one of them starts a turn or reads it; no stopped one is resumed |
 | a selector: `--org`, `--project P,..`, `--machine M,..`, `--here`, `--state W,..` | in each project it reaches, with a copy in yours | as `@all`, to every live session `list` shows with the same flags, you left out |
 

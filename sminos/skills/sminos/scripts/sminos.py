@@ -12,7 +12,8 @@ it and can be filled again (`fill --resume` continues the same session id;
 a seat, board pipeline workers included. A session the human opened is a
 member too, seat-less, from the first call that reads its project, and stays
 one when its process ends: stopped, what is addressed to it recorded and held
-(no process is started for it) until its human reopens it. After a /clear
+(no process is started for it), pushed to it only if its human reopens it
+before it ends, and otherwise left in the log. After a /clear
 the new session takes its alias, and the one left goes by its short id. A
 session ends when it is retired, or once it has been stopped for three days
 (while a devcloud host of its own remains, or devcloud cannot tell, it stays
