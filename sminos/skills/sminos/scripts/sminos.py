@@ -6392,8 +6392,9 @@ def remote_line(member):
 def held_line(machine=""):
     """What a sender is told of a message to a held session (M3), `machine`
     the one it waits on when that is another."""
-    return ("recorded and held%s: the session is stopped, and a session its human opened is not woken; it reads "
-            "this when its human reopens it" % (" on %s" % machine if machine else ""))
+    return ("recorded and held%s: the session is stopped, and a session its human opened is not woken; it is pushed "
+            "only if its human reopens the session before it ends (three days stopped, or a retire), else it stays in "
+            "the log" % (" on %s" % machine if machine else ""))
 
 
 def deliver_next(project, member):
@@ -7793,7 +7794,8 @@ def hold_verb(project, session, alias, text, sender="", via="", machine=""):
                                           "process" if runs else held_line(machine)))
         nudge_daemon()
     die("nothing was started: %s; %s" % (human_refusal(alias), "it runs, and reads the message as it is delivered"
-                                         if runs else "it reads the message when its human reopens it"),
+                                         if runs else "it reads the message only if its human reopens the session "
+                                         "before it ends (three days stopped, or a retire); else it stays in the log"),
         EXIT_UNKNOWN)
 
 
