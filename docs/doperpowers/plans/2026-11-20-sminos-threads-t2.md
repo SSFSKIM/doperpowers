@@ -1,8 +1,8 @@
 # sminos threads, T2 — the wake: execution (2026-11-20)
 
 > **Composite:** `docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md`,
-> child **T2** (The wake). **Parent pin:** `main` `4346048f`, that file's blob
-> `d470a153e8495db604bfa3b28616481691926dc0`. The child's section there is its
+> child **T2** (The wake). **Parent pin:** `main` `9f9475e5`, that file's blob
+> `22a9ef4b376f1050fd8e41e4f8b591e55144f3c2`. The child's section there is its
 > spec, D2 its design (binding), X1, X3, X6 and X7 its contracts. This document
 > carries the constraints and the milestones and nothing of the design. Read
 > before M1: the composite's Purpose, Terms, D1 (the paragraphs Lifecycle and
