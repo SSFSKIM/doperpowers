@@ -1307,7 +1307,7 @@ is read defensively (§1). devcloud is not touched.
   are one model only when their whole ids match; a family alias (`haiku`)
   against an id is shown as both names (E10's measured case), never assumed
   the same. One function decides whether a wake passes flags, for both the
-  `mode` reason and the launch, and W2 tells it when it is row 12's flagless
+  `mode` reason and the launch, and W2 tells it (`flagless=True` to `not_woken` and `mode_case`) when it is row 12's flagless
   retry or `waking.saved` is set; the `mode` check reads the mode alone and
   never probes a `--settings` path. `mode_case` answers `own` or `ceiling`
   for the sender's words (M3, M4), and `policy_inputs` the files the ceiling
