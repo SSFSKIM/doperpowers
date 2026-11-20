@@ -8446,6 +8446,15 @@ def returned_task(delivery, session, ref, msg_id, wait=False):
     conversation shows it): still owed (OWED_LINE), the daemon delivering
     it on the answer, a refusal said in daemon.log should it come: False,
     and with `wait` exit 4, no reply waited for."""
+    if isinstance(delivery, WaitingSend):
+        # Its append waits for its writer's head (no seq yet): the seat returned, and its task is queued, which the
+        # daemon appends and delivers; no verdict is asked of an event not in the log.
+        say_owed(session)
+        print("%s: its task is queued, not in the log yet; the daemon delivers it once it is recorded" % ref,
+              flush=True)
+        if wait:
+            die("no reply is waited for: the task is not in the log yet", EXIT_UNKNOWN)
+        return False
     tail = TranscriptTail(session)
     deadline = time.time() + float(os.environ.get("SMINOS_VERDICT_WAIT", "30"))
     while True:

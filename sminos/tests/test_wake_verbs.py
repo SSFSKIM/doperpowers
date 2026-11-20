@@ -992,6 +992,26 @@ class Round2(Verbs):
         self.assertIn("refused", said)
         self.assertNotIn("are confirmed yet", said)
 
+    def test_a_returned_seats_task_queued_for_its_writers_head_is_said_queued(self):
+        # frontier review, scalpel-3#7: the task's append waits (WaitingSend, no seq) once the seat runs again.
+        seats = {wait: self.seat("q%d" % wait) for wait in (False, True)}
+        for s in seats.values():
+            self.cli("retire", s["alias"])
+        self.cut_over()
+        with open(os.path.join(sminos.root(), "daemon.log"), "a"):
+            pass   # a daemon.log there: the refusal lookup is reached
+        for wait, s in seats.items():
+            with self.subTest(wait=wait):
+                with mock.patch.object(sminos, "waits_for_head", return_value=True), \
+                        mock.patch.dict(os.environ, {"SMINOS_VERDICT_WAIT": "1"}):
+                    code, out = self.cli("fill", s["alias"], "queued task", "--resume",
+                                         *(["--wait"] if wait else []))
+                self.assertEqual(code, 4 if wait else 0, out)
+                self.assertNotIn("Traceback", out)
+                self.assertIn("returned and its session runs; its task waits", out)
+                self.assertIn("queued", out)
+                self.assertTrue(self.owed_mark(out, sminos.reload_seat(s["seat_id"])["current"]), out)
+
     def test_a_returned_seats_task_still_pending_starts_no_watcher(self):
         s = self.seat()
         self.cli("retire", "w")
