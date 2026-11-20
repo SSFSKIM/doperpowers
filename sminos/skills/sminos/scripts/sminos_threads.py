@@ -1250,12 +1250,10 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
     entry = {"id": uuid.uuid4().hex, "op": op, "at": sminos.now(), "project": project.id, "events": owed,
              **{k: v for k, v in more.items() if v is not None}}
 
-    taken = []   # the wake locks of a record it absorbs, taken here (_claimed): let go once the entry is written
-
     def mutate(view, raw):
         if view.get("pending") or (guard is not None and not guard(view)):
             return False
-        if not _claimed(thread_id, entry, view, fields, absorbs, taken):
+        if not _claimed(thread_id, entry, view, fields, absorbs):
             return False
         if op == "return" and entry.get("settle"):
             # Under the record's lock, the positions the events addressed to the session have reached in the
@@ -1269,15 +1267,17 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
     # Opened under the record's wake lock (T2's M2), the hold its caller has or one taken here: a wake sees the
     # record before the entry or with it, never between. A release (a `/clear`) ends nothing and changes no
     # occupant, and a hook that skipped it has nothing that replays it: it takes no wake lock.
-    hold, took = sminos.transition_hold(thread_id, lock_until) if op != "release" else (None, False)
+    # The record a change of session may absorb changes owner: its wake lock too, taken before any store lock and
+    # with the record's own in ascending order of thread id (claim_holds); _claimed absorbs only a record whose
+    # lock is held, read again under the store locks.
+    holds = claim_holds(thread_id, op != "release", _absorbable_peek(thread_id, fields, absorbs, more.get("other")),
+                        lock_until)
     try:
         return entry if _change(thread_id, mutate, lock_until, bump=True,
                                 both=bool((fields or {}).get("current"))) else None
     finally:
-        for h in taken:
+        for h in holds:
             h.release()
-        if took:
-            hold.release()
 
 
 def _holder(session, thread_id):
@@ -1293,17 +1293,17 @@ def _holder(session, thread_id):
                  if t["thread"] != thread_id and t["current"] == session), None)
 
 
-def _claimed(thread_id, entry, view, fields, absorbs, taken=None):
+def _claimed(thread_id, entry, view, fields, absorbs):
     """Whether a change that makes a session current may: no other record
     holds it (_holder) but the one the entry absorbs; with `absorbs`, an
     absorbable human-opened one turns an advance into its absorption (entry
     changed in place). The caller holds both stores' locks: a seat's write
     takes the thread store's inside its own (_change's `both`), and a
     human-opened record's is the thread store's, which every seat's claim
-    holds too. A record absorbed changes owner, so its wake lock is held
-    for the claim (T2's M2): the caller's hold, else one taken here without
-    waiting and added to `taken`; a wake of it in flight refuses the claim,
-    which the next reconciliation makes again."""
+    holds too. A record absorbed changes owner, so it is absorbed only
+    while this thread holds its wake lock, taken before the store locks
+    (claim_holds); a wake of it in flight refuses the claim, which the next
+    reconciliation makes again."""
     session = str((fields or {}).get("current") or "")
     if not session or session == view["current"]:
         return True
@@ -1311,26 +1311,59 @@ def _claimed(thread_id, entry, view, fields, absorbs, taken=None):
     if found is None:
         return True
     if found["thread"] == entry.get("other"):
-        return _wake_quiet(found["thread"], taken)
+        return sminos.wake_held(found["thread"]) is not None
     if absorbs and found["opened"] == "human" and entry["op"] == "advance" and not entry.get("other") \
-            and absorbable(found, session) and _wake_quiet(found["thread"], taken):
+            and absorbable(found, session) and sminos.wake_held(found["thread"]) is not None:
         entry["op"], entry["other"] = "absorb", found["thread"]
         return True
     return False
 
 
-def _wake_quiet(thread_id, taken):
-    """Whether this thread holds the record's wake lock, taking it now
-    without waiting when it is free (added to `taken`); False when a wake
-    or a transition of it holds it."""
-    if sminos.wake_held(thread_id) is not None:
-        return True
-    hold, _ = sminos.wake_lock(thread_id, until=time.time(), holder=sminos.TRANSITION_HOLD)
-    if hold is None:
-        return False
-    if taken is not None:
-        taken.append(hold)
-    return True
+def _absorbable_peek(thread_id, fields, absorbs, other=None):
+    """The record a change that makes `fields`' session current may absorb,
+    read with no lock (a peek, which _claimed checks again under the store
+    locks): the entry's `other`, else with `absorbs` a human-opened record
+    that holds the session; None for none."""
+    if other:
+        return other
+    session = str((fields or {}).get("current") or "")
+    if not absorbs or not session:
+        return None
+    try:
+        found = _holder(session, thread_id)
+    except (OSError, ValueError):
+        return None
+    return found["thread"] if found is not None and found["opened"] == "human" else None
+
+
+def claim_holds(thread_id, own, other, lock_until=None):
+    """The wake locks a transition needs, taken before any store lock in
+    ascending order of thread id, each a bounded poll until `lock_until`
+    (SWEEP_WAIT by default), and only those this thread does not hold
+    already: the record's own (`own`; WakeBusy when it stays busy) and the
+    record it may absorb (`other`; left untaken when busy, so the claim is
+    refused). The holds taken, for the caller to release in a finally."""
+    need = {}
+    if own:
+        need[thread_id] = True
+    if other and other != thread_id:
+        need[other] = False
+    taken = []
+    try:
+        for tid in sorted(need):
+            if sminos.wake_held(tid) is not None:
+                continue
+            hold, _ = sminos.wake_lock(tid, until=lock_until, holder=sminos.TRANSITION_HOLD)
+            if hold is None:
+                if need[tid]:
+                    raise sminos.WakeBusy(tid)
+                continue
+            taken.append(hold)
+    except BaseException:
+        for h in taken:
+            h.release()
+        raise
+    return taken
 
 
 def _apply(entry, view, raw, fields, remove):
@@ -1549,7 +1582,14 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
                 return "aside"
             return True
 
-        _change(thread_id, clear, deadline, both=True)
+        queued = ((get(thread_id) or {}).get("pending") or {}).get("next")
+        holds = claim_holds(thread_id, False, _absorbable_peek(thread_id, queued.get("fields"), queued.get("absorbs"),
+                                                               queued.get("other")), deadline) if queued else []
+        try:
+            _change(thread_id, clear, deadline, both=True)
+        finally:
+            for h in holds:
+                h.release()
         if not chained:
             return not (get(thread_id) or {}).get("pending")
 

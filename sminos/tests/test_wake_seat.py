@@ -27,8 +27,10 @@ runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devclo
 import ast
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 from unittest import mock
@@ -354,13 +356,58 @@ class Human(Wakers):
         self.assertTrue(self.wake(sid).live)
         self.assertEqual(self.launches(), launched, "once it publishes, live with no second launch")
 
-    def test_a_launch_that_timed_out_with_its_process_running_is_live(self):
+    def test_a_launch_that_timed_out_with_its_process_running_is_live_through_w8(self):
         tid, sid = self.human_thread()
+        threads.update(tid, {"stopped": sminos.now(), "swept": sminos.now()})
+        self.edit(tid, waking={"session": sid, "failed": 2, "at": sminos.now()})
         self.switch("no-banner", 30)
+        seen = []
         with mock.patch.dict(os.environ, {"SMINOS_LAUNCH_TIMEOUT": "1.5"}):
-            got = self.wake(sid)
+            got = sminos.wake(threads.get(tid), sid, due=True, on_live=seen.append)
         self.assertTrue(got.live, got)
         self.assertIsNotNone(self.record(sid))
+        self.assertEqual(seen, [sid[:8]], "the caller's W8, with the short the process's record names")
+        rec = threads.get(tid)
+        self.assertNotIn("stopped", rec, "the stop mark lifted")
+        self.assertNotIn("failed", threads.waking(rec, sid), "the failures cleared")
+
+    def lingering(self, between):
+        """A thread woken once and stopped, its job's entry then reading working with no process (W3's job), and
+        `between` run once W2 has read the thread and before W3: the wake's result, the thread's id and session,
+        the job's short and how many stops it saw before the wake."""
+        tid, sid = self.human_thread()
+        self.assertTrue(self.wake(sid).live)
+        self.stop(sid)
+        short = sid[:8]
+        path = os.path.join(self.state, "jobs", short + ".json")
+        with open(path) as f:
+            entry = json.load(f)
+        with open(path, "w") as f:
+            json.dump(dict(entry, state="working"), f)
+        stops = len([c for c in self.calls() if c["argv"][:1] == ["stop"]])
+        wm = sminos.wake_module()
+        real = wm.row_of
+        seen = []
+
+        def w2_read(session):
+            row = real(session)
+            between(sid)
+            return row
+        with mock.patch.object(wm, "row_of", side_effect=w2_read):
+            got = self.wake(sid, on_live=seen.append)
+        self.assertEqual(seen, [], "no W8: this wake launched nothing")
+        self.assertEqual(self.resumes(sid), [["--permission-mode", "auto", "--model", "claude-term"]], "no launch")
+        self.assertNotIn("failed", self.waking(tid, sid), "nothing counted")
+        self.assertEqual(len([c for c in self.calls() if c["argv"][:1] == ["stop"]]), stops, "nothing stopped")
+        return got
+
+    def test_a_job_list_that_stops_reading_before_w3_is_starting_and_launches_nothing(self):
+        got = self.lingering(lambda sid: self.switch("agents-fail"))
+        self.assertEqual((got.live, got.why), (False, "starting"))
+
+    def test_a_process_back_before_w3_is_live_and_nothing_is_stopped_under_it(self):
+        got = self.lingering(lambda sid: self.session(sid=sid, kind="bg"))
+        self.assertEqual((got.live, got.why, got.short), (True, "", ""))
 
     def test_a_second_wake_while_the_first_holds_the_lock_launches_nothing(self):
         tid, sid = self.human_thread()
@@ -451,6 +498,27 @@ class Seat(Wakers):
         self.assertIn("reply to ", out)
         self.assertNotIn("other001", out, "another sender's reply is not this one's")
         self.assertTrue(self.replied(sid, "other001"), "the other was answered, after")
+
+    def test_wait_ended_by_the_next_prompt_leaves_the_seat_to_the_turn_that_runs(self):
+        """The next prompt delimits this message's reply; the later prompt's turn, still running, is not this
+        waiter's to publish as idle."""
+        s = self.seat()
+        sid = s["current"]
+        self.switch("reply-delay", 5)   # each turn: the waiter polls every 2s, so it returns inside the later one
+        before = len(self.inputs(sid))
+        p = subprocess.Popen([sys.executable, "-B", SCRIPT, "send", "w", "mine", "--wait"], cwd=self.root,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        self.assertTrue(wait_for(lambda: len(self.inputs(sid)) > before, timeout=30), "its frame arrived")
+        self.push(sid, sminos.compose_frame("bee", "other001", "theirs"))
+        out, err = p.communicate(timeout=60)
+        self.assertEqual(p.returncode, 0, err)
+        self.assertIn("reply to ", out)
+        self.assertNotIn("other001", out)
+        self.assertFalse([r for r in self.turns(sid) if r.get("type") == "assistant"
+                          and "reply to other001" in json.dumps(r)], "the waiter returned while the later turn ran")
+        self.assertEqual(sminos.reload_seat(s["seat_id"])["status"], "working", "not published idle under it")
+        self.assertTrue(self.replied(sid, "other001"))
 
     def test_a_retire_between_the_wake_and_the_push_pushes_nothing(self):
         s = self.seat()
@@ -553,6 +621,31 @@ class OneLauncher(unittest.TestCase):
         src = ast.get_source_segment(text, next(
             n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "spawn_fresh"))
         self.assertNotIn('"--resume"', src, "a fresh spawn resumes nothing")
+
+
+
+class Tail(unittest.TestCase):
+    def test_a_transcript_replaced_at_the_same_path_is_read_whole_again(self):
+        """--wait's incremental read (TranscriptTail): another file at the same path, as long or longer, is
+        another transcript, not more of the one read."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, "t.jsonl")
+
+        def write(target, *texts):
+            with open(target, "w") as f:
+                f.writelines(json.dumps({"type": "user", "n": x}) + "\n" for x in texts)
+        write(path, "old-1", "old-2")
+        tail = sminos.TranscriptTail("s")
+        with mock.patch.object(sminos, "transcript_now", return_value=path):
+            self.assertEqual([r["n"] for r in tail.read()], ["old-1", "old-2"])
+            for texts in (("new-1", "new-2"), ("next-1", "next-2", "next-3")):   # as long, then longer
+                write(path + ".new", *texts)
+                os.replace(path + ".new", path)
+                self.assertEqual([r["n"] for r in tail.read()], list(texts))
+            with open(path, "a") as f:
+                f.write(json.dumps({"type": "user", "n": "appended"}) + "\n")
+            self.assertEqual([r["n"] for r in tail.read()][-2:], ["next-3", "appended"], "an append read on")
 
 
 if __name__ == "__main__":

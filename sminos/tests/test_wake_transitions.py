@@ -25,6 +25,7 @@ import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from 
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -283,6 +284,65 @@ class Absorption(Transitions):
         t.join(10)
 
 
+    def free_elsewhere(self, tid):
+        """Whether another process can take the record's wake lock now: no hold of this process is left on it."""
+        code = ("import fcntl, sys\nf = open(sys.argv[1], 'a')\n"
+                "try:\n    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept OSError:\n    sys.exit(1)\n")
+        return subprocess.run([sys.executable, "-c", code, sminos.wake_lock_path(tid)]).returncode == 0
+
+    def test_a_queued_absorption_leaves_no_hold_behind(self):
+        s = self.seat()
+        seat_id, old = s["seat_id"], s["current"]
+        jtid, job = self.human_thread()                     # a record of its own the seat's next session made
+        with mock.patch.object(sminos, "_append", side_effect=OSError("disk full")):
+            entry = threads.begin(seat_id, "advance", self.p,
+                                  [{"kind": "retired", "session": old, "by": "", "reason": "replaced"}],
+                                  fields={"current": ""}, guard=lambda t: t["current"] == old)
+        self.assertIsNotNone(entry)
+        joined = sminos.joined_fields("w", "seat", self.root, "", "", seat_id, "", "seat", session=job)
+        self.assertTrue(threads.follow(seat_id, entry["id"], "advance", self.p,
+                                       [{"kind": "joined", "session": job, **joined}],
+                                       fields={"current": job}, absorbs=True))
+        self.assertEqual(dict(sminos._WAKE_HOLDS), {})
+        sminos.finish_thread(seat_id, project=self.p)
+        sminos.finish_thread(seat_id, project=self.p)
+        self.assertEqual(threads.get(seat_id)["current"], job, "the queued advance absorbed the job's record")
+        self.assertIsNone(threads.get(jtid))
+        self.assertEqual(dict(sminos._WAKE_HOLDS), {}, "no hold is left registered")
+        self.assertTrue(self.free_elsewhere(jtid) and self.free_elsewhere(seat_id), "nor any flock")
+
+    def test_a_queued_absorption_waits_for_a_wake_of_the_record_it_absorbs(self):
+        s = self.seat()
+        seat_id, old = s["seat_id"], s["current"]
+        jtid, job = self.human_thread()
+        with mock.patch.object(sminos, "_append", side_effect=OSError("disk full")):
+            entry = threads.begin(seat_id, "advance", self.p,
+                                  [{"kind": "retired", "session": old, "by": "", "reason": "replaced"}],
+                                  fields={"current": ""}, guard=lambda t: t["current"] == old)
+        joined = sminos.joined_fields("w", "seat", self.root, "", "", seat_id, "", "seat", session=job)
+        threads.follow(seat_id, entry["id"], "advance", self.p, [{"kind": "joined", "session": job, **joined}],
+                       fields={"current": job}, absorbs=True)
+        taken, release = threading.Event(), threading.Event()
+
+        def launcher():
+            hold, _ = sminos.wake_lock(jtid, holder=sminos.LAUNCH_HOLD % (os.getpid(), sminos.now()))
+            taken.set()
+            release.wait(10)
+            hold.release()
+        t, _ = self.in_background(launcher)
+        self.assertTrue(taken.wait(5))
+        with mock.patch.object(sminos, "SWEEP_WAIT", 0.3):
+            sminos.finish_thread(seat_id, project=self.p, lock_until=time.time() + 0.3)
+        self.assertNotEqual(threads.get(seat_id)["current"], job, "not absorbed while a wake of it holds it")
+        self.assertIsNotNone(threads.get(jtid))
+        release.set()
+        t.join(10)
+        sminos.finish_thread(seat_id, project=self.p)
+        sminos.finish_thread(seat_id, project=self.p)
+        self.assertEqual(threads.get(seat_id)["current"], job, "absorbed once the wake let go")
+        self.assertEqual(dict(sminos._WAKE_HOLDS), {})
+
+
 # ------------------------------------------------------------ a retired seat's return
 
 
@@ -311,6 +371,56 @@ class Return(Transitions):
         self.assertGreaterEqual(settled, older["seq"], "the older event is settled")
         self.assertEqual(int(sminos.reload_seat(seat_id)["turns"]), turns + 1, "the woken push counted")
         self.assertEqual(self.resumes(sid), [[]])
+
+    def test_a_return_whose_launch_lost_its_banner_with_its_process_up_returns_and_delivers(self):
+        s = self.seat()
+        sid, seat_id = s["current"], s["seat_id"]
+        self.cli("retire", "w")
+        self.switch("no-banner", 30)
+        with mock.patch.dict(os.environ, {"SMINOS_LAUNCH_TIMEOUT": "1.5"}):
+            code, out = self.cli("fill", "w", "after a lost banner", "--resume")
+        self.assertEqual(code, 0, out)
+        self.assertNotEqual(sminos.reload_seat(seat_id)["status"], "retired", "returned through W8")
+        self.assertNotIn("ended", threads.get(seat_id))
+        self.assertIn("after a lost banner", self.inputs(sid)[-1]["message"]["content"], "and its task delivered")
+
+    def test_a_task_its_stream_refuses_starts_nothing(self):
+        """What refuses the task here, with nothing appended and no endpoint asked (the audience choice, D4), is
+        checked before the return starts anything."""
+        s = self.seat()
+        sid, seat_id = s["current"], s["seat_id"]
+        self.cli("retire", "w")
+        au = sminos.audience_module()
+        with mock.patch.object(sminos, "streams_for", side_effect=au.Unreachable("w is outside its audience")):
+            code, out = self.cli("fill", "w", "never sent", "--resume")
+        self.assertEqual(code, sminos.EXIT_UNKNOWN, out)
+        self.assertIn("w is outside its audience", out)
+        self.assertEqual(self.resumes(sid), [], "nothing launched")
+        self.assertEqual(sminos.reload_seat(seat_id)["status"], "retired")
+        self.assertIn("ended", threads.get(seat_id))
+        self.assertFalse([e for e in self.log() if e.get("text") == "never sent"])
+
+    def test_a_seat_in_no_readable_project_returns_and_takes_its_task_by_the_projectless_push(self):
+        """A seat whose project cannot be read has no log to record its task in: the owner-checked projectless
+        push (D8) delivers it, as `send` does."""
+        s = self.seat()
+        sid, seat_id = s["current"], s["seat_id"]
+        self.cli("retire", "w")
+        real = sminos.seat_project
+
+        def unreadable_to_the_task(seat, fresh=False):
+            # The seat is still found by name (its lookup reads it as before); the verb's task sees no project.
+            caller = sys._getframe(1)
+            while caller.f_code.co_filename == mock.__file__:
+                caller = caller.f_back
+            return None if caller.f_code.co_name in ("cmd_fill", "record_send") else real(seat, fresh)
+        with mock.patch.object(sminos, "seat_project", side_effect=unreadable_to_the_task):
+            code, out = self.cli("fill", "w", "no log to hold it", "--resume")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("Traceback", out)
+        self.assertNotEqual(sminos.reload_seat(seat_id)["status"], "retired")
+        self.assertIn("no log to hold it", self.inputs(sid)[-1]["message"]["content"])
+        self.assertFalse([e for e in self.log() if e.get("text") == "no log to hold it"], "nothing recorded")
 
     def test_a_failed_launch_leaves_it_retired_and_records_nothing(self):
         s = self.seat()
