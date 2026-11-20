@@ -14,11 +14,11 @@ member too, seat-less, from the first call that reads its project, and stays
 one when its process ends: stopped, what is addressed to it recorded and held
 (no process is started for it) until its human reopens it. After a /clear
 the new session takes its alias, and the one left goes by its short id. A
-session ends when it is retired, or once it has been stopped for three days,
-but not while a devcloud host of its own remains or devcloud cannot tell (it
-stays stopped, and retire is refused); what was held for it is then settled,
-and a message to it is refused. Its human reopening it brings it back as
-itself; a seat comes back by a fill.
+session ends when it is retired, or once it has been stopped for three days
+(while a devcloud host of its own remains, or devcloud cannot tell, it stays
+stopped instead); what was held for it is then settled, and a message to it
+is refused. Its human reopening it brings it back as itself; a seat comes
+back by a fill.
 
     sminos spawn    <alias> <task> [--role R] [--brief B] [--cwd C] [--worktree W]
                    [--model M] [--settings S] [--effort E] [--wait]   # a background session in a seat
