@@ -606,6 +606,13 @@ def _change(tid, mutate, deadline=None, bump=False, both=False):
             s = sminos.reload_seat(tid)
             if s is None or not isinstance(raw, dict):
                 return False
+            if _moved(raw):
+                # A `current` another writer moved: the record the change is made on is the one every reader reads
+                # (_of_seat), its occupant last and its predecessor's marks gone, so a mark written now is its own.
+                cur = str(raw["current"])
+                raw["sessions"] = [x for x in _stored_sessions(raw) if x != cur] + [cur]
+                for k in OCCUPANT_MARKS:
+                    raw.pop(k, None)
             where = mutate(_of_seat(s), raw)
             if where is False:
                 return False
@@ -780,6 +787,7 @@ def _ensure_seat(seat, project, events, deadline):
         return _of_seat(seat)
     project = project if project is not None else (sminos.seat_project(seat) if seat["current"] else None)
     rebuilt = _seat_sessions(seat, project if not sminos.guessed(project) else None, events)
+    moved = _moved(seat)
 
     def mutate(view, raw):
         if "opened" not in raw:
@@ -787,7 +795,7 @@ def _ensure_seat(seat, project, events, deadline):
             raw["sessions"] = rebuilt
             raw.setdefault("launch", {"cwd": str(raw.get("cwd") or "")})
             raw.setdefault("channels", [])
-        elif _moved(raw):
+        elif moved and view["current"] == seat["current"]:   # its tail and marks set by _change already
             cur = view["current"]
             had = [x for x in view["sessions"] if x != cur]
             raw["sessions"] = had + [x for x in rebuilt if x not in had and x != cur] + [cur]
@@ -1188,7 +1196,8 @@ def _owe(project, entry, event, appended, append):
     return bool(got) or _holds(project, session, kind, entry["id"])
 
 
-def finish(thread_id, appended=None, project=None, append=None, lock_until=None, before=None, settle=None):
+def finish(thread_id, appended=None, project=None, append=None, lock_until=None, before=None, settle=None,
+           stop=None):
     """Carries out the record's open entry from where it stands, and clears
     it (§6, steps 2 to 4): each event the log does not hold yet; then, in
     one write, the entry removed and an end's record set aside or deleted
@@ -1235,16 +1244,24 @@ def finish(thread_id, appended=None, project=None, append=None, lock_until=None,
     through the entry that holds it, or released when that entry is gone.
     An entry with an operation queued behind it (`next`: follow) begins
     that operation in the write that clears it, and it is finished in
-    turn."""
+    turn.
+
+    A purge's stop is its entry's too (`stop(record, entry)`, by default
+    sminos.purge_stop): after its events and its settlement, before the
+    record goes, the process its end recorded is stopped while that same
+    process still holds the session, whoever finishes the entry (a verb
+    cut before its own stop, a reading verb, a tick), since the record that
+    names the process is gone after it. No store lock is held through it:
+    only the record's finisher lock."""
     appended = [] if appended is None else appended
     if not (get(thread_id) or {}).get("pending"):
         return True
     with _finish_lock(thread_id, lock_until):
         return _finish(thread_id, appended, project, append or sminos.lifecycle, lock_until,
-                       before or sminos.carry_hand_offs, settle or sminos.settle_ended)
+                       before or sminos.carry_hand_offs, settle or sminos.settle_ended, stop or sminos.purge_stop)
 
 
-def _finish(thread_id, appended, project, append, deadline, before, settle):
+def _finish(thread_id, appended, project, append, deadline, before, settle, stop):
     home = project.id if project is not None else None
     while True:
         t = get(thread_id)
@@ -1254,7 +1271,7 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
         if entry.get("op") == RESERVED:
             holder = get(entry.get("by"))
             if ((holder or {}).get("pending") or {}).get("id") == entry["id"]:
-                finish(holder["thread"], appended, project, append, deadline, before, settle)
+                finish(holder["thread"], appended, project, append, deadline, before, settle, stop)
             else:
                 _change(thread_id, lambda view, raw: _release(view, raw, entry), deadline)
             return not (get(thread_id) or {}).get("pending")
@@ -1287,6 +1304,8 @@ def _finish(thread_id, appended, project, append, deadline, before, settle):
                 return False
         if not returning and entry.get("settle") and not settle(project, entry["settle"], deadline, None):
             return False   # what is held for it is settled before the record is set aside or deleted (§6, 3)
+        if entry.get("last") == "purge" and entry.get("settle"):
+            stop(t, entry)   # tried once a finish: a stop that fails does not keep the purge open
         if entry.get("seat") and not _project_seat(entry["seat"], deadline):
             return False   # the seat could not be read or written: the entry stays open for the replay
         if other:
@@ -1784,10 +1803,15 @@ def owner_sessions(thread):
     seat = sminos.reload_seat(thread["thread"]) if thread["opened"] == "spawned" else None
     if seat is not None:
         sessions += [str(h.get("current") or "") for h in seat.get("history") or [] if isinstance(h, dict)]
+        project = sminos.seat_project(seat)
+        project = project if project is not None and not sminos.guessed(project) else None
         if "opened" not in seat or _moved(seat):   # what adoption, or the repair of a moved `current`, rebuilds
-            project = sminos.seat_project(seat) if seat["current"] else None
-            sessions += _seat_sessions(seat, project if project is not None and not sminos.guessed(project) else None,
-                                       None)
+            sessions += _seat_sessions(seat, project if seat["current"] else None, None)
+        elif project is not None:
+            # An occupant an older copy's `seat add` put there and displaced between two reads of this code (A, B,
+            # A leaves `sessions` as it was): its `joined` naming the seat is the evidence, one read of the joins.
+            sessions += [str(e.get("session") or "") for e in sminos.log_read(project, kinds=("joined",))
+                         if e.get("seat") == seat["seat_id"]]
     return sessions
 
 

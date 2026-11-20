@@ -4448,7 +4448,32 @@ def finish_thread(thread_id, appended=None, project=None, lock_until=None):
     views) see them, whichever copy of this module loaded the threads
     module."""
     return threads_module().finish(thread_id, appended, project, append=lifecycle, lock_until=lock_until,
-                                   before=carry_hand_offs, settle=settle_ended)
+                                   before=carry_hand_offs, settle=settle_ended, stop=purge_stop)
+
+
+def purge_stop(record, entry):
+    """A purge entry's stop (sminos_threads.finish), from whichever process
+    finishes it: the process the record's end recorded, while that same
+    process still holds the session the entry settles (still running it,
+    not started after the end: a process the end did not see returns the
+    thread and is never stopped for it), by its harness row, or for a seat
+    by the seat's recorded short (stop_seen_turn's rule). Nothing for an end
+    that recorded no process, or a record that holds another session."""
+    threads = threads_module()
+    sid, ended = entry.get("settle"), record.get("ended") or {}
+    if not sid or record.get("current") != sid or not ended.get("pid"):
+        return
+    seen = running_now(sid)
+    if not seen or str(seen.get("pid")) != str(ended["pid"]) or threads.returns(record, seen, known=True):
+        return
+    seat = reload_seat(record["thread"]) if record["opened"] == "spawned" else None
+    if seat is not None:
+        stop_seen_turn(seat, seen, None)
+        return
+    agents_refresh()
+    row = agent_row(session_id=sid)
+    if row and row.get("id") and still_seen(seen, sid):
+        claude_stop(row["id"])
 
 
 def positions_to(project, session):
@@ -4673,7 +4698,7 @@ def end_human_lane_b(project, sid, thread, gone):
         project, thread["thread"], "end", [{"kind": "retired", "session": sid, "by": "", "reason": "ended"}],
         fields={"ended": {"at": now(), "reason": "ended", "by": "", "pid": None}},
         guard=lambda t: t["current"] == sid and not threads.record_ended(t) and gone(), settle=sid, last="aside",
-        seat=seat_over(sid, "retired"))
+        seat=seat_over(sid, "retired", thread["thread"]))
 
 
 def end_by_rule(thread, stopped, asked=None):
@@ -4712,7 +4737,7 @@ def end_by_rule(thread, stopped, asked=None):
 
     return thread_transition(project, tid, "end", [{"kind": "retired", "session": cur, "by": "", "reason": "ended"}],
                              fields=fields, guard=guard, settle=cur, last="aside" if seat is None else None,
-                             seat=seat_over(cur, "retired") if seat is None else None)
+                             seat=seat_over(cur, "retired", tid) if seat is None else None)
 
 
 def end_lane_b_seat(project, sid, seat):
@@ -4808,7 +4833,7 @@ def older_writes(project, live, effect, joined, busy):
         out += thread_transition(project, t["thread"], "end", [], fields={"ended": ended},
                                  guard=lambda r, sid=sid, e=e: r["current"] == sid and not threads.record_ended(r)
                                  and still_in_effect(project, sid, e) and membership_here(project, sid),
-                                 settle=sid, last="aside", seat=seat_over(sid, "retired"))
+                                 settle=sid, last="aside", seat=seat_over(sid, "retired", t["thread"]))
     return out
 
 
@@ -13005,11 +13030,12 @@ def displace_refusal(s, session):
     forgets which process it describes: that process would run on with
     nothing in the fleet naming it), or is a session its human opened,
     which its record keeps (D7: an older copy's seat of it is never its
-    authority)."""
+    authority). Whether it runs is its process's, read afresh
+    (running_now): whether its inbox answers yet is delivery's question."""
     cur = s["current"]
     if not session or not cur or session == cur:
         return ""
-    peer = peer_for_session(cur)
+    peer = running_now(cur)
     if peer:
         return ("seat %s/%s still holds a live session (%s, pid %s) — repointing it would strand that process "
                 "outside the fleet; retire or remove the seat first" % (s["group"], s["alias"], cur[:8], peer.get("pid")))
@@ -14296,6 +14322,8 @@ def cmd_retire(a):
     if a.owner_unknown and os.environ.get("CLAUDE_CODE_SESSION_ID"):
         die("--owner-unknown is for a person at a terminal, and this runs inside a session: nothing was retired. "
             "Report the refusal to your human instead", 1)
+    # A purge left open (its verb cut short), as it stands before the lookup's reconciliation finishes it.
+    purging = {x["seat_id"]: x for x in seats() if (x.get("pending") or {}).get("last") == "purge"}
     target, bound = find_target(a.seat), None
     if target[0] == "none" and (ended := ended_target(a.seat)) is not None:
         target, bound = ended, ended[2].thread
@@ -14303,6 +14331,8 @@ def cmd_retire(a):
         die("no seat or member matching '%s'" % a.seat, EXIT_UNKNOWN)
     how = OwnerAsk(a.seat, "purge" if a.purge else "retire", a.owner_unknown)
     if target[0] == "seat":
+        if a.purge and replayed_purge(purging, target[1], "purged"):
+            return
         _retire_one(target[1], a.purge, target[2], how)
         return
     project, m = target[1], target[2]
@@ -14458,7 +14488,7 @@ def end_human(project, thread, sid, by, pid, purge, asked=None):
     threads = threads_module()
     tid = thread["thread"]
     fields = {"by": by, "reason": "retire", **({"pid": pid} if pid else {})}
-    seat = seat_over(sid, "purge" if purge else "retired")
+    seat = seat_over(sid, "purge" if purge else "retired", tid)
 
     def live_member(t):
         return t["opened"] == "human" and t["current"] == sid and not threads.record_ended(t) \
@@ -14508,13 +14538,14 @@ def keep_end(data, fields, session):
     return True
 
 
-def seat_over(sid, to):
+def seat_over(sid, to, thread_id):
     """The seat an older copy gave the session of a thread its human opened,
     as that record's entry brings it in line (`to`: "retired", "idle" or
     "purge"; sminos_threads._project_seat), or None for none. The seat is
     never the thread's authority: it is written only by the record's own
-    journal, and only to follow it."""
-    t = threads_module().thread_of(sid) if sid else None
+    journal, and only to follow it. `thread_id`: the record that ends, read
+    by its id (a session's canonical record by then may be another's)."""
+    t = threads_module().get(thread_id) if sid else None
     if t is None or t["opened"] != "human" or t["current"] != sid:
         return None
     s = next((s for s in seats() if s["current"] == sid), None)
@@ -14611,6 +14642,8 @@ def end_and_stop(s, purge, asked=None):
         if thread is not None and thread["opened"] == "human" and thread["current"] == cur:
             project = last_project(cur) or project
             end_human(project, thread, cur, caller_alias(), seen.get("pid") if seen else None, purge, asked)
+            if purge:
+                purge_superseded(s, cur)   # the seat over it, kept by the entry when it holds another session now
         else:
             end_seat(s, purge, asked)
     finally:
@@ -14782,21 +14815,25 @@ def end_seat(s, purge, asked=None):
         lifecycle(project, cur, "retired", by=by, reason="retire", **({"pid": pid} if pid else {}))
 
 
-def stop_ended(snap):
-    """The stop a purge's verb owed and did not make (cut after its record's
-    write), for `snap`, the seat as it stood with that entry open: the
-    process its end recorded, while that process still holds the session and
-    its retirement is in the log (end_and_stop's rule), and nothing else."""
-    if snap is None or not snap["current"]:
-        return
-    ended, cur = snap.get("ended") if isinstance(snap.get("ended"), dict) else {}, snap["current"]
-    seen = running_now(cur)
-    if not ended.get("pid") or not seen or str(seen.get("pid")) != str(ended["pid"]):
-        return
-    if threads_module().returns({"opened": "spawned", "ended": ended}, seen, known=True):
-        return
-    if retired_in_log(seat_project(snap), cur):
-        stop_seen_turn(snap, seen, None)
+def replayed_purge(purging, s0, verb):
+    """Whether a purge of seat `s0` was left open before this verb (its
+    snapshot in `purging`, taken before the lookup) and its lookup's
+    reconciliation has finished it: then the verb starts no purge of its
+    own, and reports the entry's outcome for the session it settled —
+    done (the seat gone; its stop was the entry's, purge_stop), or
+    superseded, exit 4 (another sminos gave the seat another session, which
+    the entry's last step keeps). False when there was none, or it is open
+    still (the verb's own end finishes it)."""
+    snap = purging.get(s0["seat_id"])
+    now_ = reload_seat(s0["seat_id"])
+    if snap is None or (now_ is not None and now_.get("pending")):
+        return False
+    if now_ is None:
+        print("%s %s/%s [%s] (a purge of it left open was finished; chat history kept)%s" % (
+            verb, s0["group"], s0["alias"], s0["seat_id"], worktree_note(s0)))
+        return True
+    purge_superseded(now_, snap["pending"].get("settle") or snap["current"])
+    return False
 
 
 def purge_superseded(s, cur):
@@ -14815,7 +14852,7 @@ def cmd_remove(a):
     """A seat's end and its record deleted, or a thread's its human opened
     (D1: the verbs that only manage a record apply to every thread)."""
     how = OwnerAsk(a.seat, "remove")
-    # A purge left open (its verb cut before its stop), as it stands before the lookup's reconciliation finishes it.
+    # A purge left open (its verb cut short), as it stands before the lookup's reconciliation finishes it.
     purging = {x["seat_id"]: x for x in seats() if (x.get("pending") or {}).get("last") == "purge"}
     # find_target's precedence, as retire's: a full id that is a seat's own and also the current session of a
     # thread of its own (its first occupant, reopened) names that session, never the seat it left.
@@ -14827,11 +14864,7 @@ def cmd_remove(a):
     if opened is not None:
         retire_member(opened[0], opened[1], True, verb="removed", how=how)
         return
-    if found[0] == "seat" and reload_seat(s0["seat_id"]) is None:
-        # The lookup's reconciliation finished a purge of it left open: removed, its end recorded, and what that
-        # end saw stopped as the verb that began it would have.
-        stop_ended(purging.get(s0["seat_id"]))
-        print("removed %s/%s [%s] (chat history kept)%s" % (s0["group"], s0["alias"], s0["seat_id"], worktree_note(s0)))
+    if found[0] == "seat" and replayed_purge(purging, s0, "removed"):
         return
     asked = seat_owner_guard(s0, True, how)
     locks, s = locked_fresh(s0, "remove", bound)
