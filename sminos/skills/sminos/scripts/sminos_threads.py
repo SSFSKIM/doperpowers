@@ -1737,8 +1737,11 @@ def asked_all(record, asked):
 
 def is_adopted(vm):
     """Whether a census host is an adopted machine, which `devcloud vm down`
-    releases and leaves running, where it deletes a host devcloud made."""
-    return bool(vm.get("adopted") or vm.get("account") == "adopted")
+    releases and leaves running, where it deletes a host devcloud made. X9's
+    own marker decides (`adopted` true, its provider null; x9_reply holds
+    every row to one form or the other), never the account's name: a
+    provider's account may be named `adopted`."""
+    return vm.get("adopted") is True
 
 
 def host_words(vm):
@@ -1753,7 +1756,7 @@ def unknown_words(entry):
     """One thing devcloud could not ask, or sminos's reason for no answer."""
     if entry.get("failed") == "query":
         return str(entry.get("reason") or "no answer")
-    if entry.get("account") == "adopted":
+    if entry.get("account") == "adopted" and entry.get("provider") is None:   # a provider's account may be named so
         return "the adopted machines' records: %s" % entry.get("reason")
     return "account %s (%s): %s" % (entry.get("account"), entry.get("provider"), entry.get("reason"))
 

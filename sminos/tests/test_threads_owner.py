@@ -254,6 +254,15 @@ class Owned(Owner):
         self.assertFalse(self.ended(threads.stamp(sid)))
         self.assertEqual(self.asked(), [[sid[:8]]])
 
+    def test_a_host_on_an_account_named_adopted_is_one_devcloud_made_and_deletes(self):
+        sid, _ = self.opened()
+        self.standin(hosts=[host("dc-a-0001", sid[:8], account="adopted")])
+        code, out = self.cli("retire", "alpha")
+        self.assertEqual(code, 1, out)
+        self.assertIn("it made hosts that still exist: dc-a-0001 (hetzner, account adopted)", out)
+        self.assertIn("`devcloud vm down dc-a-0001` deletes it", out, "X9's marker, not the account's name")
+        self.assertNotIn("releas", out)
+
     def test_the_command_it_suggests_quotes_a_host_name_the_shell_would_split(self):
         sid, _ = self.opened()
         self.standin(hosts=[host("dc a-0001", sid[:8]), adopted("lab;box", sid[:8])])
@@ -496,6 +505,12 @@ class Unknown(Owner):
         return [
             ("an answer of unknown", standin(unknown=[SPARE]),
              "account spare (gce): provider gce of account spare has no passing copy yet"),
+            ("an account named adopted that could not be asked",
+             standin(unknown=[dict(SPARE, account="adopted")]),
+             "account adopted (gce): provider gce of account spare has no passing copy yet"),
+            ("the adopted machines' records, unreadable",
+             standin(unknown=[{"account": "adopted", "provider": None, "failed": "listing", "reason": "unreadable"}]),
+             "the adopted machines' records: unreadable"),
             ("an owned answer for another thread, and something it could not ask",
              standin(hosts=[host("dc-z-0009", "ffff0000")], unknown=[SPARE]), "account spare (gce)"),
             ("another exit", standin(exit=1, stderr="devcloud: needs Python 3.11 or later on PATH\n"),
