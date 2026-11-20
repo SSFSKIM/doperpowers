@@ -13986,9 +13986,12 @@ def deliver_verb(s, bound, msg, wait, verb, stop_turn=False):
     frm = default_from("")
     sender = "human" if not sid else ((caller_seat() or {}).get("alias") or frm)
     msg_id = uuidlib.uuid4().hex[:8]
-    send_to_seat(s, compose_frame(frm, msg_id, msg), msg_id, wait,
-                 record=lambda seat: record_send(seat, sender, frm, msg, msg_id), session=bound, sender=frm,
-                 verb=verb, stop_turn=stop_turn)
+    try:
+        send_to_seat(s, compose_frame(frm, msg_id, msg), msg_id, wait,
+                     record=lambda seat: record_send(seat, sender, frm, msg, msg_id), session=bound, sender=frm,
+                     verb=verb, stop_turn=stop_turn)
+    except ResumeRefused as e:   # the seat's own refusals ahead of the wake (resume_session), as `send` exits on them
+        die(e.message, e.code)
 
 
 def default_from(explicit):

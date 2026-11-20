@@ -149,8 +149,13 @@ case "${1:-}" in
     [ -e "$WAKE_ENGINE_STATE/agents-fail" ] && { echo "stub: agents unavailable" >&2; exit 1; }
     python3 - "$STUB_STATE/agents" "$WAKE_ENGINE_STATE/jobs" <<'PY'
 import glob, json, os, sys
+# One job per short, as the engine lists them: the test engine's (a wake of a session the stub spawned, under the
+# same short) stands for the stub's own entry of it.
+engine = set(os.path.basename(f)[:-5] for f in glob.glob(os.path.join(glob.escape(sys.argv[2]), '*.json')))
 out = []
 for f in glob.glob(os.path.join(sys.argv[1], '*')):
+    if os.path.basename(f) in engine:
+        continue
     m = dict(l.rstrip('\n').split('=', 1) for l in open(f) if '=' in l)
     row = {"id": m.get("short"), "sessionId": m.get("uuid"), "kind": m.get("kind", "background"),
            "name": m.get("name"), "state": m.get("state", "done"),
@@ -1338,7 +1343,7 @@ assert_rc 0 "$RC" "resume exits 0"
 assert_contains "$OUT" "resumed work/plainworker" "resume reports the seat"
 assert_equals "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $P_UUID" "resume's wake argv is exactly --bg --resume <id>"
 assert_equals "$(wake_inputs "$P_UUID" | grep -c 'RES-1')" "1" "its message is pushed to the woken process once"
-assert_contains "$("$SMINOS" chat -n 5 2>&1)" "RES-1" "and recorded in the project's log first, as send records one"
+assert_contains "$(cat "$SMINOS_HOME"/projects/*/log/*.jsonl)" '"text": "RES-1"' "and recorded in the project's log first, as send records one"
 assert_equals "$(field "$P_UUID" turns)" "2" "resume increments turns"
 assert_equals "$(field "$P_UUID" current)" "$P_UUID" "same-id resume keeps current"
 run "$SMINOS" resume plainworker "RES-1b" --model opus --effort high
@@ -1671,9 +1676,11 @@ DEAD_UUID="ffff5555-abab-4000-8000-0000000f5555"
 : > "$TEST_ROOT/dead.sock"
 printf '{"pid":%s,"sessionId":"%s","name":"deadsock","kind":"bg","status":"idle","procStart":"Mon Jan  1 00:00:00 2001","messagingSocketPath":"%s/dead.sock"}\n' \
   "$$" "$DEAD_UUID" "$TEST_ROOT" > "$HOME/.claude/sessions/deadsock.json"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$DEAD_UUID.jsonl"   # a conversation to wake
 run "$SMINOS" fill grp/deadsock "REFILL" --resume
 assert_rc 0 "$RC" "a record of another process whose socket file has no listener is not live — resume proceeds"
-rm -f "$HOME/.claude/sessions/deadsock.json"; "$SMINOS" remove grp/deadsock >/dev/null
+rm -f "$HOME/.claude/sessions/deadsock.json" "$HOME/.claude/projects/fake-proj/$DEAD_UUID.jsonl"
+"$SMINOS" remove grp/deadsock >/dev/null
 
 # seat add --session records the harness row's short, and clears it when the row is gone.
 SA_UUID="abcd6666-abab-4000-8000-000000ab6666"
@@ -1708,10 +1715,14 @@ for first_live in (True, False):
         return live if first_live or len(probes) > 1 else None   # dead-first: up only after the route
     sminos.peer_for_session = probe
     sminos.send_frame = lambda path, text, sender="": actions.append("socket")
-    sminos.resume_session = lambda *a, **k: actions.append("resume")
+    # The wake, answering that its process does not answer yet: the send then stops there, nothing pushed.
+    sminos.resume_session = lambda *a, **k: (actions.append("resume"), sminos.WakeResult(False, "starting"))[1]
     sminos.harness_row = lambda s: None
-    with contextlib.redirect_stdout(io.StringIO()):
-        sminos.send_to_seat(sminos.resolve_seat("grp/probed"), "frame", "abcd1234", False)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            sminos.send_to_seat(sminos.resolve_seat("grp/probed"), "frame", "abcd1234", False)
+        except SystemExit:
+            pass
     out.append("%s:%d:%s" % ("live-first" if first_live else "dead-first", len(probes), ",".join(actions)))
 print(" ".join(out))
 PY
