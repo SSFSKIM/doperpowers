@@ -731,6 +731,21 @@ class Round(Verbs):
         code, out = self.send("far#%s" % sid[:8], "a note")
         self.assertNotIn("recorded and held", out, "a gone with nothing published reads as today")
 
+    def test_send_wait_to_a_remote_held_thread_records_it_whether_stopped_or_gone(self):
+        """A `gone` its machine publishes `held` (a spawned thread whose conversation is not there) is a stopped
+        one's to `send --wait` too (§6): recorded, the hold's words, nothing started, exit 4."""
+        for state in ("stopped", "gone"):
+            with self.subTest(state=state):
+                sid = self.remote_in(state, "held", "transcript")
+                text = "waited on while %s" % state
+                code, out = self.cli("send", "--wait", "far#%s" % sid[:8], text)
+                self.assertEqual(code, 4, out)
+                self.assertEqual(len(self.logged(text)), 1, out)
+                self.assertIn("for far: " + line("transcript").replace("recorded and held:", "recorded and held on "
+                                                                           "elsewhere:"), out)
+                self.assertIn("nothing was started: far runs on elsewhere, which holds it; no reply is waited for",
+                              out)
+
     def test_a_retired_machines_gone_is_never_read_as_a_hold(self):
         sid = self.remote_in("gone", "held", "transcript")
         with mock.patch.object(sminos, "machine_retired", lambda name: str(name).lower() == "elsewhere"):

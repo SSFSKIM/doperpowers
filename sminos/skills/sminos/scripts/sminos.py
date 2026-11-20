@@ -8663,7 +8663,9 @@ def verb_delivered(project, session, alias, delivery, msg_id, verb="", wait=Fals
 
 def remote_held_wait(project, m, text, sender, via):
     """`send --wait` to a stopped thread another machine published as held
-    (X3): recorded for its machine, the sender told what that machine
+    (X3), on its `stopped` state or a `gone` one (a spawned thread whose
+    conversation is not there, state_wake): recorded for its machine, the
+    sender told what that machine
     published (remote_line), and exit 4: no reply is waited for here."""
     e = record_message(project, m.session, m.alias, sender, via, text, uuidlib.uuid4().hex[:8], deliver=False)
     if isinstance(e, WaitingSend):
@@ -15781,8 +15783,9 @@ def _send(a):
             # reply to this message waited for; or recorded, held and exit 4.
             verb_to_thread(project, m, a.msg, True, "", sender=sender, via=frm)
             return
-        if a.wait and not m.local and m.state == "stopped" and wake_of(m) == "held":
-            remote_held_wait(project, m, a.msg, sender, frm)   # another machine's hold, as it published it
+        if a.wait and not m.local and m.state in HELD_STATES and wake_of(m) == "held":
+            # Another machine's hold, as it published it: on a `stopped` state, or a `gone` one (state_wake).
+            remote_held_wait(project, m, a.msg, sender, frm)
         if a.wait:
             refuse_wait(a.target)
         send_to_member(project, m, sender, frm, a.msg, msg_id)
