@@ -1174,6 +1174,20 @@ is read defensively (§1). devcloud is not touched.
   Evidence: `wake-spike-2.md` §9: idle 24 minutes after its turn, its
   record and inbox in place.
 
+- Observation: with no policy file and user settings that name no
+  `defaultMode`, the machine's ceiling resolves to `default`, so by M1's
+  rule every first wake on such a machine would pass `--permission-mode
+  manual` and the woken session would stall at its first tool call (E6),
+  whatever mode its last turn ran in. M5's live setup sets `defaultMode`
+  to `auto`, which would have hidden it.
+  Evidence: `sminos_policy.py`'s `load` and `settings_mode` (M1's report).
+- Observation: a test engine written without its executable bit lets
+  `PATH` fall through to the real `claude` under the test's temporary
+  `HOME`. On M1's first run the real engine stopped at "Workspace not
+  trusted" in every case and nothing started; the suites that put the test
+  engine on `PATH` now fail unless `shutil.which("claude")` is the stand-in.
+  Evidence: M1's report; no process or engine directory was left behind.
+
 ## Decision Log
 
 - 2026-11-20 — **Verification.** The plan is reviewed before it is handed
@@ -1251,6 +1265,37 @@ is read defensively (§1). devcloud is not touched.
   whole reading); a test engine with no turns (§8); and live steps that
   could not tell success from failure (rewritten). No third review of the
   plan precedes the build.
+
+- 2026-11-20 — **A first wake's capped mode decides `mode`** (M1; confirmed
+  by the composite's holder). The mode a first wake runs under is the last
+  turn's lowered to the ceiling, so when that capped mode asks for approval
+  the thread is not woken for `mode`, never started into a stall. The
+  ceiling is what the policy says (the settings' `defaultMode`, else
+  `default`, as `admit_spawn` reads it), never read as no cap. The rule is
+  for a wake that would pass flags: no row, or a row that cannot be read; a
+  thread with a readable row is untouched (no flag is passed). `why` stays
+  `mode`, with no new value; the words a sender and `sminos list` read say
+  when the ceiling, not the last turn's own mode, is the cause, and name the
+  owner's remedy (`sminos daemon policy --ceiling`, or the settings'
+  `defaultMode`). `not_woken` therefore reads the policy file and the user
+  settings, and both are in the key of the daemon's memory of an all-held
+  pass (M3), so a raised ceiling ends the hold at the next pass with nothing
+  new sent. A suite case pins it (M3): ceiling `default`, last turn `auto`,
+  no row: held for `mode`, no launch; the ceiling raised, the next pass
+  wakes it.
+- 2026-11-20 — **M1 as built.** The ceiling and the bypass rule apply to the
+  launch's recorded `--permission-mode` as well as to the last turn's, and
+  `manual` is compared as `default` in `sminos.PERMISSION_MODES`' order.
+  `launch_dropped` names only `LAUNCH_OPTIONS` dropped for their value
+  (inline JSON, a session id), once each. The `waking` writers compare and
+  set through `update` (the field unchanged since read, `current` the
+  session), so they hold without the wake lock too; `waking` is a
+  `SEAT_KEYS` entry, hidden from `list --json` and dropped at a lane B
+  repoint. `line_note` takes `first` from its caller (row 12's second pass
+  is known only there). The test engine's switches are files in its state
+  directory, so a daemon sees them; the shell stub hands a wake with no
+  message to the Python twin, and `test_wake.py` runs the shared cases
+  against both forms.
 
 ## Outcomes & Retrospective
 
