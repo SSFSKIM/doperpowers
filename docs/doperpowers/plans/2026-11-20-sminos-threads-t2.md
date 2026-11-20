@@ -31,7 +31,7 @@ composite (G2, eleven items), proved as Concrete Steps maps it.
 - [x] (2026-11-20) The direction ruled by the owner (one wake path) and folded into the composite (PR #574).
 - [x] (2026-11-20) The engine read again on 2.1.329 (`wake-spike-2.md`, E17 to E24) and this plan's first draft reviewed twice; the composite's D2 revised (the wake carries no message, PR #575) and this plan rewritten on it.
 - [x] (2026-11-20 12:20Z) M1 — What a wake reads and says, the record's field, and a test engine that can be woken. Commits `94b98e29`..`2ac241c3`; three reviews, the last item read by the controller; gates GREEN on `2ac241c3`.
-- [ ] M2 — The wake: `resume_session` starts a process and pushes to it; transitions take the wake's lock.
+- [x] (2026-11-20 14:55Z) M2 — The wake: `resume_session` starts a process and pushes to it; transitions take the wake's lock. Commits `d52f01b0`..`e2fe7c64`; three reviews, the last fix read by the controller; gates GREEN on `e2fe7c64`.
 - [ ] M3 — Delivery wakes every stopped thread, and holds what it cannot push.
 - [ ] M4 — The verbs, what a sender is told on any machine, and the direct send.
 - [ ] The frontier review of M1 to M4 as one range, by the composite's holder, and its fixes.
@@ -1188,6 +1188,21 @@ is read defensively (§1). devcloud is not touched.
   engine on `PATH` now fail unless `shutil.which("claude")` is the stand-in.
   Evidence: M1's report; no process or engine directory was left behind.
 
+- Observation: an end's `begin` writes `ended` in the same write as its
+  entry, so a wake inside a retire's open entry answers `ended` by §3's
+  order, never `pending`; `pending` is met only inside an advance, an
+  absorption or a return.
+  Evidence: `test_wake_transitions.py`, the retire cases (M2).
+- Observation: a copy of `sminos.py` loaded by a test through
+  `spec_from_file_location` binds its siblings to another copy, so a
+  registry of wake holds kept per module copy let an end's `begin` wait on
+  its own flock. The registry is one per process.
+  Evidence: the `sminos` gate's `CLOCK` block, red on M2's first push.
+- Observation: on a machine with no `jobs` directory `row_of` is
+  `UNREADABLE`, so row 15's clean-up of a failed first wake's own row never
+  runs there; the first wake still passes flags, and the next reads the
+  row the engine made.
+
 ## Decision Log
 
 - 2026-11-20 — **Verification.** The plan is reviewed before it is handed
@@ -1314,6 +1329,55 @@ is read defensively (§1). devcloud is not touched.
   is read from (M3's memory key). An unknown ceiling is read as `default`.
   The test engine signals only a helper whose command line it verifies as
   its own, at every signal.
+
+- 2026-11-20 — **M2 as built, and what its reviews moved** (the holder
+  accepted the first four). `wake()` is the core and `resume_session` the
+  seat's thin caller; only `wake` and `spawn_fresh` call `run_claude_bg`,
+  and `spawn_fresh` never with `--resume` (pinned by the source). Every M2
+  caller passes `due`; the schedule is M3's. From delivery, a seat whose
+  wake did not make it live answers `recorded` for `gone`, `lane` and
+  `ended`, `held:<why>` with no attempt counted for what passes on its own
+  or cannot be read (`sweep`, `in flight`, `starting`, `pending`,
+  `unknown`), and `failed:` counted otherwise, until M3. `fill --resume` of
+  a stopped seat records its task first; of a retired seat it wakes first
+  (the return, journaled at W8) after every check that can refuse the task
+  locally (its stream), and a seat whose project is not read here is
+  refused its return before any process starts: whatever a verb must write
+  once the process is live is checked writable before the launch. On a
+  cut-over machine the endpoint's verdict on a returned seat's task comes
+  after the process started; a refused task has woken it for nothing,
+  accepted as the plan orders it. On a cut-over machine an operator's
+  `resume` is recorded for the endpoint, as `send` is, and wakes nothing
+  itself. A projectless desk-spawned resume test went: a resume's message is
+  now a logged event. Copy evidence is only the engine's note, a whole line
+  naming this session and the banner's job; a banner job owned by another
+  session is a copy even when the session also came up; a failed job counts
+  for row 15 only when it is this session's; a removal is confirmed only by
+  a job list that reads; `waking.saved` is written as the flagless retry
+  launches. Only a positively identified background job of the session is
+  stopped (W3, `resume`'s stop), never a terminal's process; a stop is
+  confirmed only by a listing that reads, and one that cannot be is
+  `starting`, launching nothing. A retire and an end replay an open entry
+  before they take the wake lock (`held_settled`), never under it; an
+  absorption takes both wake locks before any store lock in ascending
+  thread id, and whoever takes a hold releases it (a queued absorption's
+  finisher too). W8's writes are bound to the thread and session decided
+  on (`stop_seen(thread_id=…)`, the field's compare-and-set, the seat's
+  write guarded on its occupant), and a launch that lost its banner while
+  a background process of the session runs goes through W8. `--wait` reads
+  the transcript incrementally and stops at the next prompt, writing the
+  seat `idle` only while no later turn runs. `SMINOS_LAUNCH_TIMEOUT`
+  (default 300) bounds a launch, for the timed-out row's test.
+- 2026-11-20 — **For M4, from the holder on M2's decisions.** A `fill
+  --resume` whose task the endpoint refuses after the seat's return says
+  both facts, that the seat returned and that the task was refused, and does
+  not exit as "retired". A `resume` held for the endpoint on a cut-over
+  machine stops no turn (a consequence of recording first: the verb's
+  message is the endpoint's to admit), so its line says the turn was not
+  stopped and that the message follows on the endpoint's answer. And the
+  general rule behind M2's last fix: whatever a verb must write once the
+  process is live is checked writable before the launch (a retired seat
+  whose project cannot be read is refused, not returned).
 
 ## Outcomes & Retrospective
 
