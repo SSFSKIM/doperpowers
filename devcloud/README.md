@@ -194,12 +194,16 @@ value the host stores: any plugin a person installs reads it while devcloud's
 module is loaded, whichever of the two sits outside the other, and nothing
 once devcloud is disabled and the plugins are reloaded. `cua`'s copy stands
 down only on that answer, so one guard decides every handle, and from the
-reload on `cua`'s acts. A plugin an organization's managed settings seat in
-`prepend` or `append` does not get the answer while devcloud is a person's
-plugin (from Claude Code 2.1.328 an organization's call is kept from a
-person's hooks): it reads `undefined`, so a guard seated that way acts beside
-devcloud's. (A stored marker outlived the module, and no guard
-acted, until 0.5.0. A `globalThis` symbol does not work: the engine evaluates
+reload on `cua`'s acts. The answer reaches only a person's plugins: from
+Claude Code 2.1.328 a call from a mod an organization owns (one its managed
+settings seat in `prepend` or `append`, or require in `user`) does not reach
+the hooks of a mod a person owns. So an organization's guard or reader gets
+no live marker from a devcloud a person installed, whichever tier either sits
+in: its read falls through to what the host stores, never the marker at
+version 0, and a guard the organization owns acts beside devcloud's. A
+person's plugins hear it in any tier, those a person lists in
+`prependPlugins` with no managed settings included. (A stored marker
+outlived the module, and no guard acted, until 0.5.0. A `globalThis` symbol does not work: the engine evaluates
 each plugin's module in a realm of its own. A `claude` a tool call starts has
 a session of its own.)
 

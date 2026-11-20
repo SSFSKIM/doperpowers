@@ -280,13 +280,17 @@ const notQuoted = (unquotable: readonly string[]) =>
  * the calling plugin's other hooks included: the read reaches this hook
  * whichever plugin sits outside the other, and a module that answered the
  * marker would read its own answer, so a guard that reads it to stand down
- * must never answer it. One call does not reach it: from 2.1.328 the engine
- * keeps a call an organization's mod makes (a plugin its managed settings
- * seat in `prepend` or `append`) from a person's hooks, and this module is a
- * person's wherever devcloud is installed and not seated. Such a plugin reads
- * the host's `undefined`: an organization's guard never stands down for this
- * one, and by that rule the sminos bridge a host's managed settings seat reads none
- * there (doperpowers #569). A child process (a
+ * must never answer it. One call does not reach it: from 2.1.328 a call
+ * from a mod an organization owns (one its managed settings seat in `prepend`
+ * or `append`, or require in `user`) does not reach the hooks of a mod a
+ * person owns. So an organization's guard or reader gets no live marker from
+ * a devcloud a person installed, whichever tier either sits in: its read
+ * falls through to the host's stored state (`undefined` at version 0, or a
+ * devcloud before 0.5.0's stored marker at version 1, never the marker at
+ * version 0), and it never stands down for this guard. The sminos bridge a
+ * host's managed settings seat is such a reader (doperpowers #569). A
+ * person's own plugins hear the read in any tier, those a person lists in
+ * `prependPlugins` with no managed settings included. A child process (a
  * `claude` a tool call starts) has its own session and decides for itself.
  * Its type is the plugin's contract (types/devcloud.d.ts). Not a `globalThis`
  * symbol: the engine evaluates each plugin's module in a realm of its own

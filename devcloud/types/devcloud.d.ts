@@ -12,12 +12,13 @@
  * a value that outlives its module. A plugin that scrubs secrets of its own
  * (`cua`) reads it at hook time and stands down only on the marker at
  * version 0, so one guard decides every handle and a guard always acts.
- * The answer reaches a plugin a person installs, as devcloud is. A plugin an
- * organization's managed settings seat in `prepend` or `append` reads
- * `undefined` while devcloud is a person's (the engine, from 2.1.328, keeps
- * an organization's call from a person's hooks): to it devcloud's guard is
- * not there.
- *
+ * The answer reaches only a person's plugins, in any tier: a call from a mod
+ * an organization owns (one its managed settings seat in `prepend` or
+ * `append`, or require in `user`) does not reach the hooks of a mod a person
+ * owns (the engine, from 2.1.328). So an organization's guard or reader gets
+ * no live marker from a devcloud a person installed, whichever tier either
+ * sits in: its read falls through to the host as above, and to it devcloud's
+ * guard is not there.
  *
  *   const { value, version } = await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' })
  *   if (version === 0 && value?.owner === 'devcloud') return next(e)
