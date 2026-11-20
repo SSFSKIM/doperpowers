@@ -763,7 +763,8 @@ def stop_all(st):
     for p in glob.glob(os.path.join(glob.escape(st), "helpers", "*")):
         try:
             with open(p) as f:
-                pid = helper_pid(os.path.basename(p), f.read().strip())
+                spec_path = f.read().strip()
+            pid = helper_pid(os.path.basename(p), spec_path)
             if not pid:
                 continue
             os.kill(pid, signal.SIGTERM)
@@ -772,7 +773,7 @@ def stop_all(st):
         end = time.monotonic() + 5
         while pid_alive(pid) and time.monotonic() < end:
             time.sleep(0.01)
-        if pid_alive(pid):
+        if helper_pid(pid, spec_path):   # still its own: the helper may have exited and its pid been reused
             try:
                 os.kill(pid, signal.SIGKILL)
             except OSError:

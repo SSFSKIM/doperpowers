@@ -1157,6 +1157,23 @@ class Twin(TwinCases, Engine):
                     self.assertEqual(code, 0, err)
                 self.assertIsNone(other.poll(), "the job's public pid is evidence, never a target")
 
+    def test_teardown_escalates_only_to_a_process_still_its_own(self):
+        # A process that outlives SIGTERM, whose pid stops being this engine's helper during the wait (the
+        # helper exited and the pid went to another process): teardown must not SIGKILL it.
+        other = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, "
+                                  "signal.SIG_IGN); print(1, flush=True); time.sleep(60)"], stdout=subprocess.PIPE)
+        self.addCleanup(other.wait)
+        self.addCleanup(other.kill)
+        other.stdout.readline()
+        helpers = os.path.join(self.state, "helpers")
+        os.makedirs(helpers, exist_ok=True)
+        with open(os.path.join(helpers, str(other.pid)), "w") as f:
+            f.write(os.path.join(self.state, "spec-x.json"))
+        with mock.patch.object(wake_engine, "helper_pid", side_effect=[other.pid, 0]):
+            wake_engine.stop_all(self.state)
+        with self.assertRaises(subprocess.TimeoutExpired, msg="no longer the engine's: never escalated to"):
+            other.wait(timeout=1)
+
     def test_a_helper_that_exits_takes_its_ownership_with_it(self):
         sid = self.opened()
         self.wake_flags(sid)
