@@ -2039,7 +2039,9 @@ cat > "$RHFIX" <<'JSON'
   "body":{"runId":95,"ticketId":12,"fence":4,"bearer":"tok-held","predecessorRun":41,
           "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
           "plan":null,"parentPin":null,"body":"work on"}},
- {"method":"GET","path":"/answers/unrelayed","status":200,"body":[]},
+ {"method":"GET","path":"/answers/unrelayed","status":200,
+  "body":[{"answerEventId":195,"ticketId":12,"correlationId":"evt-95","replies":["held on"]}]},
+ {"method":"POST","path":"/answers/195/ack","status":200,"body":{"acked":true}},
  {"method":"POST","path":"/runs/95/bind","status":200,"body":{"bound":true}},
  {"method":"POST","path":"/runs/95/end","status":200,"body":{"ended":true}},
  {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]}
@@ -2060,6 +2062,12 @@ nt "so no fresh worker is spawned beside it"               "SPAWN"  cat "$SPAWN_
 t  "and the successor is bound to the session it is owed to" '"path": "/runs/95/bind"' cat "$RLOG"
 nt "and the run is not released"                          '"path": "/runs/95/end"' cat "$RLOG"
 nt "and no recovery cycle is charged"                     "recovery cycle" cat "$OUTRH"
+# The answers folded into it are no worker's yet: acknowledged, the feed would
+# drop them, and a session that never runs the task would leave them nowhere.
+# They stay on the feed, which the relay acknowledges by their sentinel once a
+# process of the session has taken the task.
+nt "and the answers folded into the owed task are not acknowledged" \
+   "/answers/195/ack"                                       cat "$RLOG"
 
 # The same for every outcome that leaves the task owed, read from the line
 # `owed: <session>` rather than the exit code or the prose: queued behind an
@@ -2075,7 +2083,9 @@ _owed_drill() {  # <case> <run id>
   "body":{"runId":$2,"ticketId":12,"fence":4,"bearer":"tok-owed","predecessorRun":41,
           "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
           "plan":null,"parentPin":null,"body":"work on"}},
- {"method":"GET","path":"/answers/unrelayed","status":200,"body":[]},
+ {"method":"GET","path":"/answers/unrelayed","status":200,
+  "body":[{"answerEventId":1$2,"ticketId":12,"correlationId":"evt-$2","replies":["owed on"]}]},
+ {"method":"POST","path":"/answers/1$2/ack","status":200,"body":{"acked":true}},
  {"method":"POST","path":"/runs/$2/bind","status":200,"body":{"bound":true}},
  {"method":"POST","path":"/runs/$2/end","status":200,"body":{"ended":true}},
  {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]}
@@ -2089,15 +2099,18 @@ JSON
   : > "$SPAWN_LOG"
   RESUME_OWED="$1" RSW "$dh" > "$out" 2>&1 || true
   OUTOWED="$out"
+  OWEDLOG="$RLOG"
 }
 _owed_drill queued 96
 t  "a resume queued behind an earlier message is read as owed" \
    "the task is recorded and owed to u-old"                   cat "$OUTOWED"
 nt "so no fresh worker is spawned beside it"                 "SPAWN"  cat "$SPAWN_LOG"
+nt "nor its folded answer acknowledged"                      "/answers/196/ack" cat "$OWEDLOG"
 _owed_drill gated 97
 t  "an endpoint-gated resume whose wait expired is read as owed" \
    "the task is recorded and owed to u-old"                   cat "$OUTOWED"
 nt "so no fresh worker is spawned beside that one either"    "SPAWN"  cat "$SPAWN_LOG"
+nt "nor its folded answer acknowledged"                      "/answers/197/ack" cat "$OWEDLOG"
 _owed_drill stopfail 99
 t  "a resume whose stop of the running turn was refused is read as owed" \
    "the task is recorded and owed to u-old"                   cat "$OUTOWED"
@@ -2113,6 +2126,9 @@ nt "so no fresh worker is spawned beside the pending one"    "SPAWN"  cat "$SPAW
 _owed_drill other 98
 nt "a line owing the task to another session is not read as owed" \
    "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+t  "so a fresh worker takes the task"                        "SPAWN"  cat "$SPAWN_LOG"
+t  "and its folded answer, which that worker has, is acknowledged" \
+   "/answers/198/ack"                                       cat "$OWEDLOG"
 
 # The rboard mocks hold this suite's stdout open, so they go LAST — after every
 # board any drill above needed. One left running keeps a piped reader waiting

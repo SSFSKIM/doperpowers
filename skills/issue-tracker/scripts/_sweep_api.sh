@@ -3104,7 +3104,7 @@ _resume_owed() {  # <resume stdout> <exit code> <session>
 }
 
 _resume_one() {
-  local tid="$1" nonce="${2:-}" dir exports ids text prompt transcript delivered=""
+  local tid="$1" nonce="${2:-}" dir exports ids text prompt transcript delivered="" owed=""
   local pre_pending="" post_pending="" lane="" role=""
   local C_CLAIMED=0 C_RUN="" C_FENCE="" C_BEARER="" C_SESS="" C_PIN="" C_OBSOLETE=""
   # AN UNRESOLVED FORK IS NOT A RESUMABLE SESSION, and that is settled BEFORE
@@ -3280,7 +3280,7 @@ PY
     # task is owed, whatever it exits, and its machine's daemon pushes it to the
     # session. A fresh worker here would be a second one on the same run, the
     # task arriving at both.
-    delivered="$C_SESS"
+    delivered="$C_SESS" owed=1
     echo "resume: #$tid run $C_RUN → the task is recorded and owed to $C_SESS, which its machine delivers when a process of it runs; no fresh worker"
   else
     # AN AMBIGUOUS RESUME IS NOT A FAILED ONE. `sminos resume` has a third
@@ -3417,8 +3417,11 @@ $(cat "$dir/body.md")"
   _journal "$CLAIMS_DIR/$nonce.json" "$C_RUN" 1 "$tid" "$delivered" "$C_SESS"
   # ACK ONLY AFTER DELIVERY, exactly as phase 2 does: a folded answer that was
   # never delivered stays on the feed for the next tick rather than being
-  # acked-and-dropped.
-  if [ -n "$ids" ]; then
+  # acked-and-dropped. An OWED task is not delivered yet: no worker has its
+  # answers until a process of the session takes it, and that one may never
+  # run. They stay on the feed, which the relay acks by their sentinels once
+  # the session's transcript holds them.
+  if [ -n "$ids" ] && [ -z "$owed" ]; then
     T_IDS="$ids" _api_py - <<'PY' || echo "resume: #$tid — ack failed; the feed re-serves next tick" >&2
 import os
 import _board_api as A
