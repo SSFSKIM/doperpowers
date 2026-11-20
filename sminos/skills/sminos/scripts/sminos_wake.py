@@ -481,6 +481,53 @@ def policy_inputs():
             os.path.join(sminos.home_dir(), ".claude", "settings.json")]
 
 
+_KEPT = {}   # session → (its inputs' key but the directory's, the directory, its stat, the reason)
+
+
+def _stat(path):
+    try:
+        st = os.stat(path) if path else None
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_mode) if st else None
+
+
+def _inputs(record, session):
+    """Every input not_woken reads but the thread's directory itself, as one
+    value: the record, the config dir the session runs under, its
+    transcript and that file's stat, a seat's file (where its directory is
+    read), the engine's row, and the files the ceiling is read from."""
+    path = transcript_file(session)
+    seat = sminos.meta_path(record["thread"]) if record.get("opened") == "spawned" else ""
+    row = os.path.join(sminos.session_config_dir(session), "jobs", str(session)[:8], "state.json")
+    return (json.dumps(record, sort_keys=True, default=str), sminos.foreign_config(session), path, _stat(path),
+            _stat(seat), _stat(row), tuple(_stat(f) for f in policy_inputs()))
+
+
+def hold_reason(record, session):
+    """not_woken as a view or a tick reads it (the bounded reading), kept by
+    the stat of every input it reads (hold_key): a stopped thread asked
+    about every tick reads nothing again until a file it rests on moved."""
+    key = _inputs(record, session)
+    held = _KEPT.get(session)
+    if held is not None and held[0] == key and held[2] == _stat(held[1]):
+        return held[3]
+    reason = not_woken(record, session)
+    cwd = thread_cwd(record)
+    _KEPT[session] = (key, cwd, _stat(cwd), reason)
+    return reason
+
+
+def hold_key(record, session):
+    """What hold_reason's answer rests on, as one value: its inputs and the
+    thread's directory's stat. Equal keys, the same answer (the daemon's
+    memory of a pass that held, sminos_daemon.deliver_owed)."""
+    key = _inputs(record, session)
+    held = _KEPT.get(session)
+    cwd = held[1] if held is not None and held[0] == key else thread_cwd(record)
+    return key + (cwd, _stat(cwd))
+
+
 def _seconds(name, default):
     try:
         v = float(os.environ.get("SMINOS_" + name, default))
@@ -505,3 +552,16 @@ def wake_due(record, session, now=None):
     wait = min(_seconds("WAKE_RETRY", WAKE_RETRY) * 2.0 ** min(failed - 1, 64),
                _seconds("WAKE_RETRY_MAX", WAKE_RETRY_MAX))
     return (time.time() if now is None else now) >= at + wait
+
+
+def due_at(record, session):
+    """When a wake of the session falls due (wake_due), in epoch seconds;
+    None when it is due now or nothing holds it back."""
+    w = sminos.threads_module().waking(record, session)
+    failed = w.get("failed")
+    at = sminos._ts_epoch(w.get("at")) if type(failed) is int and failed > 0 else None
+    if at is None:
+        return None
+    wait = min(_seconds("WAKE_RETRY", WAKE_RETRY) * 2.0 ** min(failed - 1, 64),
+               _seconds("WAKE_RETRY_MAX", WAKE_RETRY_MAX))
+    return at + wait if time.time() < at + wait else None

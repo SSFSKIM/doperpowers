@@ -31,7 +31,7 @@ a crash between the push and the settlement pushes and records it again. The
 hub keeps the latest per event and recipient.
 
 One outcome comes without a settlement: an event owed to a closed terminal
-session (a stopped thread its human opened, which this machine holds, M3; or
+session (a stopped thread this machine holds, T2's §4; or
 a seat-less session of this machine whose membership ended with its process)
 is reported `recorded` once, when it first becomes owed to it
 (report_closed), and stays owed; if the session comes back (Resume) and the
@@ -183,7 +183,7 @@ CLOSED = "a terminal session that was closed: kept owed, and delivered if it com
 
 def closed_sessions(view, held=True):
     """The closed terminal sessions of this machine in a view: the members
-    it holds (sminos.hold_for: a stopped thread its human opened, M3; left
+    it holds (sminos.hold_for: a stopped thread not woken, T2's §4; left
     out with `held` False), and the seat-less sessions that joined from here
     whose membership ended with their process (retired, reason `ended`: one
     from before threads, or a lane B one; reconciliation retires a seat

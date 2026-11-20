@@ -160,7 +160,7 @@ class Ending(Rig):
         sid, proc = self.session(name=alias)
         code, out = self.cli("seat", "add", "g", alias, "--session", sid)
         self.assertEqual(code, 0, out)
-        self.transcript(sid)
+        self.transcript(sid, mode="auto")   # a turn a resume may carry on (T2's M3: `plan` would hold it for `mode`)
         seat_id = next(s["seat_id"] for s in sminos.seats() if s["alias"] == alias)
         return sid, proc, seat_id
 

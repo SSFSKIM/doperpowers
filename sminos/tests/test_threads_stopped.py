@@ -70,11 +70,20 @@ class Rig(Machine):
         self.stop_all()
         self.setUp()
 
-    def transcript(self, sid):
+    def transcript(self, sid, mode="plan"):
+        """Its last turn in `plan` mode by default (T2's M3): a stopped thread here is held for `mode`, never
+        woken, so these suites, which have no engine, pin the hold as T1 built it; the wake is
+        test_wake_delivery.py's. A seat's resume, where a test patches the launch, runs in `auto`, under a
+        machine ceiling that lets a first wake keep it (a first wake's capped mode decides `mode`)."""
+        if mode != "plan":
+            path = sminos.sibling_module("sminos_policy").policy_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump({"ceiling": "bypassPermissions"}, f)
         d = os.path.join(os.environ["HOME"], ".claude", "projects", "p-work")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, sid + ".jsonl"), "a") as f:
-            f.write(json.dumps({"type": "user", "sessionId": sid, "cwd": self.root,
+            f.write(json.dumps({"type": "user", "sessionId": sid, "cwd": self.root, "permissionMode": mode,
                                 "message": {"role": "user", "content": "work"}}) + "\n")
         sminos._TINDEX.at = None
         sminos._TINDEXES.clear()
@@ -326,19 +335,19 @@ class Hold(Rig):
         for sender in (other, None):
             code, out = self.say("@alpha are you there", sender=sender)
             self.assertEqual(code, 0, out)
-            self.assertIn("alpha: recorded and held: the session is stopped, and a session its human opened is not "
-                          "woken; it is pushed only if its human reopens the session before it ends", out)
+            self.assertIn("alpha: recorded and held: the session is stopped and is not woken: it runs in a mode that "
+                          "asks for approval; it is pushed when a process of it runs again before it ends", out)
         for _ in range(sminos.DELIVERY_ATTEMPTS + 2):
             self.tick()
         self.assertEqual(len(self.owed_to(sid)), 2)
         self.assertEqual(set(self.attempts(sid).values()) - {0}, set(), "no attempt counted")
-        self.assertEqual(threads.hold_of(sid), "human")
+        self.assertEqual(threads.hold_of(sid), "mode")
         self.assertEqual(self.member(sid).state, "stopped")
 
     def test_push_member_holds_an_addressed_frame_and_records_one_for_the_live_alone(self):
         sid = self.stopped()
         m = self.member(sid)
-        self.assertEqual(sminos.push_member(m, "x", True), sminos.HELD_HUMAN)
+        self.assertEqual(sminos.push_member(m, "x", True), "held:mode")
         self.assertEqual(sminos.push_member(m, "x", False), "recorded")
 
     def test_what_settles_without_a_push_still_settles(self):
@@ -484,7 +493,7 @@ class Hold(Rig):
                            text=True, cwd=self.root)
         self.assertEqual(r.returncode, 0, r.stderr)
         got = json.loads(r.stdout.strip().splitlines()[-1])
-        self.assertEqual(got["holds"], ["", "", "human"])
+        self.assertEqual(got["holds"], ["", "", "mode"])
         self.assertEqual(got["read"], [], "the hold reads only the live stores")
 
     def test_the_hold_reads_the_record_thread_of_reads(self):
@@ -504,12 +513,12 @@ class Hold(Rig):
             self.assertEqual((got or {}).get("thread"), (want or {}).get("thread") if want and
                              want["current"] == sid else None, why)
             self.assertEqual(threads.hold_of(sid), hold, why)
-        agree("its human's record", "human")
+        agree("its human's record", "mode")
         seat_id = str(uuidlib.uuid4())
         sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
                                   "status": "idle", "opened": "spawned", "sessions": [sid],
                                   "pending": {"op": "advance", "events": []}})
-        agree("a seat's open entry making it current", "")
+        agree("a seat's open entry making it current", "mode")   # T2: the hold is any thread's, its reason a fact
         os.unlink(sminos.meta_path(seat_id))
         path = threads._human_path(tid)
         with open(path) as f:
@@ -517,7 +526,7 @@ class Hold(Rig):
         sminos.write_json(path, dict(rec, pending={"op": threads.RESERVED}))
         agree("a reservation", "")
         sminos.write_json(path, rec)
-        agree("its record again", "human")
+        agree("its record again", "mode")
 
     def hub_stopped(self):
         """A hub project with a stopped thread its human opened, a member there."""
@@ -734,7 +743,7 @@ class Wake(Rig):
 
     def test_an_adopted_seat_stopped_before_its_adoption_gets_its_value_once(self):
         sid, proc = self.session()
-        self.transcript(sid)
+        self.transcript(sid, mode="auto")
         self.cli("seat", "add", "g", "w", "--session", sid)
         self.reconcile()
         self.end(proc)
@@ -1097,7 +1106,7 @@ class Verbs(Rig):
         self.assertEqual(self.launched, [], "no claude call")
         self.assertEqual(set(self.attempts(self.sid).values()) - {0}, set(), "no attempt counted")
         m = self.member(self.sid)
-        self.assertEqual(sminos.push_member(m, "x", True), sminos.HELD_HUMAN)
+        self.assertEqual(sminos.push_member(m, "x", True), "held:mode")
         self.tick()
         self.assertEqual(self.launched, [])
         self.assertTrue(self.owed_texts(), "what was recorded stays owed")
@@ -1247,7 +1256,7 @@ class Questions(Rig):
     def test_a_spawned_resume_during_the_sweeps_hold_waits_it_out_with_no_attempt_counted(self):
         import threading
         sid, proc = self.session()
-        self.transcript(sid)
+        self.transcript(sid, mode="auto")
         self.cli("seat", "add", "g", "w", "--session", sid)
         seat_id = sminos.load_seat(next(sminos.record_files()))["seat_id"]
         self.reconcile()
@@ -1291,7 +1300,7 @@ class Questions(Rig):
                         sminos.forget_caches()
                     else:
                         self.assertEqual(code, 0, out)
-                        self.assertIn("waits for the thread sweep", out, "tried again later")
+                        self.assertIn("its process is starting, and the daemon delivers it", out, "tried again later")
                         self.assertTrue(self.owed_to(sid), "owed for the next pass")
 
     def test_a_resume_that_meets_the_sweep_releasing_its_lock_takes_it_with_no_twin_and_no_attempt(self):
@@ -1302,7 +1311,7 @@ class Questions(Rig):
         import fcntl
         import threading
         sid, proc = self.session()
-        self.transcript(sid)
+        self.transcript(sid, mode="auto")
         self.cli("seat", "add", "g", "w", "--session", sid)
         seat_id = sminos.load_seat(next(sminos.record_files()))["seat_id"]
         self.reconcile()
@@ -1359,7 +1368,8 @@ class Questions(Rig):
                 if releases:
                     self.assertEqual(len(launched), 1, "it took the lock and resumed")
                 else:
-                    self.assertIn("waits for the thread sweep", out, "a holder that names none is the sweep's moment")
+                    self.assertIn("its process is starting, and the daemon delivers it", out,
+                                  "a holder that names none is the sweep's moment: a hold that passes (T2's §5)")
                     self.assertEqual(launched, [])
                     self.assertTrue(self.owed_to(sid), "owed for the next pass")
 

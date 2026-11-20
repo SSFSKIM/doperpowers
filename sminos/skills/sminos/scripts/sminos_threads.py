@@ -473,28 +473,44 @@ def _live_rule(session, live):
     return next((t for t in live if t["current"] == session and t["opened"] == "human"), None)
 
 
+def current_record(session, fresh=False):
+    """The record of the thread whose current session `session` is, not
+    ended and not reserved by an absorption, either kind; None otherwise.
+    `fresh`: thread_of read from the stores as they are; else through the
+    hold's index (_live_index)."""
+    if not session:
+        return None
+    # The live stores alone: an ended record holds nothing, so the archive is never read here.
+    t = thread_of(session, ended=False) if fresh else _live_index().get(session)
+    if t is None or t["current"] != session or record_ended(t) or reservation(t):
+        return None
+    return t
+
+
 def hold_of(session, fresh=False):
-    """Whether this machine holds delivery for a session (Interfaces §5): ""
-    when it delivers to the session or wakes it; "human" when it holds, for a
-    thread its human opened that has not ended, whose current session it is
-    and no process holds (the hold: what is addressed to it is recorded and
-    stays owed, and no process is started for it until its human reopens
-    it). T2 adds its reasons. The record is thread_of's for the session
-    (from the live stores: an ended thread is not held, what is owed to it
-    is settled; a seat is a spawned thread), through its index. `fresh`, at
-    a boundary that would push or ask (a delivery, a verdict's handler, the
-    uplink's question): the engine's records read afresh (sminos.running_now),
-    since a live pid alone is no evidence that its process still runs this
+    """Whether this machine holds delivery for a session (T2's §4): "" when
+    it delivers to the session or would wake it now; else the reason it
+    holds, for a thread of either kind that has not ended, whose current
+    session it is and no process holds: one of sminos_wake.REASONS
+    (not_woken's, read as a view or a tick reads it), or "failed" while a
+    wake that failed is not due again (wake_due). What is held is recorded
+    and stays owed; nothing is pushed or asked for it, and no process is
+    started for it until the reason passes. A session that is no thread
+    (lane B; no record) is never held here. `fresh`, at a boundary that
+    would push or ask (a delivery, a verdict's handler, the uplink's
+    question): the engine's records read afresh (sminos.running_now), since
+    a live pid alone is no evidence that its process still runs this
     session (a `/clear` moves the same process to another id), and the
     record is thread_of's own, read from the stores as they are, not the
     index's (hold_now)."""
-    if not session:
+    t = current_record(session, fresh)
+    if t is None or (sminos.running_now if fresh else sminos.session_running)(session):
         return ""
-    # The live stores alone, fresh or not: an ended record holds nothing, so the archive is never read here.
-    t = thread_of(session, ended=False) if fresh else _live_index().get(session)
-    if t is None or t["opened"] != "human" or t["current"] != session or record_ended(t) or reservation(t):
-        return ""
-    return "" if (sminos.running_now if fresh else sminos.session_running)(session) else "human"
+    wake = sminos.wake_module()
+    reason = wake.hold_reason(t, session)
+    if reason:
+        return reason
+    return "" if wake.wake_due(t, session) else "failed"
 
 
 def hold_now(session):
@@ -502,6 +518,16 @@ def hold_now(session):
     every counted attempt asks last, under the delivery lock where one is
     held."""
     return hold_of(session, fresh=True)
+
+
+def stopped_human(session, fresh=False):
+    """Whether the session is the current one of a thread its human opened
+    that has not ended and no process holds (T1's rule, kept by derive, the
+    views' `stopped` word and `send --wait`'s choice): stopped, whatever a
+    wake would make of it."""
+    t = current_record(session, fresh)
+    return t is not None and t["opened"] == "human" \
+        and not (sminos.running_now if fresh else sminos.session_running)(session)
 
 
 _LIVE = []   # [the cache generation it was checked in, the stores' stat key, {current session: record}]
@@ -517,8 +543,10 @@ def _live_index():
     process's own writes (_forget_live); read whole again only once a
     store's directory moved (a record is written by a rename there: the
     thread store's, or the root the seats are in), and not kept while one
-    may still move (as _aside_index). Of the seats only those with an open
-    entry are read: no other seat outranks a human-opened record."""
+    may still move (as _aside_index). Every seat that is a thread is read
+    (T2: the hold is any thread's), after the rule's own (_live_rule): a
+    seat's record is the session's when no open entry and no record its
+    human opened outranks it, as thread_of reads it."""
     gen = sminos._GENERATION[0]
     if _LIVE and _LIVE[0] == gen:
         return _LIVE[2]
@@ -536,16 +564,14 @@ def _live_index():
         _LIVE[0] = gen
         return _LIVE[2]
     human = _human_threads() if st else []
-    seats = [_of_seat(x) for x in sminos.seats() if x.get("pending") and _is_thread(x)] if rt else []
+    seats = [_of_seat(x) for x in sminos.seats() if _is_thread(x)] if rt else []
     by_current = {}
     for t in seats + human:   # grouped by current session, each group in all_threads' order (seats first)
         if t["current"]:
             by_current.setdefault(t["current"], []).append(t)
     index = {}
     for cur, records in by_current.items():
-        t = _live_rule(cur, records)
-        if t is not None:
-            index[cur] = t
+        index[cur] = _live_rule(cur, records) or records[0]
     newest = max((x.st_mtime_ns for x in (st, rt) if x), default=0)
     _LIVE[:] = [gen, key, index] if before - newest >= RACY_NS else []
     return index
@@ -1144,10 +1170,12 @@ def awaits_seat(session, peer, own):
     is positively gone: bound to another session (a `claude` started from a
     seat's shell inherits it), or neither pending nor young (a launcher that
     failed). Another process sees no token: it waits on a background
-    session younger than the bound."""
+    session younger than the bound, unless the session is the current one
+    of a thread (T2: a woken thread its human opened is a background
+    process no seat will claim)."""
     records = sminos.records_module()
     if not own:
-        return str((peer or {}).get("kind") or "") == "bg" and _young(peer)
+        return str((peer or {}).get("kind") or "") == "bg" and _young(peer) and current_record(session) is None
     token = os.environ.get(records.LAUNCH_ENV, "")
     if not records.LAUNCH_RE.fullmatch(token):
         return False

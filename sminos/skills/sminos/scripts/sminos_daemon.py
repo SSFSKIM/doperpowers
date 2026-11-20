@@ -860,8 +860,14 @@ def late_former_writers(events, former, since):
 
 
 # (project id, session) → what a delivery pass over a held session read (held_reads), when that pass found
-# every writer's head held (HELD_HUMAN) and settled nothing: the tick passes the session by while it reads the same.
+# every writer's head held for a fact (a reason its thread is not woken, or a failed wake not due yet) and settled
+# nothing: the tick passes the session by while it reads the same.
 _HELD_PASSES = {}
+# The holds a pass is remembered for (T2's M3): the reasons a thread is not woken, each a fact that stays until a
+# file the memory's key holds changes, and `failed`, remembered until its wake falls due. What passes on its own
+# (a process starting, a wake in flight, the sweep's moment, an open entry, a lock) changes no file and is never
+# remembered.
+REMEMBERED = ("config", "transcript", "cwd", "protected", "mode", "failed")
 
 
 def _stat_key(path):
@@ -882,18 +888,35 @@ def held_reads(project, view, session):
     reused), the rest by stat."""
     return (view.events, _stat_key(os.path.join(project.home, "delivered", sminos.reader_key(session) + ".json")),
             _stat_key(sminos.holder_module().home(create=False)), _stat_key(rl10.revoked_path()),
-            _stat_key(sminos.sibling_module("sminos_policy").policy_path()))
+            _stat_key(sminos.sibling_module("sminos_policy").policy_path()), hold_inputs(session))
+
+
+def hold_inputs(session):
+    """Everything the hold of the session read (sminos_wake.hold_key: its
+    record, transcript, row, directory and the ceiling's files) and when a
+    failed wake falls due; None for a session that is no thread's."""
+    t = sminos.threads_module().current_record(session)
+    if t is None:
+        return None
+    wake = sminos.wake_module()
+    return wake.hold_key(t, session), wake.due_at(t, session)
 
 
 def _same_reads(a, b):
     return a[0] is b[0] and a[1:] == b[1:]
 
 
+def _fell_due(reads):
+    """Whether a failed wake the remembered pass held for has fallen due since."""
+    held = reads[-1]
+    return held is not None and held[1] is not None and time.time() >= held[1]
+
+
 def all_held(result, owed):
     """Whether a delivery pass found every writer of `owed` held at its head
     and settled nothing."""
     outcomes = result["outcomes"]
-    return bool(outcomes) and not result["delivered"] and all(o == sminos.HELD_HUMAN for _, o in outcomes) \
+    return bool(outcomes) and not result["delivered"] and all(sminos.hold_why(o) in REMEMBERED for _, o in outcomes) \
         and {e["writer"] for e, _ in outcomes} == {e["writer"] for e in owed}
 
 
@@ -911,11 +934,13 @@ def deliver_owed(project, view):
     bridge took it is reported `failed` once, after its delivery
     (sminos_outcomes.report_refused).
 
-    A session this machine holds (a stopped thread its human opened, M3) is
-    passed by without a delivery pass only on the memory of one that ran: a
-    pass in which every writer came out held and nothing settled, while
-    nothing that pass read has changed (held_reads) and the session is still
-    held. A writer's head the skip passes by is so always an addressed event
+    A session this machine holds (a stopped thread not woken, or whose
+    failed wake is not due: T2's §4) is passed by without a delivery pass
+    only on the memory of one that ran: a pass in which every writer came
+    out held for a fact (REMEMBERED) and nothing settled, while nothing that
+    pass read has changed (held_reads, the hold's own inputs among them)
+    and the session is still held; a failed wake's memory lasts until it
+    falls due. A writer's head the skip passes by is so always an addressed event
     a full pass found nothing to settle for, and a held backlog costs a tick
     that one comparison: no read of the log, no enumeration of the backlog,
     no lock, no ask. The memory of a session that left the view goes."""
@@ -942,7 +967,8 @@ def deliver_owed(project, view):
         held = sminos.hold_for(m.session)
         memory = _HELD_PASSES.get(key)
         reads = held_reads(project, view, m.session) if held else None
-        if memory is not None and reads is not None and _same_reads(memory, reads):
+        if memory is not None and reads is not None and _same_reads(memory, reads) \
+                and not _fell_due(reads):
             continue
         _HELD_PASSES.pop(key, None)
         owed = sminos._owed(to[m.session], m.session, sminos.delivered_load(project, m.session))

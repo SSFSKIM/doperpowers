@@ -1036,7 +1036,8 @@ class Link:
         nothing is asked now, and the event, still owed, is asked `words?`
         again by a later pass. A session that stopped while its words were
         asked about, and that this machine now holds (M3: queue_asks drops
-        it), is asked nothing more: the event stays owed for its reopening."""
+        it), is asked nothing more: the event stays owed until a process of it
+        takes it."""
         if self.session_lane.queued() >= UPLOAD_AHEAD:
             return
         e, project = held["event"], held["project"]

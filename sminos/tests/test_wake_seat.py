@@ -498,15 +498,21 @@ class Seat(Wakers):
         sid = s["current"]
         code, out = self.cli("say", "@w over to you")
         self.assertEqual(code, 0, out)
-        self.assertIn("w: woken", out)
+        self.assertIn("w: sent (woken)", out, "a live push's words, woken (T2's §5)")
         self.assertEqual(sum("over to you" in f for f in self.frames(sid)), 1)
 
-    def test_a_failed_wake_is_said_and_counted(self):
+    def test_a_failed_wake_is_held_said_and_counted_in_waking_not_as_an_attempt(self):
+        """M3: a failed wake holds the message for the thread (§4), its sender told why; the failure counts in
+        `waking`, never as a delivery attempt."""
         s = self.seat()
         self.switch("fail-job")
         code, out = self.cli("say", "@w nobody home")
-        self.assertIn("w: failed:waking it failed", out)
+        self.assertIn("w: recorded and held: the session is stopped and is not woken: waking it failed, and its "
+                      "machine tries again", out)
         self.assertEqual(self.waking(s["seat_id"], s["current"])["failed"], 1)
+        record = sminos.delivered_load(self.p, s["current"])
+        self.assertEqual({w: d.get("attempts", 0) for w, d in record.items()}, {"testhost/human": 0})
+        self.assertTrue(record["testhost/human"].get("held"), "marked held")
 
     def test_wait_prints_the_reply_to_its_own_message_when_another_senders_is_answered_after_it(self):
         s = self.seat()

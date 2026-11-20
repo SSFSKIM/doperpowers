@@ -236,13 +236,20 @@ class Held(Rig):
         self.tick()
         self.assertTrue(any("while you were away" in x for x in self.inbox(sid)), self.inbox(sid))
 
-    def test_a_message_never_held_to_a_running_socketless_session_is_recorded(self):
-        sid, _ = self.opened()
+    def test_a_message_to_a_running_socketless_session_is_held_until_its_inbox_answers(self):
+        """T2 (D2, "One path"): a process that holds the session and takes no push yet is one of the three
+        holds: the message is owed, marked, no attempt counted, and pushed once its inbox answers."""
+        sid, proc = self.opened()
         code, out = self.say("@alpha while you run")
         self.assertEqual(code, 0, out)
+        self.assertIn("its process is starting, and the daemon delivers it", out)
         self.tick()
-        self.assertEqual(self.owed_to(sid), [], "recorded: it reads it in the chat")
+        self.assertEqual(len(self.owed_to(sid)), 1, "held for its thread: owed")
         self.assertEqual(set(self.attempts(sid).values()) - {0}, set())
+        self.end(proc)
+        self.live(sid=sid, inbox=True)
+        self.tick()
+        self.assertTrue(any("while you run" in x for x in self.inbox(sid)), self.inbox(sid))
 
     def test_a_held_message_to_a_thread_that_ends_is_settled_by_the_end(self):
         sid = self.stopped()

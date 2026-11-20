@@ -410,7 +410,7 @@ class Delivery(unittest.TestCase):
             sminos.forget_caches()
             view = sminos.view_of(project, titles=False)
             self.assertIn(sid, [m.session for m in view.members], "a member still")
-            self.assertEqual(sminos.hold_for(sid), "human", "and held")
+            self.assertEqual(sminos.hold_for(sid), "transcript", "and held: no conversation of it here (T2)")
             e = sminos.log_append(project, self.far, "say",
                                   **{"from": "far", "to": [{"session": sid, "alias": alias}],
                                      "text": "to a closed terminal session"})

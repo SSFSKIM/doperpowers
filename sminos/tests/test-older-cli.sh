@@ -113,7 +113,9 @@ PROJECT="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["pro
 SID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 TX="$HOME/.claude/projects/p-$SID/$SID.jsonl"
 mkdir -p "$(dirname "$TX")"
-printf '{"type":"user","uuid":"%s-u1","isSidechain":false,"sessionId":"%s","cwd":"%s","origin":{"kind":"human"},"message":{"role":"user","content":"go"}}\n' \
+# Its last turn in `plan` mode (T2's M3): this code holds it for `mode`, so the older copy's expectations below
+# stand; the cases where this code wakes it are M5's.
+printf '{"type":"user","uuid":"%s-u1","isSidechain":false,"sessionId":"%s","cwd":"%s","permissionMode":"plan","origin":{"kind":"human"},"message":{"role":"user","content":"go"}}\n' \
   "${SID:0:8}" "$SID" "$REPO" > "$TX"
 opened() { # the session run by a process of its human's terminal (a `sleep`), named keeper by them
   sleep 600 & PIDS+=("$!")
