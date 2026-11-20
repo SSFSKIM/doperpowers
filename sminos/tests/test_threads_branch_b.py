@@ -276,6 +276,29 @@ class Wave2Join(Rig):
         self.assertNotIn("thread", joins[-1], "unstamped: the thread that only had it is not its stamp")
 
 
+class Stamp(Rig):
+    def test_a_lane_b_predecessors_later_events_carry_no_successors_stamp(self):
+        """Review 3, item 7: every lifecycle event, not only its `joined`."""
+        old, proc = self.opened()
+        tid = threads.thread_of(old)["thread"]
+        new = str(uuidlib.uuid4())
+        self.write_own(old, [{"kind": "retired", "by": "", "reason": "continued", "to": new, "thread": tid}])
+        path = os.path.join(threads.store_dir(), tid + ".json")
+        with open(path) as f:
+            raw = json.load(f)
+        sminos.write_json(path, dict(raw, current=new, sessions=[old, new]))
+        self.end(proc)
+        records.set_controller(old, "B")
+        time.sleep(1.1)
+        self.session(sid=old, started=int(time.time() * 1000))
+        self.reconcile()
+        sminos.lifecycle(self.p, old, "status", text="unrelated work")
+        sminos.lifecycle(self.p, old, "in-charge", text="its own thing", source="set")
+        latest = [e for e in self.own(old) if e["kind"] in ("status", "in-charge")]
+        self.assertEqual([e.get("thread") for e in latest[-2:]], [None, None])
+        self.assertEqual(threads.thread_of(old)["thread"], tid, "the former name still finds the thread")
+
+
 class Wave2Questions(Rig):
     def test_a_former_sessions_unmarked_question_elsewhere_stays_open(self):
         there = self.project_of(self.repo("there"))

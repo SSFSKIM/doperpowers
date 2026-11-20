@@ -428,8 +428,13 @@ def stamp(session):
     that is no thread. From the live stores and their open entries alone,
     never the records set aside: after an end, what a session's thread
     writes is the journal's (or a return's), each event naming its thread,
-    and a former session that runs again is another thread."""
-    return (thread_of(session, ended=False) or {}).get("thread", "")
+    and a former session that runs again is another thread. Only a thread
+    whose current session it is (an open entry's included) stamps it: one
+    that only had the session (it went on in another) names it for a lookup
+    (thread_of), never for the session's own events now, which a journaled
+    transition of that thread stamps itself."""
+    t = thread_of(session, ended=False)
+    return t["thread"] if t is not None and t["current"] == session else ""
 
 
 def _live_rule(session, live):
