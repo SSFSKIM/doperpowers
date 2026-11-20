@@ -11831,9 +11831,10 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def run_claude_bg(args, cwd, settings):
-    """Run `claude --bg …` in cwd; return (short, banner). short is "" on failure.
-    cwd must be a real directory — callers validate with cwd_or_die; an
-    unattended worker is never silently launched somewhere else. One this
+    """Run `claude --bg …` in cwd; return (short, banner). short is "" on
+    failure, a launch past SMINOS_LAUNCH_TIMEOUT (300 s) included. cwd must
+    be a real directory — callers validate with cwd_or_die; an unattended
+    worker is never silently launched somewhere else. One this
     process may not look at (read_refused: a resume, on its seat's word) is
     launched in unlooked-at."""
     if not (cwd and (read_refused(cwd) or os.path.isdir(cwd))):
@@ -11841,7 +11842,8 @@ def run_claude_bg(args, cwd, settings):
     try:
         p = subprocess.run(["claude"] + args, cwd=cwd, env=launch_env(settings),
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, text=True, timeout=300)
+                           stderr=subprocess.STDOUT, text=True,
+                           timeout=float(os.environ.get("SMINOS_LAUNCH_TIMEOUT") or 300))
         banner = ANSI_RE.sub("", p.stdout or "")
         if p.returncode != 0:
             return "", banner

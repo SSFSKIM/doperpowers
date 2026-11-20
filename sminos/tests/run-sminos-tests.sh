@@ -390,6 +390,10 @@ run_suites() {
     fail "a seat's lifecycle verbs against the writers that race them (test_threads_branch_a.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_wake.py"; then pass "what a wake reads and says, the record's field, the test engine (test_wake.py)"; else
     fail "what a wake reads and says, the record's field, the test engine (test_wake.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_wake_seat.py"; then pass "the wake: its table for both records, a seat's message after it (test_wake_seat.py)"; else
+    fail "the wake: its table for both records, a seat's message after it (test_wake_seat.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_wake_transitions.py"; then pass "the wake against the sweep, a retire, a hand-off, a return, a /clear (test_wake_transitions.py)"; else
+    fail "the wake against the sweep, a retire, a hand-off, a return, a /clear (test_wake_transitions.py)"; fi
   if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10 beside this code: no session its human opened resumed, its ended passed by (test-older-cli.sh)"; else
     fail "sminos 1.27.10 beside this code: no session its human opened resumed, its ended passed by (test-older-cli.sh)"; fi
   if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else
