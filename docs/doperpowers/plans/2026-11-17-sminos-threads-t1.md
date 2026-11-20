@@ -1470,8 +1470,11 @@ run live, below.
 
 **M6: the live pass,** on a real engine, against a scratch store:
 
-1. A scratch git repository in a scratch directory, a scratch
-   `SMINOS_HOME` exported, and a terminal multiplexer's own server. The
+1. A scratch git repository in a scratch directory, a scratch `HOME`
+   and a scratch `SMINOS_HOME` exported, and a terminal multiplexer's own
+   server. Both homes are scratch: sminos scans `$HOME/.claude/sessions`
+   beside `CLAUDE_CONFIG_DIR`, so under the real `HOME` a tick joins
+   every real session of the machine into the scratch log. The
    scratch store is enrolled by hand, as the Python suites enroll one
    (`write_identity` in `sminos/tests/rl10_identity.py`: an identity whose
    hub address nothing listens on), since the guide prints nothing on a
@@ -2092,6 +2095,48 @@ Found while executing:
 - Observation (M2): `lineage_provenance` can carry reach to a `bg` job
   without `former`, through `lineage_of`'s `predecessor`, while its
   predecessor's process exits. Ruled to stay (Decision Log 2026-11-19).
+- Observation (M6): M6's live pass ran on engine 2.1.329. T1 began on
+  2.1.327, the version T2's spike facts were measured on.
+  Evidence: `claude --version` during the live pass.
+- Observation (M6): sminos always scans the default config dir
+  (`$HOME/.claude/sessions`) as well as `CLAUDE_CONFIG_DIR`. So a scratch
+  `SMINOS_HOME` under the real `HOME` reads the engine records of every
+  real session on the machine, and a tick joins them into the scratch log.
+  The first attempt at the live pass did exactly that, for four sessions.
+  It delivered and pushed nothing, and its endpoint was unreachable. It was
+  killed, its store was deleted, and the pass was redone under a scratch
+  `HOME`. Concrete Steps now ask for both homes to be scratch.
+  Evidence: `engine_record_paths` and `_registry` include
+  `config_dir({})`; the discarded tick reported "reconciled 4".
+- Observation (M6): engine 2.1.329 renames a resumed session whose name
+  another live session holds (`nameSource: "collision"`, with a generated
+  suffix). The session a `/clear` left, resumed while the new one is live,
+  is listed as `keeperlive-federated-thimble`, not under its short id as
+  M3's decision expected. A fork is renamed the same way
+  (`senderlive-keen-yao`). Its thread is its own, and the held message
+  reached it. Left as it is in T1; whether sminos should prefer the short
+  id is a call for CH.
+  Evidence: the live pass's steps 5 and 6 (`list --stopped --json`).
+- Observation (M6): M1's concern about pre-started processes does not
+  arise. The background supervisor pre-starts spares (`claude bg-spare`),
+  and a spawn claims one. The engine record's `startedAt` is the claim
+  time; only the kernel's start time is the pre-start, 172 s earlier.
+  sminos reads `startedAt`, so `awaits_seat` reads the child as young. The
+  claimed spare's hooks saw its `SMINOS_LAUNCH` token bound, although its
+  exec environment shows none.
+  Evidence: the live pass's second `sminos spawn` (`livechild2`).
+- Observation (M6): this Mac's plugin cache holds no runnable 1.27.10. Its
+  directory is marked orphaned and pruned, with no `sminos.py`.
+  `test-older-cli.sh` extracts that revision (aefb80aa) from git instead,
+  fetching it by id when a clone lacks it, as CI's does.
+  Evidence: the four `test-older-cli.sh` runs in M6's report.
+- Observation (M6): 1.27.10 reports what is owed as `recorded` only for an
+  event from outside the project's origin in a hub project
+  (`report_closed`). Its tag and `send` refuse a local `say` ("session
+  ended", exit 4). The fixture therefore adds a message from another
+  machine's writer.
+  Evidence: `test-older-cli.sh`.
+
 ## Decision Log
 
 - 2026-11-17 — **Verification.** This plan gets one
@@ -2517,6 +2562,30 @@ Found while executing:
   transcripts before it settles. A successor job that never starts stays a
   stopped member until the three-day end: §6 row 4's `joined` under one
   stamp makes it so, and it is no defect.
+
+- 2026-11-20 — **M6's decisions.**
+  - **`hand_off`'s successor `joined`.** It takes the `cwd` and `by` of
+    the old session's latest `joined` when the job cannot supply them, as
+    for a job the engine named and never started. `by` is copied for both
+    kinds; a seat's was `""` before. This was fixed here rather than left
+    to T2: a few lines at the place the `joined` is built.
+  - **The VM refusal.** It is carried by the verb's own words
+    (`owned_words`), not by a SKILL.md line. "Deleting a host is its
+    owner's call…" fixed the unasked `devcloud vm down` (5/5) where the
+    decision is made, so the plan's SKILL line was cut by the plan's own
+    baseline rule.
+  - **The fork line.** Main's "with the task you were forked for" is
+    dropped: in two of three samples it sent the fork after a task its
+    context does not name. By the holder's ruling, main's peer statement
+    (a722f989, "a fork is its origin's peer") stays beside the three facts,
+    and its exact wording is evaluated on the fork arm.
+  - **No lines added for self-retire or for a held tag.** The baseline
+    already did both, three of three.
+  - **`test-older-cli.sh`.** It asserts the exits and words 1.27.10
+    prints, and that the stub `claude` logged no call at all, which is
+    stronger than "no `--resume`".
+  - **Concrete Steps, live pass step 1.** Amended to require a scratch
+    `HOME` as well as a scratch `SMINOS_HOME`; the reason is in Surprises.
 
 ## Outcomes & Retrospective
 
