@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from unittest import mock
@@ -342,6 +343,61 @@ class Together(Deliveries):
 
 
 # ------------------------------------------------------------ held, for each reason
+
+
+class Bound(Deliveries):
+    """The push after a wake goes to the session the thread holds at the moment of the handoff: the wake's hold is
+    kept through it, and an entry open by then holds the event (the frontier review's scalpel-3#2)."""
+
+    def test_the_push_after_a_wake_is_made_under_the_wake_lock_and_a_transition_waits_for_it(self):
+        for kind in ("human", "seat"):
+            with self.subTest(kind=kind):
+                if kind == "human":
+                    tid, sid = self.human_thread()
+                    target = "@%s" % sid[:8]
+                else:
+                    s = self.seat("w%d" % len(sminos.seats()))
+                    tid, sid, target = s["seat_id"], s["current"], "@" + s["alias"]
+                control, seen = sminos.control_module(), []
+                real = control.push_live
+
+                def probed(peer, session, *a, **kw):
+                    got = []
+                    t = threading.Thread(target=lambda: got.append(sminos.wake_lock(tid, until=time.time() + 0.3)))
+                    t.start()
+                    t.join(5)
+                    seen.append((sminos.wake_held(tid) is not None, got[0][0] is None))
+                    return real(peer, session, *a, **kw)
+                with mock.patch.object(control, "push_live", probed):
+                    code, out = self.say("%s under the lock" % target)
+                self.assertEqual(self.shown(out, sid), ["sent (woken)"])
+                self.assertEqual(seen, [(True, True)], "held by the push, so no transition opens meanwhile")
+                self.assertFalse(sminos.wake_held(tid), "let go after the push")
+                self.assertTrue(sminos.wake_lock(tid, until=time.time() + 1)[0].release() is None)
+
+    def test_an_entry_open_by_the_time_of_the_push_holds_the_event(self):
+        for how in ("say", "send"):
+            with self.subTest(how=how):
+                tid, sid = self.human_thread()
+                real = sminos.wake
+
+                def then_opened(record, session, *a, **kw):
+                    got = real(record, session, *a, **kw)
+                    # An entry an older copy opened (it takes no wake lock) after the wake made the session live.
+                    self.edit(tid, pending={"id": "e1", "op": "retire", "events": []})
+                    return got
+                with mock.patch.object(sminos, "wake", then_opened):
+                    if how == "say":
+                        code, out = self.say("@%s too soon" % sid[:8])
+                    else:
+                        code, out = self.send(sid[:8], "too soon")
+                self.assertEqual(code, 0, out)
+                self.assertEqual(sum(f.count("too soon") for f in self.frames(sid)), 0, "nothing pushed")
+                self.assertTrue(self.owes(sid, "too soon"), "owed")
+                self.edit(tid, pending=None)
+                self.tick()
+                self.assertTrue(wait_for(lambda: sum(f.count("too soon") for f in self.frames(sid)) == 1),
+                                "pushed once the entry is gone")
 
 
 class Held(Deliveries):

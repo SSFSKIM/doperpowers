@@ -8683,7 +8683,21 @@ def wake_member(project, member, session, e, words=None, due=False):
         if tid and threads.unreadable(tid):
             return hold_outcome("unknown", tid), None
         return "", None
-    locks = []
+    locks, hold = [], []
+
+    def held():
+        # W1, taken here (under the seat's lifecycle lock for a seat) and kept through the push that follows
+        # (holder_push): every transition opens its entry under this lock, so none opens between the reading
+        # below and the frame's handoff, and the push goes to the session the thread holds then. One this thread
+        # holds already (a verb's, taken for its stop) is its own. Busy: §3's rows 1 and 2, the session pushed to
+        # as a live one (at the moment of the push, as any live push) when a process holds it now.
+        if wake_held(t["thread"]) is not None:
+            return ""
+        got, why = launch_hold(t["thread"])
+        if got is None:
+            return "" if live_now(session) else why
+        hold.append(got)
+        return ""
     try:
         if t["opened"] == "spawned":
             s = reload_seat(t["thread"])
@@ -8698,20 +8712,29 @@ def wake_member(project, member, session, e, words=None, due=False):
             s = reload_seat(t["thread"])
             if s is None or s["status"] == "retired" or s["current"] != session:
                 return "recorded", None
+            busy = held()
+            if busy:
+                return wake_outcome(busy, t["thread"]), None
             try:
                 woke = resume_session(s, locks, quiet=True, event=e, project=project.id, words=words, due=due)
             except ResumeRefused:
                 return "recorded", None   # vacant or vanished since it was read
         else:
             reach_hold(project, session, [e], words, keep=True)   # ahead of the wake, consuming nothing
+            busy = held()
+            if busy:
+                return wake_outcome(busy, t["thread"]), None
             woke = wake(t, session, due=due)
         if not woke.live:
             return wake_outcome(woke.why, t["thread"]), None
-        # The member read again, as a live delivery reads it at its start: a retire or a hand-off may have begun
-        # since the wake returned.
+        # The member read again, as a live delivery reads it at its start: the thread still the session's, not
+        # ended and with no entry open (an end, a hand-off, an absorption that began before the wake's hold, or
+        # an older copy's, which takes none).
         now = threads.current_record(session, fresh=True)
         if now is None or now["thread"] != t["thread"] or canonical_end(session, project):
             return "recorded", None
+        if now.get("pending"):
+            return hold_outcome("pending", t["thread"]), None
         if t["opened"] == "spawned":
             again = reload_seat(t["thread"])
             if again is None or again["status"] == "retired" or again["current"] != session:
@@ -8719,12 +8742,12 @@ def wake_member(project, member, session, e, words=None, due=False):
         forget_caches()
         if peer_for_session(session) is None:
             return hold_outcome("starting", t["thread"]), None   # its process runs, its inbox not answering yet
-        kept, locks = locks, []
-        return "woken", kept   # its lifecycle lock kept for the push that follows
+        kept, locks, hold = locks + hold, [], []
+        return "woken", kept   # its lifecycle lock and its wake lock kept for the push that follows
     except ReachHeld as err:
         return err.outcome(), None
     finally:
-        unlock(locks)
+        unlock(locks + hold)
 
 
 # ------------------------------------------------------------------ say / chat
@@ -11435,9 +11458,10 @@ def lock_seat(s, blocking=False, refusal=None):
 
 
 def unlock(locks):
+    """Each lock let go: a lock file closed, a wake lock's hold (WakeHold) released."""
     for lf in locks:
         try:
-            lf.close()
+            (lf.release if isinstance(lf, WakeHold) else lf.close)()
         except OSError:
             pass
 
