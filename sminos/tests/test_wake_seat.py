@@ -608,6 +608,20 @@ class Seat(Wakers):
         self.assertNotIn("(woken)", out)
         self.assertNotIn(wake.LINE_HEAD, self.frames(sid)[-1], "a live push carries no line")
 
+    def test_a_first_wake_of_a_seat_whose_row_is_gone_says_nothing_of_a_terminal(self):
+        s = self.seat()
+        sid = s["current"]
+        os.unlink(wake_engine.row_path(sid))   # its `jobs` directory kept: no row, a first wake
+        before = len(self.frames(sid))
+        code, out = self.cli("send", "w", "row gone")
+        self.assertEqual(code, 0, out)
+        self.assertIn("(woken)", out)
+        self.assertTrue(self.resumes(sid)[-1], "a first wake's flags")
+        [frame] = self.frames(sid)[before:]
+        said = line_of(frame)[1]
+        self.assertTrue(said.startswith(wake.LINE_HEAD))
+        self.assertNotIn("terminal", said, "a spawned seat never ran in one")
+
     def test_resume_records_its_message_as_send_does_and_delivers_it(self):
         s = self.seat()
         sid = s["current"]

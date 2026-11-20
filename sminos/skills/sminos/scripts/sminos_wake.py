@@ -359,15 +359,17 @@ LINE_HEAD = sminos.LINE_START + (
     "message, and your human is not watching this session unless they have attached to it since.")
 
 
-def line_note(first, options, turn, not_carried=None):
+def line_note(first, options, turn, not_carried=None, opened=""):
     """What `waking.line` holds for a wake about to launch (§7): `first`
     whether it is a first wake; `options` what it runs under (a first
     wake's flags, a later one's row options); the last turn's model beside
-    them; for a first wake the names not carried (None: not known)."""
+    them; for a first wake the names not carried (None: not known); and how
+    the thread was opened, the record's `opened`."""
     options = [t for t in options or [] if isinstance(t, str)]
     return {"id": uuid.uuid4().hex[:12], "first": bool(first), "mode": options_mode(options),
             "model": _option(options, "--model"), "turn_model": str((turn or {}).get("model") or ""),
-            "not_carried": (list(not_carried) if not_carried is not None else None) if first else []}
+            "not_carried": (list(not_carried) if not_carried is not None else None) if first else [],
+            "opened": str(opened or "")}
 
 
 def same_model(a, b):
@@ -394,13 +396,15 @@ def line_text(note):
         line += (" Your last turn ran on %s; a background run keeps the options it last ran with in the "
                  "background." % turn_model)
     if note.get("first"):
-        line += (" This is your first run outside the terminal you were opened in: the environment variables of "
-                 "that terminal are not set here.")
+        # A first wake is only a wake with no engine row: a spawned seat whose row is gone is one too, and never ran
+        # in a terminal; a note with no `opened` (older code's) is not a human's.
+        if note.get("opened") == "human":
+            line += " The environment variables of the terminal or app you were opened in may differ here."
         missing = note.get("not_carried")
         if missing is None:
-            line += " Other options of its launch may not be carried."
+            line += " Other options you were last started with may not be carried here."
         elif missing:
-            line += " Not carried from its launch: %s." % ", ".join(missing)
+            line += " Options you were last started with that are not carried here: %s." % ", ".join(missing)
     return " ".join(line.splitlines())
 
 

@@ -394,25 +394,37 @@ class Line(Wakes):
             "background by this message, and your human is not watching this session unless they have attached "
             "to it since.")
 
+    TERMINAL = " The environment variables of the terminal or app you were opened in may differ here."
+
     def test_a_first_wake_names_what_it_did_not_carry(self):
         note = wake.line_note(True, ["--permission-mode", "auto", "--model", "claude-a"],
-                              {"mode": "auto", "model": "claude-a"}, ["--add-dir", "--agent"])
-        self.assertEqual(set(note), {"id", "first", "mode", "model", "turn_model", "not_carried"})
-        self.assertEqual(wake.line_text(note), self.HEAD + (
-            " You run in auto mode on claude-a. This is your first run outside the terminal you were opened in:"
-            " the environment variables of that terminal are not set here. Not carried from its launch:"
-            " --add-dir, --agent."))
+                              {"mode": "auto", "model": "claude-a"}, ["--add-dir", "--agent"], "human")
+        self.assertEqual(set(note), {"id", "first", "mode", "model", "turn_model", "not_carried", "opened"})
+        self.assertEqual(wake.line_text(note), self.HEAD + " You run in auto mode on claude-a." + self.TERMINAL + (
+            " Options you were last started with that are not carried here: --add-dir, --agent."))
 
     def test_a_first_wake_whose_launch_does_not_say_and_one_that_dropped_nothing(self):
-        note = wake.line_note(True, [], {"mode": "", "model": ""}, None)
-        self.assertEqual(wake.line_text(note), self.HEAD + (
-            " You run under your saved options. This is your first run outside the terminal you were opened in:"
-            " the environment variables of that terminal are not set here. Other options of its launch may not"
-            " be carried."))
-        note = wake.line_note(True, ["--permission-mode", "manual", "--model", "m"], {"mode": "default"}, [])
-        self.assertTrue(wake.line_text(note).endswith(" You run in manual mode on m. This is your first run "
-                                                         "outside the terminal you were opened in: the environment"
-                                                         " variables of that terminal are not set here."))
+        note = wake.line_note(True, [], {"mode": "", "model": ""}, None, "human")
+        self.assertEqual(wake.line_text(note), self.HEAD + " You run under your saved options." + self.TERMINAL + (
+            " Other options you were last started with may not be carried here."))
+        note = wake.line_note(True, ["--permission-mode", "manual", "--model", "m"], {"mode": "default"}, [], "human")
+        self.assertTrue(wake.line_text(note).endswith(" You run in manual mode on m." + self.TERMINAL))
+
+    def test_only_a_thread_its_human_opened_is_told_of_its_terminal(self):
+        """A first wake means no engine row, which a spawned seat whose row is gone meets too: it never ran in a
+        terminal, so only what was not carried is said; a note older code wrote, with no `opened`, reads as one."""
+        for opened in ("spawned", None):
+            with self.subTest(opened=opened):
+                note = wake.line_note(True, ["--permission-mode", "auto", "--model", "claude-a"], {}, ["--agent"],
+                                      *([opened] if opened else []))
+                if opened is None:
+                    note.pop("opened")
+                self.assertEqual(wake.line_text(note), self.HEAD + (
+                    " You run in auto mode on claude-a. Options you were last started with that are not carried"
+                    " here: --agent."))
+                self.assertNotIn("terminal", wake.line_text(dict(note, not_carried=None)))
+        self.assertEqual(wake.line_note(False, [], {}, opened="human")["opened"], "human")
+        self.assertNotIn("terminal", wake.line_text(wake.line_note(False, [], {}, opened="human")), "a later wake")
 
     def test_a_later_wake_says_the_row_s_model_and_the_turn_s_when_they_differ(self):
         row = {"respawnFlags": ["--permission-mode", "default", "-n", "x", "--model", "opus"]}

@@ -166,7 +166,8 @@ class Woken(Deliveries):
         self.assertTrue(pushed.startswith("[sminos chat "), "the frame's header first")
         self.assertTrue(said.startswith(wake.LINE_HEAD), "the line after it")
         self.assertIn("You run in auto mode on claude-term.", said)
-        self.assertIn("first run outside the terminal", said)
+        self.assertIn(" The environment variables of the terminal or app you were opened in may differ here.", said,
+                      "a first wake of a thread its human opened")
         self.assertEqual(frame.count("look at this"), 1)
         self.assertEqual(self.record(sid)["name"], "term-a", "the name its human gave it kept")
         self.assertEqual(self.owed(sid), [], "settled once pushed")
@@ -196,7 +197,7 @@ class Woken(Deliveries):
         self.assertEqual(self.resumes(sid), [FLAGS, []], "a later wake passes no flag")
         third = self.frames(sid)[2]
         self.assertTrue(line_of(third)[1].startswith(wake.LINE_HEAD))
-        self.assertNotIn("first run outside the terminal", third)
+        self.assertNotIn("terminal", line_of(third)[1])
         self.assertEqual([f.count(t) for f, t in zip(self.frames(sid), ("one", "two", "three"))], [1, 1, 1])
 
     def test_an_event_for_the_live_alone_wakes_nothing(self):

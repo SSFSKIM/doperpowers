@@ -14419,7 +14419,7 @@ def _wake_held(tid, session, due, returns, on_live):
             return WakeResult(False, "mode")
         turn = wm.last_turn(session, whole=True)
         note = wm.line_note(first, flags if first else wm.row_options(row) if isinstance(row, dict) else [], turn,
-                            not_carried)
+                            not_carried, t["opened"])
         try:
             written = threads.wake_line(tid, session, note)
         except (OSError, LockBusy):
