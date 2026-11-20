@@ -51,7 +51,8 @@ States: `busy` (its turn runs), `idle`,
 a message resumes a seat; a session its human opened waits for them to
 reopen it), `gone` (no transcript here, or its machine retired), `vacant`
 (a seat with no session), `retired` (by `sminos retire`, or after three
-days stopped; reopening the session, or filling a seat, returns it).
+days stopped, but not while a devcloud host of its own remains or devcloud
+cannot tell; reopening the session, or filling a seat, returns it).
 
 ## Speaking
 
