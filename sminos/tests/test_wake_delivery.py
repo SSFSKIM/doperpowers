@@ -819,6 +819,16 @@ class Decided(Deliveries):
             self.switch("fail-job")
             held_with("auto", True)
 
+    def test_a_direct_send_marks_the_thread_its_hold_was_decided_for(self):
+        # frontier review, scalpel-2#6: the hold's own thread, not the session's stamp read again after it.
+        tid, sid = self.human_thread("plan")
+        real = threads.stamp
+        with mock.patch.object(threads, "stamp", lambda x: "another-thread" if x == sid else real(x)):
+            code, out = self.send(sid[:8], "for the thread held")
+        self.assertEqual(code, 0, out)
+        [e] = [x for x in self.log() if x.get("text") == "for the thread held"]
+        self.assertEqual(self.marked(sid), {(e["writer"], e["seq"]): tid})
+
     def test_a_late_verdict_for_an_event_for_the_live_alone_settles_it_recorded_and_marks_nothing(self):
         tid, sid = self.human_thread("plan")
         writer = "othermachine/aaaa1111-0000-4000-8000-000000000002"

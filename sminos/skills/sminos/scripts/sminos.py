@@ -15240,7 +15240,8 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
             # (§5). A verb and a wait record, start nothing and exit 4 (§6).
             if isinstance(delivery, SendDelivery):
                 for x in delivery.carried(False):
-                    delivered_held(delivery.project, delivery.session, delivery.writer, x["seq"], chosen)
+                    # Marked for the thread the wake decided for: the seat's record, which resume_session woke.
+                    delivered_held(delivery.project, delivery.session, delivery.writer, x["seq"], s["seat_id"])
                 delivery.release()
                 print("recorded %s for %s: %s" % (event_ref(delivery.event), s["alias"],
                                                   held_line(woke.why, session=s["current"])), flush=True)
@@ -15613,7 +15614,9 @@ def send_to_member(project, m, sender, via, text, msg_id):
         nudge_daemon()
         return
     hold = held_now(m.session, due=True)   # first: the engine's records read afresh for what follows
-    chosen = threads_module().stamp(m.session)   # the thread the recipient is, as looked up: what a hold names
+    # What a hold's mark names: the thread the hold was decided for (Hold.thread), else the thread the recipient
+    # is, as looked up; never the session's stamp read again after the decision.
+    chosen = getattr(hold, "thread", None) or threads_module().stamp(m.session)
     peer = None if hold else peer_for_session(m.session)
     if not peer and hold:
         # A stopped thread this machine holds (T2's §4: not woken, for a reason): recorded and held, as a tagged
