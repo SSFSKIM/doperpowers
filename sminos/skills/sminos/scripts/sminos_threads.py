@@ -885,8 +885,9 @@ def choose(session, seat=None, project=None, events=None, peer=None, lock_until=
     joined: an ended record the process does not return, which for a seat
     a fill may still return).
 
-    A lane B session revives no thread: it keeps a live record it has (its
-    end stamped, row 13), never one set aside, and makes none. A lane A
+    A lane B session revives no thread: it keeps a live record whose
+    current session it is (its end stamped, row 13), never one set aside
+    nor one that only had it, and makes none. A lane A
     session's thread is §1's: a human-opened record whose current session
     it is, set aside or not, before a seat (an older copy can have seated
     such a session; the seat is then left as it is); else ensure()'s, which
@@ -895,6 +896,8 @@ def choose(session, seat=None, project=None, events=None, peer=None, lock_until=
     `lock_until`."""
     if not _lane_a(session):
         t = thread_of(session, ended=False)
+        if t is not None and t["current"] != session:
+            t = None   # a thread that only had the session (it went on in another): not this session's to stamp
         return (t, "hold") if t is not None and record_ended(t) else (t, "join")
     t = thread_of(session)
     if t is None or t["opened"] != "human" or t["current"] != session:
@@ -1395,6 +1398,8 @@ def launch_options(argv):
     while i < len(args):
         tok = args[i]
         i += 1
+        if tok == "--":
+            break   # the end of the options: what follows is positional, whatever it is spelled like
         name, eq, inline = tok.partition("=") if tok.startswith("--") else (tok, "", "")
         if name not in LAUNCH_OPTIONS:
             continue

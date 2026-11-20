@@ -370,6 +370,8 @@ run_suites() {
     fail "a closed session stays: stopped, held, its sender told, a /clear (test_threads_stopped.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_threads_ended.py"; then pass "a thread ends, and returns: the three-day rule, a retire, the settlement, a fill (test_threads_ended.py)"; else
     fail "a thread ends, and returns: the three-day rule, a retire, the settlement, a fill (test_threads_ended.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_threads_branch_b.py"; then pass "the branch review's interleavings: a push rebound, held kept owed, questions by episode and project, a send's end, the sweep's record, join's lock (test_threads_branch_b.py)"; else
+    fail "the branch review's interleavings: a push rebound, held kept owed, questions by episode and project, a send's end, the sweep's record, join's lock (test_threads_branch_b.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_threads_owner.py"; then pass "a thread that made a VM is neither retired nor ended: devcloud asked, the census (test_threads_owner.py)"; else
     fail "a thread that made a VM is neither retired nor ended: devcloud asked, the census (test_threads_owner.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_threads_branch_a.py"; then pass "a seat's lifecycle verbs against the writers that race them (test_threads_branch_a.py)"; else
