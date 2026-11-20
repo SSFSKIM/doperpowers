@@ -521,5 +521,259 @@ class Direct(Verbs):
         self.assertGreaterEqual(sminos._delivery(sminos.delivered_load(self.p, sid), w)["settled"], mine["seq"])
 
 
+# ------------------------------------------------------------ review round 1: holds on every path, the marker
+
+
+class Round(Verbs):
+    """What the first review found: a hold published on a `gone` state, the thread's hold before the endpoint's
+    gate, the turn a verb stops, the line a script reads, a verb with nothing recorded, a returned seat's
+    refusal, a terminal's seat, an ended name's tiers, a stale event's reach."""
+
+    def cut_over(self):
+        rl10 = sminos.sibling_module("sminos_rl10")
+        sminos.write_json(rl10.identity_path(), {
+            "org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {}, "ref": "r",
+            "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"})
+        sminos.audience_module().keep_capabilities([])
+        sminos.forget_caches()
+
+    def owed_mark(self, out, sid):
+        return ("owed: %s" % sid) in out.splitlines()
+
+    # I1
+    def test_a_spawned_thread_with_no_conversation_here_publishes_its_hold_on_its_gone_state(self):
+        s = self.seat()
+        sid = s["current"]
+        os.unlink(sminos.transcript_now(sid))
+        self.assertTrue(wait_for(lambda: self.member(sid).state == "gone"), "its seat reads gone")
+        record = {}
+        for _ in range(2):
+            sminos.forget_caches()
+            self.daemon.publish_state(self.p, sminos.view_of(self.p, titles=False), record)
+        last = [e for e in self.own(sid) if e["kind"] == "state"][-1]
+        self.assertEqual((last["state"], last.get("wake"), last.get("why")), ("gone", "held", "transcript"))
+        sminos.forget_caches()
+        self.assertEqual(self.daemon.publish_state(self.p, sminos.view_of(self.p, titles=False), record), 0)
+
+    def remote_in(self, state, wake_value=None, why=None):
+        sid = str(uuidlib.uuid4())
+        w = "elsewhere/%s" % sid
+        sminos.log_append(self.p, w, "joined", session=sid, alias="far", name_source="user", machine="elsewhere",
+                          cwd="/w", worktree="", role="", seat="", by="", session_kind="interactive",
+                          thread=str(uuidlib.uuid4()))
+        sminos.log_append(self.p, w, "state", session=sid, state=state, machine="elsewhere",
+                          **({"wake": wake_value} if wake_value else {}), **({"why": why} if why else {}))
+        sminos.forget_caches()
+        return sid
+
+    def test_a_remote_gone_state_is_read_by_its_why_and_a_bare_one_as_before(self):
+        sid = self.remote_in("gone", "held", "transcript")
+        code, out = self.send("far#%s" % sid[:8], "a note")
+        self.assertIn("for far: " + line("transcript").replace("recorded and held:", "recorded and held on "
+                                                                   "elsewhere:"), out)
+        sid = self.remote_in("gone")
+        code, out = self.send("far#%s" % sid[:8], "a note")
+        self.assertNotIn("recorded and held", out, "a gone with nothing published reads as today")
+
+    def test_a_retired_machines_gone_is_never_read_as_a_hold(self):
+        sid = self.remote_in("gone", "held", "transcript")
+        with mock.patch.object(sminos, "machine_retired", lambda name: str(name).lower() == "elsewhere"):
+            sminos.forget_caches()
+            m = self.member(sid) or next((x for x in sminos.view_of(self.p).ended if x.session == sid), None)
+            self.assertIsNotNone(m)
+            self.assertEqual(sminos.why_of(m), "")
+            self.assertIsNone(sminos.remote_line(m))
+
+    # I2
+    def test_a_seat_verb_held_for_its_thread_on_a_cut_over_machine_exits_4_and_waits_for_nothing(self):
+        for verb in (("send", "--wait"), ("resume", "--wait"), ("resume",)):
+            with self.subTest(verb=verb):
+                alias = "c-" + verb[0] + str(len(verb))
+                s = self.seat(alias)
+                os.unlink(sminos.transcript_now(s["current"]))
+                self.cut_over()
+                text = "held for %s" % "-".join(verb)
+                with mock.patch.dict(os.environ, {"SMINOS_ACK_TIMEOUT": "3"}):
+                    code, out = self.cli(*argv_of(verb, alias, text))
+                self.assertEqual(code, 4, out)
+                self.assertIn("recorded and held", first_line(out))
+                self.assertIn("nothing was started: %s" % WORDS["transcript"], out)
+                self.assertNotIn("no evidence", out, "no watcher started")
+                self.assertTrue(self.owed_mark(out, s["current"]))
+
+    def test_a_hand_off_awaiting_admission_is_a_push_and_is_waited_for(self):
+        tid, sid = self.human_thread()
+        self.say("@%s up" % sid[:8])
+        real = sminos.deliver_next
+
+        def handed(project, member, due=False, **kw):
+            got = real(project, member, due=due, **kw)
+            return {**got, "outcomes": [(e, sminos.HOLDER_AWAITING) for e, _ in got["outcomes"]]}
+        with mock.patch.object(sminos, "deliver_next", handed):
+            p = mock.patch.dict(os.environ, {"SMINOS_ACK_TIMEOUT": "20"})
+            with p:
+                code, out = self.cli("send", sid[:8], "handed over", "--wait")
+        self.assertEqual(code, 0, out)
+        [event] = self.logged("handed over")
+        self.assertIn("reply to %s" % event["msg_id"], out, "waited for its reply")
+
+    def test_a_hold_with_no_push_is_said_held_and_waits_for_nothing(self):
+        tid, sid = self.human_thread()
+        self.say("@%s up" % sid[:8])
+
+        def unread(project, member, due=False, **kw):
+            evs = [e for e in sminos.owed(project, member)]
+            return {"outcomes": [(e, "held:its process's mode cannot be read") for e in evs]}
+        with mock.patch.object(sminos, "deliver_next", unread):
+            code, out = self.cli("send", sid[:8], "not handed", "--wait")
+        self.assertEqual(code, 4, out)
+        self.assertIn("no reply is waited for", out)
+        self.assertTrue(self.owed_mark(out, sid))
+
+    # I3
+    def test_a_resume_whose_message_another_deliverer_pushed_stops_no_turn(self):
+        tid, sid = self.human_thread()
+        self.say("@%s first" % sid[:8])
+        real = sminos.SendDelivery.__init__
+
+        def raced(d, project, session, writer, event):
+            sminos.deliver_next(project, self.member(session), due=True)
+            real(d, project, session, writer, event)
+        before = len(self.calls())
+        with mock.patch.object(sminos.SendDelivery, "__init__", raced):
+            code, out = self.cli("resume", sid[:8], "taken meanwhile")
+        self.assertEqual(code, 0, out)
+        self.assertIn("delivered by a concurrent delivery", out)
+        self.assertFalse([c for c in self.calls()[before:] if c["argv"][:1] == ["stop"]], "its turn ran on")
+        self.assertEqual(sum(f.count("taken meanwhile") for f in self.frames(sid)), 1)
+
+    def test_a_message_settled_by_another_without_a_push_is_not_said_delivered(self):
+        tid, sid = self.human_thread()
+        self.say("@%s first" % sid[:8])
+        real = sminos.SendDelivery.__init__
+
+        def settled(d, project, session, writer, event):
+            sminos.delivered_settle(project, session, writer, event["seq"])
+            real(d, project, session, writer, event)
+        before = len(self.calls())
+        with mock.patch.object(sminos.SendDelivery, "__init__", settled), \
+                mock.patch.dict(os.environ, {"SMINOS_ACK_TIMEOUT": "1"}):
+            code, out = self.cli("resume", sid[:8], "settled unpushed", "--wait")
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("delivered by a concurrent delivery", out)
+        self.assertNotIn("--- reply ---", out)
+        self.assertFalse([c for c in self.calls()[before:] if c["argv"][:1] == ["stop"]])
+
+    # I4
+    def test_a_verb_queued_behind_an_earlier_message_prints_the_owed_line(self):
+        tid, sid = self.human_thread()
+
+        def behind(project, member, due=False, **kw):
+            [e] = [x for x in sminos.owed(project, member)][:1] or [None]
+            return {"outcomes": [({**e, "seq": e["seq"] - 1}, "failed:busy")]} if e else {"outcomes": []}
+        with mock.patch.object(sminos, "deliver_next", behind):
+            code, out = self.cli("resume", sid[:8], "queued")
+        self.assertEqual(code, 4, out)
+        self.assertTrue(self.owed_mark(out, sid), out)
+
+    def test_an_endpoint_gated_seat_resume_whose_wait_expires_prints_the_owed_line(self):
+        s = self.seat()
+        self.cli("send", "w", "up")
+        self.cut_over()
+        with mock.patch.dict(os.environ, {"SMINOS_ACK_TIMEOUT": "0.5"}):
+            code, out = self.cli("resume", "w", "gated", "--wait")
+        self.assertEqual(code, 1, out)
+        self.assertTrue(self.owed_mark(out, s["current"]), out)
+
+    def test_a_held_verb_prints_the_owed_line_and_a_pushed_one_none(self):
+        tid, sid = self.human_thread("plan")
+        code, out = self.cli("resume", sid[:8], "held one")
+        self.assertEqual(code, 4, out)
+        self.assertTrue(self.owed_mark(out, sid))
+        tid, sid = self.human_thread()
+        code, out = self.cli("resume", sid[:8], "pushed one")
+        self.assertEqual(code, 0, out)
+        self.assertFalse(self.owed_mark(out, sid))
+
+    # I5
+    def test_a_verb_whose_message_cannot_be_recorded_starts_nothing(self):
+        self.seat()
+        real = sminos.seat_project
+        with mock.patch.object(sminos, "seat_project",
+                               lambda seat, fresh=False: None if seat and seat.get("alias") == "w" else real(seat, fresh)):
+            launched, before = self.launches(), len(self.calls())
+            for verb in (("resume",), ("fill", "--resume")):
+                with self.subTest(verb=verb):
+                    code, out = self.cli(*argv_of(verb, "w", "no log for it"))
+                    self.assertEqual(code, 4, out)
+                    self.assertIn("nothing was started", out)
+            self.assertEqual(self.launches(), launched, "nothing launched")
+            self.assertFalse([c for c in self.calls()[before:] if c["argv"][:1] == ["stop"]])
+
+    # I6
+    def test_a_returned_seats_task_the_endpoint_refuses_says_both(self):
+        s = self.seat()
+        code, out = self.cli("retire", "w")
+        self.assertEqual(code, 0, out)
+        self.cut_over()
+        env = {"SMINOS_VERDICT_WAIT": "60"}
+        with mock.patch.dict(os.environ, env):
+            p = self.run_cli("fill", "w", "refuse this", "--resume")
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        def recorded():
+            sminos.forget_caches()
+            return [x for x in sminos.log_read(project) if x.get("text") == "refuse this"]
+        project = sminos.seat_project(sminos.reload_seat(s["seat_id"]))   # cut over: the machine's project
+        self.assertTrue(wait_for(recorded, timeout=60), "recorded")
+        [e] = recorded()
+        self.assertTrue(wait_for(lambda: "returned" in p.stdout.readline(), timeout=30), "the return said")
+        seat = sminos.reload_seat(s["seat_id"])
+        self.assertTrue(wait_for(lambda: self.member(seat["current"], project) is not None, timeout=30))
+        sminos.deliver_verdict(project, self.member(seat["current"], project), e, "refuse")
+        out, err = p.communicate(timeout=60)
+        self.assertEqual(p.returncode, 4, out + err)
+        said = out + err
+        self.assertIn("returned", said)
+        self.assertIn("refused", said)
+        self.assertNotIn("is retired", said)
+        self.assertNotIn("if the endpoint refuses", said, "the fact, not a hypothetical")
+
+    # I7
+    def test_a_seat_a_terminal_holds_is_said_so_by_resume(self):
+        s = self.seat()
+        self.terminal(s["current"])
+        code, out = self.cli("resume", "w", "at the terminal")
+        self.assertEqual(code, 0, out)
+        self.assertIn("a terminal holds it", out)
+        self.assertNotIn("via --bg --resume", out)
+
+    def test_an_ended_session_named_by_its_project_or_its_short_is_said_ended_by_every_verb(self):
+        tid, sid = self.human_thread()
+        alias = self.member(sid).alias
+        code, out = self.cli("retire", sid[:8])
+        self.assertEqual(code, 0, out)
+        for name in ("%s/%s" % (self.p.name, alias), "%s#%s" % (alias, sid[:8])):
+            for verb in VERBS:
+                with self.subTest(name=name, verb=verb):
+                    code, out = self.cli(*argv_of(verb, name, "after its end"))
+                    self.assertEqual(code, 4, out)
+                    self.assertIn("returns when its human reopens it", out)
+        self.assertEqual(self.logged("after its end"), [])
+
+    # Minor
+    def test_a_stale_event_asks_no_reach_for_a_direct_send(self):
+        tid, sid = self.human_thread()
+        received = self.terminal(sid)
+        stale = Direct.stale(self, sid, "to no one")
+        real = sminos.ReachGate.needs
+        with mock.patch.object(sminos.ReachGate, "needs",
+                               lambda g, e, session: e["seq"] == stale["seq"] and e["writer"] == stale["writer"]
+                               or real(g, e, session)):
+            code, out = self.send(sid[:8], "goes now")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("the endpoint decides", out)
+        self.assertEqual(sum(f.count("goes now") for f in self.received(received)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

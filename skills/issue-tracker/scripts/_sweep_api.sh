@@ -3087,10 +3087,16 @@ PY
   done
 }
 
-# Whether `sminos resume`'s output (exit 4) says it recorded the message and
-# left it owed: its first line is a held one (`recorded and held`, T2's §5) or
-# a hold that passes on its own (the daemon delivers it).
-_resume_owed() {  # <resume stdout>
+# Whether `sminos resume` recorded the message and left it owed to the session,
+# its daemon to deliver, whatever it exited: its stdout holds the line
+# `owed: <session>` (T2's M4). From a sminos before that line, an exit 4 whose
+# first line is a held one (`recorded and held`) or a hold that passes on its
+# own (the daemon delivers it).
+_resume_owed() {  # <resume stdout> <exit code> <session>
+  if printf '%s\n' "$1" | grep -qxF "owed: $3"; then
+    return 0
+  fi
+  [ "$2" = 4 ] || return 1
   case "${1%%$'\n'*}" in
     *"recorded and held"*|*"and the daemon delivers it"*) return 0 ;;
   esac
@@ -3266,13 +3272,14 @@ PY
     # transcript is the marker, exactly as in phase 2.
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → the resume wait expired but the delivery landed in $C_SESS"
-  elif [ -n "$C_SESS" ] && [ "$rrc" = 4 ] && _resume_owed "$rout"; then
+  elif [ -n "$C_SESS" ] && _resume_owed "$rout" "$rrc" "$C_SESS"; then
     # A RECORDED RESUME IS NOT A FAILED ONE. `sminos resume` records its message
-    # in the session's log before it wakes anything; one it could not wake now
-    # (held for a reason its machine publishes, or a wake that is still
-    # starting) exits 4 with the task owed, and its machine's daemon pushes it
-    # to the session when a process of it runs. A fresh worker here would be a
-    # second one on the same run, the task arriving at both.
+    # in the session's log before it wakes anything; one it could not push now
+    # (held for a reason its machine publishes, a wake still starting, queued
+    # behind an earlier message, or waiting for the endpoint's word) says the
+    # task is owed, whatever it exits, and its machine's daemon pushes it to the
+    # session. A fresh worker here would be a second one on the same run, the
+    # task arriving at both.
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → the task is recorded and owed to $C_SESS, which its machine delivers when a process of it runs; no fresh worker"
   else

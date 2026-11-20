@@ -415,15 +415,19 @@ class Return(Transitions):
         self.assertIn("ended", threads.get(seat_id))
         self.assertFalse([e for e in self.log() if e.get("text") == "never sent"])
 
-    def test_a_stopped_seat_whose_project_cannot_be_read_takes_its_task_by_the_projectless_push(self):
-        """No log to record its task in: the owner-checked projectless push (D8) delivers it, as `send` does."""
+    def test_a_stopped_seat_whose_project_cannot_be_read_is_refused_its_task_before_anything_starts(self):
+        """No log to record its task in: a verb's message is a logged event, so nothing is woken and nothing
+        pushed (T2's M4, the rule behind M2's last fix: what a verb must write is writable before the launch)."""
         s = self.seat()
         sid, seat_id = s["current"], s["seat_id"]
+        launched = self.launches()
         with mock.patch.object(sminos, "seat_project", return_value=None):
             code, out = self.cli("fill", seat_id, "no log to hold it", "--resume")
-        self.assertEqual(code, 0, out)
+        self.assertEqual(code, sminos.EXIT_UNKNOWN, out)
         self.assertNotIn("Traceback", out)
-        self.assertIn("no log to hold it", self.inputs(sid)[-1]["message"]["content"])
+        self.assertIn("nothing was started", out)
+        self.assertEqual((self.resumes(sid), self.launches()), ([], launched), "nothing launched")
+        self.assertFalse([i for i in self.inputs(sid) if "no log to hold it" in i["message"]["content"]])
         self.assertFalse([e for e in self.log() if e.get("text") == "no log to hold it"], "nothing recorded")
 
     def test_a_failed_launch_leaves_it_retired_and_records_nothing(self):

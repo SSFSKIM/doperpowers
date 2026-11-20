@@ -625,7 +625,8 @@ def publish_state(project, view, record):
     publishes none.
     A stopped thread's `state` says whether this machine wakes it, and why
     not (X3: `wake` and `why`, which sminos.lifecycle adds for each of its
-    writers); it is written again when either changes while the word does
+    writers; a `gone` thread that has not ended says its hold the same way,
+    sminos.state_wake); it is written again when either changes while the word does
     not (never when only a failed wake's schedule turns: `why` is `failed`
     due or not).
     Returns how many events it appended."""
@@ -641,8 +642,8 @@ def publish_state(project, view, record):
             # For a session that is a thread now (its joined in effect names one; an adopted seat stopped
             # before its adoption included), whatever stamped the state before. Only when lifecycle will stamp
             # what it writes, and so add the value: a write that could not carry it is not made, every tick.
-            if last == "stopped" and m.thread and (published.get("wake"), published.get("why") or "") != \
-                    sminos.wake_published(m.session) and sminos.threads_module().stamp(m.session):
+            if last in sminos.HELD_STATES and m.thread and (published.get("wake") or None, published.get("why") or "") \
+                    != sminos.state_wake(m.session, last) and sminos.threads_module().stamp(m.session):
                 n += len(sminos.lifecycle(project, m.session, "state", required=False,
                                           state=m.state, machine=sminos.host_name()))
             continue

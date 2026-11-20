@@ -299,11 +299,30 @@ fi
 [ -n "\${RESUME_MUST_FAIL:-}" ] && exit 1
 # The resume recorded its message and could not wake the session now (T2's
 # §6): its first line says it is recorded and held, nothing was started, exit 4.
+# An older sminos says it in that first line alone; this one also prints the
+# line \`owed: <session>\` whenever the task is owed and not pushed, whatever it
+# exits: queued behind an earlier message (exit 4), or waiting for the
+# endpoint's word past the ack window (exit 1).
 if [ -n "\${RESUME_HELD:-}" ]; then
   echo "recorded testhost/human:7 for w: recorded and held: the session is stopped and is not woken: its directory is gone; it is pushed when a process of it runs again before it ends (three days stopped, or a retire), else it stays in the log"
   echo "sminos: nothing was started: its directory is gone" >&2
   exit 4
 fi
+case "\${RESUME_OWED:-}" in
+  queued)
+    echo "recorded testhost/human:7 for w: owed behind an earlier message (failed:busy)"
+    echo "owed: \$1"
+    echo "sminos: no reply is waited for: it is delivered after the earlier one" >&2
+    exit 4 ;;
+  gated)
+    echo "recorded testhost/human:7 for w; the endpoint decides its delivery; no turn was stopped, and the message follows on that answer"
+    echo "owed: \$1"
+    echo "sminos: no evidence that w received the message within the ack window (no transcript marker) — not waiting for a reply" >&2
+    exit 1 ;;
+  other)
+    echo "owed: someone-else"
+    exit 1 ;;
+esac
 # A REAL transcript line: the delivery proof reads user-role JSONL entries whose
 # content is a plain string (a delivered prompt), never the raw bytes.
 T_P="$TRANSCRIPT" T_C="\$2" python3 - <<'PYX'
@@ -2027,6 +2046,47 @@ nt "so no fresh worker is spawned beside it"               "SPAWN"  cat "$SPAWN_
 t  "and the successor is bound to the session it is owed to" '"path": "/runs/95/bind"' cat "$RLOG"
 nt "and the run is not released"                          '"path": "/runs/95/end"' cat "$RLOG"
 nt "and no recovery cycle is charged"                     "recovery cycle" cat "$OUTRH"
+
+# The same for every outcome that leaves the task owed, read from the line
+# `owed: <session>` rather than the exit code or the prose: queued behind an
+# earlier message (exit 4), and an endpoint-gated resume whose ack window
+# expired (exit 1). A line naming another session is no such word.
+_owed_drill() {  # <case> <run id>
+  local fix="$TDIR/fix-resume-owed-$1.json" dh="$TDIR/dh-resume-owed-$1" out="$TDIR/resume-owed-$1.out"
+  cat > "$fix" <<JSON
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
+  "body":{"runId":$2,"ticketId":12,"fence":4,"bearer":"tok-owed","predecessorRun":41,
+          "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
+          "plan":null,"parentPin":null,"body":"work on"}},
+ {"method":"GET","path":"/answers/unrelayed","status":200,"body":[]},
+ {"method":"POST","path":"/runs/$2/bind","status":200,"body":{"bound":true}},
+ {"method":"POST","path":"/runs/$2/end","status":200,"body":{"ended":true}},
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]}
+]
+JSON
+  rboard "$fix"
+  mkdir -p "$dh"
+  printf '%s\n' '{"uuid":"u-old","current":"u-old","status":"idle","run_id":41,
+ "fence":3,"lane":"implementer","role":"IMPLEMENT","bind_confirmed":true,"ticket":"12"}' > "$dh/u-old.json"
+  chmod 600 "$dh/u-old.json"
+  : > "$SPAWN_LOG"
+  RESUME_OWED="$1" RSW "$dh" > "$out" 2>&1 || true
+  OUTOWED="$out"
+}
+_owed_drill queued 96
+t  "a resume queued behind an earlier message is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside it"                 "SPAWN"  cat "$SPAWN_LOG"
+_owed_drill gated 97
+t  "an endpoint-gated resume whose wait expired is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside that one either"    "SPAWN"  cat "$SPAWN_LOG"
+_owed_drill other 98
+nt "a line owing the task to another session is not read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
 
 # The rboard mocks hold this suite's stdout open, so they go LAST — after every
 # board any drill above needed. One left running keeps a piped reader waiting
