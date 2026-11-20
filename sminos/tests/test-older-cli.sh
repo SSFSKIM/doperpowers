@@ -161,8 +161,9 @@ assert_equals "$BEFORE" "joined - stamped" "its one membership event is a stampe
 
 # ---- the older CLI: every verb that reads the store ---------------------------
 echo "the older CLI over the same store:"
+assert_equals "$(calls)" "" "this code asked the stub engine nothing"
 run "$OLDER" list
-assert_not_contains "$OUT" "keeper" "its list shows no keeper: a closed session it does not know as a thread"
+assert_contains "$OUT" "(no members in olderproj)" "its list shows no member: a closed session it does not know as a thread"
 assert_equals "$(own_events)" "$(printf 'joined - stamped\nretired ended unstamped')" \
   "its first reading verb reconciled the session to an unstamped ended"
 run "$OLDER" say "@keeper hello from the older code"
@@ -170,22 +171,27 @@ assert_equals "$RC" 4 "its tagged say is refused (exit 4)"
 assert_contains "$OUT" "session ended" "it says the session ended"
 run "$OLDER" send keeper "a send from the older code"
 assert_equals "$RC" 4 "its send is refused (exit 4)"
+assert_contains "$OUT" "keeper: keeper's session ended" "it says the session ended"
 run "$OLDER" resume keeper "a resume from the older code"
 assert_equals "$RC" 4 "its resume finds no seat (exit 4)"
 assert_contains "$OUT" "no seat matching 'keeper'" "it says there is no seat"
 run "$OLDER" fill keeper "a fill from the older code"
 assert_equals "$RC" 4 "its fill finds no seat (exit 4)"
+assert_contains "$OUT" "no seat matching 'keeper'" "it says there is no seat"
 run "$OLDER" fill --resume keeper "a fill --resume from the older code"
 assert_equals "$RC" 4 "its fill --resume finds no seat (exit 4)"
+assert_contains "$OUT" "no seat matching 'keeper'" "it says there is no seat"
 run "$OLDER" daemon tick
 assert_equals "$RC" 0 "its daemon tick runs"
 assert_contains "$OUT" "delivered 0" "its tick delivers nothing"
 OUTBOX="$(cat "$SMINOS_HOME/projects/$PROJECT/outcomes.jsonl" 2>/dev/null || true)"
 assert_contains "$OUTBOX" '"writer": "beta/human", "seq": 1}, "session": "'"$SID"'", "outcome": "recorded"' \
   "its tick reports the message from another machine as recorded"
-assert_not_contains "$(calls)" "--resume" "the stub engine was asked to resume nothing"
-assert_not_contains "$(calls)" "$SID" "nor to start anything for the session"
-assert_not_contains "$(calls)" "--bg" "nor to start any background session"
+assert_equals "$(calls)" "" "no verb of the older CLI called the stub engine: nothing resumed or started"
+# The boundary: the older CLI's last verb has run, this code has made no call yet.
+BOUNDARY="$(own_events)"
+assert_equals "$BOUNDARY" "$(printf 'joined - stamped\nretired ended unstamped')" \
+  "at the boundary: this code's stamped joined, then the older copy's unstamped ended, and nothing else"
 
 # ---- this code again ------------------------------------------------------------
 echo "this code after the older CLI:"
@@ -194,15 +200,15 @@ assert_equals "$(row thread)" "$THREAD" "under the same thread"
 run "$SMINOS" daemon owed
 assert_equals "$RC" 0 "daemon owed exits 0: what is held is no debt"
 assert_contains "$OUT" "closed sessions 2" "both messages are still held for it: the older tick settled nothing"
-AFTER="$(own_events)"
-run "$SMINOS" daemon tick
 run "$SMINOS" list
-assert_equals "$(own_events)" "$AFTER" "the older copy's ended is passed by: this code writes nothing over it"
+assert_equals "$(own_events)" "$BOUNDARY" "this code's reads wrote nothing over the older copy's ended: no repair joined"
+run "$SMINOS" daemon tick
+assert_equals "$(own_events)" "$BOUNDARY" "nor did its tick: the older ended is passed by"
 opened
 run "$SMINOS" list
 assert_contains "$OUT" "keeper [${SID:0:8}]" "reopened by its human, it is live as keeper"
 assert_equals "$(row thread)" "$THREAD" "the same thread"
-assert_not_contains "$(calls)" "--resume" "and nothing resumed it but its human"
+assert_equals "$(calls)" "" "and nothing called the stub engine: nothing resumed it but its human"
 
 echo
 echo "older CLI: $PASSES passed, $FAILURES failed"
