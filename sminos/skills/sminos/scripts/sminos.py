@@ -7013,6 +7013,8 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
         if got:
             peer = peer_for_session(session)
     try:
+        if locks is not None and peer is None:
+            return woken_unpushed(session)   # its inbox went between the wake's look and this one
         if not retry and (peer is None or peer.get("pid") is None
                           or (member.seat is None and latest_membership(_own_events(project, session)) == "retired")):
             outcome = push_event(project, member, session, e, events, cursor, words=words)
@@ -7024,6 +7026,10 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
             outcome = holder_carry(plan, project, member, session, e, events, cursor, peer)
         if locks is not None:
             outcome = {"sent": "woken", "sent?": "woken?"}.get(outcome, outcome)
+            if outcome == "recorded":
+                # A push after a wake that handed nothing over (no process answered by then) settles nothing:
+                # `recorded` is an end's or a stale hold's alone.
+                outcome = woken_unpushed(session, outcome)
             t = threads_module().current_record(session, fresh=True)
             if t is not None and t["opened"] == "spawned" and (outcome in PUSHED or outcome == HOLDER_AWAITING):
                 seat = reload_seat(t["thread"])
@@ -7032,6 +7038,17 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
         return outcome
     finally:
         unlock(locks or [])
+
+
+def woken_unpushed(session, outcome="recorded"):
+    """What a push made after a wake (holder_push) that handed nothing over
+    comes to: owed, `held:starting` for its thread, while the session is
+    still the current one of a thread that has not ended (thread_owed's
+    rule); else `outcome`, which an end or a stale hold settles."""
+    t = threads_module().current_record(session, fresh=True)
+    if t is None:
+        return outcome
+    return hold_outcome("starting", t["thread"])
 
 
 _HOLDER_SAID = {}   # session → why its deliveries are held, as last said in daemon.log

@@ -400,6 +400,35 @@ class Bound(Deliveries):
                                 "pushed once the entry is gone")
 
 
+class Unpushed(Deliveries):
+    def test_a_woken_process_whose_inbox_went_before_the_push_keeps_the_event_owed(self):
+        # The first addressed event, not marked yet: its inbox gone between the wake's look and the push's
+        # (frontier review, scalpel-3#1). Owed and held `starting`, never settled `recorded`; the next pass
+        # wakes it again and pushes it once.
+        for how in ("say", "send"):
+            with self.subTest(how=how):
+                tid, sid = self.human_thread()
+                real = sminos.wake_member
+
+                def then_gone(project, member, session, e, *a, **kw):
+                    got = real(project, member, session, e, *a, **kw)
+                    if got[0] == "woken":
+                        self.claude("stop", session[:8])
+                        self.assertTrue(wait_for(lambda: self.record(session) is None))
+                        sminos.forget_caches()
+                    return got
+                with mock.patch.object(sminos, "wake_member", then_gone):
+                    code, out = self.say("@%s first one" % sid[:8]) if how == "say" else \
+                        self.send(sid[:8], "first one")
+                self.assertEqual(code, 0, out)
+                self.assertEqual(sum(f.count("first one") for f in self.frames(sid)), 0, "nothing pushed")
+                self.assertTrue(self.owes(sid, "first one"), "owed")
+                self.assertIn(tid, set(self.marked(sid).values()), "held for its thread")
+                self.tick()
+                self.assertTrue(wait_for(lambda: sum(f.count("first one") for f in self.frames(sid)) == 1))
+                self.assertFalse(self.owes(sid, "first one"))
+
+
 class Held(Deliveries):
     def held_says(self, sid, why, tid=None, text="while away"):
         code, out = self.say("@%s %s" % (sid[:8], text))
