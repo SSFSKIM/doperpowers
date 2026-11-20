@@ -542,6 +542,18 @@ def exists(project_id, session, e):
     return r is not None and r.get("hash") == S.event_hash(e)
 
 
+def admitted(project_id, session, e):
+    """Whether the event's receipt was admitted: the text reached the model,
+    which settles it `sent` whatever becomes of its session since. False for
+    none, another body's, or one that cannot be read."""
+    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"]), create=False)
+    try:
+        r = _read(path) if os.path.exists(path) else None
+    except Unreadable:
+        return False
+    return r is not None and r.get("hash") == S.event_hash(e) and bool(r.get("admitted"))
+
+
 def words_of(project_id, session, e):
     """The verdict the event's held receipt was prepared under (`words`:
     True a person's words, False a peer's, None none taken); None when no

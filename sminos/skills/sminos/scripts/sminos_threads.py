@@ -689,13 +689,27 @@ def set_channels(thread_id, channels):
     return update(thread_id, {"channels": [str(c) for c in channels]})
 
 
-def note_alias(session, alias, lock_until=None):
+def note_alias(session, alias, lock_until=None, project=None):
     """The alias a human-opened thread's latest `joined` or `renamed` carried,
-    copied into its record for readers without the log (lifecycle)."""
+    copied into its record for readers without the log (lifecycle). With
+    `project`, the log it was appended to, copied only while it is still the
+    latest the session's own events there carry, read under the record's
+    lock: two copies made in the other order than their appends leave the
+    later one."""
     t = thread_of(session, ended=False)
     if t is None or t["opened"] != "human" or t["current"] != session or t.get("alias") == alias:
         return False
-    return update(t["thread"], {"alias": alias}, guard=lambda r: r["current"] == session, lock_until=lock_until)
+
+    def latest(r):
+        if r["current"] != session:
+            return False
+        if project is None:
+            return True
+        named = [e for e in sminos._own_events(project, session) if e["kind"] in ("joined", "renamed")
+                 and e.get("alias")]
+        last = sminos.latest_across_writers(named) if named else None
+        return last is None or str(last["alias"]) == alias
+    return update(t["thread"], {"alias": alias}, guard=latest, lock_until=lock_until)
 
 
 # ------------------------------------------------------------ making a record
@@ -843,8 +857,9 @@ def ensure(session, seat=None, project=None, events=None, lock_until=None):
         if not _is_thread(seat):
             return None
         return _ensure_seat(seat, project, events, lock_until)
-    if not _lane_a(session):
-        # A lane B session is never made a thread, nor returned: only a live record it has is its own.
+    if not _lane_a(session) or sminos.records_module().unreadable(session):
+        # A lane B session is never made a thread, nor returned: only a live record it has is its own. Nor one
+        # whose record cannot be read, whose lane is unknown until it can be.
         return thread_of(session, ended=False)
     have = thread_of(session)
     if have is not None and have["current"] == session:
@@ -870,7 +885,8 @@ def choose(session, seat=None, project=None, events=None, peer=None, lock_until=
     joined: an ended record the process does not return, which for a seat
     a fill may still return).
 
-    A lane B session revives no thread: it keeps a live record whose
+    A session whose record cannot be read is held: its lane is unknown, and
+    an adoption is not undone. A lane B session revives no thread: it keeps a live record whose
     current session it is (its end stamped, row 13), never one set aside
     nor one that only had it, and makes none. A lane A
     session's thread is §1's: a human-opened record whose current session
@@ -879,6 +895,8 @@ def choose(session, seat=None, project=None, events=None, peer=None, lock_until=
     makes the record when there is none. An ended thread, of either kind,
     returns by a process its end did not see (returns). LockBusy past
     `lock_until`."""
+    if sminos.records_module().unreadable(session):
+        return None, "hold"   # its lane unknown until its record reads: nothing joined, no record made
     if not _lane_a(session):
         t = thread_of(session, ended=False)
         if t is not None and t["current"] != session:
