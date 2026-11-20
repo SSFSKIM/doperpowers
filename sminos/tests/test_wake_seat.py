@@ -344,6 +344,26 @@ class Human(Wakers):
         self.assertTrue(self.wake(sid).live)
         self.assertEqual(self.resumes(sid)[-1], [], "a row there: no flag")
 
+    def test_a_line_that_cannot_be_written_launches_nothing(self):
+        # W4's write refused: an entry opened after W2 (an older copy's retire takes no wake lock) is the table's
+        # `pending`; a write refused otherwise is `unknown`. Either way nothing is launched on what was read.
+        tid, sid = self.human_thread()
+        real = threads.wake_line
+
+        def opened(t, s, line, lock_until=None):
+            self.edit(tid, pending={"id": "e1", "op": "retire", "events": []})
+            return real(t, s, line, lock_until)
+        with mock.patch.object(threads, "wake_line", opened):
+            got = self.wake(sid)
+        self.assertEqual((got.live, got.why), (False, "pending"))
+        self.assertEqual(self.launches(), 0, "nothing launched")
+        self.assertNotIn("line", threads.waking(threads.get(tid), sid))
+        self.edit(tid, pending=None)
+        with mock.patch.object(threads, "wake_line", lambda *a, **k: False):
+            got = self.wake(sid)
+        self.assertEqual((got.live, got.why), (False, "unknown"))
+        self.assertEqual(self.launches(), 0, "nothing launched")
+
     def test_a_process_late_to_publish_is_starting_then_live(self):
         tid, sid = self.human_thread()
         self.switch("late-process", 1.5)

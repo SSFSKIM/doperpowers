@@ -14254,7 +14254,15 @@ def _wake_held(tid, session, due, returns, on_live):
         turn = wm.last_turn(session, whole=True)
         note = wm.line_note(first, flags if first else wm.row_options(row) if isinstance(row, dict) else [], turn,
                             not_carried)
-        threads.wake_line(tid, session, note)
+        try:
+            written = threads.wake_line(tid, session, note)
+        except (OSError, LockBusy):
+            written = False
+        if not written:
+            # Nothing is launched on a record this wake could not write (an entry an older copy opened since W2,
+            # with no wake lock): the table's answer for what is found now, else `unknown`.
+            _, why = _wake_found(tid, session, due, returns, flagless)
+            return WakeResult(why == "live", "" if why == "live" else why or "unknown")
         seat = reload_seat(tid) if t["opened"] == "spawned" else None
         settings = seat["settings"] if seat is not None else wm.option(flags, "--settings")
         short, banner = run_claude_bg(wm.wake_argv(session, flags), wm.thread_cwd(t), settings)   # W5, W6
