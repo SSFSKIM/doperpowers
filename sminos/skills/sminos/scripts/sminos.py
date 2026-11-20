@@ -6733,7 +6733,10 @@ HOLD_WORDS = {
 # Log, "The `mode` words"): the ceiling's value and whose setting it is, never how to raise it.
 CEILING_WORDS = "this machine's ceiling (%s) would start it in a mode that asks for approval; the ceiling is its " \
                 "owner's setting (sminos daemon policy shows it)"
-PASSING_LINE = "recorded: its process is starting, and the daemon delivers it"
+PASSING_LINE = "recorded: its process is starting, and the daemon delivers it"   # a launch under way
+# A record, a lane or a job list its machine could not read: no launch is under way, nothing is known to clear.
+UNREAD_LINE = "recorded: its machine could not read the session's state just now, and the daemon delivers it when " \
+              "it can"
 
 
 def hold_words(why, session=""):
@@ -6752,9 +6755,15 @@ def held_line(why, machine="", session=""):
     """What a sender is told of a message held for a thread (T2's §5), `why`
     the hold (HOLDS), `machine` the one it waits on when that is another;
     `session`, a local thread's, for `mode`'s cause (hold_words). A hold
-    that passes on its own is said as one the daemon delivers."""
+    that passes on its own is said as one the daemon delivers, in words
+    true for it: a process starting only for a launch under way (`starting`,
+    `in flight`)."""
     if why not in HOLD_WORDS:
-        return PASSING_LINE
+        if why in ("starting", "in flight"):
+            return PASSING_LINE
+        if why == "unknown":
+            return UNREAD_LINE
+        return "recorded: %s, and the daemon delivers it" % wake_words(why)
     return ("recorded and held%s: the session is stopped and is not woken: %s; it is pushed when a process of it runs "
             "again before it ends (three days stopped, or a retire), else it stays in the log"
             % (" on %s" % machine if machine else "", hold_words(why, session)))
@@ -14282,7 +14291,7 @@ def stop_lingering(session, row):
     """W3: the background job of the session (background_job) that the job
     list shows working or blocked while no process holds the session,
     stopped and waited for (wait_stopped); only when the session's own row
-    is there. "" when nothing is in the way; "starting" when the job list
+    is there. "" when nothing is in the way; "unknown" when the job list
     does not read, here or through the stop's confirmation (the latest job
     signal unknown: nothing is launched on it); "live" when a process holds
     the session again since W2 (nothing is stopped under it); "failed" when
@@ -14291,7 +14300,7 @@ def stop_lingering(session, row):
         return ""
     rows = agents_refresh()
     if rows is None:
-        return "starting"
+        return "unknown"
     for r in rows:
         if background_job(r, session) and normalize_state(r) in ("working", "blocked"):
             if running_now(session) is not None:
@@ -14300,7 +14309,7 @@ def stop_lingering(session, row):
                 return "failed"
             stopped = wait_stopped({"current": session, "short": ""}, r["id"], session)
             if stopped != "stopped":
-                return "starting" if stopped == "unknown" else "failed"
+                return "unknown" if stopped == "unknown" else "failed"
     return ""
 
 
@@ -14373,7 +14382,7 @@ def _wake_found(tid, session, due, returns, flagless):
     if held:
         return None, "live"                                              # row 7
     if not readable:
-        return None, "starting"                                          # row 8
+        return None, "unknown"                                           # row 8
     reason = wm.not_woken(t, session, whole=True, flagless=flagless)
     if reason:
         return None, reason                                              # row 9
@@ -14395,7 +14404,7 @@ def _wake_held(tid, session, due, returns, on_live):
             # starting while the job list shows it working, which no wake stops as lingering or launches beside.
             readable, entry = job_of(job["short"])
             if not readable:
-                return WakeResult(False, "starting")
+                return WakeResult(False, "unknown")
             if entry is not None and str(entry.get("sessionId") or session) == session \
                     and normalize_state(entry) in ("working", "blocked"):
                 return WakeResult(False, "starting")
@@ -14407,8 +14416,8 @@ def _wake_held(tid, session, due, returns, on_live):
         lingering = stop_lingering(session, row)                         # W3
         if lingering == "live":
             return WakeResult(True)   # a process holds it again, this wake's launch none of it: nothing of W8
-        if lingering == "starting":
-            return WakeResult(False, "starting")   # row 8's answer: passed on, no attempt counted
+        if lingering == "unknown":
+            return WakeResult(False, "unknown")   # row 8's answer: passed on, no attempt counted
         if lingering:
             return _wake_failed(tid, session, None, "its earlier job could not be stopped")
         first = not flagless and wm.passes_flags(t, session, row)       # W4: row 12's retry passes none
@@ -14730,7 +14739,8 @@ WAKE_WORDS = {
     "in flight": "a wake of it is already in flight",
     "starting": "its process was started and does not answer yet",
     "pending": "it holds a transition not finished yet, which the next reading verb finishes",
-    "unknown": "its record or its lane cannot be read",
+    "unknown": "its record, its lane or the engine's jobs could not be read just now",
+    "busy": "a verb holds its seat",
     "gone": "its session no longer fills its thread",
     "lane": "its session is one MAWS reopens, which sminos never wakes",
     "ended": "it has ended",

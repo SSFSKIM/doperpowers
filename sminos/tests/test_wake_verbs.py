@@ -52,6 +52,9 @@ from test_wake_delivery import FLAGS, STARTING, TAIL, WORDS, Deliveries, line  #
 from test_wake_seat import SCRIPT, sminos, threads, wake  # noqa: E402
 
 VERBS = (("resume",), ("fill", "--resume"), ("send", "--wait"))
+# §5's line for the sweep's moment: nothing launched, the daemon delivers it.
+SWEPT = "recorded: its wake waits for the thread sweep or a transition of it, which holds its lock, and the daemon " \
+        "delivers it"
 
 
 def argv_of(verb, target, text):
@@ -220,6 +223,37 @@ class Human(Verbs):
         self.assertIn("no reply is waited for", out)
         self.assertTrue(self.owes(sid, "soon"), "owed, the daemon's to deliver")
 
+    def test_a_hold_with_no_launch_under_way_is_not_said_as_a_process_starting(self):
+        # frontier review, scalpel-4#7: a job list that does not read, and a record that does not, launch nothing.
+        unread = ("recorded: its machine could not read the session's state just now, and the daemon delivers it "
+                  "when it can")
+        for case in ("jobs", "record"):
+            with self.subTest(case=case):
+                tid, sid = self.human_thread()
+                path = sminos.records_module().record_path(sid)
+                with open(path) as f:
+                    kept = f.read()
+                if case == "jobs":
+                    self.switch("agents-fail")
+                else:
+                    with open(path, "w") as f:
+                        f.write("{")   # the session's record there and unreadable: row 3
+                try:
+                    code, out = self.cli("send", sid[:8], "unread %s" % case)
+                    self.assertEqual(code, 0, out)
+                    self.assertIn(unread, out)
+                    self.assertNotIn("its process is starting", out)
+                    code, out = self.cli("send", sid[:8], "unread %s, waited" % case, "--wait")
+                    self.assertEqual(code, 4, out)
+                    self.assertIn(unread, first_line(out))
+                    self.assertEqual(self.launches(), 0, "nothing launched")
+                finally:
+                    if case == "jobs":
+                        os.unlink(os.path.join(self.state, "agents-fail"))
+                    else:
+                        with open(path, "w") as f:
+                            f.write(kept)
+
     def test_an_ended_one_is_refused_with_exit_4_and_nothing_recorded(self):
         tid, sid = self.human_thread()
         code, out = self.cli("retire", sid[:8])
@@ -274,7 +308,7 @@ class Human(Verbs):
         with self.swept(tid), mock.patch.object(sminos, "SWEEP_WAIT", 0.3):
             code, out = self.cli("resume", sid[:8], "start over")
         self.assertEqual(code, 4, out)
-        self.assertIn(sminos.PASSING_LINE, first_line(out))
+        self.assertIn(SWEPT, first_line(out))
         self.assertTrue(self.owed_mark(out, sid))
         self.assertFalse([c for c in self.calls()[before:] if c["argv"][:1] == ["stop"]], "its turn left running")
         self.assertEqual(len(self.resumes(sid)), resumes, "nothing launched")
@@ -375,7 +409,7 @@ class Seat(Verbs):
         with self.swept(s["seat_id"]), mock.patch.object(sminos, "SWEEP_WAIT", 0.3):
             code, out = self.cli("resume", "w", "start over")
         self.assertEqual(code, 4, out)
-        self.assertIn(sminos.PASSING_LINE, out)
+        self.assertIn(SWEPT, out)
         self.assertTrue(self.owed_mark(out, sid))
         self.assertFalse([c for c in self.calls()[before:] if c["argv"][:1] == ["stop"]], "its turn left running")
         self.assertEqual(len(self.resumes(sid)), resumes, "nothing launched")

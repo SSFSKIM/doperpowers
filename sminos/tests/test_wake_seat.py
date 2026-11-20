@@ -202,13 +202,14 @@ class Human(Wakers):
             "ended": lambda tid, sid: self.edit(tid, ended={"at": sminos.now(), "pid": None}),
             "pending": lambda tid, sid: self.edit(tid, pending={"id": "x1", "op": "end", "events": []}),
             "lane": lambda tid, sid: records.set_controller(sid, "B"),
-            "starting": lambda tid, sid: self.switch("agents-fail"),
+            "unknown jobs": lambda tid, sid: self.switch("agents-fail"),   # row 8: a signal it cannot read
             "transcript": lambda tid, sid: os.unlink(sminos.transcript_now(sid)),
             "failed": lambda tid, sid: self.edit(tid, waking={"session": sid, "failed": 1, "at": sminos.now()}),
             "unknown": lambda tid, sid: self.unreadable_record(sid),
         }
-        for why, make in cases.items():
-            with self.subTest(why=why):
+        for case, make in cases.items():
+            why = case.split()[0]
+            with self.subTest(why=case):
                 tid, sid = self.human_thread()
                 make(tid, sid)
                 got = self.wake(sid, due=why != "failed")
@@ -527,17 +528,17 @@ class Human(Wakers):
         self.assertEqual(len([c for c in self.calls() if c["argv"][:1] == ["stop"]]), stops, "nothing stopped")
         return got
 
-    def test_a_job_list_that_stops_reading_before_w3_is_starting_and_launches_nothing(self):
+    def test_a_job_list_that_stops_reading_before_w3_is_unknown_and_launches_nothing(self):
         got = self.lingering(lambda sid: self.switch("agents-fail"))
-        self.assertEqual((got.live, got.why), (False, "starting"))
+        self.assertEqual((got.live, got.why), (False, "unknown"))
 
     def test_a_process_back_before_w3_is_live_and_nothing_is_stopped_under_it(self):
         got = self.lingering(lambda sid: self.session(sid=sid, kind="bg"))
         self.assertEqual((got.live, got.why, got.short), (True, "", ""))
 
-    def test_a_stop_whose_confirmation_cannot_be_read_is_starting_and_launches_nothing(self):
+    def test_a_stop_whose_confirmation_cannot_be_read_is_unknown_and_launches_nothing(self):
         """W3's stop confirmed only by a job list that reads: one that stops reading right after `claude stop`
-        is row 8 (starting), no launch and no attempt spent."""
+        is row 8 (unknown), no launch and no attempt spent."""
         tid, sid = self.human_thread()
         self.assertTrue(self.wake(sid).live)
         self.stop(sid)
@@ -555,7 +556,7 @@ class Human(Wakers):
         with mock.patch.object(sminos, "claude_stop", side_effect=stop_then_unlisted), \
                 mock.patch.dict(os.environ, {"SMINOS_STOP_TIMEOUT": "1", "SMINOS_POLL_INTERVAL": "0.2"}):
             got = self.wake(sid, on_live=seen.append)
-        self.assertEqual((got.live, got.why), (False, "starting"))
+        self.assertEqual((got.live, got.why), (False, "unknown"))
         self.assertEqual(self.resumes(sid), [["--permission-mode", "auto", "--model", "claude-term"]], "no launch")
         self.assertEqual(seen, [])
         self.assertNotIn("failed", self.waking(tid, sid), "nothing counted")
