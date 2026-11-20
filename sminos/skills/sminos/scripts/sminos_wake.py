@@ -12,8 +12,8 @@ Interfaces §1 and §2 of docs/doperpowers/plans/2026-11-20-sminos-threads-t2.md
   transcript's tail within TAIL_BOUND for a daemon's tick, or whole for a
   wake about to launch, each reading kept by the transcript's stat.
 - The flags of a first wake (first_flags, first_wake), the names of what it
-  does not carry, and the opening line a woken session reads first
-  (line_note, opening_line).
+  does not carry, and the line a woken session reads after the message that
+  woke it (line_note, line_text).
 - Why a thread is not woken (not_woken), and whether a wake that failed is
   due again (wake_due), from the record's `waking` (sminos_threads, §7).
 
@@ -351,12 +351,12 @@ def wake_argv(session, flags):
     return ["--bg", "--resume", session] + list(flags)
 
 
-# ------------------------------------------------------------ the opening line
+# ------------------------------------------------------------ the line
 
 
-LINE_HEAD = ("[sminos] A note from sminos on this machine, not from the sender below: you were woken in the "
-             "background by this message, and your human is not watching this session unless they have attached "
-             "to it since.")
+LINE_HEAD = sminos.LINE_START + (
+    "A note from sminos on this machine, not from the sender above: you were woken in the background by this "
+    "message, and your human is not watching this session unless they have attached to it since.")
 
 
 def line_note(first, options, turn, not_carried=None):
@@ -381,9 +381,11 @@ def same_model(a, b):
     return bool(a) and a == b
 
 
-def opening_line(note):
-    """The one paragraph of sminos's own that opens the first frame pushed
-    after a wake (D2, step 3), from its note (line_note)."""
+def line_text(note):
+    """The one paragraph of sminos's own that closes the first text pushed
+    after a wake (D2, step 3), from its note (line_note): one line, whatever
+    the names it says hold, since a reader finds it by its LINE_START at a
+    line's start after the last frame."""
     mode, model = str(note.get("mode") or ""), str(note.get("model") or "")
     line = LINE_HEAD + (" You run in %s mode on %s." % (mode_flag(mode), model) if mode and model
                         else " You run under your saved options.")
@@ -399,7 +401,7 @@ def opening_line(note):
             line += " Other options of its launch may not be carried."
         elif missing:
             line += " Not carried from its launch: %s." % ", ".join(missing)
-    return line
+    return " ".join(line.splitlines())
 
 
 # ------------------------------------------------------------ not woken, and the schedule

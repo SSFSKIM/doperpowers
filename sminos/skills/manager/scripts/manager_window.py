@@ -64,6 +64,9 @@ REPLY_LINE_RE = re.compile(r"\n\[To reply, run in Bash: [^\n]*\]\s*\Z")
 SENDER = r'((?:"(?:[^"\\\n]|\\.)*")?.*?)'
 CHAT_FRAME_RE = re.compile(r"^\[sminos chat (\S+) (\S+) from %s → ([^\]\n]*?)(?: \| unread \d+)?\]\n" % SENDER, re.M)
 MESSAGE_FRAME_RE = re.compile(r"^\[sminos message from %s id=(\S+)\]\n" % SENDER, re.M)
+# The line sminos puts after the last frame of the first text pushed after a wake (sminos_wake.line_text): the text's
+# last paragraph, one line opening with sminos.LINE_START, which no sender's line opens with (sminos.sender_text).
+WAKE_NOTE_RE = re.compile(r"\n\n%s[^\n]*\n*\Z" % re.escape(S.LINE_START))
 # The clause sminos.sender_labels puts after a sender's alias.
 SENDER_LABEL_RE = re.compile(r"(?:, owned by .*| \((?:owners unverified|unverified(?:, legacy)?|signed by a revoked key)\))\Z")
 
@@ -107,10 +110,16 @@ def _sender(raw):
     return SENDER_LABEL_RE.sub("", raw)
 
 
+def without_note(text):
+    """A delivered text less the line a wake puts after its last frame, which is sminos's and no sender's."""
+    return WAKE_NOTE_RE.sub("", text)
+
+
 def frames(text):
     """[(kind, sender, ref, body, whole)] for each sminos frame in a delivered text, in order: kind `chat` (ref
     its event's `writer:seq`) or `message` (ref its message id); `whole` the frame's own text, header line and
-    body. [] for a text that opens with none."""
+    body, the last one's less a wake's line (without_note). [] for a text that opens with none."""
+    text = without_note(text)
     heads = sorted([("chat", m) for m in CHAT_FRAME_RE.finditer(text)] +
                    [("message", m) for m in MESSAGE_FRAME_RE.finditer(text)], key=lambda h: h[1].start())
     if not heads or heads[0][1].start() != 0:
@@ -463,7 +472,8 @@ class Classifier:
                 or stripped.startswith(("<system-reminder>", "(no content)")):
             return
         elif not frames(stripped):
-            self._add(0, ts, "you·desk" if self.corroborate(stripped) else "you·desk?", stripped, via="bridge")
+            words = without_note(stripped)
+            self._add(0, ts, "you·desk" if self.corroborate(words) else "you·desk?", words, via="bridge")
         else:
             # One push can carry several frames, each its own sender's: each is classified on its own, so one
             # frame's evidence never vouches for another sender's words.

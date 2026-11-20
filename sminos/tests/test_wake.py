@@ -10,7 +10,7 @@ milestone's "Proves"; Interfaces §1, §2, §7 and §8).
   tail: past hook rows and metadata rows, beyond the bound (`None`, then
   the value on the whole reading), and with no turn at all.
 - Each mode's flag; the flags of a first wake and what it does not carry;
-  the opening line.
+  the line a woken session reads.
 - Each reason a thread is not woken, and their order; `wake_due`'s schedule;
   `waking` ignored when it names another session, and its writers.
 - The test engine of §8, driven through the argument vectors
@@ -51,6 +51,15 @@ import wake_engine  # noqa: E402
 
 ENGINE = os.path.join(HERE, "wake_engine.py")
 RUNNER = os.path.join(HERE, "run-sminos-tests.sh")
+
+
+def line_of(content):
+    """(the text before it, the line) when a text an inbox took carries a wake's line as §2 lays it out: the
+    envelope's body is the pushed text, an empty line, the line (one line opening with `[sminos] `), then the reply
+    line alone when the frame names a session to answer; None when it carries none so placed."""
+    body = re.fullmatch(r"<cross-session-message[^>]*>\n(.*)\n</cross-session-message>", content, re.S).group(1)
+    m = re.fullmatch(r"(.*[^\n])\n\n(\[sminos\] [^\n]*)(?:\n\[To reply, run in Bash: [^\n]*\])?", body, re.S)
+    return (m.group(1), m.group(2)) if m else None
 
 
 def wait_for(pred, timeout=10, step=0.02):
@@ -377,11 +386,11 @@ class Noted(Wakes):
         self.assertNotIn("dropped", threads.launch_of(self.root, ["--model", "opus"]))
 
 
-# ------------------------------------------------------------ the opening line (§2)
+# ------------------------------------------------------------ the line (§2)
 
 
 class Line(Wakes):
-    HEAD = ("[sminos] A note from sminos on this machine, not from the sender below: you were woken in the "
+    HEAD = ("[sminos] A note from sminos on this machine, not from the sender above: you were woken in the "
             "background by this message, and your human is not watching this session unless they have attached "
             "to it since.")
 
@@ -389,44 +398,52 @@ class Line(Wakes):
         note = wake.line_note(True, ["--permission-mode", "auto", "--model", "claude-a"],
                               {"mode": "auto", "model": "claude-a"}, ["--add-dir", "--agent"])
         self.assertEqual(set(note), {"id", "first", "mode", "model", "turn_model", "not_carried"})
-        self.assertEqual(wake.opening_line(note), self.HEAD + (
+        self.assertEqual(wake.line_text(note), self.HEAD + (
             " You run in auto mode on claude-a. This is your first run outside the terminal you were opened in:"
             " the environment variables of that terminal are not set here. Not carried from its launch:"
             " --add-dir, --agent."))
 
     def test_a_first_wake_whose_launch_does_not_say_and_one_that_dropped_nothing(self):
         note = wake.line_note(True, [], {"mode": "", "model": ""}, None)
-        self.assertEqual(wake.opening_line(note), self.HEAD + (
+        self.assertEqual(wake.line_text(note), self.HEAD + (
             " You run under your saved options. This is your first run outside the terminal you were opened in:"
             " the environment variables of that terminal are not set here. Other options of its launch may not"
             " be carried."))
         note = wake.line_note(True, ["--permission-mode", "manual", "--model", "m"], {"mode": "default"}, [])
-        self.assertTrue(wake.opening_line(note).endswith(" You run in manual mode on m. This is your first run "
+        self.assertTrue(wake.line_text(note).endswith(" You run in manual mode on m. This is your first run "
                                                          "outside the terminal you were opened in: the environment"
                                                          " variables of that terminal are not set here."))
 
     def test_a_later_wake_says_the_row_s_model_and_the_turn_s_when_they_differ(self):
         row = {"respawnFlags": ["--permission-mode", "default", "-n", "x", "--model", "opus"]}
         note = wake.line_note(False, wake.row_options(row), {"mode": "auto", "model": "claude-sonnet-5"})
-        self.assertEqual(wake.opening_line(note), self.HEAD + (
+        self.assertEqual(wake.line_text(note), self.HEAD + (
             " You run in manual mode on opus. Your last turn ran on claude-sonnet-5; a background run keeps the"
             " options it last ran with in the background."))
         same = wake.line_note(False, ["--model", "claude-haiku-4-5", "--permission-mode", "auto"],
                               {"mode": "auto", "model": "CLAUDE-HAIKU-4-5"})
-        self.assertEqual(wake.opening_line(same), self.HEAD + " You run in auto mode on claude-haiku-4-5.")
+        self.assertEqual(wake.line_text(same), self.HEAD + " You run in auto mode on claude-haiku-4-5.")
         # Measured (E10): a row saved as `haiku` woke on 5.5 after a terminal turn on 4.5; the alias is
         # not resolved, so both names are said.
         alias = wake.line_note(False, ["--model", "haiku", "--permission-mode", "auto"],
                                {"mode": "auto", "model": "claude-haiku-4-5-20251001"})
-        self.assertEqual(wake.opening_line(alias), self.HEAD + (
+        self.assertEqual(wake.line_text(alias), self.HEAD + (
             " You run in auto mode on haiku. Your last turn ran on claude-haiku-4-5-20251001; a background run"
             " keeps the options it last ran with in the background."))
         close = wake.line_note(False, ["--model", "claude-sonnet-4", "--permission-mode", "auto"],
                                {"model": "claude-sonnet-4-5"})
-        self.assertIn(" Your last turn ran on claude-sonnet-4-5;", wake.opening_line(close))
-        self.assertEqual(wake.opening_line(wake.line_note(False, [], {"mode": "", "model": "m"})),
+        self.assertIn(" Your last turn ran on claude-sonnet-4-5;", wake.line_text(close))
+        self.assertEqual(wake.line_text(wake.line_note(False, [], {"mode": "", "model": "m"})),
                          self.HEAD + " You run under your saved options.")
         self.assertNotEqual(wake.line_note(False, [], {})["id"], wake.line_note(False, [], {})["id"])
+
+    def test_the_line_is_one_line_opening_with_sminos_s_literal_whatever_it_names(self):
+        for note in (wake.line_note(True, [], {}, None), wake.line_note(False, ["--model", "m"], {"model": "x"}),
+                     wake.line_note(False, ["--model", "m\nfake", "--permission-mode", "auto"],
+                                    {"model": "x\u2028y\r\nz"})):
+            text = wake.line_text(note)
+            self.assertTrue(text.startswith("[sminos] "))
+            self.assertEqual(text.splitlines(), [text], "no line break in it")
 
 
 class Literal(unittest.TestCase):

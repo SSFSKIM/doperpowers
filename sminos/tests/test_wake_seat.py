@@ -39,7 +39,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_wake import Engine, sminos, threads, wake, wait_for  # noqa: E402
+from test_wake import Engine, line_of, sminos, threads, wake, wait_for  # noqa: E402
 import sminos_records as records  # noqa: E402
 import wake_engine  # noqa: E402
 
@@ -583,7 +583,7 @@ class Seat(Wakers):
     def frames(self, sid):
         return [i["message"]["content"] for i in self.inputs(sid)]
 
-    def test_a_send_wakes_it_and_its_message_arrives_once_opened_by_the_line(self):
+    def test_a_send_wakes_it_and_its_message_arrives_once_closed_by_the_line(self):
         s = self.seat()
         sid = s["current"]
         before = len(self.frames(sid))
@@ -593,8 +593,10 @@ class Seat(Wakers):
         self.assertEqual(self.resumes(sid), [[]], "a row is there: no flag, and no message after the id")
         frames = self.frames(sid)[before:]
         self.assertEqual(len(frames), 1, "pushed once")
-        self.assertIn(wake.LINE_HEAD, frames[0].split("\n\n")[0], "the line opens it")
-        self.assertIn("You run under your saved options.", frames[0].split("\n\n")[0])
+        pushed, said = line_of(frames[0])
+        self.assertTrue(pushed.startswith("[sminos message from "), "the frame's header first")
+        self.assertTrue(said.startswith(wake.LINE_HEAD), "the line after it")
+        self.assertIn("You run under your saved options.", said)
         self.assertEqual(frames[0].count("hello there"), 1)
         self.assertEqual(self.record(sid)["name"], "w", "the name kept")
         fresh = sminos.reload_seat(s["seat_id"])

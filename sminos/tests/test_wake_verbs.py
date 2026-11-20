@@ -47,7 +47,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_wake import answer, prompt, rows, wait_for  # noqa: E402
+from test_wake import answer, line_of, prompt, rows, wait_for  # noqa: E402
 from test_wake_delivery import FLAGS, STARTING, TAIL, WORDS, Deliveries, line  # noqa: E402
 from test_wake_seat import SCRIPT, sminos, threads, wake  # noqa: E402
 
@@ -156,7 +156,7 @@ class Human(Verbs):
                 self.assertIn("(woken)", out)
                 self.assertEqual(self.resumes(sid), [FLAGS], "a first wake's flags, no message after them")
                 [frame] = self.frames(sid)
-                self.assertIn(wake.LINE_HEAD, frame.partition("\n\n")[0], "opened by the line")
+                self.assertTrue(line_of(frame)[1].startswith(wake.LINE_HEAD), "closed by the line")
                 self.assertEqual(frame.count("carry on, %s" % verb[0]), 1)
                 [event] = self.logged("carry on, %s" % verb[0])
                 self.assertIn("id=%s" % event["msg_id"], frame, "recorded first, its id in the frame")

@@ -221,11 +221,13 @@ def push_live(peer, session, text, event=None, project=None, words=None, marker=
     SendFailed("before") when none does."""
     S.reach_hold(project, session, [event] if carried is None else carried, words)
     peer = S.bound_peer(peer, session)
-    # The first frame after a wake opens with sminos's line (T2's §2, §4), ahead of the frame's own first line and
-    # before a route is chosen; removed once this push was made, only while it is still that wake's.
+    # The first push after a wake carries sminos's line (T2's §2, §4), put in before a route is chosen as the text's
+    # last paragraph, one empty line after its last frame: a frame's header stays the text's first line (a receipt's
+    # marker before it), and on the inbox the reply line alone follows the line. Removed once this push was made,
+    # only while it is still that wake's.
     line = S.wake_line_for(peer, session)
     if line is not None:
-        text = "%s\n\n%s" % (S.wake_module().opening_line(line[1]), text)
+        text = "%s\n\n%s" % (text.rstrip("\n"), S.wake_module().line_text(line[1]))
     _routes(peer, session, text, event, project, words, marker)
     if line is not None:
         S.wake_line_pushed(line[0], session, line[1])

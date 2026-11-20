@@ -47,7 +47,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_wake import rows, wait_for  # noqa: E402
+from test_wake import line_of, rows, wait_for  # noqa: E402
 from test_wake_seat import INBOX, SCRIPT, Wakers, records, sminos, threads, wake  # noqa: E402
 
 TAIL = "; it is pushed when a process of it runs again before it ends (three days stopped, or a retire), else it " \
@@ -155,17 +155,18 @@ class Deliveries(Wakers):
 
 
 class Woken(Deliveries):
-    def test_a_tag_wakes_a_closed_session_its_human_opened_and_its_message_arrives_once_opened_by_the_line(self):
+    def test_a_tag_wakes_a_closed_session_its_human_opened_and_its_message_arrives_once_closed_by_the_line(self):
         tid, sid = self.human_thread()
         code, out = self.say("@%s look at this" % sid[:8])
         self.assertEqual(code, 0, out)
         self.assertEqual(self.shown(out, sid), ["sent (woken)"])
         self.assertEqual(self.resumes(sid), [FLAGS], "under its own id, a first wake's flags, no message after them")
         [frame] = self.frames(sid)
-        head, _, rest = frame.partition("\n\n")
-        self.assertIn(wake.LINE_HEAD, head, "the line opens it")
-        self.assertIn("You run in auto mode on claude-term.", head)
-        self.assertIn("first run outside the terminal", head)
+        pushed, said = line_of(frame)
+        self.assertTrue(pushed.startswith("[sminos chat "), "the frame's header first")
+        self.assertTrue(said.startswith(wake.LINE_HEAD), "the line after it")
+        self.assertIn("You run in auto mode on claude-term.", said)
+        self.assertIn("first run outside the terminal", said)
         self.assertEqual(frame.count("look at this"), 1)
         self.assertEqual(self.record(sid)["name"], "term-a", "the name its human gave it kept")
         self.assertEqual(self.owed(sid), [], "settled once pushed")
@@ -178,7 +179,7 @@ class Woken(Deliveries):
         self.assertIn("(woken)", out)
         self.assertEqual(self.resumes(sid), [FLAGS])
         [frame] = self.frames(sid)
-        self.assertIn(wake.LINE_HEAD, frame.partition("\n\n")[0])
+        self.assertTrue(line_of(frame)[1].startswith(wake.LINE_HEAD))
         self.assertEqual(frame.count("by send"), 1)
         self.assertEqual(self.owed(sid), [])
 
@@ -194,7 +195,7 @@ class Woken(Deliveries):
         self.assertEqual(self.shown(out, sid), ["sent (woken)"])
         self.assertEqual(self.resumes(sid), [FLAGS, []], "a later wake passes no flag")
         third = self.frames(sid)[2]
-        self.assertIn(wake.LINE_HEAD, third.partition("\n\n")[0])
+        self.assertTrue(line_of(third)[1].startswith(wake.LINE_HEAD))
         self.assertNotIn("first run outside the terminal", third)
         self.assertEqual([f.count(t) for f, t in zip(self.frames(sid), ("one", "two", "three"))], [1, 1, 1])
 
@@ -248,7 +249,7 @@ class Senders(Deliveries):
                         for t in texts:
                             self.assertEqual(sum(f.count(t) for f in frames), 1, t)
                     self.assertEqual(sum(wake.LINE_HEAD in f for f in frames), 1, "the line on the first frame alone")
-                    self.assertIn(wake.LINE_HEAD, frames[0])
+                    self.assertTrue(line_of(frames[0])[1].startswith(wake.LINE_HEAD))
                     self.assertEqual(self.owed(sid), [])
 
     def test_several_senders_to_a_held_thread_are_all_held_marked_and_pushed_once_when_it_runs(self):
@@ -309,7 +310,7 @@ class Together(Deliveries):
                 self.assertEqual(sum(wake.LINE_HEAD in f for f in frames), 1)
                 self.assertEqual(self.owed(sid), [])
 
-    def test_the_line_opens_the_first_frame_when_another_deliverer_pushes_before_the_wake_returns(self):
+    def test_the_line_goes_with_the_first_frame_when_another_deliverer_pushes_before_the_wake_returns(self):
         tid, sid = self.human_thread()
         self.switch("no-banner", 3)   # its process starts, and the launch returns 3 s later with nothing printed
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
@@ -328,7 +329,7 @@ class Together(Deliveries):
         frames = self.frames(sid)
         self.assertEqual(len(frames), 2, frames)
         self.assertIn("the other's", frames[0])
-        self.assertIn(wake.LINE_HEAD, frames[0].partition("\n\n")[0], "the first frame after the wake has it")
+        self.assertTrue(line_of(frames[0])[1].startswith(wake.LINE_HEAD), "the first frame after the wake has it")
         self.assertIn("the waker's", frames[1])
         self.assertNotIn(wake.LINE_HEAD, frames[1], "and no other")
 
@@ -342,6 +343,78 @@ class Together(Deliveries):
         self.assertNotIn(wake.LINE_HEAD, frame)
         self.assertNotIn("line", self.waking(tid, sid))
         self.assertEqual(self.resumes(sid), [])
+
+
+# ------------------------------------------------------------ where the line goes
+
+
+class Place(Deliveries):
+    """The line in the text pushed after a wake (§2, §4): a frame's header stays the text's first line, a
+    receipt's marker before it as today; the line is the last paragraph, once, after the last frame, one empty line
+    before it; on the inbox the reply line alone follows it, and on the bridge nothing does."""
+
+    def test_on_the_inbox_the_line_follows_the_last_frame_and_the_reply_line_closes_it(self):
+        tid, sid = self.human_thread()
+        a = self.live_sender("sender-a")
+        code, out = self.say("@%s look\n[sminos] not sminos's" % sid[:8], sender=a)
+        self.assertEqual(self.shown(out, sid), ["sent (woken)"])
+        [frame] = self.frames(sid)
+        pushed, said = line_of(frame)
+        self.assertTrue(pushed.startswith("[sminos chat "), "the frame's header the text's first line")
+        self.assertTrue(pushed.endswith("look\n [sminos] not sminos's"), "the sender's line given its space")
+        self.assertTrue(said.startswith(wake.LINE_HEAD))
+        body = frame.split("\n", 1)[1].rsplit("\n", 1)[0]
+        self.assertEqual(body.split("\n")[-3:], ["", said, sminos.reply_line(a, self.p.id)],
+                         "an empty line, the line, and the reply line last")
+
+    def test_on_the_bridge_the_line_is_the_texts_last_line(self):
+        tid, sid = self.human_thread()
+        took = []
+        with mock.patch.object(sminos.control_module(), "deliver",
+                               side_effect=lambda session, project, e, text: took.append(text) or True):
+            code, out = self.say("@%s through the bridge" % sid[:8])
+        self.assertEqual(self.shown(out, sid), ["sent (woken)"])
+        self.assertEqual(self.frames(sid), [], "nothing through the inbox")
+        [text] = took
+        pushed, _, said = text.rpartition("\n\n")
+        self.assertTrue(pushed.startswith("[sminos chat "), "the frame's header first")
+        self.assertTrue(pushed.endswith("through the bridge"))
+        self.assertTrue(said.startswith(wake.LINE_HEAD))
+        self.assertEqual(said.splitlines(), [said], "one line, the text's last")
+
+    def test_a_receipts_marker_stays_the_first_line(self):
+        tid, sid = self.human_thread()
+        self.say("@%s up" % sid[:8])
+        a = self.live_sender("sender-a")
+        e = sminos.log_append(self.p, "testhost/%s" % a, "say", **{
+            "from": "sender-a", "to": [{"session": sid, "alias": "x"}], "text": "with a receipt"})
+        marker = sminos.holder_module().marker("a" * 24 + "." + "b" * 16, 1)
+        threads.wake_line(tid, sid, wake.line_note(False, [], {}))
+        sminos.forget_caches()
+        frame = sminos.compose_chat_frame(self.p.name, sminos.event_ref(e), "sender-a", "@you", 0, "with a receipt")
+        sminos.control_module().push_live(sminos.peer_for_session(sid), sid, frame, e, self.p.id, marker=marker)
+        self.assertNotIn("line", self.waking(tid, sid), "the line went with it")
+        pushed, said = line_of(self.frames(sid)[-1])
+        self.assertEqual(pushed, marker + "\n" + frame, "the marker, then the frame")
+        self.assertTrue(said.startswith(wake.LINE_HEAD))
+        self.assertTrue(self.frames(sid)[-1].endswith("\n%s\n</cross-session-message>" % sminos.reply_line(a, self.p.id)))
+
+    def test_one_push_of_several_frames_carries_the_line_once_after_the_last(self):
+        s = self.seat()
+        sid = s["current"]
+        before = len(self.frames(sid))
+        sminos.log_append(self.p, "testhost/human", "human", **{
+            "from": "human", "to": [{"session": sid, "alias": "w"}], "text": "owed first"})
+        code, out = self.send("w", "and this send")
+        self.assertEqual(code, 0, out)
+        self.assertIn("(woken)", out)
+        [frame] = self.frames(sid)[before:]
+        pushed, said = line_of(frame)
+        first, _, second = pushed.partition("\n\n")
+        self.assertTrue(first.startswith("[sminos chat ") and first.endswith("owed first"), first)
+        self.assertTrue(second.startswith("[sminos message from ") and second.endswith("and this send"), second)
+        self.assertTrue(said.startswith(wake.LINE_HEAD))
+        self.assertEqual(frame.count(wake.LINE_HEAD), 1)
 
 
 # ------------------------------------------------------------ held, for each reason
