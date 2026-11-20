@@ -2482,6 +2482,7 @@ run "$SMINOS" say '@b your migration renames my column'
 assert_rc 0 "$RC" "tag to a stopped member is recorded"
 assert_contains "$OUT" 'b: woken' "tag resumes a stopped member"
 assert_contains "$(cat "$STUB_STATE/log/calls.log")" "--bg --resume $B" "resume uses saved session"
+"$CLAUDE_STUB" stop "${B:0:8}" >/dev/null   # the woken process stopped again: b is a stopped member below
 run "$SMINOS" say '@all standup'
 assert_rc 0 "$RC" "broadcast is recorded"
 assert_contains "$OUT" 'lead: sent' "@all reaches a live member"
@@ -2610,6 +2611,7 @@ print(ms[cur].by if cur in ms else "-", cur in ms)
 PY_SPAWNED
 )"
 assert_equals "$SPAWNED" "a True" "and stays a member, its spawner kept as provenance"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$A.jsonl"   # a conversation for its wake
 "$SMINOS" fill fam/a "back" --resume >/dev/null
 rm -f "$HOME/.claude/sessions/b.json"
 printf 'short=bbbb0003\nuuid=%s\nname=b\nstate=stopped\nstatus=\ncwd=%s\n' "$B" "$WORK" > "$STUB_STATE/agents/bbbb0003"
@@ -2687,6 +2689,7 @@ wait "$d1_holder"
 assert_rc 0 "$RC" "one busy lifecycle lock does not abort sibling fan-out"
 assert_contains "$OUT" 'd1: failed:' "busy lifecycle lock is recorded per member"
 assert_contains "$OUT" 'd2: woken' "later member still resumes after lock contention"
+"$CLAUDE_STUB" stop "${D2:0:8}" >/dev/null   # stopped again, for the next fan-out to wake
 run "$SMINOS" say '@d1 @d2 please respond'
 assert_rc 0 "$RC" "one refused resume does not abort the fan-out"
 assert_contains "$OUT" 'd1: pending behind an earlier undelivered message (failed:' "a failed earlier message holds the later one back"
@@ -3043,6 +3046,7 @@ assert_not_contains "$(inbox e)" "rebase in progress" "an @all written before a 
 CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@d wake up"
 assert_contains "$OUT" "d: woken" "a tag resumes a stopped member"
 assert_contains "$(cat "$STUB_STATE/log/calls.log")" "--bg --resume $SD" "through its saved session"
+"$CLAUDE_STUB" stop "${SD:0:8}" >/dev/null   # its woken process stopped again: d stays a stopped member
 CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@a hi"
 assert_rc 2 "$RC" "a member cannot tag itself"
 CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@all @b hi"
@@ -3371,6 +3375,7 @@ assert_contains "$OUT" "sent to demo/b (woken)" "by waking it"
 assert_contains "$(cat "$STUB_STATE/wake/inputs/$SB" 2>/dev/null)" "after a broadcast" "the push after the wake carries the send"
 assert_not_contains "$(cat "$STUB_STATE/wake/inputs/$SB" 2>/dev/null)" "stale broadcast" "but not the broadcast a stopped member is never woken for"
 assert_equals "$(owed_count "$SB")" 0 "the broadcast is settled by passing"
+"$CLAUDE_STUB" stop "${SB:0:8}" >/dev/null   # the woken process stopped: b is its inbox stand-in again
 mv "$TEST_ROOT/pl-b.json.aside" "$HOME/.claude/sessions/pl-b.json"
 rm -f "$STUB_STATE/agents/bbbb0b02"
 
@@ -3868,8 +3873,9 @@ run "$SMINOS" fill pc "continue" --resume
 assert_rc 0 "$RC" "fill --resume of the retired seat"
 assert_equals "$(field "$PC" current)" "$PC2" "keeps its session"
 assert_equals "$(events_of "$PC2")" "joined in-charge retired:retire joined " "and re-joins it under the same uuid"
+"$CLAUDE_STUB" stop "${PC2:0:8}" >/dev/null   # its woken process stopped
 run "$SMINOS" list --stopped
-assert_contains "$OUT" "pc" "the revived seat lists again with --stopped (the stub has no live peer)"
+assert_contains "$OUT" "pc" "the revived seat lists again with --stopped once its process stops"
 # seat add records joined; remove records retired.
 SAS=2a000007-0000-4000-8000-00000000002a
 run "$SMINOS" seat add pf-repo added --session "$SAS"
@@ -4341,7 +4347,7 @@ run "$SMINOS" say "@stp @ib wake both"
 chmod 600 "$PFLOG/testhost.$STP.jsonl"
 assert_rc 0 "$RC" "a say whose resumed recipient cannot be re-joined in the log still completes"
 assert_contains "$OUT" "stp: woken" "the resume launched with the frame"
-assert_contains "$OUT" "pf-repo/stp was resumed with the message, but recording joined of ${STP:0:8}" "a warning names the failed re-join"
+assert_contains "$OUT" "pf-repo/stp was woken, but recording joined of ${STP:0:8}" "a warning names the failed re-join"
 assert_contains "$OUT" "ib: sent" "the fan-out goes on to the next recipient"
 assert_contains "$(inbox ib)" "wake both" "which is delivered"
 assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["testhost/human"]["settled"])' "$SMINOS_HOME/projects/$PF/delivered/$STP.json")" \
