@@ -205,6 +205,8 @@ class Human(Verbs):
         os.unlink(os.path.join(self.state, "fail-job"))
         code, out = self.cli("resume", sid[:8], "and now")
         self.assertEqual(code, 0, out)
+        # The engine's inbox appends a frame once it has read it: the last one pushed is waited for.
+        self.assertTrue(wait_for(lambda: any("and now" in f for f in self.frames(sid))))
         frames = self.frames(sid)
         for text in ("failing resume", "failing fill", "failing send", "and now"):
             self.assertEqual(sum(f.count(text) for f in frames), 1, text)
@@ -350,6 +352,20 @@ class Seat(Verbs):
         self.assertEqual(at, [("stop", True), ("launch", True)], "the stop and the launch under the lock")
         self.assertEqual(takes, [s["seat_id"]], "one hold, taken before the stop, for both")
         self.assertEqual(sum(f.count("start over") for f in self.frames(sid)), 1)
+
+    def test_resume_stops_no_job_an_earlier_wake_accepted_that_is_still_starting(self):
+        s = self.seat()
+        sid = s["current"]
+        self.switch("late-process", 30)
+        with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "2"}):
+            code, out = self.cli("send", "w", "up")
+            self.assertIn(sminos.PASSING_LINE, out)
+            launched, before = self.launches(), len(self.calls())
+            code, out = self.cli("resume", "w", "start over")
+        self.assertEqual(code, 4, out)
+        self.assertFalse([c for c in self.calls()[before:] if c["argv"][:1] in (["stop"], ["rm"])], "nothing stopped")
+        self.assertEqual(self.launches(), launched, "nothing launched beside it")
+        self.assertTrue(self.owes(sid, "start over"), "owed")
 
     def test_resume_that_cannot_have_the_wake_lock_stops_nothing_and_answers_the_hold(self):
         s = self.seat()

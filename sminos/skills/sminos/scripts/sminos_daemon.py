@@ -1437,12 +1437,18 @@ def sweep_threads():
             continue
         try:
             if cur in running:
+                if set(threads.LIVE_CLEARS) & set(threads.waking(t, cur)):
+                    # A process holds it, however it came up (a wake, its human in a terminal, an older copy): a
+                    # wake's failures and the job it accepted are past, as a wake that saw it live forgets them.
+                    threads.wake_cleared(tid, cur)
                 remove = [k for k in ("stopped", "swept") if t.get(k)]
                 if t.get("released") and threads.release_outlived(t["released"], running[cur]):
                     remove.append("released")
                 if remove:
                     threads.update(tid, {}, remove=remove, guard=lambda r, cur=cur: r["current"] == cur)
                 continue
+            if sminos.wake_module().starting(t, cur) is not None:
+                continue   # a wake's job still starting (its grace not passed): neither marked nor ended
             if ending_pass and t.get("stopped") and now - (sminos._ts_epoch(t["stopped"]) or now) > after \
                     and (threads.thread_of(cur) or {}).get("thread") == tid:
                 due.append((tid, cur, t["stopped"]))   # the session's canonical record alone is ended (thread_of)
@@ -1564,7 +1570,7 @@ def end_stopped(threads, tid, cur, stopped, asked=None):
     t = threads.get(tid)
     if t is None or t["current"] != cur or t.get("pending") or threads.record_ended(t) \
             or t.get("stopped") != stopped or not threads.asked_all(t, asked) or sminos.running_now(cur) \
-            or (threads.thread_of(cur) or {}).get("thread") != tid:
+            or (threads.thread_of(cur) or {}).get("thread") != tid or sminos.wake_module().starting(t, cur):
         return []
     return sminos.end_by_rule(t, stopped, asked)
 
@@ -1580,7 +1586,7 @@ def stop_and_close(threads, tid, cur, stopped):
     closing — goes through the same lock and the same checks."""
     t = threads.get(tid)
     if t is None or t["current"] != cur or t.get("pending") or threads.record_ended(t) \
-            or t.get("stopped") != stopped or sminos.running_now(cur):
+            or t.get("stopped") != stopped or sminos.running_now(cur) or sminos.wake_module().starting(t, cur):
         return
     if not stopped:
         stopped = sminos.now()

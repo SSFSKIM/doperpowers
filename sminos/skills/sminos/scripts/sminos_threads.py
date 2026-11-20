@@ -843,6 +843,7 @@ def wake_failed(thread_id, session, line_id, lock_until=None):
     def change(w):
         w["failed"] = (w["failed"] if isinstance(w.get("failed"), int) and w["failed"] > 0 else 0) + 1
         w["at"] = sminos.now(ms=True)
+        w.pop("job", None)
         if line_id is not None and (w.get("line") or {}).get("id") == line_id:
             w.pop("line")
         return w
@@ -850,11 +851,13 @@ def wake_failed(thread_id, session, line_id, lock_until=None):
 
 
 def wake_done(thread_id, session, saved=None, lock_until=None):
-    """A wake made the session live: the failures forgotten, and `saved` set
-    when given (the engine said the session keeps saved options, §3 row 12)."""
+    """A wake made the session live: the failures and its accepted job
+    forgotten, and `saved` set when given (the engine said the session keeps
+    saved options, §3 row 12)."""
     def change(w):
         w.pop("failed", None)
         w.pop("at", None)
+        w.pop("job", None)
         if saved:
             w["saved"] = True
         return w
@@ -872,13 +875,41 @@ def wake_saved(thread_id, session, lock_until=None):
     return _waking_change(thread_id, session, change, lock_until)
 
 
+# What a process holding the session again makes past (wake_cleared): a wake's failures and the job it accepted.
+LIVE_CLEARS = ("failed", "at", "job")
+
+
 def wake_cleared(thread_id, session, lock_until=None):
-    """A wake's failures (`failed`, `at`) forgotten: a process holds the session again."""
+    """A wake's failures (`failed`, `at`) and its accepted job (`job`)
+    forgotten: a process holds the session again, however it came up."""
     def change(w):
-        if "failed" not in w and "at" not in w:
+        if not set(LIVE_CLEARS) & set(w):
             return None
-        w.pop("failed", None)
-        w.pop("at", None)
+        for k in LIVE_CLEARS:
+            w.pop(k, None)
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_job(thread_id, session, short, lock_until=None):
+    """`waking.job` set when a wake's banner named this session's job
+    (`short`), before its process is seen (§3, W6): {"short", "at"}, so that
+    while it may still be starting no wake stops it as lingering or launches
+    again, and the sweep neither marks nor ends the thread
+    (sminos_wake.starting)."""
+    def change(w):
+        w["job"] = {"short": short, "at": sminos.now(ms=True)}
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_job_cleared(thread_id, session, short, lock_until=None):
+    """The accepted job `short` forgotten (read as failed, or gone from the
+    job list), only while it is still the one the field names."""
+    def change(w):
+        if (w.get("job") or {}).get("short") != short:
+            return None
+        w.pop("job")
         return w
     return _waking_change(thread_id, session, change, lock_until)
 
@@ -1231,7 +1262,7 @@ def stop_seen(session, lock_until=None, thread_id=None):
     launch sees it before the sweep can: the stop mark of the thread whose
     current session it is, `stopped` and `swept`, removed, so the clock of
     the rule starts again at its next stop and never runs on a mark from
-    before; a wake's failures (`waking.failed`, `at`) go with it, cleared by
+    before; a wake's failures (`waking.failed`, `at`) and its accepted job go with it, cleared by
     the field's own compare-and-set (wake_cleared), never a write of the
     field as read before the lock. Nothing for a record with no mark, an
     ended one (its return lifts the mark) or one with an open entry.
@@ -1242,7 +1273,7 @@ def stop_seen(session, lock_until=None, thread_id=None):
         return False
     tid = t["thread"]
     cleared = False
-    if "failed" in waking(t, session) or "at" in waking(t, session):
+    if set(LIVE_CLEARS) & set(waking(t, session)):
         cleared = wake_cleared(tid, session, lock_until)
     if not (t.get("stopped") or t.get("swept")):
         return cleared

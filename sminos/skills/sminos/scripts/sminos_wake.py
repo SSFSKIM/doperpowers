@@ -49,6 +49,9 @@ REASONS = ("config", "transcript", "cwd", "protected", "mode")
 TAIL_BOUND = 4 << 20      # how far back from its end a tick reads a transcript for the last turn
 WAKE_RETRY = 60           # seconds after a first failed wake before the next; doubled per failure (§4)
 WAKE_RETRY_MAX = 3600     # the most it waits
+# How long a job a wake's banner named (`waking.job`) is taken for one still starting when its process has not been
+# seen: three times the wake's own wait for it (SMINOS_UUID_POLL polls of SMINOS_POLL_INTERVAL, 30 of 2 s).
+WAKE_GRACE = 180
 _CHUNK = 1 << 16
 _ROWS = {}                # row path → (its stat key, what it parsed to: any JSON value, or UNREADABLE)
 _TURNS = {}               # transcript path → (its stat key, {"bounded": turn, "whole": turn})
@@ -580,6 +583,22 @@ def deadline(record, session):
         return None
     return at + min(_seconds("WAKE_RETRY", WAKE_RETRY) * 2.0 ** min(failed - 1, 64),
                     _seconds("WAKE_RETRY_MAX", WAKE_RETRY_MAX))
+
+
+def starting(record, session, now=None):
+    """The job a wake of the session accepted (`waking.job`: the banner
+    named this session's job, its process not seen yet), while WAKE_GRACE
+    (SMINOS_WAKE_GRACE) has not passed since: {"short", "at"}; None
+    otherwise. While it is there no wake stops that job or launches again
+    (sminos.wake) and the sweep neither marks the thread stopped nor ends
+    it; past it, the job is one lingering as any other."""
+    job = sminos.threads_module().waking(record, session).get("job")
+    if not isinstance(job, dict) or not job.get("short"):
+        return None
+    at = sminos._ts_epoch(job.get("at"))
+    if at is None or (time.time() if now is None else now) - at >= _seconds("WAKE_GRACE", WAKE_GRACE):
+        return None
+    return job
 
 
 def wake_due(record, session, now=None):

@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -430,6 +431,56 @@ class Human(Wakers):
         launched = self.launches()
         self.assertTrue(self.wake(sid).live)
         self.assertEqual(self.launches(), launched, "once it publishes, live with no second launch")
+
+    def test_a_job_accepted_and_still_starting_is_neither_stopped_nor_launched_beside(self):
+        # A banner named this session's job and its process is not there at W7's bound (frontier review,
+        # scalpel-3#6): the job is remembered, and the next wake, within its grace, stops nothing and launches
+        # nothing; once the process is up it is live with no second launch, and the job is forgotten.
+        tid, sid = self.human_thread()
+        self.switch("late-process", 2.5)
+        with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "4"}):
+            got = self.wake(sid)
+            self.assertEqual((got.live, got.why), (False, "starting"))
+            self.assertEqual(self.waking(tid, sid)["job"]["short"], sid[:8], "the accepted job noted")
+            before = len(self.calls())
+            for _ in range(2):
+                again = self.wake(sid)
+                self.assertEqual((again.live, again.why), (False, "starting"))
+        self.assertEqual(self.launches(), 1, "no second launch")
+        self.assertFalse([c for c in self.calls()[before:] if c["argv"][:1] in (["stop"], ["rm"])], "nothing stopped")
+        self.assertTrue(wait_for(lambda: self.record(sid) is not None))
+        self.assertTrue(self.wake(sid).live)
+        self.assertEqual(self.launches(), 1)
+        sminos.daemon_module().sweep_threads()
+        self.assertNotIn("job", self.waking(tid, sid), "forgotten once a process is seen holding the session")
+
+    def test_a_job_accepted_whose_grace_passed_lingers_as_any_other(self):
+        tid, sid = self.human_thread()
+        self.switch("late-process", 30)
+        with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "2", "SMINOS_WAKE_GRACE": "0.3"}):
+            self.assertEqual(self.wake(sid).why, "starting")
+            time.sleep(0.4)
+            os.unlink(os.path.join(self.state, "late-process"))
+            got = self.wake(sid)
+        self.assertTrue(got.live, got)
+        self.assertTrue([c for c in self.calls() if c["argv"][:1] == ["stop"]], "stopped as lingering")
+        self.assertEqual(self.launches(), 2, "launched again")
+
+    def test_a_job_accepted_and_read_failed_is_forgotten_and_the_wake_goes_on(self):
+        tid, sid = self.human_thread()
+        self.switch("late-process", 30)
+        with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "2"}):
+            self.assertEqual(self.wake(sid).why, "starting")
+        self.claude("stop", sid[:8])   # its worker gone before it published,
+        path = os.path.join(self.state, "jobs", sid[:8] + ".json")
+        with open(path) as f:
+            entry = json.load(f)
+        with open(path, "w") as f:
+            json.dump(dict(entry, state="failed"), f)   # and its job read as failed: forgotten
+        os.unlink(os.path.join(self.state, "late-process"))
+        got = self.wake(sid)
+        self.assertTrue(got.live, got)
+        self.assertEqual(self.launches(), 2, "the failed one forgotten: launched again")
 
     def test_a_launch_that_timed_out_with_its_process_running_is_live_through_w8(self):
         tid, sid = self.human_thread()

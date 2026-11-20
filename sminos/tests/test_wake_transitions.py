@@ -83,6 +83,32 @@ class Sweep(Transitions):
         self.sweep(3)
         self.assertNotIn("stopped", threads.get(tid))
 
+    def test_a_thread_whose_wake_accepted_a_job_still_starting_is_neither_marked_nor_ended(self):
+        # frontier review, scalpel-1#3: W7's bound passed with the banner's job accepted and no process yet.
+        tid, sid = self.human_thread()
+        self.switch("late-process", 30)
+        with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "2"}):
+            self.assertEqual(self.wake(sid).why, "starting")
+        self.sweep(3)
+        self.assertNotIn("stopped", threads.get(tid), "not marked stopped while it starts")
+        old = "2026-01-01T00:00:00.000Z"
+        self.assertTrue(threads.update(tid, {"stopped": old, "swept": old}))
+        t = threads.get(tid)
+        asked = threads.shorts_of(threads.owner_sessions(t))
+        self.assertEqual(self.daemon.end_stopped(threads, tid, sid, old, asked), [], "not ended by the rule")
+        self.assertIsNone(threads.get(tid).get("ended"))
+        with mock.patch.dict(os.environ, {"SMINOS_WAKE_GRACE": "0"}):
+            self.assertTrue(self.daemon.end_stopped(threads, tid, sid, old, asked), "ended once its grace passed")
+
+    def test_a_process_seen_by_the_sweep_clears_a_wakes_failures(self):
+        # frontier review, scalpel-2#3: a terminal reopened after failed wakes, seen live by the sweep.
+        tid, sid = self.human_thread()
+        self.edit(tid, waking={"session": sid, "failed": 4, "at": sminos.now()})
+        _, proc = self.session(sid=sid, kind="interactive", name="term-a")
+        self.sweep()
+        self.assertEqual(self.waking(tid, sid), {}, "the failures and the retry time cleared")
+        self.end(proc)
+
     def test_a_wake_that_meets_the_sweeps_hold_waits_it_out_or_launches_nothing(self):
         tid, sid = self.human_thread()
         held, release = threading.Event(), threading.Event()

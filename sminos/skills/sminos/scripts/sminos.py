@@ -14358,6 +14358,20 @@ def _wake_held(tid, session, due, returns, on_live):
         t, why = _wake_found(tid, session, due, returns, flagless)
         if t is None:
             return WakeResult(why == "live", "" if why == "live" else why)
+        job = wm.starting(t, session)
+        if job is not None:
+            # A job an earlier wake's banner named, its process not seen yet and its grace not passed: one still
+            # starting while the job list shows it working, which no wake stops as lingering or launches beside.
+            readable, entry = job_of(job["short"])
+            if not readable:
+                return WakeResult(False, "starting")
+            if entry is not None and str(entry.get("sessionId") or session) == session \
+                    and normalize_state(entry) in ("working", "blocked"):
+                return WakeResult(False, "starting")
+            try:
+                threads.wake_job_cleared(tid, session, job["short"])   # gone or ended: today's rules from here
+            except (OSError, LockBusy) as e:
+                warn("the wake of %s did not forget its earlier job: %s" % (session[:8], e or "its lock is busy"))
         row = wm.row_of(session)
         lingering = stop_lingering(session, row)                         # W3
         if lingering == "live":
@@ -14412,6 +14426,12 @@ def _wake_held(tid, session, due, returns, on_live):
                 continue
             remove_copy(short, "the engine started a copy")              # row 13
             return _wake_failed(tid, session, note["id"], "the engine started a copy")
+        try:
+            # The job the banner named, accepted before its process is seen (W6): a launch that is still starting at
+            # W7's bound is neither stopped as lingering nor launched beside by the next wake, nor ended by the sweep.
+            threads.wake_job(tid, session, short)
+        except (OSError, LockBusy) as e:
+            warn("the wake of %s did not note its job: %s" % (session[:8], e or "its lock is busy"))
         got = _wake_wait(session, short)                                 # W7
         if got == "copy":                                                # row 13: the banner's job is another's
             remove_copy(short, "the banner's job names another session")
@@ -14580,7 +14600,8 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
                 if took is None:
                     return WakeResult(False, why)
             try:
-                stop_live_turn(s)
+                if wake_module().starting(threads_module().get(seat_id), s["current"]) is None:
+                    stop_live_turn(s)   # never a job an earlier wake accepted that is still starting: the wake waits
             except BaseException:
                 if took is not None:
                     took.release()
