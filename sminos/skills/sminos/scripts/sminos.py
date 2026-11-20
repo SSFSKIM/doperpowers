@@ -8508,10 +8508,27 @@ def verb_delivered(project, session, alias, delivery, msg_id, verb="", wait=Fals
         # A turn is stopped only for a wake that would start it again: the message goes to the process that runs.
         warn("the turn of %s was not stopped: a wake would not start it again (%s); the message goes to the process "
              "that runs" % (alias, hold_words(reason, session)))
-    elif stop_turn and rec is not None and not terminal:
+    hold = None
+    if not reason and stop_turn and rec is not None and not terminal:
+        # The stop and the wake that follows run under one hold of the wake lock (§3, W1), taken before anything
+        # is stopped and kept through this call's delivery pass, whose wake uses it: the sweep cannot act between
+        # them. A lock that cannot be had stops nothing, and the hold is the answer. (Taken under the delivery
+        # lock; the pass's delivery lock is then taken under it, which only a deliverer polling this wake lock,
+        # for its bounded wait, can meet.)
+        if t is not None and wake_held(t["thread"]) is None:
+            hold, why = launch_hold(t["thread"])
+            if hold is None:
+                delivery.release()
+                print("recorded %s for %s: %s" % (event_ref(delivery.event), alias, held_line(why, session=session)),
+                      flush=True)
+                say_owed(session)
+                nudge_daemon()
+                die(verb_hold_words(why, session), EXIT_UNKNOWN)
         try:
             stop_background_turn(session, "", alias)
         except ResumeRefused as e:
+            if hold is not None:
+                hold.release()
             delivery.release()
             nudge_daemon()
             say_owed(session)
@@ -8521,11 +8538,17 @@ def verb_delivered(project, session, alias, delivery, msg_id, verb="", wait=Fals
     member = next((x for x in members(project) if x.session == session), None)
     ref = event_ref(delivery.event)
     if member is None:
+        if hold is not None:
+            hold.release()
         print("recorded %s for %s: the daemon delivers it" % (ref, alias), flush=True)
         say_owed(session)
         nudge_daemon()
         die("no reply is waited for: %s is not a member of %s here" % (alias, project.name), EXIT_UNKNOWN)
-    got = deliver_next(project, member, due=True)
+    try:
+        got = deliver_next(project, member, due=True)
+    finally:
+        if hold is not None:
+            hold.release()
     mine = [o for ev, o in got["outcomes"] if (ev["writer"], ev["seq"]) == (writer, seq)]
     first = next((o for ev, o in got["outcomes"] if ev["writer"] == writer), "")
     entry = _delivery(delivered_load(project, session), writer)
@@ -14233,13 +14256,25 @@ def wake(record, session, due=False, returns=False, on_live=None):
     what the caller writes once the process is live (a seat's fields, a
     retired seat's return)."""
     tid = record["thread"]
-    hold, why = wake_lock(tid, holder=LAUNCH_HOLD % (os.getpid(), now()))
+    mine = wake_held(tid) is None   # a hold this thread has already (its caller's) is its caller's to end
+    hold, why = launch_hold(tid)
     if hold is None:
         return WakeResult(True) if live_now(session) else WakeResult(False, why)   # rows 1 and 2
     try:
         return _wake_held(tid, session, due, returns, on_live)
     finally:
-        hold.release()
+        if mine:
+            hold.release()
+
+
+def launch_hold(thread_id):
+    """W1: the thread's wake lock for a wake, by wake_lock's bounded poll,
+    named as a launch's (LAUNCH_HOLD); the one this thread holds already
+    when it has one. A caller that must act before the wake under the same
+    hold (`resume`'s stop of a live turn) or after it (the push to the
+    woken process) takes it here and ends it; the wake then uses it and
+    leaves it held. (hold, "") or (None, why)."""
+    return wake_lock(thread_id, holder=LAUNCH_HOLD % (os.getpid(), now()))
 
 
 def _wake_found(tid, session, due, returns, flagless):
@@ -14492,11 +14527,23 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
     # Its config dir and its directory are the wake's to answer (not_woken: a hold, T2's §6), for a verb as for a
     # delivery. A live turn is stopped only for a wake that would start it again: with a reason not to, the message
     # goes to the process that runs, its turn left as it is.
+    took = None
     if stop_turn:
         record = threads_module().get(seat_id)
         reason = wake_module().not_woken(record, s["current"], whole=True) if record is not None else ""
         if not reason:
-            stop_live_turn(s)
+            # The stop and the wake that follows run under one hold of the wake lock (§3, W1), taken before
+            # anything is stopped: the sweep cannot act between them, and a lock that cannot be had stops nothing.
+            if wake_held(seat_id) is None:
+                took, why = launch_hold(seat_id)
+                if took is None:
+                    return WakeResult(False, why)
+            try:
+                stop_live_turn(s)
+            except BaseException:
+                if took is not None:
+                    took.release()
+                raise
         elif running_now(s["current"]) is not None:
             warn("the turn of %s/%s was not stopped: a wake would not start it again (%s); the message goes to the "
                  "process that runs" % (s["group"], s["alias"], hold_words(reason, s["current"])))
@@ -14520,8 +14567,12 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
                 raise
             warn("%s/%s was woken, but %s" % (s["group"], s["alias"], e))
 
-    woke = wake(threads_module().get(seat_id) or {"thread": seat_id}, s["current"], due=due, returns=returns,
-                on_live=on_live)
+    try:
+        woke = wake(threads_module().get(seat_id) or {"thread": seat_id}, s["current"], due=due, returns=returns,
+                    on_live=on_live)
+    finally:
+        if took is not None:
+            took.release()
     if woke.live and returns and ((threads_module().get(seat_id) or {}).get("pending") or {}).get("op") == "return":
         # Nothing is written through an open entry (§6, 6): nothing is pushed until its return is finished.
         raise ResumeRefused("%s/%s was woken and its session runs, but its return is not finished (its record holds "

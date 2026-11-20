@@ -32,6 +32,8 @@ Run: python3 -B sminos/tests/test_wake_verbs.py
 """
 import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
+import contextlib
+import fcntl
 import json
 import os
 import shutil
@@ -85,6 +87,44 @@ class Verbs(Deliveries):
             "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"})
         sminos.audience_module().keep_capabilities([])
         sminos.forget_caches()
+
+    @contextlib.contextmanager
+    def swept(self, tid):
+        """The thread's wake lock held as the sweep holds it (its own descriptor: flock is per open file)."""
+        f = open(sminos.wake_lock_path(tid), "a+")
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        f.seek(0)
+        f.truncate()
+        f.write(sminos.SWEEP_HOLD)
+        f.flush()
+        try:
+            yield
+        finally:
+            f.close()
+
+    def one_hold(self, tid):
+        """Every fresh taking of the thread's wake lock (none held by this thread yet) and, at each stop and launch,
+        whether it was held: patches in place, read back from the lists returned."""
+        takes, at = [], []
+        real_lock, real_stop, real_run = sminos.wake_lock, sminos.claude_stop, sminos.run_claude_bg
+
+        def lock(thread_id, *a, **k):
+            if thread_id == tid and sminos.wake_held(tid) is None:
+                takes.append(thread_id)
+            return real_lock(thread_id, *a, **k)
+
+        def stop(short):
+            at.append(("stop", sminos.wake_held(tid) is not None))
+            return real_stop(short)
+
+        def run(args, cwd, settings):
+            at.append(("launch", sminos.wake_held(tid) is not None))
+            return real_run(args, cwd, settings)
+        for name, f in (("wake_lock", lock), ("claude_stop", stop), ("run_claude_bg", run)):
+            p = mock.patch.object(sminos, name, f)
+            p.start()
+            self.addCleanup(p.stop)
+        return takes, at
 
     def owed_mark(self, out, sid):
         return ("owed: %s" % sid) in out.splitlines()
@@ -215,6 +255,33 @@ class Human(Verbs):
         self.assertEqual(self.resumes(sid), [FLAGS, []], "woken again, under its row")
         self.assertEqual(sum(f.count("start over") for f in self.frames(sid)), 1)
 
+    def test_resume_stops_its_turn_and_wakes_it_under_one_hold_of_the_wake_lock(self):
+        tid, sid = self.human_thread()
+        self.say("@%s first" % sid[:8])
+        takes, at = self.one_hold(tid)
+        code, out = self.cli("resume", sid[:8], "start over")
+        self.assertEqual(code, 0, out)
+        self.assertIn("(woken)", out)
+        self.assertEqual(at, [("stop", True), ("launch", True)], "the stop and the launch under the lock")
+        self.assertEqual(takes, [tid], "one hold, taken before the stop, for both")
+
+    def test_resume_that_cannot_have_the_wake_lock_stops_nothing_and_answers_the_hold(self):
+        tid, sid = self.human_thread()
+        self.say("@%s first" % sid[:8])
+        before, resumes = len(self.calls()), len(self.resumes(sid))
+        with self.swept(tid), mock.patch.object(sminos, "SWEEP_WAIT", 0.3):
+            code, out = self.cli("resume", sid[:8], "start over")
+        self.assertEqual(code, 4, out)
+        self.assertIn(sminos.PASSING_LINE, first_line(out))
+        self.assertTrue(self.owed_mark(out, sid))
+        self.assertFalse([c for c in self.calls()[before:] if c["argv"][:1] == ["stop"]], "its turn left running")
+        self.assertEqual(len(self.resumes(sid)), resumes, "nothing launched")
+        self.assertIsNotNone(self.record(sid), "its process still runs")
+        self.assertTrue(self.owes(sid, "start over"), "owed")
+        self.tick()
+        self.assertTrue(wait_for(lambda: sum(f.count("start over") for f in self.frames(sid)) == 1),
+                        "the daemon pushes it to the process that runs")
+
     def test_fill_resume_of_a_live_one_is_refused_as_a_filled_seat_is_and_records_nothing(self):
         tid, sid = self.human_thread()
         self.say("@%s up now" % sid[:8])
@@ -272,6 +339,32 @@ class Seat(Verbs):
                 with self.subTest(why=why, verb=verb):
                     text = "for %s by %s" % (why, verb[0])
                     self.held_verb(argv_of(verb, alias, text), s["current"], why, text)
+
+    def test_resume_stops_its_turn_and_wakes_it_under_one_hold_of_the_wake_lock(self):
+        s = self.seat()
+        sid = s["current"]
+        self.cli("send", "w", "up")
+        takes, at = self.one_hold(s["seat_id"])
+        code, out = self.cli("resume", "w", "start over")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(at, [("stop", True), ("launch", True)], "the stop and the launch under the lock")
+        self.assertEqual(takes, [s["seat_id"]], "one hold, taken before the stop, for both")
+        self.assertEqual(sum(f.count("start over") for f in self.frames(sid)), 1)
+
+    def test_resume_that_cannot_have_the_wake_lock_stops_nothing_and_answers_the_hold(self):
+        s = self.seat()
+        sid = s["current"]
+        self.cli("send", "w", "up")
+        before, resumes = len(self.calls()), len(self.resumes(sid))
+        with self.swept(s["seat_id"]), mock.patch.object(sminos, "SWEEP_WAIT", 0.3):
+            code, out = self.cli("resume", "w", "start over")
+        self.assertEqual(code, 4, out)
+        self.assertIn(sminos.PASSING_LINE, out)
+        self.assertTrue(self.owed_mark(out, sid))
+        self.assertFalse([c for c in self.calls()[before:] if c["argv"][:1] == ["stop"]], "its turn left running")
+        self.assertEqual(len(self.resumes(sid)), resumes, "nothing launched")
+        self.assertIsNotNone(self.record(sid), "its process still runs")
+        self.assertTrue(self.owes(sid, "start over"), "owed")
 
     def test_a_spawned_thread_in_a_protected_folder_is_resumed(self):
         s = self.seat_in("w", self.vault())
