@@ -17,6 +17,7 @@ Hermetic: every case has its own HOME, SMINOS_HOME and CLAUDE_CONFIG_DIR.
 Run: python3 -B sminos/tests/test_holder_receipts.py
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import json
 import os
 import threading

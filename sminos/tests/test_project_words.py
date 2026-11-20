@@ -15,6 +15,7 @@ make the repositories.
 Run: python3 -B -I sminos/tests/test_project_words.py
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import argparse
 import contextlib
 import io

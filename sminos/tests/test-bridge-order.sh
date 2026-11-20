@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # Row order and the snapshot cut (DC2 M4, DX5): the child's readiness, each
 # loop's cut, a later resync ending every subscription, and the reference

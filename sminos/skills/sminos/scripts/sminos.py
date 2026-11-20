@@ -14142,8 +14142,11 @@ def retire_member(project, m, purge, verb="retired", how=None):
     human = thread is not None and thread["opened"] == "human" and thread["current"] == m.session
     if purge and not human:
         die("%s holds no seat and no thread record of this machine: there is no record to purge" % m.alias)
-    asked = None
-    if thread is not None and thread["current"] == m.session and (purge or not threads.record_ended(thread)):
+    if thread is None or thread["current"] != m.session:
+        asked = threads.Exempt("no-thread")
+    elif threads.record_ended(thread) and not purge:
+        asked = threads.Exempt("ended")
+    else:
         asked = owner_guard(how or OwnerAsk(m.alias, "purge" if purge else "retire"), [thread],
                             "%s (session %s)" % (m.alias, m.short))
     agents_refresh()
@@ -14261,16 +14264,19 @@ def retired_in_log(project, sid):
 def seat_owner_guard(s0, purge, how):
     """owner_guard for a seat's end, asked before its locks are taken (the
     question can take a minute): the record that ends (its session's
-    canonical one, else the seat's own) and the seat. None, nothing asked,
-    for a seat that is no thread (a lane B session's) and for a retire of
-    one ended already, which ends nothing."""
+    canonical one, else the seat's own) and the seat. Nothing is asked for
+    a seat that is no thread (a lane B session's) or a retire of one ended
+    already, which ends nothing: an Exempt saying which, which the end
+    proves again under the locks (end_and_stop, asked_all)."""
     threads = threads_module()
     cur = s0["current"]
     t = threads.thread_of(cur) if cur else None
     own = threads.get(s0["seat_id"])
     t = t if t is not None and t["current"] == cur else own
-    if t is None or threads.record_ended(t) and not purge:
-        return None
+    if t is None:
+        return threads.Exempt("no-thread")
+    if threads.record_ended(t) and not purge:
+        return threads.Exempt("ended")
     return owner_guard(how, [t] + ([own] if own is not None and own is not t else []),
                        "%s/%s (session %s)" % (s0["group"], s0["alias"], cur[:8]) if cur
                        else "%s/%s" % (s0["group"], s0["alias"]))
@@ -14311,15 +14317,19 @@ def end_and_stop(s, purge, asked=None):
     (end_human), its entry bringing the seat in line, retired or for a
     purge deleted; else the seat's own (end_seat). The verb's lifecycle
     locks are held. What may keep a thread from its end (M5: devcloud's
-    answer) is asked by the verb before this (seat_owner_guard), and `asked`,
-    the short ids it asked about, rechecked by the end under the record's
-    lock."""
+    answer) is asked by the verb before this (seat_owner_guard), and what
+    cleared it (`asked`: the short ids asked about, or why none was needed)
+    is proved again here, under the seat's locks, and by the end under the
+    record's lock (sminos_threads.asked_all)."""
     cur = s["current"]
-    if asked is not None and cur and cur[:8] not in asked:
-        # Read under the seat's locks: a refill since devcloud was asked put a session it was not asked about here.
-        die("seat %s/%s changed while devcloud was asked (it now holds %s): nothing was written; run it again" % (
-            s["group"], s["alias"], cur[:8]), EXIT_UNKNOWN)
-    thread = threads_module().thread_of(cur) if cur else None
+    threads = threads_module()
+    thread = threads.thread_of(cur) if cur else None
+    record = thread if thread is not None and thread["current"] == cur else threads.get(s["seat_id"])
+    if record is not None and not threads.asked_all(record, asked):
+        # Read under the seat's locks: a refill or a return since devcloud was asked (or since no question was
+        # needed) put this seat in a state the question did not clear.
+        die("seat %s/%s changed while its end was decided (it now holds %s): nothing was written; run it again"
+            % (s["group"], s["alias"], cur[:8] or "no session"), EXIT_UNKNOWN)
     project = seat_project(s)
     seen = session_running(cur) if cur else None   # the process the end sees, and records
     agents_refresh()
@@ -16097,6 +16107,7 @@ def build_parser():
         dsub.add_parser(op, add_help=False)
     dc = dsub.add_parser("census", add_help=False)   # the ending pass's child (T1's M5); no person runs it
     dc.add_argument("threads", nargs="*")
+    dc.add_argument("--reap", action="store_true")
     dpr = dsub.add_parser("profile", add_help=False)
     dpr.add_argument("--seconds", type=float, default=20.0)
     dpr.add_argument("--of", choices=("uplink", "run"), default="uplink")

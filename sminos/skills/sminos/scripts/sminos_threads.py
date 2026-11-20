@@ -1456,6 +1456,15 @@ DEVCLOUD_GRACE = 5              # seconds between the driver's SIGTERM and the k
 _MANIFEST = os.path.join(".claude-plugin", "plugin.json")
 
 
+class Exempt(NamedTuple):
+    """No question was asked because none was needed, and why (`why`):
+    "ended", a retire of a record that had ended already, which ends
+    nothing; "no-thread", a session no record tracks (lane B). An end
+    proves the exemption again where it writes (asked_all), and a record
+    that no longer fits it is refused."""
+    why: str
+
+
 class Owned(NamedTuple):
     """devcloud's answer about some short ids (Interfaces §7): `answer`
     "owned", "none" or "unknown"; `vms` devcloud's matching hosts; `unknown`
@@ -1592,7 +1601,8 @@ def owned_by(shorts):
         return no_answer(shorts, "devcloud vm owned-by exited %d: %s" % (code, first[:300]))
     reply = _reply(printed[0])
     if reply is None:
-        return no_answer(shorts, "devcloud vm owned-by exited 0 without its answer: %s" % first[:300])
+        return no_answer(shorts, "devcloud vm owned-by exited 0 without a well-formed answer (a malformed answer): %s"
+                         % first[:300])
     return Owned(reply["answer"], reply["vms"], reply["unknown"], shorts)
 
 
@@ -1603,15 +1613,47 @@ def _text(f, limit=1 << 20):
 
 def _reply(stdout):
     """devcloud's answer object (X9) from what it printed, or None when it
-    is not one."""
+    is not one (x9_reply)."""
     try:
         d = json.loads(stdout)
     except ValueError:
         return None
+    return x9_reply(d)
+
+
+def _text_or_none(v):
+    return v is None or isinstance(v, str)
+
+
+def x9_reply(d, ours=False):
+    """`d` when it is an answer of X9's form, else None: `answer` one of the
+    three; each of `vms` a host with its `name`, `account`, `creator`
+    (`@<short>`) and `provider` (null only for an adopted machine, `adopted`
+    true); each of `unknown` an `account`, a `provider`, `failed`
+    ("account" or "listing"; with `ours`, the census's own file, also
+    sminos's "query") and a `reason`; and the answer consistent with them:
+    owned with a host, none with neither hosts nor anything unknown,
+    unknown with no host and something unknown. A host with no creator
+    would otherwise drop out of the match and leave a none."""
     if not (isinstance(d, dict) and d.get("answer") in ANSWERS and isinstance(d.get("vms"), list)
-            and isinstance(d.get("unknown"), list) and all(isinstance(v, dict) for v in d["vms"] + d["unknown"])):
+            and isinstance(d.get("unknown"), list)):
         return None
-    return d
+    for v in d["vms"]:
+        if not (isinstance(v, dict) and isinstance(v.get("name"), str) and v["name"]
+                and isinstance(v.get("account"), str) and v["account"]
+                and isinstance(v.get("creator"), str) and re.fullmatch(r"@\S+", v["creator"])
+                and (isinstance(v.get("provider"), str) and v["provider"]
+                     or v.get("provider") is None and v.get("adopted") is True)):
+            return None
+    failed = ("account", "listing", "query") if ours else ("account", "listing")
+    for u in d["unknown"]:
+        if not (isinstance(u, dict) and _text_or_none(u.get("account")) and _text_or_none(u.get("provider"))
+                and u.get("failed") in failed and isinstance(u.get("reason"), str)
+                and (u["account"] is not None or u["failed"] == "query")):
+            return None
+    shape = {"owned": bool(d["vms"]), "none": not d["vms"] and not d["unknown"],
+             "unknown": not d["vms"] and bool(d["unknown"])}
+    return d if shape[d["answer"]] else None
 
 
 def owned_among(reply, shorts):
@@ -1624,10 +1666,9 @@ def owned_among(reply, shorts):
     mine = [v for v in reply.vms if v.get("creator") in tags]
     if mine:
         return Owned("owned", mine, list(reply.unknown), shorts)
-    if reply.unknown:
-        return Owned("unknown", [], list(reply.unknown), shorts)
-    if reply.answer == "unknown":
-        return no_answer(shorts, "devcloud answered unknown and named nothing it could not ask")
+    if reply.unknown or reply.answer == "unknown":
+        return Owned("unknown", [], list(reply.unknown), shorts) if reply.unknown else \
+            no_answer(shorts, "devcloud answered unknown and named nothing it could not ask")
     return Owned("none", [], [], shorts)
 
 
@@ -1657,11 +1698,19 @@ def owned_vms(thread):
 
 
 def asked_all(record, asked):
-    """Whether a question asked about `asked` (short ids) still covers the
-    record as it is now: every session it has had among them. What an end
-    rechecks under the record's lock (its guard), since the answer was
-    read before."""
-    return asked is None or set(shorts_of(list(record["sessions"]) + [record["current"]])) <= set(asked)
+    """Whether what an end was cleared by still holds for the record as it
+    is now, read where the end writes (its guard, under the record's lock),
+    since the answer was read before: for short ids asked about, every
+    session the record has had among them, by the same reading the
+    question was asked from (owner_sessions); for an Exempt, the reason no
+    question was needed (a record that had ended has ended still; a session
+    no record tracked has none, so any record refuses it). Nothing (None)
+    clears nothing."""
+    if isinstance(asked, Exempt):
+        return asked.why == "ended" and record_ended(record)
+    if asked is None:
+        return False
+    return set(shorts_of(owner_sessions(record))) <= set(asked)
 
 
 def host_words(vm):
@@ -1747,10 +1796,13 @@ def stop_tree(pid, wait, grace=None):
         signal.pthread_sigmask(signal.SIG_SETMASK, before)
 
 
-def kill_tree(pid):
+def kill_tree(pid, still=None):
     """SIGKILL to a process and every process descended from it, the
-    descendants read before the kill."""
+    descendants read before the kill; with `still`, only while still()
+    says the process is the one meant (read after the table)."""
     below = descendants(pid)
+    if still is not None and not still():
+        return
     for p in [pid] + below:
         try:
             os.kill(p, signal.SIGKILL)

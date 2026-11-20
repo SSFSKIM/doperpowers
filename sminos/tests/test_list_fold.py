@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Display-only folding of stopped sessions, through the real CLI in a temp home."""
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import json
 import os
 import subprocess

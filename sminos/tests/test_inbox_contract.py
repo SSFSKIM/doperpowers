@@ -18,6 +18,7 @@ Hermetic: HOME and SMINOS_HOME are temporary; nothing reaches beyond this
 run's directory.
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import json
 import os
 import shutil

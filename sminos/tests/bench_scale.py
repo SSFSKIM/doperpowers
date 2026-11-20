@@ -156,6 +156,7 @@ The counting window is 60 s so that it holds one whole member round (the
 loop's longest period) wherever it falls.
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import argparse
 import datetime
 import json

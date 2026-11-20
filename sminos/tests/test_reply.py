@@ -5,6 +5,7 @@ the last thing it said, the message's text where the turn ended on a final messa
 response of its own (`answeredWithoutRequest`, no request made) that says nothing of the session's; and that response
 ends the turn for the readers of its end. Through the real CLI in a temp home; the rows are shaped as the engine
 writes them (2.1.312, read off a live to-human final message)."""
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import json
 import os
 import subprocess

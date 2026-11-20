@@ -6,6 +6,7 @@ registry/harness inputs and external CLI process are stand-ins; no harness or
 runtime configuration is read. HOME and SMINOS_HOME are temporary throughout.
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import os
 from pathlib import Path
 import subprocess

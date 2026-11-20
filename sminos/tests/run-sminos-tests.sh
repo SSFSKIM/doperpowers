@@ -124,10 +124,9 @@ export DAEMON_HOST="testhost"
 export SMINOS_NO_EXEC=1
 # The daemon's derivation (every five minutes) starts a child; only the cases that pin it turn it on.
 export SMINOS_DERIVE_EVERY=0
-# devcloud is a stand-in for every suite run from here (T1's M5): no test reaches a real driver, and
-# none of devcloud's own variables (its seed key, its profile) reaches one.
-export SMINOS_DEVCLOUD="$SCRIPT_DIR/devcloud_standin.py"
-while IFS= read -r var; do unset "$var"; done < <(compgen -e | grep '^DEVCLOUD_' || true)
+# devcloud is a stand-in for every suite run from here (T1's M5), exported to each file it runs.
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$SCRIPT_DIR/devcloud-isolation.sh"
 WORK="$TEST_ROOT/work"
 mkdir -p "$HOME/.claude/sessions" "$WORK" "$STUB_STATE/agents" "$STUB_STATE/log"
 

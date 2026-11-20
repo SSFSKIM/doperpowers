@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # Requests from outside and their settlement (DC2 M3, DX5): the endpoint's
 # pending set and recent settlements, the mod's long-poll for a decision, a

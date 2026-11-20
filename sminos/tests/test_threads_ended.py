@@ -23,6 +23,7 @@ sessions are `sleep` processes with engine records the test writes; the
 harness's `claude agents` and `claude stop` are stood in for.
 Run: python3 -B sminos/tests/test_threads_ended.py
 """
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import contextlib
 import json
 import os
@@ -41,7 +42,8 @@ from test_threads import BASE, Killed, ms_ago, sminos, threads  # noqa: E402
 from test_threads_stopped import Rig, wait_for  # noqa: E402
 
 PERIOD = 3600
-ENV = {"SMINOS_THREAD_END_AFTER": str(PERIOD), "SMINOS_THREAD_END_EVERY": "0"}
+SPACING = 600   # the ending pass's: a census's answer is taken up no older than this (sweep() makes each pass due)
+ENV = {"SMINOS_THREAD_END_AFTER": str(PERIOD), "SMINOS_THREAD_END_EVERY": str(SPACING)}
 
 
 def ago(seconds):
@@ -57,21 +59,32 @@ class Ending(Rig):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.daemon._ENDING[0] = 0.0
-        self.daemon._CENSUS_SEEN[0] = None
-        self.daemon._CENSUS_LIVE[0] = False
         self.daemon._CENSUS = None
+        self.daemon._REAPER = None
         self.addCleanup(self.census_gone)
         self.launched = []
 
     def census_gone(self):
-        """A census this test started, waited for (or stopped) before its machine goes."""
-        proc, self.daemon._CENSUS = self.daemon._CENSUS, None
-        if proc is not None:
-            try:
-                proc.wait(30)
-            except Exception:  # noqa: BLE001 — stopped, then reaped
-                proc.kill()
-                proc.wait()
+        """A census or reaper this test started, waited for (or stopped) before its machine goes."""
+        for name in ("_CENSUS", "_REAPER"):
+            proc = getattr(self.daemon, name)
+            setattr(self.daemon, name, None)
+            if proc is not None:
+                try:
+                    proc.wait(30)
+                except Exception:  # noqa: BLE001 — stopped, then reaped
+                    proc.kill()
+                    proc.wait()
+
+    def spacing_due(self):
+        """The ending pass's spacing passed: the next sweep is a pass on it."""
+        self.daemon._ENDING[0] = 0.0
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", "threads.json")
+        if os.path.exists(path):
+            with open(path) as f:
+                held = json.load(f)
+            held.pop("ending", None)
+            sminos.write_json(path, held)
 
     def engine(self, sid, short=None):
         """The harness's two steps a fill takes, stood in for: the engine's
@@ -87,10 +100,13 @@ class Ending(Rig):
         return mock.patch.object(sminos, "run_claude_bg", side_effect=start), \
             mock.patch.object(sminos, "poll_uuid", return_value=(sid, "idle", self.root))
 
-    def sweep(self):
-        """A pass of the thread sweep; when it started a census (T1's M5:
-        the three-day rule asks devcloud first, off the tick), the census
-        waited for and the pass that takes its answer up."""
+    def sweep(self, spaced=True):
+        """A pass of the thread sweep, on its spacing unless `spaced` is
+        false; when it started a census (T1's M5: the three-day rule asks
+        devcloud first, off the tick), the census waited for and the pass
+        its landing starts, which takes its answer up."""
+        if spaced:
+            self.spacing_due()
         sminos.forget_caches()
         self.daemon.sweep_threads()
         sminos.forget_caches()
@@ -210,10 +226,10 @@ class Rule(Ending):
         tid, _ = self.stopped_since(sid, 2 * PERIOD)
         with mock.patch.dict(os.environ, {"SMINOS_THREAD_END_EVERY": "3600"}):
             self.daemon._ENDING[0] = time.time() - 60
-            self.sweep()
+            self.sweep(spaced=False)
             self.assertFalse(threads.record_ended(threads.get(tid)), "within the spacing: no ending pass")
             self.daemon._ENDING[0] = time.time() - 3601
-            self.sweep()
+            self.sweep(spaced=False)
             self.assertTrue(threads.record_ended(threads.get(tid)))
 
     def test_a_process_that_takes_the_session_after_the_pass_decided_is_not_ended(self):

@@ -6,6 +6,7 @@ nowhere here for a day.
 
 Hermetic: HOME and SMINOS_HOME are temporary (test_session_plane's)."""
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import base64
 import json
 import os

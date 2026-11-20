@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # Sync of hub projects (DC4 M3 of the desk), on machines cut over to their
 # endpoints (endpoint_standin.py), never enrolled at a hub and holding no

@@ -8,6 +8,7 @@ is the real CLI's. Each test has its own HOME, SMINOS_HOME and MAWS_USER_DATA.
 Run: python3 -B sminos/tests/test_org_retired.py
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import datetime
 import json
 import os

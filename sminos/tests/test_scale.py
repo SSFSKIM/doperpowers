@@ -7,6 +7,7 @@ a reconciliation deciding on a resolution older than a move does not undo
 the move (F3). Hermetic: HOME and SMINOS_HOME are temporary.
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import errno
 import glob
 import json

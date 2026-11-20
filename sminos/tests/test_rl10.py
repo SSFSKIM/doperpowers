@@ -15,6 +15,7 @@ one temporary directory; nothing listens beyond a Unix socket there.
 Run: python3 -B sminos/tests/test_rl10.py
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import base64
 import glob
 import json

@@ -23,6 +23,7 @@ test (test_threads.Machine); sessions are `sleep` processes with engine
 records the test writes.
 Run: python3 -B sminos/tests/test_threads_stopped.py
 """
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import contextlib
 import io
 import json

@@ -3,6 +3,7 @@
 the engine writes (metas, transcripts), the tree, --done, and the CLI's text and JSON, in a temp home. The rows
 are shaped as the engine writes them (2.1.310: a background Bash launch, its notification after the preamble, a
 handback's turn-ending result, request records between rows)."""
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import json
 import os
 import socket

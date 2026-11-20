@@ -15,6 +15,7 @@ stub, the endpoint is sminos's own stand-in on a Unix socket there.
 Run: python3 -B -I sminos/tests/test_locations_kept.py
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import glob
 import json
 import os

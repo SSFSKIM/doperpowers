@@ -11,6 +11,7 @@ runner until someone dismissed it). Hermetic: HOME and SMINOS_HOME are
 temporary; the platform is the guard's flag (sminos.TCC), so it runs on Linux.
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import builtins
 import contextlib
 import json

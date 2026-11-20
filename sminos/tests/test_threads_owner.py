@@ -23,7 +23,11 @@ suite's stand-in for devcloud (devcloud_standin.py, which SMINOS_DEVCLOUD
 names); the one test of the real launcher runs it under an empty HOME with
 none of devcloud's variables. Run: python3 -B sminos/tests/test_threads_owner.py
 """
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import contextlib
+import fcntl
+import glob
+import io
 import json
 import os
 import pty
@@ -127,19 +131,40 @@ class Owner(Ending):
     def ended(self, tid):
         return threads.record_ended(threads.get(tid))
 
-    def pass_(self):
-        """One pass of the sweep, as the daemon's tick makes it."""
+    def pass_(self, spaced=True):
+        """One pass of the sweep, as the daemon's tick makes it, on the
+        ending pass's spacing unless `spaced` is false."""
+        if spaced:
+            self.spacing_due()
         sminos.forget_caches()
         self.daemon.sweep_threads()
         sminos.forget_caches()
 
-    def landed_pass(self):
-        """A pass that only a census's landing starts (the spacing not due):
-        it takes the answer up and asks nothing."""
-        with mock.patch.dict(os.environ, {"SMINOS_THREAD_END_EVERY": "3600"}):
-            self.daemon._ENDING[0] = time.time()
+    def take_up(self):
+        """A pass on its spacing that takes up the census's answer as it
+        stands, its own census held back: the mock of start_census."""
+        with mock.patch.object(self.daemon, "start_census") as start:
             self.pass_()
-        self.assertIsNone(self.daemon._CENSUS, "a pass a landing started asks nothing")
+        return start
+
+    def run_path(self):
+        return os.path.join(os.environ["SMINOS_HOME"], "daemon", "census-run.json")
+
+    def owe(self, to, sender, text):
+        """A message addressed to `to`, written as an older sender writes one
+        (its own writer file, no push): owed until a tick delivers it."""
+        sminos.log_append(self.p, sminos.writer_id(sender), "message", session=sender, text="@x %s" % text,
+                          to=[{"session": to, "alias": "x"}])
+        sminos.forget_caches()
+
+    def full_tick(self):
+        """The daemon's whole tick (every project, then the thread sweep):
+        how long it took."""
+        began = time.monotonic()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.daemon.tick_all(quiet=True)
+        sminos.forget_caches()
+        return time.monotonic() - began
 
     def census_here(self, *tids):
         """The census's question, asked in this process (so a test's patches
@@ -306,8 +331,38 @@ class Owned(Owner):
         with mock.patch.object(sminos, "owner_guard", side_effect=meanwhile):
             code, out = self.cli("retire", "g/v")
         self.assertEqual(code, 4, out)
-        self.assertIn("changed while devcloud was asked", out)
+        self.assertIn("changed while its end was decided", out)
         self.assertNotEqual(sminos.reload_seat(seat_id)["status"], "retired")
+
+
+    def test_a_seat_ended_already_and_filled_before_its_retire_takes_its_locks_is_not_retired(self):
+        """A retire of an ended seat asks nothing, since it ends nothing;
+        a fill that returns the seat before the retire takes its locks
+        leaves it nothing to stand on."""
+        sid, proc, seat_id = self.seated()
+        code, out = self.cli("retire", "g/w")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.ended(seat_id))
+        new, _ = self.session(name="w")
+        self.standin(hosts=[host("dc-a-0001", new[:8])])
+        real = sminos.seat_owner_guard
+
+        def filled(*a):
+            got = real(*a)
+            self.assertEqual(got, threads.Exempt("ended"))
+            with open(sminos.meta_path(seat_id)) as f:   # a fill's return, between the question and the locks
+                raw = json.load(f)
+            raw.update(current=new, status="idle", sessions=raw["sessions"] + [new])
+            raw.pop("ended", None)
+            sminos.write_json(sminos.meta_path(seat_id), raw)
+            sminos.forget_caches()
+            return got
+        with mock.patch.object(sminos, "seat_owner_guard", side_effect=filled):
+            code, out = self.cli("retire", "g/w")
+        self.assertEqual(code, 4, out)
+        self.assertIn("changed while its end was decided", out)
+        self.assertFalse(self.ended(seat_id), "its new occupant, never asked about, keeps it")
+        self.assertFalse(threads.asked_all(threads.get(seat_id), None), "nothing asked clears nothing")
 
 
 # ------------------------------------------------------------ unknown
@@ -360,8 +415,18 @@ class Unknown(Owner):
             ("another exit", standin(exit=1, stderr="devcloud: needs Python 3.11 or later on PATH\n"),
              "exited 1: devcloud: needs Python 3.11 or later on PATH"),
             ("exit 0 without the answer", standin(stdout="Traceback (most recent call last):\n"),
-             "exited 0 without its answer: Traceback (most recent call last):"),
+             "exited 0 without a well-formed answer (a malformed answer): Traceback (most recent call last):"),
             ("a timeout", bounded(), "gave no answer within 0.5s, and was stopped"),
+            ("owned with no host", standin(stdout='{"answer": "owned"}\n'), "a malformed answer"),
+            ("a host with no creator", standin(stdout=json.dumps({
+                "answer": "owned", "vms": [{"name": "dc-a-0001", "account": "main", "provider": "hetzner"}],
+                "unknown": [], "listed": ["main"]}) + "\n"), "a malformed answer"),
+            ("none with something it could not ask", standin(stdout=json.dumps({
+                "answer": "none", "vms": [], "unknown": [SPARE], "listed": []}) + "\n"), "a malformed answer"),
+            ("a host with no provider that is no adopted machine", standin(stdout=json.dumps({
+                "answer": "owned", "vms": [{"name": "dc-a-0001", "account": "main", "provider": None,
+                                            "creator": "@abcd1234"}], "unknown": [], "listed": []}) + "\n"),
+             "a malformed answer"),
             ("a launcher that cannot be run", unrunnable(), "could not be run"),
             ("a copy older than 0.17.2", lookup("0.17.1"), "is 0.17.1, older than 0.17.2"),
             ("no copy found", lookup(None), "no devcloud CLI was found here"),
@@ -372,8 +437,6 @@ class Unknown(Owner):
             with self.subTest(what):
                 if i:
                     self.fresh()
-                    self.daemon._ENDING[0] = 0.0
-                    self.daemon._CENSUS_SEEN[0] = None
                 what, ctx, named = self.rows()[i]
                 sid, tid, at = self.due()
                 with ctx:
@@ -384,7 +447,7 @@ class Unknown(Owner):
                     self.assertIn("sminos retire alpha --owner-unknown", out)
                     self.assertTrue(self.is_member(sid))
                     self.census_here(tid)
-                self.landed_pass()
+                self.take_up()
                 self.assertFalse(self.ended(tid))
                 self.assertEqual(threads.get(tid)["stopped"], at)
                 said = self.logged("stopped and not ended")
@@ -447,7 +510,7 @@ class NoneAnswer(Owner):
             self.assertNotIn("seed", out, "exit 6 refuses nothing, and is given as no reason")
             self.census_here(tid)
         self.assertEqual(self.ended_with(sid)[:2], ("retired", "retire"))
-        self.landed_pass()
+        self.take_up()
         self.assertTrue(self.ended(tid))
 
     def test_exit_6_from_the_copy_sminos_devcloud_names_is_taken_at_its_word(self):
@@ -573,31 +636,30 @@ class Census(Owner):
         self.stopped_since(sid, PERIOD - 60)
         self.pass_()
         self.assertIsNone(self.daemon._CENSUS)
-        self.assertFalse(os.path.exists(os.path.join(os.environ["SMINOS_HOME"], "daemon", "census-run.json")))
+        self.assertFalse(os.path.exists(self.run_path()))
         self.assertEqual(self.calls(), [])
 
     def test_the_pass_returns_before_the_answer_delivery_goes_on_and_a_later_pass_takes_it_up(self):
         gate = os.path.join(self.home, "gate")
         self.standin(gate=gate)
         beta, _ = self.opened(name="beta", inbox=True)
+        other, _ = self.session(name="older")
+        self.reconcile()
         sid, tid, _ = self.due()
         began = time.monotonic()
         self.pass_()
         self.assertLess(time.monotonic() - began, 5, "the pass does not wait for devcloud")
         self.assertTrue(wait_for(lambda: self.calls()), "the census asks")
         for n in (1, 2):
-            code, out = self.say("@beta number %d" % n)
-            self.assertEqual(code, 0, out)
-            self.tick()
-            self.pass_()
-        for n in (1, 2):
+            self.owe(beta, other, "number %d" % n)
+            self.assertLess(self.full_tick(), 5)
             self.assertTrue(any("number %d" % n in m for m in self.inbox(beta)), self.inbox(beta))
         self.assertFalse(self.ended(tid))
         self.assertEqual(len(self.calls()), 1, "one census in flight")
         open(gate, "w").close()
         self.census_done()
-        self.pass_()
-        self.assertTrue(self.ended(tid), "a later pass takes the answer up")
+        self.pass_(spaced=False)
+        self.assertTrue(self.ended(tid), "the pass its landing starts takes the answer up")
 
     def test_one_call_for_every_thread_due_and_each_threads_answer_its_own(self):
         a, ta, at = self.due(name="alpha")
@@ -607,7 +669,7 @@ class Census(Owner):
         self.census_done()
         self.assertEqual(len(self.calls()), 1)
         self.assertEqual(sorted(self.asked()[0]), sorted([a[:8], b[:8]]))
-        self.pass_()
+        self.pass_(spaced=False)
         self.assertFalse(self.ended(ta))
         self.assertEqual(threads.get(ta)["stopped"], at)
         self.assertTrue(self.ended(tb))
@@ -615,53 +677,132 @@ class Census(Owner):
             census = json.load(f)
         self.assertEqual(sorted(x["thread"] for x in census["threads"]), sorted([ta, tb]))
 
+    def test_an_answer_older_than_one_spacing_is_not_taken_up(self):
+        """One spacing, whatever the bound on a question (a minute here, below
+        what a census may take)."""
+        sid, tid, at = self.due()
+        for age, taken in ((90, False), (30, True)):
+            sminos.write_json(self.daemon.daemon_path("census.json"), {
+                "at": ago(age), "threads": [{"thread": tid, "current": sid, "stopped": at, "shorts": [sid[:8]]}],
+                "answer": "none", "vms": [], "unknown": []})
+            with mock.patch.dict(os.environ, {"SMINOS_THREAD_END_EVERY": "60"}):
+                start = self.take_up()
+            self.assertEqual(self.ended(tid), taken, age)
+            self.assertEqual(start.called, not taken, "a thread with no answer it may take is asked about")
+
+    def test_a_malformed_census_answer_holds_the_thread_named(self):
+        sid, tid, at = self.due()
+        sminos.write_json(self.daemon.daemon_path("census.json"), {
+            "at": ago(1), "threads": [{"thread": tid, "current": sid, "stopped": at, "shorts": [sid[:8]]}],
+            "answer": "owned", "vms": [{"name": "dc-a-0001", "account": "main", "provider": "hetzner"}],
+            "unknown": []})
+        self.take_up()
+        self.assertFalse(self.ended(tid))
+        said = self.logged("stopped and not ended")
+        self.assertEqual(len(said), 1, said)
+        self.assertIn("malformed", said[0])
+
     def test_a_driver_that_never_answers_is_stopped_past_the_bound_with_the_child_it_started(self):
         self.standin(hang=True, ignore_term=True, child=True)
         sid, tid, at = self.due()
         with mock.patch.dict(os.environ, {"SMINOS_DEVCLOUD_TIMEOUT": "1"}):
             self.pass_()
-            run = os.path.join(os.environ["SMINOS_HOME"], "daemon", "census-run.json")
-            with open(run) as f:
+            with open(self.run_path()) as f:
                 first = json.load(f)["pid"]
             self.assertTrue(wait_for(lambda: self.calls()), "the census asks")
             self.pass_()
-            with open(run) as f:
+            with open(self.run_path()) as f:
                 self.assertEqual(json.load(f)["pid"], first, "no second census beside the first")
             self.census_done()
             call = self.calls()
             self.assertEqual(len(call), 1)
             for pid in (call[0]["pid"], call[0]["child"]):
                 self.assertTrue(wait_for(lambda pid=pid: not alive(pid)), "past the bound, %d is gone" % pid)
-            self.pass_()
+            self.pass_(spaced=False)
         self.assertFalse(self.ended(tid))
         self.assertEqual(threads.get(tid)["stopped"], at)
         said = self.logged("devcloud")
         self.assertEqual(len(said), 1, said)
         self.assertIn("gave no answer within 1s, and was stopped", said[0])
 
-    def test_a_census_past_twice_its_bound_is_stopped_by_the_pass_that_finds_it(self):
-        stuck = subprocess.Popen([sys.executable, "-c", "import signal, subprocess, time\n"
-                                  "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    def stuck_run(self, started_ago=10, ignore_term=True):
+        """A census that will not stop: a process recorded as the run,
+        started `started_ago` s ago, that ignores SIGTERM (unless told
+        not to) and has a child of its own in a session of its own."""
+        stuck = subprocess.Popen([sys.executable, "-c", "import signal, subprocess, sys, time\n"
+                                  "if sys.argv[1] == '1': signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
                                   "print(subprocess.Popen(['sleep', '600'], start_new_session=True).pid, flush=True)\n"
-                                  "time.sleep(600)"], stdout=subprocess.PIPE, text=True)
+                                  "time.sleep(600)", "1" if ignore_term else "0"], stdout=subprocess.PIPE, text=True)
         self.addCleanup(lambda: (stuck.kill(), stuck.wait(), stuck.stdout.close()))
         child = int(stuck.stdout.readline())
+        self.addCleanup(killed, child)
         sminos.write_json(self.daemon.daemon_path("census-run.json"),
-                          {"pid": stuck.pid, "start": sminos.read_proc_start(stuck.pid), "started": time.time() - 5})
-        self.daemon._CENSUS_LIVE[0] = True
-        with mock.patch.dict(os.environ, {"SMINOS_DEVCLOUD_TIMEOUT": "1"}), \
-                mock.patch.object(threads, "DEVCLOUD_GRACE", 0.2):
-            self.pass_()
-            self.assertIsNone(stuck.poll(), "SIGTERM first: the tick does not wait for it")
-            said = self.logged("ran past twice its bound of 1s")
-            self.assertEqual(len(said), 1, said)
-            time.sleep(0.3)
-            self.pass_()
-            self.assertTrue(wait_for(lambda: stuck.poll() is not None), "killed after the grace")
-            self.assertTrue(wait_for(lambda: not alive(child)), "with what it started")
-            self.pass_()
-        self.assertEqual(len(self.logged("ran past twice its bound")), 1, "said once")
-        self.assertFalse(self.daemon._CENSUS_LIVE[0])
+                          {"pid": stuck.pid, "start": sminos.read_proc_start(stuck.pid),
+                           "started": time.time() - started_ago})
+        return stuck, child
+
+    def test_a_census_past_twice_its_bound_is_stopped_off_the_tick_while_the_full_tick_delivers(self):
+        beta, _ = self.opened(name="beta", inbox=True)
+        other, _ = self.session(name="older")
+        self.reconcile()
+        stuck, child = self.stuck_run()
+        with mock.patch.dict(os.environ, {"SMINOS_DEVCLOUD_TIMEOUT": "1"}):
+            with open(self.daemon.daemon_path("census.lock"), "a") as held:
+                fcntl.flock(held, fcntl.LOCK_EX)   # the census lock, held by another process at it
+                self.owe(beta, other, "first")
+                self.assertLess(self.full_tick(), 3, "a busy census lock is left to the next tick")
+                fcntl.flock(held, fcntl.LOCK_UN)
+            self.assertIsNone(self.daemon._REAPER)
+            self.owe(beta, other, "second")
+            self.assertLess(self.full_tick(), 3, "the escalation is a reaper's, never the tick's")
+            reaper = self.daemon._REAPER
+            self.assertIsNotNone(reaper, "a reaper started")
+            self.owe(beta, other, "third")
+            self.assertLess(self.full_tick(), 3)
+            self.assertIs(self.daemon._REAPER, reaper, "one reaper")
+            for text in ("first", "second", "third"):
+                self.assertTrue(any(text in m for m in self.inbox(beta)), (text, self.inbox(beta)))
+            self.assertTrue(wait_for(lambda: stuck.poll() is not None, timeout=30), "killed after the grace")
+            self.assertTrue(wait_for(lambda: not alive(child)), "with the child it started")
+            self.assertTrue(self.daemon.census_tick(), "its end is a landing, taken once")
+            self.assertFalse(os.path.exists(self.run_path()))
+            self.assertFalse(self.daemon.census_tick())
+        said = self.logged("ran past twice its bound of 1s")
+        self.assertEqual(len(said), 1, said)
+
+    def test_a_recorded_run_is_supervised_at_the_next_tick_after_a_restart_whatever_is_due(self):
+        self.daemon._CENSUS = self.daemon._REAPER = None   # a daemon restarted in place: no memory of the run
+        done = subprocess.Popen(["true"])
+        done.wait()
+        sminos.write_json(self.daemon.daemon_path("census-run.json"), {"pid": done.pid, "start": "gone",
+                                                                       "started": time.time() - 1})
+        self.assertTrue(self.daemon.census_tick(), "an ended run is reaped and lands")
+        self.assertFalse(os.path.exists(self.run_path()))
+        stuck, child = self.stuck_run(ignore_term=False)
+        with mock.patch.dict(os.environ, {"SMINOS_DEVCLOUD_TIMEOUT": "1"}):
+            self.pass_(spaced=False)
+            self.assertIsNotNone(self.daemon._REAPER, "supervised though nothing is due")
+            self.assertTrue(wait_for(lambda: stuck.poll() is not None, timeout=15))
+
+    def test_signals_go_only_to_the_process_the_run_names(self):
+        sleeper = subprocess.Popen(["sleep", "600"])
+        self.addCleanup(lambda: (sleeper.kill(), sleeper.wait()))
+        sminos.write_json(self.daemon.daemon_path("census-run.json"),
+                          {"pid": sleeper.pid, "start": "another start", "started": time.time() - 999})
+        self.daemon.census_reap()
+        self.assertIsNone(sleeper.poll(), "a pid whose start is not the run's is not signalled")
+        self.daemon._CENSUS = sleeper
+        sminos.write_json(self.daemon.daemon_path("census-run.json"), {"pid": 1, "start": "x", "started": 0})
+        self.assertFalse(self.daemon.census_running({"pid": 1, "start": "x"}), "a handle of another pid is no say")
+        self.daemon._CENSUS = None
+
+    def test_a_census_asks_nothing_until_its_run_names_it(self):
+        me = {"pid": os.getpid(), "start": sminos.read_proc_start(os.getpid()), "started": time.time()}
+        with mock.patch.object(self.daemon, "CENSUS_WAIT", 0.2):
+            sminos.write_json(self.daemon.daemon_path("census-run.json"), dict(me, pid=1))
+            self.assertFalse(self.daemon.census_published())
+            sminos.write_json(self.daemon.daemon_path("census-run.json"), me)
+            self.assertTrue(self.daemon.census_published())
 
     def test_a_thread_that_reopened_during_the_question_or_reopened_and_stopped_again_is_not_ended_by_it(self):
         gate = os.path.join(self.home, "gate")
@@ -672,18 +813,57 @@ class Census(Owner):
         self.assertTrue(wait_for(lambda: self.calls()), "the census asks about both")
         _, proc_a = self.live(sid=a, name="alpha")
         _, proc_b = self.live(sid=b, name="beta")
-        self.pass_()
+        self.pass_(spaced=False)
         self.assertIsNone(threads.get(tb).get("stopped"), "reopened: its stop mark goes")
         self.end(proc_b)
-        self.pass_()
-        self.pass_()
+        self.pass_(spaced=False)
+        self.pass_(spaced=False)
         self.assertTrue(threads.update(tb, {"stopped": ago(3 * PERIOD), "swept": ago(3 * PERIOD)}))
         open(gate, "w").close()
         self.census_done()
-        self.pass_()
+        self.pass_(spaced=False)
         self.assertFalse(self.ended(ta), "reopened during the question")
         self.assertFalse(self.ended(tb), "reopened and stopped again: another stop than the one asked about")
         self.assertTrue(self.is_member(a) and self.is_member(b))
+
+
+# ------------------------------------------------------------ every runnable fixture
+
+
+class Isolation(unittest.TestCase):
+    """Every runnable test of this suite keeps devcloud out by itself, run
+    alone as in the suite: its first import, or its first command, is the
+    shared isolation (devcloud_isolation.py, devcloud-isolation.sh)."""
+
+    def test_every_python_test_imports_the_isolation_first(self):
+        for path in sorted(glob.glob(os.path.join(HERE, "test_*.py"))) + [os.path.join(HERE, "bench_scale.py")]:
+            with open(path) as f:
+                first = next(line for line in f if line.startswith(("import ", "from ")))
+            self.assertTrue(first.startswith("import devcloud_isolation"), os.path.basename(path))
+
+    def test_every_shell_test_sources_the_isolation_first(self):
+        for path in sorted(glob.glob(os.path.join(HERE, "test-*.sh"))):
+            with open(path) as f:
+                lines = [line for line in f.read().splitlines()[1:] if line.strip() and not line.startswith("#")]
+            self.assertIn("devcloud-isolation.sh", lines[0], os.path.basename(path))
+
+    def test_the_isolation_points_at_the_stand_in_and_drops_devclouds_variables(self):
+        env = dict(os.environ, DEVCLOUD_SEED_FILE="/nonexistent/seed.json", DEVCLOUD_PROFILE="/nonexistent/p")
+        env.pop("SMINOS_DEVCLOUD", None)
+        out = subprocess.run(["bash", "-c", '. "$1"; env', "-", os.path.join(HERE, "devcloud-isolation.sh")],
+                             env=env, capture_output=True, text=True, timeout=30).stdout
+        self.assertIn("SMINOS_DEVCLOUD=%s" % STANDIN, out)
+        self.assertNotIn("DEVCLOUD_", out.replace("SMINOS_DEVCLOUD", ""))
+        code = "import os, devcloud_isolation; print(sorted(k for k in os.environ if 'DEVCLOUD' in k), " \
+               "os.environ['SMINOS_DEVCLOUD'])"
+        out = subprocess.run([sys.executable, "-c", code], env=env, cwd=HERE, capture_output=True, text=True,
+                             timeout=30).stdout
+        self.assertEqual(out.strip(), "['SMINOS_DEVCLOUD'] %s" % STANDIN)
+
+
+def killed(pid):
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGKILL)
 
 
 def alive(pid):

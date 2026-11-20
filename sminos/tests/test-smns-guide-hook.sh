@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 # smns-guide.sh (SessionStart) hands its payload to `sminos guide` and prints
 # what that prints, which the engine adds to the session's context: on a
 # machine enrolled in its org (identity.json, the identity its endpoint gave;

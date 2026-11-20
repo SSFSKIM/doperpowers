@@ -9,6 +9,7 @@ real CLI in a temporary HOME and SMINOS_HOME.
 
 Run: python3 -B sminos/tests/test_manager.py
 """
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import contextlib
 import datetime
 import io

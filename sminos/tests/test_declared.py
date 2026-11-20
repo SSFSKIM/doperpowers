@@ -14,6 +14,7 @@ directly as the endpoint's frame would leave it, no git run, no daemon.
 Run: python3 -B -I sminos/tests/test_declared.py
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import json
 import os
 import shutil

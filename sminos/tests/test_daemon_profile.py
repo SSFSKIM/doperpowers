@@ -9,6 +9,7 @@ Hermetic: every test has its own HOME and SMINOS_HOME under /tmp.
 Run: python3 -B sminos/tests/test_daemon_profile.py
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import builtins
 import contextlib
 import fcntl

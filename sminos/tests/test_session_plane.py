@@ -23,6 +23,7 @@ Hermetic: HOME and SMINOS_HOME are temporary; nothing reaches beyond
 127.0.0.1 and this directory.
 """
 
+import devcloud_isolation  # noqa: F401 — first: no test reaches a real devcloud (T1's M5)
 import base64
 import json
 import os

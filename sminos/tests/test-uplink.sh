@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # The uplink: `sminos daemon uplink`, the process `daemon run` keeps beside
 # its tick loop, which speaks RL10 to the machine's endpoint once the machine

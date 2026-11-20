@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=sminos/tests/devcloud-isolation.sh
+. "$(dirname "${BASH_SOURCE[0]}")/devcloud-isolation.sh"   # first: no test reaches a real devcloud (T1's M5)
 #
 # A session's address in what it writes, and `sminos who`, which reads it
 # back. `who` alone (`--session`, the address mod's call) prints the line a
