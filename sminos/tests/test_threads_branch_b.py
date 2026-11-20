@@ -142,6 +142,7 @@ class Wave2Push(Rig):
         sminos.forget_caches()
         self.assertEqual(len(self.owed_to(sid)), 1)
         self.assertIsNotNone(self.member(sid).seat, "the seat branch delivers it")
+        self.tick()   # the hold decided for it, while no process holds the session
         _, quiet = self.session(sid=sid, started=reopened_now())
         self.peer_set(quiet, nameSource="user", messagingSocketPath=os.path.join(self.home, "none.sock"))
         with mock.patch.object(sminos, "run_claude_bg") as launched:
@@ -165,6 +166,94 @@ class Wave2Push(Rig):
                 control.push_live(peer, sid, "for alpha", e, self.p.id, words=True)
         supervisor.assert_not_called()
         self.assertEqual(self.inbox(sid), [])
+
+
+class Held(Rig):
+    """Review 3, items 1 and 6: the hold is a decision kept for the event
+    (the delivery record's `held`), never inferred from clocks."""
+
+    def stopped(self):
+        sid, proc = self.opened()
+        self.end(proc)
+        self.reconcile()
+        return sid
+
+    def foreign(self, sid, ahead):
+        """A say to the session from another machine's writer whose clock runs `ahead` seconds."""
+        writer = "othermachine/%s" % uuidlib.uuid4()
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + ahead)) + ".000Z"
+        path = sminos.writer_path(self.p, writer)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps({"ts": ts, "writer": writer, "seq": 1, "kind": "say", "from": "far",
+                                "to": [{"session": sid, "alias": "alpha"}], "text": "from a fast clock"}) + "\n")
+        sminos.forget_caches()
+
+    def quiet(self, sid, started):
+        _, proc = self.session(sid=sid, started=started)
+        self.peer_set(proc, nameSource="user", messagingSocketPath=os.path.join(self.home, "none.sock"))
+        return proc
+
+    def owed_then_pushed(self, sid, proc, text, attempts=None):
+        for _ in range(attempts or 3):
+            self.tick()
+        self.assertEqual(len(self.owed_to(sid)), 1, "not pushed yet: owed")
+        self.end(proc)
+        self.live(sid=sid, inbox=True)
+        self.tick()
+        self.assertEqual(self.owed_to(sid), [])
+        self.assertTrue(any(text in x for x in self.inbox(sid)), self.inbox(sid))
+
+    def test_a_writer_whose_clock_runs_two_minutes_ahead(self):
+        sid = self.stopped()
+        self.foreign(sid, 120)
+        self.tick()   # decided held
+        proc = self.quiet(sid, reopened_now())
+        self.owed_then_pushed(sid, proc, "from a fast clock")
+
+    def test_a_resume_into_a_process_older_than_the_message(self):
+        sid = self.stopped()
+        code, out = self.say("@alpha while you were away")
+        self.assertEqual(code, 0, out)
+        proc = self.quiet(sid, int((time.time() - 3600) * 1000))   # an in-session /resume in an hour-old process
+        self.owed_then_pushed(sid, proc, "while you were away")
+
+    def test_a_failure_before_the_receipts_text_reaches_the_socket(self):
+        sid = self.stopped()
+        code, out = self.say("@alpha while you were away")
+        self.assertEqual(code, 0, out)
+        _, proc = self.live(sid=sid, inbox=True)
+        self.assertEqual(sminos.holder_module().activate(proc.pid, "launch-1", sid)["mode"], "gate")
+        with mock.patch.object(sminos, "DELIVERY_ATTEMPTS", 3), \
+                mock.patch.object(sminos, "send_frame", side_effect=sminos.SendFailed("before", "no listener")):
+            for _ in range(5):
+                self.tick()
+        self.assertEqual(len(self.owed_to(sid)), 1, "owed: no settlement past the attempts")
+        self.assertEqual(self.inbox(sid), [])
+        self.tick()
+        self.assertTrue(any("while you were away" in x for x in self.inbox(sid)), self.inbox(sid))
+
+    def test_a_message_never_held_to_a_running_socketless_session_is_recorded(self):
+        sid, _ = self.opened()
+        code, out = self.say("@alpha while you run")
+        self.assertEqual(code, 0, out)
+        self.tick()
+        self.assertEqual(self.owed_to(sid), [], "recorded: it reads it in the chat")
+        self.assertEqual(set(self.attempts(sid).values()) - {0}, set())
+
+    def test_a_held_message_to_a_thread_that_ends_is_settled_by_the_end(self):
+        sid = self.stopped()
+        code, out = self.say("@alpha while you were away")
+        self.assertEqual(code, 0, out)
+        self.tick()
+        code, out = self.cli("retire", "alpha")
+        self.assertEqual(code, 0, out)
+        self.tick()
+        self.assertEqual(self.owed_any(sid), [])
+
+    def owed_any(self, sid):
+        sminos.forget_caches()
+        return sminos._owed(sminos.log_read(self.p, to_session=sid), sid, sminos.delivered_load(self.p, sid))
 
 
 class Wave2Join(Rig):
