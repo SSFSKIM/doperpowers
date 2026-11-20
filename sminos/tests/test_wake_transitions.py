@@ -23,11 +23,13 @@ Run: python3 -B sminos/tests/test_wake_transitions.py
 """
 import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
+import json
 import os
 import sys
 import threading
 import time
 import unittest
+import uuid as uuidlib
 from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -178,6 +180,85 @@ class HandOff(Transitions):
         self.assertEqual(threads.get(tid)["current"], job)
 
 
+class HandOffRaces(Transitions):
+    def continued(self, old, new):
+        """The engine's hand-off of `old` to a background job `new`, as test_threads.Sessions writes it: the old
+        transcript's `continued-in`, and the job's process."""
+        with open(sminos.transcript_now(old), "a") as f:
+            f.write(json.dumps({"type": "continued-in", "sessionId": old, "continuedInSessionId": new}) + "\n")
+        sminos._TINDEX.at = None
+        sminos._TINDEXES.clear()
+        _, proc = self.session(kind="bg", sid=new, name="handyjob")
+        self.peer_set(proc, nameSource="auto")
+        return proc
+
+    def test_a_hand_off_found_while_a_wake_is_past_w2_waits_and_the_wake_stands(self):
+        tid, sid = self.human_thread()
+        job = str(uuidlib.uuid4())
+        lift = self.barrier()
+        t, got = self.in_background(lambda: sminos.wake(threads.get(tid), sid, due=True))
+        self.assertTrue(wait_for(lambda: self.launches() >= 1))
+        self.continued(sid, job)
+        with mock.patch.object(sminos, "SWEEP_WAIT", 0.3):
+            self.reconcile()
+        self.assertEqual((threads.get(tid)["current"], threads.get(tid).get("pending")), (sid, None),
+                         "the hand-off waits for the wake in flight: nothing written")
+        lift()
+        t.join(30)
+        self.assertTrue(got[0].live)
+        self.reconcile()
+        # The session the wake started runs again: no hand-off is read from a session a process holds, and each
+        # session is one record's (the job a thread of its own).
+        rec = threads.get(tid)
+        self.assertEqual((rec["current"], rec.get("pending")), (sid, None), "the wake stands")
+        self.assertIsNotNone(self.record(sid))
+        owner = threads.thread_of(job)
+        self.assertTrue(owner is None or owner["thread"] != tid, "the job is not this thread's")
+
+    def test_a_wake_after_a_hand_offs_begin_launches_nothing(self):
+        tid, sid = self.human_thread()
+        job = str(uuidlib.uuid4())
+        self.continued(sid, job)
+        seen = []
+        real = threads.finish
+
+        def finish(*a, **kw):
+            if not seen and (threads.get(tid) or {}).get("pending"):   # the hand-off's entry, begun
+                seen.append(sminos.wake(threads.get(tid), sid, due=True))
+            return real(*a, **kw)
+        with mock.patch.object(threads, "finish", side_effect=finish):
+            self.reconcile()
+        self.assertEqual(len(seen), 1)
+        self.assertFalse(seen[0].live)
+        self.assertIn(seen[0].why, ("gone", "pending"))
+        self.assertEqual(self.resumes(sid), [], "nothing launched")
+        self.reconcile()
+        self.assertEqual(threads.get(tid)["current"], job)
+
+    def test_an_absorption_waits_for_a_wake_of_the_record_it_absorbs(self):
+        tid, sid = self.human_thread()                      # the thread that goes on in the job
+        jtid, job = self.human_thread()                     # the job's own record, made before its hand-off
+        lift = self.barrier()
+        t, got = self.in_background(lambda: sminos.wake(threads.get(jtid), job, due=True))
+        self.assertTrue(wait_for(lambda: self.launches() >= 1))
+        with open(sminos.transcript_now(sid), "a") as f:
+            f.write(json.dumps({"type": "continued-in", "sessionId": sid, "continuedInSessionId": job}) + "\n")
+        sminos._TINDEX.at = None
+        sminos._TINDEXES.clear()
+        with mock.patch.object(sminos, "SWEEP_WAIT", 0.3), mock.patch.object(sminos, "_RECORD_DEADLINE",
+                                                                             time.time() + 0.3):
+            self.assertEqual(sminos.hand_off(self.p, sid, job), [], "the absorption waits")
+        self.assertEqual(threads.get(tid)["current"], sid, "its owner unchanged")
+        self.assertIsNone(threads.reservation(threads.get(jtid)), "the absorbed record untouched")
+        lift()
+        t.join(30)
+        self.assertTrue(got[0].live, "the wake of the record stands")
+        events = sminos.hand_off(self.p, sid, job)
+        self.assertEqual([e["kind"] for e in events], ["retired", "joined"], "made after it")
+        self.assertEqual(threads.get(tid)["current"], job)
+        self.assertIsNone(threads.get(jtid), "the job's record absorbed")
+
+
 # ------------------------------------------------------------ an absorption
 
 
@@ -211,7 +292,11 @@ class Return(Transitions):
         sid, seat_id = s["current"], s["seat_id"]
         code, out = self.cli("retire", "w")
         self.assertEqual(code, 0, out)
-        self.cli("say", "@w said while it was retired")
+        # An event addressed to it while it was retired, owed until the return settles it.
+        project = sminos.seat_project(sminos.reload_seat(seat_id))
+        older = sminos.record_message(project, sid, "w", "human", "human", "said while it was retired", "old00001",
+                                      deliver=False)
+        turns = int(sminos.reload_seat(seat_id)["turns"] or 0)
         before = len(self.inputs(sid))
         code, out = self.cli("fill", "w", "the new task", "--resume")
         self.assertEqual(code, 0, out)
@@ -221,7 +306,10 @@ class Return(Transitions):
         frames = [i["message"]["content"] for i in self.inputs(sid)][before:]
         self.assertEqual(len(frames), 1, frames)
         self.assertIn("the new task", frames[0])
-        self.assertNotIn("said while it was retired", frames[0], "settled by the end, not pushed")
+        self.assertNotIn("said while it was retired", frames[0], "settled by the return, not pushed")
+        settled = sminos.delivered_load(project, sid).get(older["writer"], {}).get("settled") or 0
+        self.assertGreaterEqual(settled, older["seq"], "the older event is settled")
+        self.assertEqual(int(sminos.reload_seat(seat_id)["turns"]), turns + 1, "the woken push counted")
         self.assertEqual(self.resumes(sid), [[]])
 
     def test_a_failed_launch_leaves_it_retired_and_records_nothing(self):

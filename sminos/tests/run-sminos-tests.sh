@@ -4829,14 +4829,14 @@ STUB_AGENTS_FAIL=1 run_in "$ODA" "$SMINOS" resume od-alpha/quiet-seat "go on"
 assert_rc 1 "$RC" "resume of a running seat it cannot stop is refused"
 assert_contains "$OUT" "still runs" "saying the session still runs"
 assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and launches no resume"
-# With a recorded short, the stop command succeeds, yet the process its
-# record names still runs: the turn is not down, so nothing is launched.
+# A short the seat recorded is no proof of a background job of this session (T2's M2): with no job list to show
+# one, nothing is stopped and nothing launched.
 "$SMINOS" meta set od-alpha/quiet-seat short 0d00ab02 >/dev/null
 : > "$STUB_STATE/log/calls.log"
 SMINOS_STOP_TIMEOUT=0.5 STUB_AGENTS_FAIL=1 run_in "$ODA" "$SMINOS" resume od-alpha/quiet-seat "go on"
-assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop 0d00ab02" "resume stops the running seat's recorded turn"
-assert_rc 1 "$RC" "and, its process still running after a stop that succeeded, refuses"
-assert_contains "$OUT" "is still running" "saying the turn is still running"
+assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "stop 0d00ab02" "resume never stops a short the seat recorded alone"
+assert_rc 1 "$RC" "and, its process still running, refuses"
+assert_contains "$OUT" "still runs" "saying the session still runs"
 assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and launches no resume"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/od-"*.json

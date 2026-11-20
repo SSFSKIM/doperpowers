@@ -366,6 +366,20 @@ def get(thread_id):
     return _human_at(_human_path(tid)) or _human_at(_human_path(tid, aside=True))
 
 
+def unreadable(thread_id):
+    """Whether a file of the thread's record is there and cannot be read as
+    one (get answers None for it as for none): a seat's that does not load,
+    or a human-opened record's that does not parse or is no record."""
+    tid = str(thread_id or "")
+    if not tid or not sminos.valid_name(tid):
+        return False
+    if os.path.exists(sminos.meta_path(tid)):
+        return sminos.reload_seat(tid) is None
+    if not _ID_RE.fullmatch(tid):
+        return False
+    return any(os.path.exists(p) and _human_at(p) is None for p in (_human_path(tid), _human_path(tid, aside=True)))
+
+
 _ASIDE = []   # [the set-aside store's stat key, {session: [thread ids of the records set aside that had it]}]
 RACY_NS = 1_000_000_000   # a listing is kept once its directory held still this long before it (a coarse clock)
 
@@ -811,6 +825,28 @@ def wake_done(thread_id, session, saved=None, lock_until=None):
     return _waking_change(thread_id, session, change, lock_until)
 
 
+def wake_saved(thread_id, session, lock_until=None):
+    """`saved` set as the flagless retry launches (§3 row 12): the engine said
+    the session keeps saved options, whatever that retry comes to."""
+    def change(w):
+        if w.get("saved"):
+            return None
+        w["saved"] = True
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_cleared(thread_id, session, lock_until=None):
+    """A wake's failures (`failed`, `at`) forgotten: a process holds the session again."""
+    def change(w):
+        if "failed" not in w and "at" not in w:
+            return None
+        w.pop("failed", None)
+        w.pop("at", None)
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
 def wake_line_sent(thread_id, session, line_id, lock_until=None):
     """The line pushed: removed, only while it is still the one of `line_id`."""
     def change(w):
@@ -1152,31 +1188,29 @@ def returns(record, peer, known=None):
     return started is not None and at is not None and int(started) > at
 
 
-def stop_seen(session, lock_until=None):
+def stop_seen(session, lock_until=None, thread_id=None):
     """A process holds the session again (§6, row 8), as its hook or a
     launch sees it before the sweep can: the stop mark of the thread whose
     current session it is, `stopped` and `swept`, removed, so the clock of
     the rule starts again at its next stop and never runs on a mark from
-    before; a wake's failures (`waking.failed`, `at`) go with it. Nothing
-    for a record with no mark, an ended one (its return lifts the mark) or
-    one with an open entry."""
-    t = thread_of(session, ended=False)
+    before; a wake's failures (`waking.failed`, `at`) go with it, cleared by
+    the field's own compare-and-set (wake_cleared), never a write of the
+    field as read before the lock. Nothing for a record with no mark, an
+    ended one (its return lifts the mark) or one with an open entry.
+    `thread_id`: the record the caller decided on (the wake's W8), never
+    looked up again by the session."""
+    t = get(thread_id) if thread_id else thread_of(session, ended=False)
     if t is None or t["current"] != session or record_ended(t):
         return False
-    w = t.get("waking") if isinstance(t.get("waking"), dict) else {}
-    failure = bool(waking(t, session)) and ("failed" in w or "at" in w)
-    if not (t.get("stopped") or t.get("swept") or failure):
-        return False
-    fields, remove = {}, ["stopped", "swept"]
-    if failure:
-        # A wake's failures go with the stop mark (T2's §7): a process holds the session again.
-        kept = {k: v for k, v in w.items() if k not in ("failed", "at")}
-        if set(kept) - {"session"}:
-            fields["waking"] = kept
-        else:
-            remove.append("waking")
-    return update(t["thread"], fields, remove=remove,
-                  guard=lambda r: r["current"] == session and not record_ended(r), lock_until=lock_until)
+    tid = t["thread"]
+    cleared = False
+    if "failed" in waking(t, session) or "at" in waking(t, session):
+        cleared = wake_cleared(tid, session, lock_until)
+    if not (t.get("stopped") or t.get("swept")):
+        return cleared
+    return update(tid, {}, remove=("stopped", "swept"),
+                  guard=lambda r: r["thread"] == tid and r["current"] == session and not record_ended(r),
+                  lock_until=lock_until) or cleared
 
 
 # ------------------------------------------------------------ the journal (§6)
@@ -1216,10 +1250,12 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
     entry = {"id": uuid.uuid4().hex, "op": op, "at": sminos.now(), "project": project.id, "events": owed,
              **{k: v for k, v in more.items() if v is not None}}
 
+    taken = []   # the wake locks of a record it absorbs, taken here (_claimed): let go once the entry is written
+
     def mutate(view, raw):
         if view.get("pending") or (guard is not None and not guard(view)):
             return False
-        if not _claimed(thread_id, entry, view, fields, absorbs):
+        if not _claimed(thread_id, entry, view, fields, absorbs, taken):
             return False
         if op == "return" and entry.get("settle"):
             # Under the record's lock, the positions the events addressed to the session have reached in the
@@ -1238,6 +1274,8 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
         return entry if _change(thread_id, mutate, lock_until, bump=True,
                                 both=bool((fields or {}).get("current"))) else None
     finally:
+        for h in taken:
+            h.release()
         if took:
             hold.release()
 
@@ -1255,25 +1293,44 @@ def _holder(session, thread_id):
                  if t["thread"] != thread_id and t["current"] == session), None)
 
 
-def _claimed(thread_id, entry, view, fields, absorbs):
+def _claimed(thread_id, entry, view, fields, absorbs, taken=None):
     """Whether a change that makes a session current may: no other record
     holds it (_holder) but the one the entry absorbs; with `absorbs`, an
     absorbable human-opened one turns an advance into its absorption (entry
     changed in place). The caller holds both stores' locks: a seat's write
     takes the thread store's inside its own (_change's `both`), and a
     human-opened record's is the thread store's, which every seat's claim
-    holds too."""
+    holds too. A record absorbed changes owner, so its wake lock is held
+    for the claim (T2's M2): the caller's hold, else one taken here without
+    waiting and added to `taken`; a wake of it in flight refuses the claim,
+    which the next reconciliation makes again."""
     session = str((fields or {}).get("current") or "")
     if not session or session == view["current"]:
         return True
     found = _holder(session, thread_id)
-    if found is None or found["thread"] == entry.get("other"):
+    if found is None:
         return True
+    if found["thread"] == entry.get("other"):
+        return _wake_quiet(found["thread"], taken)
     if absorbs and found["opened"] == "human" and entry["op"] == "advance" and not entry.get("other") \
-            and absorbable(found, session):
+            and absorbable(found, session) and _wake_quiet(found["thread"], taken):
         entry["op"], entry["other"] = "absorb", found["thread"]
         return True
     return False
+
+
+def _wake_quiet(thread_id, taken):
+    """Whether this thread holds the record's wake lock, taking it now
+    without waiting when it is free (added to `taken`); False when a wake
+    or a transition of it holds it."""
+    if sminos.wake_held(thread_id) is not None:
+        return True
+    hold, _ = sminos.wake_lock(thread_id, until=time.time(), holder=sminos.TRANSITION_HOLD)
+    if hold is None:
+        return False
+    if taken is not None:
+        taken.append(hold)
+    return True
 
 
 def _apply(entry, view, raw, fields, remove):

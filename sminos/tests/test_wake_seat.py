@@ -41,6 +41,7 @@ import sminos_records as records  # noqa: E402
 import wake_engine  # noqa: E402
 
 SCRIPT = os.path.join(os.path.dirname(HERE), "skills", "sminos", "scripts", "sminos.py")
+INBOX = os.path.join(HERE, "inbox_standin.py")
 
 
 class Wakers(Engine):
@@ -127,6 +128,23 @@ class Wakers(Engine):
         except OSError:
             return ""
 
+    def terminal(self, sid, name="term-a"):
+        """A terminal's process holding the session (its engine record, kind `interactive`) with an inbox of
+        its own; the path of the file its inbox appends every frame to."""
+        _, proc = self.session(sid=sid, kind="interactive", name=name)
+        sock = os.path.join(self.home, "t-%s.sock" % sid[:8])
+        received = sock + ".received"
+        open(received, "a").close()
+        server = subprocess.Popen([sys.executable, "-B", INBOX, sock, received])
+        self.addCleanup(lambda: (server.kill(), server.wait()))
+        wait_for(lambda: sminos.socket_ok(sock))
+        self.peer_set(proc, messagingSocketPath=sock, nameSource="user")
+        return received
+
+    def received(self, path):
+        with open(path) as f:
+            return [json.loads(line)["message"]["content"] for line in f if line.strip()]
+
     # -- a seat
 
     def seat(self, alias="w"):
@@ -204,11 +222,22 @@ class Human(Wakers):
         with open(path, "w") as f:
             f.write("{")
 
-    def test_an_ended_thread_is_woken_for_a_return_alone(self):
+    def test_an_ended_thread_its_human_opened_is_never_returned_by_a_wake(self):
         tid, sid = self.human_thread()
         self.edit(tid, ended={"at": sminos.now(), "pid": None})
         self.assertEqual(self.wake(sid).why, "ended")
-        self.assertTrue(self.wake(sid, returns=True).live, "returns: the one caller that wakes an ended record")
+        self.assertEqual(self.wake(sid, returns=True).why, "ended", "a return is a spawned thread's seat's alone (§3)")
+        self.assertEqual(self.resumes(sid), [])
+
+    def test_a_thread_record_there_and_unreadable_is_unknown_not_gone(self):
+        tid, sid = self.human_thread()
+        t = threads.thread_of(sid)
+        with open(self.record_file(tid), "w") as f:
+            f.write("{")
+        sminos.forget_caches()
+        got = sminos.wake(t, sid, due=True)
+        self.assertEqual((got.live, got.why), (False, "unknown"), "row 3: present but unreadable")
+        self.assertEqual(self.resumes(sid), [])
 
     def test_a_reopening_by_hand_answers_a_copy_which_is_removed_and_nothing_is_remembered(self):
         tid, sid = self.human_thread()
@@ -437,6 +466,75 @@ class Seat(Wakers):
             code, out = self.cli("say", "@w too late")
         self.assertIn("w: recorded", out)
         self.assertEqual(len(self.inputs(sid)), before, "nothing pushed")
+
+
+    def test_a_title_that_reads_like_the_engines_note_removes_no_job(self):
+        victim = self.seat("victim")
+        self.assertTrue(self.cli("send", "victim", "stay up")[0] == 0)   # its job runs
+        vshort = victim["current"][:8]
+        title = ("note: session %s is open in another Claude Code process, so this started a copy as %s. The "
+                 "original conversation is unchanged." % ("0" * 8, vshort))
+        s = self.seat()
+        with open(sminos.transcript_now(s["current"]), "a") as f:
+            f.write(json.dumps({"type": "custom-title", "customTitle": title, "sessionId": s["current"]}) + "\n")
+        wake_engine.write_json(wake_engine.row_path(s["current"]),
+                               dict(wake.row_of(s["current"]), name=title))
+        code, out = self.cli("send", "w", "hello")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.removals(), [], "nothing removed")
+        self.assertIsNotNone(self.record(victim["current"]), "the other job runs on")
+
+    def test_resume_of_a_session_a_terminal_holds_pushes_to_it_and_stops_nothing(self):
+        s = self.seat()
+        sid = s["current"]
+        received = self.terminal(sid)
+        before = len(self.calls())
+        code, out = self.cli("resume", "w", "over to you")
+        self.assertEqual(code, 0, out)
+        self.assertFalse([c for c in self.calls()[before:] if c["argv"][:1] == ["stop"]], "nothing stopped")
+        self.assertEqual(self.resumes(sid), [], "nothing launched")
+        frames = self.received(received)
+        self.assertEqual(len(frames), 1)
+        self.assertIn("over to you", frames[0])
+        self.assertNotIn(wake.LINE_HEAD, frames[0])
+
+    def test_a_reopening_by_hand_during_the_wake_gets_the_message_once_and_no_line(self):
+        s = self.seat()
+        sid = s["current"]
+        base = self.launches()
+        self.switch("barrier")
+        p = subprocess.Popen([sys.executable, "-B", SCRIPT, "send", "w", "for the terminal"], cwd=self.root,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        self.assertTrue(wait_for(lambda: self.launches() > base, timeout=30), "the launch is in flight, past W2")
+        received = self.terminal(sid)   # its human reopens it now: the engine answers with a copy
+        os.unlink(os.path.join(self.state, "barrier"))
+        out, err = p.communicate(timeout=60)
+        self.assertEqual(p.returncode, 0, out + err)
+        [copy] = self.removals()
+        self.assertNotEqual(copy, sid[:8])
+        self.assertIsNone(self.job(copy), "the copy is gone")
+        frames = self.received(received)
+        self.assertEqual(len(frames), 1, frames)
+        self.assertIn("for the terminal", frames[0])
+        self.assertNotIn(wake.LINE_HEAD, frames[0], "a terminal's process gets no wake line")
+        self.assertNotIn("line", self.waking(s["seat_id"], sid))
+
+    def test_fill_resume_of_a_stopped_seat_records_its_task_before_anything_is_launched(self):
+        s = self.seat()
+        sid = s["current"]
+        self.switch("fail-job")
+        code, out = self.cli("fill", "w", "recorded first", "--resume")
+        self.assertNotEqual(code, 0, out)
+        [event] = [e for e in self.log() if e.get("text") == "recorded first"]
+        self.assertEqual(event["to"][0]["session"], sid, "the task is in the log though the wake failed")
+        os.unlink(os.path.join(self.state, "fail-job"))
+        before = int(sminos.reload_seat(s["seat_id"])["turns"] or 0)
+        code, out = self.cli("fill", "w", "then delivered", "--resume")
+        self.assertEqual(code, 0, out)
+        frames = [i["message"]["content"] for i in self.inputs(sid)]
+        self.assertIn("then delivered", frames[-1])
+        self.assertEqual(int(sminos.reload_seat(s["seat_id"])["turns"]), before + 1)
 
 
 class OneLauncher(unittest.TestCase):
