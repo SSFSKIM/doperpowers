@@ -570,6 +570,9 @@ run_suites_c() {
   if "$SCRIPT_DIR/test-notice-machines.sh"; then
     pass "a machine's notice between two machines: the thread's current session, the frame, going on (test-notice-machines.sh)"
   else fail "a machine's notice between two machines: the thread's current session, the frame, going on (test-notice-machines.sh)"; fi
+  if python3 -B "$SCRIPT_DIR/test_who_thread.py"; then
+    pass "who --thread: the thread a name is, one JSON line for devcloud vm owner (test_who_thread.py)"
+  else fail "who --thread: the thread a name is, one JSON line for devcloud vm owner (test_who_thread.py)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 summary() {

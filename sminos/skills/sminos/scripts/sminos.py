@@ -137,8 +137,9 @@ back by a fill.
     sminos status   <member> <one line>                   # the member's own "now" line
     sminos retire   <member> [--purge] [--owner-unknown]  # end it (recorded first), then stop what can be
                    stopped; --purge deletes its record (a seat's, or a session its human opened). Refused for
-                   a session that made a devcloud host that still exists (naming it: devcloud vm down <name>),
-                   and when devcloud cannot tell; --owner-unknown retires it then, for a person at a terminal
+                   a session that owns a devcloud host that still exists (it names the host, with devcloud vm
+                   down and devcloud vm owner), and when devcloud cannot tell; --owner-unknown retires it then,
+                   for a person at a terminal
     sminos access   <member> private|listed|org-view|org-converse   # who may reach a session of this
                    machine: private, its owners' agents and its shares'; listed or org-wide, every member's
     sminos share    <member> <person> list|view|converse|approve|none   # a member's grade on it (<person> an
@@ -178,6 +179,9 @@ back by a fill.
                    or a PR (its body's last line, else its commits' trailers; a number or URL, through gh)
                    was made by, as it is now: alias, project, machine, state, the session it went on as,
                    how to reach or resume it. Alone, inside a session: the line its commits carry
+    sminos who      --thread <name>                       # for a program (devcloud vm owner): the thread a
+                   name is, as one line of JSON (thread, session, short, alias, opened, state, ended, local,
+                   machine, project {id, name}); exit 4 when no thread, or several, answer to it
     sminos projects [--all]                               # every project known here: kind (hub, machine,
                    local), live and waiting sessions, their machines; --all: a retired machine's too
     sminos machines                                       # every machine enrolled in the org: its newest
@@ -16754,7 +16758,8 @@ def locked_fresh(s0, verb, session="", locks=None):
 def cmd_retire(a):
     """End one member's thread and stop what sminos can stop. Nothing it
     spawned goes with it: a spawner is provenance, not a host. A thread that
-    made a host devcloud still has is not ended, nor one whose answer is
+    owns a host devcloud still has (one it made, or one handed to it with
+    `devcloud vm owner`) is not ended, nor one whose answer is
     unknown unless a person at a terminal passes it (`--owner-unknown`,
     refused inside a session; owner_guard). The end is recorded before
     anything is stopped (T1's M4): a session that retires itself may be
@@ -16822,8 +16827,9 @@ def owner_guard(how, records, label):
     """The question every end on purpose asks before it writes anything
     (T1's M5): devcloud's answer about every session the thread has had
     (`records`: its record, and a seat that follows it; sminos_threads.
-    owner_sessions). Owned: refused, exit 1, naming each host and
-    `devcloud vm down <name>` as the way on; unknown: refused naming what
+    owner_sessions). Owned: refused, exit 1, naming each host, and
+    `devcloud vm down <name>` and `devcloud vm owner <name> <thread>` as
+    the ways on (owned_words); unknown: refused naming what
     could not be asked, unless the verb was given `--owner-unknown` and the
     person confirms it at the controlling terminal (exit 1 where there is
     none). Returns the short ids asked, which the end rechecks under the
@@ -18682,7 +18688,13 @@ def cmd_who(a):
     """`who [<commit|PR>]`: the session a commit or pull request names in its
     Sminos-Session line, as it is now and how to reach it. Without a target,
     the line this session's commits carry (`--session` names another of this
-    machine's: the address mod's call), nothing when it has none."""
+    machine's: the address mod's call), nothing when it has none. With
+    `--thread`, the thread a name is, for a program (who_thread)."""
+    if a.thread:
+        if a.target or a.session:
+            die("usage: sminos who --thread <name>  (alone: it names a thread, not a commit or a session)")
+        who_thread(a.thread)
+        return
     if not a.target:
         sid = a.session or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
         if not sid:
@@ -18697,6 +18709,44 @@ def cmd_who(a):
     print("%s:" % what)
     for addr in found:
         print("\n".join(who_lines(addr)))
+
+
+def who_thread(name):
+    """`who --thread <name>` (EN.G1's plan, Interfaces §4): one line of JSON
+    for the one seat or member `find_target` resolves the name to (one
+    leading `@` dropped), else a thread its human opened that has ended,
+    named by a full id (ended_target); exit 4 for none or several. The
+    facts devcloud's `vm owner` decides on, and nothing of a record's
+    journal or its former sessions (X1)."""
+    q = name[1:] if name.startswith("@") else name
+    target = find_target(q)
+    ended = False
+    if target[0] == "none" and (hit := ended_target(q)) is not None:
+        target, ended = hit, True
+    if target[0] == "none":
+        die("no seat or member matching '%s'" % name, EXIT_UNKNOWN)
+    threads = threads_module()
+    if target[0] == "seat":
+        s = target[1]
+        project = seat_project(s)
+        row = next((m for m in (project_rows(project) if project is not None else [])
+                    if m.seat and m.seat["seat_id"] == s["seat_id"]), None)
+        rec = threads.get(s["seat_id"])
+        state_word = row.state if row is not None else state(s)
+        answer = {"thread": rec["thread"] if rec else s["seat_id"], "session": s["current"], "alias": s["alias"],
+                  "opened": rec["opened"] if rec else "spawned", "state": state_word,
+                  "ended": state_word == "retired" or threads.record_ended(rec), "local": True,
+                  "machine": host_name()}
+    else:
+        project, m = target[1], target[2]
+        rec = threads.get(m.thread) if m.local and m.thread else None
+        answer = {"thread": m.thread, "session": m.session, "alias": m.alias, "opened": m.opened,
+                  "state": m.state, "ended": ended or bool(m.end) or threads.record_ended(rec), "local": m.local,
+                  "machine": m.machine}
+    out = {"thread": answer["thread"], "session": answer["session"], "short": answer["session"][:8]}
+    out.update((k, answer[k]) for k in ("alias", "opened", "state", "ended", "local", "machine"))
+    out["project"] = {"id": project.id, "name": project.name} if project is not None else None
+    print(json.dumps(out))
 
 
 def cmd_attach(a):
@@ -19169,6 +19219,7 @@ def build_parser():
     wh = sub.add_parser("who", add_help=False)
     wh.add_argument("target", nargs="?", default="")
     wh.add_argument("--session", default="")
+    wh.add_argument("--thread", default="")
     wh.set_defaults(fn=cmd_who)
 
     pjs = sub.add_parser("projects", add_help=False)
@@ -19275,9 +19326,10 @@ def main(argv=None):
         # running daemon, run beside it: neither migrates or takes a lock.
         cmd_daemon(a)
         return
-    if a.cmd == "who" and not a.target:
+    if a.cmd == "who" and not a.target and not a.thread:
         # The address mod's, before a session's model requests: it reads and
-        # never migrates, and never waits on the registry's lock.
+        # never migrates, and never waits on the registry's lock. `--thread`
+        # resolves a name through find_target, which reconciles: not here.
         cmd_who(a)
         return
     if not getattr(a, "fn", None):

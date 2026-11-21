@@ -2225,23 +2225,24 @@ def unknown_words(entry):
 
 def owned_words(owned):
     """What an answer that holds a thread says (owned or unknown): the hosts
-    and the way on, and what could not be asked."""
+    it owns, the two ways on (down, or the handover to a thread that stays),
+    and what could not be asked (EN.G1's plan, Interfaces §6). A thread can
+    own a host it did not make, so the words say "owns", never "made"."""
     parts = []
     if owned.vms:
-        # Whose call taking a host down is, said where it is read (T1's M6, evaluated): "take each down first"
-        # had sessions asked only to retire delete the host themselves.
-        kinds = {is_adopted(v) for v in owned.vms}
-        made, act = (("made or adopted", "deleting or releasing") if len(kinds) == 2 else
-                     ("adopted", "releasing") if True in kinds else ("made", "deleting"))
-        parts.append("it %s hosts that still exist: %s; %s a host is its owner's call: once nothing on it is "
-                     "needed, %s, and then it can be retired" % (
-                         made, ", ".join(host_words(v) for v in owned.vms), act,
+        # Whose call a host's end is, said where it is read (T1's M6, evaluated): "take each down first" had
+        # sessions asked only to retire delete the host themselves.
+        names = [shlex.quote(str(v.get("name"))) for v in owned.vms]
+        parts.append("it owns hosts that still exist: %s; what becomes of a host is its owner's call: once nothing "
+                     "on it is needed, %s; or hand it to a thread of this machine that stays, %s; then it can be "
+                     "retired" % (
+                         ", ".join(host_words(v) for v in owned.vms),
                          "; ".join("`devcloud vm down %s` %s" % (
-                             shlex.quote(str(v.get("name"))),
-                             "releases it and leaves it running" if is_adopted(v) else "deletes it")
-                             for v in owned.vms)))
+                             name, "releases it and leaves it running" if is_adopted(v) else "deletes it")
+                             for name, v in zip(names, owned.vms)),
+                         ", ".join("`devcloud vm owner %s <thread>`" % name for name in names)))
     if owned.unknown:
-        parts.append("%sdevcloud could not tell whether it made a host that still exists: %s" % (
+        parts.append("%sdevcloud could not tell whether it owns a host that still exists: %s" % (
             "and " if parts else "", "; ".join(unknown_words(u) for u in owned.unknown)))
     return "; ".join(parts)
 
