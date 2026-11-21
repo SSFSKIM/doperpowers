@@ -258,6 +258,13 @@ class Usage(On):
                                     "or pass --on new", *argv)
         launch.assert_not_called()
 
+    def test_an_empty_task_is_refused_before_devcloud_runs(self):
+        for where in ("vm1", "new"):
+            with self.subTest(where=where):
+                self.answers("vm1", self.spawned())
+                self.refused(2, "spawn --on: the task is empty", "--on", where, task="")
+                self.assertEqual(self.calls(), [], "devcloud never called")
+
     def test_a_malformed_stamp_is_refused_before_devcloud_runs(self):
         for where, stamp, words in (("vm1", "nofield", "--stamp takes field=value: nofield"),
                                     ("new", "=x", "--stamp takes field=value: =x"),

@@ -385,6 +385,9 @@ def usage(c):
         sminos.die("spawn --on: --asked-from is the form the other machine's sminos is called with: drop it")
     if a.cwd and not (os.path.isabs(a.cwd) or a.cwd.startswith("~/")):
         sminos.die("spawn --on: --cwd is a path on the other machine: give it absolute, or from the home there as ~/…")
+    if a.task == "":
+        # An unset variable, say: the other machine refuses it (cmd_spawn), after `new` has made a VM for it.
+        sminos.die("spawn --on: the task is empty: give it as the argument, or as - with the text on standard input")
     sminos.parse_stamps(a.stamp)   # as the other machine's spawn reads them, refused here before anything is made
 
 
