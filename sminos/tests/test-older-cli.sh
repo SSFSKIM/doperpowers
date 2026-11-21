@@ -25,7 +25,9 @@
 #   as `recorded` what this code held for a spawned thread (its rule for a
 #   seat: no conversation of it here, so no resume); and its refill leaves
 #   the record's `waking` naming the displaced session, which this code
-#   ignores (T2's §7): the new occupant is woken at once, under no failure.
+#   ignores (T2's §7): it holds nothing for the new occupant, whose message
+#   from another machine its daemon's pass delivers, waking it, while that
+#   failure's backoff would still hold it, and a sender's own call wakes it.
 #
 #   test-older-cli.sh [--older <path to an older sminos launcher>]
 #
@@ -240,6 +242,14 @@ human_line() { # the outside event a person on another machine wrote to keeper
     "$SID" > "$SMINOS_HOME/projects/$PROJECT/log/beta.human.jsonl"
 }
 older_launches() { calls older | grep -c -e '--bg' || true; }
+hold_of() { # session — this code's hold of it, as a view reads it and as a push asks it last: "[<hold_of>] [<hold_now>]",
+  # a failed wake's backoff an hour (SMINOS_WAKE_RETRY), so a failure read as the session's own holds it `failed`
+  (cd "$REPO" && SMINOS_WAKE_RETRY=3600 SMINOS_WAKE_RETRY_MAX=3600 python3 -B -c 'import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+t = sminos.threads_module()
+print("[%s] [%s]" % (t.hold_of(sys.argv[2]), t.hold_now(sys.argv[2])))' "$SCRIPTS" "$1")
+}
 seat_field() { # seat field — one field of the seat's record in the seat store, as JSON
   py 'import json, sys; print(json.dumps(json.load(open(sys.argv[1])).get(sys.argv[2]), sort_keys=True))' \
     "$SMINOS_HOME/$1.json" "$2"
@@ -420,12 +430,30 @@ case_1_51() {
     "$SEAT 1" "its record keeps the waking, naming the session it displaced"
   run env STUB_WHO=test claude stop "${NEW:0:8}"
   assert_equals "$(row state "$NEW")" stopped "the new occupant's process stopped, it is stopped"
+  # Before anything is sent, and by the daemon, which follows the schedule (a sender's own call passes over a
+  # failed wake's backoff, §4): the displaced session's failure, an hour from due, read as the new occupant's
+  # would hold it `failed`.
+  assert_equals "$(hold_of "$NEW")" "[] []" "this code holds nothing for the new occupant: the waking names another session"
+  printf '{"ts":"%s","writer":"beta/human","seq":1,"kind":"human","from":"human","to":[{"session":"%s","alias":"seata"}],"text":"@seata for the seat from beta"}\n' \
+    "$(py 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"))')" \
+    "$NEW" > "$SMINOS_HOME/projects/$PROJECT/log/beta.human.jsonl"
+  BEFORE_TICK="$(launches)"
+  run env SMINOS_WAKE_RETRY=3600 SMINOS_WAKE_RETRY_MAX=3600 "$SMINOS" daemon tick
+  assert_equals "$RC" 0 "this code's tick runs, a failed wake's backoff an hour"
+  assert_contains "$OUT" "delivered 1 to seata" "and delivers the message from another machine to the new occupant"
+  assert_equals "$(( $(launches) - BEFORE_TICK ))" 1 "waking it once"
+  assert_equals "$(frames "$NEW")" "for the seat from beta" "the new occupant takes it once"
+  assert_contains "$(cat "$SMINOS_HOME/projects/$PROJECT/outcomes.jsonl")" \
+    '"writer": "beta/human", "seq": 1}, "session": "'"$NEW"'", "outcome": "delivered"' "its outcome delivered"
+  assert_equals "$(seat_field "$SEAT" waking)" null "the waking it ignored is gone once its own wake is done"
+  run env STUB_WHO=test claude stop "${NEW:0:8}"
+  assert_equals "$(row state "$NEW")" stopped "stopped again"
   run "$SMINOS" say "@seata for the seat, after the refill"
   assert_equals "$RC" 0 "this code's say to it exits 0"
   assert_contains "$OUT" "seata: sent (woken)" "woken at once: the displaced session's failure holds nothing"
-  assert_equals "$(frames "$NEW")" "for the seat, after the refill" \
-    "the new occupant takes that message once, and not what was held for the session it displaced"
-  assert_equals "$(seat_field "$SEAT" waking)" null "the waking it ignored is gone once its own wake is done"
+  assert_equals "$(frames "$NEW")" "$(printf '%s\n' "for the seat from beta" "for the seat, after the refill")" \
+    "the new occupant takes each message once, and not what was held for the session it displaced"
+  assert_equals "$(seat_field "$SEAT" waking)" null "nor does a wake leave one"
   assert_equals "$(violations)" "" "no resume carried a message"
 }
 

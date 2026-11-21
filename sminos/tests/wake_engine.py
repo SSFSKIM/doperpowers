@@ -51,7 +51,9 @@ copy); `silent-copy`; `row-elsewhere` (the engine keeps its rows in the
 state directory, where sminos does not look); `fail-before-start`;
 `fail-job` (a job that fails otherwise, its row kept); `rm-refuses` (the
 shorts it names, every one when empty); `late-inbox` and `late-process`
-(seconds); `agents-fail`; `no-banner` (seconds the launch sleeps, its
+(seconds); `process-gate` (a launch's process, started, writes nothing and does not listen until the file
+is removed, as `late-process` but for no set time; read at the launch, so a later launch with the file gone is
+not held); `agents-fail`; `no-banner` (seconds the launch sleeps, its
 process started, before it exits with nothing printed); `barrier` (each
 launch waits until the file is removed; `launches` counts those entered);
 `no-reply`, `reply-delay` (seconds), `reply-reversed` (two frames' whole
@@ -484,7 +486,8 @@ def start(sid, flags, run_with, cwd, path, message, row, note, defaults=False):
     spec = {"sid": sid, "short": short, "cwd": row["cwd"], "name": name, "nameSource": source,
             "mode": mode_of(run_with, defaults), "model": model_of(run_with, defaults), "transcript": path,
             "message": message, "late_inbox": seconds("late-inbox"), "late_process": seconds("late-process"),
-            "bridge": switch("bridge") is not None, "state": state()}
+            "process_gate": switch("process-gate") is not None, "bridge": switch("bridge") is not None,
+            "state": state()}
     spec_path = os.path.join(state(), "spec-%s.json" % uuid.uuid4().hex[:8])
     write_json(spec_path, spec)
     with open(os.path.join(state(), "helper.err"), "a") as err:
@@ -499,7 +502,7 @@ def start(sid, flags, run_with, cwd, path, message, row, note, defaults=False):
         f.write(spec_path)
     # The banner once the process is ready (E18): its record, its job's pid and its inbox listening; a late
     # switch breaks that order on purpose (late-inbox: the record only; late-process: nothing).
-    stage = None if spec["late_process"] else ("record" if spec["late_inbox"] else "inbox")
+    stage = None if spec["late_process"] or spec["process_gate"] else ("record" if spec["late_inbox"] else "inbox")
     if stage:
         mark = os.path.join(state(), "ready", "%d.%s" % (proc.pid, stage))
         end = time.monotonic() + 15
@@ -633,6 +636,10 @@ class Helper:
         late = self.spec.get("late_process") or 0
         if late:
             time.sleep(late)
+        if self.spec.get("process_gate"):
+            end = time.monotonic() + 120
+            while switch("process-gate", self.st) is not None and time.monotonic() < end:
+                time.sleep(0.01)
         write_json(self.record, {"pid": self.pid, "sessionId": self.sid, "cwd": self.spec["cwd"], "kind": "bg",
                                  "name": self.spec["name"], "nameSource": self.spec["nameSource"],
                                  "messagingSocketPath": self.sock, "status": "idle", "jobId": self.spec["short"],

@@ -33,6 +33,11 @@ each against:
   pass pushes it again; one killed after the wake and before the push leaves
   no second copy (the wake adds no window).
 
+Each message is followed to where it went: its token counted in every inbox
+the test made (the engine's, one a session, and each holder's), once in the
+one it was for or in none; its event read in the delivery record, in its
+writer's settled prefix with what settled it as this process's deliverers
+concluded, or above it with its hold mark, pushed nowhere while held.
 Every teardown fails on a launch that carried a message (test_wake.Engine).
 Hermetic: test_wake.Engine (HOME, SMINOS_HOME and the engine's state
 temporary, the engine first on PATH and checked to be).
@@ -62,6 +67,9 @@ import wake_engine  # noqa: E402
 
 PATHS = ("say", "send", "project")
 COMBOS = ((1, 1), (1, 3), (2, 1), (2, 3), (5, 1), (5, 3))   # (senders, messages from each)
+# What settles a message pushed: a delivery pass's outcomes (sminos.PUSHED, an uncertain one's left out), and a
+# plain send's own push (SendDelivery.settle, which keeps no outcome).
+PUSHED = ("sent", "woken", "send")
 WOKEN_FAR = "recorded (on testhost): the session is stopped, and its machine wakes it with this"
 
 Msg = collections.namedtuple("Msg", "token path sender told")
@@ -86,6 +94,46 @@ class Senders(Deliveries):
         self.q = self.project_of(self.other)
         self.pools = {"here": [], "there": []}
         self.waves = 0
+        self.boxes = []   # every inbox file a holder of this test serves
+        self.ledger()
+
+    def ledger(self):
+        """What this process's deliverers made of each event, by (session, writer, seq): `self.decided`, every
+        outcome a delivery pass concluded (sminos._conclude: a push's, a hold's); `self.settled_by`, what settled it
+        (that outcome; `send`, a plain send's own push, SendDelivery.settle; or `ended`, the settlement of an end or
+        of an advance away from the session, sminos_outcomes.settle_ended). A deliverer in a process of its own (a
+        sender's in Race) leaves neither."""
+        self.decided, self.settled_by, why = collections.defaultdict(list), {}, []
+        real_settle, real_conclude = sminos.delivered_settle, sminos._conclude
+        outcomes = sminos.sibling_module("sminos_outcomes")
+        real_ended, real_sent = outcomes.settle_ended, sminos.SendDelivery.settle
+
+        def settle(project, session, writer, seq):
+            real_settle(project, session, writer, seq)
+            self.settled_by.setdefault((session, writer, int(seq)), why[-1] if why else "?")
+
+        def conclude(project, member, session, e, outcome, outside):
+            self.decided[(session, e["writer"], int(e["seq"]))].append(str(outcome))
+            why.append(str(outcome))
+            try:
+                return real_conclude(project, member, session, e, outcome, outside)
+            finally:
+                why.pop()
+
+        def by(word, real):
+            def run(*a, **k):
+                why.append(word)
+                try:
+                    return real(*a, **k)
+                finally:
+                    why.pop()
+            return run
+        for module, name, fn in ((sminos, "delivered_settle", settle), (sminos, "_conclude", conclude),
+                                 (outcomes, "settle_ended", by("ended", real_ended)),
+                                 (sminos.SendDelivery, "settle", by("send", real_sent))):
+            p = mock.patch.object(module, name, fn)
+            p.start()
+            self.addCleanup(p.stop)
 
     # -- who sends, and how
 
@@ -143,6 +191,7 @@ class Senders(Deliveries):
         self.addCleanup(lambda: (server.kill(), server.wait()))
         self.assertTrue(wait_for(lambda: sminos.socket_ok(sock)))
         self.peer_set(proc, messagingSocketPath=sock, nameSource="user", **fields)
+        self.boxes.append(received)
         return proc, received
 
     # -- what each message became
@@ -158,6 +207,40 @@ class Senders(Deliveries):
                         if str(e.get("text") or "").endswith(token):
                             return e["writer"], e["seq"]
         self.fail("no event for %s" % token)
+
+    def box(self, sid):
+        """The engine's inbox of the session, as inboxes() names it."""
+        return "engine:" + sid
+
+    def inboxes(self):
+        """Every inbox of the test and the frames it took: the engine's, one a session (`inputs/<id>`), and each a
+        holder of this test serves."""
+        out = {}
+        d = os.path.join(self.state, "inputs")
+        for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            out[self.box(name)] = self.frames(name)
+        for path in self.boxes:
+            out[path] = self.received(path)
+        return out
+
+    def assert_only(self, msgs, box, times=1):
+        """Each message `times` in the inbox `box` and in no other inbox of the test (`box` None: in none)."""
+        boxes = self.inboxes()
+        for m in msgs:
+            got = {k: n for k, fs in boxes.items() if (n := sum(f.count(m.token) for f in fs))}
+            self.assertEqual(got, {box: times} if box else {}, "where %s is" % (m,))
+
+    def assert_settled(self, sid, msgs, why, p=None):
+        """Each message's event in its writer's settled prefix of the session's delivery record, no hold mark of it
+        left, and settled by what `why` names (outcomes, or `ended`; None where its deliverer ran elsewhere)."""
+        record = sminos.delivered_load(p or self.p, sid)
+        for m in msgs:
+            w, seq = self.event_of(m.token, p)
+            d = record.get(w) or {}
+            self.assertGreaterEqual(d.get("settled", 0), seq, "settled: %s" % (m,))
+            self.assertNotIn(seq, d.get("held") or {}, "no mark left: %s" % (m,))
+            if why is not None:
+                self.assertIn(self.settled_by.get((sid, w, seq)), why, "settled by: %s" % (m,))
 
     def assert_once(self, frames, msgs):
         for m in msgs:
@@ -177,15 +260,23 @@ class Senders(Deliveries):
         self.assertIsNotNone(placed, "the line the last paragraph of the first text")
         self.assertTrue(placed[1].startswith(wake.LINE_HEAD))
 
-    def assert_held(self, sid, tid, msgs, why=None, p=None):
-        marks, owed = self.marked(sid, p), self.owed(sid, p)
+    def assert_held(self, sid, tid, msgs, why=None, p=None, held=None):
+        """Each message held for the session: its sender told `why`'s line, its event above its writer's settled
+        prefix and marked for the thread, every outcome a pass here concluded of it `held:<held>` (`why` by
+        default), no attempt counted, and pushed to no inbox."""
+        marks, owed, record = self.marked(sid, p), self.owed(sid, p), sminos.delivered_load(p or self.p, sid)
+        held = held or why
         for m in msgs:
             if why is not None:
                 self.assertEqual(m.told, line(why), m)
-            self.assertEqual(marks.get(self.event_of(m.token, p)), tid, "held with its mark for its thread: %s"
-                             % (m,))
+            w, seq = self.event_of(m.token, p)
+            self.assertEqual(marks.get((w, seq)), tid, "held with its mark for its thread: %s" % (m,))
+            self.assertLess((record.get(w) or {}).get("settled", 0), seq, "not settled: %s" % (m,))
+            if held is not None:
+                self.assertEqual(set(self.decided.get((sid, w, seq), [])) - {"held:" + held}, set(), m)
             self.assertEqual(sum(t.endswith(m.token) for t in owed), 1, "owed: %s" % (m,))
         self.assertEqual(set(self.attempts(sid, p).values()) - {0}, set(), "no attempt counted")
+        self.assert_only(msgs, None)
 
     def helpers_alive(self, sid):
         """The engine's worker processes for the session that still run."""
@@ -237,7 +328,8 @@ class Woken(Senders):
                     self.assert_in_order(frames, msgs)
                     self.assert_line_once_first(frames)
                     self.assertEqual([m.told for m in msgs], ["sent (woken)"] + ["sent"] * (n * k - 1))
-                    self.assertEqual(self.owed(target.sid), [])
+                    self.assert_only(msgs, self.box(target.sid))
+                    self.assert_settled(target.sid, msgs, PUSHED)
 
 
 # ------------------------------------------------------------ held
@@ -284,8 +376,8 @@ class Held(Senders):
                     self.assert_once(got, msgs)
                     self.assert_in_order(got, msgs)
                     self.assertFalse([f for f in got if wake.LINE_HEAD in f], "no line to a terminal's process")
-                    self.assertEqual(self.owed(target.sid), [])
-                    self.assertEqual(self.inputs(target.sid), [], "nothing to any process a wake started")
+                    self.assert_only(msgs, received)   # nothing to any process a wake started
+                    self.assert_settled(target.sid, msgs, ("sent",))
 
     def test_a_seat_held_for_its_reasons_holds_every_way_of_sending_and_its_process_takes_them_once(self):
         for why in ("transcript", "config", "failed"):
@@ -313,7 +405,8 @@ class Held(Senders):
                 got = self.received(received)
                 self.assert_once(got, msgs)
                 self.assert_in_order(got, msgs)
-                self.assertEqual(self.owed(target.sid), [])
+                self.assert_only(msgs, received)
+                self.assert_settled(target.sid, msgs, ("sent",))
 
 
 # ------------------------------------------------------------ a wake that fails once
@@ -338,7 +431,8 @@ class Retry(Senders):
                 self.assert_once(frames, [first] + rest)
                 self.assertIn(first.token, frames[0], "the held message first")
                 self.assert_line_once_first(frames)
-                self.assertEqual(self.owed(target.sid), [])
+                self.assert_only([first] + rest, self.box(target.sid))
+                self.assert_settled(target.sid, [first] + rest, PUSHED)
                 self.assertNotIn("failed", self.waking(target.tid, target.sid), "cleared by the wake that made it live")
 
 
@@ -375,10 +469,9 @@ class Between(Senders):
         self.due()
         self.tick()
         self.tick()
-        self.assertEqual(self.owed(target.sid), [], "settled: the thread went on in the job")
-        self.assertFalse([f for f in self.received(received) if any(m.token in f for m in msgs)],
-                         "nothing of the session left pushed into the job")
-        self.assertEqual(self.inputs(target.sid), [])
+        self.assert_settled(target.sid, msgs, ("ended",))   # in the hand-off's advance: the thread went on in the job
+        self.assert_only(msgs, None)   # nothing of the session left pushed into the job, nor anywhere
+        self.assertEqual(self.received(received), [])
         self.assertEqual(self.launches(), launched, "nothing woken")
 
     def test_a_clear_leaves_the_messages_to_the_session_they_were_for_woken_and_never_to_the_new_one(self):
@@ -404,7 +497,8 @@ class Between(Senders):
         self.assert_in_order(frames, msgs)
         self.assert_line_once_first(frames)
         self.assertEqual(self.received(received), [], "nothing to the session the /clear started")
-        self.assertEqual(self.owed(target.sid), [])
+        self.assert_only(msgs, self.box(target.sid))
+        self.assert_settled(target.sid, msgs, PUSHED)
 
     def test_a_retire_settles_what_was_held_and_pushes_it_nowhere(self):
         target = self.human()
@@ -412,12 +506,12 @@ class Between(Senders):
         launched = self.launches()
         code, out = self.cli("retire", target.sid[:8])
         self.assertEqual(code, 0, out)
+        self.assert_settled(target.sid, msgs, ("ended",))   # with its end, by the retire itself
         self.due()
         self.tick()
-        self.assertEqual(self.owed(target.sid), [], "settled with its end")
-        self.assertEqual(self.inputs(target.sid), [])
+        self.assert_settled(target.sid, msgs, ("ended",))
+        self.assert_only(msgs, None)
         self.assertEqual(self.launches(), launched, "nothing woken")
-        self.assertTrue(msgs)
 
     def test_a_refill_settles_what_was_held_for_the_session_it_displaces_and_pushes_it_to_neither(self):
         target = self.seated("w")
@@ -428,12 +522,12 @@ class Between(Senders):
         code, out = self.cli("seat", "add", s["group"], "w", "--session", new)
         self.assertEqual(code, 0, out)
         self.end(proc)
-        self.assertEqual(self.owed(target.sid), [], "settled in the refill's entry")
+        self.assert_settled(target.sid, msgs, ("ended",))   # in the refill's entry
         self.due()
         self.tick()
         self.assertEqual(self.launches(), launched, "nothing woken for the session displaced")
-        for sid in (target.sid, new):
-            self.assertFalse([f for f in self.frames(sid) if any(m.token in f for m in msgs)], sid)
+        self.assert_settled(target.sid, msgs, ("ended",))
+        self.assert_only(msgs, None)   # to neither session, nor any other
 
 
 # ------------------------------------------------------------ the accepted job's grace
@@ -442,13 +536,15 @@ class Between(Senders):
 class Grace(Senders):
     def test_a_job_not_up_by_the_bound_holds_every_sender_starting_launches_nothing_twice_and_is_pushed_once(self):
         target = self.human()
-        self.switch("late-process", 8)
+        self.switch("process-gate")   # its process comes up only once the senders are done, however slow they are
         with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "1", "SMINOS_WAKE_GRACE": "60"}):
             msgs = self.wave(target, PATHS, 5, 1) + self.wave(target, ("say",), 1, 2)
             self.assertEqual(self.launches(), 1, "one launch, the others held behind its accepted job")
             self.assertEqual([m.told for m in msgs], [STARTING] * len(msgs))
             self.assertEqual(self.waking(target.tid, target.sid)["job"]["short"], target.sid[:8])
-            self.assert_held(target.sid, target.tid, msgs)
+            self.assert_held(target.sid, target.tid, msgs, held="starting")
+            self.assertIsNone(self.record(target.sid), "its process is not up yet")
+            os.unlink(os.path.join(self.state, "process-gate"))
             self.assertIsNotNone(wait_for(lambda: self.record(target.sid), timeout=15), "its process comes up")
             self.tick()
         self.assertTrue(wait_for(lambda: len(self.frames(target.sid)) == len(msgs)))
@@ -457,18 +553,21 @@ class Grace(Senders):
         self.assert_in_order(frames, msgs)
         self.assert_line_once_first(frames)
         self.assertEqual(self.launches(), 1, "nothing launched twice")
-        self.assertEqual(self.owed(target.sid), [])
+        self.assert_only(msgs, self.box(target.sid))
+        self.assert_settled(target.sid, msgs, PUSHED)
         self.assertEqual(len(self.helpers_alive(target.sid)), 1)
 
     def test_one_that_never_comes_up_is_counted_failed_after_its_grace_and_woken_again_its_worker_stopped(self):
         target = self.human()
         self.switch("late-process", 120)
-        with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "1", "SMINOS_WAKE_GRACE": "2"}):
-            msgs = self.wave(target, PATHS, 2, 1)
+        with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "1", "SMINOS_WAKE_GRACE": "60"}):
+            msgs = self.wave(target, PATHS, 2, 1)   # within the grace however slow the calls
             self.assertEqual([m.told for m in msgs], [STARTING] * 2)
             self.assertEqual(self.launches(), 1)
+            self.assert_held(target.sid, target.tid, msgs, held="starting")
             [stuck] = self.helpers_alive(target.sid)
-            time.sleep(2.2)   # the grace passes with no process holding the session
+        with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "1", "SMINOS_WAKE_GRACE": "1"}):
+            time.sleep(1.1)   # the grace passed, whatever the calls cost: with no process holding the session
             os.unlink(os.path.join(self.state, "late-process"))
             rest = self.wave(target, PATHS, 5, 1, first=2)
         self.assertEqual({m.told for m in rest}, {"sent"}, "pushed by a sender's own call, due once the grace passed")
@@ -483,7 +582,8 @@ class Grace(Senders):
         waking = self.waking(target.tid, target.sid)
         self.assertNotIn("job", waking)
         self.assertNotIn("failed", waking, "forgotten once a process holds it")
-        self.assertEqual(self.owed(target.sid), [])
+        self.assert_only(msgs + rest, self.box(target.sid))
+        self.assert_settled(target.sid, msgs + rest, PUSHED)
 
 
 # ------------------------------------------------------------ the line, senders racing one wake
@@ -530,6 +630,8 @@ class Race(Senders):
         self.assert_once(frames, msgs)
         self.assert_line_once_first(frames)
         self.assertIn("terminal", line_of(frames[0])[1], "a first wake's line")
+        self.assert_only(msgs, self.box(target.sid))
+        self.assert_settled(target.sid, msgs, None)
         self.stop(target.sid)
         later = self.racing(target, 5)
         self.assertEqual(self.launches(), 2)
@@ -539,6 +641,8 @@ class Race(Senders):
         self.assert_line_once_first(frames2)
         self.assertNotIn("terminal", line_of(frames2[0])[1], "the later wake's own line, not the first's again")
         self.assertNotIn("line", self.waking(target.tid, target.sid))
+        self.assert_only(msgs + later, self.box(target.sid))
+        self.assert_settled(target.sid, msgs + later, None)
 
     def test_senders_racing_a_wake_whose_session_another_process_took_meanwhile_push_there_with_no_line(self):
         for kind, fields in (("interactive", {}),
@@ -557,7 +661,8 @@ class Race(Senders):
                 self.assertFalse([f for f in got if wake.LINE_HEAD in f],
                                  "no line to a process its launch did not make")
                 self.assertNotIn("line", self.waking(target.tid, target.sid), "the copy's line removed")
-                self.assertEqual(self.inputs(target.sid), [])
+                self.assert_only(msgs, received)   # nothing to the copy, nor to any other process
+                self.assert_settled(target.sid, msgs, None)
                 self.assertEqual([j for j in self.jobs() if j.get("sessionId") != target.sid
                                   and j.get("state") not in ("stopped", "failed")], [], "no copy left running")
                 self.end(proc)
@@ -610,7 +715,9 @@ class NotPromised(Senders):
                     self.assertEqual(sum(f.count("the third") for f in frames), 1, "the dying sender's own, once")
                 self.assertEqual(sum(f.count(wake.LINE_HEAD) for f in frames), 1, "the line once, with the first")
                 self.assertEqual(len(self.resumes(target.sid)), 3, "two failed, one woke it: no wake for the copy")
-                self.assertEqual(self.owed(target.sid), [])
+                self.assert_only([first], self.box(target.sid), times=2)
+                self.assert_only(held[1:], self.box(target.sid))
+                self.assert_settled(target.sid, held, PUSHED)
 
     def test_a_deliverer_killed_after_the_wake_and_before_the_push_leaves_no_second_copy(self):
         target = self.human()
@@ -630,7 +737,8 @@ class NotPromised(Senders):
         self.assert_once(frames, held)
         self.assert_line_once_first(frames)
         self.assertEqual(len(self.resumes(target.sid)), 4, "three failed, one woke it, none again")
-        self.assertEqual(self.owed(target.sid), [])
+        self.assert_only(held, self.box(target.sid))
+        self.assert_settled(target.sid, held, PUSHED)
 
 
 # ------------------------------------------------------------ a second registry over a git mirror
@@ -714,7 +822,8 @@ class Remote(Senders):
                 self.assert_once(frames, msgs)
                 self.assert_in_order(frames, msgs)
                 self.assert_line_once_first(frames)
-                self.assertEqual(self.owed(target.sid), [])
+                self.assert_only(msgs, self.box(target.sid))
+                self.assert_settled(target.sid, msgs, PUSHED)
 
     def test_far_writers_to_a_held_thread_are_told_why_held_marked_and_pushed_once_to_its_process(self):
         target = self.mirrored("plan")
@@ -724,35 +833,47 @@ class Remote(Senders):
         self.assertEqual({m.told for m in msgs},
                          {line("mode").replace("recorded and held:", "recorded and held on testhost:")})
         self.here_tick()
-        self.assert_held(target.sid, target.tid, msgs)
+        self.assert_held(target.sid, target.tid, msgs, held="mode")
         self.assertEqual(self.resumes(target.sid), [])
         _, received = self.holder(target.sid, "interactive", target.alias, root=self.repo_dir)
         self.tick()
         got = self.received(received)
         self.assert_once(got, msgs)
         self.assert_in_order(got, msgs)
-        self.assertEqual(self.owed(target.sid), [])
+        self.assert_only(msgs, received)
+        self.assert_settled(target.sid, msgs, ("sent",))
 
     def test_far_writers_after_one_failed_wake_wait_for_the_schedule_and_are_pushed_once(self):
-        self.retry_soon(retry="1", cap="1")
+        self.retry_soon(retry="3600", cap="3600")   # not due until the test moves the failure back
         target = self.mirrored()
         self.publish()
         msgs = self.far_wave(target, 5, 1)
         self.switch("fail-job")
         self.here_tick()
         self.assertEqual(len(self.resumes(target.sid)), 1, "the daemon's wake, failed")
-        self.assert_held(target.sid, target.tid, msgs)
+        self.assert_held(target.sid, target.tid, msgs, held="failed")
         os.unlink(os.path.join(self.state, "fail-job"))
         self.tick()
         self.assertEqual(len(self.resumes(target.sid)), 1, "not due: the daemon waits")
-        time.sleep(1.1)
+        self.assert_held(target.sid, target.tid, msgs, held="failed")
+        waking = self.waking(target.tid, target.sid)
+        self.assertEqual(waking["failed"], 1)
+        # The failure an hour back: due. Written whole by a rename, as sminos writes a record, so that the stores'
+        # index sees it however long the directory has held still.
+        with open(self.record_file(target.tid)) as f:
+            rec = json.load(f)
+        rec["waking"] = dict(waking, session=target.sid,
+                             at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3601)))
+        sminos.write_json(self.record_file(target.tid), rec)
+        sminos.forget_caches()
         self.tick()
         self.assertEqual(len(self.resumes(target.sid)), 2, "due: woken")
         self.assertTrue(wait_for(lambda: len(self.frames(target.sid)) == len(msgs)))
         frames = self.frames(target.sid)
         self.assert_once(frames, msgs)
         self.assert_line_once_first(frames)
-        self.assertEqual(self.owed(target.sid), [])
+        self.assert_only(msgs, self.box(target.sid))
+        self.assert_settled(target.sid, msgs, PUSHED)
 
 
 if __name__ == "__main__":
