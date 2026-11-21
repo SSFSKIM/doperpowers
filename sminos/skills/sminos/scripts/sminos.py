@@ -34,6 +34,17 @@ back by a fill.
                    of this project (--cwd's); --brief is its in-charge line until its first derived one; --wait prints the reply.
                    --wait only watches, for DAEMON_TIMEOUT (default 18000 s): the seat works on after,
                    and `reply` reads its live transcript
+    sminos spawn    <alias> <task|-> --on <vm>|new [--cwd <path there>] [--role R] [--brief B] [--worktree W]
+                   [--stamp F=V]... [--model M] [--effort E] [--permission-mode M]
+                   [--vm-project owner/repo[@ref]]... [--vm-confirmed]   # the session opened on a devcloud VM
+                   (one that exists, adopted machines included, or `new`, which devcloud vm up makes, enrolled
+                   and kept, with this worktree's pushed branch or the --vm-project projects; --vm-confirmed is
+                   up's --confirmed, after the person's yes). Run from a Mac enrolled in the org, by a session
+                   whose project the enrollment carries and whose reach is this machine's default; the new
+                   session is told its spawner's address. --wait and --settings are refused with it
+    sminos spawn    <alias> - --asked-from <json> [--cwd C] …   # the form another machine's sminos calls over
+                   devcloud vm ssh for spawn --on: refused where this machine is not enrolled or is of another
+                   org, or where an inferred directory is another repository's checkout; prints one outcome line
     sminos seat add <group> <alias> [--role R] [--brief B] [--session S]   # register a vacant seat for a
                    later fill, or, with --session, give a running session a seat (refused for a session
                    its human opened that is already a member: its own record keeps it)
@@ -1163,6 +1174,24 @@ def has_left(p):
     if not _LEFT:
         _LEFT.append(frozenset(leaving_kept()["left"]))
     return p.id in _LEFT[0]
+
+
+def not_carried(project, org):
+    """Why this machine's enrollment in `org` does not carry the project
+    (EN.G1's plan, §7 row 9), "" when it does: the test
+    sminos_uplink.hub_projects makes of each project it opens. Its hub names
+    that org, the org's directory has not retired it, and it has not left
+    this machine."""
+    hub = project.hub if isinstance(project.hub, dict) else None
+    if hub is None or not isinstance(hub.get("org"), str) or not hub["org"]:
+        return "it syncs through no hub"
+    if hub["org"] != org:
+        return "its .smns names another org"
+    if org_retired(project.id):
+        return "the org's directory has retired it"
+    if has_left(project):
+        return "it has left this machine"
+    return ""
 
 
 def machine_retired(name):
@@ -4523,10 +4552,7 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
         _unreadable_said(sid)
         return None
     rec = records.read(sid)
-    settled = rec is not None and (records.basis(rec) == "launch" or records.strength(rec) == (2, True)
-                                   or (records.strength(rec) == (1, True) and not former
-                                       and str((peer or {}).get("kind") or "") != "bg"))
-    if not settled:
+    if not provenance_settled(rec, peer, former):
         try:
             prov = lineage_provenance(project, sid, peer, former, events) \
                 or evidence or records.default_provenance()
@@ -4545,6 +4571,21 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
     if rec is not None and records.is_final(rec) and project is not None:
         publish_owners(project, sid, events)
     return rec
+
+
+def provenance_settled(rec, peer, former=None):
+    """Whether nothing stronger is still looked for behind a session's
+    record, as ensure_record judges before it looks: it rests on a launch;
+    or it is final and rests on a lineage; or it is final, rests on the
+    session's own hook, and the session (`peer`, the engine's record of its
+    process) is no background job and is no hand-off's successor
+    (`former`). A background job's own hook record is not settled until a
+    lineage reaches it: the hand-off it continues may give it a narrower
+    reach. (`record_settled` is another function: an event's guard.)"""
+    records = records_module()
+    return rec is not None and (records.basis(rec) == "launch" or records.strength(rec) == (2, True)
+                                or (records.strength(rec) == (1, True) and not former
+                                    and str((peer or {}).get("kind") or "") != "bg"))
 
 
 def policy_rev_floor(sid):
@@ -13859,7 +13900,7 @@ def parse_stamps(items):
 
 
 def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
-                model, settings, effort, wait, locks, verb, stamp=None, permission_mode="auto"):
+                model, settings, effort, wait, locks, verb, stamp=None, permission_mode="auto", asked=None):
     """Launch a fresh background session for a seat and register it.
 
     seat_id None → a brand-new seat: a provisional record exists during the
@@ -13877,7 +13918,14 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     In the project's log: `retired` (replaced) for the session a re-fill
     displaces, then `joined` for the new one with its spawner as `by`, then,
     when the seat has a brief, the brief as its `in-charge` line. Every spawn
-    renders the preamble. Returns nothing (prints; may exit).
+    renders the preamble. Prints the banner and returns what it printed, as
+    {verb, group, alias, short, seat, session, status, cwd, project}; may exit.
+
+    `asked`, for a spawn another machine asked for (`--asked-from`, EN.G1's
+    plan §8): {"by": the spawner it names, or None}. The preamble and the
+    `joined` name that spawner (an address only: nothing of it is a grant),
+    the record is a terminal spawn's (spawn_provenance), and no banner is
+    printed, since the asking machine prints its own.
 
     The new session's record (spawn_provenance) is fixed before it exists:
     left pending under a launch id its settings carry, claimed by its own
@@ -13899,14 +13947,20 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     if project is None:   # its repository is in a protected folder this process may not read (read_refused)
         die("spawn: the project of %s is not read from here: its repository is in a folder macOS asks the person "
             "about; run sminos spawn from inside that folder" % cwd, EXIT_USAGE)
-    by = caller_alias()
-    # A desk member is the human, whom the preamble calls "the operator".
-    preamble = render_preamble(project.name, alias, "" if desk_member() else by)
+    if asked is not None:
+        spawner = asked.get("by")
+        by = spawner["alias"] if spawner else ""
+        named = SPAWNER_WORDS % spawner if spawner else ""
+    else:
+        by = caller_alias()
+        # A desk member is the human, whom the preamble calls "the operator".
+        named = "" if desk_member() else by
+    preamble = render_preamble(project.name, alias, named)
     task_text = compose_task(task, brief or "", preamble)
     records = records_module()
     launch_id = records.new_launch()
     merged = launch_settings(settings, launch_id)
-    records.write_pending(launch_id, spawn_provenance(settings, merged))
+    records.write_pending(launch_id, spawn_provenance(settings, merged, terminal=asked is not None))
     short, banner = run_claude_bg(claude_args(alias, model, merged, effort, worktree,
                                               permission_mode) + [task_text], cwd, settings)
     if not short:
@@ -14134,16 +14188,21 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     wt = ("  worktree=%s (branch worktree-%s)" % (runcwd, re.sub(r"[^a-zA-Z0-9._-]", "-", worktree))) if worktree else ""
     if verb == "spawned" and seat_id is not None:
         verb = "re-filled"
-    print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: sminos reply %s)" % (
-        verb, group, alias, short, rec_id, status, wt, short), flush=True)
+    if asked is None:
+        print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: sminos reply %s)" % (
+            verb, group, alias, short, rec_id, status, wt, short), flush=True)
     if wait:
         print_reply_block(rec_id)
     for failure in log_failed:
         warn("%s completed, but %s" % ("fill" if verb == "filled" else "spawn", failure))
+    return {"verb": verb, "group": group, "alias": alias, "short": short, "seat": rec_id, "session": uuid,
+            "status": status, "cwd": runcwd or cwd, "project": project}
 
 
-def spawn_provenance(settings, merged):
-    """A spawned session's provenance (sminos_records), fixed at its launch:
+def spawn_provenance(settings, merged, terminal=False):
+    """A spawned session's provenance (sminos_records), fixed at its launch
+    (`terminal`: the last case, whatever runs it; a spawn another machine
+    asked for, whose spawner's session is not this machine's):
     - for a desk member (a desk RPC's spawn, desk_member): owned by them,
       their principal, origin `maws` naming them the requester;
     - from inside a session: its record's owners, proofs, principal and
@@ -14159,8 +14218,8 @@ def spawn_provenance(settings, merged):
     spawner's slot, or the parent's inference, stands."""
     records = records_module()
     route = {"kind": "route", "settingsRef": merged} if settings else None
-    member = desk_member()
-    caller = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    member = "" if terminal else desk_member()
+    caller = "" if terminal else os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if member:
         return {**records.default_provenance("launch"), "origin": {"kind": "maws", "requester": member},
                 "owners": [member], "ownersProof": desk_proof(), "principal": member,
@@ -14178,9 +14237,34 @@ def spawn_provenance(settings, merged):
             "inference": route or records.slot()}
 
 
+# The spawner a spawn another machine asked for names (`--asked-from`'s `by`), as its preamble's {{BY}}.
+SPAWNER_WORDS = '%(alias)s (@%(short)s, in %(project_name)s on %(machine)s; sminos say "@%(short)s …" reaches it)'
+
+
 def cmd_spawn(a):
     """Start a session in the working directory's project (or --cwd's), as a
-    seat, recorded as joined by its spawner: a sibling, never a child."""
+    seat, recorded as joined by its spawner: a sibling, never a child. With
+    --on, on another machine (sminos_on.spawn_on); with --asked-from, the
+    spawn another machine's --on asked for, answered with one outcome line
+    (sminos_on, EN.G1's plan §8)."""
+    if a.on is not None:
+        sibling_module("sminos_on").spawn_on(a)
+        return
+    if a.asked_from is None:
+        spawn_here(a)
+        return
+    on = sibling_module("sminos_on")
+    req = on.read_request(a)
+    with on.Answering(req["nonce"]) as answer:
+        on.admit(req, answer)
+        cwd = cwd_or_die(on.expand_home(a.cwd), "spawn")
+        on.hold_to_origin(req, cwd, answer)
+        a.cwd = cwd
+        answer.ok(spawn_here(a, asked=req))
+
+
+def spawn_here(a, asked=None):
+    """`spawn` on this machine (cmd_spawn); what spawn_fresh printed."""
     alias = a.alias
     if not valid_name(alias):
         die("bad alias: %s" % alias)
@@ -14231,9 +14315,9 @@ def cmd_spawn(a):
         brief = a.brief if a.brief is not None else existing["brief"]
     else:
         role, brief = a.role or "", a.brief or ""
-    spawn_fresh(existing["seat_id"] if existing else None, alias, group, role, brief,
-                a.task, cwd, a.worktree or "", a.model or "", settings, effort, a.wait, locks, "spawned",
-                stamp=parse_stamps(a.stamp), permission_mode=a.permission_mode)
+    return spawn_fresh(existing["seat_id"] if existing else None, alias, group, role, brief,
+                       a.task, cwd, a.worktree or "", a.model or "", settings, effort, a.wait, locks, "spawned",
+                       stamp=parse_stamps(a.stamp), permission_mode=a.permission_mode, asked=asked)
 
 
 def cmd_seat_add(a):
@@ -18973,6 +19057,11 @@ def build_parser():
     # desk's spawn RPC passes the machine's ceiling, or a stricter mode).
     sp.add_argument("--permission-mode", default="auto", choices=PERMISSION_MODES)
     sp.add_argument("--no-wait", action="store_true", help="accepted and ignored (no-wait is the default)")
+    # On another machine (EN.G1's plan, §7 and §8): the Mac side, and the VM side it calls.
+    sp.add_argument("--on", default=None, metavar="VM|new")
+    sp.add_argument("--vm-project", action="append", default=None, metavar="owner/repo[@ref]")
+    sp.add_argument("--vm-confirmed", action="store_true")
+    sp.add_argument("--asked-from", default=None, metavar="JSON")
     route_flags(sp)
     sp.set_defaults(fn=cmd_spawn)
 

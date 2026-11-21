@@ -573,6 +573,12 @@ run_suites_c() {
   if python3 -B "$SCRIPT_DIR/test_who_thread.py"; then
     pass "who --thread: the thread a name is, one JSON line for devcloud vm owner (test_who_thread.py)"
   else fail "who --thread: the thread a name is, one JSON line for devcloud vm owner (test_who_thread.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_on.py"; then
+    pass "spawn --on, the Mac side: its refusals, vm up's call, origin's branch, the reach rule, the outcome line (test_on.py)"
+  else fail "spawn --on, the Mac side: its refusals, vm up's call, origin's branch, the reach rule, the outcome line (test_on.py)"; fi
+  if "$SCRIPT_DIR/test-on.sh"; then
+    pass "spawn --on between two machines: the VM side for real, its refusals, the wait, what is not known (test-on.sh)"
+  else fail "spawn --on between two machines: the VM side for real, its refusals, the wait, what is not known (test-on.sh)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 summary() {

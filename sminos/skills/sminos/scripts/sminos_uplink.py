@@ -405,8 +405,7 @@ def hub_projects(cred):
     sminos.register_declared()
     out = {}
     for p in sminos.known_projects():
-        if p.id in out or not (isinstance(p.hub, dict) and p.hub.get("org") == cred["org"]) \
-                or sminos.org_retired(p.id) or sminos.has_left(p):
+        if p.id in out or sminos.not_carried(p, cred["org"]):
             continue
         fresh = sminos.resolve_project(p.root) if p.root and not sminos.read_refused(p.root) \
             and os.path.isdir(p.root) else None
