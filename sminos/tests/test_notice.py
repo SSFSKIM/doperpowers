@@ -112,10 +112,10 @@ class Marker(unittest.TestCase):
 
 
 class Notices(Verbs):
-    def notice(self, sid, text, alias="x"):
+    def notice(self, sid, text, alias="x", program="devcloud"):
         """A machine's notice of this machine's operator writer, owed to the session and pushed by nobody yet."""
         return sminos.log_append(self.p, HUMAN, "human", **{"from": "human", "to": [{"session": sid, "alias": alias}],
-                                                            "text": text, "notice": "devcloud"})
+                                                            "text": text, "notice": program})
 
     def say_notice(self, *argv, cwd=None):
         os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
@@ -394,6 +394,27 @@ class Runs(Notices):
         self.assertEqual(routed["seq"], mine["seq"])
         self.assertLess(e["seq"], mine["seq"])
         self.assertEqual(self.settled(sid), mine["seq"], "settled past both once both landed")
+        self.assertEqual(self.owed(sid), [])
+
+    def test_notices_of_two_programs_go_as_two_pushes_each_under_its_own_sender(self):
+        """A run is cut wherever the sender changes (§1): two programs' notices are never one envelope naming
+        the last of them (G8)."""
+        took = self.bridge()
+        sid = str(uuidlib.uuid4())
+        received = self.terminal(sid)
+        self.notice(sid, "devcloud on vm: the first")
+        self.notice(sid, "backup on vm: the second", program="backup")
+        self.notice(sid, "backup on vm: the third", program="backup")
+        code, out = self.send(sid[:8], "the operator's send")
+        self.assertEqual(code, 0, out)
+        got = self.received(received)
+        self.assertEqual([envelope(g)[0] for g in got], ["devcloud@testhost", "backup@testhost"])
+        self.assertIn("devcloud on vm: the first", got[0])
+        self.assertNotIn("backup on vm", got[0])
+        self.assertIn("backup on vm: the second", got[1])
+        self.assertIn("backup on vm: the third", got[1], "one program's neighbours stay one run")
+        [(_, _, text)] = took
+        self.assertIn("the operator's send", text)
         self.assertEqual(self.owed(sid), [])
 
     def test_a_second_push_that_fails_leaves_the_notice_settled_and_the_verb_owed(self):

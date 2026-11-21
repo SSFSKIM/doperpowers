@@ -90,7 +90,9 @@ def outcome_whole(d):
     """Whether `d` is an outcome of §8's shape: a success's fields each of
     its type, or a refusal whose `why` and `exit` are a row of the table.
     Every key of the shape is there with its type (`head` too, null or 40
-    hex); a key beyond these is ignored."""
+    hex), and the optional `not_carried`, where it is, a string (one this
+    Mac does not know is still a reason the seat is not carried); a key
+    beyond these is ignored."""
     if not isinstance(d, dict):
         return False
     if d.get("ok") is True:
@@ -99,7 +101,8 @@ def outcome_whole(d):
                 and all(_text(d.get(k)) for k in ("group", "alias", "short", "status", "machine", "cwd"))
                 and all(isinstance(d.get(k), str) and sminos.UUID_RE.fullmatch(d[k]) for k in ("seat", "session"))
                 and isinstance(p, dict) and _text(p.get("id")) and _text(p.get("name"))
-                and (d.get("head") is None or isinstance(d["head"], str) and bool(HEAD_RE.fullmatch(d["head"]))))
+                and (d.get("head") is None or isinstance(d["head"], str) and bool(HEAD_RE.fullmatch(d["head"])))
+                and isinstance(d.get("not_carried", ""), str))
     if d.get("ok") is False:
         code, why = d.get("exit"), d.get("why")
         return type(code) is int and isinstance(why, str) and why in WHYS and code in WHYS[why]
@@ -168,7 +171,9 @@ class Answering:
     (spawn_fresh marks the request `launched`), any end but a whole success
     prints none, an exit or an exception alike: the job may run without a
     seat, so nothing is a refusal, and the asking machine says the outcome
-    is not known; the job is named here."""
+    is not known; the job is named here. So too where the launcher was
+    started and gave no answer (`unanswered`): a job may run that no one
+    can name."""
 
     def __init__(self, nonce, request=None):
         self.nonce, self.request, self.why, self.done = nonce, request or {}, "other", False
@@ -207,6 +212,8 @@ class Answering:
             return False
         code = (error.code if type(error.code) is int else 0 if error.code is None else 1) \
             if isinstance(error, SystemExit) else 1
+        if self.request.get("unanswered"):
+            return False   # spawn_fresh said why: a job may run, so this is no refusal either (§8 step 8)
         if (job := self.request.get("launched")):
             # After a launch nothing is a refusal, an exit or an exception alike (§8 steps 6 and 8).
             what = "it ended with exit %d, its own line above saying why" % code if isinstance(error, SystemExit) \
@@ -458,21 +465,22 @@ def usage(c):
 
 def route_back(c, enrolled):
     """(e): the calling session's address, its project carried by this
-    enrollment, its reach; the spawner the request names."""
-    address = sminos.session_address(c.session, os.getcwd())
-    if not address:
+    enrollment, its reach; the spawner the request names, its alias, short
+    id and project as sminos holds them (address_of), never read back out
+    of the formatted line."""
+    named = sminos.address_of(c.session, os.getcwd())
+    if named is None:
         c.refuse("spawn --on: this session is no member of a project yet (sminos who prints no address), so the "
                  "session opened there would have no one to answer: nothing was spawned")
-    project = sminos.session_project(c.session, sminos.launch_cwd(c.session, fallback=os.getcwd()))
+    alias, project = named
     why = sminos.not_carried(project, enrolled["org"])
     if why:
         c.refuse("spawn --on: this session's project, %s, is not one this machine's enrollment carries (%s), so "
                  "nothing a session on another machine says would reach it: nothing was spawned. Run it from a "
                  "session in a project the org shares" % (project.name, why))
     reach(c)
-    parsed = sminos.parse_addresses(address)
-    alias = (parsed[0]["alias"] if parsed else "") or c.session[:8]
-    return {"alias": alias, "short": c.session[:8], "project": project.id, "project_name": project.name,
+    return {"alias": alias or c.session[:8], "short": c.session[:8],
+            "project": project.id, "project_name": project.name,
             "machine": sminos.host_name()}
 
 
@@ -691,13 +699,15 @@ def closed(files):
 
 
 def make_vm(c, projects):
-    """(h): `devcloud vm up` for `new`; the host its `ready` line names."""
+    """(h): `devcloud vm up` for `new`; the host its `ready` line names.
+    Each value is one `--flag=value` word, so that devcloud's parser reads
+    one that opens with `-` (a label `-review`) as the value it is."""
     a = c.a
-    args = ["--enroll", "--keep", "--expect-creator", c.session[:8]]
+    args = ["--enroll", "--keep", "--expect-creator=%s" % c.session[:8]]
     if LABEL_RE.fullmatch(a.alias):
-        args += ["--label", a.alias]
+        args.append("--label=%s" % a.alias)
     for p in projects:
-        args += ["--project", p]
+        args.append("--project=%s" % p)
     if a.vm_confirmed:
         args.append("--confirmed")
     sminos.note("making a VM (a few minutes; devcloud's own lines follow): devcloud vm up %s" % shlex.join(args))
@@ -717,9 +727,9 @@ def make_vm(c, projects):
 
 def carried(a, directory):
     """The VM side's flags: the directory, the mode, and each carried flag
-    given, a free value as one `--flag=value` word, so that a value the
+    given, each value as one `--flag=value` word, so that a value the
     Mac's parser took (`--brief=--review`) is not read there as a flag."""
-    out = ["--cwd", directory, "--permission-mode", a.permission_mode]
+    out = ["--cwd=%s" % directory, "--permission-mode=%s" % a.permission_mode]
     for flag, value in (("--role", a.role), ("--brief", a.brief), ("--worktree", a.worktree or None),
                         ("--model", a.model), ("--effort", a.effort)):
         if value is not None:
@@ -735,8 +745,8 @@ def remote(c, vm, request, directory):
     line (rows 25 to 33)."""
     a = c.a
     # The positionals after `--`, so that an alias the Mac's parser took after its own (`-alias`) is one there.
-    args = (["vm", "ssh", vm, "--", "sminos", "spawn", "--asked-from",
-             json.dumps(request, separators=(",", ":"), ensure_ascii=False)]
+    args = (["vm", "ssh", vm, "--", "sminos", "spawn",
+             "--asked-from=%s" % json.dumps(request, separators=(",", ":"), ensure_ascii=False)]
             + carried(a, directory) + ["--", a.alias, "-"])
     bound = seconds("SMINOS_ON_TIMEOUT", REMOTE_TIMEOUT)
     wait = seconds("SMINOS_ON_ENROLL_WAIT", ENROLL_WAIT)
@@ -798,7 +808,9 @@ def remote(c, vm, request, directory):
         # Only where the session runs in the checkout the branch was derived for, which an explicit --cwd or a
         # --worktree need not be.
         if c.checked is not None and in_checkout(d["cwd"], c.checked[2]) and d["head"] and d["head"] != c.checked[1]:
-            sminos.note("origin's %s moved while the VM was made: the VM's checkout is at %s" % (c.checked[0], d["head"]))
+            # Read after the job started, the VM's HEAD shows a difference, not its cause.
+            sminos.note("the VM's checkout is at %s, not at %s, the commit origin's %s was at when it was checked"
+                        % (d["head"], c.checked[1], c.checked[0]))
     sys.exit(0)
 
 

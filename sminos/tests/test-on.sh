@@ -167,7 +167,7 @@ TASK='Three lines: "quoted", `ticks`
 and $HOME as written,
 and done.'
 
-echo "== --on vm1 from a session"
+echo "== --on vm1 from a session (the VM side runs in none: devcloud vm ssh carries no session)"
 standin
 on w1 --on vm1
 assert_rc 0 "$RC" "spawned on vm1"
@@ -182,6 +182,17 @@ assert_contains "$LAUNCH" "boss (@${S:0:8}, in $PROJECT_NAME on mac; sminos say 
 assert_contains "$LAUNCH" 'Three lines: \"quoted\", `ticks`\nand $HOME as written,\nand done.' "the task arrives as written"
 assert_contains "$LAUNCH" "\"--permission-mode\", \"auto\"" "under the mode asked"
 assert_equals "$(calls)" "ssh" "one call of devcloud, vm ssh"
+
+echo "== the VM side's flag inside a session (over devcloud vm ssh there is none, as above)"
+set +e
+OUT="$(cd "$VH/Developer/GitHub/repo" && printf 'a task' | CLAUDE_CODE_SESSION_ID="$S" vm "$SMINOS" spawn w9 - \
+  --asked-from='{"v": 1, "nonce": "0123456789abcdef", "org": "org-1", "origin": null, "by": null}' 2>&1)"
+RC=$?
+set -e
+assert_rc 2 "$RC" "refused, as a usage error"
+assert_contains "$OUT" "sminos: spawn: --asked-from is the form another machine's sminos calls over devcloud vm ssh, and a session is not one: drop it" "in the words say --notice's refusal has"
+assert_not_contains "$OUT" "sminos-spawn " "and no outcome line"
+assert_equals "$(seat_on_vm1 w9)" "" "no seat made"
 
 echo "== from a terminal, with the carried flags"
 standin

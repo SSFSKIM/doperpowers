@@ -18,6 +18,7 @@ temporary host directory for the program.
 Run: python3 -m unittest discover -s devcloud/tests/unit -p test_driver_owner.py"""
 import fcntl
 import json
+import pathlib
 import shlex
 import shutil
 import stat
@@ -26,7 +27,7 @@ import sys
 import time
 from unittest import mock
 
-import _path  # noqa: F401
+import _path
 from driver import adopt, cli, context, hostctl, owned
 from driver.errors import DriverError
 from driver.ssh import Result
@@ -129,8 +130,8 @@ class HandedOn(OwnerBase):
         self.assertEqual(self.label(), SHORT)
         self.assertEqual(out, f"{NAME} was owned by @{OLD}; builder#{SHORT} (example on testmac) owns it now\n")
         self.assertEqual(err, f"devcloud vm: warning: builder's project, example, is not one this machine's "
-                              f"enrollment carries (it syncs through no hub), so no notice from {NAME} reaches "
-                              f"builder: they end in its journal and wall\n")
+                              f"enrollment carries (it syncs through no hub), so builder may get no notice from "
+                              f"{NAME}\n")
         for carried in ({"not_carried": ""}, {}):   # carried, and a sminos that predates the key
             with self.subTest(carried=carried):
                 self.threads["builder"] = thread_answer(**carried)
@@ -254,9 +255,25 @@ class SminosAnswer(DriverBase):
             context.sminos_thread(env, name)
         return caught.exception.code, str(caught.exception)
 
+    def test_a_name_that_opens_with_a_hyphen_reaches_sminos_s_own_parser_as_the_name(self):
+        """The name is one `--thread=<name>` word, read by sminos's own CLI (this tree's, under a home of the
+        test's): `-review` is the name nothing answers to, never a usage error read as an older sminos (G3)."""
+        scripts = _path.DEVCLOUD.parent / "sminos" / "skills" / "sminos" / "scripts"
+        bindir = self.tmp / "real-bin"
+        bindir.mkdir()
+        (bindir / "sminos").symlink_to(scripts / "sminos")
+        home = self.tmp / "sminos-home"
+        home.mkdir()
+        env = {"PATH": f"{bindir}:{pathlib.Path(sys.executable).parent}:/usr/bin:/bin", "HOME": str(home),
+               "SMINOS_HOME": str(home / ".claude" / "sminos")}
+        self.assertEqual(self.refusal(env, name="-review"),
+                         (1, "owner: sminos names no thread for -review (sminos: no seat or member matching "
+                             "'-review'): nothing was changed"))
+
     def test_its_answer_its_refusals_and_a_copy_that_predates_the_flag(self):
         answer = thread_answer()
-        env = self.sminos(f"[ \"$1 $2 $3\" = 'who --thread builder' ] || exit 9\necho '{json.dumps(answer)}'")
+        env = self.sminos(f"[ \"$1 $2\" = 'who --thread=builder' ] && [ $# = 2 ] || exit 9\n"
+                          f"echo '{json.dumps(answer)}'")
         self.assertEqual(context.sminos_thread(env, "builder"), answer)
         self.assertEqual(self.refusal({"PATH": str(self.tmp / "empty"), "HOME": str(self.tmp / "home")}),
                          (1, "owner: no sminos CLI was found, and only sminos says which thread a name is: nothing "

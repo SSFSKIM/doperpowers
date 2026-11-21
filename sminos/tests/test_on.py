@@ -55,6 +55,28 @@ KEY = "github.com/example/repo"
 SEAT = "6f0e9d8c-7b6a-4594-8382-716253443526"
 JOB = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 DROP = object()   # a key taken out of a request
+DEVCLOUD = os.path.join(os.path.dirname(os.path.dirname(HERE)), "devcloud")
+
+
+def devcloud_parser():
+    """devcloud's own `vm` parser, from this tree (devcloud/driver/cli.py): what reads the words `vm up` is given.
+    Imported, never run: no devcloud process, profile or provider."""
+    added = [DEVCLOUD, os.path.join(DEVCLOUD, "boot")]
+    sys.path[:0] = added
+    try:
+        from driver import cli
+    finally:
+        for d in added:
+            sys.path.remove(d)
+    return cli.parser()
+
+
+def vm_side(argv):
+    """The VM side's words of a `vm ssh` call (everything after its `--` but `sminos`), read by sminos's own
+    parser as the VM's sminos reads them."""
+    words = argv[argv.index("--") + 1:]
+    assert words[0] == "sminos", words
+    return sminos.build_parser().parse_args(words[1:])
 
 
 def gitq(*args, cwd=None):
@@ -326,6 +348,33 @@ class RouteBack(On):
         self.assertIn(ids[shared], opened)
 
 
+    def test_the_spawner_is_named_from_its_record_whatever_its_projects_name(self):
+        """The request's `by` is the spawner's alias, short id and project as sminos holds them, never read back
+        out of its address line: a project named with spaces and parentheses keeps the alias (G7)."""
+        d = os.path.join(self.home, "spaced")
+        os.makedirs(d)
+        pid = str(uuidlib.uuid4())
+        with open(os.path.join(d, ".smns"), "w") as f:
+            json.dump({"project": pid, "name": "Build Tools (Core)", "remote": "", "hub": {"org": "org-1"}}, f)
+        self.sid, _ = self.session(root=d)
+        self.recorded(self.sid)
+        address = sminos.session_address(self.sid, d)
+        self.assertTrue(address.endswith(" (Build Tools (Core) on testhost)"), address)
+        alias = address[len("Sminos-Session: "):].split("#", 1)[0]
+        self.assertNotEqual(alias, self.sid[:8], "a session with an alias")
+        sent = {}
+
+        def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
+            sent["args"] = args
+            return 0, [self.spawned()], "", False, True
+        with mock.patch.object(on, "run_devcloud", side_effect=run):
+            code, out, err = self.spawn("--on", "vm1", "--cwd", "/srv/x", cwd=d)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(vm_side(sent["args"]).asked_from)["by"],
+                         {"alias": alias, "short": self.sid[:8], "project": pid, "project_name": "Build Tools (Core)",
+                          "machine": "testhost"})
+
+
 class Reach(On):
     def test_reach_that_could_not_be_read_refuses_and_nothing_is_written(self):
         job, jproc = self.session(root=self.work, kind="bg")
@@ -414,10 +463,10 @@ class New(On):
         self.answers("dc-x-0001", self.spawned(machine="dc-x-0001"))
         code, out, err = self.spawn("--on", "new")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.up_args(), ["--enroll", "--keep", "--expect-creator", self.sid[:8], "--label", "w",
-                                          "--project", "example/repo@topic"])
+        self.assertEqual(self.up_args(), ["--enroll", "--keep", "--expect-creator=%s" % self.sid[:8], "--label=w",
+                                          "--project=example/repo@topic"])
         self.assertIn("sminos: note: making a VM (a few minutes; devcloud's own lines follow): devcloud vm up "
-                      "--enroll --keep --expect-creator %s --label w --project example/repo@topic" % self.sid[:8], err)
+                      "--enroll --keep --expect-creator=%s --label=w --project=example/repo@topic" % self.sid[:8], err)
         lines = out.splitlines()
         self.assertTrue(lines.index("dc-x-0001  ready in 0m01s") < len(lines) - 1, "devcloud's lines come first")
         self.assertEqual(lines[-1], 'seat spawned on dc-x-0001: repo/w  [a1b2c3d4 / %s]  status=working  (message '
@@ -425,16 +474,31 @@ class New(On):
                          % (SEAT, JOB[:8]))
         self.assertIn("sminos: note: dc-x-0001 is kept and this session's thread owns it: devcloud vm down "
                       "dc-x-0001 ends it, and it sends a notice after three idle days", err)
-        self.assertNotIn("moved while the VM was made", err)
+        self.assertNotIn("the VM's checkout is at", err)
         ssh = [c for c in self.calls() if c[1] == "ssh"][0]
         self.assertEqual(ssh[2:4], ["dc-x-0001", "--"])
-        request = json.loads(ssh[ssh.index("--asked-from") + 1])
+        there = vm_side(ssh)
+        request = json.loads(there.asked_from)
         self.assertEqual(request, {"v": 1, "nonce": NONCE, "org": "org-1", "origin": KEY,
                                    "by": {"alias": request["by"]["alias"], "short": self.sid[:8],
                                           "project": sminos.resolve_project(self.work).id,
                                           "project_name": sminos.resolve_project(self.work).name,
                                           "machine": "testhost"}})
-        self.assertEqual(ssh[ssh.index("--cwd") + 1], "~/Developer/GitHub/repo")
+        self.assertEqual(there.cwd, "~/Developer/GitHub/repo")
+        self.assertTrue(all(w.startswith(("--asked-from=", "--cwd=", "--permission-mode=")) for w in ssh[6:9]),
+                        "each value one word, the request's too: %r" % ssh[6:9])
+
+    def test_devcloud_reads_each_value_of_vm_up_as_it_was_sent(self):
+        """Each value `vm up` is given is one `--flag=value` word, read here by devcloud's own parser: a label
+        that opens with `-` (an alias after `--`) and a project that does are values, not flags (G3)."""
+        self.answers("dc-x-0001", self.spawned(machine="dc-x-0001", alias="-review"))
+        code, out, err = self.sminos_argv("spawn", "--on", "new", "--vm-project=-odd/repo@-ref", "--vm-confirmed",
+                                          "--", "-review", "a task")
+        self.assertEqual(code, 0, err)
+        [up] = [c for c in self.calls() if c[1] == "up"]
+        args = devcloud_parser().parse_args(up[1:])
+        self.assertEqual((args.command, args.label, args.project, args.expect_creator, args.enroll, args.keep,
+                          args.confirmed), ("up", "-review", ["-odd/repo@-ref"], self.sid[:8], True, True, True))
 
     def test_label_confirmed_and_named_projects(self):
         self.answers("dc-x-0001", self.spawned(machine="dc-x-0001", alias="Big_W"))
@@ -442,8 +506,8 @@ class New(On):
         code, _, err = self.spawn("--on", "new", "--vm-project", "example/repo@main", "--vm-project", "maws",
                                   "--vm-confirmed", alias="Big_W")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.up_args(), ["--enroll", "--keep", "--expect-creator", self.sid[:8],
-                                          "--project", "example/repo@main", "--project", "maws", "--confirmed"])
+        self.assertEqual(self.up_args(), ["--enroll", "--keep", "--expect-creator=%s" % self.sid[:8],
+                                          "--project=example/repo@main", "--project=maws", "--confirmed"])
 
     def test_devcloud_reading_another_creator_makes_nothing_and_spawns_nothing(self):
         self.cfg["up"] = {"creator": "ffffffff"}
@@ -549,28 +613,29 @@ class New(On):
         self.answers("dc-x-0001", self.spawned(machine="dc-x-0001", head=other))
         code, out, err = self.spawn("--on", "new")
         self.assertEqual(code, 0, err)
-        self.assertIn("sminos: note: origin's topic moved while the VM was made: the VM's checkout is at %s" % other,
-                      err)
+        self.assertIn("sminos: note: the VM's checkout is at %s, not at %s, the commit origin's topic was at when it "
+                      "was checked" % (other, self.commit), err)
+        self.assertNotIn("moved", err, "the HEAD is read after the job started: it shows a difference, not its cause")
         self.answers("vm1", self.spawned(head=other))
         code, out, err = self.spawn("--on", "vm1")
         self.assertEqual(code, 0, err)
-        self.assertNotIn("moved while", err)
+        self.assertNotIn("the VM's checkout is at", err)
         self.assertNotIn("is kept and", err)
         # An explicit --cwd: the session's directory need not be the checkout of the branch derived, so its commit
         # says nothing of that branch.
         self.answers("dc-x-0001", self.spawned(machine="dc-x-0001", head=other, cwd="/home/u/elsewhere"))
         code, out, err = self.spawn("--on", "new", "--cwd", "~/elsewhere")
         self.assertEqual(code, 0, err)
-        self.assertNotIn("moved while", err)
+        self.assertNotIn("the VM's checkout is at", err)
         # The derived checkout named with --cwd is compared; another checkout the engine ran in (--worktree) is not.
         self.answers("dc-x-0001", self.spawned(machine="dc-x-0001", head=other))
         code, out, err = self.spawn("--on", "new", "--cwd", "~/Developer/GitHub/repo")
-        self.assertIn("moved while", err)
+        self.assertIn("the VM's checkout is at", err)
         self.answers("dc-x-0001", self.spawned(machine="dc-x-0001", head=other,
                                                cwd="/home/u/Developer/GitHub/repo/.claude/worktrees/wt"))
         code, out, err = self.spawn("--on", "new", "--worktree", "wt")
         self.assertEqual(code, 0, err)
-        self.assertNotIn("moved while", err)
+        self.assertNotIn("the VM's checkout is at", err)
 
     def test_from_a_terminal_new_is_refused(self):
         self.refused(1, "spawn --on new: no session runs this, so the VM would have no owner", "--on", "new",
@@ -619,7 +684,7 @@ class New(On):
         self.answers("dc-x-0001", self.spawned(machine="dc-x-0001"))
         code, _, err = self.spawn("--on", "new")
         self.assertEqual(code, 0, err)
-        self.assertIn("example/repo@main", [c for c in self.calls() if c[1] == "up"][0])
+        self.assertIn("--project=example/repo@main", [c for c in self.calls() if c[1] == "up"][0])
 
     def test_a_linked_worktrees_own_origin_is_the_one_read(self):
         linked = os.path.join(self.home, "linked")
@@ -636,7 +701,7 @@ class New(On):
         self.answers("dc-x-0001", self.spawned(machine="dc-x-0001"))
         code, _, err = self.spawn("--on", "new", cwd=linked)
         self.assertEqual(code, 0, err)
-        self.assertIn("example/fork@feature", [c for c in self.calls() if c[1] == "up"][0])
+        self.assertIn("--project=example/fork@feature", [c for c in self.calls() if c[1] == "up"][0])
 
     def test_reach_narrowed_while_the_vm_is_made_refuses_saying_it_is_kept(self):
         gate = os.path.join(self.home, "gate")
@@ -679,7 +744,7 @@ class New(On):
         self.answers("dc-x-0001", self.spawned(machine="dc-x-0001"))
         code, _, err = self.spawn("--on", "new")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.up_args()[-2:], ["--project", "example/repo@topic"])
+        self.assertEqual(self.up_args()[-1:], ["--project=example/repo@topic"])
 
     def test_devcloud_reading_no_creating_session_makes_nothing_and_spawns_nothing(self):
         self.cfg["up"] = {"creator": None}
@@ -959,6 +1024,9 @@ class Outcome(On):
              [on.outcome_line(NONCE, {k: v for k, v in json.loads(line.split(" ", 2)[2]).items() if k != "head"})]),
             ("the outcome line does not read as one", [self.spawned(project=None)]),
             ("the outcome line does not read as one", [self.spawned(head="")]),
+            ("the outcome line does not read as one", [self.spawned(not_carried=7)]),
+            ("the outcome line does not read as one", [self.spawned(not_carried=None)]),
+            ("the outcome line does not read as one", [self.spawned(not_carried=["it syncs through no hub"])]),
         ]
         for reason, lines in cases:
             with self.subTest(reason=reason, lines=lines[0][:60]):
@@ -993,6 +1061,14 @@ class Outcome(On):
         self.assertIn("sminos: note: vm1 filed this seat in its project unshared, which its enrollment does not carry "
                       "(it syncs through no hub): it will not be listed here, and nothing said from here reaches it",
                       err)
+        self.answers("vm1", self.spawned(not_carried="a word a newer VM knows", project={"id": "p-u",
+                                                                                         "name": "unshared"}))
+        code, out, err = self.spawn("--on", "vm1")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("message it", out, "a word this Mac does not know: not carried")
+        self.assertIn("sminos: note: vm1 filed this seat in its project unshared, which its enrollment does not carry: "
+                      "it will not be listed here", err)
+        self.assertNotIn("a word a newer VM knows", err, "with no reason shown")
         self.answers("vm1", self.spawned(not_carried="", project={"id": "p-u", "name": "unshared"}))
         code, out, err = self.spawn("--on", "vm1")
         self.assertIn("(message it: sminos say", out, "an empty value: carried, the promise as before")
@@ -1056,10 +1132,12 @@ class Outcome(On):
 class VmSide(On):
     """The VM side's own line, for each way it ends, read by the Mac's check."""
 
-    def asked(self, req=None, cwd=None, raw=None, task="a task", stdin=None, runcwd=None, **over):
+    def asked(self, req=None, cwd=None, raw=None, task="a task", stdin=None, runcwd=None, session=None,
+              launch=None, **over):
         """The VM side run here with `req` (each key of `over` set, DROP's taken out), or `raw` as the value:
         (exit, stdout's lines, stderr, what was launched); `runcwd`, the directory the engine says the job runs
-        in (a --worktree's), else the directory asked for."""
+        in (a --worktree's), else the directory asked for; `session`, the session it runs in (none, as over
+        `devcloud vm ssh`); `launch`, what the launcher answers, (short, banner), in place of a job."""
         req = req or {"v": 1, "nonce": NONCE, "org": "org-1", "origin": None,
                       "by": {"alias": "boss", "short": "abcd1234", "project": "p", "project_name": "repo",
                              "machine": "mac"}}
@@ -1071,12 +1149,16 @@ class VmSide(On):
 
         def start(args, cwd_, settings):
             launched["task"] = args[-1]
+            if launch is not None:
+                return launch
             sid, launched["proc"] = self.session(root=cwd_, kind="bg", sid=JOB)
             return "a1b2c3d4", "banner"
         with mock.patch.object(sminos, "run_claude_bg", side_effect=start), \
                 mock.patch.object(sminos, "poll_uuid", return_value=(JOB, "working", runcwd or cwd or self.work)), \
+                mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": session} if session else {}), \
                 piped(stdin), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            if not session:
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
             try:
                 sminos.main(argv)
                 code = 0
@@ -1165,6 +1247,44 @@ class VmSide(On):
             with self.subTest(bad=bad):
                 code, lines, err, _ = self.asked(raw=bad)
                 self.assertEqual((code, lines), (2, []), err)
+
+    def test_inside_a_session_the_flag_is_refused_before_anything_is_made(self):
+        """`--asked-from` is the transport's (§8): a session that passes it would give its child the terminal's
+        reach, not its own, so it is refused there as `say --notice` is, exit 2, before the request is read, with
+        no outcome line, nothing launched and no seat. Over `devcloud vm ssh` there is no session: the same call
+        spawns (G1)."""
+        code, lines, err, launched = self.asked(session=self.sid)
+        self.assertEqual((code, lines), (2, []), err)
+        self.assertIn("sminos: spawn: --asked-from is the form another machine's sminos calls over devcloud vm ssh, "
+                      "and a session is not one: drop it (sminos spawn --on <vm> opens a session on another machine)",
+                      err)
+        self.assertEqual(launched, {}, "nothing launched")
+        self.assertEqual([x["alias"] for x in sminos.seats()], [], "no seat")
+        code, lines, err, launched = self.asked(raw="not even a request", session=self.sid)
+        self.assertEqual((code, lines), (2, []), "refused before the request is read")
+        self.assertIn("a session is not one: drop it", err)
+        code, lines, err, launched = self.asked()
+        self.assertEqual(on.judge(lines, NONCE, "w", code)[0], "ok", err)
+
+    def test_a_launcher_that_gave_no_answer_is_no_refusal_and_the_mac_says_not_known(self):
+        """A launcher started and stopped at its bound may have started the job: no outcome line, so the Mac
+        says the outcome is not known and where to look before a retry (row 29), never a refusal (G2). One that
+        answered, with a failure, is still a refusal."""
+        code, lines, err, _ = self.asked(launch=("", sminos.LaunchOutput("timed out", timeout=300.0)))
+        self.assertEqual(code, 1, err)
+        self.assertEqual(on.judge(lines, NONCE, "w", code), ("unknown", "no outcome line came back"), lines)
+        self.assertIn("sminos: spawn: the launcher (claude --bg) was started here and gave no answer within 300 s, "
+                      "and was stopped: a session may have started all the same; no outcome is reported for it, so "
+                      "the machine that asked says it is not known: sminos list here shows whether one runs", err)
+        self.answers("vm1", *lines, code=code)
+        mac, out, said = self.spawn("--on", "vm1")
+        self.assertEqual(mac, 1, said)
+        self.assertIn("spawn --on: the outcome on vm1 is not known (no outcome line came back): a session may or may "
+                      "not have started there, and devcloud vm ssh vm1 -- sminos list shows", said)
+        self.assertNotIn("answered exit", said)
+        self.assertNotIn("seat spawned on", out)
+        code, lines, err, _ = self.asked(launch=("", sminos.LaunchOutput("claude: refused", status=1)))
+        self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1, "why": "other"}))
 
     def test_a_success_it_cannot_say_whole_prints_no_line_and_names_the_job(self):
         """After a launch nothing is a refusal (§8 steps 6 and 8): no outcome line, so the Mac takes row 29; the

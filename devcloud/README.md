@@ -760,7 +760,7 @@ retire it while the host exists. sminos says which thread a name is
 another machine, an ended one, a vacant seat, a session that is no thread
 and a name that is none, changing nothing. A thread whose project this
 machine's enrollment does not carry (sminos says why) is handed the host
-with a warning that its notices will not reach it. It writes the host first, by a
+with a warning that its notices may not reach it. It writes the host first, by a
 program it sends as root (`driver/owner_host.py`, which loads the host's own
 library, so a host made before the verb takes it): under the host's send
 lock, so a notice being sent finishes first (none after 20 seconds: refused),

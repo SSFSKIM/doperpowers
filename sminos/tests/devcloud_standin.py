@@ -86,8 +86,11 @@ def up(argv):
     name = u.get("name", "dc-x-0001")
     while u.get("gate") and not os.path.exists(u["gate"]):
         time.sleep(0.05)
-    if "--expect-creator" in argv and "creator" in u:
-        expected = argv[argv.index("--expect-creator") + 1]
+    # As devcloud's parser reads it: `--expect-creator=<short>`, or the flag and its value as two words.
+    given = [w.split("=", 1)[1] for w in argv if w.startswith("--expect-creator=")] + \
+        [argv[i + 1] for i, w in enumerate(argv[:-1]) if w == "--expect-creator"]
+    if given and "creator" in u:
+        expected = given[-1]
         if u["creator"] is None:
             sys.stderr.write("devcloud vm: --expect-creator: the caller expects @%s as this host's creator, and "
                              "devcloud read no creating session here (sminos who --session gave it no address it "

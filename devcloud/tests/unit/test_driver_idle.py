@@ -65,7 +65,7 @@ class CreatorTest(DriverBase):
 
         def run(argv, **kw):
             calls.append(argv)
-            if argv[1:3] == ["who", "--session"]:
+            if argv[1:3] == ["who", f"--session={self.SESSION}"]:
                 return subprocess.CompletedProcess(argv, 0, self.ADDRESS, "")
             if isinstance(second, BaseException):
                 raise second
@@ -78,8 +78,9 @@ class CreatorTest(DriverBase):
     def test_two_who_calls_give_the_tag_the_short_and_the_projects_id(self):
         creator, project, again, calls = self.lookup(self.answer())
         self.assertEqual((creator, project, again), (("@abcd1234", "abcd1234"), self.PID, self.PID))
-        self.assertEqual([c[1:] for c in calls], [["who", "--session", self.SESSION], ["who", "--thread", self.SESSION]],
-                         "two calls of sminos, once for the run")
+        self.assertEqual([c[1:] for c in calls],
+                         [["who", f"--session={self.SESSION}"], ["who", f"--thread={self.SESSION}"]],
+                         "two calls of sminos, once for the run, each value one word")
 
     def test_the_name_stays_where_the_answer_is_not_for_the_calling_session_itself(self):
         cases = {

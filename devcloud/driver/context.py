@@ -405,7 +405,8 @@ def session_creator(env):
     if not session or not cli:
         return None, None, None
     try:
-        done = subprocess.run([cli, "who", "--session", session], capture_output=True, text=True, timeout=30)
+        # Each value one `--flag=value` word, as sminos's parser reads it whatever it opens with.
+        done = subprocess.run([cli, "who", f"--session={session}"], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return None, None, None
     # As sminos writes it (`session_address`): the project's name as it is, spaces and parentheses included, then
@@ -463,7 +464,8 @@ def sminos_thread(env, name):
         raise DriverError(FAILED, "owner: no sminos CLI was found, and only sminos says which thread a name is: "
                                   "nothing was changed")
     try:
-        done = subprocess.run([cli, "who", "--thread", name], capture_output=True, text=True, env=env,
+        # One `--thread=<name>` word: a name that opens with `-` (`-review`) is the name, not a flag.
+        done = subprocess.run([cli, "who", f"--thread={name}"], capture_output=True, text=True, env=env,
                               timeout=THREAD_TIMEOUT)
     except subprocess.TimeoutExpired:
         line = f"no answer within {THREAD_TIMEOUT} s"

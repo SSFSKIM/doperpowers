@@ -45,7 +45,8 @@ back by a fill.
     sminos spawn    <alias> - --asked-from <json> [--cwd C] …   # the form another machine's sminos calls over
                    devcloud vm ssh for spawn --on: refused where this machine is not enrolled or is of another
                    org, where an inferred directory is another repository's checkout, or where the directory is
-                   in a project this machine's enrollment does not carry; prints one outcome line
+                   in a project this machine's enrollment does not carry; prints one outcome line. Refused
+                   inside a session
     sminos seat add <group> <alias> [--role R] [--brief B] [--session S]   # register a vacant seat for a
                    later fill, or, with --session, give a running session a seat (refused for a session
                    its human opened that is already a member: its own record keeps it)
@@ -2975,6 +2976,12 @@ def notice_sender(e):
     notice = notice_of(e)
     program = notice if NOTICE_PROGRAM_RE.fullmatch(notice) else "notice"
     return "%s@%s" % (program, writer_base(str(e.get("writer") or "")).rpartition("/")[0])
+
+
+def run_sender(e):
+    """The sender a push of `e` is enveloped under, as SendDelivery.runs
+    cuts its runs: notice_sender for a marked event, None for any other."""
+    return notice_sender(e) if notice_of(e) else None
 
 
 def writer_short(writer):
@@ -13944,7 +13951,8 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     `joined` name that spawner (an address only: nothing of it is a grant),
     the record is a terminal spawn's (spawn_provenance), and no banner is
     printed, since the asking machine prints its own. Once the launcher has
-    returned a job, `asked["launched"]` is its short id.
+    returned a job, `asked["launched"]` is its short id; where it was
+    started and gave no answer within its bound, `asked["unanswered"]`.
 
     The new session's record (spawn_provenance) is fixed before it exists:
     left pending under a launch id its settings carry, claimed by its own
@@ -13986,6 +13994,13 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         records.drop_pending(launch_id)
         if isinstance(banner, NoLaunchDir):
             die(banner, EXIT_USAGE)
+        if asked is not None and banner.timeout is not None:
+            # Started and stopped at its bound, it may have started the job all the same: no refusal
+            # (sminos_on.Answering), so the asking machine says the outcome is not known and where to look.
+            asked["unanswered"] = True
+            die("spawn: the launcher (claude --bg) was started here and gave no answer within %d s, and was stopped: "
+                "a session may have started all the same; no outcome is reported for it, so the machine that asked "
+                "says it is not known: sminos list here shows whether one runs" % banner.timeout, 1)
         sys.stderr.write("sminos: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
         sys.exit(1)
     if asked is not None:
@@ -14276,6 +14291,12 @@ def cmd_spawn(a):
     if a.asked_from is None:
         spawn_here(a)
         return
+    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        # The transport's flag: the record it gives the new session is a terminal spawn's (spawn_provenance), so
+        # a session passing it would give its child this machine's default reach, not its own. Refused before
+        # anything, as `say --notice` is; over `devcloud vm ssh` no session runs it.
+        die("spawn: --asked-from is the form another machine's sminos calls over devcloud vm ssh, and a session is "
+            "not one: drop it (sminos spawn --on <vm> opens a session on another machine)")
     on = sibling_module("sminos_on")
     req = on.read_request(a)
     with on.Answering(req["nonce"], req) as answer:
@@ -16256,7 +16277,9 @@ class SendDelivery:
         event that routes it, the events it carries)], in the writer's order.
         One run, the whole payload under the queue's last event, as today,
         unless the queue holds a marked event: then a new run begins wherever
-        a marked event and an unmarked one are neighbours. Ordinary
+        two neighbours differ in their notice sender, an unmarked event's
+        being none, so that no envelope names a sender for another's event
+        (a notice beside a person's line, or two programs' notices). Ordinary
         delivery's policy applies: an @all (`wake`) reaches only the live, so
         to a stopped member it is settled by passing and left out of the
         resume (`skipped`, as `carried` leaves it out); a stale hold is pushed
@@ -16268,7 +16291,7 @@ class SendDelivery:
         for e in self.queue:
             if e in self.skipped or e in self.stale:
                 continue
-            if out and bool(notice_of(out[-1][-1])) == bool(notice_of(e)):
+            if out and run_sender(out[-1][-1]) == run_sender(e):
                 out[-1].append(e)
             else:
                 out.append([e])
@@ -18591,29 +18614,41 @@ ADDRESS_ALIAS_RE = re.compile(r"[^\s#()][^\n#()]{0,63}")   # one short line, no 
 def session_address(session, fallback_cwd=""):
     """The `Sminos-Session: <alias>#<short> (<project> on <machine>)` line of a
     session of this machine — `<short>` alone for a session with no name fit
-    for it — or "" when it has none: in no project, an internal fork, or no
-    member (its log holds no membership and it is no member on sight,
-    joinable). The alias is the one its own `say` signs with (guide_text's)."""
-    if os.environ.get("SMNS_INTERNAL") or not UUID_RE.fullmatch(session or ""):
+    for it — or "" when it has none (address_of)."""
+    named = address_of(session, fallback_cwd)
+    if named is None:
         return ""
+    alias, project = named
+    who = "%s#%s" % (alias, session[:8]) if alias else session[:8]
+    return "%s: %s (%s on %s)" % (ADDRESS_KEY, who, project.name, host_name())
+
+
+def address_of(session, fallback_cwd=""):
+    """What a session's address line names, as sminos holds it: (the alias
+    the line carries, "" for none fit for it, its project), or None when it
+    has no address: in no project, an internal fork, or no member (its log
+    holds no membership and it is no member on sight, joinable). The alias
+    is the one its own `say` signs with (guide_text's). A caller that needs
+    these takes them here, never back out of the formatted line, whose
+    project name may hold spaces and parentheses."""
+    if os.environ.get("SMNS_INTERNAL") or not UUID_RE.fullmatch(session or ""):
+        return None
     project = session_project(session, launch_cwd(session, fallback=fallback_cwd))
     if project is None:
-        return ""
+        return None
     seen = _on_sight(project, session)
     if seen is None:
-        return ""
+        return None
     seat, peer = seen
     own = _own_events(project, session)
     if latest_membership(own) != "joined" and not joinable(seat, peer, member_mark(peer)):
-        return ""
+        return None
     alias = seat["alias"] if seat else held_alias(*own_alias(own, session), peer, session,
                                                   shadowing(project, session))[0]
     # A name that is no name — a `claude --bg "<prompt>"` job joins under its
     # prompt, the harness's first name for it — would make the line a
     # paragraph the model rewrites: the short goes alone.
-    who = "%s#%s" % (alias, session[:8]) if ADDRESS_ALIAS_RE.fullmatch(alias or "") and alias != session[:8] \
-        else session[:8]
-    return "%s: %s (%s on %s)" % (ADDRESS_KEY, who, project.name, host_name())
+    return (alias if ADDRESS_ALIAS_RE.fullmatch(alias or "") and alias != session[:8] else ""), project
 
 
 def parse_addresses(text, last_paragraph=False):

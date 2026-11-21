@@ -161,7 +161,7 @@ def _hand(ctx, name, given, t, record, entry, host, old, where, sides):
                 "takes ends in its journal")
     why = t.get("not_carried")     # sminos 1.53.0's: absent from an older answer
     if isinstance(why, str) and why:
+        # Where a notice goes instead is the host's to decide, not this Mac's to say.
         ctx.warn(f"devcloud vm: warning: {t['alias']}'s project, {project['name']}, is not one this machine's "
-                 f"enrollment carries ({why}), so no notice from {name} reaches {t['alias']}: they end in its "
-                 "journal and wall")
+                 f"enrollment carries ({why}), so {t['alias']} may get no notice from {name}")
     return 0
