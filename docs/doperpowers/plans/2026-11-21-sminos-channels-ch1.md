@@ -1373,8 +1373,10 @@ the record within a scan.
 In `S/sminos_channels.py`, the callers that build `decide`:
 
     def change(thread_id, channel, op, session, lock_until=None) -> Outcome
-        # C1, C2 (§6's Outcome): `applied`, or `failed` with why it could not be recorded (`wake`, `entry`,
-        # `vacant`, `between`); never `pending`, since no request exists for a later pass to carry out
+        # C1, C2 (§6's Outcome): `applied`; `refused` `limit` for an add past 128, nothing written; or
+        # `failed` with why it could not be recorded (`wake`, `entry`, `vacant`, `between`, `moved`: the
+        # session is no longer the thread's current one, or the record ended or is gone); never `pending`,
+        # since no request exists for a later pass to carry out
     def restate(project, thread_id, session, writer, seen) -> bool
         # C5: `seen` the set the reconciliation read from the record. Only tries the wake lock. True when a
         # statement was owed and its entry begun; a failure to finish it is the next reconciliation's
@@ -1424,7 +1426,8 @@ this child never opens for a channel.
         def state(self, session, event) -> None
             # folds one own `channels` event of `session`: it is the session's statement in effect when its
             # writer is the writer of the session's latest `joined` (self.joined) and its seq is above that
-            # `joined`'s; any other is none. add() of a `joined` clears the session's statement
+            # `joined`'s; any other is none. add() of a `joined` clears the session's statement, and a
+            # `retired` in effect for that writer ends it: no statement is in effect without its `joined`
     def stated_set(event) -> tuple
         # a statement's `channels` as a reader takes them: its strings that pass is_channel_id, in order, each
         # once, the first 128; () for no statement
@@ -1801,6 +1804,16 @@ while the milestones are built, one observation and its evidence each.
   into a channel's log is stopped by nothing but `lifecycle`'s guard; the
   undoing `retired` is the one write the constraint allows there (C4).
 - (M1) The `sminos-channels` gate runs in about 20 to 25 seconds at M1.
+- (M2) T2's wake writes its record's fields (`wake_job`, `wake_line`,
+  `wake_done`) through `update`, which refuses a record with an open entry:
+  the concrete reason the operation must refuse inside a wake's own hold.
+- (M2) 1.51.0 and 1.52.0 finish a `channels` entry by their own `_owe` and
+  `lifecycle`, unchanged (their `_finish` checks no operation); 1.27.10
+  leaves record and entry alone, and this code's next `list` finishes it.
+  All three keep `began` and `answered`, since they rewrite a record whole.
+- (M2) `project_path` creates a project's home and its `project.json` on
+  first use, so a reader that must create nothing (`channel_positions`)
+  joins `project.home` itself.
 
 ## Decision Log
 
@@ -2208,6 +2221,26 @@ while the milestones are built, one observation and its evidence each.
   resolvers (`project_tiers`, `find_project`) refuse a channel-shaped
   argument before any name lookup, so a project named like a channel's id
   no longer shadows it and stays reachable by its own id.
+- 2026-11-21 — **M2 as built** (`5ec8f9d6..dcbbb18e`). The fold ends a
+  session's statement at its writer's `retired` as well as at a new
+  `joined`: C2 reads membership as the statement after the `joined` in
+  effect, and with a `retired` in effect there is none, so a statement
+  written after the writer's `retired` (a move between the record's write
+  and the statement) states nothing (§5 amended). `change` takes its
+  project from `last_project` before the lock, which only chooses where to
+  look; under the lock it reads the session's own events in that project
+  (no lock, nothing written), and a session no longer a member there drops
+  the caches and asks once more an attempt, three at most, the same answer
+  again being `failed between`. `change`'s outcomes gain `failed moved`
+  (the session is no longer the thread's current one, or the record ended
+  or is gone) and `refused limit` for an own add past 128, nothing written
+  (§3 amended). `change` refuses at once in a process that holds the
+  thread's wake lock, before it finishes any entry. `REQUEST_TTL`,
+  `REASONS`, `expired` and `request_ttl()` are defined in M2, since
+  `set_channels` prunes `answered` and checks an answer's reason; §6 names
+  them as before. `T/test-older-cli.sh` runs 1.52.0 on the cut case alone:
+  that copy wakes a stopped thread itself, so the every-copy expectation
+  "launched nothing" cannot hold for it, and its own expectations are M8's.
 
 ## Outcomes & Retrospective
 
