@@ -575,6 +575,9 @@ run_channels() {
   if python3 -B "$SCRIPT_DIR/test_channels_wire.py"; then
     pass "nothing published under a channel id: the checker's breaches, a real uplink over an older copy's join (test_channels_wire.py)"
   else fail "nothing published under a channel id: the checker's breaches, a real uplink over an older copy's join (test_channels_wire.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_store.py"; then
+    pass "a thread's declared set: one durable operation, its statement and its reader, against a wake (test_channels_store.py)"
+  else fail "a thread's declared set: one durable operation, its statement and its reader, against a wake (test_channels_store.py)"; fi
   echo
   if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact (test-channels.sh)"; else
     fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact (test-channels.sh)"; fi

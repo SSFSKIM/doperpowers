@@ -16,9 +16,15 @@ project. What is here:
   (opens_unfollowed): read from this machine's thread records and nothing
   else (held_channels), which MAWS counts, with a member frame naming the
   channel, as this machine holding it.
+- A thread's own add or remove (change, §3's rows C1 and C2), through the
+  one operation that writes a set (sminos_threads.set_channels); what the
+  record holds of it (channels_of, began_of), and what a change came to
+  (Outcome, §6).
 """
 import os
 import sys
+import time
+from typing import NamedTuple
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 if SCRIPT_DIR not in sys.path:
@@ -107,3 +113,141 @@ def opens_unfollowed(channel_id):
     (C1). sminos does not keep this equal to MAWS's `known`, which also needs
     that thread's member frame to name the channel."""
     return channel_id in held_channels()
+
+
+# ------------------------------------------------------------ the record's set (§3, §5) and a thread's own change
+
+REQUEST_TTL = 7 * 86400   # seconds a request can be pending, by its own ts (C3); SMINOS_CHANNEL_REQUEST_TTL
+REASONS = ("not-reachable", "read-only", "limit")   # why a request is refused (C2)
+
+
+class Outcome(NamedTuple):
+    """What became of a change of a thread's set (§6). `state`: applied,
+    refused, pending, ignored or failed; `why`: for refused one of REASONS,
+    for pending, ignored and failed a word of §6's tables, for applied
+    "unchanged" when the set already read so (nothing was written), else
+    ""."""
+    state: str
+    why: str = ""
+
+
+def request_ttl():
+    try:
+        return float(os.environ.get("SMINOS_CHANNEL_REQUEST_TTL") or REQUEST_TTL)
+    except ValueError:
+        return float(REQUEST_TTL)
+
+
+def expired(request, now=None):
+    """Whether a request can no longer be pending: its `ts` unreadable, or
+    older than the request lifetime (C3: seven days by its own timestamp)."""
+    at = sminos._ts_epoch((request or {}).get("ts"))
+    return at is None or (time.time() if now is None else now) - at > request_ttl()
+
+
+def channels_of(session):
+    """The set of the thread whose current session `session` is, when it is a
+    thread of this machine that has not ended; () otherwise (§5): what the
+    record holds, which the member frame carries and a bare `list` reads for
+    its caller."""
+    threads = sminos.threads_module()
+    t = threads.current_record(session)
+    return tuple(threads.held_set(t)) if t is not None else ()
+
+
+def began_of(thread_id, channel_id):
+    """Where the thread's membership of the channel began (§4): its record's
+    positions for it, {writer: seq}; None when the thread is not in it. A
+    channel of the set the record keeps no positions for reads as {}:
+    nothing was held then."""
+    threads = sminos.threads_module()
+    t = threads.get(thread_id)
+    if t is None or channel_id not in threads.held_set(t):
+        return None
+    began = t.get("began") if isinstance(t.get("began"), dict) else {}
+    held = began.get(channel_id)
+    return dict(held) if isinstance(held, dict) else {}
+
+
+def _member_of(project, session):
+    """Whether the session's own events in the project's log leave it a
+    member there, read from its writer files as they are (no lock taken,
+    nothing written): what decide() may read (§3)."""
+    return project is not None and sminos.threads_module().member(sminos._own_events(project, session))
+
+
+def change(thread_id, channel, op, session, lock_until=None):
+    """A thread's own add (`op` "add") or remove ("remove") of a channel (an
+    id, or its Project), §3's rows C1 and C2: an Outcome, `applied`
+    ("unchanged" when the set already read so: nothing is written), refused
+    `limit` for a 129th channel, or `failed` with why it could not be
+    recorded: `wake` (a wake of the thread holds its wake lock, or this
+    process does), `entry` (its record holds an operation not finished
+    yet), `vacant` (it holds no session), `between` (its session is a member
+    of no project now) or `moved` (`session` is not the thread's current one
+    any more, or the thread ended). Never `pending`: no request exists for a
+    later pass to carry out, so the caller says nothing was recorded and to
+    run it again.
+
+    The statement goes to the project in whose log the session is a member
+    at the write, read under the record's lock from the session's own
+    events there; the project read before the lock only chooses where to
+    look, and a session found elsewhere by then is looked for again. An
+    entry the record holds is finished first, with no wake lock held; the
+    one this change opens is finished after its write, and a finish cut
+    short is the next reconciliation's. The daemon is nudged after a write."""
+    cid = getattr(channel, "id", channel)
+    if op not in ("add", "remove") or not sminos.is_channel_id(cid):
+        raise ValueError("change(%r, %r): an add or a remove of a channel id" % (op, cid))
+    threads = sminos.threads_module()
+    if sminos.wake_held(thread_id) is not None:
+        return Outcome("failed", "wake")   # a wake of the thread under way in this process: never across it
+    if not sminos.finish_thread(thread_id, lock_until=lock_until):
+        return Outcome("failed", "entry")
+    project = sminos.last_project(session) if session else None
+    for _ in range(3):
+        t = threads.get(thread_id)
+        if t is None or threads.record_ended(t) or (session and t["current"] and t["current"] != session):
+            return Outcome("failed", "moved")
+        if not session or not t["current"]:
+            return Outcome("failed", "vacant")
+        said = []
+
+        def decide(rec, project=project):
+            if rec["current"] != session:
+                said.append("vacant" if not rec["current"] else "moved")
+                return None
+            if not _member_of(project, session):
+                said.append("between")
+                return None
+            chans = threads.held_set(rec)
+            if (cid in chans) == (op == "add"):
+                said.append("unchanged")
+                return None
+            if op == "add" and len(chans) >= threads.CHANNEL_LIMIT:
+                said.append("limit")
+                return None
+            after = chans + [cid] if op == "add" else [c for c in chans if c != cid]
+            return {"project": project, "session": session, "channels": after, "answer": None}
+        try:
+            entry = threads.set_channels(thread_id, decide, lock_until=lock_until)
+        except sminos.WakeBusy:
+            return Outcome("failed", "wake")
+        if entry is not None:
+            sminos.finish_thread(thread_id, project=project, lock_until=lock_until)
+            sminos.nudge_daemon()
+            return Outcome("applied")
+        if not said:   # decide was not asked: an entry opened since, or the record ended
+            return Outcome("failed", "entry" if (threads.get(thread_id) or {}).get("pending") else "moved")
+        if said[0] == "unchanged":
+            return Outcome("applied", "unchanged")
+        if said[0] == "limit":
+            return Outcome("refused", "limit")
+        if said[0] != "between":
+            return Outcome("failed", said[0])
+        sminos.forget_caches()   # the project read before the lock: is the session a member elsewhere now?
+        again = sminos.last_project(session)
+        if getattr(again, "id", None) == getattr(project, "id", None):
+            return Outcome("failed", "between")
+        project = again
+    return Outcome("failed", "between")

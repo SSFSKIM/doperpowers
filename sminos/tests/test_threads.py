@@ -2106,7 +2106,10 @@ class LateHandOff(Sessions):
             self.reconcile()
         held = threads.get(theirs)["pending"]
         self.assertEqual((held["op"], held["by"], held["id"]), (threads.RESERVED, tid, threads.get(tid)["pending"]["id"]))
-        self.assertFalse(threads.update(theirs, {"channels": ["c"]}), "update() leaves a held record alone")
+        self.assertFalse(threads.update(theirs, {"launch": threads.launch_of(self.root)}),
+                         "update() leaves a held record alone")
+        with self.assertRaises(ValueError):
+            threads.update(theirs, {"channels": ["c"]})   # a thread's set is set_channels' alone (CH1's §3)
         self.assertIsNone(threads.begin(theirs, "end", self.p, []), "no operation starts on it")
         self.assertEqual(threads.thread_of(job)["thread"], tid, "the lookup answers the absorbing thread")
         self.assertTrue(sminos.entry_open(job), "the hook reads it as an open entry")

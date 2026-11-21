@@ -29,6 +29,15 @@
 #   from another machine its daemon's pass delivers, waking it, while that
 #   failure's backoff would still hold it, and a sender's own call wakes it.
 #
+# - 1.52.0, T2's release (CH1's M2 pins it; its own expectations are M8's):
+#   the cut below alone.
+# - Every copy from 1.51.0 on, CH1's M2: a membership change this code began
+#   and was cut after its record's write (the record holds the set, where its
+#   membership began and the request it answered; the entry owes the
+#   statement) is finished by the copy's reading verb, with no step of its
+#   own: the statement appended once, the record's keys as written. 1.27.10,
+#   which has no journal, finishes nothing, and this code's next verb does.
+#
 #   test-older-cli.sh [--older <path to an older sminos launcher>]
 #
 # The two pinned copies are revisions of this repository, extracted by `git
@@ -38,7 +47,8 @@
 # copy (one in a plugin cache, say), run after them with the expectations of
 # the version its plugin says (`<plugin>/.claude-plugin/plugin.json`, the
 # launcher being `<plugin>/skills/sminos/scripts/sminos`): 1.27.x as 1.27.10,
-# 1.51.x as 1.51.0, any other with the every-copy expectation alone.
+# 1.51.x as 1.51.0, 1.52.x as 1.52.0, any other with the every-copy
+# expectation alone.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per case; `claude` is
 # a stand-in that logs every call with the copy that made it and hands it to
 # the test engine (wake_engine.py); the machine is not enrolled.
@@ -52,6 +62,7 @@ SMINOS="$SCRIPTS/sminos"
 ENGINE="$SCRIPT_DIR/wake_engine.py"
 REV_1_27=aefb80aa55bb8d95c47341ca21051ba244e103dd   # sminos 1.27.10
 REV_1_51=0387f2b794167fae12113f9ff654c3743e4dcfc7   # sminos 1.51.0, the merge that released it
+REV_1_52=f051d4f2a28615d7b3517963aed0ac68233435fb   # sminos 1.52.0, the merge that released it
 
 THIRD=""
 while [ $# -gt 0 ]; do
@@ -127,6 +138,7 @@ pinned() { # revision version — the launcher of that revision's sminos, extrac
 }
 COPY_1_27="$(pinned "$REV_1_27" 1.27.10)"
 COPY_1_51="$(pinned "$REV_1_51" 1.51.0)"
+COPY_1_52="$(pinned "$REV_1_52" 1.52.0)"
 
 # ---- the stand-in engine, first on PATH -------------------------------------------
 unset CLAUDE_CODE_SESSION_ID CLAUDE_PID SMNS_INTERNAL SMNS_MEMBER DAEMON_HOME AGORA_HOME CLAUDE_PLUGIN_ROOT \
@@ -457,6 +469,71 @@ case_1_51() {
   assert_equals "$(violations)" "" "no resume carried a message"
 }
 
+# ---- a membership change cut after its record's write (CH1's M2) ---------------------
+CHANNEL=5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c   # a declared channel's id, registered here with no root
+here_py() { # code args... — python run with this code's modules
+  python3 -B -c "import sys; sys.path.insert(0, sys.argv[1]); $1" "$SCRIPTS" "${@:2}"
+}
+statements() { # the session's statements in the project's log: "<op> <channels joined by ,>", one a line
+  cat "$SMINOS_HOME/projects/$PROJECT/log/"*.jsonl | py 'import json, sys
+for line in sys.stdin:
+    e = json.loads(line)
+    if e.get("session") == sys.argv[1] and e.get("kind") == "channels":
+        print(e.get("op"), ",".join(e["channels"]))' "$SID"
+}
+record_keys() { # the thread's record: its set, positions, answered requests and open entry's op, as one JSON line
+  py 'import json, sys
+r = json.load(open(sys.argv[1]))
+print(json.dumps([r.get("channels"), r.get("began"), [a[:2] for a in r.get("answered") or []],
+                  (r.get("pending") or {}).get("op")], sort_keys=True))' "$SMINOS_HOME/threads/$THREAD.json"
+}
+cut_finished() { # label — the cut, the older copy's reading verb, and this code after it
+  fresh "$1-cut"
+  echo " a membership change this code began, cut after its record's write:"
+  opened
+  run "$SMINOS" list
+  assert_contains "$OUT" "keeper [${SID:0:8}]" "a live session its human opened is a member"
+  THREAD="$(row thread)"
+  # The channel's log holds two other writers' events; the change places the thread in it, answering a request.
+  ENTRY="$(here_py 'import sminos, sminos_threads as threads
+cid, sid, tid, pid = sys.argv[2:6]
+sminos.register_if_absent(sminos.make_project(cid, "desk-integration", "", "", None))
+c = sminos.known_project(cid)
+for w in ("beta/human", "beta/human", "gamma/6b000001-0000-4000-8000-0000000000b1"):
+    sminos.log_append(c, w, "channel-env", op="add", machine="beta", thread="x")
+answer = {"channel": cid, "id": "req-1", "ts": sminos.now(ms=True), "result": "applied", "reason": None}
+entry = threads.set_channels(tid, lambda rec: {"project": sminos.known_project(pid), "session": sid,
+                                               "channels": [cid], "answer": answer})
+print(entry["id"])' "$CHANNEL" "$SID" "$THREAD" "$PROJECT")"
+  WRITTEN='[["'"$CHANNEL"'"], {"'"$CHANNEL"'": {"beta/human": 2, "gamma/6b000001-0000-4000-8000-0000000000b1": 1}}, [["'"$CHANNEL"'", "req-1"]], '
+  assert_equals "$(record_keys)" "${WRITTEN}\"channels\"]" "the record holds the set, its positions and the answer, its entry open"
+  assert_equals "$(statements)" "" "and nothing is stated yet"
+  older list
+  assert_equals "$RC" 0 "the older copy's list runs"
+  case "$(version_of "$OLDER")" in
+    1.27.*)
+      assert_equals "$(statements)" "" "1.27, with no journal, finishes nothing"
+      assert_equals "$(record_keys)" "${WRITTEN}\"channels\"]" "and leaves the record as it was"
+      run "$SMINOS" list
+      assert_equals "$RC" 0 "this code's next verb runs" ;;
+  esac
+  assert_equals "$(statements)" "$ENTRY $CHANNEL" "the statement appended once, under the entry's id"
+  assert_equals "$(record_keys)" "${WRITTEN}null]" "the entry cleared, the record's set, positions and answer as written"
+  run "$SMINOS" list
+  run "$SMINOS" daemon tick
+  assert_equals "$(statements)" "$ENTRY $CHANNEL" "this code's reads and tick state nothing again"
+  assert_equals "$(here_py 'import sminos, sminos_channels as ch
+sid, tid, cid = sys.argv[2:5]
+p = sminos.resolve_project(sys.argv[5])
+row = next(m for m in sminos.view_of(p).members if m.session == sid)
+print(" ".join(row.channels), "|", " ".join(ch.channels_of(sid)), "|", sorted(ch.began_of(tid, cid).items()))' \
+    "$SID" "$THREAD" "$CHANNEL" "$REPO")" \
+    "$CHANNEL | $CHANNEL | [('beta/human', 2), ('gamma/6b000001-0000-4000-8000-0000000000b1', 1)]" \
+    "this code reads the log stating the set, and the record's set and positions"
+  assert_equals "$(launches)" 0 "and nothing started"
+  closed
+}
+
 # ---- run each copy with its version's expectations -----------------------------------
 run_copy() { # label launcher
   OLDER="$2"
@@ -466,11 +543,14 @@ run_copy() { # label launcher
   case "$v" in
     1.27.*) case_1_27 "$1" ;;
     1.51.*) case_1_51 "$1" ;;
+    1.52.*) ;;   # T2's release, which wakes what every_copy holds it must not: its expectations are M8's
     *) echo " no expectations of its own for $v: every copy's alone"; every_copy "$1-every" ;;
   esac
+  cut_finished "$1"
 }
 run_copy pinned-1.27 "$COPY_1_27"
 run_copy pinned-1.51 "$COPY_1_51"
+run_copy pinned-1.52 "$COPY_1_52"
 [ -z "$THIRD" ] || run_copy third "$THIRD"
 
 echo

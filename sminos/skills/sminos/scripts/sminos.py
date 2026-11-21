@@ -697,8 +697,10 @@ MEMBERSHIP = ("joined", "retired")
 # The facts about a session the projection reads; whoever writes one for a
 # session on its machine appends it to that session's file. `unlisted` is a
 # session's transition notice (P5 O18 D6): the members it is addressed to no
-# longer see the session.
-LIFECYCLE = MEMBERSHIP + ("renamed", "state", "titled", "in-charge", "status", "unlisted")
+# longer see the session. `channels` is a thread's statement of the declared
+# channels it is in (CH1's C2), which only its thread's journaled operation
+# writes (sminos_threads.set_channels, through finish).
+LIFECYCLE = MEMBERSHIP + ("renamed", "state", "titled", "in-charge", "status", "unlisted", "channels")
 # The harness session kinds that are members on sight; any other is not.
 JOINABLE_KINDS = ("interactive", "bg")
 # A headless or SDK run (`claude -p`, the agent SDKs) registers as
@@ -4223,6 +4225,8 @@ class Member(NamedTuple):
     end_by: str = ""      # who retired it (the `retired`'s `by`), for a row that says why
     named: str = ""       # the thread a name of it resolves through (§4, row_thread): its stamp, else the seat its
                           # unstamped `joined` names, which a remote row holds no seat record to give
+    channels: tuple = ()  # the declared channels it is in, as the log states them (CH1's §5: its statement in effect,
+                          # sminos_threads.stated_set); () for none
 
 
 def project_kind(project):
@@ -5016,6 +5020,34 @@ def positions_to(project, session):
     out = {}
     for e in log_read(project, to_session=session):
         out[e["writer"]] = max(out.get(e["writer"], 0), int(e["seq"]))
+    return out
+
+
+def channel_positions(channel_id):
+    """{writer: its latest seq} in the channel's log as this machine holds it
+    now (CH1's §4): where a membership that begins now begins. {} for a log
+    that holds nothing, and for a channel not registered here. Read with no
+    lock, each writer file's last line (_last_seq), its writer its first
+    line's: by set_channels for a channel entering a set, by a return for
+    every channel of its set, each under the record's store lock."""
+    project = known_project(channel_id) if is_channel_id(channel_id) else None
+    if project is None:
+        return {}
+    where = os.path.join(project.home, "log")   # read as it is: nothing is made for a log that holds nothing
+    try:
+        names = sorted(n for n in os.listdir(where) if n.endswith(".jsonl"))
+    except OSError:
+        return {}
+    out = {}
+    for name in names:
+        try:
+            with open(os.path.join(where, name), "rb") as f:
+                first = next((e for e in (parse_event(line.decode("utf-8", "replace")) for line in f
+                                          if line.strip()) if e), None)
+                if first is not None:
+                    out[first["writer"]] = max(out.get(first["writer"], 0), _last_seq(f))
+        except OSError:
+            continue
     return out
 
 
@@ -6300,7 +6332,9 @@ def _projection(events):
     every status line, for a row read per episode (_member). `marked`: its
     latest own `renamed`, `state` and `titled` under each stamp ("" for
     none), which a row read per episode takes from the episodes that count
-    (_episode_view), as it does its alias and status."""
+    (_episode_view), as it does its alias and status. `stated`: its
+    statement in effect (CH1's C2, sminos_threads.Fold.state), None for
+    none."""
     info = {}
     fold = threads_module().Fold()   # the membership in effect: `latest` and `joined` are its
 
@@ -6308,13 +6342,18 @@ def _projection(events):
         return info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
                                      "titled": None, "in_charge": [], "status": [], "to": "", "continues": "",
                                      "aliases": {}, "owned": None, "unlisted": 0, "policyRev": 0,
-                                     "episodes": [], "named": [], "marked": {}})
+                                     "episodes": [], "named": [], "marked": {}, "stated": None})
 
     for e in events:
         sid, kind = e.get("session"), e["kind"]
         if kind not in LIFECYCLE or not isinstance(sid, str) or not sid:
             continue
         own = writer_session(e["writer"]) == sid
+        if kind == "channels":
+            if own:   # another writer's states nothing, and makes no row
+                fold.state(sid, e)
+                row(sid)["stated"] = fold.stated.get(sid)
+            continue
         r = row(sid)
         rev = e.get("policyRev") if type(e.get("policyRev")) is int else 0
         if kind == "unlisted":
@@ -6333,6 +6372,7 @@ def _projection(events):
             if kind in MEMBERSHIP:
                 before = r["latest"]
                 r["latest"], r["joined"] = fold.effect[sid], fold.joined.get(sid)
+                r["stated"] = None   # a membership event in effect ends the statement (Fold.add)
                 if kind == "joined":
                     stamp = e["thread"] if isinstance(e.get("thread"), str) else ""
                     mark, eps = stamp or str(e.get("seat") or ""), r["episodes"]
@@ -6664,7 +6704,8 @@ def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
         wake=str(published.get("wake") or "") if not local and not gone_machine and state_word in HELD_STATES
         else "",
         why=str(published.get("why") or "") if not local and not gone_machine and state_word in HELD_STATES else "",
-        end=end, end_by=str(latest.get("by") or "") if ended else "", named=thread_mark)
+        end=end, end_by=str(latest.get("by") or "") if ended else "", named=thread_mark,
+        channels=threads_module().stated_set(r["stated"]) if r and r.get("stated") else ())   # no call for none
     charge, source, ts = charge_of(m, in_charge, title, published_title(own))
     return m._replace(charge=charge, charge_source=source, charge_age=ts_age(ts) if ts else None)
 

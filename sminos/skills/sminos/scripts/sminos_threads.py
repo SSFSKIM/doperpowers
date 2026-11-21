@@ -56,16 +56,20 @@ import sminos  # noqa: E402
 
 V = 1
 OPENED = ("spawned", "human")
-OPS = ("advance", "absorb", "end", "return", "release")
+OPS = ("advance", "absorb", "end", "return", "release", "channels")
 # The mark an absorption leaves, as an entry, on the record it absorbs while
 # its own entry is open (finish): never begun, so no other operation starts
 # there, update() leaves it alone, and the hook reads it as an open entry.
 RESERVED = "reserved"
-# The keys only a journaled operation writes (begin); update() refuses them.
-JOURNALED = ("current", "sessions", "ended", "released", "pending")
-# What a seat record gains; its `thread`, `current` and `alias` are its own. `waking` is T2's (its plan's §7).
+# The keys only a journaled operation writes (begin; a thread's set, where its memberships began and the requests
+# it answered by set_channels alone, CH1's §3); update() refuses them.
+JOURNALED = ("current", "sessions", "ended", "released", "pending", "channels", "began", "answered")
+# What a seat record gains; its `thread`, `current` and `alias` are its own. `waking` is T2's (its plan's §7);
+# `began` and `answered` CH1's (§3), which no listing exports (sminos.public_seat).
 SEAT_KEYS = ("opened", "sessions", "launch", "channels", "stopped", "swept", "ended", "released", "pending",
-             "waking")
+             "waking", "began", "answered")
+# The most declared channels a thread's set holds (CH1, C3): every path that grows a set stops there.
+CHANNEL_LIMIT = 128
 # A seat's marks that belong to the occupant they were written for: a seat that takes another session drops them.
 # `waking` (T2) is one too: an earlier occupant back (A, B, A) never finds its old line or failures valid again.
 OCCUPANT_MARKS = ("ended", "stopped", "swept", "waking")
@@ -110,21 +114,56 @@ class Fold:
     (the latest not passed by), `joined` its latest `joined`. in_effect is
     a fold of one session's events; a reader that reads a whole log in one
     pass folds every session's in one (sminos._memberships, _projection,
-    _lineage_scan)."""
-    __slots__ = ("effect", "joined")
+    _lineage_scan). `stated` holds, per session, its statement in effect
+    (CH1's C2, state): what every reader takes as the declared channels it
+    is in."""
+    __slots__ = ("effect", "joined", "stated")
 
     def __init__(self):
-        self.effect, self.joined = {}, {}
+        self.effect, self.joined, self.stated = {}, {}, {}
 
     def add(self, session, event):
         """Folds one own `joined` or `retired` of `session`: the event when
-        it takes effect, None when it is passed by."""
+        it takes effect, None when it is passed by. One that takes effect
+        ends the session's statement: a `joined` begins a membership that
+        has stated nothing yet (a writer a thread returns to never speaks
+        with an old statement), and a `retired` leaves no `joined` in effect
+        for a statement to follow."""
         if event["kind"] == "joined":
             self.joined[session] = event
         elif event.get("reason") == "ended" and passed_by(event, self.joined.get(session)):
             return None
         self.effect[session] = event
+        self.stated.pop(session, None)
         return event
+
+    def state(self, session, event):
+        """Folds one own `channels` event of `session` (C2): it is the
+        session's statement in effect when the session's `joined` is in
+        effect, its writer is that `joined`'s, and its seq is above that
+        `joined`'s; any other states nothing, and leaves the statement in
+        effect as it was."""
+        joined = self.joined.get(session)
+        if joined is None or self.effect.get(session) is not joined or event.get("writer") != joined.get("writer") \
+                or not isinstance(event.get("seq"), int) or event["seq"] <= joined.get("seq", 0):
+            return
+        self.stated[session] = event
+
+
+def stated_set(event):
+    """A statement's `channels` as a reader takes them (C2, §5): its strings
+    that are channel ids, in order, each once, the first CHANNEL_LIMIT; ()
+    for no statement, or one whose `channels` is no list."""
+    chs = (event or {}).get("channels")
+    if not isinstance(chs, list):
+        return ()
+    out = []
+    for c in chs:
+        if sminos.is_channel_id(c) and c not in out:
+            out.append(c)
+            if len(out) == CHANNEL_LIMIT:
+                break
+    return tuple(out)
 
 
 def in_effect(events):
@@ -290,6 +329,9 @@ def _of_seat(s):
             rec[k] = copy.deepcopy(s[k])
     if isinstance(s.get("waking"), dict) and not moved:
         rec["waking"] = copy.deepcopy(s["waking"])   # its reader checks the session it names too (waking)
+    for k, kind in (("began", dict), ("answered", list)):   # the thread's, kept across its occupants (CH1's §3)
+        if isinstance(s.get(k), kind):
+            rec[k] = copy.deepcopy(s[k])
     if ended is not None:
         rec["ended"] = dict(ended)
     return rec
@@ -734,11 +776,11 @@ def holds(thread_id, pred, lock_until=None, missing=False):
 
 def update(thread_id, fields, remove=(), guard=None, lock_until=None):
     """A change that owes no event (the stop mark, `swept`, a launch noted,
-    the alias's copy, CH's channels, the end of a release: `released`
-    removed once a process started after it holds the session): merged under
-    the store's lock, applied only if guard(record) holds and the record has
-    no open entry. Never a key a journaled operation owns, but that
-    removal."""
+    the alias's copy, the end of a release: `released` removed once a
+    process started after it holds the session): merged under the store's
+    lock, applied only if guard(record) holds and the record has no open
+    entry. Never a key a journaled operation owns, but that removal: a
+    thread's set is set_channels' alone (CH1's §3)."""
     owned = (set(fields) & set(JOURNALED)) | (set(remove) & (set(JOURNALED) - {"released"}))
     if owned:
         raise ValueError("update() never writes %s" % ", ".join(sorted(owned)))
@@ -776,9 +818,124 @@ def note_launch(thread_id, cwd, options=None, dropped=None, lock_until=None):
     return update(thread_id, {"launch": launch_of(cwd, options, dropped)}, lock_until=lock_until)
 
 
-def set_channels(thread_id, channels):
-    """CH's writer of the declared channels."""
-    return update(thread_id, {"channels": [str(c) for c in channels]})
+def set_channels(thread_id, decide, lock_until=None):
+    """The one way a thread's set (`channels`), where its memberships began
+    (`began`) and the requests it answered (`answered`) change, and a
+    statement is owed (CH1's §3, rows C1 to C5): a journaled operation
+    whose record write holds the whole change and whose entry owes the
+    statement alone, so that any finisher from 1.51.0 on carries it to the
+    same end.
+
+    Under the thread's wake lock, taken here as begin() takes it for a
+    transition (a bounded poll until `lock_until`, SWEEP_WAIT from now by
+    default) and let go once the record is written: a wake sees the record
+    before the entry or with it, never between. The hold is always this
+    call's own: WakeBusy, nothing written, when a wake holds it past the
+    deadline or this thread of this process holds it already (a wake of
+    the thread under way here, whose own record writes an entry opened now
+    would refuse).
+
+    Under the record's store lock, on a fresh read, when the record has
+    not ended and has no open entry: decide(record) answers None (nothing
+    is written) or a Change {"project", "session", "channels", "answer"},
+    which is written in one write with its entry. For each channel that
+    enters the set `began` gains the positions of its log as read just
+    then (sminos.channel_positions; no caller gives one, and no lock holds
+    the log still: what is imported after that read counts as gained after
+    it); a channel that leaves the set loses them, and an empty set has no
+    `began`. An answer joins `answered`, whose entries older than a
+    request's lifetime are dropped. A Change whose session is not the
+    record's current one, whose `channels` holds more than CHANNEL_LIMIT
+    ids, an id twice or an id that is no channel's, or whose project is a
+    channel, is the caller's error (ValueError), never written. The entry
+    as written, None when nothing was. A seat's lifecycle generation does
+    not move: a turn's watcher stands down at a generation it did not see,
+    and a membership changed during a turn must not cost it its reply."""
+    if sminos.wake_held(thread_id) is not None:
+        raise sminos.WakeBusy(thread_id)
+    hold, _ = sminos.wake_lock(thread_id, until=lock_until, holder=sminos.TRANSITION_HOLD)
+    if hold is None:
+        raise sminos.WakeBusy(thread_id)
+    written = []
+
+    def mutate(view, raw):
+        if view.get("pending") or record_ended(view):
+            return False
+        change = decide(copy.deepcopy(view))
+        if change is None:
+            return False
+        entry = _channels_entry(thread_id, view, change)
+        before, after = held_set(view), list(change["channels"])
+        began = {c: copy.deepcopy(p) for c, p in (view.get("began") or {}).items() if c in after}
+        for c in after:
+            if c not in before:
+                began[c] = sminos.channel_positions(c)
+        raw["channels"] = after
+        if began:
+            raw["began"] = began
+        else:
+            raw.pop("began", None)
+        answered = _answered_after(view.get("answered"), change.get("answer"))
+        if answered:
+            raw["answered"] = answered
+        else:
+            raw.pop("answered", None)
+        raw["pending"] = entry
+        written.append(entry)
+        return True
+
+    try:
+        _change(thread_id, mutate, lock_until)
+    finally:
+        hold.release()
+    return written[0] if written else None
+
+
+def held_set(record):
+    """A record's `channels` as a list of its strings, read where it is read:
+    a value that is no list (a hand edit, another version's) holds none."""
+    chs = (record or {}).get("channels")
+    return [c for c in chs if isinstance(c, str)] if isinstance(chs, list) else []
+
+
+def _channels_entry(thread_id, view, change):
+    """The entry of a Change (set_channels), checked: it owes the statement
+    and nothing else (§2), under the record's current session, in the
+    thread's own project."""
+    project, session, chans = change.get("project"), change.get("session"), change.get("channels")
+    if not session or session != view["current"]:
+        raise ValueError("a statement is written under the record's current session, not %r" % (session,))
+    if not isinstance(getattr(project, "id", None), str) or sminos.is_channel_id(project.id):
+        raise ValueError("a statement goes to the thread's own project, not %r" % (project,))
+    if not isinstance(chans, list) or len(chans) > CHANNEL_LIMIT or len(set(chans)) != len(chans) \
+            or not all(sminos.is_channel_id(c) for c in chans):
+        raise ValueError("a set is at most %d channel ids, each once: %r" % (CHANNEL_LIMIT, chans))
+    statement = {"kind": "channels", "session": session, "thread": thread_id, "channels": list(chans)}
+    answer = change.get("answer")
+    if answer is not None:
+        result, reason = answer.get("result"), answer.get("reason")
+        if not (sminos.is_channel_id(answer.get("channel")) and isinstance(answer.get("id"), str) and answer["id"]
+                and isinstance(answer.get("ts"), str) and result in ("applied", "refused")
+                and (reason in sminos.channels_module().REASONS if result == "refused" else not reason)):
+            raise ValueError("not an answer to a request: %r" % (answer,))
+        statement.update(answers={"channel": answer["channel"], "id": answer["id"]}, result=result)
+        if reason:
+            statement["reason"] = reason
+    return {"id": uuid.uuid4().hex, "op": "channels", "at": sminos.now(), "project": project.id,
+            "events": [statement]}
+
+
+def _answered_after(answered, answer):
+    """`answered` after a write of the operation: its entries whose request
+    can still be pending (sminos_channels.expired reads a request's `ts`),
+    then the request `answer` answers, once (§3)."""
+    expired = sminos.channels_module().expired
+    out = [list(a) for a in (answered if isinstance(answered, list) else [])
+           if isinstance(a, list) and len(a) == 3 and all(isinstance(x, str) for x in a)
+           and not expired({"ts": a[2]})]
+    if answer is not None and not any(a[0] == answer["channel"] and a[1] == answer["id"] for a in out):
+        out.append([answer["channel"], answer["id"], answer["ts"]])
+    return out
 
 
 # ------------------------------------------------------------ the wake's field (T2's plan, §7)
