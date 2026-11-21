@@ -805,6 +805,88 @@ class Verbs(Requests):
         self.assertEqual([x[1:3] for x in self.answers(sid)], [("said-under-the-old-name", "applied")])
         self.assertEqual(self.held(tid), [DESK])
 
+    def test_a_former_names_request_that_names_no_thread_here_holds_nothing_back(self):
+        """Deferred only once whom it names and the ledger are read: an old queued request naming a session the
+        thread never had is not-here, and a valid request queued behind it is carried out."""
+        tid, sid, _, other = self.two()
+        self.identity("testhost", {"oldname": []})
+        self.head_wait()
+        sminos._queue(self.chan(DESK), "oldname/human", [{"kind": "channel-request", "op": "add", "session": other,
+                                                          "thread": tid, "id": "an-old-one-naming-another"}])
+        time.sleep(0.002)
+        code, out = self.verb("channel", "add", "desk", sid)
+        self.assertEqual(code, 0, out)
+        self.assertIn(": in desk", out)
+        self.assertEqual([r["seq"] for r in channels.requests_of(self.chan(DESK))[1]], [None, None], "both queued")
+        self.assertEqual(self.held(tid), [DESK])
+        c = self.chan(DESK)
+        _, reqs = channels.requests_of(c)
+        self.assertEqual(channels.judge(c, reqs[0], threads.get(tid), []), O("ignored", "not-here"))
+
+    def test_create_writes_under_the_one_stream_choice_it_made_before_registering(self):
+        tid, sid, _ = self.human()
+        audience.keep_capabilities(["access", "channels"])
+        real_choice, chosen = channels._choice, []
+
+        def counted(*a, **k):
+            chosen.append(a[0].id)
+            return real_choice(*a, **k)
+        # The target goes private just before the choice: refused, nothing registered.
+        real_mint = channels.mint_channel_id
+
+        def private_first():
+            self.record(sid, access="private")
+            return real_mint()
+        self.verb("list")
+        before, logs = [c.id for c in sminos.known_channels()], self.logs()
+        with mock.patch.object(channels, "_choice", counted), mock.patch.object(channels, "mint_channel_id",
+                                                                                private_first):
+            code, out = self.verb("channel", "create", "desk-new", sid)
+        self.assertEqual(code, 1, out)
+        self.assertIn("refused: not reachable", out)
+        self.assertEqual([c.id for c in sminos.known_channels()], before)
+        self.assertEqual(self.logs(), logs)
+        self.assertEqual(len(chosen), 1)
+        # Its audience changes after the choice, as the channel is registered: the request goes under the stream
+        # chosen, with no second choice that could refuse once the channel is there.
+        self.record(sid, access="listed")
+        chosen.clear()
+        real_register = channels.register
+
+        def narrowed(*a, **k):
+            self.record(sid, access="private")
+            return real_register(*a, **k)
+        with mock.patch.object(channels, "_choice", counted), mock.patch.object(channels, "register", narrowed):
+            code, out = self.verb("channel", "create", "desk-new", sid)
+        made = self.channel_named("desk-new")
+        self.assertEqual(len(chosen), 1, "one choice")
+        self.assertEqual(len(made), 1)
+        self.assertEqual(chosen, [made[0].id], "made against the channel about to be registered")
+        reqs = channels.requests_of(made[0])[1]
+        self.assertEqual([(r["writer"], r["thread"]) for r in reqs], [(sminos.writer_id(), tid)],
+                         "the request was written, under the stream chosen")
+        self.assertEqual(code, 0, out)
+        self.assertIn("created channel desk-new (%s) with " % made[0].id, out)
+        self.assertEqual(self.held(tid), [made[0].id], "placed: its statement waits for the audience (a warning)")
+
+    def test_a_terminals_create_the_daemon_carried_first_is_reported_from_its_answer(self):
+        tid, sid, _ = self.human()
+        raced = []
+        with self.raced(lambda: raced.append(self.answers(sid))):
+            code, out = self.verb("channel", "create", "desk-new", sid)
+        cid = self.channel_named("desk-new")[0].id
+        self.assertEqual([a[0] for a in raced[0]], [cid], "the daemon's pass answered it first")
+        self.assertEqual(code, 0, out)
+        self.assertIn("created channel desk-new (%s) with " % cid, out)
+        self.assertEqual(channels.change(tid, cid, "remove", sid).state, "applied")
+        with self.raced(lambda: None):
+            code, out = self.verb("channel", "create", "desk-new", sid)
+        self.assertEqual(code, 0, out)
+        self.assertIn("desk-new exists and has no member: ", out)
+        self.assertIn(" is in it again", out)
+        self.assertEqual(out.count("\n"), 1, "the one line, no target line after it")
+        self.assertEqual(self.held(tid), [cid])
+
     def test_a_private_targets_refused_stream_at_a_terminals_create_registers_and_writes_nothing(self):
         tid, sid, _ = self.human()
         audience.keep_capabilities(["access", "channels"])
@@ -836,7 +918,8 @@ class Verbs(Requests):
             if not once:
                 once.append(True)
                 sminos.forget_caches()
-                channels.carry_due(self.chan(DESK), wake_until=time.time())
+                for c in sminos.known_channels():   # the daemon's channel pass, every channel here
+                    channels.carry_due(c, wake_until=time.time())
                 then()
             return real()
         return mock.patch.object(sminos, "nudge_daemon", nudge)

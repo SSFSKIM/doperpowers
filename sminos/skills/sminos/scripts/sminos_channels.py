@@ -572,13 +572,15 @@ def judge(channel, request, record, earlier, word=None, asked=None, project=_LOO
         return Outcome("ignored", "expired")
     if _duplicate(request, earlier):
         return Outcome("ignored", "duplicate")
-    if _queued_under_former_name(request):
-        return Outcome("pending", "queued")
     if not _names_here(record, request, facts):
         return Outcome("ignored", "not-here")
     answered = _answered(record)
     if (cid, request["id"]) in answered:
         return Outcome("ignored", "answered")
+    if _queued_under_former_name(request):
+        # After whom it names and the ledger, before who may ask: a request that names no thread here, or is
+        # answered, holds nothing back; one that does waits, its thread's later ones behind it.
+        return Outcome("pending", "queued")
     for i, r in enumerate(earlier):
         if r["thread"] == record["thread"] and (cid, r["id"]) not in answered and not expired(r, now) \
                 and not _duplicate(r, earlier[:i]) and _names_here(record, r, facts):
@@ -869,15 +871,18 @@ def _answered_line(op, channel, target, request):
     the statement answering it says, read from the thread's open entry or
     its sessions' own events; when neither can be read, that it was
     answered, and the thread's membership now as such, not as the verdict.
-    (line, whether it was refused)."""
+    (line, the outcome recorded: applied or refused with its reason from
+    the statement, `ignored answered` when none could be read)."""
     answer = _answer_of_record(target.thread, channel.id, request["id"])
     if answer is not None:
         if answer["result"] == "refused":
-            return "refused: %s" % WORDS.get(answer.get("reason"), answer.get("reason")), True
-        return ("in %s" if op == "add" else "out of %s") % channel.name, False
+            reason = answer.get("reason")
+            return "refused: %s" % WORDS.get(reason, reason), Outcome("refused", reason)
+        return ("in %s" if op == "add" else "out of %s") % channel.name, Outcome("applied")
     threads = sminos.threads_module()
     held = channel.id in threads.held_set(threads.get(target.thread))
-    return "answered already by its machine; it is %s %s now" % ("in" if held else "not in", channel.name), False
+    return ("answered already by its machine; it is %s %s now" % ("in" if held else "not in", channel.name),
+            Outcome("ignored", "answered"))
 
 
 def _choice(channel, session, target):
@@ -890,7 +895,7 @@ def _choice(channel, session, target):
     return (None, refusal[0]) if refusal else (choice, None)
 
 
-def place(channel, op, targets, session):
+def place(channel, op, targets, session, choices=None):
     """Each target added to or removed from the channel (§8): the caller's
     own thread by a statement alone (change), any other by a request
     written into the channel's log under the caller's writer there (the
@@ -899,7 +904,9 @@ def place(channel, op, targets, session):
     machine, carried out at once from the request in hand (carry_due, which
     carries the channel's other due requests too). [(target, outcome or
     None, line)] in the targets' order, a target named twice once, and
-    whether any was refused or could not be recorded."""
+    whether any was refused or could not be recorded. `choices`: {thread:
+    (stream choice, None)} already made for a target (create's, made
+    against the channel before it was registered), written under as made."""
     threads = sminos.threads_module()
     me = threads.current_record(session, fresh=True) if session else None
     rows, seen, written, bad, wrote = [], set(), [], False, False
@@ -926,7 +933,7 @@ def place(channel, op, targets, session):
             else:
                 rows.append([t, got, _placed(op, channel, got)])
             continue
-        choice, refusal = _choice(channel, session, t)
+        choice, refusal = (choices or {}).get(t.thread) or _choice(channel, session, t)
         if refusal:
             rows.append([t, None, "refused: not reachable: %s" % refusal])
             bad = True
@@ -958,8 +965,8 @@ def place(channel, op, targets, session):
                 o = got.get((e["writer"], e["id"]), Outcome("pending", "earlier"))
                 row[1] = o
                 if o.state == "ignored" and o.why == "answered":
-                    row[2], refused = _answered_line(op, channel, row[0], e)
-                    bad = bad or refused
+                    row[2], row[1] = _answered_line(op, channel, row[0], e)
+                    bad = bad or row[1].state == "refused"
                 elif o.state == "ignored":
                     row[2] = WORDS[o.why]
                     bad = True
@@ -1053,12 +1060,15 @@ def _create(name, thread, session):
     else:
         candidate = back
     me = sminos.threads_module().current_record(session, fresh=True) if session else None
+    choices = None
     if me is None or me["thread"] != first.thread:
-        # The first member is placed by a request: its stream is chosen now, against the channel about to be made,
-        # so a refusal (a private thread whose audience is not known yet) leaves nothing registered or written.
-        _, refusal = _choice(candidate, session, first)
+        # The first member is placed by a request: its stream is chosen once, against the channel about to be made,
+        # the last thing before the registration, and that same choice is the one the request is written under. A
+        # refusal (a private thread whose audience is not known yet) leaves nothing registered or written.
+        choice, refusal = _choice(candidate, session, first)
         if refusal:
             sminos.die("%s: refused: not reachable: %s: nothing was written" % (first.label, refusal), 1)
+        choices = {first.thread: (choice, None)}
     if back is None:
         try:
             channel = register(cid, name)
@@ -1066,7 +1076,7 @@ def _create(name, thread, session):
             sminos.die("cannot create channel %s: %s" % (name, e), 1)
     else:
         channel = back
-    rows, bad = place(channel, "add", [first], session)
+    rows, bad = place(channel, "add", [first], session, choices)
     t, outcome, line = rows[0]
     done = isinstance(outcome, Outcome) and outcome.state == "applied"
     if back is None:

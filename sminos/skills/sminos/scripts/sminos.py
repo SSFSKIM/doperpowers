@@ -5421,12 +5421,13 @@ def _current_here(session, project, joined):
 
     at = str(joined.get("ts") or "")
     newest = {project.id}   # the projects the newest moment names
+    identity = machine_identity_now()   # once for the scan: every project's files chosen by the same names
     for path in registration_paths():
         pid = os.path.basename(os.path.dirname(path))
         if pid == project.id or is_channel_id(pid):
             continue
         p = _registered_as(pid, registration(pid))
-        last = threads_module().in_effect(own_events_now(p, session)) if p is not None else None
+        last = threads_module().in_effect(_own_events(p, session, identity=identity)) if p is not None else None
         ts = str(last.get("ts") or "") if last is not None else ""
         if last is None or ts < at:
             continue
