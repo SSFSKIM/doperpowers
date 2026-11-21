@@ -602,6 +602,7 @@ refuses with exit 6: hosts never drive. A session learns it from
 
     devcloud vm up [--label L] [--project owner/repo[@ref]]... [--account A] [--type T] [--location L]
                    [--disk GB] [--ttl D | --keep] [--spot] [--confirmed] [--dry-run]
+                   [--enroll] [--expect-creator <short>]
     devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
     devcloud vm ls [--json]
     devcloud vm ssh <name> [--root] [-- command...]
@@ -686,6 +687,19 @@ With `--project`, the first project's `devenv/host.toml`
 checkout when it is that repository, else from GitHub with `gh api`) sits
 between the flags and the profile's defaults; an unknown key or an account
 the profile lacks is exit 2 before anything runs.
+The host's owner is the session that runs `up` (`sminos who --session`), and
+its descriptor names that session's project by its id where `sminos who
+--thread` answers for that very session, a thread of this machine that has
+not ended (else by its name, as before; it never refuses an `up`). Two flags
+are what `sminos spawn --on new` asks for, each checked before the reaper's
+run and any provider call, `--dry-run` too: `--enroll` makes a host that
+joins the org, the MAWS project added after those named when none of them
+provisions it, and is exit 3 under a profile whose `[desk]` names no
+provisioning; `--expect-creator <short>` makes nothing (exit 1) unless the
+creating session `up` reads is that one. sminos reads two of `up`'s lines:
+`<name>  ready in <m>m<ss>s`, the one line of that form in a whole `up`'s
+output, for the host's name, and the opening `no VM named` of a name no
+account holds; each is pinned by a test in `tests/unit` named for that reader.
 
 **Images.** `image build [--account A] [--arch x86|arm]` creates a builder (the smallest type
 of the account's default type's architecture, or of `--arch`,

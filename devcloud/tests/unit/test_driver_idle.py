@@ -39,16 +39,65 @@ class NoticeDescriptorTest(unittest.TestCase):
 
 
 class CreatorTest(DriverBase):
-    def test_one_who_call_provides_tag_short_and_project(self):
+    """The creating session and its project (EN.G1's plan, §9): the creator
+    from one `sminos who --session`, then the project by its id from one
+    `sminos who --thread <the calling session>` that answers for that very
+    session, current, local, a thread, not ended; else its name, as before."""
+
+    SESSION = "abcd1234-5e6f-4a1b-8c2d-3e4f5a6b7c8d"
+    PID = "0f1e2d3c-4b5a-4968-8776-655443322110"
+    ADDRESS = "Sminos-Session: build task#abcd1234 (example on testhost)\n"
+
+    def answer(self, **over):
+        a = {"thread": "9f8e7d6c-5b4a-4321-8fed-cba987654321", "session": self.SESSION, "short": self.SESSION[:8],
+             "alias": "build task", "opened": "spawned", "state": "working", "ended": False, "local": True,
+             "machine": "testhost", "project": {"id": self.PID, "name": "example"}}
+        a.update(over)
+        return subprocess.CompletedProcess([], 0, json.dumps(a) + "\n", "")
+
+    def lookup(self, second):
+        """(creator, creator_project, the argv of each call) with sminos's
+        two answers: the address line, then `second`."""
         ctx = self.make_ctx()
-        # Use the real Context's identity path rather than the fixture's injected creator.
-        ctx = context.Context(ctx.paths, env={"CLAUDE_CODE_SESSION_ID": "abcd1234-session", "PATH": "/bin"})
-        result = subprocess.CompletedProcess([], 0, "Sminos-Session: build task#abcd1234 (example on testhost)\n", "")
+        # The real Context's identity path rather than the fixture's injected creator.
+        ctx = context.Context(ctx.paths, env={"CLAUDE_CODE_SESSION_ID": self.SESSION, "PATH": "/bin"})
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            if argv[1:3] == ["who", "--session"]:
+                return subprocess.CompletedProcess(argv, 0, self.ADDRESS, "")
+            if isinstance(second, BaseException):
+                raise second
+            return second
         with mock.patch.object(context, "_sminos", return_value="/opt/sminos"), \
-                mock.patch.object(context.subprocess, "run", return_value=result) as run:
-            self.assertEqual(ctx.creator(), ("@abcd1234", "abcd1234"))
-            self.assertEqual(ctx.creator_project(), "example")
-            self.assertEqual(run.call_count, 1)
+                mock.patch.object(context.subprocess, "run", side_effect=run):
+            got = (ctx.creator(), ctx.creator_project(), ctx.creator_project())
+        return got[0], got[1], got[2], calls
+
+    def test_two_who_calls_give_the_tag_the_short_and_the_projects_id(self):
+        creator, project, again, calls = self.lookup(self.answer())
+        self.assertEqual((creator, project, again), (("@abcd1234", "abcd1234"), self.PID, self.PID))
+        self.assertEqual([c[1:] for c in calls], [["who", "--session", self.SESSION], ["who", "--thread", self.SESSION]],
+                         "two calls of sminos, once for the run")
+
+    def test_the_name_stays_where_the_answer_is_not_for_the_calling_session_itself(self):
+        cases = {
+            "another session (the thread has gone on)": self.answer(session="ffff0000-5e6f-4a1b-8c2d-3e4f5a6b7c8d"),
+            "a session that is no thread": self.answer(thread="", opened=""),
+            "a thread of another machine": self.answer(local=False),
+            "an ended thread": self.answer(ended=True),
+            "no project read": self.answer(project=None),
+            "an id the descriptor does not take": self.answer(project={"id": "one two", "name": "example"}),
+            "an id that opens with a hyphen": self.answer(project={"id": "-x", "name": "example"}),
+            "a sminos that predates --thread": subprocess.CompletedProcess([], 2, "", "usage"),
+            "nothing": subprocess.CompletedProcess([], 0, "", ""),
+            "a timeout": subprocess.TimeoutExpired(["sminos"], 30),
+        }
+        for why, second in cases.items():
+            with self.subTest(why=why):
+                creator, project, _, _ = self.lookup(second)
+                self.assertEqual((creator, project), (("@abcd1234", "abcd1234"), "example"))
 
     def test_unnamed_session_address_and_outside_a_session(self):
         result = subprocess.CompletedProcess([], 0, "Sminos-Session: abcd1234 (example on testhost)\n", "")

@@ -9,6 +9,7 @@ provider's Ubuntu by the slow path."""
 
 import dataclasses
 import datetime
+import re
 
 from devcloudlib import status
 
@@ -19,6 +20,7 @@ from .profile import duration, format_duration
 BOOT_WAIT = 15 * 60
 SSH_WAIT = 5 * 60
 POLL = 10
+SHORT = re.compile(r"[0-9a-f]{8}")
 
 
 @dataclasses.dataclass
@@ -120,12 +122,41 @@ def describe(r):
             f"{'  spot' if r.spot else ''}  price {r.price}")
 
 
+def asked(ctx, opts):
+    """`--enroll` and `--expect-creator` (EN.G1's plan, §9), before the
+    reaper's run and any call to a provider, under --dry-run too: the
+    projects the host is made with (the MAWS project appended where
+    enrollment needs it), or a DriverError with nothing made."""
+    projects = list(opts.project or [])
+    expected = opts.expect_creator
+    if expected is not None and not SHORT.fullmatch(expected):
+        raise DriverError(USAGE, f"--expect-creator takes a session's short id (eight hex digits): {expected}")
+    if opts.enroll and not compose.provisions(ctx.profile, projects):
+        if not ctx.profile.maws_secret:
+            raise DriverError(REFUSED, "--enroll: the profile's [desk] names no provisioning (provisioning_secret_v2 "
+                                       "with delegation_id), so a host it makes cannot join the org: nothing was made")
+        # After those named, so the first project's host.toml still governs.
+        projects.append(compose.MAWS_PROJECT)
+        ctx.say("enroll    the MAWS project is added: its setup installs the endpoint this host enrolls with")
+    if expected is not None:
+        _, short = ctx.creator()
+        if short is None:
+            raise DriverError(FAILED, f"--expect-creator: the caller expects @{expected} as this host's creator, and "
+                                      "devcloud read no creating session here (sminos who --session gave it no "
+                                      "address it reads): nothing was made")
+        if short != expected:
+            raise DriverError(FAILED, f"--expect-creator: the caller expects @{expected} as this host's creator, and "
+                                      f"devcloud read @{short}: nothing was made")
+    return projects
+
+
 def run(ctx, opts):
     begun = ctx.clock()
     label = names.check_label(opts.label or "vm")
-    provisions = compose.provisions(ctx.profile, list(opts.project or []))
+    projects = asked(ctx, opts)
+    provisions = compose.provisions(ctx.profile, projects)
     # A project's file is checked before anything runs: a bad one is exit 2 with nothing done.
-    wanted = hostfile.governing(ctx, list(opts.project or []))
+    wanted = hostfile.governing(ctx, projects)
     if wanted is not None:
         ctx.say(f"host.toml of {wanted.project}, read from {wanted.source}")
     if not opts.dry_run:
@@ -153,7 +184,7 @@ def run(ctx, opts):
     if metadata_seed and not r.client.has("user_data"):
         raise DriverError(REFUSED, f"provider {r.client.name} has metadata_seed without user_data: nothing could "
                                    "start its first boot")
-    desc = compose.descriptor(name=name, profile=ctx.profile, projects=list(opts.project or []), expires=expires,
+    desc = compose.descriptor(name=name, profile=ctx.profile, projects=projects, expires=expires,
                               creator=tag, spot=r.spot, seed="gce-metadata" if metadata_seed else "file",
                               created=int(started), hourly_price=r.type.get("hourly_price"),
                               currency=r.type.get("currency"), creator_project=ctx.creator_project())

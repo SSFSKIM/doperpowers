@@ -99,9 +99,10 @@ class Context:
         self.sminos_machines = sminos_machines or (lambda timeout: run_sminos_machines(self.env, timeout))
         identity = functools.cache(lambda: session_creator(self.env))
         self.creator = creator or (lambda: identity()[:2])
-        self.creator_project = (lambda: None) if creator else (lambda: identity()[2])
         # The thread a name is, as sminos answers it (§4 of EN.G1's plan); DriverError in `vm owner`'s words.
         self.thread = thread or (lambda name: sminos_thread(self.env, name))
+        self.creator_project = (lambda: None) if creator else functools.cache(
+            lambda: creator_project(self.env, identity()[2], self.thread))
         self.key_pushed = key_pushed or (lambda: key_in_remote(self))
         self.token_hex = token_hex or (lambda: secrets_mod.token_hex(2))
         self.monotonic = monotonic
@@ -413,6 +414,30 @@ def session_creator(env):
         return None, None, None
     short, project = match.groups()
     return f"@{short}", short, project
+
+
+def creator_project(env, name, thread):
+    """The creating session's project as a new host is told it (EN.G1's
+    plan, §9): its id where `sminos who --thread <the calling session>`
+    answers for that very session, its thread's current one, local, a
+    thread that has not ended, with an id the descriptor takes for the key
+    (the host's parser: one token, no `(`, `)` or `,`, not opening with
+    `-`); else `name`, the project the address line named, as before. It
+    never refuses an `up` and never changes the creator."""
+    session = env.get("CLAUDE_CODE_SESSION_ID")
+    if not name or not session:
+        return name
+    try:
+        answer = thread(session)
+    except DriverError:
+        return name
+    project = answer.get("project") or {}
+    pid = project.get("id")
+    if answer.get("session") == session and answer.get("local") is True and answer.get("thread") \
+            and answer.get("ended") is False and isinstance(pid, str) and re.fullmatch(r"[^\s(),]+", pid) \
+            and not pid.startswith("-"):
+        return pid
+    return name
 
 
 THREAD_TIMEOUT = 30

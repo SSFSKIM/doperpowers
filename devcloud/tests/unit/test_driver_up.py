@@ -18,7 +18,7 @@ HOUR = 3600
 
 def opts(**kw):
     base = dict(label=None, project=[], account=None, type=None, location=None, disk=None, ttl=None, keep=False,
-                spot=False, confirmed=False, dry_run=False)
+                spot=False, confirmed=False, dry_run=False, enroll=False, expect_creator=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -454,6 +454,95 @@ class CountTest(UpBase):
         self.assertIn("recount", message)
         self.assertNotIn("dc-vm-7f3a", self.servers())
         self.assertNotIn("seed", " ".join(self.remote.commands()))
+
+
+class EnrollTest(UpBase):
+    """`up --enroll` and `--expect-creator` (EN.G1's plan, §9): what
+    `sminos spawn --on new` asks of devcloud, each checked before the
+    reaper's run and before any call to a provider."""
+
+    def desk(self):
+        toml = self.profile_dir / "driver.toml"
+        toml.write_text(toml.read_text() + f'\n[desk]\nprovisioning_secret_v2 = "desk-provisioning-v2"\n'
+                        f'delegation_id = "{MawsTest.DELEGATION}"\n')
+        self.ctx = self.make_ctx(token_hex=lambda: next(self.hexes))
+
+    def created(self):
+        return MawsTest.created(self)
+
+    def test_enroll_adds_the_maws_project_after_those_named_when_none_of_them_provisions(self):
+        self.desk()
+        self.assertEqual(self.up(project=["example/repo@topic"], enroll=True, keep=True), 0)
+        create, desc = self.created()
+        self.assertEqual(desc.projects, ("example/repo@topic", "maws"))
+        self.assertEqual(create["labels"]["devcloud-enroll"], "key")
+        self.assertEqual(desc.maws_secret, "desk-provisioning-v2")
+        self.assertIn("enroll    the MAWS project is added: its setup installs the endpoint this host enrolls with",
+                      self.out.getvalue())
+
+    def test_enroll_adds_nothing_when_a_named_project_provisions(self):
+        self.desk()
+        self.assertEqual(self.up(project=["example/repo", "maws@main"], enroll=True), 0)
+        _, desc = self.created()
+        self.assertEqual(desc.projects, ("example/repo", "maws@main"))
+        self.assertNotIn("enroll    ", self.out.getvalue())
+
+    def test_enroll_under_a_profile_that_names_no_provisioning_is_3_before_any_provider_call(self):
+        for dry in (True, False):
+            with self.subTest(dry_run=dry):
+                code, message = self.refused(project=["example/repo"], enroll=True, dry_run=dry)
+                self.assertEqual(code, 3)
+                self.assertEqual(message, "--enroll: the profile's [desk] names no provisioning "
+                                          "(provisioning_secret_v2 with delegation_id), so a host it makes cannot "
+                                          "join the org: nothing was made")
+        self.assertEqual(self.state()["calls"], [], "no provider was called, the reaper's run included")
+
+    def test_expect_creator_the_context_reads_makes_the_host_as_before(self):
+        self.assertEqual(self.up(expect_creator="abcd1234"), 0)
+        self.assertIn("create", self.ops())
+        self.assertEqual(self.servers()["dc-vm-7f3a"]["labels"]["devcloud-creator"], "abcd1234")
+
+    def test_expect_creator_with_another_or_no_creator_read_is_1_and_no_provider_is_called(self):
+        cases = ((lambda: ("@abcd1234", "abcd1234"),
+                  "--expect-creator: the caller expects @12345678 as this host's creator, and devcloud read "
+                  "@abcd1234: nothing was made"),
+                 (lambda: (None, None),
+                  "--expect-creator: the caller expects @12345678 as this host's creator, and devcloud read no "
+                  "creating session here (sminos who --session gave it no address it reads): nothing was made"))
+        for creator, words in cases:
+            for dry in (True, False):
+                with self.subTest(words=words[60:90], dry_run=dry):
+                    self.ctx = self.make_ctx(token_hex=lambda: next(self.hexes), creator=creator)
+                    code, message = self.refused(expect_creator="12345678", dry_run=dry)
+                    self.assertEqual((code, message), (1, words))
+        self.assertEqual(self.state()["calls"], [], "no provider was called at all, the reaper's run included")
+
+    def test_expect_creator_that_is_no_short_id_is_usage(self):
+        for value in ("abcd123", "ABCD1234", "@abcd1234", "abcd12345"):
+            with self.subTest(value=value):
+                self.assertEqual(self.refused(expect_creator=value, dry_run=True)[0], 2)
+        self.assertEqual(self.state()["calls"], [])
+
+
+class ReadyLineReaderTest(MawsTest):
+    """sminos's reader of `up`'s output (S/sminos_on.py, READY_RE): in
+    everything a whole `up` prints, the host is named by exactly one line
+    of the form `<name>  ready in <m>m<ss>s`, with five lines after it."""
+
+    READY_RE = re.compile(r"(\S+)  ready in \d+m\d\ds")
+
+    def test_the_whole_output_of_an_up_holds_one_ready_line_naming_its_host(self):
+        from devcloudlib import status
+        steps = [{"name": n, "state": "ok", "at": "t", "detail": ""} for n in status.STEPS]
+        steps[-1] = {"name": "maws", "state": "deferred", "at": "t", "detail": "its certificate not yet live"}
+        self.remote.rules = [r for r in self.remote.rules if "status.json" not in r["needle"]]
+        self.remote.on("status.json", out=json.dumps({"steps": steps}) + "\nactive")
+        self.assertEqual(self.up(project=["maws"]), 0)
+        lines = (self.out.getvalue() + self.err.getvalue()).splitlines()
+        ready = [i for i, line in enumerate(self.out.getvalue().splitlines()) if self.READY_RE.fullmatch(line)]
+        self.assertEqual([self.READY_RE.fullmatch(lines[i]).group(1) for i in ready], ["dc2-vm-7f3a"])
+        self.assertEqual(len(self.out.getvalue().splitlines()) - ready[0] - 1, 5)
+        self.assertTrue(any(line.startswith("maws      deferred") for line in lines))
 
 
 class RecountTest(UpBase):

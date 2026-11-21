@@ -2,6 +2,7 @@
 
   devcloud vm up [--label L] [--project owner/repo[@ref]]... [--account A] [--type T] [--location L]
                  [--disk GB] [--ttl D | --keep] [--spot] [--confirmed] [--dry-run]
+                 [--enroll] [--expect-creator <short>]
   devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
   devcloud vm ls [--json]
   devcloud vm owned-by <tag|short>...
@@ -61,6 +62,11 @@ def parser():
     p.add_argument("--spot", action="store_true")
     p.add_argument("--confirmed", action="store_true")
     p.add_argument("--dry-run", dest="dry_run", action="store_true")
+    # What `sminos spawn --on new` asks (EN.G1's plan, §9): a host that joins the org, made only for that session.
+    p.add_argument("--enroll", action="store_true", help="make a host that enrolls in the org (the MAWS project "
+                                                         "is added where none named provisions it)")
+    p.add_argument("--expect-creator", dest="expect_creator", metavar="SHORT",
+                   help="make nothing unless the creating session devcloud reads is this short id")
     p = sub.add_parser("adopt", help="make a machine the driver did not make a host, until released")
     p.add_argument("target", metavar="user@address")
     p.add_argument("--label", default=None)
