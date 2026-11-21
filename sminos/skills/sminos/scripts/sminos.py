@@ -3711,8 +3711,9 @@ def frame_landed(project, session, e):
     drops a stream's suffix, and each stream numbers its own events): such a
     frame cannot be told from the other's, and claims no push. A frame after
     another in one push of several is not told from a quote either, and
-    claims none."""
-    if e.get("msg_id"):
+    claims none. A machine's notice is always a chat frame (frame_of), a
+    `msg_id` on it included."""
+    if e.get("msg_id") and not notice_of(e):
         framed = re.compile(r"\[sminos message from [^\n]* id=%s\](?:\n|$)" % re.escape(e["msg_id"]))
         return _transcript_holds(session, ("id=%s]" % e["msg_id"]).encode(),
                                  lambda text: framed.match(text) is not None)
@@ -7925,11 +7926,12 @@ def frame_of(project, e, events, session, cursor):
     whose target is `@you`, or a broadcast's scope (target_label: `@all`,
     `@all on mini`).
     Its unread count leaves out copies: each is a record of a message
-    another log carries, not one spoken here. A machine's notice is shown
-    from its notice_sender, `<program>@<machine>`."""
-    if e.get("msg_id"):
-        return compose_frame(notice_sender(e) if notice_of(e) else str(e.get("via") or e.get("from") or ""),
-                             e["msg_id"], str(e.get("text") or ""), sender_labels(project)(e))
+    another log carries, not one spoken here. A machine's notice is always
+    a chat frame, from its notice_sender, `<program>@<machine>`, whatever
+    else it carries (X8; a `msg_id` too)."""
+    if e.get("msg_id") and not notice_of(e):
+        return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""),
+                             sender_labels(project)(e))
     unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and "copy" not in x and
                  writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
     sender = notice_sender(e) if notice_of(e) else str(e.get("from") or "")
@@ -9290,7 +9292,7 @@ def say_scoped(a, home, sender, writer, kind, sid):
 
 def notice_field(a):
     """The field `say --notice` puts on every event the call appends (X8)."""
-    return {"notice": a.notice} if a.notice else {}
+    return {"notice": a.notice} if a.notice is not None else {}
 
 
 def cmd_say(a):
@@ -9301,11 +9303,11 @@ def cmd_say(a):
     EXIT_HELD when a tagged recipient's line was a held one (deliver_say),
     and changes nothing else."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    if a.notice and sid:
-        die("--notice marks a notice of a machine's own program, and a session is not one: drop it")
-    if a.notice and not NOTICE_PROGRAM_RE.fullmatch(a.notice):
+    if a.notice is not None and not NOTICE_PROGRAM_RE.fullmatch(a.notice):
         die("--notice names the program that speaks, as a lower-case word of letters, digits and hyphens (32 at "
             "most): %s" % a.notice)
+    if a.notice is not None and sid:
+        die("--notice marks a notice of a machine's own program, and a session is not one: drop it")
     scoped = selector_given(a)
     if scoped and leading_tags(a.text):
         die("a selector picks the recipients itself: drop the opening @tags, or the selector — tags name "
@@ -15975,11 +15977,11 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
                     return
                 woken = True
                 continue
-            if delivery:
-                # Uncertain after a write: that run is never pushed again, and a later one stays owed.
-                delivery.landed(delivery.pushing)
-                delivery.release()
+            # Uncertain after a write: that run is never pushed again, and a later one stays owed.
+            ahead = delivery.uncertain() if delivery else ""
             unlock(locks)
+            if ahead:
+                die(uncertain_ahead(ref, ahead, e, msg_id), 1)
             die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s). Not "
                 "waking it and not re-sending id=%s; check the seat with sminos reply/attach before retrying." % (
                     ref, e, msg_id), 1)
@@ -16101,7 +16103,7 @@ class SendDelivery:
         unknown = next((e for e in self.queue if e not in self.stale and held_unreadable(record, e)), None)
         self.cursor = cursor_load(project, session)
         self.skipped = []
-        self.pushing = None
+        self.pushing, self.run = None, []
         self.held = "the endpoint decides its delivery" if words_held(event) else (
             self.checked() if sibling_module("sminos_rl10").cut_over() else None)
         if self.held is None and unknown is not None:
@@ -16135,23 +16137,16 @@ class SendDelivery:
         reach gate checks: no stale one."""
         return [e for e in self.queue if (live or not e.get("wake")) and e not in self.stale]
 
-    def payload(self, live):
-        """The text of the one push. Ordinary delivery's policy applies: an
-        @all (`wake`) reaches only the live, so to a stopped member it is
-        settled by passing and left out of the resume; a stale hold is
-        pushed to no one."""
-        self.skipped = [e for e in self.queue if e.get("wake") and not live]
-        return "\n\n".join(frame_of(self.project, e, self.events, self.session, self.cursor)
-                             for e in self.queue if e not in self.skipped and e not in self.stale)
-
     def runs(self, live):
         """The queue as the pushes it is handed over in: [(the text, the
         event that routes it, the events it carries)], in the writer's order.
         One run, the whole payload under the queue's last event, as today,
         unless the queue holds a marked event: then a new run begins wherever
-        a marked event and an unmarked one are neighbours. What `live` leaves
-        out and what is stale are left out as `payload` and `carried` leave
-        them out. A machine's notice is so never carried inside a payload
+        a marked event and an unmarked one are neighbours. Ordinary
+        delivery's policy applies: an @all (`wake`) reaches only the live, so
+        to a stopped member it is settled by passing and left out of the
+        resume (`skipped`, as `carried` leaves it out); a stale hold is pushed
+        to no one. A machine's notice is so never carried inside a payload
         another event routes (X8): on a machine not cut over an operator's
         verb goes by the bridge as the owner's words (EN.G1's plan, §1)."""
         self.skipped = [e for e in self.queue if e.get("wake") and not live]
@@ -16171,12 +16166,25 @@ class SendDelivery:
         (control.push_live), each settled as it lands (landed), so the
         record's settled prefix never passes an event that was not handed
         over. What push_live raises for a run is raised, that run and every
-        later one still queued; `pushing` names the run's last event."""
+        later one still queued; `pushing` names the run's last event, `run`
+        the events it carries."""
         for text, route, carried in self.runs(live):
-            self.pushing = route
+            self.pushing, self.run = route, carried
             control_module().push_live(peer, session, text, route, self.project.id, carried=carried)
             self.landed(route)
-        self.pushing = None
+        self.pushing, self.run = None, []
+
+    def uncertain(self):
+        """A run whose frame was written and whose close-out failed: settled,
+        never pushed again, and the delivery released, what follows it left
+        owed for the daemon. "" when it was the last run (the verb's own, as
+        on every path with no notice owed ahead of it); else the run's refs,
+        for the sender's sentence."""
+        run = self.run
+        self.landed(self.pushing)
+        rest = bool(self.queue)
+        self.release()
+        return ", ".join(event_ref(e) for e in run) if rest else ""
 
     def landed(self, last):
         """A run handed over, `last` its last event: it and everything queued
@@ -16214,6 +16222,16 @@ class SendDelivery:
         self.release()
         print("recorded %s for %s; %s" % (event_ref(self.event), alias, self.held), flush=True)
         nudge_daemon()
+
+
+def uncertain_ahead(ref, refs, err, msg_id):
+    """What a sender is told when a run pushed ahead of its own message
+    (SendDelivery.runs: a machine's notice, or what its writer owed before
+    one) was written and its close-out failed: that run is not pushed again,
+    and the message itself was never pushed and stays queued."""
+    return ("delivery to %s is UNCERTAIN for %s, pushed ahead of this message: its frame was written but the "
+            "close-out failed (%s), and it is not pushed again. This message (id=%s) was not pushed: it stays "
+            "queued, and the daemon delivers it" % (ref, refs, err, msg_id))
 
 
 class WaitingSend:
@@ -16392,8 +16410,9 @@ def send_to_member(project, m, sender, via, text, msg_id):
         return
     except SendFailed as e:
         if e.phase == "after":
-            delivery.landed(delivery.pushing)   # that run never pushed again; a later one stays owed
-            delivery.release()
+            ahead = delivery.uncertain()   # that run never pushed again; a later one stays owed
+            if ahead:
+                die(uncertain_ahead(m.alias, ahead, e, msg_id), 1)
             die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s); "
                 "do not blindly re-send" % (m.alias, e), 1)
         delivery.fail()
@@ -18949,7 +18968,7 @@ def build_parser():
     say = sub.add_parser("say", add_help=False)
     say.add_argument("text")
     say.add_argument("--in", dest="in_", default="")
-    say.add_argument("--notice", default="")
+    say.add_argument("--notice", default=None)
     say.add_argument("--exit-held", action="store_true")
     scope_flags(say)
     say.set_defaults(fn=cmd_say, args=[])

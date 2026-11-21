@@ -179,16 +179,19 @@ class Say(Notices):
         self.assertEqual(self.events("from a session"), [])
 
     def test_a_value_outside_the_pattern_is_refused(self):
+        sid = self.live_sender("sender-a")
         for value in ("DevCloud", "dev cloud", "x" * 33, "9x", "dev_cloud", ""):
-            with self.subTest(value=value):
-                code, out = self.cli("say", "--notice", value, "--in", self.p.id, "odd %r" % value)
-                if value == "":
-                    self.assertEqual(code, 0, "an empty value is no flag")
-                    continue
-                self.assertEqual(code, 2, out)
-                self.assertIn("--notice names the program that speaks, as a lower-case word of letters, digits and "
-                              "hyphens (32 at most): %s" % value, out)
-                self.assertEqual(self.events("odd %r" % value), [])
+            for session in ("", sid):
+                with self.subTest(value=value, session=session):
+                    text = "odd %r %s" % (value, session[:8])
+                    env = {"CLAUDE_CODE_SESSION_ID": session} if session else {}
+                    with mock.patch.dict(os.environ, env):
+                        argv = ["--in", self.p.id] if not session else []
+                        code, out = self.cli("say", "--notice", value, *argv, text)
+                    self.assertEqual(code, 2, out)
+                    self.assertIn("--notice names the program that speaks, as a lower-case word of letters, digits "
+                                  "and hyphens (32 at most): %s" % value, out)
+                    self.assertEqual(self.events(text), [], "nothing appended")
 
     def test_a_project_named_by_its_id_where_two_logs_share_its_name(self):
         roots = []
@@ -224,6 +227,27 @@ class Shown(Notices):
         self.assertIsNotNone(m, first)
         self.assertEqual(m.group(1), self.p.name)
         self.assertTrue(m.group(2).endswith(":%d" % e["seq"]), "one token ending :<seq>")
+
+    def test_a_notice_carrying_a_msg_id_is_still_the_chat_frame_and_is_found_landed_as_one(self):
+        sid, _ = self.session()
+        e = sminos.log_append(self.p, HUMAN, "human", **{"from": "human", "to": [{"session": sid, "alias": "x"}],
+                                                         "text": "devcloud on vm: with an id", "notice": "devcloud",
+                                                         "msg_id": "abc12345"})
+        frame = sminos.frame_of(self.p, e, sminos.log_read(self.p), sid, {})
+        self.assertTrue(frame.startswith("[sminos chat %s %s from devcloud@testhost → @you"
+                                         % (self.p.name, sminos.event_ref(e))), frame)
+        self.assertNotIn("[sminos message from", frame)
+        seen = []
+
+        def holds(session, needle, match):
+            seen.append(needle)
+            return match(frame)
+        with mock.patch.object(sminos, "_transcript_holds", holds):
+            self.assertTrue(sminos.frame_landed(self.p, sid, e), "the chat frame, found by its head and its text")
+        self.assertEqual(seen, [(" %s from " % sminos.event_ref(e)).encode()], "looked for as a chat frame")
+        unmarked = dict(e, notice="")
+        self.assertTrue(sminos.frame_of(self.p, unmarked, sminos.log_read(self.p), sid, {}).startswith(
+            "[sminos message from human id=abc12345]"), "an unmarked one keeps a send's frame")
 
     def test_the_label_follows_the_sender_as_sender_labels_gives_it(self):
         sid, _ = self.session()
@@ -366,6 +390,46 @@ class Runs(Notices):
         self.assertEqual(code, 4, out)
         self.assertEqual(self.settled(sid), e["seq"], "the notice's alone")
         self.assertEqual(self.owed(sid), ["never handed over"])
+
+    def uncertain_at(self, n):
+        """control.push_live failing after its write at the n-th push of this call."""
+        real, seen = control.push_live, []
+
+        def push_live(peer, session, text, event=None, *a, **k):
+            seen.append(event["seq"])
+            real(peer, session, text, event, *a, **k)
+            if len(seen) == n:
+                raise sminos.SendFailed("after", "the close-out failed")
+        return mock.patch.object(control, "push_live", push_live)
+
+    def test_an_uncertain_notice_run_names_itself_and_leaves_the_verb_queued(self):
+        self.bridge()
+        sid = str(uuidlib.uuid4())
+        self.terminal(sid)
+        e = self.notice(sid, "devcloud on vm: uncertain")
+        with self.uncertain_at(1):
+            code, out = self.send(sid[:8], "still queued")
+        self.assertEqual(code, 1, out)
+        [mine] = self.logged("still queued")
+        self.assertIn("is UNCERTAIN for %s, pushed ahead of this message" % sminos.event_ref(e), out)
+        self.assertIn("This message (id=%s) was not pushed: it stays queued, and the daemon delivers it"
+                      % mine["msg_id"], out)
+        self.assertNotIn("do not blindly re-send", out)
+        self.assertEqual(self.settled(sid), e["seq"], "the uncertain run settled, never pushed again")
+        self.assertEqual(self.owed(sid), ["still queued"])
+
+    def test_an_uncertain_last_run_says_what_it_said_before(self):
+        self.bridge()
+        sid = str(uuidlib.uuid4())
+        self.terminal(sid)
+        self.notice(sid, "devcloud on vm: lands")
+        with self.uncertain_at(2):
+            code, out = self.send(sid[:8], "the verb itself")
+        self.assertEqual(code, 1, out)
+        self.assertIn("the frame was written but the close-out failed (the close-out failed); do not blindly re-send",
+                      out)
+        self.assertNotIn("pushed ahead of this message", out)
+        self.assertEqual(self.owed(sid), [])
 
     def test_send_wait_pushes_both_and_returns_the_reply_to_its_own_message(self):
         took = self.bridge(took=False)

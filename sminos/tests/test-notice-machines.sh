@@ -87,7 +87,9 @@ until_true() {
 gitq() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 py() { python3 -B -c "$@"; }
 
-unset CLAUDE_CODE_SESSION_ID CLAUDE_PID SMNS_INTERNAL SMNS_MEMBER DAEMON_HOME AGORA_HOME DAEMON_HOST CLAUDE_PLUGIN_ROOT \
+# SMINOS_RL10 first: sminos_rl10 prefers it to the machine's own endpoint, so one inherited would have these
+# daemons dial an endpoint outside the test; each machine's is its stand-in's, under its MAWS_USER_DATA (rl10_as).
+unset SMINOS_RL10 CLAUDE_CODE_SESSION_ID CLAUDE_PID SMNS_INTERNAL SMNS_MEMBER DAEMON_HOME AGORA_HOME DAEMON_HOST CLAUDE_PLUGIN_ROOT \
   CLAUDE_PROJECT_DIR CLAUDE_CONFIG_DIR
 export SMINOS_DERIVE_EVERY=0 DAEMON_BOOT_ID=boot-current SCRIPTS WAKE_ENGINE="$ENGINE"
 mkdir -p "$T/bin"
@@ -158,6 +160,7 @@ start_daemon() { "$SMINOS" daemon run --interval 1 >> "$SMINOS_HOME/run.out" 2>&
 events_with() { # project-id text — the events of this machine's log of the project that carry the text
   cat "$SMINOS_HOME/projects/$1/log/"*.jsonl 2>/dev/null | grep -F -- "$2" || true
 }
+has_event() { [ -n "$(events_with "$1" "$2")" ]; }   # project-id text — read again at each call
 field_of() { py 'import json, sys; print(json.dumps(json.loads(sys.argv[1]).get(sys.argv[2])))' "$1" "$2"; }
 # Whether this machine's projection of the project binds `name` to the session (a former session's short included).
 binds() { # project-id name session
@@ -176,6 +179,15 @@ import sminos
 p = sminos.find_project(sys.argv[2])
 m = next((m for m in sminos.members(p) if m.session == sys.argv[3]), None)
 sys.exit(0 if m is not None and sminos.remote_held(m) else 1)' "$SCRIPTS" "$1" "$2") 2>/dev/null
+}
+# Whether this machine reads the member as live (one of sminos's FILLED states), not stopped or held.
+live_here() { # project-id session
+  (cd "$T/x" && python3 -B -c 'import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+p = sminos.find_project(sys.argv[2])
+m = next((m for m in sminos.members(p) if m.session == sys.argv[3]), None)
+sys.exit(0 if m is not None and m.state in sminos.FILLED else 1)' "$SCRIPTS" "$1" "$2") 2>/dev/null
 }
 mkdir -p "$T/x"
 
@@ -292,6 +304,11 @@ got keeper2 "lease ends (refill)" && pass "R2's inbox holds it" || fail "R2's in
 
 # ---- marked ------------------------------------------------------------------------------
 echo "marked, under each of mac's verdicts:"
+# The marked cases expect vm to read R2 running: a slower machine can still be reading the seat's stopped state
+# from between R1 and R2 there (exit 3, seen on the gate), so its live state is waited for first.
+rl10_as vm vm
+if until_true relayed live_here "$PP" "$R2"; then pass "vm reads R2 live"; else
+  fail "vm reads R2 live: no relay brought its state within the bound"; fi
 for v in peer words; do
   rl10_as mac mac
   verdict "$EPM" "$v"
@@ -393,7 +410,8 @@ assert_equals "$(field_of "$NOTE" writer) $(field_of "$NOTE" to) $(field_of "$NO
   "in quietproj's log under vm's plain writer, untagged, marked"
 rl10_as mac mac
 J1=5e000002-0000-4000-8000-0000000000e2
-until_true relayed test -n "$(events_with "$PQ2" "idle (the note)")" || true
+if until_true relayed has_event "$PQ2" "idle (the note)"; then pass "the note reaches mac"; else
+  fail "the note reaches mac: no relay brought it within the bound"; fi
 live_session j1 "$J1" "$Q2"
 run_in "$Q2" "$SMINOS" list
 run_in "$Q2" env CLAUDE_CODE_SESSION_ID="$J1" "$SMINOS" chat
@@ -421,7 +439,8 @@ assert_rc 0 "$RC" "accepted: vm still reads U1 as the thread's session"
 assert_equals "$(field_of "$(events_with "$PP" "lagging")" to)" "[{\"session\": \"$U1\", \"alias\": \"u1\"}]" \
   "the event names U1"
 rl10_as mac mac
-until_true relayed test -n "$(events_with "$PP" "lagging")" || true
+if until_true relayed has_event "$PP" "lagging"; then pass "the lagging notice reaches mac"; else
+  fail "the lagging notice reaches mac: no relay brought it within the bound"; fi
 for _ in 1 2 3; do relayed run_in "$P" "$SMINOS" daemon tick; done
 assert_not_contains "$(received u2)" "lagging" "pushed to no session: not to U2"
 assert_equals "$(launches)" "$before" "and no process started"
