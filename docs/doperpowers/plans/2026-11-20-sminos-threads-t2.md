@@ -34,7 +34,7 @@ composite (G2, eleven items), proved as Concrete Steps maps it.
 - [x] (2026-11-20 14:55Z) M2 — The wake: `resume_session` starts a process and pushes to it; transitions take the wake's lock. Commits `d52f01b0`..`e2fe7c64`; three reviews, the last fix read by the controller; gates GREEN on `e2fe7c64`.
 - [x] (2026-11-20 19:35Z) M3 — Delivery wakes every stopped thread, and holds what it cannot push. Commits `ca38e7f7`..`b482b4ce`; three reviews, the last fix read by the controller; gates GREEN on `b482b4ce`.
 - [x] (2026-11-21 00:10Z) M4 — The verbs, what a sender is told on any machine, and the direct send. Commits `eb5ef1ca`..`18dcfeb2`; three reviews, the last fix read by the controller; gates GREEN on `2d98a842`, and on `18dcfeb2` RED 1/8 on one teardown timeout of `test_manager.py`'s bridge stand-in, which M4 does not touch and which passed six concurrent local runs (reported to the holder).
-- [ ] The frontier review of M1 to M4 as one range, by the composite's holder, and its fixes.
+- [x] (2026-11-21) The frontier review of M1 to M4 as one range, by the composite's holder, and its fixes: three rounds (30, 27 and 5 confirmed), fixed on the branch through `ec582142` (Decision Log, "The frontier review, round 1/2/3"); `origin/main` merged after it (`ccad9a51`).
 - [ ] M5 — What sessions are told, older copies, several senders, and the acceptance on a real engine.
 
 ## Words this document adds
