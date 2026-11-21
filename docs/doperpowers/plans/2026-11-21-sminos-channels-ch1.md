@@ -49,7 +49,7 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) M1 — A channel id is told from a project's at every door, and nothing is published under one. `dba3f5e8..eee82f3b`, three reviews (the bound), then the idle trim and round 3's last finding fixed (Decision Log, "M1's idle trim"); `sminos-idle` 32,161 calls a second.
 - [x] (2026-11-21) M2 — A thread's declared set: one durable operation, its statement and the statement's reader. `5ec8f9d6..ec4034c1`, clean at its third review; `sminos-idle` 32,165 calls a second.
 - [x] (2026-11-21) M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption. `54cacc3a..7748fde1`, three reviews (the bound), then round 3's last finding fixed; `sminos-idle` 32,024 calls a second.
-- [ ] M4 — Requests on one machine, and the verbs that write them.
+- [x] (2026-11-21) M4 — Requests on one machine, and the verbs that write them. `04cc6146..9ffbe8c5`, three reviews (the bound), then round 3's last finding fixed; `sminos-idle` 32,232 calls a second.
 - [ ] M5 — The roster, the listing and the pool.
 - [ ] M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture.
 - [ ] M7 — Requests across machines: the endpoint's word, and what a requester is told.
@@ -2392,6 +2392,24 @@ while the milestones are built, one observation and its evidence each.
   answered it (the record's open entry, else its sessions' events), and
   when neither can be read says it was answered and where the thread is
   now, exit 0. A failed write for one target is that target's outcome.
+- 2026-11-21 — **M4's review, rounds 2 and 3, as fixed** (`ba2c784c`,
+  `9ffbe8c5`). A request from a former name's queue is deferred `queued`
+  only after §6's rows 3 and 4 (whom it names, the answered ledger), so one
+  that names no thread here is `ignored not-here` and holds no later
+  request back. A command's row keeps the recorded outcome of a request
+  answered first (`_answered_line` returns the line and the `Outcome`), and
+  `create`'s summary is built from it. `_current_here` takes one fresh
+  identity for its whole scan. `create`'s stream choice: the preflight
+  against the channel about to be made refuses an unreachable target with
+  nothing registered; `place` chooses again at the append for that one
+  recipient, and when that choice refuses or gives another writer or
+  audience it appends nothing, says the channel stays registered with no
+  member and that the same command run again brings it back, and exits 1.
+  That race (the target's reach narrowed during the registration) is the
+  one exception to "refused before anything is written": a registration
+  with no member is left, never a request under an audience the target no
+  longer has. This last fix came after the third review and had none of
+  its own.
 
 ## Outcomes & Retrospective
 
