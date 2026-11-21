@@ -22,7 +22,7 @@ How to see it working is the acceptance below, proved by suites that run a real 
 - [x] (2026-11-21) The revision's review, the second and last before the build (ten findings), the holder's ruling on each, and this revision (Decision Log, "The plan's second review").
 - [x] (2026-11-21, reviewed clean; gates GREEN on `a7cafd0a`) M1 — A machine's notice: the marker, the exit that lets it go on, and the host that sends both.
 - [x] (2026-11-21, reviewed clean after two fix waves; gates GREEN on `7fa45742`) M2 — A VM handed to another thread.
-- [ ] M3 — A thread opened on a VM with one command.
+- [x] (2026-11-21, reviewed clean after three fix waves; gates GREEN on `44529554`) M3 — A thread opened on a VM with one command.
 - [ ] M4 — What sessions are taught, what sits beside the code, and the gates on the final head.
 - [ ] The whole range reviewed (Decision Log, "Verification"), its fixes, and the merge.
 - [ ] M5 — The live check, on the merged change.
