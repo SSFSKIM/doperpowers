@@ -80,7 +80,7 @@ The project family, standalone: nothing of doperpowers' is needed for it to run.
 
 | Part | What it does |
 |---|---|
-| [`sminos` skill and CLI](../sminos/skills/sminos/SKILL.md) | `sminos` on every session's PATH. Who is here (`list`, `find`, `who`), speaking (`say`, `send`), driving another session (`watch`, `steer`, `interrupt`, `answer`, `decide`, `model`, `compact`), spawning and retiring background sessions (`spawn`), and a project's and machine's setup |
+| [`sminos` skill and CLI](../sminos/skills/sminos/SKILL.md) | `sminos` on every session's PATH. Who is here (`list`, `find`, `who`), speaking (`say`, `send`, which wake a stopped session in the background), driving another session (`watch`, `steer`, `interrupt`, `answer`, `decide`, `model`, `compact`), spawning and retiring background sessions (`spawn`), and a project's and machine's setup |
 | [`manager` skill](../sminos/skills/manager/SKILL.md) | *Manual* (`/sminos:manager`). A read-only manager session: follows the sessions you name and tells you what they need from you and what you missed, in a ledger |
 | bridge | Makes a session watchable and steerable from outside it: its live stream for a reader, its control for a client |
 | ask tool | `mcp__sminos__AskUserQuestion`: the built-in question tool plus `async`, so a session asks and keeps working |

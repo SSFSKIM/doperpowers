@@ -1,9 +1,10 @@
 # sminos
 
 The project family as a Claude Code plugin: every session working in a
-project is a member that sees the others, messages them and its human, hands
-work between them, and spans machines through a git mirror or a desk hub
-(reached through the machine's MAWS endpoint).
+project is a member that sees the others, messages them (a stopped one is
+woken in the background to read it) and its human, hands work between them,
+and spans machines through a git mirror or a desk hub (reached through the
+machine's MAWS endpoint).
 The plugin carries the `sminos` CLI (on every session's PATH, from its `bin/`) and skill, the shell hooks that join a
 session to its project and record what it sent its human, and the function
 hooks (mods) that make a session reachable from outside it: the bridge, the

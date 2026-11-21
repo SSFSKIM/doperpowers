@@ -13,12 +13,15 @@ a seat, board pipeline workers included. A session the human opened is a
 member too, seat-less, from the first call that reads its project, and stays
 one when its process ends: stopped. A message addressed to a stopped session,
 of either kind, wakes it: its process is started again in the background under
-the same id, and the message pushed to it. One its machine does not wake (its
-directory or its conversation gone, another config dir, a folder macOS
-protects, a mode that asks for approval, a wake that failed and is tried
-again) holds the message until a process of it runs before it ends, and the
-sender is told why. After a /clear
-the new session takes its alias, and the one left goes by its short id. A
+the same id, with no message, and the message is then pushed to it, followed by
+a `[sminos] ` line telling it that it was woken and that its human is not
+watching. One its machine does not wake (its directory or its conversation
+gone, another config dir, a directory in or holding a folder macOS protects,
+$HOME among them, a mode that asks for approval, its own or a first wake's
+capped by the machine's ceiling, a wake that failed, a launch whose process
+never came up included, tried again at widening intervals) holds the message
+until a process of it runs before it ends, and the sender is told why. After a
+/clear the new session takes its alias, and the one left goes by its short id. A
 session ends when it is retired, or once it has been stopped for three days
 (while a devcloud host of its own remains, or devcloud cannot tell, it stays
 stopped instead); what was held for it is then settled, and a message to it
@@ -35,7 +38,8 @@ back by a fill.
                    its human opened that is already a member: its own record keeps it)
     sminos fill     <seat> <task> [--resume] [--model M] [--settings S] [--effort E] [--wait]
                    # a fresh session in the seat; --resume continues its saved one
-    sminos resume   <seat|member> <msg> [--wait]          # process-level continuation (stops a live turn first)
+    sminos resume   <seat|member> <msg> [--wait]          # process-level continuation: a live background turn is
+                   stopped first, only once its wake is read to start it again
                    A seat or a session its human opened alike: the message recorded, the session woken and
                    the message pushed; one its machine does not wake records it, starts nothing, says why
                    and exits 4 (the daemon pushes it when a process of it runs). Whenever the message is
@@ -49,7 +53,9 @@ back by a fill.
                    to change them.
     sminos send     <member|session name|codex thread> <msg> [--wait] [--from F]
                    # a live member: inbox socket; a stopped one: woken, or recorded and held (with
-                   # --wait, exit 4: nothing is started). On a machine not enrolled, a live session in
+                   # --wait, exit 4: nothing is started). --wait prints the reply to this message: what
+                   # follows its row, or the bridge's wake naming it, up to the next prompt that starts a
+                   # turn. On a machine not enrolled, a live session in
                    # no project by its name; a codex thread (its id, or codex:<id|exact name>, through
                    # codex's queue); --wait needs a seat or a thread of this machine.
     sminos say      [--in <project>] <text>                # untagged: recorded; @alias / @"a b" / @alias#short /
@@ -209,14 +215,15 @@ Messaging is one verb, `send`: to a live seat it writes a frame to the
 session's inbox socket — the socket the harness's native cross-session
 SendMessage tool also rides, wrapped in that tool's own envelope — which the
 harness delivers as a peer message (an idle session starts a new turn, a busy
-one reads it at its next tool round); a stopped seat is resumed with the
-frame as its message. A peer's message always takes the inbox. The owner's
+one reads it at its next tool round); a stopped one is woken first, and the
+frame pushed to it as to a live one. A peer's message always takes the inbox. The owner's
 (owner_event) takes a session's bridge (the bridge mod) instead, as the
 human's words, submitted once per log event however often it is delivered,
 and a --bg job with no bridge takes it through the engine supervisor's
 `reply`. `resume` is
-the process-level continuation the board pipeline relays through: a fresh
-`claude --bg --resume` carrying the invoking environment.
+the process-level continuation the board pipeline relays through: a wake
+(`claude --bg --resume <id>`, carrying the invoking environment and no
+message) and the push of its message.
 
 State lives under $SMINOS_HOME (default ~/.claude/sminos; $DAEMON_HOME is the
 older name of the same root and is honored). Records are <seat-id>.json at the
@@ -8531,8 +8538,8 @@ def opened_by_human(session):
 
 
 def human_refusal(alias):
-    return ("%s is a session its human opened: its sessions are its human's to open, and sminos starts none for it"
-            % alias)
+    return ("%s is a session its human opened: its sessions are its human's to open, and sminos starts no fresh one "
+            "for it (a message to it wakes the one it has)" % alias)
 
 
 def thread_owed(session):

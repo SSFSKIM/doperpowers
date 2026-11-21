@@ -48,8 +48,8 @@ shows or hides all three states. Inside a session `list` says who you are
 and ends with how many of your own subagents run.
 States: `busy` (its turn runs), `idle`,
 `waiting` (on a question or a permission prompt), `stopped` (no process:
-a message resumes a seat; a session its human opened waits for them to
-reopen it), `gone` (no transcript here, or its machine retired), `vacant`
+a message addressed to it wakes it, below), `gone` (no transcript here, or
+its machine retired), `vacant`
 (a seat with no session), `retired` (by `sminos retire`, or after three
 days stopped, but not while a devcloud host of its own remains or devcloud
 cannot tell; reopening the session, or filling a seat, returns it).
@@ -81,8 +81,8 @@ text is text.
 | message | recorded | delivered |
 | --- | --- | --- |
 | untagged | for everyone | to no one: read at a member's next `chat` |
-| `@alias …` | addressed | an idle member starts a turn, a busy one reads it at its next tool round, a stopped seat is resumed, for a stopped session its human opened it is recorded and held, read if its human reopens it before it ends |
-| `@all …` | addressed to the members live now | every one of them starts a turn or reads it; no stopped one is resumed |
+| `@alias …` | addressed | an idle member starts a turn, a busy one reads it at its next tool round, a stopped one is woken to read it, or held where its machine does not wake it (you are told why) |
+| `@all …` | addressed to the members live now | every one of them starts a turn or reads it; no stopped one is woken |
 | a selector: `--org`, `--project P,..`, `--machine M,..`, `--here`, `--state W,..` | in each project it reaches, with a copy in yours | as `@all`, to every live session `list` shows with the same flags, you left out |
 
 The selector is `list`'s filters, combined (`--project MAWS --machine
@@ -173,12 +173,22 @@ comes first settles it, once, and the other is told who did. A command
 its bridge cannot place yet (a reloaded session whose turn state is
 unknown) is refused: retry shortly.
 
-`send` to a stopped seat resumes it; to a stopped session its human
-opened it is held, as a tag is, and no verb starts a process for such a
-session (`resume`, `fill` and `send --wait` say so). `send --wait` (a
-seat only) prints the
-turn's reply; `reply <seat>` its latest, a pending question included.
-For a working seat prefer `send` to `resume`, which stops its live turn.
+A message to a stopped member, a seat or a session its human opened,
+wakes it: its machine starts it again in the background under the same
+session id, and the message reaches it as a live member's does, with a
+`[sminos] ` line after it saying that it was woken and that its human is
+not watching. Its machine holds the message instead, and your line says
+why, where a wake would fail or stall: its directory or its conversation
+is gone, it runs under another config dir, its directory is in or holds a
+folder macOS protects (a home directory does), a wake would run it in a
+mode that asks for approval (its own, or the machine's ceiling), or a
+wake of it failed and its machine tries again. A held message is pushed
+when a process of the session runs before it ends; sending it again only
+adds a copy. `resume`, `fill --resume` and `send --wait` wake it the same
+way, and start nothing and exit 4 when it is held. `send --wait` prints
+the reply to its message; `reply <name>` the latest, a pending question
+included. For a working seat prefer `send` to `resume`, which stops its
+live turn.
 `attach`, `fill [--resume]` and `retire [--purge]` are in `sminos help`.
 A member on another machine is reached by `say` and `send`; the other
 verbs act on this machine's processes, so run them on its machine.
