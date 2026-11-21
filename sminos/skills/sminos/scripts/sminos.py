@@ -6568,16 +6568,22 @@ def view_of(project, all_seats=None, titles=True):
         all_seats = seats()
         by_session = seats_by_session(project, all_seats)
         local = _local_sessions(project, all_seats)
-    if appended:
-        events = events + appended
+    # Read again: what anyone appended since the read above is in the view — this reconciliation's own
+    # events, and another process's join (or retire, rename, hand-off) that its guards then declined to
+    # repeat (#581). The same merged list when no file moved. An append that waits for its writer's head
+    # is in no log file yet: it is added as written.
+    sig, events = _store_whole(project, "log", shared=True)
+    queued = [e for e in appended if e.get("seq") is None]
+    if queued:
+        events = events + queued
     # The projection of a log no file of which moved is the one made last:
     # a read-only View, as the generation's cache (_VIEWS) shares it too.
-    held = None if appended else _PROJECTED.get(project.id)
+    held = None if queued else _PROJECTED.get(project.id)
     if held is not None and held[0] == sig:
         info = held[1]
     else:
         info = _projection(events)
-        if not appended:
+        if not queued:
             _PROJECTED[project.id] = (sig, info)
     internal = internal_pids()
     forks = {r.get("sessionId") for r in peer_records() if str(r.get("pid")) in internal}
