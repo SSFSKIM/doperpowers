@@ -99,6 +99,22 @@ class CreatorTest(DriverBase):
                 creator, project, _, _ = self.lookup(second)
                 self.assertEqual((creator, project), (("@abcd1234", "abcd1234"), "example"))
 
+    def test_a_project_name_with_spaces_reads_as_sminos_writes_it(self):
+        """sminos writes the project's name as it is (`.smns` takes `Release Tools`): the creator is read, and
+        the descriptor is told the id, or no project where only the name, which it does not take, is known."""
+        for name in ("Release Tools", "tools (old) on x"):
+            with self.subTest(name=name):
+                self.ADDRESS = "Sminos-Session: build task#abcd1234 (%s on testhost)\n" % name
+                creator, project, _, _ = self.lookup(self.answer(project={"id": self.PID, "name": name}))
+                self.assertEqual((creator, project), (("@abcd1234", "abcd1234"), self.PID))
+                creator, project, _, _ = self.lookup(subprocess.CompletedProcess([], 2, "", "usage"))
+                self.assertEqual((creator, project), (("@abcd1234", "abcd1234"), None))
+                result = subprocess.CompletedProcess([], 0, "Sminos-Session: abcd1234 (%s on testhost)\n" % name, "")
+                with mock.patch.object(context, "_sminos", return_value="/opt/sminos"), \
+                        mock.patch.object(context.subprocess, "run", return_value=result):
+                    self.assertEqual(context.session_creator({"CLAUDE_CODE_SESSION_ID": "s"}),
+                                     ("@abcd1234", "abcd1234", name))
+
     def test_unnamed_session_address_and_outside_a_session(self):
         result = subprocess.CompletedProcess([], 0, "Sminos-Session: abcd1234 (example on testhost)\n", "")
         with mock.patch.object(context, "_sminos", return_value="/opt/sminos"), \

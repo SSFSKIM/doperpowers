@@ -408,7 +408,9 @@ def session_creator(env):
         done = subprocess.run([cli, "who", "--session", session], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return None, None, None
-    match = re.search(r"^Sminos-Session: (?:[^\n#]+#)?([0-9a-f]{8}) \(([^\s()]+) on [^\s()]+\)$",
+    # As sminos writes it (`session_address`): the project's name as it is, spaces and parentheses included, then
+    # ` on <machine>)`, a machine name holding neither.
+    match = re.search(r"^Sminos-Session: (?:[^\n#]+#)?([0-9a-f]{8}) \((.+) on [^\s()]+\)$",
                       done.stdout.strip(), re.MULTILINE)
     if done.returncode != 0 or not match:
         return None, None, None
@@ -422,22 +424,28 @@ def creator_project(env, name, thread):
     answers for that very session, its thread's current one, local, a
     thread that has not ended, with an id the descriptor takes for the key
     (the host's parser: one token, no `(`, `)` or `,`, not opening with
-    `-`); else `name`, the project the address line named, as before. It
-    never refuses an `up` and never changes the creator."""
+    `-`); else `name`, the project the address line named, as before, where
+    the descriptor takes it too, and no project where it does not (a name
+    with a space). It never refuses an `up` and never changes the creator."""
     session = env.get("CLAUDE_CODE_SESSION_ID")
+    named = name if _descriptor_takes(name) else None
     if not name or not session:
-        return name
+        return named
     try:
         answer = thread(session)
     except DriverError:
-        return name
+        return named
     project = answer.get("project") or {}
     pid = project.get("id")
     if answer.get("session") == session and answer.get("local") is True and answer.get("thread") \
-            and answer.get("ended") is False and isinstance(pid, str) and re.fullmatch(r"[^\s(),]+", pid) \
-            and not pid.startswith("-"):
+            and answer.get("ended") is False and _descriptor_takes(pid):
         return pid
-    return name
+    return named
+
+
+def _descriptor_takes(value):
+    """Whether a host's parser takes `value` for DEVCLOUD_CREATOR_PROJECT."""
+    return isinstance(value, str) and bool(re.fullmatch(r"[^\s(),]+", value)) and not value.startswith("-")
 
 
 THREAD_TIMEOUT = 30
