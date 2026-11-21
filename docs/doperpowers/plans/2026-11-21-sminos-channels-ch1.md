@@ -51,7 +51,7 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption. `54cacc3a..7748fde1`, three reviews (the bound), then round 3's last finding fixed; `sminos-idle` 32,024 calls a second.
 - [x] (2026-11-21) M4 — Requests on one machine, and the verbs that write them. `04cc6146..9ffbe8c5`, three reviews (the bound), then round 3's last finding fixed; `sminos-idle` 32,232 calls a second.
 - [x] (2026-11-21) M5 — The roster, the listing and the pool. `b4a9bdd7..10b8740a`, clean at its third review; `sminos-idle` 32,772 calls a second.
-- [ ] M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture.
+- [x] (2026-11-21) M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture. `442c9784..e9fd15e0`, three reviews (the bound), then round 3's last finding (a test-harness race) fixed; the replay 112 lines `ok`, no amendment; `sminos-idle` 32,100 calls a second.
 - [ ] M7 — Requests across machines: the endpoint's word, and what a requester is told.
 - [ ] The review of M1 to M7 as one range, by the composite's holder, and its fixes.
 - [ ] M8 — Older copies, what is written beside the code, the version, and the acceptance.
@@ -2490,6 +2490,15 @@ while the milestones are built, one observation and its evidence each.
   `channels`, so this test stands in for the gate there). A fresh store's
   checker takes an empty baseline: only the older-copy case grandfathers
   events.
+- 2026-11-21 — **M6's review, rounds 2 and 3, as fixed** (`d774d1fa`,
+  `e9fd15e0`, test code alone). The stand-in installs a connection and
+  opens its restatement in one step under its lock (`Endpoint.install`),
+  checks which connection a `member` or `restated` frame belongs to under
+  the lock that applies it, and keeps a replaced connection's frames in
+  `received` for the checker without applying them; the suites wait on
+  `restatement_applied(n)`, set only when that connection's own `restated`
+  is applied. The last fix came after the third review and had none of
+  its own.
 
 ## Outcomes & Retrospective
 
