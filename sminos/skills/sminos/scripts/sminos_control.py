@@ -227,7 +227,7 @@ def push_live(peer, session, text, event=None, project=None, words=None, marker=
     # only while it is still that wake's.
     line = S.wake_line_for(peer, session)
     if line is not None:
-        text = "%s\n\n%s" % (text.rstrip("\n"), S.wake_module().line_text(line[1]))
+        text = "%s\n\n%s" % (text.rstrip("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"), S.wake_module().line_text(line[1]))
     _routes(peer, session, text, event, project, words, marker)
     if line is not None:
         S.wake_line_pushed(line[0], session, line[1])

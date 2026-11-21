@@ -1331,5 +1331,23 @@ class Round4(Verbs):
                 self.assertIn("nothing was started: far runs on elsewhere, which refuses it; no reply is waited for",
                               out)
 
+    def test_the_line_follows_one_empty_line_whatever_break_the_text_ends_with(self):
+        """push_live puts the line one empty line after the text, as str.splitlines reads it, whichever line
+        break the text ended with."""
+        control = sminos.control_module()
+        note = wake.line_note(True, FLAGS, {"mode": "auto", "model": "claude-term"}, [])
+        said = wake.line_text(note)
+        for end in ("\u2028", "\r\n", "\n\n", ""):
+            with self.subTest(end=repr(end)):
+                got = []
+                with mock.patch.object(sminos, "reach_hold", lambda *a, **k: None), \
+                        mock.patch.object(sminos, "bound_peer", lambda peer, session: peer), \
+                        mock.patch.object(sminos, "wake_line_for", lambda peer, session: ("t", note)), \
+                        mock.patch.object(sminos, "wake_line_pushed", lambda *a: None), \
+                        mock.patch.object(control, "_routes", lambda peer, session, text, *a: got.append(text)):
+                    control.push_live({}, "s", sminos.compose_frame("bee", "a1", "hello") + end)
+                [text] = got
+                self.assertEqual(text.splitlines()[-3:], ["hello", "", said])
+
 if __name__ == "__main__":
     unittest.main()
