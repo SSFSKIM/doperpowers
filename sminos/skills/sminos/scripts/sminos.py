@@ -17077,7 +17077,8 @@ def row_cells(m, project=None):
         rest.append("· now: " + m.status)
     if m.by:
         rest.append("· by " + m.by)
-    why = hold_for(m.session) if m.local and m.session and m.state in HELD_STATES else ""
+    # A stopped row's hold (T2's §5): a `gone` row says already that no conversation of it is here.
+    why = hold_for(m.session) if m.local and m.session and m.state == "stopped" else ""
     if why:
         rest.append("· not woken: " + hold_words(why, m.session))
     if m.end == "retire":
