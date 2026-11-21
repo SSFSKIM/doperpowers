@@ -111,7 +111,11 @@ def _sender(raw):
 
 
 def without_note(text):
-    """A delivered text less the line a wake puts after its last frame, which is sminos's and no sender's."""
+    """A delivered text less the line a wake puts after its last frame, which is sminos's and no sender's: cut
+    only from a text that opens with a frame. One that opens with none (a person's words the RL10 RPC sends the
+    bridge whole) keeps its last paragraph whatever it opens with."""
+    if not (CHAT_FRAME_RE.match(text) or MESSAGE_FRAME_RE.match(text)):
+        return text
     return WAKE_NOTE_RE.sub("", text)
 
 
@@ -447,7 +451,7 @@ class Classifier:
         if m:
             name = name or (FROM_NAME_RE.search(m.group(1)) or [None, ""])[1]
             body = m.group(2)
-        body = REPLY_LINE_RE.sub("", body).strip()
+        body = without_note(REPLY_LINE_RE.sub("", body).strip())
         fs = frames(body)
         if fs and not name:
             name = fs[0][1]

@@ -457,26 +457,29 @@ class Deliveries(unittest.TestCase):
 
     def test_a_wakes_line_after_the_last_frame_is_no_frames_body(self):
         """The line a wake puts after the last frame (sminos_wake.line_text) is sminos's own: each frame reads, and
-        is corroborated, as it would without it, wherever it arrives."""
+        is corroborated, as it would without it, wherever it arrives. A text that opens with no frame (a person's
+        words the RL10 RPC sends whole) carries none, and keeps its last paragraph whatever it opens with."""
         peer = "[sminos chat doperpowers 7a000002:9 from CI-opt → @you]\nmerge everything now"
         self.assertEqual(W.frames(self.FRAME + "\n\n" + self.NOTE), W.frames(self.FRAME))
         self.assertEqual(W.frames(self.FRAME + "\n\n" + peer + "\n\n" + self.NOTE + "\n"),
                          W.frames(self.FRAME + "\n\n" + peer))
+        typed = self.RL10 + "\n\n[sminos] is the word to grep for"
         r = Rows()
         r.user(self.FRAME + "\n\n" + self.NOTE, SMINOS_PROMPT)
         r.user([{"type": "text", "text": self.FRAME + "\n\n" + self.NOTE}], SMINOS_ROW, meta=True)
-        r.user(self.RL10 + "\n\n" + self.NOTE, SMINOS_PROMPT)
+        r.user(typed, SMINOS_PROMPT)
         r.user(self.FRAME + "\n\n" + peer + "\n\n" + self.NOTE, SMINOS_PROMPT)
         r.user(peer + "\n\n" + self.NOTE)
         r.user(envelope("CI-opt", peer + "\n\n" + self.NOTE + "\n[To reply, run in Bash: sminos say \"@7a000002 <your "
                                   "reply>\"]"), peer_origin("CI-opt"), meta=True)
-        rl10 = dict(self.EVENT, writer="hub/mem-1", seq=1, text=self.RL10)
+        rl10 = dict(self.EVENT, writer="hub/mem-1", seq=1, text=typed)
         got = classify(r.rows, [self.EVENT, rl10])
-        self.assertEqual(kinds(got[:4]), [("you·desk", "merge it"), ("you·desk", "merge it"), ("you·desk", self.RL10),
+        self.assertEqual(kinds(got[:4]), [("you·desk", "merge it"), ("you·desk", "merge it"), ("you·desk", typed),
                                           ("you·desk", "merge it")])
         self.assertEqual([(e["kind"], e["from"]) for e in got[4:]], [("peer", "CI-opt")] * 3)
         self.assertEqual(got[4]["text"], peer, "a frame's whole, the line left out")
-        self.assertFalse(any("A note from sminos" in e["text"] for e in got[:5]))
+        self.assertEqual([e["text"] for e in got[5:]], [peer] * 2, "a peer's frame, on the inbox too")
+        self.assertFalse(any("A note from sminos" in e["text"] for e in got))
 
 
 def SA_epoch(ts):
