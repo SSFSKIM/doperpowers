@@ -1790,9 +1790,18 @@ the replay stay where they run today.
 
 ## Surprises & Discoveries
 
-None yet. The controller records here what changes the understanding of the
-design while the milestones are built, one observation and its evidence
-each.
+The controller records here what changes the understanding of the design
+while the milestones are built, one observation and its evidence each.
+
+- (M1) `_stated_decision` would take an org-frame location statement that
+  names a channel's id as that folder's project. Nothing guards it here:
+  MAWS refuses linking a folder to a channel id, so no such statement
+  reaches a machine. A guard is cheap if one ever does.
+- (M1) An older copy's `end_closed` writing a `retired` for a closed session
+  into a channel's log is stopped by nothing but `lifecycle`'s guard; the
+  undoing `retired` is the one write the constraint allows there (C4).
+- (M1) The `sminos-channels` gate runs in about 20 to 25 seconds; its timeout
+  is one minute, ci-kit's smallest whole unit, raised as the part grows.
 
 ## Decision Log
 
@@ -2101,6 +2110,27 @@ each.
     and 1.52.0 hide `channels` and expose `began` and `answered` (M8, the
     accepted list); §2 no longer calls `channel-env`'s `thread` an
     addition, since the composite's C2 names it.
+- 2026-11-21 — **M1 as built.** `cmd_projects` needed no change: its input
+  is `known_projects`, which never yields a channel, so the fourth kind its
+  tier order would raise on never reaches it; the listings with a channel
+  registered beside them are pinned byte for byte. `project_label`,
+  `moved_here`, the private-stream lookup and `daemon status`/owed read
+  `known_logs` (they serve a log, not a person's choice of project);
+  `_holding_projects` and `last_project` skip a channel, which is never a
+  session's project. `Plane.refresh` of a channel does not call `view_of`:
+  the daemon's channel pass is the one reconciler of a channel's log.
+  `find_channel(required=False)` still exits on a project or an ambiguous
+  name and returns none only when nothing matches, so a caller asking "is
+  this a channel" never silently takes a project. `name#short` takes a
+  non-UUID id whole, else a hex prefix of eight or more. `append_host`
+  raises `LogWriteFailed` for a channel, handled at `main` as any failed
+  write. `register` takes the enrollment's hub and org and raises on a
+  machine not enrolled (a channel's log syncs only through a hub).
+  `held_channels` is cached by the cache generation and the thread stores'
+  stat key. §9's checker: `published(frames, welcomed=())` takes the
+  stand-in's `(conn, frame)` pairs or bare frames, `welcomed` the
+  connections whose welcome listed `channels`; `written(..., deliveries=True)`,
+  which CH2 passes false.
 
 ## Outcomes & Retrospective
 
