@@ -983,6 +983,8 @@ What the code map and this plan's own reading found that D4 did not expect. Each
   - *Wording.* §10 says that a driver named by `SMINOS_DEVCLOUD` is not asked its version and meets the new flags at its own parsing; the creator guard's test asserts that no provider was called at all.
 - 2026-11-21 — **The suite gates are three.** A change of the gates that is merging as this plan is revised splits `sminos-suites` into `sminos-suites-a`, `-b` and `-c`. The plan is written against the three (its five files at the end of `run_suites_c`), and the build's first step, a merge of `origin/main`, decides which names hold until then (Constraints).
 
+- 2026-11-21 — **The build's first merge was empty** (controller, pre-flight). The branch was cut from `origin/main` at `6f153009`, which already holds the split gates `sminos-suites-a`, `-b` and `-c`: the files go at the end of `run_suites_c` from M1 on, and `sminos-suites` is named nowhere. `origin/main` is merged again at milestone boundaries and before M4's gates; the sibling CH1, if it has merged by then, is resolved as (c) says.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
