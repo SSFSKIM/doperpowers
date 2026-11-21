@@ -19162,6 +19162,10 @@ def cmd_hub(a):
     hub_module().cmd_hub(a.words)
 
 
+def cmd_channel(a):
+    channels_module().cmd_channel(a)
+
+
 def cmd_rpc_query(a):
     sibling_module("sminos_rpc").cmd_rpc_query(a)
 
@@ -19386,6 +19390,18 @@ def build_parser():
     # so its parse never fails): sminos_hub parses them and never prints one.
     # An old enrollment code typed after `hub enroll` must not reach
     # argparse's error, which echoes the word it could not place.
+    ch = sub.add_parser("channel", add_help=False)
+    chsub = ch.add_subparsers(dest="channel_op")
+    cc = chsub.add_parser("create", add_help=False)
+    cc.add_argument("name")
+    cc.add_argument("thread", nargs="?", default=None)
+    cc.set_defaults(fn=cmd_channel)
+    for op in ("add", "remove"):
+        co = chsub.add_parser(op, add_help=False)
+        co.add_argument("channel")
+        co.add_argument("threads", nargs="*")
+        co.set_defaults(fn=cmd_channel)
+
     hb = sub.add_parser("hub", add_help=False, prefix_chars="\0")
     hb.add_argument("words", nargs="*")
     hb.set_defaults(fn=cmd_hub)
@@ -19630,6 +19646,9 @@ def main(argv=None):
             die("usage: sminos seat add <group> <alias> [--role R] [--brief B] [--session S]")
         if a.cmd == "project":
             die("usage: sminos project init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]")
+        if a.cmd == "channel":
+            die("usage: sminos channel create <name> [<thread>] | add <channel> [<thread>...] | remove <channel> "
+                "[<thread>...]")
         die("unknown command: %s (try: sminos help)" % argv[0])
     stdin_body(a)
     migrate()

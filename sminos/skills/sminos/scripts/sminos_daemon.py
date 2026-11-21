@@ -1362,12 +1362,17 @@ def channel_pass(channels, all_seats):
     mirror or the archive runs for one), and each known here has its view
     read, which reconciles its log (sminos.view_of: a `joined` an older copy
     wrote there retired `moved` while a process or a seat holds its session)
-    and publishes nothing. `channels`: those known here (sminos.known_kinds'
-    channels), a loop over nothing on a machine that knows none. A channel
-    whose pass fails is said in daemon.log when the failure is a new one."""
+    and publishes nothing; then its requests are carried out
+    (sminos_channels.carry_due), a request a command left or one imported
+    from another machine, only trying each thread's wake lock (a wake in
+    flight is the next pass's). `channels`: those known here
+    (sminos.known_kinds' channels), a loop over nothing on a machine that
+    knows none. A channel whose pass fails is said in daemon.log when the
+    failure is a new one."""
     for c in sorted(channels, key=lambda c: (c.name, c.id)):
         try:
             sminos.view_of(c, all_seats, titles=False)
+            sminos.channels_module().carry_due(c, wake_until=time.time())
         except MachineClaimed:
             raise
         except (Exception, SystemExit) as e:  # noqa: BLE001 — one channel's failure is not the daemon's

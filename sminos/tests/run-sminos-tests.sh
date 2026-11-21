@@ -581,9 +581,12 @@ run_channels() {
   if python3 -B "$SCRIPT_DIR/test_channels_life.py"; then
     pass "the set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption (test_channels_life.py)"
   else fail "the set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption (test_channels_life.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_requests.py"; then
+    pass "requests on one machine: every row of the table, under the lock, the words, order and identity (test_channels_requests.py)"
+  else fail "requests on one machine: every row of the table, under the lock, the words, order and identity (test_channels_requests.py)"; fi
   echo
-  if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact (test-channels.sh)"; else
-    fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact (test-channels.sh)"; fi
+  if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove (test-channels.sh)"; else
+    fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove (test-channels.sh)"; fi
 }
 summary() {
   echo

@@ -11,8 +11,14 @@
 # the machine's project, saying why (A8's halves); a verb that writes a fact
 # about a thread (`charge`, `status`, `retire`) writes it to the thread's own
 # project however the thread is named, and one that names it through a
-# channel is refused (A11). The channel is registered as the org's directory
-# registers one (sminos_channels.register): no verb creates one yet.
+# channel is refused (A11), again with the thread in a channel. The verbs
+# `channel create`, `add` and `remove` (M4): refused without the capability,
+# every log unchanged; with it, a thread creating a channel with itself,
+# adding and removing another by a request carried out before the command
+# returns, from a session and from a terminal, each refusal of §8 before
+# anything is written, and an emptied channel's name bringing it back under
+# its id; no session's turn started. The first channel is registered as the
+# org's directory registers one (sminos_channels.register).
 # One machine cut over to its endpoint (daemon/identity.json); no endpoint
 # runs. Hermetic: HOME and SMINOS_HOME are temporary; `claude` is a stub;
 # the sessions are `sleep`s with engine records the suite writes.
@@ -165,6 +171,89 @@ run_in "$T" "$SMINOS" list alpha --json
 assert_contains "$OUT" "\"session\": \"$S3\"" "a session there is a member of the machine's project"
 assert_equals "$(channel_files)" 0 "and nothing of it is in the channel's log"
 
+echo "the channel verbs (create, add, remove):"
+S2=6c000002-0000-4000-8000-0000000000c2
+live_pid
+session_record helper "$S2" "$LIVE_PID" "$APPDIR"
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+NOCAP="this machine's endpoint does not serve channels (its welcome listed no channels): nothing was written"
+BEFORE="$(logs_sum)"
+for verb in "create desk-two" "add desk-integration" "remove desk-integration" "add desk-integration helper"; do
+  # shellcheck disable=SC2086
+  run_in "$APPDIR" in_session "$S1" "$SMINOS" channel $verb
+  assert_rc 1 "$RC" "channel $verb without the capability is refused, exit 1"
+  assert_contains "$OUT" "$NOCAP" "saying the endpoint serves no channels ($verb)"
+done
+run_in "$APPDIR" "$SMINOS" channel add desk-integration helper
+assert_rc 1 "$RC" "and from a terminal"
+assert_equals "$(logs_sum)" "$BEFORE" "no log file changed"
+python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos_audience
+sminos_audience.keep_capabilities(["channels"])   # what a welcome that listed channels keeps
+PY
+channel_id() { python3 - "$1" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+print(" ".join(c.id for c in sminos.known_channels() if c.name == sys.argv[1]))
+PY
+}
+set_of() { # session — its thread's set, as its record holds it
+  python3 - "$1" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos_channels
+print(" ".join(sminos_channels.channels_of(sys.argv[1])))
+PY
+}
+log_kinds() { # channel id — every kind its log holds, each once
+  cat "$SMINOS_HOME/projects/$1/log/"*.jsonl 2>/dev/null | python3 -c 'import json, sys
+print(" ".join(sorted({json.loads(l)["kind"] for l in sys.stdin if l.strip()})))'
+}
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel create desk-two
+assert_rc 0 "$RC" "a session creates a channel"
+TWO="$(channel_id desk-two)"
+assert_contains "$OUT" "created channel desk-two ($TWO) with worker#${S1:0:8}" "with itself its first member"
+assert_equals "$(set_of "$S1")" "$TWO" "its record holds the channel"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel add desk-two helper
+assert_rc 0 "$RC" "it adds another thread of the machine"
+assert_contains "$OUT" "helper#${S2:0:8}: in desk-two" "placed when the command returns"
+assert_equals "$(set_of "$S2")" "$TWO" "the other thread's record holds it"
+assert_equals "$(log_kinds "$TWO")" "channel-request" "the channel's log holds the request alone"
+assert_contains "$(kinds_of "$APP" "$S2")" "channels" "the answer is a statement in the thread's own project"
+run_in "$APPDIR" "$SMINOS" channel add desk-two helper
+assert_rc 0 "$RC" "a terminal names the thread"
+assert_contains "$OUT" "helper#${S2:0:8}: already in desk-two" "which is in it already"
+run_in "$APPDIR" "$SMINOS" channel add desk-two
+assert_rc 1 "$RC" "a terminal that names no thread is refused"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel create desk-two
+assert_rc 1 "$RC" "a name a channel with a member answers is refused"
+assert_contains "$OUT" "cannot create channel desk-two: desk-two#${TWO:0:8} (channel) already answers to that name" "naming it"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel create desk-three helper
+assert_rc 1 "$RC" "a session's create that names a thread is refused"
+run_in "$APPDIR" "$SMINOS" channel create desk-three
+assert_rc 1 "$RC" "a terminal's create that names no thread is refused"
+run_in "$APPDIR" "$SMINOS" channel add no-such-channel helper
+assert_rc 4 "$RC" "an unknown channel, exit 4"
+run_in "$APPDIR" "$SMINOS" channel create desk-three helper
+assert_rc 0 "$RC" "a terminal creates one with a thread of this machine"
+assert_contains "$OUT" "created channel desk-three ($(channel_id desk-three)) with helper#${S2:0:8}" "its first member"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel remove desk-two helper
+assert_rc 0 "$RC" "a thread removes another"
+assert_contains "$OUT" "helper#${S2:0:8}: out of desk-two" "out when the command returns"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel remove desk-two
+assert_contains "$OUT" "worker#${S1:0:8}: out of desk-two" "and itself, with none named"
+assert_equals "$(set_of "$S1")" "" "its set is empty"
+run_in "$T" "$SMINOS" list app --json
+assert_contains "$OUT" "\"session\": \"$S1\"" "a removal retires no one"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel create desk-two
+assert_rc 0 "$RC" "the emptied channel's name"
+assert_contains "$OUT" "desk-two exists and has no member: worker#${S1:0:8} is in it again" "brings it back under its id"
+assert_equals "$(set_of "$S1")" "$TWO" "the same id"
+assert_equals "$( (cat "$STUB_STATE/calls" 2>/dev/null || true) | grep -c resume || true)" 0 "no session's turn was started"
+
 echo "a verb's fact goes to the thread's own project:"
 SHORT="${S1:0:8}"
 for name in "$SHORT" "$S1" "worker#$SHORT"; do
@@ -185,6 +274,7 @@ run_in "$APPDIR" "$SMINOS" retire "worker#$SHORT"
 assert_rc 0 "$RC" "retire names it by alias#short"
 assert_contains "$(kinds_of "$APP" "$S1")" "retired" "its retirement is in its own project's log"
 assert_equals "$(channel_files)" 0 "nothing was ever written in the channel's log"
+assert_equals "$(log_kinds "$TWO")" "channel-request" "nor, with the thread in a channel, anything but requests in that one's"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
