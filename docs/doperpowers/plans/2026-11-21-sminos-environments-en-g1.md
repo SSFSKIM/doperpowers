@@ -441,12 +441,14 @@ CH2 and EN.G2 are built against §1; devcloud and sminos against each other thro
 In `S/sminos.py`, beside `owner_event`:
 
     NOTICE_PROGRAM_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
+    NOTICE_MACHINE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")   # MAWS's machine-name grammar
 
     def notice_of(e):
         """The program a machine's notice names, "" for any other event: a
         `human` event whose plain writer is `<machine>/human` (an audience
-        stream of it included, never `hub/<member>`) and whose `notice` is a
-        non-empty string."""
+        stream of it included, never `hub/<member>`), whose machine is a
+        machine name (NOTICE_MACHINE_RE in full, never `hub` or `legacy` in
+        any case), and whose `notice` is a non-empty string."""
 
     def notice_sender(e):
         """`<program>@<machine>` for a marked event: the program its `notice`
@@ -934,6 +936,7 @@ What the code map and this plan's own reading found that D4 did not expect. Each
 
 - 2026-11-21 — **Verification.** This plan gets one review before it is built, by the `doperpowers:adversarial-reviewer` agent, on buildability: the milestones against the code, the names and sentences of Interfaces against the composite and the rulings, and §10's table against what each older copy really does. The build runs under `doperpowers:plan-executor`, a fresh executor a milestone; each milestone is reviewed at its close by the execution loop's reviewer. After M4, the last milestone that changes the tree, the composite's holder reviews the whole range through doperpowers:review-code at the panel rung `xhigh`, with these lenses given: what leaves a machine (a notice's fields and frame, what `--asked-from` carries, what the outcome line and `who --thread` export); that every refusal comes before its side effect (nothing made, spawned or written); the two plugins' contract read from both sides (§3, §4, §5, §8, §9); and §10's older copies. Its confirmed findings go to a fix wave, weighed as the owner's rule for review findings weighs them. M5 changes nothing and is not reviewed; what it finds is a change of its own. The review of this plan returned thirteen findings, and the review of its revision ten (the entries "The plan's review" and "The plan's second review"); there is no third before the build.
 - 2026-11-21 — **The lagging view is not built** (the holder's ruling after the plan's review; R7's third point had made it this plan's). An event that names a session its thread has left is pushed to no process and wakes none (Surprises & Discoveries). That is a property of delivery as T1 built it, for every sender whose view lags, a VM's notice among them, and nothing this change introduces. The event is not lost: it is in the project's log and counted unread for the thread's current session, which reads it at its next `sminos chat`. What it costs, said plainly: the window is the time between a change of session on the owning machine and the VM reading it, seconds while both are connected and as long as the disconnect when one is not; and the event that lands in it can be a lease warning, sent once per lease, thirty minutes before the VM is deleted, where an idle notice comes again every three idle days. The holder puts the limit to the owner; if they want it closed it is a milestone of its own. This plan pins the outcome in a test (M1), records it in TECH-DEBT, and words acceptance 8 by the condition under which it holds. The fix sized for that milestone: keep in the thread record the project log's positions at each change of session (CH1 keeps such positions for a channel), and let `_owed` read, for the current session, what names a former one past them. Alternative rejected: the daemon saying a marked notice again under the Mac's own human writer, which closes it for notices only and makes the Mac the notice's sender.
+- 2026-11-21 — **The owner confirmed the lagging view as a limit.** Asked whether a VM's notice sent before the VM has read the owning thread's change of session should be closed in EN.G1, recorded as a limit, or closed in a later piece of work, the owner answered "한계로 기록 (Recommended)": recorded as a limit. The plan's scope is unchanged.
 - 2026-11-21 — **A machine that is not connected is not a case of going on** (R7's parenthesis asked for it "if the sender's view already tells it"). It does not: the endpoint publishes no presence. Alternative rejected: reading `online` in the org's directory as kept, which is false for every machine. The composite already defers a machine publishing whether it is on.
 - 2026-11-21 — **The live check runs after the merge** (R10 has it close the plan). Both machines run sminos from their marketplace's declared source, `main` unless a ref is pinned, so a check before the merge would exercise neither the VM side nor the Mac's delivery. Alternative rejected: pointing the VM's copy at the branch by hand, which the host's own refresh undoes when it next runs.
 - 2026-11-21 — **The host is written by a program the driver sends** (R6 allowed this or a way for an existing host to get a new verb). Alternative rejected: a verb of the host's CLI with this as its fallback, two paths where every host alive at landing would take the fallback.
@@ -984,6 +987,8 @@ What the code map and this plan's own reading found that D4 did not expect. Each
 - 2026-11-21 — **The suite gates are three.** A change of the gates that is merging as this plan is revised splits `sminos-suites` into `sminos-suites-a`, `-b` and `-c`. The plan is written against the three (its five files at the end of `run_suites_c`), and the build's first step, a merge of `origin/main`, decides which names hold until then (Constraints).
 
 - 2026-11-21 — **The build's first merge was empty** (controller, pre-flight). The branch was cut from `origin/main` at `6f153009`, which already holds the split gates `sminos-suites-a`, `-b` and `-c`: the files go at the end of `run_suites_c` from M1 on, and `sminos-suites` is named nowhere. `origin/main` is merged again at milestone boundaries and before M4's gates; the sibling CH1, if it has merged by then, is resolved as (c) says.
+
+- 2026-11-21 — **`notice_of` holds the writer's machine to MAWS's machine-name grammar** (the holder's ruling after MAWS's #828, which landed X8's endpoint half). MAWS's predicate marks an event only under `<machine>/human` whose machine matches `[A-Za-z0-9][A-Za-z0-9._-]{0,62}` in full and is neither `hub` nor `legacy` in lower case; sminos's test is the same (`NOTICE_MACHINE_RE`), so the two never read one event differently, a peer's frame in sminos and a person's words in the app. An event no longer marked is read as today (X8's last sentence).
 
 ## Outcomes & Retrospective
 
