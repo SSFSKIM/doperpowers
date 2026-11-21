@@ -1916,7 +1916,7 @@ class Link:
         socks = plane.bridge_socks()
         records = sminos.records_module()
         where = records.records_dir()
-        holders = sminos.threads_module().set_holders() if self.serves_channels else None
+        holders = self.holders() if self.serves_channels else None
         seen = set()
         for pid in sorted(pid for pid, rows in self.plane.member_rows.items() if rows and pid in self.member_known):
             for sid, m in sorted(self.plane.member_rows[pid].items()):
@@ -1974,8 +1974,9 @@ class Link:
         carries, the thread's declared set while the welcome listed
         `channels` (sminos_channels.frame_channels, a lookup in what the
         thread stores' index already holds; nothing read without the
-        welcome's word; `holders`, sminos_threads.set_holders as a publish
-        read it once for every member; without the word the set is (), so
+        welcome's word; `holders`, Link.holders as a publish read it once
+        for every member, none while no channel is registered here; without
+        the word the set is (), so
         the tuple stands for the word too), the launch the bridge names and
         the visibility. An unchanged member costs a stat at each publish
         (twice a tick, every member: their parse and build were most of an
@@ -1999,7 +2000,7 @@ class Link:
                 at = (path, os.path.lexists(path))
         chans = ()
         if self.serves_channels:
-            holders = sminos.threads_module().set_holders() if holders is None else holders
+            holders = self.holders() if holders is None else holders
             if sid in holders:
                 chans = sminos.channels_module().frame_channels(sid, holders)
         made_of = (at, pid, m.session, m.alias, m.state, m.title, m.cwd, m.worktree, chans, launch, self.visibility)
@@ -2017,6 +2018,16 @@ class Link:
         else:
             self.frames.pop(m.session, None)
         return frame
+
+    def holders(self):
+        """The threads of this machine that hold a declared set, for the
+        member frames (sminos_threads.set_holders), asked only while the
+        welcome listed `channels`; none while no channel is registered here
+        (sminos.channels_here, one stat a cache generation: a thread's set
+        names channels registered here), so a machine that knows no channel
+        reads no thread's set at a publish (the holder's ruling on the idle
+        cost)."""
+        return sminos.threads_module().set_holders() if sminos.channels_here() else {}
 
     def send_members(self, batch):
         """One entry of member frames queued, and taken as sent."""

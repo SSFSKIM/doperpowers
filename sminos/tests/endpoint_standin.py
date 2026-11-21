@@ -111,15 +111,22 @@ themselves, never one written by hand.
 
 Declared channels (CH1's M6), as MAWS's endpoint at its master 8ae3b0843
 does them (the registry's `#knownNow`, rl10/link.ts's `sessionProjects`,
-rl10/members.ts's `memberChannels`): the welcome lists `channels`, when
-`capabilities` holds it, only to a hello that listed it (`welcomes` keeps
-each welcome sent, with its connection); a member frame whose `project` is
-a channel's id is that session gone; and `known()` (`known` in the state,
+rl10/members.ts's restatement and `memberChannels`): the welcome lists
+`channels`, when `capabilities` holds it, only to a hello that listed it
+(`welcomes` keeps each welcome sent, with its connection); a member frame
+whose `project` is a channel's id is that session gone; a welcome opens a
+restatement of every member held, which sminos's `restated` closes, each
+held member it left out then gone (a connection that ends before its
+`restated` withdraws nothing); and `known()` (`known` in the state,
 sorted) is the machine's known logs: those the live connection's hellos
 opened without `follow` (each log's last hello there) whose id a held
 member names, by its `project` and, while that connection's hello listed
-`channels`, by a lane A member's `channels`, the entries that are channels'
-ids, the first 128.
+`channels`, by a lane A member's `channels` (memberChannels: its distinct
+channels' ids in order, up to 128, an entry that is no channel's id or one
+again using none of them). While no connection is live or a restatement is
+open the last answer stands, as MAWS keeps it (a sminos restarting is not
+every project's sessions ending); it is taken again at each member, hello
+and `restated` outside a restatement, as MAWS's `knownMoved` asks it.
 
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
@@ -151,6 +158,22 @@ CHANNEL_LIMIT = 128   # the member frame's channels MAWS counts
 
 def is_channel_id(value):
     return isinstance(value, str) and CHANNEL_ID.fullmatch(value) is not None
+
+
+def member_channels(member):
+    """MAWS's memberChannels: the channels a member frame states, as the
+    endpoint counts them: one pass in the frame's order, ids that are no
+    channel's skipped, stopped at the 128th distinct id."""
+    chans = member.get("channels")
+    if not isinstance(chans, list):
+        return []
+    counted = []
+    for entry in chans:
+        if is_channel_id(entry) and entry not in counted:
+            counted.append(entry)
+            if len(counted) == CHANNEL_LIMIT:
+                break
+    return counted
 
 
 def iso(t=None):
@@ -313,6 +336,8 @@ class Endpoint:
         self.reach_verdicts = {}
         self.reach_verdict = None
         self.members = {}   # session → its last `member` frame (the member state an action's context is read from)
+        self.unrestated = None   # the members held at the latest welcome not restated since; None outside a restatement
+        self.last_known = set()  # known()'s last answer, which stands while away or restating
         self.relay = True
         self.capabilities = []   # the welcome's (an O18 endpoint's: ["access", "reach"])
         self.audiences = []      # `audience` frames' bodies, sent after each welcome to an sminos whose hello says `audience`
@@ -466,6 +491,7 @@ class Endpoint:
                        "stateVersion": self.state_version}
             with self.cv:
                 self.welcomes.append((conn.number, welcome))
+                self.unrestated = set(self.members)   # a welcome: every member held is to be restated
             conn.write(welcome)
             conn.write({"t": "revoked", **self.revoked})
             if self.org is not None:
@@ -494,6 +520,7 @@ class Endpoint:
             with self.cv:
                 if self.current is conn:
                     self.current = None
+                    self.unrestated = None   # a restatement cut short withdraws nothing
                 self.cv.notify_all()
             conn.close()
 
@@ -514,6 +541,16 @@ class Endpoint:
                     self.members.pop(frame["session"], None)   # a channel is no member's project: that session gone
                 else:
                     self.members[frame["session"]] = frame
+                    if self.unrestated is not None:
+                        self.unrestated.discard(frame["session"])
+                self.known()
+                self.cv.notify_all()
+        elif t == "restated":
+            with self.cv:
+                for sid in self.unrestated or ():
+                    self.members.pop(sid, None)   # held, left out of the restatement: it left while away
+                self.unrestated = None
+                self.known()
                 self.cv.notify_all()
         elif t == "words?" and not isinstance(frame.get("project"), str):
             out.append({"t": "words", "id": frame.get("id"), "verdict": "refuse"})   # O10 M6: no project, no words
@@ -531,8 +568,11 @@ class Endpoint:
                 verdict, reason = (verdict, "not-reachable") if isinstance(verdict, str) else tuple(verdict)
                 out.append({"t": "reach", "id": frame.get("id"), "verdict": verdict,
                             **({"reason": reason} if verdict == "refuse" else {})})
-        elif t == "hello" and isinstance(frame.get("project"), str) and self.relay:
-            out.append(self.have(frame["project"]))
+        elif t == "hello" and isinstance(frame.get("project"), str):
+            with self.cv:
+                self.known()
+            if self.relay:
+                out.append(self.have(frame["project"]))
         elif t == "events" and isinstance(frame.get("project"), str) and isinstance(frame.get("events"), list):
             out += self.take(frame["project"], frame["events"])
         for f in out:
@@ -695,11 +735,12 @@ class Endpoint:
     def known(self):
         """The logs this machine is known to hold (MAWS's rule, the module's
         docstring): those the live connection opened without `follow` whose
-        id a held member names."""
+        id a held member names; the last answer while no connection is live
+        or its restatement is open."""
         with self.cv:
             conn = self.current.number if self.current is not None else None
-            if conn is None:
-                return set()
+            if conn is None or self.unrestated is not None:
+                return set(self.last_known)
             hello = next((h for n, h in reversed(self.hellos) if n == conn), {})
             listed = hello.get("capabilities") if isinstance(hello.get("capabilities"), list) else []
             unfollowed = {}
@@ -710,10 +751,10 @@ class Endpoint:
             for m in self.members.values():
                 if isinstance(m.get("project"), str):
                     named.add(m["project"])
-                chans = m.get("channels")
-                if "channels" in listed and m.get("lane") == "A" and isinstance(chans, list):
-                    named.update(c for c in chans[:CHANNEL_LIMIT] if is_channel_id(c))
-            return {pid for pid, held in unfollowed.items() if held and pid in named}
+                if "channels" in listed and m.get("lane") == "A":
+                    named.update(member_channels(m))
+            self.last_known = {pid for pid, held in unfollowed.items() if held and pid in named}
+            return set(self.last_known)
 
     # ---------------------------------------------------- the test's reads
 

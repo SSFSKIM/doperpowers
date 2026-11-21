@@ -200,9 +200,10 @@ class Wire(unittest.TestCase):
             "org": ORG, "hub": URL, "name": MACHINE, "former": {}, "ref": "machine-ref-1",
             "enrolled": "2026-11-10T00:00:00.000Z", "cutover": "2026-11-10T00:00:01.000Z", "build": "b"}, mode=0o600)
         sminos.forget_caches()
-        self.org = {"projects": [{"id": APP, "name": "app", "kind": "hub", "retired": False},
-                                 {"id": DESK, "name": "desk-integration", "kind": "hub", "retired": False},
-                                 {"id": LOBBY, "name": "lobby", "kind": "hub", "retired": False}],
+        self.org = {"projects": [{"id": APP, "name": "app", "kind": "hub", "retired": False}] + (
+                        [{"id": DESK, "name": "desk-integration", "kind": "hub", "retired": False},
+                         {"id": LOBBY, "name": "lobby", "kind": "hub", "retired": False}]
+                        if getattr(self, "channels_in_org", True) else []),
                     "machines": [{"name": MACHINE, "online": False}], "complete": True}
         self.assertTrue(uplink.keep_org(self.org, CRED))
         self.root = os.path.join(home, "app")
@@ -210,7 +211,7 @@ class Wire(unittest.TestCase):
         with open(os.path.join(self.root, ".smns"), "w") as f:
             json.dump({"project": APP, "name": "app", "hub": {"org": ORG}}, f)
         sminos.forget_caches()
-        self.app, self.lobby = sminos.known_project(APP), sminos.known_project(LOBBY)
+        self.app, self.lobby = sminos.known_project(APP), sminos.known_project(LOBBY)   # no lobby without channels
         sminos.project_path(sminos.resolve_project(self.root), "log")
 
     def stop_all(self):
@@ -294,7 +295,7 @@ class Wire(unittest.TestCase):
         ep.drop()
         ep.wait_until(lambda: self.hellos(ep, 2).keys() >= {APP, DESK, LOBBY})
         self.assertEqual({k: v for k, v in self.hellos(ep, 2).items() if k in ids}, {DESK: False, LOBBY: True})
-        ep.wait(lambda f: f["t"] == "restated")
+        ep.wait_until(lambda: on(ep, 2, lambda f: f["t"] == "restated"))
         time.sleep(0.5)   # what a tick after the restatement sends
         self.assertEqual(wire.published(ep.received, ids, before), [],
                          "a welcome that listed no channels: no member frame carries the key")
@@ -446,6 +447,40 @@ class FrameKey(unittest.TestCase):
             self.assertFalse(link.serves_channels)
 
 
+class NoChannelHere(unittest.TestCase):
+    """The holder's ruling on the idle cost: under a welcome that lists
+    `channels`, a machine where no channel is registered asks for no
+    thread's set at a publish (sminos.channels_here first: a thread's set
+    names channels registered here); once one is, the set is read."""
+
+    channels_in_org = False
+    setUp = Wire.setUp
+    stop_all = Wire.stop_all
+    live = Wire.live
+    row = FrameKey.row
+    link = FrameKey.link
+
+    def publish(self, link):
+        link.member_known = {APP: self.app}
+        link.plane.member_rows = {APP: {S1: self.row(S1)}}
+        with mock.patch.object(threads, "set_holders", wraps=threads.set_holders) as asked:
+            link.publish_members(0.0)
+            link.fresh_frame(APP, self.row(S1))
+        return asked.call_count
+
+    def test_no_holders_asked_on_a_machine_with_no_channel(self):
+        self.live(S1, "worker")
+        self.row(S1)
+        self.assertFalse(sminos.known_channels())
+        link = self.link(serves=True)
+        self.assertEqual(self.publish(link), 0, "no channel registered: no thread's set looked up")
+        self.assertNotIn("channels", link.session_lane.sent[-1])
+        channels.register(DESK, "desk-integration")
+        set_record(S1, channels=[DESK])
+        self.assertGreater(self.publish(link), 0, "a channel registered here: the holders are read")
+        self.assertEqual([f.get("channels") for f in link.session_lane.sent if f.get("session") == S1][-1], [DESK])
+
+
 class WireWithChannels(unittest.TestCase):
     """A real uplink against a stand-in that serves channels: the thread's
     member frame carries its set while its welcome listed `channels`; a
@@ -485,6 +520,7 @@ class WireWithChannels(unittest.TestCase):
         self.assertEqual((frame["project"], frame["channels"]), (APP, [DESK]))
         other = ep.wait(lambda f: f["t"] == "member" and f.get("session") == S2)
         self.assertNotIn("channels", other, "a thread in none carries no key")
+        ep.wait_until(lambda: on(ep, 1, lambda f: f["t"] == "restated"))
         self.assertEqual(ep.known(), {APP, DESK}, "the stand-in counts the desk as known")
         # The last record naming the desk lets it go: followed again, and the frame without the key.
         set_record(S1, channels=[])
@@ -499,8 +535,10 @@ class WireWithChannels(unittest.TestCase):
         self.assertEqual([h for h in self.channel_hellos(ep)], [(1, False), (1, True), (1, False)])
         ep.drop()
         ep.wait_until(lambda: self.hellos(ep, 2).get(DESK) is False)
-        ep.wait(lambda f: f["t"] == "restated")
-        ep.wait_until(lambda: DESK in ep.known())
+        ep.wait_until(lambda: on(ep, 2, lambda f: f["t"] == "member" and f.get("session") == S1
+                                 and f.get("channels") == [DESK]))
+        ep.wait_until(lambda: on(ep, 2, lambda f: f["t"] == "restated"))
+        self.assertIn(DESK, ep.known(), "after connection 2's own restatement, from its own frames")
         time.sleep(0.5)
         welcomed = {n for n, w in ep.welcomes if "channels" in w["capabilities"]}
         self.assertEqual(welcomed, {1, 2})
@@ -509,6 +547,12 @@ class WireWithChannels(unittest.TestCase):
         self.assertFalse([f for f in ep.frames("session") if f["message"].get("project") in ids
                           and f["message"].get("kind") != "end"], "no machine frame, no presence, either way")
         self.assertFalse([f for f in ep.frames("member") if f.get("channels") == []], "never an empty list")
+
+
+def on(ep, conn, pred):
+    """Whether the stand-in took a frame `pred` holds of on that connection."""
+    with ep.cv:
+        return any(n == conn and pred(f) for n, f in ep.received)
 
 
 def uplink_nudge():

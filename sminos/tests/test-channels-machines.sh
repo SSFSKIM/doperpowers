@@ -180,14 +180,6 @@ PY
 assert_contains "$OUT" "created channel desk-integration ($DESK) with worker#${SA:0:8}" "with itself in it"
 until_true knows "$EPA" "$DESK" true || true
 assert_equals "$(known "$EPA" "$DESK")" true "alpha's stand-in lists the channel in known"
-BASELINE="$T/baseline.json"
-python3 -B - "$SCRIPT_DIR" "$DESK" "$BASELINE" "$T/a/s" "$T/b/s" "$T/c/s" <<'PY'
-import json, sys
-sys.path.insert(0, sys.argv[1])
-import channel_wire
-json.dump({home: [[list(k), v] for k, v in channel_wire.baseline(home, [sys.argv[2]]).items()]
-           for home in sys.argv[4:]}, open(sys.argv[3], "w"))
-PY
 rl10_known_directory "$DIR" "$EPA" "$EPB" "$EPC" >/dev/null
 on b beta
 until_true is_registered "$DESK" || true
@@ -215,7 +207,9 @@ echo "a removal withdraws its machine alone, and a return holds it again:"
 on b beta
 run_in "$T/b/web" in_session "$SB" "$SMINOS" channel remove desk-integration
 assert_rc 0 "$RC" "beta's thread removes itself"
-until_true knows "$EPB" "$DESK" false || true
+# Either input alone clears known (the tick publishes members before it hellos again): wait for both.
+removed() { knows "$EPB" "$DESK" false && follows_as "$EPB" "$DESK" True && [ "$(member_channels "$EPB" "$SB")" = null ]; }
+until_true removed || true
 assert_equals "$(known "$EPB" "$DESK")" false "beta's stand-in no longer lists the channel"
 assert_equals "$(follows "$EPB" "$DESK")" True "beta follows its log again"
 assert_equals "$(member_channels "$EPB" "$SB")" "null" "its member frame carries no channels key"
@@ -254,20 +248,20 @@ assert_equals "$(rl10_known_directory "$DIR" "$EPA" "$EPB" "$EPC" | grep -c "$DE
   "and the directory built from them no longer lists it"
 
 echo "nothing is published or written under the channel:"
-CHECKED="$(python3 -B - "$SCRIPT_DIR" "$DESK" "$BASELINE" "$EPA" "$EPB" "$EPC" "$T/a/s" "$T/b/s" "$T/c/s" <<'PY'
+# A fresh store on every machine: the baseline is empty, so nothing this code wrote under the channel,
+# its creation included, is excused (only a store an older copy wrote into has one: test_channels_wire.py).
+CHECKED="$(python3 -B - "$SCRIPT_DIR" "$DESK" "$EPA" "$EPB" "$EPC" "$T/a/s" "$T/b/s" "$T/c/s" <<'PY'
 import json, sys
 sys.path.insert(0, sys.argv[1])
 import channel_wire, endpoint_standin
-cid, eps, homes = sys.argv[2], sys.argv[4:7], sys.argv[7:10]
-held = json.load(open(sys.argv[3]))
+cid, eps, homes = sys.argv[2], sys.argv[3:6], sys.argv[6:9]
 out = []
 for ep, home, name in zip(eps, homes, ("alpha", "beta", "gamma")):
     state = json.loads(endpoint_standin.ctl_call(ep, "state", {}))
     frames = [(r["conn"], r["frame"]) for r in state["received"]]
     welcomed = {w["conn"] for w in state["welcomes"] if "channels" in w["welcome"]["capabilities"]}
-    before = {tuple(k): v for k, v in held[home]}
-    out += ["%s: %s" % (name, b) for b in channel_wire.published(frames, [cid], before, welcomed=welcomed)]
-    out += ["%s: %s" % (name, b) for b in channel_wire.written(home, [cid], name, before)]
+    out += ["%s: %s" % (name, b) for b in channel_wire.published(frames, [cid], {}, welcomed=welcomed)]
+    out += ["%s: %s" % (name, b) for b in channel_wire.written(home, [cid], name, {})]
 print("\n".join(out) or "clean")
 PY
 )"
