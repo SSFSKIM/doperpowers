@@ -1226,5 +1226,33 @@ class Round3(Verbs):
                 self.assertFalse(sminos.refusal_logged(self.p, sid, {**e, "seq": 4}), "another event")
 
 
+
+class Round4(Verbs):
+    """What the second frontier review found in what a waiter reads and what a sender is told."""
+
+    def test_a_row_put_into_the_running_turn_does_not_end_the_wait(self):
+        """A text-bearing user row inside the turn that holds the message (the bridge's second delivery, which a
+        plugin appends; the engine's own meta row) is no prompt of another turn: the waiter waits for the reply."""
+        put = {"a plugin's": {"origin": {"kind": "plugin", "name": "sminos"}}, "the engine's": {}}
+        for who, origin in put.items():
+            with self.subTest(row=who):
+                tid, sid = self.human_thread()
+                self.switch("reply-delay", 4)
+                text = "mine, then %s row" % who
+                p = self.run_cli("send", sid[:8], text, "--wait")
+                self.addCleanup(lambda p=p: p.poll() is None and p.kill())
+                [event] = wait_for(lambda: self.logged(text), timeout=30)
+                self.assertTrue(wait_for(lambda: sminos.transcript_contains(sid, "id=%s]" % event["msg_id"]),
+                                         timeout=30), "its prompt is in")
+                row = {"type": "user", "isMeta": True, "sessionId": sid, "uuid": str(uuidlib.uuid4()),
+                       "message": {"role": "user", "content": [
+                           {"type": "text", "text": sminos.compose_frame("bee", "other001", "theirs")}]}, **origin}
+                with open(sminos.transcript_now(sid), "a") as f:
+                    f.write(json.dumps(row) + "\n")
+                out, err = p.communicate(timeout=60)
+                self.assertEqual(p.returncode, 0, out + err)
+                self.assertIn("reply to %s" % event["msg_id"], out, "the reply, not an empty one")
+                os.unlink(os.path.join(self.state, "reply-delay"))
+
 if __name__ == "__main__":
     unittest.main()

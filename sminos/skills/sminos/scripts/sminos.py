@@ -15135,12 +15135,30 @@ class TranscriptTail:
         return self.rows
 
 
+def _put_in_turn(row):
+    """Whether a prompt row (_prompt_text) was put into the turn that runs
+    rather than starting one: the engine keeps such a row isMeta, from a
+    plugin (the bridge's second delivery to a busy session, its notes) or
+    from itself (no origin: a skill's text, a stop hook's feedback). A
+    peer's message, a task's notification and a prompt a plugin submitted
+    as the human's (`asUser`) each start a turn of their own."""
+    if row.get("isMeta") is not True:
+        return False
+    origin = row.get("origin")
+    if not isinstance(origin, dict):
+        return True
+    return origin.get("kind") == "plugin" and origin.get("asUser") is not True
+
+
 def reply_to(session, msg_id, rows=None):
-    """(found, the assistant text that follows the prompt holding the
-    message `msg_id`, up to the next prompt, closed: whether a next prompt
-    follows it, which delimits the reply): what `--wait` prints (T2's M2),
-    whatever another sender's message got before or after it. `rows`: the
-    transcript's rows as read (TranscriptTail), else read whole."""
+    """(found, the assistant text that follows the row holding the message
+    `msg_id`, up to the next prompt that starts a turn, closed: whether
+    such a prompt follows it, which delimits the reply): what `--wait`
+    prints (T2's M2), whatever another sender's message got before or after
+    it. A row put into the turn that runs (_put_in_turn) delimits nothing:
+    the turn holding the message goes on past it, and its end is the
+    waiter's to read. `rows`: the transcript's rows as read
+    (TranscriptTail), else read whole."""
     rows = transcript_rows(session) if rows is None else rows
     marker = "id=%s]" % msg_id
     start = next((i for i, r in enumerate(rows) if marker in (_prompt_text(r) or "")), None)
@@ -15150,7 +15168,7 @@ def reply_to(session, msg_id, rows=None):
                for b in _blocks(r, "tool_result")}
     said, closed = [], False
     for r in rows[start + 1:]:
-        if _prompt_text(r) is not None:
+        if _prompt_text(r) is not None and not _put_in_turn(r):
             closed = True
             break
         if r.get("type") == "assistant" and r.get("answeredWithoutRequest") is not True:
@@ -15178,7 +15196,8 @@ def wait_session_reply(session, name, msg_id):
 def _wait_reply(cur, ref, name, msg_id, seat):
     """The message's id in the session's transcript, waited for
     (SMINOS_ACK_TIMEOUT), then the turn that holds it to its end — the next
-    prompt after it (which delimits the reply), or the engine's record of
+    prompt that starts a turn (which delimits the reply; a row put into the
+    turn that runs does not, reply_to), or the engine's record of
     the process reading `idle` with an answer after the prompt, or for a
     second look a poll later, or no process left — then the reply to that
     message printed (reply_to). The transcript is read incrementally
