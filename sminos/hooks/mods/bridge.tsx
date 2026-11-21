@@ -3,8 +3,8 @@ import type { EngineInterface, HookStream, HttpResponse, On, PermissionRequestDe
 import type {} from '../../../devcloud/types/devcloud'
 
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
-import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './bridge-place'
-import type { Guard, Place, Verdict } from './bridge-place'
+import { MANAGED_OFF_LINE, OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, isManagedCua, seatOf, verdictOf } from './bridge-place'
+import type { Guard, Place, Seat, Verdict } from './bridge-place'
 import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, WAKE_LINE, capped, isEffort, isLaneVerdict, isObserver, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Streaming, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, emitOwed, emitTaken, endStep, forgetLive, modeFields, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
@@ -39,7 +39,7 @@ import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leav
 import { receiptRow, receiptsCarried } from './bridge-receipts'
 import type { Carried } from './bridge-receipts'
 
-export { OFF_LINE, ON_LINE } from './bridge-place'
+export { MANAGED_OFF_LINE, OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, INTERRUPT_HOLD_MS, TEXT_CAP, WAKE_LINE, capped, resetBridge } from './bridge-state'
 export { RESYNC_INPUT_CAP, RESYNC_MAX, STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
@@ -321,6 +321,8 @@ export const LANE_B = 'lane-b'
 /** The lane verdict kept for a module reload (types/sminos.d.ts): the process's, so a reload never re-opens the provisional window. */
 const LANE = { plugin: 'sminos', key: 'lane' } as const
 const LAUNCH = { plugin: 'sminos', key: 'launch' } as const
+/** The bridge's own tier, which its own `state.get` hook answers it (registerBridge). */
+const SEAT = { plugin: 'sminos', key: 'bridgeSeat' } as const
 /** A launch as this module mints it: 16 random bytes, base64url. */
 const LAUNCH_RE = /^[A-Za-z0-9_-]{22}$/
 
@@ -1709,13 +1711,35 @@ async function beat($: EngineInterface) {
 }
 
 /**
- * Which secrets guard is loaded now: devcloud's when its marker is live, else
- * cua's copy when the user settings enable cua. The same reads appeal makes,
- * of another plugin's state and of the user settings.
+ * The bridge's seat (bridge-place.tsx, Seat), learned once for the module
+ * instance: the tier from its call to its own `state.get` hook, which hears it
+ * raised from the tier sminos sits in, then, outside `user`, the managed
+ * settings. A read that fails is not kept, so the next dispatch reads again.
  */
-async function loadedGuard($: EngineInterface): Promise<Guard | undefined> {
+async function bridgeSeat($: EngineInterface): Promise<Seat> {
+  if (state.seat === undefined) {
+    const tier = (await $.state.get(SEAT)).value
+    if (typeof tier !== 'string') {
+      throw new Error("the bridge's own hook did not answer which tier sminos sits in")
+    }
+    state.seat = await seatOf(tier, () => $.settings.read({ source: 'policy' }))
+  }
+  return state.seat
+}
+
+/**
+ * Which secrets guard is loaded now: devcloud's when its marker is live, else
+ * cua's copy when the settings that can seat cua outside this bridge enable
+ * it: the managed settings for an `outer` seat (a person's cua is beneath
+ * it), the user settings otherwise. The same reads appeal makes, of another
+ * plugin's state and of the settings.
+ */
+async function loadedGuard($: EngineInterface, seat: Seat): Promise<Guard | undefined> {
   if (isLiveMarker(await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' }))) {
     return 'devcloud'
+  }
+  if (seat === 'outer') {
+    return isManagedCua(await $.settings.read({ source: 'policy' })) ? 'cua' : undefined
   }
   return isCuaEnabled(await $.settings.read({ source: 'user' })) ? 'cua' : undefined
 }
@@ -1724,7 +1748,9 @@ async function loadedGuard($: EngineInterface): Promise<Guard | undefined> {
  * The bridge's place, judged again from what settled beneath one of its hooks
  * (bridge-place.tsx); `transitionsAt` is how many times it had turned off or
  * on when that dispatch began. Answers `off` when this dispatch read the
- * bridge inside a guard: what it would post is its own to drop.
+ * bridge inside a guard, or could not settle where a loaded guard is
+ * (`unsettled`, which changes nothing else): what it would post is its own
+ * to drop.
  *
  * - The first `guarded` or `unguarded` settles the place as safe and posts
  *   the tool events that waited for it.
@@ -1739,7 +1765,7 @@ async function loadedGuard($: EngineInterface): Promise<Guard | undefined> {
  */
 async function judgePlace(
   $: EngineInterface,
-  beneath: { readonly trace: readonly { readonly plugin: string }[]; readonly origin: { readonly plugin: string } },
+  beneath: { readonly trace: readonly { readonly plugin: string }[]; readonly origin: { readonly plugin: string; readonly tier: string } },
   transitionsAt: number,
 ): Promise<'off' | undefined> {
   if (state.post === undefined) {
@@ -1747,7 +1773,12 @@ async function judgePlace(
   }
   let verdict: Verdict | undefined
   try {
-    verdict = await verdictOf(beneath.trace, beneath.origin.plugin, () => loadedGuard($))
+    verdict = await verdictOf(
+      beneath.trace,
+      beneath.origin,
+      () => bridgeSeat($),
+      (seat) => loadedGuard($, seat),
+    )
   } catch (error) {
     const why = `bridge: its place among the secrets guards was not read: ${message(error)}`
     $.ui.log(why, { to: 'debug' })
@@ -1760,10 +1791,14 @@ async function judgePlace(
   if (state.post === undefined || verdict === undefined) {
     return undefined
   }
+  if (verdict === 'unsettled') {
+    return 'off'
+  }
   const isCurrent = transitionsAt === state.transitions
   if (verdict === 'off') {
     if (isCurrent && state.place !== 'off') {
-      turnOff($)
+      // An off verdict comes only once the seat is read.
+      turnOff($, state.seat === 'person' ? OFF_LINE : MANAGED_OFF_LINE)
     }
     return 'off'
   }
@@ -1783,7 +1818,7 @@ async function judgePlace(
  * toast and in the debug log. While off, nothing is queued or raised, and no
  * child is started (startChild).
  */
-function turnOff($: EngineInterface) {
+function turnOff($: EngineInterface, line: string) {
   // Off before it is said, so nothing the saying does can leave it running.
   state.place = 'off'
   state.transitions++
@@ -1797,8 +1832,8 @@ function turnOff($: EngineInterface) {
       settle(r, 'withdrawn', 'bridge')
     }
   }
-  $.ui.log(OFF_LINE, { to: 'debug' })
-  $.ui.toast(OFF_LINE)
+  $.ui.log(line, { to: 'debug' })
+  $.ui.toast(line)
 }
 
 /**
@@ -2006,6 +2041,11 @@ function toolInput(e: Record<string, unknown>): { value: unknown; cut: boolean }
  */
 export function registerBridge(on: On) {
   observeAsks(onAskNote)
+
+  // The bridge's own tier (bridgeSeat): a hook hears a call another hook of
+  // its plugin makes, raised from the tier the plugin sits in. Answered to
+  // this plugin alone; the host holds nothing under the key.
+  on('state.get', { plugin: 'sminos', key: 'bridgeSeat' }, (_, e, next) => (next.origin.plugin === PLUGIN ? { value: { value: next.origin.tier, version: 0 } } : next(e)))
 
   on('session.start', { cwd: /^/ }, async ($, e, next) => {
     const started = await next(e)
@@ -2273,9 +2313,7 @@ export function registerBridge(on: On) {
     if (isDialog && base.toolUseId !== null) {
       state.dialogCalls.set(base.toolUseId, askCallFor(first))
     }
-    if (!isDialog) {
-      emit({ type: 'tool', phase: 'call', ...base, input: input.value, ...(input.cut && { truncated: true }) })
-    }
+    const queuedCall = isDialog ? undefined : emit({ type: 'tool', phase: 'call', ...base, input: input.value, ...(input.cut && { truncated: true }) })
     let settle: (text: string | undefined) => void = () => undefined
     const done = new Promise<string | undefined>((resolve) => (settle = resolve))
     const owner = e.agentId === undefined ? state.mainTurn : state.foreground.get(e.agentId)
@@ -2313,6 +2351,12 @@ export function registerBridge(on: On) {
       const text = capped(shown)
       const denied = capped(result.deny)
       if (isDialog || isInside) {
+        // Its call too, while it still waits for the place: a later safe
+        // verdict would post it, read under the placement this one could not settle.
+        const at = queuedCall === undefined ? -1 : state.queue.indexOf(queuedCall)
+        if (at !== -1) {
+          state.queue.splice(at, 1)
+        }
         return result
       }
       emit({
