@@ -120,10 +120,14 @@ describe('the work bound', () => {
 })
 
 describe('linear work', () => {
+  // What proves linear work is the span itself: work past the lexer's bound (steps per character) gives up, and the
+  // span would be undefined. The clock catches only work hidden inside one step, which at these sizes takes tens of
+  // seconds when quadratic; the largest case takes about 70 ms on a CI runner and took 271 ms on a slow one
+  // (run 44958757624, every case 3 to 5 times its usual), so the bound leaves a slow runner room.
   const quick = (command: string) => {
     const started = performance.now()
     const span = liveBacktick(command)
-    expect(performance.now() - started).toBeLessThan(250)
+    expect(performance.now() - started).toBeLessThan(2_000)
     return span
   }
 
