@@ -333,6 +333,10 @@ case "\${RESUME_OWED:-}" in
     echo "owed: \$1"
     echo "sminos: claude stop 1a2b3c4d failed for w — not resuming over a turn that may still be running" >&2
     exit 1 ;;
+  reachheld)
+    echo "recorded testhost/human:7 for w: the endpoint decides its delivery"
+    echo "owed: \$1"
+    exit 0 ;;
   other)
     echo "owed: someone-else"
     exit 1 ;;
@@ -2071,8 +2075,9 @@ nt "and the answers folded into the owed task are not acknowledged" \
 
 # The same for every outcome that leaves the task owed, read from the line
 # `owed: <session>` rather than the exit code or the prose: queued behind an
-# earlier message (exit 4), and an endpoint-gated resume whose ack window
-# expired (exit 1). A line naming another session is no such word.
+# earlier message (exit 4), an endpoint-gated resume whose ack window
+# expired (exit 1), and one the last hop deferred to the endpoint (exit 0). A
+# line naming another session is no such word.
 _owed_drill() {  # <case> <run id>
   local fix="$TDIR/fix-resume-owed-$1.json" dh="$TDIR/dh-resume-owed-$1" out="$TDIR/resume-owed-$1.out"
   cat > "$fix" <<JSON
@@ -2123,6 +2128,11 @@ _owed_drill receipt 101
 t  "a receipt that handed nothing off is read as owed" \
    "the task is recorded and owed to u-old"                   cat "$OUTOWED"
 nt "so no fresh worker is spawned beside the pending one"    "SPAWN"  cat "$SPAWN_LOG"
+_owed_drill reachheld 102
+t  "a resume the last hop deferred to the endpoint, exiting 0 with the owed line, is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside the deferred one"   "SPAWN"  cat "$SPAWN_LOG"
+nt "nor its folded answer acknowledged"                      "/answers/1102/ack" cat "$OWEDLOG"
 _owed_drill other 98
 nt "a line owing the task to another session is not read as owed" \
    "the task is recorded and owed to u-old"                   cat "$OUTOWED"

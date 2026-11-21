@@ -3258,7 +3258,9 @@ PY
        "$SMINOS_CLI" resume --wait "$C_SESS" "$prompt")" || rrc=$?
     [ -z "$rout" ] || printf '%s\n' "$rout"
   fi
-  if [ -n "$C_SESS" ] && [ "$rrc" = 0 ]; then
+  # The owed line is read before the exit code: a resume the last hop deferred
+  # to the endpoint prints it and exits 0, and its task is owed, not delivered.
+  if [ -n "$C_SESS" ] && [ "$rrc" = 0 ] && ! _resume_owed "$rout" "$rrc" "$C_SESS"; then
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → resumed session $C_SESS"
   elif [ -n "$C_SESS" ] && transcript="$(_transcript_for_uuid "$C_SESS")" \
