@@ -177,8 +177,8 @@ class Answering:
              "project": {"id": project.id, "name": project.name} if project is not None else None,
              "machine": sminos.host_name(), "cwd": spawned["cwd"], "head": head_of(spawned["cwd"])}
         if not outcome_whole(d):
-            sminos.die("spawn: seat %s/%s was spawned here (session %s), and what it is does not read as an outcome "
-                       "line (%s), so the machine that asked is told it was not: sminos list here shows it"
+            sminos.die("spawn: seat %s/%s was spawned here (session %s), and its result could not be reported in the "
+                       "outcome line's shape (%s): sminos list here shows it"
                        % (d["group"], d["alias"], d["session"], json.dumps(d, ensure_ascii=False)), 1)
         self.done = True
         print(outcome_line(self.nonce, d), flush=True)
@@ -302,15 +302,21 @@ class Call:
         if not sminos.UUID_RE.fullmatch(self.session):
             self.session = ""
         self.made = None          # the VM `vm up` made, once it did
+        self.ready = []           # the hosts `vm up`'s ready lines named, as its output was read
         self.devcloud = ""
         self.checked = None       # (branch, commit) of a derived project, for row 33
         self.reaching = None      # the VM a run of the VM side was started on whose outcome is not yet read
 
+    def vm(self):
+        """The VM made: the one `vm up` was seen to name, once one was."""
+        return self.made or (self.ready[0] if len(self.ready) == 1 else None)
+
     def kept(self):
-        if self.made is None:
+        vm = self.vm()
+        if vm is None:
             return ""
         thread = sminos.threads_module().thread_of(self.session) if self.session else None
-        return KEPT % {"vm": self.made, "owner": "this session's thread" if thread is not None else "this session"}
+        return KEPT % {"vm": vm, "owner": "this session's thread" if thread is not None else "this session"}
 
     def refuse(self, words, code=1):
         sminos.die(words + self.kept(), code)
@@ -523,11 +529,14 @@ def run_devcloud(c, args, stdin=None, timeout=None, keep_err=False, vm=None, non
     threads = sminos.threads_module()
     lines, err, pumps, proc = [], [], [], None
     mark = "%s %s " % (OUTCOME, nonce) if nonce else None
+    up = args[:2] == ["vm", "up"]
 
     def pump_out():
         for raw in proc.stdout:
             line = raw.decode("utf-8", "replace").rstrip("\n")
             lines.append(line)
+            if up and (m := READY_RE.fullmatch(line)):
+                c.ready.append(m.group(1))
             if mark is None or not line.startswith(mark):
                 sys.stdout.write(line + "\n")
                 sys.stdout.flush()
@@ -566,9 +575,13 @@ def run_devcloud(c, args, stdin=None, timeout=None, keep_err=False, vm=None, non
         except subprocess.TimeoutExpired:
             threads.stop_tree(proc.pid, proc.wait)
             code, timed_out = proc.wait(), True
+        for t in pumps:
+            t.join(5)
+        closed(proc)
     except (Stopped, KeyboardInterrupt):
         if proc is not None:
-            threads.stop_tree(proc.pid, proc.wait)
+            if proc.returncode is None:
+                threads.stop_tree(proc.pid, proc.wait)
             for t in pumps:
                 if t.ident is not None:
                     t.join(5)
@@ -576,21 +589,11 @@ def run_devcloud(c, args, stdin=None, timeout=None, keep_err=False, vm=None, non
         if vm is not None:
             c.refuse("spawn --on: stopped while devcloud vm ssh ran, and devcloud was stopped with it: a session may "
                      "or may not have started there, and devcloud vm ssh %s -- sminos list shows" % vm)
-        if args[:2] == ["vm", "up"] and c.made is None and len(named := ready_names(lines)) == 1:
-            c.made = named[0]
         c.refuse("spawn --on: stopped while devcloud ran; devcloud was stopped with it, and its own lines above say "
                  "what became of anything it made")
     finally:
         signal.signal(signal.SIGTERM, previous)
-    for t in pumps:
-        t.join(5)
-    closed(proc)
     return code, lines, "".join(err), timed_out
-
-
-def ready_names(lines):
-    """The hosts `vm up`'s lines name in its ready line (READY_RE)."""
-    return [m.group(1) for m in (READY_RE.fullmatch(line) for line in lines) if m]
 
 
 def closed(proc):
@@ -610,16 +613,16 @@ def make_vm(c, projects):
     if a.vm_confirmed:
         args.append("--confirmed")
     sminos.note("making a VM (a few minutes; devcloud's own lines follow): devcloud vm up %s" % shlex.join(args))
-    code, lines, _, _ = run_devcloud(c, ["vm", "up"] + args)
+    code, _, _, _ = run_devcloud(c, ["vm", "up"] + args)
     if code != 0:
+        c.ready = []   # what became of a VM it named, its own lines say (row 22)
         c.refuse("spawn --on new: devcloud vm up exited %d; its own lines above say why, and what became of any VM it "
                  "made. Nothing was spawned%s" % (code, ". The cap is the person's: after their yes to this exact "
                                                        "request, pass --vm-confirmed" if code == 4 else ""), code)
-    named = ready_names(lines)
-    if len(named) != 1:
+    if len(c.ready) != 1:
         c.refuse("spawn --on new: devcloud vm up succeeded and did not name one host where sminos reads it: find the "
                  "VM with devcloud vm ls, then sminos spawn --on <name>")
-    c.made = named[0]
+    c.made = c.ready[0]
     return c.made
 
 
@@ -646,15 +649,16 @@ def remote(c, vm, request, directory):
     wait = seconds("SMINOS_ON_ENROLL_WAIT", ENROLL_WAIT)
     deadline = None
     while True:
+        reach(c)
         given = bound
         if deadline is not None:
-            # The wait bounds every try it starts: none at or past its end, and each given only what is left.
+            # The wait bounds every try it starts: none at or past its end, and each given only what is left,
+            # read last before the try (the reach rule's read takes time too).
             left = deadline - time.monotonic()
             if left <= 0:
                 c.refuse("spawn --on new: %s did not enroll within %d minutes: nothing was spawned. Once sminos "
                          "machines lists it, sminos spawn --on %s spawns there" % (vm, round(wait / 60), vm))
             given = min(bound, left)
-        reach(c)
         c.reaching = vm
         code, lines, err, timed_out = run_devcloud(c, args, stdin=a.task, timeout=given, keep_err=True, vm=vm,
                                                    nonce=request["nonce"])

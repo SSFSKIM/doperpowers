@@ -14258,6 +14258,8 @@ def cmd_spawn(a):
     on = sibling_module("sminos_on")
     req = on.read_request(a)
     with on.Answering(req["nonce"]) as answer:
+        if a.task == "":
+            die("spawn -: no text on standard input")
         on.admit(req, answer)
         cwd = cwd_or_die(on.expand_home(a.cwd), "spawn")
         on.hold_to_origin(req, cwd, answer)
@@ -19377,11 +19379,14 @@ def stdin_body(a):
     if sys.stdin is None or sys.stdin.isatty():
         die("%s -: the text is read from standard input; pipe it, or give it as a heredoc:\n"
             "  sminos %s ... - <<'EOF'\n  <text>\n  EOF" % (a.cmd, a.cmd))
-    text = sys.stdin.buffer.read().decode("utf-8", "replace")
+    raw = sys.stdin.buffer.read()
     if a.cmd == "spawn" and getattr(a, "asked_from", None) is not None:
-        # The task another machine's --on sends is the one its own spawn read (EN.G1's plan, §8): taken as sent.
-        setattr(a, field, text)
+        # The task another machine's --on sends is the one its own spawn read (EN.G1's plan, §8): taken as sent,
+        # decoded as it was encoded there (an argument's undecodable bytes included); none is refused under the
+        # request's outcome line (cmd_spawn).
+        setattr(a, field, raw.decode("utf-8", "surrogateescape"))
         return
+    text = raw.decode("utf-8", "replace")
     text = text[:-2] if text.endswith("\r\n") else text[:-1] if text.endswith("\n") else text
     if not text.strip():
         die("%s -: no text on standard input" % a.cmd)

@@ -597,13 +597,20 @@ class New(On):
         self.assertEqual(code, 0, err)
         self.assertIn(said, out.splitlines())
 
-    def waited(self, *answers, wait="60", poll="30", bound="480"):
-        """`--on new` under a clock that only sleeping moves, devcloud answering `up` with a host and each
-        `vm ssh` with the next of `answers` ((exit, lines, timed out)): (exit, stderr, each try's (start, bound))."""
+    def waited(self, *answers, wait="60", poll="30", bound="480", reach_takes=0):
+        """`--on new` under a clock that only sleeping and each read of the reach rule (`reach_takes` seconds)
+        move, devcloud answering `up` with a host and each `vm ssh` with the next of `answers` ((exit, lines,
+        timed out)): (exit, stderr, each try's (start, bound))."""
         clock, tries, left = [1000.0], [], list(answers)
+        reach = on.reach
+
+        def slow_reach(c):
+            clock[0] += reach_takes
+            reach(c)
 
         def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
             if args[:2] == ["vm", "up"]:
+                c.ready.append("dc-x-0001")   # as run_devcloud's reading of the ready line records it
                 return 0, ["dc-x-0001  ready in 0m01s"], "", False
             tries.append((clock[0], timeout))
             code, lines, timed_out = left.pop(0)
@@ -611,7 +618,7 @@ class New(On):
         fake = mock.Mock(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
         env = {"SMINOS_ON_ENROLL_WAIT": wait, "SMINOS_ON_ENROLL_POLL": poll, "SMINOS_ON_TIMEOUT": bound}
         with mock.patch.object(on, "run_devcloud", side_effect=run), mock.patch.object(on, "time", fake), \
-                mock.patch.dict(os.environ, env):
+                mock.patch.object(on, "reach", slow_reach), mock.patch.dict(os.environ, env):
             code, out, err = self.spawn("--on", "new")
         self.assertNotIn("seat spawned on", out)
         return code, err, tries
@@ -623,6 +630,13 @@ class New(On):
         self.assertEqual(code, 1, err)
         self.assertIn("spawn --on new: dc-x-0001 did not enroll within 1 minutes: nothing was spawned", err)
         self.assertIn(". The VM dc-x-0001 is kept and", err)
+
+    def test_no_try_starts_past_the_deadline_however_long_the_reach_read_takes(self):
+        no = (1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled"})], False)
+        code, err, tries = self.waited(no, (0, [self.spawned(machine="dc-x-0001")], False), reach_takes=40)
+        self.assertEqual(tries, [(1080.0, 480.0)], "the reach read before the second try ends past the deadline")
+        self.assertEqual(code, 1, err)
+        self.assertIn("spawn --on new: dc-x-0001 did not enroll within 1 minutes: nothing was spawned", err)
 
     def test_a_try_cut_short_by_the_deadline_may_have_spawned(self):
         no = (1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled"})], False)
@@ -642,7 +656,10 @@ class New(On):
         real = time.sleep
 
         def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
-            return (0, ["dc-x-0001  ready in 0m01s"], "", False) if args[:2] == ["vm", "up"] else no
+            if args[:2] == ["vm", "up"]:
+                c.ready.append("dc-x-0001")   # as run_devcloud's reading of the ready line records it
+                return 0, ["dc-x-0001  ready in 0m01s"], "", False
+            return no
 
         def term(seconds):
             os.kill(os.getpid(), signal.SIGTERM)
@@ -682,6 +699,24 @@ class New(On):
         self.assertIn("spawn --on: stopped while devcloud ran", err)
         self.assertIn(". The VM dc-x-0001 is kept and", err)
         self.assertEqual(self.verbs(), ["up"])
+
+    def test_stopped_after_up_exited_before_its_result_returned_keeps_the_vm(self):
+        closed, calls = on.closed, []
+
+        def stopped_once(proc):
+            calls.append(proc)
+            if len(calls) == 1:   # up's own: its child has exited, and its result is not yet returned
+                raise KeyboardInterrupt
+            closed(proc)
+        with mock.patch.object(on, "closed", stopped_once):
+            code, out, err = self.spawn("--on", "new")
+        self.assertEqual(code, 1, err)
+        self.assertIn("dc-x-0001  ready in 0m01s", out.splitlines())
+        self.assertIn("spawn --on: stopped while devcloud ran", err)
+        self.assertIn(". The VM dc-x-0001 is kept and", err)
+        self.assertEqual(self.verbs(), ["up"])
+        for proc in calls:
+            closed(proc)
 
     def test_stopped_while_the_vm_side_runs_says_where_to_look(self):
         for argv, vm in ((["--on", "vm1"], "vm1"), (["--on", "new"], "dc-x-0001")):
@@ -824,7 +859,7 @@ class Outcome(On):
 class VmSide(On):
     """The VM side's own line, for each way it ends, read by the Mac's check."""
 
-    def asked(self, req=None, cwd=None, raw=None, **over):
+    def asked(self, req=None, cwd=None, raw=None, task="a task", stdin=None, **over):
         """The VM side run here with `req` (each key of `over` set, DROP's taken out), or `raw` as the value:
         (exit, stdout's lines, stderr, what was launched)."""
         req = req or {"v": 1, "nonce": NONCE, "org": "org-1", "origin": None,
@@ -833,7 +868,7 @@ class VmSide(On):
         req.update(over)
         req = {k: v for k, v in req.items() if v is not DROP}
         out, err = io.StringIO(), io.StringIO()
-        argv = ["spawn", "w", "a task", "--asked-from", raw or json.dumps(req), "--cwd", cwd or self.work]
+        argv = ["spawn", "w", task, "--asked-from", raw or json.dumps(req), "--cwd", cwd or self.work]
         launched = {}
 
         def start(args, cwd_, settings):
@@ -842,7 +877,7 @@ class VmSide(On):
             return "a1b2c3d4", "banner"
         with mock.patch.object(sminos, "run_claude_bg", side_effect=start), \
                 mock.patch.object(sminos, "poll_uuid", return_value=(JOB, "working", cwd or self.work)), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                piped(stdin), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
             try:
                 sminos.main(argv)
@@ -902,8 +937,16 @@ class VmSide(On):
         with mock.patch.object(on, "head_of", return_value="not a commit"):
             code, lines, err, launched = self.asked()
         self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1, "why": "other"}))
-        self.assertIn("was spawned", err)
-        self.assertIn(JOB, err)
+        self.assertIn("spawn: seat repo/w was spawned here (session %s), and its result could not be reported in "
+                      "the outcome line's shape (" % JOB, err)
+        self.assertIn("sminos list here shows it", err)
+        self.assertNotIn("was not", err)
+
+    def test_an_empty_task_on_standard_input_is_refused_with_a_line(self):
+        code, lines, err, launched = self.asked(task="-", stdin=b"")
+        self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 2, "why": "other"}))
+        self.assertIn("spawn -: no text on standard input", err)
+        self.assertEqual(launched, {}, "nothing launched")
 
     def task_given(self, *argv, stdin=None):
         """The task `sminos spawn <argv>` run here hands the launch (spawn_fresh), launching nothing."""
@@ -926,8 +969,9 @@ class VmSide(On):
 
     def test_the_session_on_the_vm_gets_the_task_a_spawn_here_would_give_it(self):
         request = json.dumps({"v": 1, "nonce": NONCE, "org": "org-1", "origin": None, "by": None})
+        undecodable = b"x\xff".decode("utf-8", "surrogateescape")   # as Python reads such an argument
         for how, body in (("positional", "x\n"), ("positional", "x\r\n"), ("piped", b"x\n"), ("piped", b"x\r\n"),
-                          ("piped", b"x\n\n")):
+                          ("piped", b"x\n\n"), ("positional", undecodable)):
             with self.subTest(how=how, body=body):
                 task, stdin = (body, None) if how == "positional" else ("-", body)
                 here = self.task_given(task, stdin=stdin)
@@ -939,7 +983,8 @@ class VmSide(On):
                 with mock.patch.object(on, "run_devcloud", side_effect=run):
                     code, _, err = self.spawn("--on", "vm1", task=task, stdin=stdin)
                 self.assertEqual(code, 0, err)
-                there = self.task_given("-", "--asked-from", request, stdin=sent["task"].encode("utf-8"))
+                there = self.task_given("-", "--asked-from", request,
+                                        stdin=sent["task"].encode("utf-8", "surrogateescape"))   # as run_devcloud feeds it
                 self.assertEqual(there, here)
 
     def test_without_the_flag_spawn_is_as_before(self):
