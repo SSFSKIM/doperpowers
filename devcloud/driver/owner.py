@@ -104,22 +104,28 @@ def _hand(ctx, name, given, t, record, entry, host, old, where, sides):
         sides["label"] = f"names {tag} already"
     else:
         sides["label"] = f"may name {tag} or not (its write was under way)"
+        failed = None
         if record is not None:
             try:
                 written = adopt.update(ctx, name, creator=short)
             except (OSError, DriverError) as error:
                 written = True       # not known to be gone: the read-back says what the record holds
-                ctx.warn(f"devcloud vm: {name}'s adoption record: {getattr(error, 'strerror', None) or error}")
+                failed = f"devcloud vm: {name}'s adoption record: {getattr(error, 'strerror', None) or error}"
             if written is None:
                 raise adopt.gone(name)
         else:
             try:
                 ctx.merge_labels(entry, {"devcloud-creator": short})
             except (OSError, DriverError) as error:     # its lock, or the provider: the read-back says
-                ctx.warn(f"devcloud vm: {name}'s label: {error}")
-        sides["label"] = f"was written to name {tag}, and not read back"
-    # Both sides read back, the host by its own parser.
+                failed = f"devcloud vm: {name}'s label: {error}"
+        if failed:
+            sides["label"] = f"may name {tag} or not (its write failed)"
+            ctx.warn(failed)
+        else:
+            sides["label"] = f"was written to name {tag}, and not read back"
+    # Both sides read back, the host by its own parser; each said as its read answered.
     held = hostctl.host_owner(ctx, host)
+    sides["host"] = f"holds {host_words(held)}" if held is not None else "could not be read back"
     if record is not None:
         try:
             now = adopt.load(ctx, name)
@@ -135,8 +141,9 @@ def _hand(ctx, name, given, t, record, entry, host, old, where, sides):
             label = vm["labels"].get("devcloud-creator") if vm is not None else UNREAD
         except DriverError:
             label = UNREAD
+    named = UNREAD if label == UNREAD else f"@{label}" if label else "no owner"
+    sides["label"] = "could not be read back" if label == UNREAD else f"names {named}"
     if not (holds(held) and label == short):
-        named = UNREAD if label == UNREAD else f"@{label}" if label else "no owner"
         raise DriverError(FAILED, f"{name}'s owner is not settled: the host, which sends its notices, holds "
                                   f"{host_words(held)}, and {where}, which decides whom sminos refuses to retire, "
                                   f"names {named}; this run wrote {tag} with project {project['id']}. Another devcloud "

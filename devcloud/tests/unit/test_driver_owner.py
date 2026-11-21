@@ -576,6 +576,44 @@ class Stopped(OwnerBase):
         self.assertEqual(code, 130)
         self.partial(err, f"holds @{SHORT} with project p-7c1e9a", f"was written to name @{SHORT}, and not read back")
 
+    def test_stopped_after_a_write_that_failed_never_says_it_was_written(self):
+        self.vm()
+        self.behave(fail={"set-labels": 1})
+        reads = []
+
+        def read(target, command):
+            reads.append(target)
+            if len(reads) == 1:
+                raise KeyboardInterrupt
+            return self.host.answer()
+        self.remote.rules = [r for r in self.remote.rules if "python3 -P - read" not in r["needle"]]
+        self.remote.on("python3 -P - read", fn=read)
+        code, out, err = self.owner()
+        self.assertEqual(code, 130)
+        self.partial(err, f"holds @{SHORT} with project p-7c1e9a", f"may name @{SHORT} or not (its write failed)")
+        self.assertNotIn("was written", err)
+
+    def test_each_side_is_said_as_its_last_read_answered(self):
+        """The host's read-back answering another owner, or nothing, is what is said of it, when a signal lands
+        while the label is read."""
+        from driver import provider
+        for answer, said in ((lambda: Result(0, json.dumps({"tag": "@ffff0000", "project": "p-x",
+                                                            "takes_project": True}) + "\n", "", False),
+                              "holds @ffff0000 with project p-x"),
+                             (lambda: Result(255, "", "ssh: Connection timed out", False), "could not be read back")):
+            with self.subTest(said=said):
+                self.state_file.write_text(json.dumps({"servers": [], "images": [], "deleted": [], "calls": [],
+                                                       "behavior": {}}))
+                self.vm()
+                self.host.apply(f"@{OLD}", "example")
+                self.remote.rules = [r for r in self.remote.rules if "python3 -P - read" not in r["needle"]]
+                self.remote.on("python3 -P - read", fn=lambda target, command, answer=answer: answer())
+                with mock.patch.object(self.ctx, "merge_labels"), \
+                        mock.patch.object(provider.Client, "get", side_effect=KeyboardInterrupt):
+                    code, out, err = self.owner()   # the label written, and the signal as it is read back
+                self.assertEqual(code, 130)
+                self.partial(err, said, f"was written to name @{SHORT}, and not read back")
+
     def test_stopped_before_anything_was_written_says_only_that(self):
         self.vm()
         with mock.patch.object(self.ctx, "thread", side_effect=KeyboardInterrupt):
