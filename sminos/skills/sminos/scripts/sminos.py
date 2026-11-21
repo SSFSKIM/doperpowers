@@ -7041,9 +7041,9 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
         got, locks = wake_member(project, member, session, e, words, due)
         if got and got != "woken":
             return got
-        if got:
-            peer = peer_for_session(session)
     try:
+        if locks is not None:
+            peer = peer_for_session(session)   # under the locks the wake kept, let go below whatever comes
         if locks is not None and peer is None:
             return woken_unpushed(session)   # its inbox went between the wake's look and this one
         if not retry and (peer is None or peer.get("pid") is None
@@ -14557,7 +14557,13 @@ def _wake_held(tid, session, due, returns, on_live):
             return WakeResult(why == "live", "" if why == "live" else why or "unknown")
         seat = reload_seat(tid) if t["opened"] == "spawned" else None
         settings = seat["settings"] if seat is not None else wm.option(flags, "--settings")
-        short, banner = run_claude_bg(wm.wake_argv(session, flags), wm.thread_cwd(t), settings)   # W5, W6
+        cwd = wm.thread_cwd(t)
+        if not (cwd and (read_refused(cwd) or os.path.isdir(cwd))):
+            # Gone since W2 read it: the hold not_woken answers for it, as run_claude_bg's own check would refuse it
+            # by exiting, which no wake does (a deliverer, the daemon or the uplink, goes on past it).
+            wake_line_dropped(tid, session, note["id"])
+            return WakeResult(False, "cwd")
+        short, banner = run_claude_bg(wm.wake_argv(session, flags), cwd, settings)   # W5, W6
         if not short:                                                    # row 14
             rec = running_now(session)
             if rec is not None and str(rec.get("kind") or "") == "bg":
@@ -14799,12 +14805,12 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
             reason = wake_refusal(seat_id, s["current"], returns)
             if not reason:
                 stop_live_turn(s)
+            elif running_now(s["current"]) is not None:
+                turn_kept("%s/%s" % (s["group"], s["alias"]), reason, s["current"])
         except BaseException:
             if took is not None:
                 took.release()
             raise
-        if reason and running_now(s["current"]) is not None:
-            turn_kept("%s/%s" % (s["group"], s["alias"]), reason, s["current"])
 
     def on_live(short):
         # The seat's fields once its process runs (W8): the job's short and where it runs; `turns` and `status`

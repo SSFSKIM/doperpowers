@@ -411,6 +411,43 @@ class OneLaunch(Deliveries):
         self.assertFalse(sminos.launch_in_flight(tid))
         self.assertTrue(sminos.wake_lock(tid, until=time.time() + 1)[0].release() is None, "the check took nothing")
 
+    def test_a_directory_gone_before_the_launch_holds_the_wake_for_cwd_with_nothing_left_held(self):
+        # frontier review round 2, sweep#4: gone after W2 read it, before the launch: a hold, never an exit that
+        # unwinds the delivery pass (the daemon lives on past one), and no line, wake lock or delivery lock kept.
+        for how in ("say", "the daemon's pass"):
+            with self.subTest(how=how):
+                tid, sid = self.human_thread()
+                where = os.path.join(self.root, "sub-%s" % len(os.listdir(self.root)))
+                os.makedirs(where)
+                self.edit(tid, launch=dict(threads.get(tid).get("launch") or {}, cwd=where))
+                real = threads.wake_line
+
+                def then_gone(*a, **k):
+                    got = real(*a, **k)
+                    shutil.rmtree(where)   # W4's write made; the directory goes before W5
+                    return got
+                with mock.patch.object(threads, "wake_line", then_gone):
+                    if how == "say":
+                        code, out = self.say("@%s to a gone place" % sid[:8])
+                        self.assertEqual(code, 0, out)
+                        self.assertEqual(self.shown(out, sid), [line("cwd")])
+                    else:
+                        sminos.record_message(self.p, sid, self.member(sid).alias, "human", "testhost",
+                                              "to a gone place", uuidlib.uuid4().hex[:8], deliver=False)
+                        self.tick()
+                self.assertEqual(self.launches_of(sid), 0, "nothing launched")
+                self.assertTrue(self.owes(sid, "to a gone place"), "owed, held")
+                self.assertIn(tid, set(self.marked(sid).values()))
+                self.assertNotIn("line", self.waking(tid, sid), "its line removed")
+                self.assertNotIn("failed", self.waking(tid, sid), "a hold, not a failure")
+                self.assertIsNone(sminos.wake_held(tid), "no hold left in this process")
+                self.assertTrue(sminos.wake_lock(tid, until=time.time() + 1)[0].release() is None, "the lock free")
+                with sminos.flocked(sminos.project_path(self.p, "delivered", sminos.reader_key(sid) + ".lock")):
+                    pass   # the delivery lock free too
+
+    def launches_of(self, sid):
+        return len(self.resumes(sid))
+
     def test_a_copy_discarded_for_saved_options_leaves_no_line_for_a_process_found_after_it(self):
         # Row 12, then the flagless pass's W2 finds a background process of the session (one resumed by hand
         # meanwhile): the discarded copy's line is not that process's (sweep#8).
