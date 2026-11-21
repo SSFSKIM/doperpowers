@@ -148,7 +148,7 @@ def published(frames, channel_ids, before={}, allowed=ALLOWED, welcomed=()):  # 
             out.append("a reach? under channel %s for a %r" % (pid, (f.get("event") or {}).get("kind")))
         elif t == "snapshots" and (pid in ids or is_channel(pid)) and f.get("events"):
             out.append("a snapshots answer for channel %s carries %d events" % (pid, len(f["events"])))
-        elif t == "events" and pid in ids:
+        elif t == "events" and (pid in ids or is_channel(pid)):
             for e in f.get("events") or ():
                 line = _event_breach(pid, e, before, allowed, "uploaded")
                 if line:

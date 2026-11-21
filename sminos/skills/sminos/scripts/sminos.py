@@ -1108,8 +1108,8 @@ def org_directory():
             projects = [p for p in d["projects"] if isinstance(p, dict) and isinstance(p.get("id"), str)]
             machines = [m for m in d["machines"] if isinstance(m, dict) and isinstance(m.get("name"), str)]
             retired = {m["name"] for m in machines if m.get("retired") is True}
-            retired |= {str(p.get("machine") or p.get("name") or "") for p in projects
-                        if p.get("kind") == "machine" and p.get("retired") is True}
+            retired |= {str(p.get("machine") or p.get("name") or "") for p in projects   # a channel by its id first
+                        if p.get("kind") == "machine" and p.get("retired") is True and not is_channel_id(p["id"])}
             d = {"projects": projects, "machines": machines, "at": str(d.get("at") or ""),
                  "retired": frozenset(n.lower() for n in retired if n), "locations": _stated(d.get("locations")),
                  "declared": _declared(d.get("locations"))}
@@ -1292,7 +1292,9 @@ def _stated(raw):
     """{canonical path: (by, project id, anchor)} of an org file's
     `locations`, the entries a stored statement decides at and that still
     count (not `replaced`, an anchor that reads), or None when the file
-    holds no `locations` (an endpoint that sends none)."""
+    holds no `locations` (an endpoint that sends none). One naming a
+    channel's id is none, its folder resolving as if it were absent (CH1,
+    the holder's ruling): a channel is no folder's project."""
     if not isinstance(raw, dict) or not isinstance(raw.get("at"), list):
         return None
     out = {}
@@ -1301,7 +1303,7 @@ def _stated(raw):
             continue
         path, pid, anchor = e.get("path"), e.get("project"), e.get("anchor")
         if not (isinstance(path, str) and path.startswith("/") and isinstance(pid, str) and valid_name(pid)
-                and isinstance(anchor, dict)
+                and not is_channel_id(pid) and isinstance(anchor, dict)
                 and all(isinstance(anchor.get(k), str) and re.fullmatch(r"[0-9]+", anchor[k])
                         for k in ("dev", "ino", "birth"))):
             continue
@@ -2000,13 +2002,15 @@ def registered_guess(cwd):
     """The project registered here whose root is `cwd` or its nearest
     ancestor, by the path's string alone, as a Guessed — of several at one
     root the latest registered, and on an enrolled machine never a local one
-    (no directory resolves to one there) — or None: unknown."""
+    (no directory resolves to one there) — or None: unknown. A channel an
+    older copy registered rooted at a folder (a channel-valued .smns) is no
+    project of it (CH1, §1)."""
     _registered_at("")   # every registration read, once per cache generation
     roots, local_ok = _ROOTS[0], enrollment() is None
     d = _abs(cwd)
     while True:
         held = [p for p in (known_project(pid) for pid in roots.get(d, []))
-                if p is not None and (local_ok or not p.id.startswith("local-"))]
+                if p is not None and (local_ok or not p.id.startswith("local-")) and not is_channel_id(p.id)]
         if held:
             return Guessed(*max(held, key=lambda p: (mtime_of(os.path.join(p.home, "project.json")), p.id)))
         parent = os.path.dirname(d)
@@ -2450,7 +2454,7 @@ def _known(all_seats):
             (channels if held[3] else projects)[held[2].id] = held[2]
     for s in seats() if all_seats is None else all_seats:
         p = seat_project(s)
-        if p:
+        if p and not is_channel_id(p.id):   # a seat is never in a channel, whatever an older copy registered
             projects.setdefault(p.id, p)
     return projects, channels
 
@@ -2501,8 +2505,10 @@ def _name_tiers(q):
     """(tiers, clash): project_tiers' lookup over every log known here
     (known_logs), and the logs of the first tier it consults that holds
     several (the tiers before it in `tiers`), rather than an exit. An id
-    names its log. `<name>#<short>` names the logs of that name whose id is
-    `short` or begins with it, `short` eight hex digits or more. A channel is
+    names its log, then a name exactly as it is (`#` is a name's character:
+    `project init` takes it); only a `q` no log is named reads as
+    `<name>#<short>`, split at its last `#`: the logs of that name whose id
+    is `short` or begins with it, `short` eight hex digits or more. A channel is
     in no tier: a name a channel answers to along with any other log, a
     second channel included, is a clash of every log of that name; a name
     only one channel answers to names it. Among projects alone the tiers,
@@ -2511,12 +2517,12 @@ def _name_tiers(q):
     hits = [p for p in known if p.id == q]
     if hits:
         return hits[:1], []
-    name, sep, short = q.partition("#")
-    if sep:
+    named = [p for p in known if p.name == q]
+    name, sep, short = q.rpartition("#")
+    if sep and not named:
         prefix = len(short) >= 8 and all(c in "0123456789abcdef" for c in short)
         hits = [p for p in known if p.name == name and (p.id == short or prefix and p.id.startswith(short))]
         return (hits, []) if len(hits) < 2 else ([], hits)
-    named = [p for p in known if p.name == q]
     if any(is_channel_id(p.id) for p in named):
         return (named, []) if len(named) == 1 else ([], named)
     out = []
@@ -2554,8 +2560,11 @@ def not_a_project(q):
 def names_channel(q):
     """The channel `q` names (by its id, `name#short` or a name only it
     answers to), else None; a name several logs answer to exits with the one
-    refusal. Asked first by the paths that say why a channel cannot be used
-    there (say, a verb's target, join)."""
+    refusal. An id of a channel's form is a channel's, registered here or
+    not. Asked first by the paths that say why a channel cannot be used
+    there (say, a tag, a verb's target, join)."""
+    if is_channel_id(q):
+        return known_project(q) or make_project(q, q, "", "")
     out, clash = _name_tiers(q)
     if clash:
         die(ambiguous_name(q, clash), EXIT_UNKNOWN)
@@ -5147,6 +5156,29 @@ def _reconcile(project, events, local, by_session, all_seats=None):
     return out
 
 
+def _reconcile_channel(project, events, by_session):
+    """A channel's reconciliation: the one write C4 allows there, the undo of
+    an older copy's `joined` of a session of this machine, `retired` `moved`
+    to the project the session is in, written only while a seat or a process
+    holds the session (retire_moved, its project read again under the
+    lock). A closed session's `joined` is left as it is until the session
+    runs again; nothing else of _reconcile runs (no join, no end, no thread
+    made or adopted, no hand-off)."""
+    latest, joined, _ = log_memo(events, "memberships", _memberships)
+    out = []
+    for sid, e in joined.items():
+        if latest[sid] != "joined" or not is_self(str(e.get("machine") or ""), sid):
+            continue
+        seat = by_session.get(sid)
+        if seat is not None and seat["current"] == sid:
+            out += retire_moved(project, sid, seat_project(seat), lambda seat=seat: seat_project(seat, fresh=True))
+            continue
+        rec = session_running(sid)
+        if rec is not None and str(rec.get("pid")) not in internal_pids():
+            out += retire_moved(project, sid, record_project(rec), lambda rec=rec: record_project(rec, fresh=True))
+    return out
+
+
 def end_closed(project, sid, events, joined=None):
     """A seat-less member of this machine whose process no longer runs and
     that no seat holds. A thread (lane A) stays a member, `stopped` (M3: the
@@ -6705,7 +6737,8 @@ def view_of(project, all_seats=None, titles=True):
     by_session = seats_by_session(project, all_seats)
     local = _local_sessions(project, all_seats)
     read, events = _store_whole(project, "log", shared=True)
-    appended = _reconcile(project, events, local, by_session, all_seats)
+    appended = (_reconcile_channel(project, events, by_session) if is_channel_id(project.id)
+                else _reconcile(project, events, local, by_session, all_seats))
     # Read again: what anyone appended since the read above is in the view — this reconciliation's own
     # events, and another process's join (or retire, rename, hand-off) that its guards then declined to
     # repeat (#581). The same merged list when no file moved. An append that waits for its writer's head
@@ -6722,9 +6755,9 @@ def view_of(project, all_seats=None, titles=True):
         events = events + queued
     if is_channel_id(project.id):
         # A channel's view has no members, by construction and whatever its log holds (CH1, C1): an older
-        # copy's `joined` there, retired by the reconciliation above while a process or a seat holds its
-        # session, is no member before or after, so nothing reads one to publish, deliver or address under
-        # a channel id. Its roster is a read of its own.
+        # copy's `joined` there, undone above while a process or a seat holds its session, is no member
+        # before or after, so nothing reads one to publish, deliver or address under a channel id. Its
+        # roster is a read of its own.
         view = View([], [], [], events, {}, len(appended))
         if titles:
             _VIEWS[project.id] = view
@@ -8506,6 +8539,9 @@ def resolve_tags(project, text, raws=None):
         live = [m for m in members(project) if m.state in FILLED]
         return project, [{"session": m.session, "alias": m.alias} for m in live], text, True
 
+    for t in tags:
+        if t["project"] and names_channel(t["project"]) is not None:
+            die(channel_say_refusal(t["project"]), 1)   # before any member is looked up, which reconciles (CH1, §8)
     destinations, recipients, held = {}, [], []
     run = audience_module().leading_run(text)[0]
     for i, t in enumerate(tags):
@@ -9414,6 +9450,8 @@ def cmd_say(a):
     dest, recipients, _text, wake = resolve_tags(home, a.text, raws)
     if dest is None:
         die("say outside a project: run it in a project's directory, or name one with --in <project>")
+    if is_channel_id(dest.id):
+        die(channel_say_refusal(dest.name), 1)   # however it was reached: an older copy's rooted registration
     if sid:
         if wake:
             recipients = [r for r in recipients if r["session"] != sid]
@@ -18020,6 +18058,8 @@ def cmd_join(a):
         die("join declares the calling session's project: run it from inside a session")
     if a.cwd and a.project:
         die("usage: sminos join <project> | --cwd | (nothing: which project this session is in)")
+    if a.project and names_channel(a.project) is not None:   # before anything is read or written, a seat's refusal too
+        die("cannot join %s: %s" % (a.project, channel_join_refusal(a.project)), 1)
     try:
         record_config_dir(sid)   # from the session's own environment, as its hook does: its move reads its engine record
     except OSError as e:
@@ -18066,8 +18106,6 @@ def cmd_join(a):
             move_session(sid, now_in, home, "join")
         print("%s is back in %s" % (me, home_line))
         return
-    if names_channel(a.project) is not None:
-        die("cannot join %s: %s" % (a.project, channel_join_refusal(a.project)), 1)
     target = find_project(a.project)
     why = join_refusal(target)
     if why:

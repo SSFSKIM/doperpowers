@@ -23,7 +23,19 @@ docs/doperpowers/plans/2026-11-21-sminos-channels-ch1.md, the milestone's
 - A channel's view has no members whatever its log holds, its plane maps
   are empty, `lifecycle` appends nothing but a `retired` there and
   `append_host` raises; the daemon ticks no channel as a project and its
-  channel pass reconciles one.
+  channel pass reconciles one: it undoes an older copy's `joined` only while
+  a process or a seat holds the session, a closed session's left as it is
+  until it runs again, and an import into a channel delivers nothing.
+- The doors classify an explicit channel id by its form, registered or not
+  (`say --in`, a tag's qualifier, `join`, a verb's target), a say's tags all
+  checked before any member is looked up, `join` refusing a channel before a
+  seat; a rooted registration an older copy made of a channel is no project
+  (registered_guess, a seat's fallback, a say's destination); a location
+  statement naming a channel is no statement; a channel entry of kind
+  `machine` retires no machine; a record's `channels` that is no list holds
+  none.
+- `#` in a project's name: an exact name first, a qualifier read from the
+  right.
 
 Hermetic: HOME and SMINOS_HOME are temporary, fresh for each test; the one
 live session is a `sleep` with an engine record the test writes.
@@ -40,6 +52,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 SCRIPTS = os.path.join(os.path.dirname(HERE), "skills", "sminos", "scripts")
@@ -56,6 +69,8 @@ import sminos  # noqa: E402
 import sminos_channels as channels  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_plane as plane  # noqa: E402
+import sminos_hublog as hublog  # noqa: E402
+import sminos_records as records  # noqa: E402
 import sminos_rl10 as rl10  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
 
@@ -407,6 +422,181 @@ class Tick(Machine):
         with open(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")) as f:
             said = [line for line in f if "the pass of channel desk-integration failed" in line]
         self.assertEqual((calls, len(said)), ([DESK, DESK], 1))
+
+
+class LegacyRoot(Machine):
+    """A channel registered rooted at a folder, as an older copy registered a
+    channel-valued .smns in a protected folder."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.join(os.environ["HOME"], "Documents", "desk")
+        os.makedirs(os.path.join(self.root, "w"))
+        sminos.register_if_absent(sminos.make_project(DESK, "app", "", self.root, HUB))
+        self.project(PROJ, "app")
+        sminos.forget_caches()
+
+    def test_a_rooted_channel_registration_is_no_project(self):
+        sid = "6c000005-0000-4000-8000-0000000000c5"
+        seat = {"cwd": os.path.join(self.root, "w"), "current": sid, "group": "g", "status": "idle"}
+        with mock.patch.object(sminos, "TCC", True):
+            sminos.forget_caches()
+            self.assertIsNone(sminos.registered_guess(os.path.join(self.root, "w")))
+            self.assertEqual([p.id for p in sminos.known_projects([seat])], [PROJ])
+        self.assertEqual([p.id for p in sminos.known_channels()], [DESK])
+        with mock.patch.object(sminos, "seat_project", lambda s, fresh=False: sminos.known_project(DESK)):
+            sminos.forget_caches()
+            self.assertEqual([p.id for p in sminos.known_projects([seat])], [PROJ], "a seat's fallback holds none")
+
+    def test_a_say_whose_destination_is_a_channel_is_refused(self):
+        with mock.patch.object(sminos, "caller_project", lambda caller=None: sminos.known_project(DESK)):
+            code, said = exits(sminos.main, ["say", "hello"])
+        self.assertEqual(code, 1)
+        self.assertIn("is a channel, and speaking in a channel is not available", said)
+        self.assertEqual(self.log_events(DESK), [])
+
+
+class ChannelReconcile(Machine):
+    """A channel's reconciliation undoes an older copy's `joined` only while a
+    process or a seat holds the session."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.join(self.home, "app")
+        os.makedirs(self.root)
+        with open(os.path.join(self.root, ".smns"), "w") as f:
+            json.dump({"project": PROJ, "name": "app", "hub": {"org": ORG}}, f)
+        self.p = self.project(PROJ, "app", self.root)
+        self.c = self.channel(DESK, "desk-integration")
+
+    def older_join(self, sid):
+        sminos.log_append(self.c, "%s/%s" % (MACHINE, sid), "joined", session=sid, alias="worker",
+                          name_source="user", machine=MACHINE, cwd=self.root, worktree="", role="", seat="", by="join")
+        sminos.forget_caches()
+
+    def kinds(self, pid, sid):
+        return [(e["kind"], e.get("reason")) for e in self.log_events(pid) if e.get("session") == sid]
+
+    def tick(self):
+        sminos.forget_caches()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            daemon.tick_all(quiet=True)
+
+    def test_a_closed_session_is_left_until_it_runs_again(self):
+        for n, lane in ((6, "B"), (7, "A")):
+            sid = "6c00000%d-0000-4000-8000-0000000000c%d" % (n, n)
+            records.establish(sid, records.default_provenance())
+            if lane == "B":
+                records.set_controller(sid, "B")
+            self.older_join(sid)
+            for _ in range(2):
+                self.tick()
+            self.assertEqual(self.kinds(DESK, sid), [("joined", None)], "lane %s: nothing written for it" % lane)
+            self.assertIsNone(sminos.threads_module().thread_of(sid), "lane %s: no thread made for it" % lane)
+            proc = self.live(sid, self.root)
+            self.tick()
+            self.assertEqual(self.kinds(DESK, sid), [("joined", None), ("retired", "moved")], lane)
+            self.assertIn(("joined", None), self.kinds(PROJ, sid), lane)
+            proc.kill()
+            proc.wait()
+
+    def test_an_import_into_a_channel_delivers_nothing(self):
+        calls = []
+        with mock.patch.object(sminos, "view_of", lambda *a, **k: calls.append(a) or None), \
+                mock.patch.object(daemon, "deliver_owed", lambda *a, **k: calls.append(a) or (0, [])):
+            hublog.HubLog(self.c, CRED).deliver()
+        self.assertEqual(calls, [])
+
+
+class Doors(Machine):
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.join(self.home, "app")
+        os.makedirs(self.root)
+        with open(os.path.join(self.root, ".smns"), "w") as f:
+            json.dump({"project": PROJ, "name": "app", "hub": {"org": ORG}}, f)
+        self.p = self.project(PROJ, "app", self.root)
+        self.channel(DESK, "desk-integration")
+
+    def test_a_say_checks_every_tag_before_any_member_is_looked_up(self):
+        sid = "6c000008-0000-4000-8000-0000000000c8"
+        self.live(sid, self.root)
+        rc, out, err = self.cli("say", "@worker @desk-integration/worker hello", cwd=self.root)
+        self.assertEqual(rc, 1, err)
+        self.assertIn("desk-integration is a channel", err)
+        self.assertEqual(self.log_events(PROJ), [], "no member was looked up: nothing reconciled, nothing recorded")
+
+    def test_an_unregistered_channel_id_is_a_channel_at_every_door(self):
+        other = "9e000001-0000-8000-8000-0000000000e1"
+        self.assertTrue(sminos.is_channel_id(other))
+        for args, code, words in ((("say", "--in", other, "hi"), 1, "%s is a channel" % other),
+                                  (("say", "@%s/worker hi" % other), 1, "%s is a channel" % other),
+                                  (("charge", "%s/worker" % other, "x"), 4, "names a thread through a channel")):
+            rc, out, err = self.cli(*args, cwd=self.root)
+            self.assertEqual(rc, code, (args, err))
+            self.assertIn(words, err, args)
+        self.assertEqual(self.log_events(PROJ), [])
+
+    def test_join_refuses_a_channel_before_a_seat(self):
+        sid = "6c000009-0000-4000-8000-0000000000c9"
+        other = "9e000001-0000-8000-8000-0000000000e1"
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": sid}), \
+                mock.patch.object(sminos, "caller_seat", lambda: {"current": sid, "alias": "w"}):
+            for q in ("desk-integration", DESK, other):
+                code, said = exits(sminos.main, ["join", q])
+                self.assertEqual(code, 1, q)
+                self.assertIn("cannot join %s: it is a channel, not a project — sminos channel add %s" % (q, q),
+                              said)
+
+    def test_a_location_statement_naming_a_channel_is_no_statement(self):
+        d = os.path.join(self.home, "stated")
+        os.makedirs(d)
+        st = os.stat(d)
+        birth = sminos.birth_ns(getattr(st, "st_birthtime", 0))
+        frame = {"t": "org", "projects": [{"id": DESK, "name": "desk-integration", "kind": "hub", "retired": False}],
+                 "machines": [{"name": MACHINE, "online": False}],
+                 "locations": {"gen": 1, "at": [{"path": sminos.canonical(d), "project": DESK, "stated": "linked",
+                                                 "anchor": {"dev": str(st.st_dev), "ino": str(st.st_ino),
+                                                            "birth": str(int(birth or 0))}}]}}
+        self.assertTrue(uplink.keep_org(frame, CRED))
+        sminos.forget_caches()
+        self.assertEqual(sminos.stated_here(), {})
+        got = sminos.decision(d)
+        self.assertEqual((got.by, got.project.id), ("machine", sminos.machine_project_id(ORG, MACHINE)))
+
+    def test_a_channel_entry_of_kind_machine_retires_no_machine(self):
+        frame = {"t": "org", "projects": [{"id": DESK, "name": "elsewhere", "machine": "elsewhere", "kind": "machine",
+                                           "retired": True}],
+                 "machines": [{"name": MACHINE, "online": False}, {"name": "elsewhere", "online": False}]}
+        self.assertTrue(uplink.keep_org(frame, CRED))
+        sminos.forget_caches()
+        self.assertFalse(sminos.machine_retired("elsewhere"))
+
+    def test_a_record_whose_channels_is_no_list_holds_none(self):
+        threads = sminos.threads_module()
+        rows = [{"thread": "t1", "channels": "5c2a9e10"}, {"thread": "t2", "channels": 7}, {"thread": "t3",
+                                                                                            "channels": [DESK]}]
+        channels._HELD.clear()
+        with mock.patch.object(threads, "all_threads", lambda: rows), \
+                mock.patch.object(threads, "record_ended", lambda t: False):
+            self.assertEqual(channels.held_channels(), frozenset([DESK]))
+        channels._HELD.clear()
+
+
+class HashNames(Machine):
+    def test_an_exact_name_first_and_a_qualifier_from_the_right(self):
+        p = self.project(PROJ, "release#42")
+        self.assertEqual(sminos.find_project("release#42").id, p.id)
+        self.assertEqual([x.id for x in sminos.project_tiers("release#42")], [PROJ])
+        rc, out, err = self.cli("list", "release#42")
+        self.assertEqual(rc, 0, err)
+        self.project(TWIN1, "a#b")
+        self.assertEqual(sminos.find_project("a#b#" + TWIN1[:8]).id, TWIN1, "the qualifier from the right")
+        # An exact name that is also a qualified spelling of another: the exact name wins.
+        self.project(TWIN2, "twin")
+        exact = self.project("7d2b9c43-1f3e-4a6b-8c5d-9e0f1a2b3c4d", "twin#" + TWIN2[:8])
+        self.assertEqual(sminos.find_project("twin#" + TWIN2[:8]).id, exact.id)
+        self.assertEqual(sminos.find_project("twin#" + TWIN2).id, TWIN2, "the whole id reaches the other")
 
 
 if __name__ == "__main__":

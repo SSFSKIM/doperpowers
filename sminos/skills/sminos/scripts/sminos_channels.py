@@ -88,10 +88,17 @@ def held_channels():
     if _HELD.get("key") != key or "value" not in _HELD:
         threads = sminos.threads_module()
         _HELD["value"] = frozenset(c for t in threads.all_threads() if not threads.record_ended(t)
-                                   for c in t.get("channels") or () if sminos.is_channel_id(c))
+                                   for c in _channels_of(t) if sminos.is_channel_id(c))
         _HELD["key"] = key
     _HELD["generation"] = generation
     return _HELD["value"]
+
+
+def _channels_of(record):
+    """A thread record's `channels`, read where it is read: a value that is no
+    list (a hand edit, another version's) is none."""
+    chs = record.get("channels")
+    return chs if isinstance(chs, list) else ()
 
 
 def opens_unfollowed(channel_id):

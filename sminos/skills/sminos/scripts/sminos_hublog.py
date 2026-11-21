@@ -1415,7 +1415,12 @@ class HubLog:
         return True
 
     def deliver(self):
-        """What an import made owed to this machine's members, delivered now."""
+        """What an import made owed to this machine's members, delivered now.
+        Nothing for a channel, which has no member (CH1, C1): its
+        reconciliation is the daemon's channel pass, which the nudge after an
+        import wakes."""
+        if sminos.is_channel_id(self.project.id):
+            return
         sminos.forget_caches()
         total, reached = daemon.deliver_owed(self.project, sminos.view_of(self.project, titles=False))
         if total:

@@ -101,6 +101,13 @@ class Checker(unittest.TestCase):
         got = wire.published([self.events(DESK, self.joined)], [DESK, LOBBY], self.before)
         self.assertEqual(len(got), 1, "the baseline holds it for the lobby, not the desk")
 
+    def test_an_events_frame_of_a_channel_left_out_of_the_list(self):
+        got = wire.published([self.events(DESK, ev(W, 1, "joined", session=S2, alias="w", machine=MACHINE))],
+                             [LOBBY], self.before)
+        self.assertEqual(len(got), 1, "a channel id is a channel's by its form, as in every other branch")
+        self.assertIn("'joined' event under channel %s" % DESK, got[0])
+        self.assertEqual(wire.published([self.events(APP, self.joined)], [LOBBY], self.before), [], "a project's")
+
     def test_a_retired_that_undoes_no_older_joined(self):
         for cid, retired in ((DESK, ev(W, 2, "retired", session=S2, reason="moved", project=APP)),
                              (LOBBY, ev(W, 2, "retired", session=S2, reason="ended")),
