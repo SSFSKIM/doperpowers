@@ -191,8 +191,9 @@ the reply to its message; `reply <name>` the latest, a pending question
 included. For a working seat prefer `send` to `resume`, which stops its
 live turn.
 `attach`, `fill [--resume]` and `retire [--purge]` are in `sminos help`.
-A member on another machine is reached by `say` and `send`; the other
-verbs act on this machine's processes, so run them on its machine.
+A member on another machine is reached by `say` and `send`, and `spawn
+--on` opens one on a devcloud VM; the other verbs act on this machine's
+processes, so run them on its machine.
 
 ## Spawning siblings
 
@@ -206,6 +207,20 @@ your project, or `--cwd`'s; `--brief` is its in-charge line until its first deri
 Spawning an alias whose seat is not live re-fills it fresh; a live seat
 is refused. `--wait` only watches, for `DAEMON_TIMEOUT`: the seat works
 on after, and `reply` reads its live transcript.
+
+    sminos spawn <alias> - --on <vm>|new [--vm-project owner/repo[@ref]]... [--vm-confirmed]
+                [--cwd <path there>] [--brief B] [--role R] [--worktree NAME] <<'EOF'
+    <the task, as written>
+    EOF
+
+`--on` opens the session on a devcloud VM instead: one that exists, or
+`new`, which devcloud makes with your worktree's pushed branch, keeps,
+and gives your thread to own (it takes minutes: run it as a background
+command). The new session is told your address. It is refused, saying
+why, from a VM, from a machine or project the org does not share, from a
+session whose reach is not this machine's default, and with `--wait` or
+`--settings`. The VM itself, its caps and its end are the `devcloud:vm`
+skill's.
 
 **What gets a session.** A session is for a separable standing
 responsibility — one that outlives the task that revealed it, held by

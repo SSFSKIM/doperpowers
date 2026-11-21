@@ -28,8 +28,8 @@ record aside or deletes it. Any process may finish an entry, any number of
 times; nothing else changes a record while its entry is open.
 
 Which hosts a thread owns is devcloud's answer, never a copy kept here
-(contract X9; M5): owned_by() is the one function that runs devcloud, and
-owned_vms() asks it about a thread's sessions.
+(contract X9; M5): owned_by() is the one function that asks devcloud what a
+thread owns, and owned_vms() asks it about a thread's sessions.
 """
 import contextlib
 import copy
