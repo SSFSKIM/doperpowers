@@ -392,6 +392,8 @@ run_suites() {
     fail "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; fi
   if python3 "$SCRIPT_DIR/test_list_fold.py"; then pass "stopped members fold only in text views (test_list_fold.py)"; else
     fail "stopped members fold only in text views (test_list_fold.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_view_race.py"; then pass "a view holds what another process joined during its reconciliation (test_view_race.py)"; else
+    fail "a view holds what another process joined during its reconciliation (test_view_race.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_threads.py"; then pass "every member a thread: its record, the stamp, the reader rule, the journal (test_threads.py)"; else
     fail "every member a thread: its record, the stamp, the reader rule, the journal (test_threads.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_threads_stopped.py"; then pass "a closed session stays: stopped, held, its sender told, a /clear (test_threads_stopped.py)"; else
