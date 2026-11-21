@@ -36,6 +36,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1359,15 +1360,28 @@ class Round4(Verbs):
         self.assertEqual(sminos.reply_to("s", "abcd1234", [appended, woke, said]), (True, "done", False))
         self.assertEqual(sminos.reply_to("s", "abcd1234", [appended, woke, said, then]), (True, "done", True))
 
-    def raced(self):
+    def raced(self, landed=True, first=None):
         """deliver_next as when the daemon's pass took the event between the sender's release of the lock and the
-        sender's own pass: that pass then finds nothing of it."""
+        sender's own pass: that pass then finds nothing of it. `landed`: the daemon's push is in the conversation by
+        the time the sender looks (its text in the transcript); `first(project, member)`: what happens before the
+        daemon's pass."""
         real = sminos.deliver_next
 
         def daemon_first(project, member, due=False, **kw):
+            owed = sminos.owed(project, member)
+            if first is not None:
+                first(project, member)
             real(project, member, due=True)
+            if landed:
+                self.assertTrue(wait_for(lambda: all(
+                    sminos.transcript_contains(member.session, re.sub(r"^@\S+ ", "", e["text"])) for e in owed),
+                    timeout=30), "the push landed")
             return real(project, member, due=due, **kw)
         return mock.patch.object(sminos, "deliver_next", daemon_first)
+
+    def unseen(self, alias):
+        """What a sender is told of its message another delivery settled with nothing of it in the conversation."""
+        return "settled by another delivery, and nothing of it is in %s's conversation" % alias
 
     def test_a_message_the_daemon_delivered_first_is_said_delivered_not_owed(self):
         for argv in (("send", "{short}", "taken first"), ("say", "@{short} taken first")):
@@ -1382,20 +1396,66 @@ class Round4(Verbs):
                 self.assertNotIn("pending", out)
                 self.assertEqual(sum(f.count("taken first") for f in self.frames(sid)[before:]), 1, "pushed once")
 
-    def test_a_live_send_through_receipts_settled_first_is_said_delivered_not_owed(self):
+    def test_a_message_another_delivery_settled_with_no_push_is_never_said_delivered(self):
+        """A settlement proves no push: a stale hold, and an @all whose recipient stopped before the daemon's pass,
+        settle `recorded` with nothing pushed (frontier review round 3)."""
+        def stale(project, member):
+            for e in sminos.owed(project, member):   # decided held for a thread the session no longer fills
+                sminos.delivered_held(project, member.session, e["writer"], e["seq"], str(uuidlib.uuid4()))
+        for argv in (("send", "{short}", "stale first"), ("say", "@{short} stale first")):
+            with self.subTest(verb=argv[0], case="a stale hold"):
+                tid, sid = self.human_thread()
+                alias = self.member(sid).alias
+                with self.raced(landed=False, first=stale):
+                    code, out = self.cli(*[a.format(short=sid[:8]) for a in argv])
+                self.assertEqual(code, 0, out)
+                self.assertIn(self.unseen(alias), out)
+                self.assertNotIn("delivered", out)
+                self.assertNotIn("sent", out)
+                self.assertEqual(self.owed(sid), [], "settled")
+                self.assertFalse([f for f in self.frames(sid) if "stale first" in f], "pushed nothing")
+        with self.subTest(case="an @all to a recipient stopped before the daemon's pass"):
+            tid, sid = self.human_thread()
+            _, proc = self.session(sid=sid, kind="interactive", name="term-b")
+            self.reconcile()
+            alias = self.member(sid).alias
+            with self.raced(landed=False, first=lambda project, member: self.end(proc)):
+                code, out = self.say("@all for the live alone")
+            self.assertEqual(code, 0, out)
+            [said] = self.shown(out, sid)
+            self.assertIn("settled by another delivery, and nothing of it is in", said)
+            self.assertNotIn("delivered", said)
+            self.assertNotIn("sent", said)
+            self.assertEqual(self.resumes(sid), [], "nothing woken")
+
+    def test_a_live_send_through_receipts_settled_first_is_said_by_what_its_conversation_shows(self):
         tid, sid = self.human_thread()
         self.terminal(sid)
+        alias = self.member(sid).alias
 
-        def settled_first(project, member, due=False, **kw):
-            for e in sminos.owed(project, member):
-                sminos.delivered_settle(project, member.session, e["writer"], e["seq"])
-            return {"outcomes": []}
-        with mock.patch.object(sminos.holder_module(), "handoff", lambda pid, session: "receipts"), \
-                mock.patch.object(sminos, "deliver_next", settled_first):
-            code, out = self.cli("send", sid[:8], "settled first")
-        self.assertEqual(code, 0, out)
-        self.assertIn("delivered by a concurrent delivery", out)
-        self.assertNotIn("owed", out)
+        def settled_first(admitted):
+            def deliver(project, member, due=False, **kw):
+                for e in sminos.owed(project, member):
+                    if admitted:   # its receipt's admission: the frame in the conversation
+                        with open(sminos.transcript_now(member.session), "a") as f:
+                            f.write(json.dumps(prompt("auto", sminos.compose_frame("human", e["msg_id"],
+                                                                                   e["text"]))) + "\n")
+                    sminos.delivered_settle(project, member.session, e["writer"], e["seq"])
+                return {"outcomes": []}
+            return deliver
+        for admitted in (True, False):
+            with self.subTest(admitted=admitted):
+                with mock.patch.object(sminos.holder_module(), "handoff", lambda pid, session: "receipts"), \
+                        mock.patch.object(sminos, "deliver_next", settled_first(admitted)):
+                    code, out = self.cli("send", sid[:8], "settled first %s" % admitted)
+                self.assertEqual(code, 0, out)
+                self.assertNotIn("owed", out)
+                if admitted:
+                    self.assertIn("sent to %s (delivered by a concurrent delivery)" % alias, out)
+                else:
+                    self.assertIn(self.unseen(alias), out)
+                    self.assertNotIn("delivered", out)
+                    self.assertNotIn("sent", out)
 
     CEILING = sminos.CEILING_WORDS % "default"
 
