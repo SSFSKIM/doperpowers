@@ -1642,7 +1642,9 @@ and `()` otherwise; its key (`made_of`) takes that tuple.
 
 A `<channel>` is an id, a `name#short` or a name (`find_channel`); a
 `<thread>` is what `find_target` takes. Exit 0 when every target was
-applied or is pending; 1 when the verb or any target was refused, or the
+applied or is pending, or was answered already by its machine with no
+answer this command can read (it says so, and where the thread is now);
+1 when the verb or any target was refused, or the
 caller's own change could not be recorded; 4 for a name that is unknown or
 ambiguous; 2 for usage.
 
