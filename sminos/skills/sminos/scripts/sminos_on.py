@@ -751,7 +751,8 @@ def remote(c, vm, request, directory):
                               d["short"], d["seat"], d["status"], d["session"][:8], d["machine"]), flush=True)
     if c.made is not None:
         sminos.note(c.kept()[len(". The VM "):] + ", and it sends a notice after three idle days")
-        if c.checked is not None and d["head"] and d["head"] != c.checked[1]:
+        # Only where the session runs in the checkout the branch was derived for: an explicit --cwd need not be it.
+        if c.checked is not None and not a.cwd and d["head"] and d["head"] != c.checked[1]:
             sminos.note("origin's %s moved while the VM was made: the VM's checkout is at %s" % (c.checked[0], d["head"]))
     sys.exit(0)
 

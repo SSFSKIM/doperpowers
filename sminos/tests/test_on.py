@@ -550,6 +550,12 @@ class New(On):
         self.assertEqual(code, 0, err)
         self.assertNotIn("moved while", err)
         self.assertNotIn("is kept and", err)
+        # An explicit --cwd: the session's directory need not be the checkout of the branch derived, so its commit
+        # says nothing of that branch.
+        self.answers("dc-x-0001", self.spawned(machine="dc-x-0001", head=other, cwd="/home/u/elsewhere"))
+        code, out, err = self.spawn("--on", "new", "--cwd", "~/elsewhere")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("moved while", err)
 
     def test_from_a_terminal_new_is_refused(self):
         self.refused(1, "spawn --on new: no session runs this, so the VM would have no owner", "--on", "new",
