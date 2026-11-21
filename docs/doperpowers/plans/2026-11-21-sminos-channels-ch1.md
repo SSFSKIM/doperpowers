@@ -212,7 +212,9 @@ lock, the delivery lock and held. Added here:
   finishes drops what the provisional record had gained; an older copy that
   itself begins a return leaves the record's positions as they were before
   the end, so a later release may push what the channel's log gained while
-  the thread was ended; a session an older copy joined into a channel and
+  the thread was ended, and so does a return of this code's over a channel
+  whose log is there and cannot be read, for that channel alone (the
+  holder's ruling of 2026-11-21); a session an older copy joined into a channel and
   that is closed before this code's next reconciliation is listed in
   neither until it runs again; a 1.51.0 or 1.52.0 copy's `list --json`
   shows a spawned thread's record keys it does not know, the positions and
@@ -2297,6 +2299,23 @@ while the milestones are built, one observation and its evidence each.
   fresh reads: the `own_stream` read inside `restate`'s `decide` uses the
   module's ordinary readers; a stale writer can only skip a statement or
   write one that states nothing, which the next pass repairs.
+- 2026-11-21 — **A return over an unreadable channel log** (the holder's
+  ruling; Y3). A return over a channel whose log is there and cannot be
+  read keeps that channel's `began` from before the end, writes the others
+  anew, commits, and says so once; it is on the accepted list beside the
+  older copy's return. A return must not wait on one channel's log: a
+  thread that cannot come back because a log it only reads is unreadable
+  is the worse fault, and a wake would inherit it. What the kept positions
+  cost: events the channel gained while the thread was ended count as
+  after its membership began, so CH2 may push them once at the return,
+  where the design means them not owed; nothing is lost or misaddressed
+  (they are the channel's own events, and the thread is a member). *Lost:
+  an unknown-boundary marker,* a third state of the record that CH2 and
+  every older finisher would have to read, for a local read error a
+  healthy machine does not produce. An add differs on purpose: it has no
+  earlier positions to keep, so it stays `failed unreadable` with nothing
+  written (M2). The holder folds this into the composite (C3, Y3) at CH1's
+  landing.
 
 ## Outcomes & Retrospective
 
