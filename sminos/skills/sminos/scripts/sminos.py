@@ -5630,7 +5630,9 @@ def held_alias(logged, logged_source, peer, session, shadowed=None):
     else its harness name; ("", "") for none. A name the harness made up
     (GENERATED_NAMES) changes with each process — a resume draws a new
     suffix, a background job gets a title — so it never replaces an alias
-    already held: the address stays the one its peers know.
+    already held: the address stays the one its peers know. Nor does the
+    engine's own title, whatever source its record gives it
+    (titled_by_engine).
 
     Nor is a harness name taken that would shadow a live identity, the alias
     of a seat or of another current member of the project (`shadowed`, from
@@ -5650,6 +5652,8 @@ def held_alias(logged, logged_source, peer, session, shadowed=None):
         if released:
             name = "" if name == released else name
             logged, logged_source = ("", "") if logged == released else (logged, logged_source)
+    if name and logged and name != logged and source not in GENERATED_NAMES and titled_by_engine(session, name):
+        source = "auto"   # the engine's own title, restored as a given name: made up all the same
     if name and (source not in GENERATED_NAMES or not logged) \
             and not (name != logged and shadowed is not None and shadowed(name)):
         return name, source
@@ -9725,6 +9729,46 @@ def transcript_title(session_id):
         return title
     except OSError:
         return ""
+
+
+_TITLE_PAIRS = {}  # session -> ((path, size, mtime_ns), (custom, ai)): valid while the file is unchanged
+
+
+def titled_by_engine(session, name):
+    """Whether `name` is the title the engine wrote for the session itself
+    (its latest `ai-title`) and not the one its human gave it (its latest
+    `custom-title`): a name the engine made up, whatever source its record
+    gives it. 2.1.330's background worker titles a woken session and names
+    its record by the title (`nameSource auto`); a later process of the
+    session restores that name from the transcript as `user`. Read backward
+    from the transcript's end, at most 8 MiB, to the latest of each."""
+    path = transcript_path(session)
+    if not path or not name:
+        return False
+    try:
+        st = os.stat(path)
+        key = (path, st.st_size, st.st_mtime_ns)
+        held = _TITLE_PAIRS.get(session)
+        if held and held[0] == key:
+            custom, ai = held[1]
+        else:
+            custom = ai = None
+            with open(path, "rb") as f:
+                for _, line in _lines_backward(f, _complete_end(f), budget=8 << 20):
+                    if b'-title"' not in line:
+                        continue
+                    r = _record(line) or {}
+                    if custom is None and r.get("type") == "custom-title" and isinstance(r.get("customTitle"), str):
+                        custom = " ".join(r["customTitle"].split())
+                    elif ai is None and r.get("type") == "ai-title" and isinstance(r.get("aiTitle"), str):
+                        ai = " ".join(r["aiTitle"].split())
+                    if custom is not None and ai is not None:
+                        break
+            _TITLE_PAIRS[session] = (key, (custom, ai))
+    except OSError:
+        return False
+    name = " ".join(name.split())
+    return ai == name and custom != name
 
 
 def _position_path(project, session):

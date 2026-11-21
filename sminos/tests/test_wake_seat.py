@@ -39,7 +39,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_wake import Engine, line_of, sminos, threads, wake, wait_for  # noqa: E402
+from test_wake import Engine, line_of, rows, sminos, threads, wake, wait_for  # noqa: E402
 import sminos_records as records  # noqa: E402
 import wake_engine  # noqa: E402
 
@@ -624,6 +624,98 @@ class Human(Wakers):
 
 
 # ------------------------------------------------------------ a seat, through the verbs and delivery
+
+
+class Names(Wakers):
+    """A woken session keeps its alias by sminos's rule (held_alias): a name the engine made up never displaces the
+    alias the log holds. 2.1.330's background worker titles a woken session (an `ai-title`, its `agent-name`
+    after it) and names its record by it, `nameSource auto`; a later process of the session restores that name
+    from the transcript as `user`. A name its human set (`/rename`: its `custom-title`) still takes."""
+
+    def tick(self):
+        """A daemon tick's reconciliation and its renames."""
+        sminos.forget_caches()
+        sminos.reconcile(self.p)
+        sminos.forget_caches()
+        return sminos.daemon_module().publish_renames(self.p, sminos.view_of(self.p, titles=False))
+
+    def alias(self, sid):
+        sminos.forget_caches()
+        return sminos.own_alias(self.own(sid), sid)[0] or sid[:8]
+
+    def renames(self, sid):
+        sminos.forget_caches()
+        return [e for e in self.own(sid) if e["kind"] == "renamed"]
+
+    def titled(self, sid, kind, title):
+        """A title row the engine appends, and the `agent-name` it writes after it."""
+        key = {"custom-title": "customTitle", "ai-title": "aiTitle"}[kind]
+        self.transcript(sid, rows({"type": kind, key: title, "sessionId": sid},
+                                  {"type": "agent-name", "agentName": title, "sessionId": sid}))
+
+    def named(self, sid, name, source):
+        """The live process's engine record, named as the engine names it."""
+        for path, _ in sminos.engine_record_paths(fresh=True):
+            with open(path) as f:
+                rec = json.load(f)
+            if rec.get("sessionId") == sid:
+                rec.update(name=name, nameSource=source)
+                with open(path, "w") as f:
+                    json.dump(rec, f)
+        sminos.forget_caches()
+
+    def never_named(self):
+        """A session its human opened and never named, joined under the name the engine drew for it."""
+        sid = self.opened()
+        with open(sminos.transcript_now(sid)) as f:
+            kept = [line for line in f if '"custom-title"' not in line]
+        with open(sminos.transcript_now(sid), "w") as f:
+            f.writelines(kept)
+        _, proc = self.session(sid=sid)
+        self.reconcile()
+        self.end(proc)
+        return sid
+
+    def two_wakes(self, sid):
+        held = self.alias(sid)
+        self.assertTrue(self.wake(sid).live)
+        self.titled(sid, "ai-title", "greeting reply test")
+        self.named(sid, "greeting reply test", "auto")
+        self.tick()
+        self.assertEqual(self.alias(sid), held, "the first woken turn's title is made up")
+        self.stop(sid)
+        self.assertTrue(self.wake(sid).live)
+        self.named(sid, "greeting reply test", "user")
+        self.tick()
+        self.assertEqual(self.alias(sid), held, "and so is the same title restored by the next process")
+        self.assertEqual(self.renames(sid), [], "no renamed for a made-up name over a held alias")
+        m = next(m for m in sminos.view_of(self.p, titles=False).members if m.session == sid)
+        self.assertEqual(m.alias, held, "the alias it goes by")
+        return held
+
+    def test_a_session_its_human_named_keeps_its_alias_across_two_wakes(self):
+        tid, sid = self.human_thread()
+        self.two_wakes(sid)
+
+    def test_a_never_named_session_keeps_its_alias_across_two_wakes(self):
+        sid = self.never_named()
+        self.assertNotEqual(self.alias(sid), "greeting reply test")
+        self.two_wakes(sid)
+
+    def test_a_rename_by_its_human_still_takes(self):
+        tid, sid = self.human_thread()
+        self.assertTrue(self.wake(sid).live)
+        self.titled(sid, "ai-title", "greeting reply test")
+        self.named(sid, "greeting reply test", "auto")
+        self.tick()
+        self.titled(sid, "custom-title", "term-b")
+        self.named(sid, "term-b", "user")
+        self.assertEqual(self.tick(), 1)
+        self.assertEqual(self.alias(sid), "term-b")
+        self.titled(sid, "custom-title", "greeting reply test")   # renamed by hand to the engine's own title
+        self.named(sid, "greeting reply test", "user")
+        self.assertEqual(self.tick(), 1)
+        self.assertEqual(self.alias(sid), "greeting reply test")
 
 
 class Seat(Wakers):
