@@ -53,12 +53,29 @@ def run(ctx, name, given):
     refused = _refusal(given, t)
     if refused:
         raise DriverError(FAILED, refused)
-    short, project = t["short"], t["project"]
-    tag = "@" + short
+    tag = "@" + t["short"]
     record = adopt.load(ctx, name)
     entry = None if record is not None else ctx.find(name)
     host = record.host if record is not None else entry.host
     old = record.creator if record is not None else entry.vm["labels"].get("devcloud-creator")
+    where = "this Mac's adoption record" if record is not None else "its provider's label"
+    named = f"@{old}" if old else "no owner"
+    # What each side was last seen to hold, for a signal between the writes (acceptance 6).
+    sides = {"host": f"may hold {tag} or not (its write was under way)", "label": f"still names {named}"}
+    try:
+        return _hand(ctx, name, given, t, record, entry, host, old, where, sides)
+    except BaseException as stop:
+        if not isinstance(stop, Exception):     # an interrupt or a SIGTERM (cli's Terminated)
+            ctx.warn(f"devcloud vm: {name}'s handover was stopped part way: the host, which sends its notices, "
+                     f"{sides['host']}, and {where}, which decides whom sminos refuses to retire, {sides['label']}; "
+                     f"run devcloud vm owner {name} {given} again to complete it")
+        raise
+
+
+def _hand(ctx, name, given, t, record, entry, host, old, where, sides):
+    """run's writes and read-back, keeping `sides` to what each was last seen to hold."""
+    short, project = t["short"], t["project"]
+    tag = "@" + short
 
     def holds(held):
         return held is not None and held.tag == tag and (held.project == project["id"] or not held.takes_project)
@@ -80,8 +97,13 @@ def run(ctx, name, given):
             raise DriverError(FAILED, f"{name} gave no whole answer to the new owner ({seen[0]}) and holds "
                                       f"{host_words(now)} now; the command may still be running there. Nothing else "
                                       f"was changed: run devcloud vm owner {name} {given} again to settle it")
+        held = now
+    sides["host"] = f"holds {host_words(held)}"
     # Then the label or the record. A failure or a lost reply here does not end the verb: the read-back says.
-    if old != short:
+    if old == short:
+        sides["label"] = f"names {tag} already"
+    else:
+        sides["label"] = f"may name {tag} or not (its write was under way)"
         if record is not None:
             try:
                 written = adopt.update(ctx, name, creator=short)
@@ -95,10 +117,10 @@ def run(ctx, name, given):
                 ctx.merge_labels(entry, {"devcloud-creator": short})
             except (OSError, DriverError) as error:     # its lock, or the provider: the read-back says
                 ctx.warn(f"devcloud vm: {name}'s label: {error}")
+        sides["label"] = f"was written to name {tag}, and not read back"
     # Both sides read back, the host by its own parser.
     held = hostctl.host_owner(ctx, host)
     if record is not None:
-        where = "this Mac's adoption record"
         try:
             now = adopt.load(ctx, name)
         except DriverError:
@@ -108,7 +130,6 @@ def run(ctx, name, given):
                 raise adopt.gone(name)
             label = now.creator
     else:
-        where = "its provider's label"
         try:
             vm = entry.client.get(entry.vm["id"])
             label = vm["labels"].get("devcloud-creator") if vm is not None else UNREAD

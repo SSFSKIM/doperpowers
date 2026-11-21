@@ -705,11 +705,18 @@ run and any provider call, `--dry-run` too: `--enroll` makes a host that
 joins the org, the MAWS project added after those named when none of them
 provisions it, and is exit 3 under a profile whose `[desk]` names no
 provisioning; `--expect-creator <short>` makes nothing (exit 1) unless the
-creating session `up` reads is that one. sminos reads two of the
-driver's lines: `<name>  ready in <m>m<ss>s`, the one line of that form in
-a whole `up`'s output, for the host's name, and, from `vm ssh`, the opening
-`no VM named` of `Context.find`'s refusal of a name no account holds; each
-is pinned by a test in `tests/unit` named for that reader.
+creating session `up` reads is that one. With `--enroll`, a boot that
+skipped the provisioning that enrolls (the `maws` step neither ok nor
+deferred) is a failure of `up` (exit 1) naming the VM it keeps, never
+`ready`. A failure after the create says a lease bounds the VM only where
+it has one; a kept VM is named with the `down` that removes it. sminos
+reads some of the driver's lines: `<name>  ready in <m>m<ss>s`, the one
+line of that form in a whole `up`'s output, for the host's name; where
+`up` fails, its `caps` line, its `created   <name> (id …) from …` and its
+recount's `deleted <name>`, for whether a VM was made and kept; and, from
+`vm ssh`, the opening `no VM named` of `Context.find`'s refusal of a name
+no account holds; each is pinned by a test in `tests/unit` named for that
+reader.
 
 **Images.** `image build [--account A] [--arch x86|arm]` creates a builder (the smallest type
 of the account's default type's architecture, or of `--arch`,
@@ -763,7 +770,9 @@ parser, and reports the handover (`<name> was owned by @<old>; <alias>#<short>
 reply lost on either side is settled by that read, never taken for a write
 that failed; where the two sides differ (two handovers at once, a write
 that did not land) it exits 1 saying what each holds, and run again it
-settles. On this Mac every merge of a server's labels (`lease`, the
+settles. Stopped by a signal once it began to write, it says which side it
+last saw hold the new owner and which not, and that running it again
+completes it. On this Mac every merge of a server's labels (`lease`, the
 reaper's, the image builder's, the handover's) and every write of an
 adoption record is made under one lock per host name
 (`~/.local/state/devcloud/locks/<name>.lock`), held for the read and the

@@ -24,6 +24,7 @@ import stat
 import subprocess
 import sys
 import time
+from unittest import mock
 
 import _path  # noqa: F401
 from driver import adopt, cli, context, hostctl, owned
@@ -503,6 +504,67 @@ class ReadBack(OwnerBase):
         self.assertEqual((code, err), (1, "devcloud vm: lab-box's adoption record was removed while this ran (the "
                                           "machine was released): nothing more was written\n"))
         self.assertIsNone(adopt.load(self.ctx, "lab-box"))
+
+
+class Stopped(OwnerBase):
+    """Acceptance 6: a handover stopped between its writes says which place holds the new owner and which does
+    not, and that running it again completes it; one stopped before it wrote anything says only that."""
+
+    def partial(self, err, host, label, where="its provider's label", name=NAME):
+        self.assertIn(f"devcloud vm: {name}'s handover was stopped part way: the host, which sends its notices, "
+                      f"{host}, and {where}, which decides whom sminos refuses to retire, {label}; run devcloud vm "
+                      f"owner {name} builder again to complete it\n", err)
+
+    def test_stopped_while_the_host_is_written(self):
+        self.vm()
+
+        def write(tag, project):
+            raise KeyboardInterrupt
+        self.host.on_write = write
+        code, out, err = self.owner()
+        self.assertEqual((code, out), (130, ""))
+        self.partial(err, f"may hold @{SHORT} or not (its write was under way)", f"still names @{OLD}")
+        self.assertTrue(err.endswith("devcloud vm: interrupted\n"), err)
+
+    def test_stopped_while_the_label_or_the_record_is_written(self):
+        self.vm()
+        with mock.patch.object(self.ctx, "merge_labels", side_effect=cli.Terminated):
+            code, out, err = self.owner()
+        self.assertEqual((code, out), (143, ""))
+        self.partial(err, f"holds @{SHORT} with project p-7c1e9a", f"may name @{SHORT} or not (its write was under "
+                                                                    "way)")
+        self.assertTrue(err.endswith("devcloud vm: terminated\n"), err)
+        adopt.save(self.ctx, adopt.Record(name="lab-box", address="203.0.113.50", user="root", lifetime="keep",
+                                          expires=None, projects=[], phase="booted", created=NOW, creator=OLD))
+        self.host.apply(f"@{OLD}", "example")
+        with mock.patch.object(adopt, "update", side_effect=KeyboardInterrupt):
+            code, out, err = self.owner(name="lab-box")
+        self.assertEqual(code, 130)
+        self.partial(err, f"holds @{SHORT} with project p-7c1e9a", f"may name @{SHORT} or not (its write was under "
+                                                                    "way)", where="this Mac's adoption record",
+                     name="lab-box")
+
+    def test_stopped_while_both_are_read_back(self):
+        self.vm()
+        reads = []
+
+        def read(target, command):
+            reads.append(target)
+            if len(reads) == 1:
+                raise KeyboardInterrupt
+            return self.host.answer()
+        self.remote.rules = [r for r in self.remote.rules if "python3 -P - read" not in r["needle"]]
+        self.remote.on("python3 -P - read", fn=read)
+        code, out, err = self.owner()
+        self.assertEqual(code, 130)
+        self.partial(err, f"holds @{SHORT} with project p-7c1e9a", f"was written to name @{SHORT}, and not read back")
+
+    def test_stopped_before_anything_was_written_says_only_that(self):
+        self.vm()
+        with mock.patch.object(self.ctx, "thread", side_effect=KeyboardInterrupt):
+            code, out, err = self.owner()
+        self.assertEqual((code, err), (130, "devcloud vm: interrupted\n"))
+        self.nothing_sent()
 
 
 # --- the owner program, run as the driver sends it, against a temporary host ------------------------
