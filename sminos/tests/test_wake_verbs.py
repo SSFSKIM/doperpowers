@@ -158,6 +158,7 @@ class Human(Verbs):
                 self.assertEqual(code, 0, out)
                 self.assertIn("(woken)", out)
                 self.assertEqual(self.resumes(sid), [FLAGS], "a first wake's flags, no message after them")
+                self.assertTrue(wait_for(lambda: self.frames(sid)), "its inbox wrote the frame down")
                 [frame] = self.frames(sid)
                 self.assertTrue(line_of(frame)[1].startswith(wake.LINE_HEAD), "closed by the line")
                 self.assertEqual(frame.count("carry on, %s" % verb[0]), 1)

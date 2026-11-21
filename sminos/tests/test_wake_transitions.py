@@ -157,6 +157,7 @@ class Sweep(Transitions):
         self.assertTrue(wait_for(lambda: self.record(sid) is not None))
         code, out = self.cli("say", "@%s after it" % sid[:8])
         self.assertEqual(code, 0, out)
+        self.assertTrue(wait_for(lambda: self.inputs(sid)), "its inbox wrote the frame down")
         [frame] = [i["message"]["content"] for i in self.inputs(sid)]
         self.assertIn("after it", frame)
         self.assertNotIn(sminos.wake_module().LINE_HEAD, frame)

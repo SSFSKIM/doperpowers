@@ -373,12 +373,13 @@ class OneLaunch(Deliveries):
                 self.assertTrue(threads.wake_line(tid, sid, line))
                 code, out = self.say("@%s %s" % (sid[:8], case))
                 self.assertEqual(self.shown(out, sid), ["sent"])
+                self.assertTrue(wait_for(lambda: case in "".join(self.frames(sid)[-1:])))
                 frame = self.frames(sid)[-1]
-                self.assertIn(case, frame)
                 self.assertNotIn(wake.LINE_HEAD, frame, "no other launch's line")
                 self.assertNotIn("line", self.waking(tid, sid), "removed")
         self.assertTrue(threads.wake_line(tid, sid, dict(note, at=old, short=rec["jobId"])))
         self.say("@%s its own" % sid[:8])
+        self.assertTrue(wait_for(lambda: "its own" in "".join(self.frames(sid)[-1:])))
         self.assertTrue(line_of(self.frames(sid)[-1])[1].startswith(wake.LINE_HEAD), "the launch's own process")
 
     def test_a_line_whose_launch_is_in_flight_goes_to_a_process_started_since_and_waits_otherwise(self):
@@ -465,8 +466,8 @@ class OneLaunch(Deliveries):
         with mock.patch.object(sminos, "remove_copy", then_by_hand):
             code, out = self.say("@%s after the copy" % sid[:8])
         self.assertEqual(code, 0, out)
+        self.assertTrue(wait_for(lambda: "after the copy" in "".join(self.frames(sid)[-1:])))
         frame = self.frames(sid)[-1]
-        self.assertIn("after the copy", frame)
         self.assertNotIn(wake.LINE_HEAD, frame, "the discarded copy's line goes to no process")
         self.assertNotIn("line", self.waking(tid, sid))
 
