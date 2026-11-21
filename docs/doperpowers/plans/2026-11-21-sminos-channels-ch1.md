@@ -2426,14 +2426,30 @@ while the milestones are built, one observation and its evidence each.
   it prints times to the second and a requester as `alias#short`,
   `<short>@<machine>` or "the person at <machine>". `channel env`'s
   "not in the channel" reads the roster, and the machine is matched
-  case-insensitively against the org's directory; the pool counts this
-  machine's queued `channel-env` appends. `member_json`, which the chart's
+  case-insensitively against the org's directory. `member_json`, which the chart's
   member JSON also uses, carries `channels` only on a row in a channel. The
   M5 unit tests are `T/test_channels_roster.py`, in the `channels` part.
   A13 for the listing: `list`, `list --org`, `list --json`, `list
   --stopped`, `list --all` and `list --org --json`, from a terminal and
   from a session, identical to the merge base's over one store with no
   channel (ages normalised).
+- 2026-11-21 — **M5's review, round 1, as fixed** (`4ab6784f`). `env`
+  checks the terminal, the machine and then membership, and that last
+  check (`_states`) reads only the session's own events in its project, so
+  a refusal never reconciles or appends; its membership is what the
+  thread's log states, so while a restatement is due a channel only the
+  record holds is refused. A session with rows in two projects' views keeps
+  the row of the project its newest membership points to (`_where_now`,
+  `last_project`'s rule), in the roster, `list --channel --json` (which
+  keeps exactly the roster's rows) and the pool; at a tie of two projects
+  the roster keeps neither, as `_current_here` writes nothing then. A
+  refusal answers a request only with a `reason` in `REASONS`. A pending
+  request takes its target's machine and label from the last ended row
+  this reader may still read, never put back in a roster. `member_json`'s
+  `channels` follows the roster's test for an ended row. Reversed: the pool
+  does not count queued `channel-env` appends (an `env` has a session
+  writer, and the queue holds the operator's appends alone); it reads the
+  merged log.
 
 ## Outcomes & Retrospective
 
