@@ -563,6 +563,13 @@ run_suites_c() {
   if python3 -B "$SCRIPT_DIR/test_stdin_bodies.py"; then
     pass "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"
   else fail "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"; fi
+  # EN.G1 (docs/doperpowers/plans/2026-11-21-sminos-environments-en-g1.md): its five suite files, here and nowhere else.
+  if python3 -B "$SCRIPT_DIR/test_notice.py"; then
+    pass "a machine's notice: the marker, its route and frame, a direct send's runs, say --exit-held (test_notice.py)"
+  else fail "a machine's notice: the marker, its route and frame, a direct send's runs, say --exit-held (test_notice.py)"; fi
+  if "$SCRIPT_DIR/test-notice-machines.sh"; then
+    pass "a machine's notice between two machines: the thread's current session, the frame, going on (test-notice-machines.sh)"
+  else fail "a machine's notice between two machines: the thread's current session, the frame, going on (test-notice-machines.sh)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 summary() {

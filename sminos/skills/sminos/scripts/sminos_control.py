@@ -236,7 +236,10 @@ def push_live(peer, session, text, event=None, project=None, words=None, marker=
 def _routes(peer, session, text, event, project, words, marker):
     """push_live's routes, the peer bound: a receipt's marker to the inbox;
     a person's words through the bridge, then the supervisor; else the inbox
-    frame."""
+    frame. A machine's notice (S.notice_of) is nobody's words: the inbox
+    frame from its S.notice_sender, whatever the verdict (X8), so that a
+    verdict of `words`, which the VM's own endpoint gives for the VM's own
+    line, never puts it before a session as its human's prompt."""
     if marker is not None:
         text = "%s\n%s" % (marker, text)
     else:
@@ -249,7 +252,8 @@ def _routes(peer, session, text, event, project, words, marker):
             if mode != "legacy":
                 raise S.SendFailed("before", "session %s's process takes %s only with a receipt (%s)" % (
                     session[:8], S.event_ref(event), mode))
-        owner = words if words is not None else event is not None and S.owner_event(event)
+        notice = event is not None and S.notice_of(event)
+        owner = not notice and (words if words is not None else event is not None and S.owner_event(event))
         if owner and deliver(session, project, event, text):
             return
         # The bridge declined, which can take seconds: each route after it is bound again, so a `/clear` meanwhile
@@ -261,7 +265,8 @@ def _routes(peer, session, text, event, project, words, marker):
             if took is True:
                 return
             peer = S.bound_peer(peer, session)
-    sender = str(event.get("via") or event.get("from") or "") if event is not None else ""
+    sender = "" if event is None else S.notice_sender(event) if S.notice_of(event) else \
+        str(event.get("via") or event.get("from") or "")
     # from_project arrives in synced events and lands in a shell argument: only an id-shaped one is used
     origin = event.get("from_project") if event is not None else None
     origin = origin if isinstance(origin, str) and S.valid_name(origin) else project

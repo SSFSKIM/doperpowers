@@ -68,7 +68,7 @@ import wake_engine  # noqa: E402
 PATHS = ("say", "send", "project")
 COMBOS = ((1, 1), (1, 3), (2, 1), (2, 3), (5, 1), (5, 3))   # (senders, messages from each)
 # What settles a message pushed: a delivery pass's outcomes (sminos.PUSHED, an uncertain one's left out), and a
-# plain send's own push (SendDelivery.settle, which keeps no outcome).
+# plain send's own push (SendDelivery.landed, each run as it lands, and SendDelivery.settle; neither keeps an outcome).
 PUSHED = ("sent", "woken", "send")
 WOKEN_FAR = "recorded (on testhost): the session is stopped, and its machine wakes it with this"
 
@@ -100,13 +100,14 @@ class Senders(Deliveries):
     def ledger(self):
         """What this process's deliverers made of each event, by (session, writer, seq): `self.decided`, every
         outcome a delivery pass concluded (sminos._conclude: a push's, a hold's); `self.settled_by`, what settled it
-        (that outcome; `send`, a plain send's own push, SendDelivery.settle; or `ended`, the settlement of an end or
-        of an advance away from the session, sminos_outcomes.settle_ended). A deliverer in a process of its own (a
-        sender's in Race) leaves neither."""
+        (that outcome; `send`, a plain send's own push, SendDelivery.landed or .settle; or `ended`, the settlement of an
+        end or of an advance away from the session, sminos_outcomes.settle_ended). A deliverer in a process of its own
+        (a sender's in Race) leaves neither."""
         self.decided, self.settled_by, why = collections.defaultdict(list), {}, []
         real_settle, real_conclude = sminos.delivered_settle, sminos._conclude
         outcomes = sminos.sibling_module("sminos_outcomes")
         real_ended, real_sent = outcomes.settle_ended, sminos.SendDelivery.settle
+        real_landed = sminos.SendDelivery.landed
 
         def settle(project, session, writer, seq):
             real_settle(project, session, writer, seq)
@@ -130,7 +131,8 @@ class Senders(Deliveries):
             return run
         for module, name, fn in ((sminos, "delivered_settle", settle), (sminos, "_conclude", conclude),
                                  (outcomes, "settle_ended", by("ended", real_ended)),
-                                 (sminos.SendDelivery, "settle", by("send", real_sent))):
+                                 (sminos.SendDelivery, "settle", by("send", real_sent)),
+                                 (sminos.SendDelivery, "landed", by("send", real_landed))):
             p = mock.patch.object(module, name, fn)
             p.start()
             self.addCleanup(p.stop)

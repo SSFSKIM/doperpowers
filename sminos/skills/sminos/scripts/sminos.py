@@ -64,6 +64,11 @@ back by a fill.
     sminos say      [--org] [--project P,..] [--machine M,..] [--here] [--state W,..] <text>   # list's filters:
                    every live session of that scope but you (`list` with the same flags shows them), each woken
                    as @all wakes; recorded in each project it reaches, copied into yours; no @tags beside it
+    sminos say      --notice <program> …                  # a machine's own program speaking (devcloud's hosts:
+                   devcloud), refused in a session: each event marked, shown from <program>@<machine>, never
+                   delivered as a person's words
+    sminos say      --exit-held …                         # exit 3 when a tagged recipient's line says it is held
+                   and not woken; the message is recorded as without it
     sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
     sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
     sminos charge   [<member>] "<one line>"               # what the member is in charge of, until its next
@@ -300,6 +305,7 @@ PERMISSION_MODES = ("plan", "default", "acceptEdits", "auto", "dontAsk", "bypass
 PREAMBLE_PATH = os.path.join(SCRIPT_DIR, "..", "references", "spawn-preamble.md")
 
 EXIT_USAGE = 2
+EXIT_HELD = 3      # say --exit-held: a tagged recipient's line was a held one (EN.G1's plan, Interfaces §2)
 EXIT_UNKNOWN = 4
 
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -2885,10 +2891,47 @@ def owner_event(e):
     """Whether a log event is the owner's words: a `human` event written by
     the owner's own writer — `<machine>/human` (sminos run with no session)
     or the hub's `hub/<member>` (a send from the desk, which the hub stores
-    only as a `human`). A session's `say`, and anything else, is a peer's:
-    it reaches a session as a peer message, never as the human's words."""
+    only as a `human`) — that is no machine's notice (notice_of). A
+    session's `say`, and anything else, is a peer's: it reaches a session as
+    a peer message, never as the human's words."""
     writer = writer_base(str(e.get("writer") or ""))
-    return e.get("kind") == "human" and (writer.startswith("hub/") or writer.rsplit("/", 1)[-1] == "human")
+    return e.get("kind") == "human" and (writer.startswith("hub/") or writer.rsplit("/", 1)[-1] == "human") \
+        and not notice_of(e)
+
+
+# A machine's notice (contract X8 of docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md; EN.G1's
+# plan, Interfaces §1): a `human` event under a machine's human writer whose `notice` names the program that speaks
+# (`say --notice <program>`, run by that machine's own program with no session: devcloud's hosts pass `devcloud`). It
+# is nobody's words: delivered as a peer's frame from `<program>@<machine>`, never through the bridge or a
+# supervisor, whatever the endpoint's verdict. The field on any other kind or writer marks nothing.
+NOTICE_PROGRAM_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
+NOTICE_MACHINE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")   # MAWS's machine-name grammar
+NOT_MACHINES = ("hub", "legacy")   # writer prefixes that are no machine, in any case
+
+
+def notice_of(e):
+    """The program a machine's notice names, "" for any other event: a
+    `human` event whose plain writer is `<machine>/human` (an audience
+    stream of it included, never `hub/<member>`), whose machine is a
+    machine name (NOTICE_MACHINE_RE in full, never `hub` or `legacy` in
+    any case), and whose `notice` is a non-empty string. MAWS's predicate
+    is the same, so the two never read one event differently."""
+    notice = e.get("notice")
+    if e.get("kind") != "human" or not isinstance(notice, str) or not notice:
+        return ""
+    machine, _, last = writer_base(str(e.get("writer") or "")).rpartition("/")
+    if last != "human" or not NOTICE_MACHINE_RE.fullmatch(machine) or machine.lower() in NOT_MACHINES:
+        return ""
+    return notice
+
+
+def notice_sender(e):
+    """`<program>@<machine>` for a marked event: the program its `notice`
+    names when that is whole by NOTICE_PROGRAM_RE, else the word `notice`;
+    the machine as its plain writer names it."""
+    notice = notice_of(e)
+    program = notice if NOTICE_PROGRAM_RE.fullmatch(notice) else "notice"
+    return "%s@%s" % (program, writer_base(str(e.get("writer") or "")).rpartition("/")[0])
 
 
 def writer_short(writer):
@@ -6894,12 +6937,18 @@ def remote_line(member):
     wake = wake_of(member) if member.state in HELD_STATES else None
     if wake == "woken" and member.state == "stopped":
         return woken_line(member.machine)
-    if wake != "held":
+    if not remote_held(member):
         return None
     why = why_of(member)
     if why == "read-only":
         return "recorded: %s admits nothing from another machine, and refuses it there" % member.machine
     return held_line(why, member.machine) if why in HOLD_WORDS else held_line_151(member.machine)
+
+
+def remote_held(member):
+    """Whether remote_line's line for a member of another machine is a held
+    one: that machine published `held` for it, whatever its `why` (X3)."""
+    return member.state in HELD_STATES and wake_of(member) == "held"
 
 
 def held_line_151(machine=""):
@@ -7306,7 +7355,8 @@ def holder_wake(project, e):
     its bridge found retained): a pointer to it, the same receipt's marker
     put before it by push_live."""
     return "[sminos chat %s %s from %s → @you, again]\nIt is above in this conversation, delivered before: read it " \
-           "there." % (project.name, event_ref(e), frame_alias(str(e.get("via") or e.get("from") or "")))
+           "there." % (project.name, event_ref(e), frame_alias(notice_sender(e) if notice_of(e) else
+                                                        str(e.get("via") or e.get("from") or "")))
 
 
 # A person's words on a machine cut over to its endpoint (O12 M6). The
@@ -7507,10 +7557,12 @@ class ReachGate:
         """Whether the push of `e` is the gate's: a log event handed over as
         a peer frame on a machine whose endpoint decides reach. A person's
         words (`words` True, or with no verdict a writer push_live takes as
-        the owner's) are the words gate's."""
+        the owner's) are the words gate's. A machine's notice is asked about
+        as any `human` event of its writer is: only its route and its frame
+        differ (notice_of)."""
         if not self.capable or e is None:
             return False
-        return not (words if words is not None else owner_event(e))
+        return not (words if words is not None else owner_event(e) or bool(notice_of(e)))
 
     def needs(self, e, session, words=None):
         """Whether the push needs the endpoint's `deliver`: the gate's, and
@@ -7873,13 +7925,15 @@ def frame_of(project, e, events, session, cursor):
     whose target is `@you`, or a broadcast's scope (target_label: `@all`,
     `@all on mini`).
     Its unread count leaves out copies: each is a record of a message
-    another log carries, not one spoken here."""
+    another log carries, not one spoken here. A machine's notice is shown
+    from its notice_sender, `<program>@<machine>`."""
     if e.get("msg_id"):
-        return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""),
-                             sender_labels(project)(e))
+        return compose_frame(notice_sender(e) if notice_of(e) else str(e.get("via") or e.get("from") or ""),
+                             e["msg_id"], str(e.get("text") or ""), sender_labels(project)(e))
     unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and "copy" not in x and
                  writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
-    return compose_chat_frame(project.name, event_ref(e), str(e.get("from") or ""),
+    sender = notice_sender(e) if notice_of(e) else str(e.get("from") or "")
+    return compose_chat_frame(project.name, event_ref(e), sender,
                               target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""),
                               sender_labels(project)(e))
 
@@ -9070,8 +9124,12 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
     (deliver_next); another machine's by that machine's daemon, which this
     machine's is asked to push it to at once. On a cut-over machine a
     person's words this pass leaves owed for the endpoint's verdict (O12 M6)
-    are said so, and the daemon nudged: its uplink asks."""
+    are said so, and the daemon nudged: its uplink asks. The recipients
+    whose line was a held one (`--exit-held`'s, Interfaces §2 of EN.G1's
+    plan): a thread of this machine held for a reason it is not woken
+    (HOLD_WORDS), or one another machine published `held` for."""
     by_session = {m.session: m for m in members(dest)}
+    held_for = []
     for r in recipients:
         member = by_session.get(r["session"])
         if member is not None and not member.local:
@@ -9079,6 +9137,8 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
             # once this machine's daemon has pushed it: ask for that now. A
             # stopped session its machine says it holds (X3) is said so.
             print("%s: %s" % (name(r), remote_line(member) or "recorded (on %s)" % member.machine))
+            if remote_held(member):
+                held_for.append(r)
             nudge_daemon()
             continue
         result = deliver_next(dest, member, due=True) if member else {"outcomes": []}
@@ -9089,6 +9149,8 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
             # This very event decided held, and still owed: why, as its writer's pass found it (T2's §5).
             why = hold_why(mine[0] if mine else first) or hold_now(member.session) or "starting"
             print("%s: %s" % (name(r), held_line(why, session=member.session)))
+            if why in HOLD_WORDS:
+                held_for.append(r)
             continue
         if mine:
             woken = {"woken": "sent (woken)", "woken?": "sent? (woken)"}   # §5: a live push's words, woken
@@ -9104,6 +9166,7 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
             continue
         held = next((o for ev, o in result["outcomes"] if ev["writer"] == writer), "")
         print("%s: pending%s" % (name(r), " behind an earlier undelivered message (%s)" % held if held else ""))
+    return held_for
 
 
 # A broadcast's scope (§5a of the org directory design): list's filters, put
@@ -9202,7 +9265,7 @@ def say_scoped(a, home, sender, writer, kind, sid):
         # Where each recipient's transcript ends before its event is appended (frame_landed reads what follows).
         note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)
         for split_writer, aud, rs, _text in splits:
-            fields = {"from": sender, "to": rs, "text": a.text, "wake": True, "scope": scope}
+            fields = {"from": sender, "to": rs, "text": a.text, "wake": True, "scope": scope, **notice_field(a)}
             if home is not None and home.id != dest.id:
                 fields["from_project"] = home.id  # the sender's own project, where a reply finds it
             try:
@@ -9225,10 +9288,24 @@ def say_scoped(a, home, sender, writer, kind, sid):
         sys.exit(1)
 
 
+def notice_field(a):
+    """The field `say --notice` puts on every event the call appends (X8)."""
+    return {"notice": a.notice} if a.notice else {}
+
+
 def cmd_say(a):
     """Record a message in a project's log, and deliver it to whom it tags;
-    with a selector, to every live session of its scope (say_scoped)."""
+    with a selector, to every live session of its scope (say_scoped).
+    `--notice <program>` marks every event it appends as that machine's
+    program's notice (X8), refused inside a session; `--exit-held` exits
+    EXIT_HELD when a tagged recipient's line was a held one (deliver_say),
+    and changes nothing else."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if a.notice and sid:
+        die("--notice marks a notice of a machine's own program, and a session is not one: drop it")
+    if a.notice and not NOTICE_PROGRAM_RE.fullmatch(a.notice):
+        die("--notice names the program that speaks, as a lower-case word of letters, digits and hyphens (32 at "
+            "most): %s" % a.notice)
     scoped = selector_given(a)
     if scoped and leading_tags(a.text):
         die("a selector picks the recipients itself: drop the opening @tags, or the selector — tags name "
@@ -9269,7 +9346,7 @@ def cmd_say(a):
     recorded = []
     note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)   # before the appends (frame_landed)
     for split_writer, aud, rs, text in splits:
-        fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": text}
+        fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": text, **notice_field(a)}
         if wake:
             fields["wake"] = True
         if sid and home is not None and home.id != dest.id:
@@ -9286,8 +9363,11 @@ def cmd_say(a):
         recorded.append((e, rs))
     if recorded and sid and home is not None and home.id != dest.id:
         record_copy(home, [(dest, e) for e, _ in recorded])
+    held_for = []
     for e, rs in recorded:
-        deliver_say(dest, e, e["writer"], rs)
+        held_for += deliver_say(dest, e, e["writer"], rs)
+    if a.exit_held and held_for:
+        sys.exit(EXIT_HELD)
 
 
 def target_label(e):
@@ -9327,8 +9407,8 @@ def chat_line(e, label=""):
     refs = [copy] if isinstance(copy, str) else [r for r in copy if isinstance(r, str)] if isinstance(copy, list) else []
     if refs:
         target += " → %s" % ", ".join(project_label(r.partition(":")[0]) for r in refs)
-    out = ["%s %s %s%s → %s  %s" % (e["ts"][11:19], event_ref(e), frame_alias(str(e.get("from", ""))), label, target,
-                                    lines[0])]
+    sender = notice_sender(e) if notice_of(e) else str(e.get("from", ""))
+    out = ["%s %s %s%s → %s  %s" % (e["ts"][11:19], event_ref(e), frame_alias(sender), label, target, lines[0])]
     out += ["    " + line for line in lines[1:]]
     return "\n".join(out)
 
@@ -15854,9 +15934,9 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
     while True:
         try:
             if delivery:
-                # An @all reaches only the live: to a session this send woke it is settled by passing (payload).
-                control_module().push_live(peer, s["current"], delivery.payload(not woken), delivery.queue[-1],
-                                           delivery.project.id, carried=delivery.carried(not woken))
+                # An @all reaches only the live: to a session this send woke it is settled by passing (runs). A
+                # machine's notice still owed goes as a push of its own, ahead of this one (SendDelivery.push).
+                delivery.push(peer, s["current"], not woken)
             else:
                 send_frame(socket_path_of(bound_peer(peer, s["current"])), text, sender)
             break
@@ -15896,7 +15976,9 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
                 woken = True
                 continue
             if delivery:
-                delivery.settle()  # uncertain after a write: never pushed again
+                # Uncertain after a write: that run is never pushed again, and a later one stays owed.
+                delivery.landed(delivery.pushing)
+                delivery.release()
             unlock(locks)
             die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s). Not "
                 "waking it and not re-sending id=%s; check the seat with sminos reply/attach before retrying." % (
@@ -16019,6 +16101,7 @@ class SendDelivery:
         unknown = next((e for e in self.queue if e not in self.stale and held_unreadable(record, e)), None)
         self.cursor = cursor_load(project, session)
         self.skipped = []
+        self.pushing = None
         self.held = "the endpoint decides its delivery" if words_held(event) else (
             self.checked() if sibling_module("sminos_rl10").cut_over() else None)
         if self.held is None and unknown is not None:
@@ -16060,6 +16143,49 @@ class SendDelivery:
         self.skipped = [e for e in self.queue if e.get("wake") and not live]
         return "\n\n".join(frame_of(self.project, e, self.events, self.session, self.cursor)
                              for e in self.queue if e not in self.skipped and e not in self.stale)
+
+    def runs(self, live):
+        """The queue as the pushes it is handed over in: [(the text, the
+        event that routes it, the events it carries)], in the writer's order.
+        One run, the whole payload under the queue's last event, as today,
+        unless the queue holds a marked event: then a new run begins wherever
+        a marked event and an unmarked one are neighbours. What `live` leaves
+        out and what is stale are left out as `payload` and `carried` leave
+        them out. A machine's notice is so never carried inside a payload
+        another event routes (X8): on a machine not cut over an operator's
+        verb goes by the bridge as the owner's words (EN.G1's plan, §1)."""
+        self.skipped = [e for e in self.queue if e.get("wake") and not live]
+        out = []
+        for e in self.queue:
+            if e in self.skipped or e in self.stale:
+                continue
+            if out and bool(notice_of(out[-1][-1])) == bool(notice_of(e)):
+                out[-1].append(e)
+            else:
+                out.append([e])
+        return [("\n\n".join(frame_of(self.project, e, self.events, self.session, self.cursor) for e in run),
+                 run[-1], run) for run in out]
+
+    def push(self, peer, session, live):
+        """The runs pushed in order to the session's process
+        (control.push_live), each settled as it lands (landed), so the
+        record's settled prefix never passes an event that was not handed
+        over. What push_live raises for a run is raised, that run and every
+        later one still queued; `pushing` names the run's last event."""
+        for text, route, carried in self.runs(live):
+            self.pushing = route
+            control_module().push_live(peer, session, text, route, self.project.id, carried=carried)
+            self.landed(route)
+        self.pushing = None
+
+    def landed(self, last):
+        """A run handed over, `last` its last event: it and everything queued
+        before it (a skipped broadcast, a stale hold) settled, in order, and
+        out of the queue."""
+        at = self.queue.index(last) + 1
+        for e in self.queue[:at]:
+            delivered_settle(self.project, self.session, self.writer, e["seq"])
+        self.queue = self.queue[at:]
 
     def settle(self):
         for e in self.queue:
@@ -16256,8 +16382,7 @@ def send_to_member(project, m, sender, via, text, msg_id):
         print("sent to %s (%s)" % (m.alias, mine[0] if mine else "owed behind an earlier message"))
         return
     try:
-        control_module().push_live(peer, m.session, delivery.payload(True), delivery.queue[-1], project.id,
-                                   carried=delivery.carried(True))
+        delivery.push(peer, m.session, True)
     except ReachHeld:
         delivery.held = "the endpoint decides its delivery"
         delivery.recorded_owed(m.alias)
@@ -16267,7 +16392,8 @@ def send_to_member(project, m, sender, via, text, msg_id):
         return
     except SendFailed as e:
         if e.phase == "after":
-            delivery.settle()
+            delivery.landed(delivery.pushing)   # that run never pushed again; a later one stays owed
+            delivery.release()
             die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s); "
                 "do not blindly re-send" % (m.alias, e), 1)
         delivery.fail()
@@ -18823,6 +18949,8 @@ def build_parser():
     say = sub.add_parser("say", add_help=False)
     say.add_argument("text")
     say.add_argument("--in", dest="in_", default="")
+    say.add_argument("--notice", default="")
+    say.add_argument("--exit-held", action="store_true")
     scope_flags(say)
     say.set_defaults(fn=cmd_say, args=[])
 
