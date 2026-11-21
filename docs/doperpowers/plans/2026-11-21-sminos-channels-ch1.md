@@ -2374,6 +2374,22 @@ while the milestones are built, one observation and its evidence each.
   target's current session's record. A queued request is dropped from the
   ordered input once the log holds its writer and id. Every path keeps M3's
   gate: a request is carried out only for a channel registered here.
+- 2026-11-21 — **M4's review, round 1, as fixed** (`0a43efe5`). Every
+  membership check under a lock (`_member_of`, `set_channels`' last guard,
+  `_current_here`) picks writer files by the identity `identity.json` holds
+  now; `is_self`, `own_writers_here`, `same_owner_local` and
+  `outside_origin` take `fresh`, and `_Facts` calls them rather than keep
+  copies of the same-owner rule. A terminal's `create` runs the first
+  member's stream choice against the channel about to be made before it
+  registers anything. A request read from a former name's queue is pending
+  `queued` until `release_queued` rewrites it under the current name, and
+  sorts after the log's requests as every queued append does; no event
+  logged under a former name is trusted. The store-locked comparison of
+  the ordered input is by file stats alone (`input_signature`). A command
+  whose request was answered first reports from the statement that
+  answered it (the record's open entry, else its sessions' events), and
+  when neither can be read says it was answered and where the thread is
+  now, exit 0. A failed write for one target is that target's outcome.
 
 ## Outcomes & Retrospective
 
