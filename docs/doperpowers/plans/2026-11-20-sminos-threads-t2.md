@@ -349,14 +349,17 @@ rule for transitions. Consumes §1, §2, §7, §8.
   live leaves that event as a failed `send` to a stopped seat leaves one
   today, and the verb exits as it does today; M3 and M4 give it the hold.
 - **Waiting.** `--wait`, for a seat as for any session, waits for the
-  message's id in the transcript and then for the turn that holds it to
-  end, and prints the assistant text that follows the row holding it up to
-  the next prompt that starts a turn: a row put into the running turn (the
-  bridge's second delivery to a busy session, the engine's own meta rows)
-  delimits nothing, and nor does a prompt that names the message itself
-  (the bridge's wake for a delivery it appended with no turn running); a
-  busy job alone is no evidence, since an idle woken job is
-  listed before any turn. The seat's reply file and `status` are still
+  message's frame in the transcript (its head, `[sminos message from …
+  id=<id>]`, at a line's start, never the id quoted in a body) and then for
+  the turn that holds it to end, and prints the assistant text that follows
+  the row holding it, or, when the bridge's wake naming that row's first
+  frame line follows it (the row went in while a turn that never read it
+  was ending, or after a stop), the text that follows the wake, what was
+  said before it being the turn's that did not read the row; up to the next
+  prompt that starts a turn other than that wake. A row put into the
+  running turn (the bridge's second delivery to a busy session, the
+  engine's own meta rows) ends nothing; a busy job alone is no evidence,
+  since an idle woken job is listed before any turn. The seat's reply file and `status` are still
   written under their guard, for `sminos reply` and the list; the waiter
   does not print from that shared file. A seat's `turns` and its `working`
   status are written when a message was pushed, not when a process was
@@ -624,10 +627,11 @@ Consumes §3 and §4.
   same wake and the same push. §6 says what each does before it; where the
   table is silent a verb exits and prints as it does today.
 - `--wait` on a thread with no seat record waits as M2 made a seat's wait:
-  by the message's id in the transcript, then for the turn that holds it to
-  end (the engine's record of the process reading `idle`), and prints the
-  assistant text that follows the row holding it up to the next prompt
-  that starts a turn (M2's rule). With no such
+  by the message's frame in the transcript, then for the turn that holds it
+  to end (the engine's record of the process reading `idle`), and prints
+  its reply by M2's rule: the assistant text after the row holding it, or
+  after the bridge's wake naming that row when one follows, up to the next
+  prompt that starts a turn. With no such
   text it prints `(no reply yet)`. A watcher that expires says the reply is
   read with `sminos reply <name>`, which from M4 resolves a session with no
   seat on this machine and prints its transcript's last reply. A message
@@ -951,7 +955,7 @@ fields, a retired seat's return).
 | W2 | Under it, read again, in this order: the record by its thread id; that it is the thread `thread_of` answers for the session now, its `current` the session, with no reservation on it; its end; its open entry; the session's lane; E5's three signals; `not_woken` with the last turn read whole; unless `due`, `wake_due`; and the job an earlier wake accepted (`waking.job`): while its grace has not passed, against the job list; one that reads failed or is gone, or whose grace has passed, is a launch that failed (the accepted job), and the wake goes on only when one is due. |
 | W3 | If the session's row exists and the engine lists that row's job as neither stopped nor failed while no process holds the session, stop that job (`claude stop <its short>`) and wait for it as `wait_stopped` does. |
 | W4 | Read the row. A row: no flag. No row: `first_flags`. Unreadable: `first_flags`, unless the record's `waking.saved` is set or this is the pass after row 12. A first wake's flags are checked by themselves: W2 read the policy and the row once and the flags read them again, so a mode flag that asks for approval launches nothing (row 10c). Then write `waking.line` for this wake, with an id of its own and the time it was written (§7); a write refused launches nothing (row 10d). |
-| W5 | Look at the thread's directory again: one gone since W2 is the hold `cwd`, the line removed and nothing launched. Run `claude` with `wake_argv` from that directory, with `launch_env` as today. |
+| W5 | Run `claude` with `wake_argv` from the thread's directory, with `launch_env` as today. A directory gone since W2, as the launch boundary finds it (`run_claude_bg`'s typed answer, `NoLaunchDir`, at its look or when the engine's start there fails), is the hold `cwd`, the line removed and nothing launched; no wake exits on it, and a fresh spawn, a verb, exits as before. |
 | W6 | Read the answer: the exit status, the banner's short, the three notes of E14. A banner naming a job with no note of a copy: that job is kept in `waking.job` (§7) before W7, the accepted job, and the line is bound to it (its `short`) in the same write. |
 | W7 | Wait, for `poll_uuid`'s bound, until the engine's record shows a process holding the session, or the job the banner named reads failed. |
 | W8 | Write what the wake learned, each write made only while the record is still the thread and the session it was decided for: `waking`'s failure and accepted job cleared and `saved` set when row 12 led here, the stop mark lifted (`stop_seen`), and the caller's `on_live`. |
@@ -974,7 +978,7 @@ session that is live, and holds the event otherwise.
 | 9 | W2: a reason of `not_woken` | nothing | not live, that reason |
 | 10 | W2: the wake is not due | nothing | not live, `failed` |
 | 10a | W2: an accepted job within its grace that the job list shows working or blocked (a list that does not read: `unknown`) | nothing | not live, `starting` |
-| 10b | W2: an accepted job that reads failed or is gone, or whose grace has passed | counted failed, its line removed | on to W3 when due, else not live, `failed` |
+| 10b | W2: an accepted job that reads failed or is gone, or whose grace has passed | counted failed, its line removed, only while the record still holds that job (its `short` and `at`); one the record hook cleared first counts nothing | on to W3 when due, else not live, `failed`; W2 again when the hook cleared it |
 | 10c | W4: a first wake whose own mode flag asks for approval | nothing | not live, `mode` |
 | 10d | W4: `waking.line` cannot be written (an entry an older copy opened since W2, which takes no wake lock) | nothing | as W2 finds it now, else `unknown` |
 | 11 | W6: a copy, "is open in another Claude Code process" or "is already running in the background" | the copy removed; nothing remembered | as W2 finds it now: live, or `starting` |
@@ -1020,7 +1024,11 @@ sweep's pass, which reads the process again under the wake lock it holds
 out and leaves a busy lock to the next tick), each forgetting a wake's
 failures with it. A job that reads failed or is gone, or whose grace passes
 with no process holding the session, is a launch that failed, counted as
-any failure with its line removed (row 10b): a wake finds it so by the job
+any failure with its line removed (row 10b), and only while the record
+still holds the job observed, its `short` and `at`, decided in the field's
+own compare-and-set: the record hook, which forgets the job when a process
+holds the session and takes no wake lock, wins when it cleared it first,
+and the wake reads W2 again; a wake finds it so by the job
 list within the grace and by the record alone after it, and the sweep
 counts one whose grace has passed from the record alone, under the wake
 lock it holds out, so §4's schedule holds the daemon's next wake and no
@@ -1198,7 +1206,7 @@ over it are refused for a human-opened thread as T1 refuses them.
 | `job` | the job a wake's banner named, accepted before its process is seen (§3, W6): `{"short": str, "at": time}`, read only within `WAKE_GRACE` of `at` |
 
     def wake_line(thread_id, session, line, lock_until=None)          # line set, before a launch
-    def wake_failed(thread_id, session, line_id, lock_until=None)     # failed += 1, at; that line removed (None: none)
+    def wake_failed(thread_id, session, line_id, lock_until=None, job=None)  # failed += 1, at; that line removed (None: none); with job, only while the field holds that very job, the line bound to it removed
     def wake_done(thread_id, session, saved=None, lock_until=None)    # failed and at removed; saved set when given
     def wake_line_sent(thread_id, session, line_id, lock_until=None)  # line removed, if it still has that id
     def wake_forget(thread_id, session, lock_until=None)              # saved removed: sminos removed the session's row
@@ -1490,8 +1498,8 @@ is read defensively (§1). devcloud is not touched.
   write guarded on its occupant), and a launch that lost its banner while
   a background process of the session runs goes through W8. `--wait` reads
   the transcript incrementally and stops at the next prompt that starts a
-  turn (never a row put into the running turn, nor a wake naming the
-  message), writing the
+  turn (never a row put into the running turn), its reply starting after
+  the bridge's wake when one names the row holding the message, writing the
   seat `idle` only while no later turn runs. `SMINOS_LAUNCH_TIMEOUT`
   (default 300) bounds a launch, for the timed-out row's test.
 - 2026-11-20 — **For M4, from the holder on M2's decisions.** A `fill
@@ -1576,7 +1584,12 @@ is read defensively (§1). devcloud is not touched.
   acknowledges its folded answers. A sender's own pass that finds nothing of
   its event because another deliverer settled it first (the writer's
   settled prefix, `settled_already`) says it was delivered by a concurrent
-  delivery, for `send`, `say` and a receipt's send alike. A returned seat
+  delivery only when the event's frame is in the conversation at one look
+  (a send's id, a chat event's frame head; `settled_words`), and otherwise
+  that another delivery settled it, claiming no push: a settled entry keeps
+  no outcome and the uplink's outcomes are of outside events alone, and a
+  stale hold, an @all whose recipient stopped and a refusal settle unpushed;
+  for `send`, `say` and a receipt's send alike. A returned seat
   whose task the endpoint decides waits up to `SMINOS_VERDICT_WAIT` (30 s)
   for the verdict and reports both facts on a refusal, read from daemon.log
   by the event's whole identity (`refused_key`: project id, writer, seq,
@@ -1684,6 +1697,35 @@ is read defensively (§1). devcloud is not touched.
   long-lived process between `wake_member`'s return and `holder_push`'s
   `try`. The steer's other routes (the bridge's, the supervisor's, MAWS's)
   still carry a `[sminos] ` line unescaped, outside this scope.
+- 2026-11-21 — **The frontier review, round 3.** A single reviewer read the
+  second round's diff and found five things, all in its fixes; all fixed,
+  each with a test that failed before its fix. `reply_to` follows one rule
+  in place of round 2's two patches (M2's "Waiting."): the row holding the
+  waited-for frame is found by its head at a line's start, the reply starts
+  after it, or after the bridge's wake whose `Unread:` names that row's
+  first frame line when one follows (what was said before such a wake is
+  the turn's that did not read the row), and ends at the next prompt that
+  starts a turn other than that wake; a row put into the running turn ends
+  nothing. Its fixtures are the rows the bridge writes (`wakeText`,
+  `frameOf`, `appendDelivery`). A settlement another deliverer made first is
+  said delivered only on evidence of a push, the frame in the conversation,
+  else that another delivery settled it (`settled_words`, the words of
+  `settled_elsewhere`; superseding round 2's scalpel-4#5 wording). The
+  accepted job is counted failed only while the record still holds the job
+  observed, inside the field's own compare-and-set, so a record hook that
+  cleared it first wins and the live worker keeps its line (row 10b). The
+  launch boundary answers a gone directory itself (`NoLaunchDir`), which a
+  wake turns into the hold `cwd` and a fresh spawn into its exit, the
+  wake's own second look removed (superseding round 2's sweep#4 change).
+  What the `reply_to` change leaves: a waiter that reads `idle` between the
+  end of the turn that missed its row and the bridge's wake prints that
+  turn's answer, and one reading rows as they come closes at a person's
+  prompt queued ahead of the wake (`_wait_reply`'s polling, outside this
+  round); a prompt the engine injects into a running turn as a
+  `queued_command` attachment is read by neither, as before. Two plain-send
+  sites older than T2 (`send_to_seat` and `send_to_member` when the
+  delivery finds its queue empty) still say a concurrent delivery
+  delivered it with no evidence. This closes the frontier review.
 
 ## Outcomes & Retrospective
 
