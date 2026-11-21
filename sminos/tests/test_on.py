@@ -762,11 +762,11 @@ class New(On):
     def test_stopped_after_up_exited_before_its_result_returned_keeps_the_vm(self):
         closed, calls = on.closed, []
 
-        def stopped_once(proc):
-            calls.append(proc)
+        def stopped_once(files):
+            calls.append(files)
             if len(calls) == 1:   # up's own: its child has exited, and its result is not yet returned
                 raise KeyboardInterrupt
-            closed(proc)
+            closed(files)
         with mock.patch.object(on, "closed", stopped_once):
             code, out, err = self.spawn("--on", "new")
         self.assertEqual(code, 1, err)
@@ -774,8 +774,8 @@ class New(On):
         self.assertIn("spawn --on: stopped while devcloud ran", err)
         self.assertIn(". The VM dc-x-0001 is kept and", err)
         self.assertEqual(self.verbs(), ["up"])
-        for proc in calls:
-            closed(proc)
+        for files in calls:
+            closed(files)
 
     def test_stopped_while_the_vm_side_runs_says_where_to_look(self):
         for argv, vm in ((["--on", "vm1"], "vm1"), (["--on", "new"], "dc-x-0001")):
@@ -788,6 +788,40 @@ class New(On):
                 self.assertNotIn("nothing was spawned", err)
                 if vm == "dc-x-0001":
                     self.assertIn(". The VM dc-x-0001 is kept and", err)
+
+
+class Bound(On):
+    def test_the_bound_holds_while_a_descendant_keeps_devcloud_s_output_open(self):
+        """The ssh under `devcloud vm ssh` is such a descendant: the call returns at its deadline, whatever still
+        holds the pipe. (A watchdog ends the descendant after 8 s, so that a call that waits on it fails here
+        rather than hangs.)"""
+        self.cfg.update(child=True, hang=True)
+        self.save()
+        c = on.Call(mock.Mock(on="vm1", alias="w"))
+        c.devcloud = os.environ["SMINOS_DEVCLOUD"]
+        returned = threading.Event()
+
+        def child():
+            with contextlib.suppress(OSError, ValueError, IndexError, KeyError):
+                with open(os.path.join(os.environ["HOME"], "devcloud-standin.calls")) as f:
+                    return json.loads(f.readlines()[-1])["child"]
+
+        def watchdog():
+            if not returned.wait(8) and child():
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(child(), signal.SIGKILL)
+        threading.Thread(target=watchdog, daemon=True).start()
+        began = time.monotonic()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            got = on.run_devcloud(c, ["vm", "owned-by", "abcd1234"], timeout=0.3, keep_err=True)
+        took = time.monotonic() - began
+        returned.set()
+        pid = child()
+        if pid:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+        self.assertTrue(got[3], "the bound passed")
+        self.assertLess(took, 3, "returned at its deadline, not when the descendant let go")
 
 
 class Outcome(On):

@@ -42,6 +42,7 @@ CREATED_RE = re.compile(r"created   (\S+) \(id [^)]*\) from .*")   # where `vm u
 CAPS_LINE = "caps      "                   # `vm up`'s caps line, printed before it makes anything
 ENROLL_WAIT, ENROLL_POLL, REMOTE_TIMEOUT = 660, 30, 480   # seconds; SMINOS_ON_ENROLL_WAIT, _POLL, SMINOS_ON_TIMEOUT
 LS_REMOTE_TIMEOUT = 30
+PIPE_DRAIN, PIPE_GRACE = 10, 1   # seconds devcloud's output is drained for once it exited; once its bound passed
 
 # `new` always means a VM to be made: a host of that name is reached with `devcloud vm ssh`, never with --on.
 NEW = "new"
@@ -579,27 +580,23 @@ def run_devcloud(c, args, stdin=None, timeout=None, keep_err=False, vm=None, non
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=child_env())
         except OSError as e:
             c.refuse("spawn --on: the devcloud at %s could not be run: %s" % (c.devcloud, e.strerror or e))
-        pumps += [threading.Thread(target=pump_out, daemon=True), threading.Thread(target=pump_err, daemon=True)]
+        pumps += [(threading.Thread(target=pump_out, daemon=True), proc.stdout),
+                  (threading.Thread(target=pump_err, daemon=True), proc.stderr)]
         if stdin is not None:
-            pumps.append(threading.Thread(target=feed, daemon=True))
-        for t in pumps:
+            pumps.append((threading.Thread(target=feed, daemon=True), proc.stdin))
+        for t, _ in pumps:
             t.start()
         try:
             code = proc.wait(timeout)
         except subprocess.TimeoutExpired:
             threads.stop_tree(proc.pid, proc.wait)
             code, timed_out = proc.wait(), True
-        for t in pumps:
-            t.join(5)
-        closed(proc)
+        drained(pumps, PIPE_GRACE if timed_out else PIPE_DRAIN)
     except (Stopped, KeyboardInterrupt):
         if proc is not None:
             if proc.returncode is None:
                 threads.stop_tree(proc.pid, proc.wait)
-            for t in pumps:
-                if t.ident is not None:
-                    t.join(5)
-            closed(proc)
+            drained([(t, f) for t, f in pumps if t.ident is not None], PIPE_DRAIN)
         if vm is not None:
             c.refuse("spawn --on: stopped while devcloud vm ssh ran, and devcloud was stopped with it: a session may "
                      "or may not have started there, and devcloud vm ssh %s -- sminos list shows" % vm)
@@ -610,8 +607,20 @@ def run_devcloud(c, args, stdin=None, timeout=None, keep_err=False, vm=None, non
     return code, lines, "".join(err), timed_out
 
 
-def closed(proc):
-    for f in (proc.stdin, proc.stdout, proc.stderr):
+def drained(pumps, within):
+    """Each pump given what is left of `within` seconds to finish, then the
+    pipes of those that did closed: one still blocked on its read is a pipe
+    a descendant of devcloud holds open (the ssh under `vm ssh`), and a
+    close of it would wait for that descendant, where this process's exit
+    does not."""
+    deadline = time.monotonic() + within
+    for t, _ in pumps:
+        t.join(max(0.0, deadline - time.monotonic()))
+    closed([f for t, f in pumps if not t.is_alive()])
+
+
+def closed(files):
+    for f in files:
         if f is not None:
             f.close()
 
