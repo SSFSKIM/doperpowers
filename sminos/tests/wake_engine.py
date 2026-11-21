@@ -56,7 +56,10 @@ process started, before it exits with nothing printed); `barrier` (each
 launch waits until the file is removed; `launches` counts those entered);
 `no-reply`, `reply-delay` (seconds), `reply-reversed` (two frames' whole
 turns run the second first: its prompt and reply, then the first's); `bridge` (the helper serves sminos's bridge
-socket for the session, a signal of E5's beside its record and its job).
+socket for the session, a signal of E5's beside its record and its job); `spare` (each launch also leaves a
+session claimed from the engine's spare pool with no prompt yet, as 2.1.330 does: a helper whose record says
+`"spare": true` under a session id of its own, with an inbox and no job in the list, which drops the flag at its
+first frame; `spare(cwd)` starts one for a test directly).
 """
 import contextlib
 import fcntl
@@ -509,6 +512,8 @@ def start(sid, flags, run_with, cwd, path, message, row, note, defaults=False):
     if hang is not None:
         time.sleep(float(hang) if hang else 600)
         return 1
+    if switch("spare") is not None:
+        start_spare(row["cwd"])
     label = " · %s" % name if note.startswith("note: woke") else ""
     print("backgrounded · %s%s%s" % (short, label, IDLE if message is None else ""))
     if note:
@@ -518,6 +523,42 @@ def start(sid, flags, run_with, cwd, path, message, row, note, defaults=False):
 
 def record_path(pid):
     return os.path.join(config(), "sessions", "%d.json" % pid)
+
+
+def spare(cwd):
+    """A session claimed from the spare pool with no prompt yet (2.1.330: a
+    claim the supervisor logs as `(spare)`): its helper writes a record with
+    `"spare": true` under a session id of its own, kind `bg`, an inbox and
+    no job entry, and drops the flag at its first frame, which runs a turn
+    in that session. (sid, pid) once its inbox listens, started through a
+    process of the engine's own, so the helper is no child of the caller's
+    (a test's), as a launch's is not."""
+    out = subprocess.run([sys.executable, "-B", HERE, "--spare", cwd], capture_output=True, text=True, timeout=30,
+                         check=True).stdout.split()
+    return out[0], int(out[1])
+
+
+def start_spare(cwd):
+    """spare's work, in the engine's process (a launch's, or `--spare`'s)."""
+    sid = str(uuid.uuid4())
+    spec = {"sid": sid, "short": sid[:8], "cwd": cwd, "name": sid[:8], "nameSource": "", "mode": "auto",
+            "model": "claude-spare", "transcript": transcript_for(sid, cwd), "message": None, "late_inbox": 0,
+            "late_process": 0, "bridge": False, "spare": True, "state": state()}
+    spec_path = os.path.join(state(), "spec-%s.json" % uuid.uuid4().hex[:8])
+    write_json(spec_path, spec)
+    for d in ("helpers", "inputs"):
+        os.makedirs(os.path.join(state(), d), exist_ok=True)
+    with open(os.path.join(state(), "helper.err"), "a") as err:
+        proc = subprocess.Popen([sys.executable, "-B", HERE, "--helper", spec_path], cwd=cwd,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+                                start_new_session=True, close_fds=True)
+    with open(os.path.join(state(), "helpers", str(proc.pid)), "w") as f:
+        f.write(spec_path)
+    mark = os.path.join(state(), "ready", "%d.inbox" % proc.pid)
+    end = time.monotonic() + 15
+    while not os.path.exists(mark) and time.monotonic() < end and proc.poll() is None:
+        time.sleep(0.005)
+    return sid, proc.pid
 
 
 # ------------------------------------------------------------ the process
@@ -556,6 +597,16 @@ class Helper:
                 rec["status"] = status
                 write_json(self.record, rec)
 
+    def unspare(self):
+        """A spare's first frame makes it a session like any (2.1.330): the flag dropped, its pid, id and inbox
+        kept."""
+        self.spec["spare"] = False
+        with self.lock:
+            rec = read_json(self.record)
+            if isinstance(rec, dict):
+                rec.pop("spare", None)
+                write_json(self.record, rec)
+
     def ready(self, stage):
         append(os.path.join(self.st, "ready", "%d.%s" % (self.pid, stage)), "")
 
@@ -585,7 +636,8 @@ class Helper:
         write_json(self.record, {"pid": self.pid, "sessionId": self.sid, "cwd": self.spec["cwd"], "kind": "bg",
                                  "name": self.spec["name"], "nameSource": self.spec["nameSource"],
                                  "messagingSocketPath": self.sock, "status": "idle", "jobId": self.spec["short"],
-                                 "startedAt": int(time.time() * 1000), "version": "wake-engine"})
+                                 "startedAt": int(time.time() * 1000), "version": "wake-engine",
+                                 **({"spare": True} if self.spec.get("spare") else {})})
         self.entry(pid=self.pid, state="blocked", status="idle")
         self.ready("record")
         threading.Thread(target=self.turns, daemon=True).start()
@@ -671,6 +723,7 @@ class Helper:
         row.setdefault("cwd", self.spec["cwd"])
         row.setdefault("uuid", str(uuid.uuid4()))
         row.setdefault("timestamp", time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()))
+        os.makedirs(os.path.dirname(self.spec["transcript"]), exist_ok=True)
         with open(self.spec["transcript"], "a") as f:
             f.write(json.dumps(row) + "\n")
 
@@ -708,6 +761,8 @@ class Helper:
                 self.entry(state="done", status="idle")
                 continue
             text = self.prompt(frame)
+            if self.spec.get("spare"):
+                self.unspare()
             if switch("no-reply", self.st) is not None:
                 pass
             else:
@@ -809,6 +864,9 @@ def stop_all(st):
 def main(argv):
     if argv[:1] == ["--helper"]:
         Helper(read_json(argv[1]), argv[1]).run()
+        return 0
+    if argv[:1] == ["--spare"]:
+        print("%s %d" % start_spare(argv[1]))
         return 0
     if argv[:1] == ["--has-positional"]:
         return 0 if has_positional(argv[1:]) else 1

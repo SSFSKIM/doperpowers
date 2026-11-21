@@ -10495,7 +10495,8 @@ def launch_pending(session):
 
 def cmd_record(_a, payload=None):
     """The hook's verb: one Stop or SessionStart payload on stdin. Records
-    nothing for an internal fork, a session in no project, or a non-member;
+    nothing for an internal fork, the engine's spare, a session in no
+    project, or a non-member;
     a failure is a line in daemon.log, never an exit that blocks a turn
     (run_record bounds it in time)."""
     if os.environ.get("SMNS_INTERNAL"):
@@ -10505,8 +10506,8 @@ def cmd_record(_a, payload=None):
         return
     session, cwd = str(payload.get("session_id") or ""), str(payload.get("cwd") or "")
     tpath, event = str(payload.get("transcript_path") or ""), str(payload.get("hook_event_name") or "")
-    if not (UUID_RE.fullmatch(session) and cwd and tpath):
-        return
+    if not (UUID_RE.fullmatch(session) and cwd and tpath) or hook_spare(session):
+        return   # a spare is no session anyone opened (engine_spare): nothing of it is written
     try:
         # Its engine's config dir, from its own environment, before anything
         # reads the files the engine keeps there; not recorded, the rest goes on.
@@ -11930,12 +11931,41 @@ def foreign_config(session):
     return "" if _same_dir(theirs, config_dir()) else theirs
 
 
+def engine_spare(rec):
+    """Whether an engine session record is a spare's (2.1.330): a session
+    the engine's supervisor claimed from its pool of pre-started processes
+    with no prompt yet, under an id of its own, its record saying
+    `"spare": true` until its first frame runs a turn in it. No reader of
+    the records takes it for a session: no one opened it, and a wake's own
+    claim carries no flag."""
+    return rec.get("spare") is True
+
+
+def hook_spare(session):
+    """Whether the engine running this hook (CLAUDE_PID, beside the
+    CLAUDE_CODE_SESSION_ID that names `session`) records it as a spare: its
+    SessionStart fires at the claim, after the record is written."""
+    pid = os.environ.get("CLAUDE_PID", "")
+    if os.environ.get("CLAUDE_CODE_SESSION_ID") != session or not pid.isdigit():
+        return False
+    for p, _ in engine_record_paths():
+        if os.path.basename(p) != pid + ".json":
+            continue
+        try:
+            rec = json_at(p)
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("sessionId") == session and engine_spare(rec):
+            return True
+    return False
+
+
 def peer_records():
     """The harness's peer registry: one JSON per live-ish session under
     <config dir>/sessions/<pid>.json, for every config dir sminos knows
-    (engine_record_paths, each speaking for the sessions its dir does).
-    Records of dead sessions linger, so callers check the pid before trusting
-    one."""
+    (engine_record_paths, each speaking for the sessions its dir does), a
+    spare's left out (engine_spare). Records of dead sessions linger, so
+    callers check the pid before trusting one."""
     global _PEERS, _PEERS_UNREAD
     if _PEERS is None:
         recs, unread = [], []
@@ -11950,7 +11980,7 @@ def peer_records():
                 continue
             if not isinstance(d, dict):
                 unread.append(os.path.basename(p))
-            elif speaks_for(owners, d):
+            elif speaks_for(owners, d) and not engine_spare(d):
                 recs.append(d)
         _PEERS, _PEERS_UNREAD = recs, unread
     return _PEERS

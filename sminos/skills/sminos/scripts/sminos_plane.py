@@ -2442,7 +2442,8 @@ def working_diff(cwd):
 
 class Records:
     """The engine's session registry, read only where it changed: the record
-    of every session whose process runs, by session id."""
+    of every session whose process runs, by session id, a spare's left out
+    (sminos.engine_spare)."""
 
     def __init__(self, clock=time.monotonic):
         self.files = {}      # path → (mtime_ns, size, record)
@@ -2468,7 +2469,8 @@ class Records:
                 held = self.files[path] = (st.st_mtime_ns, st.st_size, rec if isinstance(rec, dict) else None)
             rec = held[2]
             sid = rec.get("sessionId") if rec else None
-            if isinstance(sid, str) and sminos.speaks_for(owners, rec) and self.running(rec):
+            if isinstance(sid, str) and sminos.speaks_for(owners, rec) and not sminos.engine_spare(rec) \
+                    and self.running(rec):
                 old = live.get(sid)
                 if old is None or (rec.get("updatedAt") or 0) > (old.get("updatedAt") or 0):
                     live[sid] = rec

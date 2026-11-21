@@ -22,7 +22,11 @@ M3: docs/doperpowers/plans/2026-11-20-sminos-threads-t2.md, the milestone's
   spawned thread settled at its end; a refill settling what was held;
 - one reach permit serving a wake and the push after it;
 - no fork by derive, no young-background wait, and a tick that launches
-  nothing and lists no job for a thread nothing is owed to.
+  nothing and lists no job for a thread nothing is owed to;
+- a session the engine claimed from its spare pool (`"spare": true`, no
+  prompt yet), beside a wake and alone, under both forms of the engine: no
+  member, no push, no process holding a session, nothing its SessionStart
+  hook writes; a session like any once its first frame drops the flag.
 
 The wake itself is test_wake_seat.py's; the transitions against it are
 test_wake_transitions.py's. Hermetic: test_wake.Engine (HOME, SMINOS_HOME
@@ -47,8 +51,9 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_wake import line_of, rows, wait_for  # noqa: E402
+from test_wake import Stub, line_of, rows, wait_for  # noqa: E402
 from test_wake_seat import INBOX, SCRIPT, Wakers, records, sminos, threads, wake  # noqa: E402
+import wake_engine  # noqa: E402
 
 TAIL = "; it is pushed when a process of it runs again before it ends (three days stopped, or a retire), else it " \
        "stays in the log"
@@ -1235,6 +1240,97 @@ class Reads(Deliveries):
             self.assertFalse(wake.wake_due(t, sid, now=due - 1))
             self.assertTrue(wake.wake_due(t, sid, now=due))
             self.assertEqual(wake.deadline(t, sid), due)
+
+
+# ------------------------------------------------------------ the engine's spare pool
+
+
+class Spare(Deliveries):
+    """2.1.330 keeps a pre-started process it hands a session at a claim: one
+    the supervisor logs as `(spare)` writes a record saying `"spare": true`
+    under a session id of its own, with an inbox, no transcript and no job,
+    and its SessionStart hook fires once; its first frame runs a turn in it
+    and drops the flag. A wake's claim carries no flag."""
+
+    def engine_records(self):
+        out = []
+        for p, _ in sminos.engine_record_paths(fresh=True):
+            with open(p) as f:
+                out.append(json.load(f))
+        return out
+
+    def spare_record(self, sid):
+        return next((r for r in self.engine_records() if r.get("sessionId") == sid), None)
+
+    def members(self):
+        sminos.forget_caches()
+        return {m.session for m in sminos.view_of(self.p).members}
+
+    def session_start(self, sid, pid, event="SessionStart"):
+        """The SessionStart hook the engine runs in it at its claim (2.1.330), sminos's record verb (or another
+        hook's)."""
+        payload = {"session_id": sid, "cwd": self.root, "hook_event_name": event, "source": "startup",
+                   "transcript_path": wake_engine.transcript_for(sid, self.root), "agent_type": "claude"}
+        with mock.patch.dict(os.environ, {"CLAUDE_PID": str(pid), "CLAUDE_CODE_SESSION_ID": sid}):
+            sminos.cmd_record(None, payload)
+        sminos.forget_caches()
+
+    def test_a_spare_is_no_member_no_recipient_and_no_process_holding_a_session(self):
+        sid, pid = wake_engine.spare(self.root)
+        self.assertTrue(self.spare_record(sid).get("spare"), "the engine's record says spare")
+        live, _ = self.session(name="live-one")
+        self.reconcile()
+        self.assertEqual(self.members() & {sid}, set(), "no member on sight")
+        code, out = self.say("@all to whoever runs")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.inputs(sid), [], "nothing pushed to it")
+        sminos.forget_caches()
+        self.assertIsNone(sminos.peer_for_session(sid))
+        self.assertIsNone(sminos.running_now(sid))
+        self.assertEqual(sminos.process_holds(sid), (False, True), "W7 and E5 read no process holding it")
+        self.assertEqual(sminos.live_name_holders(sid[:8]), [], "its name held by no live process")
+
+    def test_its_session_start_hook_writes_nothing(self):
+        sid, pid = wake_engine.spare(self.root)
+        self.session_start(sid, pid)
+        self.assertEqual(self.own(sid), [], "no joined, nothing in the log")
+        self.assertIsNone(threads.thread_of(sid), "no thread record")
+        self.assertEqual(self.members() & {sid}, set())
+
+    def test_one_whose_first_frame_dropped_the_flag_is_a_session_like_any(self):
+        sid, pid = wake_engine.spare(self.root)
+        sock = sminos.socket_path_of(self.spare_record(sid))
+        sminos.send_frame(sock, "a first prompt")
+        self.assertTrue(wait_for(lambda: "spare" not in self.spare_record(sid)), "the flag dropped at its turn")
+        sminos.forget_caches()
+        self.assertIsNotNone(sminos.peer_for_session(sid), "a process holds it now")
+        self.session_start(sid, pid, "Stop")
+        self.assertIn(sid, self.members(), "its first Stop joins it, as any session its start did not")
+
+    def test_a_wake_that_leaves_a_spare_beside_it_joins_the_woken_session_and_no_other(self):
+        tid, sid = self.human_thread()
+        before = self.members()
+        self.switch("spare")
+        code, out = self.say("@%s look at this" % sid[:8])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.shown(out, sid), ["sent (woken)"])
+        spares = [r for r in self.engine_records() if r.get("spare")]
+        self.assertEqual(len(spares), 1, "the engine left one spare beside the wake")
+        self.session_start(spares[0]["sessionId"], spares[0]["pid"])
+        self.reconcile()
+        self.assertEqual(self.members() - before, set(), "no phantom member after the wake")
+        self.assertIn(sid, self.members())
+        self.assertIsNotNone(self.record(sid), "the woken session is held by its process")
+        code, out = self.say("@all after the wake")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.inputs(spares[0]["sessionId"]), [], "nothing pushed to the spare")
+        self.assertEqual(sum(f.count("after the wake") for f in self.frames(sid)), 1)
+
+
+class SpareStub(Spare):
+    """The same under the shell stub of run-sminos-tests.sh, which hands the wake to the twin."""
+    FORM = "stub"
+    install = Stub.install
 
 if __name__ == "__main__":
     unittest.main()
