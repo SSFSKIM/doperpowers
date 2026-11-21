@@ -15170,7 +15170,10 @@ def reply_to(session, msg_id, rows=None):
     prints (T2's M2), whatever another sender's message got before or after
     it. A row put into the turn that runs (_put_in_turn) delimits nothing:
     the turn holding the message goes on past it, and its end is the
-    waiter's to read. `rows`: the transcript's rows as read
+    waiter's to read. Nor does a prompt that names the message itself (the
+    bridge's wake for a delivery it appended with no turn running, whose
+    `Unread:` line is the message's frame line): it starts the turn that
+    answers the message. `rows`: the transcript's rows as read
     (TranscriptTail), else read whole."""
     rows = transcript_rows(session) if rows is None else rows
     marker = "id=%s]" % msg_id
@@ -15181,7 +15184,8 @@ def reply_to(session, msg_id, rows=None):
                for b in _blocks(r, "tool_result")}
     said, closed = [], False
     for r in rows[start + 1:]:
-        if _prompt_text(r) is not None and not _put_in_turn(r):
+        text = _prompt_text(r)
+        if text is not None and not _put_in_turn(r) and marker not in text:
             closed = True
             break
         if r.get("type") == "assistant" and r.get("answeredWithoutRequest") is not True:

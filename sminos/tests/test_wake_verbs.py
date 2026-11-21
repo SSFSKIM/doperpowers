@@ -1255,6 +1255,23 @@ class Round4(Verbs):
                 self.assertIn("reply to %s" % event["msg_id"], out, "the reply, not an empty one")
                 os.unlink(os.path.join(self.state, "reply-delay"))
 
+    def test_a_wake_naming_the_message_starts_the_turn_that_answers_it(self):
+        """A delivery the bridge appended with no turn running is followed by the bridge's wake on the inbox, which
+        names its frame line (`Unread:`): that prompt starts the turn that answers the message, and delimits
+        nothing; the next prompt does."""
+        frame = sminos.compose_frame("bee", "abcd1234", "the task")
+        appended = {"type": "user", "isMeta": True, "origin": {"kind": "plugin", "name": "sminos"},
+                    "message": {"role": "user", "content": [{"type": "text", "text": frame}]}}
+        woke = {"type": "user", "isMeta": True, "origin": {"kind": "peer", "name": "sminos bridge"},
+                "message": {"role": "user", "content": sminos.peer_envelope(
+                    "[sminos bridge]\nA message for you was added to the conversation after your turn was stopped. "
+                    "It is the user message before this message: read it and act on it now.\nUnread: "
+                    + frame.split("\n", 1)[0], "sminos bridge")}}
+        said = {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}}
+        then = {"type": "user", "message": {"role": "user", "content": "another prompt"}}
+        self.assertEqual(sminos.reply_to("s", "abcd1234", [appended, woke, said]), (True, "done", False))
+        self.assertEqual(sminos.reply_to("s", "abcd1234", [appended, woke, said, then]), (True, "done", True))
+
     def raced(self):
         """deliver_next as when the daemon's pass took the event between the sender's release of the lock and the
         sender's own pass: that pass then finds nothing of it."""
