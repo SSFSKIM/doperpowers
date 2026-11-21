@@ -1513,5 +1513,124 @@ class Round4(Verbs):
                 [text] = got
                 self.assertEqual(text.splitlines()[-3:], ["hello", "", said])
 
+
+class Round5(Verbs):
+    """M5, the holder's additions: a plain send whose delivery finds its queue empty, another deliverer having settled
+    its event first, is said delivered only on evidence of a push (a seat's send and a send to a session with no seat,
+    as settled_sent says it); and that evidence is read from what the conversation gained during the call alone, a
+    chat frame known by its head and its text together and never when another event shows the same."""
+
+    def settled_first(self, admitted):
+        """SendDelivery as when another deliverer settled the event between the append and this call's lock;
+        `admitted`: its frame in the conversation by then."""
+        real = sminos.SendDelivery.__init__
+
+        def settled(d, project, session, writer, event):
+            if admitted:
+                with open(sminos.transcript_now(session), "a") as f:
+                    f.write(json.dumps(prompt("auto", sminos.compose_frame("human", event["msg_id"],
+                                                                           event["text"]))) + "\n")
+            sminos.delivered_settle(project, session, writer, event["seq"])
+            real(d, project, session, writer, event)
+        return mock.patch.object(sminos.SendDelivery, "__init__", settled)
+
+    def said_by_its_conversation(self, target, alias):
+        for admitted in (True, False):
+            with self.subTest(admitted=admitted):
+                with self.settled_first(admitted):
+                    code, out = self.cli("send", target, "settled first %s" % admitted)
+                self.assertEqual(code, 0, out)
+                self.assertNotIn("owed", out)
+                if admitted:
+                    self.assertIn("sent to %s (delivered by a concurrent delivery)" % alias, out)
+                else:
+                    self.assertIn(sminos.SETTLED_UNSEEN % alias, out)
+                    self.assertNotIn("delivered", out)
+                    self.assertNotIn("sent", out)
+
+    def test_a_plain_send_to_a_live_seat_settled_first_is_said_by_what_its_conversation_shows(self):
+        s = self.seat()
+        code, out = self.cli("send", "w", "up")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(wait_for(lambda: sminos.peer_for_session(s["current"]) is not None), "live")
+        self.said_by_its_conversation("w", "%s/%s" % (s["group"], s["alias"]))
+
+    def test_a_plain_send_to_a_live_session_with_no_seat_settled_first_is_said_by_what_its_conversation_shows(self):
+        tid, sid = self.human_thread()
+        self.terminal(sid)
+        self.said_by_its_conversation(sid[:8], self.member(sid).alias)
+
+    # What the conversation gained during the call (frame_landed)
+
+    def chat(self, writer, seq, text):
+        return {"writer": writer, "seq": seq, "kind": "say", "from": "bee", "text": text,
+                "to": [{"session": "x", "alias": "x"}]}
+
+    def noted(self, sid, events=()):
+        """The session's transcript noted as this call found it, and the log holding `events`."""
+        sminos.TRANSCRIPT_AT.clear()
+        self.addCleanup(sminos.TRANSCRIPT_AT.clear)
+        sminos.note_transcripts([sid])
+        p = mock.patch.object(sminos, "log_read", lambda project, *a, **k: list(events))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def append(self, sid, text):
+        with open(sminos.transcript_now(sid), "a") as f:
+            f.write(json.dumps(prompt("auto", text)) + "\n")
+
+    def test_the_evidence_is_read_from_what_the_transcript_gained_during_the_call_and_nothing_is_built(self):
+        tid, sid = self.human_thread()
+        e = {"writer": "testhost/human", "seq": 4, "kind": "human", "from": "human", "text": "hi",
+             "msg_id": "abcd1234"}
+        frame = sminos.compose_frame("human", "abcd1234", "hi")
+        self.append(sid, frame)   # before the call: no push of this call's
+        self.noted(sid, [e])
+        with mock.patch.object(sminos, "transcript_rows", side_effect=AssertionError("the transcript kept whole")), \
+                mock.patch.object(sminos, "reply_to", side_effect=AssertionError("a reply built")):
+            self.assertFalse(sminos.frame_landed(self.p, sid, e), "a frame that was there before the call")
+            self.append(sid, frame)
+            self.assertTrue(sminos.frame_landed(self.p, sid, e), "the frame appended during it")
+
+    def test_a_chat_frame_is_known_by_its_head_and_its_text_and_never_when_another_shows_the_same(self):
+        """event_ref drops a stream's suffix and each stream numbers its own events: two streams of one sender can
+        show one reference."""
+        tid, sid = self.human_thread()
+        writer = "testhost/%s" % uuidlib.uuid4()
+        a = self.chat(writer + "~" + "a" * 16, 1, "first words")
+        b = self.chat(writer + "~" + "b" * 16, 1, "later words")
+        self.assertEqual(sminos.event_ref(a), sminos.event_ref(b))
+        self.noted(sid, [a, b])
+        self.append(sid, sminos.compose_chat_frame(self.p.name, sminos.event_ref(a), "bee", "@you", 0, a["text"]))
+        self.assertTrue(sminos.frame_landed(self.p, sid, a))
+        self.assertFalse(sminos.frame_landed(self.p, sid, b), "the same head with another text")
+        c = self.chat(writer + "~" + "c" * 16, 1, "first words")
+        self.noted(sid, [a, b, c])
+        self.append(sid, sminos.compose_chat_frame(self.p.name, sminos.event_ref(a), "bee", "@you", 0, a["text"]))
+        self.assertFalse(sminos.frame_landed(self.p, sid, a), "a frame another event's would show the same")
+
+
+class WakePayload(unittest.TestCase):
+    """The bridge's wake is its own payload's first line: a message that pastes an earlier wake is a prompt like any
+    other (reply_to's rule, _wake_names)."""
+
+    FRAME = sminos.compose_frame("human", "abcd1234", "the task")
+
+    def test_a_message_pasting_an_earlier_wake_is_no_wake(self):
+        head = self.FRAME.split("\n", 1)[0]
+        pasted = "look at what came earlier:\n" + wake_text("answer", head)
+        for name, row in (("an owner's message", submitted(sminos.compose_frame("human", "ef567890", pasted))),
+                          ("a peer body", inboxed(pasted))):
+            with self.subTest(row=name):
+                rows = [appended(self.FRAME), said("its answer"), row, said("the paste's answer")]
+                self.assertEqual(sminos.reply_to("s", "abcd1234", rows), (True, "its answer", True))
+
+    def test_a_peer_wake_with_no_body_is_read_from_its_envelope(self):
+        head = self.FRAME.split("\n", 1)[0]
+        row = inboxed(wake_text("stopped", head))
+        del row["origin"]["body"]
+        rows = [appended(self.FRAME), said("the other's"), row, said("done")]
+        self.assertEqual(sminos.reply_to("s", "abcd1234", rows), (True, "done", False))
+
 if __name__ == "__main__":
     unittest.main()

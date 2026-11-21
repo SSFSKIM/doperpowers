@@ -3624,14 +3624,77 @@ DELIVERED_ELSEWHERE = "delivered by a concurrent delivery"
 SETTLED_UNSEEN = "settled by another delivery, and nothing of it is in %s's conversation"
 
 
+# Where each recipient's transcript ended as this call found it, before it appended its message
+# (note_transcripts): {session: (device, inode, size), or None for none}. A frame another deliverer pushed during the
+# call was appended after that, so frame_landed reads only what follows.
+TRANSCRIPT_AT = {}
+
+
+def note_transcripts(sessions):
+    """Note where each session's transcript ends now, just before this call
+    appends a message for it (a stat of the indexed path; nothing read): a
+    process that sends again notes again."""
+    for session in sessions:
+        path = transcript_path(session)
+        try:
+            st = os.stat(path) if path else None
+        except OSError:
+            st = None
+        TRANSCRIPT_AT[session] = (st.st_dev, st.st_ino, st.st_size) if st else None
+
+
 def frame_landed(project, session, e):
-    """Whether the event's frame is in the session's conversation now, at
-    one look: a send's by its id, as `landed` finds it; a chat event's by
-    its frame's head, which names its project and ref."""
+    """Whether the event's frame is in the session's conversation, at one
+    look over what it gained during this call (_transcript_holds): a send's
+    by its head, which names its id; a chat event's by its head and its text
+    together, and never when another chat event of the log shows the same
+    reference and a text that frame would show as well (event_ref drops a
+    stream's suffix, and each stream numbers its own events): such a frame
+    cannot be told from the other's, and claims no push."""
     if e.get("msg_id"):
-        return reply_to(session, e["msg_id"])[0]
-    head = "[sminos chat %s %s from " % (project.name, event_ref(e))
-    return any(head in (_prompt_text(r) or "") for r in transcript_rows(session))
+        framed = re.compile(r"^\[sminos message from [^\n]* id=%s\]$" % re.escape(e["msg_id"]), re.M)
+        return _transcript_holds(session, ("id=%s]" % e["msg_id"]).encode(),
+                                 lambda text: framed.search(text) is not None)
+    ref, body = event_ref(e), sender_text(str(e.get("text") or ""))
+    if any(x.get("kind") in CHAT_KINDS and (x.get("writer"), x.get("seq")) != (e["writer"], e["seq"])
+           and event_ref(x) == ref and sender_text(str(x.get("text") or "")).startswith(body)
+           for x in log_read(project) if x.get("writer") is not None and x.get("seq") is not None):
+        return False
+    head = re.compile(r"^\[sminos chat %s %s from [^\n]*\]\n" % (re.escape(project.name), re.escape(ref)), re.M)
+
+    def holds(text):
+        return any(text.startswith(body, m.end()) and text[m.end() + len(body):m.end() + len(body) + 1] in ("", "\n")
+                   for m in head.finditer(text))
+    return _transcript_holds(session, (" %s from " % ref).encode(), holds)
+
+
+def _transcript_holds(session, needle, holds):
+    """Whether a prompt row the session's transcript gained since this call
+    noted it (TRANSCRIPT_AT; the whole file when it noted none there, or the
+    file is another or shorter now) has a text `holds` accepts: read a line
+    at a time to the first that does, a line parsed only when it holds the
+    bytes `needle`, nothing kept."""
+    path = transcript_now(session)
+    if not path:
+        return False
+    at = TRANSCRIPT_AT.get(session)
+    try:
+        with open(path, "rb") as f:
+            st = os.fstat(f.fileno())
+            if at and (st.st_dev, st.st_ino) == at[:2] and st.st_size >= at[2]:
+                f.seek(at[2])
+            for line in f:
+                if needle not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and holds(_prompt_text(row) or ""):
+                    return True
+    except OSError:
+        pass
+    return False
 
 
 def settled_words(project, session, e, alias):
@@ -9131,6 +9194,7 @@ def cmd_say(a):
     except au.StreamUnknown as err:
         die("say could not be recorded: %s" % err, 1)
     recorded = []
+    note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)   # before the appends (frame_landed)
     for split_writer, aud, rs, text in splits:
         fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": text}
         if wake:
@@ -15229,19 +15293,32 @@ WAKE_PEER = "sminos bridge"
 FRAME_HEAD_RE = re.compile(r"^\[sminos (?:message from|chat) [^\n]*\]$", re.M)
 
 
+def _wake_payload(row):
+    """The text a prompt row carries from the bridge, where its wake would
+    be: the prompt it submits as the human's (a plugin's, `asUser`) as
+    submitted, or the body of the one it sends on the inbox after a stop (a
+    peer's, WAKE_PEER), its `origin.body` or else unwrapped from the
+    engine's envelope; "" for any other row."""
+    origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
+    if origin.get("kind") == "plugin" and origin.get("asUser") is True:
+        return _prompt_text(row) or ""
+    if origin.get("kind") != "peer" or origin.get("name") != WAKE_PEER:
+        return ""
+    if isinstance(origin.get("body"), str):
+        return origin["body"]
+    text = _prompt_text(row) or ""
+    opened = re.search(r"<%s[^>\n]*>\n" % PEER_TAG, text)
+    return text[opened.end():] if opened else ""
+
+
 def _wake_names(row, head):
     """Whether a prompt row is the bridge's wake naming the frame line
-    `head` on its `Unread:` line: the prompt the bridge submits as the
-    human's (a plugin's, `asUser`), or the one it sends on the inbox
-    after a stop (a peer's, WAKE_PEER)."""
-    origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
-    if not (origin.get("kind") == "plugin" and origin.get("asUser") is True
-            or origin.get("kind") == "peer" and origin.get("name") == WAKE_PEER):
+    `head` on its `Unread:` line: a payload of the bridge's (_wake_payload)
+    whose first line is the wake's own, never a message that quotes one."""
+    lines = _wake_payload(row).split("\n")
+    if lines[0] != WAKE_LINE:
         return False
-    lines = (_prompt_text(row) or "").split("\n")
-    if WAKE_LINE not in lines:
-        return False
-    unread = next((line for line in lines[lines.index(WAKE_LINE):] if line.startswith(WAKE_UNREAD)), None)
+    unread = next((line for line in lines[1:] if line.startswith(WAKE_UNREAD)), None)
     return unread is not None and " %s " % head in " %s " % unread[len(WAKE_UNREAD):]
 
 
@@ -15505,7 +15582,7 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
             if verb or wait:
                 settled_elsewhere(s["current"], ref, delivery.event, msg_id, verb, waiter)
             else:
-                print("sent to %s (delivered by a concurrent delivery)" % ref, flush=True)
+                print(settled_sent(delivery.project, s["current"], delivery.event, ref), flush=True)
             return
         if woke:
             if returned_task(delivery, s["current"], ref, msg_id, wait) and waiter is not None:
@@ -15894,6 +15971,7 @@ def record_message(project, session, alias, sender, via, text, msg_id, deliver=T
     home = caller_scope() if sid else None
     if home is not None and home.id != project.id:
         fields["from_project"] = home.id  # the sender's own project, where a reply finds it
+    note_transcripts([session])   # before the append: what a concurrent push adds follows it (frame_landed)
     try:
         event = addressed_append(project, sid, fields["to"], "say" if sid else "human", fields,
                                  "send not delivered: it could not be recorded in %s's log" % project.name)
@@ -16003,7 +16081,7 @@ def send_to_member(project, m, sender, via, text, msg_id):
         return
     if not delivery.queue:
         delivery.release()
-        print("sent to %s (delivered by a concurrent delivery)" % m.alias)
+        print(settled_sent(project, m.session, delivery.event, m.alias))
         return
     if holder_module().handoff(peer.get("pid"), m.session) != "legacy":
         # O12 M4b: the process takes log-backed deliveries only with
