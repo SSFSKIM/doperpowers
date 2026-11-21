@@ -159,8 +159,14 @@ export type ReceiptReport =
  */
 export type StoppedReceipt = { session: string; id: string; attempt: number; bodiless?: boolean }
 
+/**
+ * `bridgeSeat` (hooks/mods/bridge.tsx): the tier sminos sits in, as the
+ * bridge's own `state.get` hook answers the bridge's read of it, a hook
+ * hearing a call another hook of its plugin makes. Never stored, and answered
+ * to sminos alone: another plugin's read gets the host's nothing.
+ */
 declare module 'claude-code' {
   interface PluginState {
-    sminos: { ask: AskSnapshot; btw: string[]; bridgeAsk: BridgeAskKept; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept; mode: ModeKept; holder: HolderKept }
+    sminos: { ask: AskSnapshot; btw: string[]; bridgeAsk: BridgeAskKept; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept; mode: ModeKept; holder: HolderKept; bridgeSeat: Tier }
   }
 }

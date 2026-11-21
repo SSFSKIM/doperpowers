@@ -3,8 +3,8 @@ import type { EngineInterface, HookStream, HttpResponse, On, PermissionRequestDe
 import type {} from '../../../devcloud/types/devcloud'
 
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
-import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './bridge-place'
-import type { Guard, Place, Verdict } from './bridge-place'
+import { MANAGED_OFF_LINE, OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, seatOf, verdictOf } from './bridge-place'
+import type { Guard, Place, Seat, Verdict } from './bridge-place'
 import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, WAKE_LINE, capped, isEffort, isLaneVerdict, isObserver, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Streaming, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, emitOwed, emitTaken, endStep, forgetLive, modeFields, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
@@ -39,7 +39,7 @@ import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leav
 import { receiptRow, receiptsCarried } from './bridge-receipts'
 import type { Carried } from './bridge-receipts'
 
-export { OFF_LINE, ON_LINE } from './bridge-place'
+export { MANAGED_OFF_LINE, OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, INTERRUPT_HOLD_MS, TEXT_CAP, WAKE_LINE, capped, resetBridge } from './bridge-state'
 export { RESYNC_INPUT_CAP, RESYNC_MAX, STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
@@ -321,6 +321,8 @@ export const LANE_B = 'lane-b'
 /** The lane verdict kept for a module reload (types/sminos.d.ts): the process's, so a reload never re-opens the provisional window. */
 const LANE = { plugin: 'sminos', key: 'lane' } as const
 const LAUNCH = { plugin: 'sminos', key: 'launch' } as const
+/** The bridge's own tier, which its own `state.get` hook answers it (registerBridge). */
+const SEAT = { plugin: 'sminos', key: 'bridgeSeat' } as const
 /** A launch as this module mints it: 16 random bytes, base64url. */
 const LAUNCH_RE = /^[A-Za-z0-9_-]{22}$/
 
@@ -1709,15 +1711,34 @@ async function beat($: EngineInterface) {
 }
 
 /**
- * Which secrets guard is loaded now: devcloud's when its marker is live, else
- * cua's copy when the user settings enable cua. The same reads appeal makes,
- * of another plugin's state and of the user settings.
+ * The bridge's seat (bridge-place.tsx, Seat), learned once for the module
+ * instance: the tier from its call to its own `state.get` hook, which hears it
+ * raised from the tier sminos sits in, then, outside `user`, the managed
+ * settings. A read that fails is not kept, so the next dispatch reads again.
  */
-async function loadedGuard($: EngineInterface): Promise<Guard | undefined> {
+async function bridgeSeat($: EngineInterface): Promise<Seat> {
+  if (state.seat === undefined) {
+    const tier = (await $.state.get(SEAT)).value
+    if (typeof tier !== 'string') {
+      throw new Error("the bridge's own hook did not answer which tier sminos sits in")
+    }
+    state.seat = await seatOf(tier, () => $.settings.read({ source: 'policy' }))
+  }
+  return state.seat
+}
+
+/**
+ * Which secrets guard is loaded now: devcloud's when its marker is live, else
+ * cua's copy when the settings that seat cua beside this bridge enable it,
+ * the managed settings for an `outer` seat (a person's cua is beneath it),
+ * the user settings otherwise. The same reads appeal makes, of another
+ * plugin's state and of the settings.
+ */
+async function loadedGuard($: EngineInterface, seat: Seat): Promise<Guard | undefined> {
   if (isLiveMarker(await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' }))) {
     return 'devcloud'
   }
-  return isCuaEnabled(await $.settings.read({ source: 'user' })) ? 'cua' : undefined
+  return isCuaEnabled(await $.settings.read({ source: seat === 'outer' ? 'policy' : 'user' })) ? 'cua' : undefined
 }
 
 /**
@@ -1747,7 +1768,12 @@ async function judgePlace(
   }
   let verdict: Verdict | undefined
   try {
-    verdict = await verdictOf(beneath.trace, beneath.origin.plugin, () => loadedGuard($))
+    verdict = await verdictOf(
+      beneath.trace,
+      beneath.origin.plugin,
+      () => bridgeSeat($),
+      (seat) => loadedGuard($, seat),
+    )
   } catch (error) {
     const why = `bridge: its place among the secrets guards was not read: ${message(error)}`
     $.ui.log(why, { to: 'debug' })
@@ -1763,7 +1789,8 @@ async function judgePlace(
   const isCurrent = transitionsAt === state.transitions
   if (verdict === 'off') {
     if (isCurrent && state.place !== 'off') {
-      turnOff($)
+      // An off verdict comes only once the seat is read.
+      turnOff($, state.seat === 'person' ? OFF_LINE : MANAGED_OFF_LINE)
     }
     return 'off'
   }
@@ -1783,7 +1810,7 @@ async function judgePlace(
  * toast and in the debug log. While off, nothing is queued or raised, and no
  * child is started (startChild).
  */
-function turnOff($: EngineInterface) {
+function turnOff($: EngineInterface, line: string) {
   // Off before it is said, so nothing the saying does can leave it running.
   state.place = 'off'
   state.transitions++
@@ -1797,8 +1824,8 @@ function turnOff($: EngineInterface) {
       settle(r, 'withdrawn', 'bridge')
     }
   }
-  $.ui.log(OFF_LINE, { to: 'debug' })
-  $.ui.toast(OFF_LINE)
+  $.ui.log(line, { to: 'debug' })
+  $.ui.toast(line)
 }
 
 /**
@@ -2006,6 +2033,11 @@ function toolInput(e: Record<string, unknown>): { value: unknown; cut: boolean }
  */
 export function registerBridge(on: On) {
   observeAsks(onAskNote)
+
+  // The bridge's own tier (bridgeSeat): a hook hears a call another hook of
+  // its plugin makes, raised from the tier the plugin sits in. Answered to
+  // this plugin alone; the host holds nothing under the key.
+  on('state.get', { plugin: 'sminos', key: 'bridgeSeat' }, (_, e, next) => (next.origin.plugin === PLUGIN ? { value: { value: next.origin.tier, version: 0 } } : next(e)))
 
   on('session.start', { cwd: /^/ }, async ($, e, next) => {
     const started = await next(e)

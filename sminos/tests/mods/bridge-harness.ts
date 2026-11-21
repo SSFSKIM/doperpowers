@@ -144,6 +144,16 @@ export function harness(
     /** `$.state.get` rejects. */
     stateFails?: boolean
     /**
+     * The tier the engine seats sminos in (`user` by default): what
+     * `next.origin.tier` says when the bridge's own `state.get` hook hears the
+     * bridge's call, as a hook of a plugin hears a call another of its hooks makes.
+     */
+    tier?: 'prepend' | 'user' | 'append'
+    /** What the managed settings hold (`$.settings.read({ source: 'policy' })`): by default nothing, a machine with none. */
+    policy?: Record<string, unknown>
+    /** The managed settings' read rejects. */
+    policyFails?: boolean
+    /**
      * Asked before each `$.state` read or write of this plugin's own key: `fail`
      * makes the call reject (the host did not answer); anything else lets it
      * run, after whatever the function did (another writer's write, say).
@@ -215,9 +225,11 @@ export function harness(
   const timers: { kind: 'after' | 'every'; ms: number; fn: () => void; cancelled: boolean }[] = []
   const logs: string[] = []
   const toasts: string[] = []
-  /** What the bridge read to learn which secrets guard is loaded: devcloud's marker, the user settings. */
+  /** What the bridge read to learn which secrets guard is loaded and whose its seat is: devcloud's marker, the user and the managed settings. */
   const guardReads: { op: string; args: unknown }[] = []
   let marker = options.marker ?? { value: undefined, version: 0 }
+  /** The bridge's calls to its own hook to learn the tier it sits in (its seat's other read, of the managed settings, is a guard read). */
+  const seatReads: { op: string; args: unknown }[] = []
   let isCuaEnabled = options.cua === true
   /** While held (`holdGuardReads`), `$.state.get` waits. */
   let readGate: Promise<void> = Promise.resolve()
@@ -477,6 +489,16 @@ export function harness(
           if (options.stateFault?.('get', ref.key) === 'fail') {
             throw new Error('$.state.get: the host did not answer')
           }
+          if (ref.key === 'bridgeSeat') {
+            // A call the bridge makes runs through its own state.get hook,
+            // which hears it raised by its own plugin, in the tier it sits in.
+            seatReads.push({ op: 'state.get', args: ref })
+            const own = hooks.find((h) => h.event === 'state.get' && h.matcher?.plugin === ref.plugin && h.matcher?.key === ref.key)
+            // What settles a `$` call's chain: its answer under `value`.
+            const host = async () => ({ value: { value: undefined, version: 0 } })
+            const settled = own === undefined ? await host() : ((await own.handler($, ref, Object.assign(host, { origin: { plugin: PLUGIN, tier: options.tier ?? 'user' }, trace: [] }))) as { value: unknown })
+            return settled.value
+          }
           return sessionState.has(ref.key) ? { value: sessionState.get(ref.key), version: stateVersions.get(ref.key) ?? 1 } : { value: undefined, version: 0 }
         }
         guardReads.push({ op: 'state.get', args: ref })
@@ -503,6 +525,12 @@ export function harness(
     settings: {
       read: async (args?: { source?: string }) => {
         guardReads.push({ op: 'settings.read', args })
+        if (args?.source === 'policy') {
+          if (options.policyFails) {
+            throw new Error('$.settings.read: the host did not answer')
+          }
+          return options.policy ?? {}
+        }
         return args?.source === 'user' && isCuaEnabled ? { enabledPlugins: { 'cua@cua': true } } : {}
       },
     },
@@ -758,6 +786,7 @@ export function harness(
     logs,
     toasts,
     guardReads,
+    seatReads,
     setMarker: (read: { value: unknown; version: number }) => (marker = read),
     setCua: (isEnabled: boolean) => (isCuaEnabled = isEnabled),
     /** Holds the guard reads until the returned function is called. */

@@ -278,7 +278,8 @@ rows read from the transcript, and the export to the host).
   beneath its hook. If the guard loaded now is not among them, the bridge is
   inside it. devcloud's guard counts as loaded when its marker reads live
   (the answer at state version 0). Otherwise cua's copy counts when the user
-  settings enable `cua@cua`. A dispatch that lacks the loaded guard's link
+  settings enable `cua@cua` (the managed settings, for a bridge the
+  organization seats in `prepend`; below). A dispatch that lacks the loaded guard's link
   says `off` only when its trace reaches the engine and the guard's own
   plugin did not raise it: a trace cut short (a link answered the call
   itself) still says `safe` when it names the guard or no guard is loaded,
@@ -308,6 +309,21 @@ rows read from the transcript, and the export to the host).
   whose input is posted before its own dispatch settles, right after a
   guard loaded outside the bridge with no row appended in between. It needs
   an unplaced machine.
+- **Its seat.** Whose plugin sminos is, and in which tier, decides how it
+  reads the guards. It learns its tier once per module instance from a
+  call to its own `state.get` hook (`next.origin.tier` there is the
+  plugin's own), and, outside `user`, reads the managed settings: on a
+  machine that has them, `prepend` and `append` are theirs alone and every
+  plugin a person enables loads in `user`. A person's sminos reads as
+  above. Seated by the organization in `prepend`, it is outside every
+  plugin a person installs, and a person's devcloud does not hear its
+  marker read: no guard of a person's turns it off, and a guard the
+  organization seats ahead of it is judged as above. Seated by the
+  organization anywhere else, it is inside every plugin a person installs
+  and cannot read a person's devcloud, so it turns off at its first check
+  unless both guards are beneath it. Either way its off line names the
+  managed settings' `prependPlugins`. `CLAUDE.md` beside this file lists
+  what this does not cover.
 - **The stream.** Each chunk of every model request, the main loop's and
   every subagent's (tagged with its turn, loop and index), tool calls and
   results, turns, subagents, usage, a heartbeat (the turn's state, and the
