@@ -33,11 +33,13 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
+import types
 import unittest
 import uuid as uuidlib
 from unittest import mock
@@ -58,25 +60,47 @@ DROP = object()   # a key taken out of a request
 DEVCLOUD = os.path.join(os.path.dirname(os.path.dirname(HERE)), "devcloud")
 
 
-def devcloud_parser():
-    """devcloud's own `vm` parser, from this tree (devcloud/driver/cli.py): what reads the words `vm up` is given.
-    Imported, never run: no devcloud process, profile or provider."""
-    added = [DEVCLOUD, os.path.join(DEVCLOUD, "boot")]
-    sys.path[:0] = added
-    try:
-        from driver import cli
-    finally:
-        for d in added:
-            sys.path.remove(d)
-    return cli.parser()
+def devcloud_python():
+    """A Python devcloud runs under (3.11 or later, found as devcloud/bin/devcloud finds one), or None."""
+    if sys.version_info >= (3, 11):
+        return sys.executable
+    for name in ("python3.14", "python3.13", "python3.12", "python3.11", "python3"):
+        found = shutil.which(name)
+        if found and subprocess.run([found, "-c", "import sys; sys.exit(sys.version_info < (3, 11))"],
+                                    capture_output=True).returncode == 0:
+            return found
+    return None
+
+
+PARSER_PROBE = """import json, sys
+sys.path[:0] = sys.argv[1:3]
+from driver import cli
+print(json.dumps(vars(cli.parser().parse_args(json.loads(sys.argv[3]))), default=repr))"""
+
+
+def devcloud_reads(argv):
+    """What devcloud's own `vm` parser, from this tree (devcloud/driver/cli.py), reads `argv` as: imported, never
+    run (no devcloud process, profile or provider), under a Python devcloud accepts, since its modules need 3.11
+    (tomllib) and sminos runs on 3.10. Skipped where there is none, as devcloud itself could not run there."""
+    py = devcloud_python()
+    if py is None:
+        raise unittest.SkipTest("devcloud's parser needs Python 3.11 or later, and none is on PATH")
+    done = subprocess.run([py, "-B", "-I", "-c", PARSER_PROBE, DEVCLOUD, os.path.join(DEVCLOUD, "boot"),
+                           json.dumps(argv)], capture_output=True, text=True, timeout=60)
+    if done.returncode != 0:
+        raise AssertionError("devcloud's parser did not read %r: %s" % (argv, done.stderr))
+    return types.SimpleNamespace(**json.loads(done.stdout))
+
+
+REMOTE_HEAD = ["env", "-u", "CLAUDE_CODE_SESSION_ID", "sminos"]   # the session variable cleared there (H3)
 
 
 def vm_side(argv):
-    """The VM side's words of a `vm ssh` call (everything after its `--` but `sminos`), read by sminos's own
-    parser as the VM's sminos reads them."""
+    """The VM side's words of a `vm ssh` call (everything after its `--` but its head, `sminos` started with the
+    session variable cleared), read by sminos's own parser as the VM's sminos reads them."""
     words = argv[argv.index("--") + 1:]
-    assert words[0] == "sminos", words
-    return sminos.build_parser().parse_args(words[1:])
+    assert words[:len(REMOTE_HEAD)] == REMOTE_HEAD, words
+    return sminos.build_parser().parse_args(words[len(REMOTE_HEAD):])
 
 
 def gitq(*args, cwd=None):
@@ -489,6 +513,10 @@ class New(On):
         self.assertNotIn("the VM's checkout is at", err)
         ssh = [c for c in self.calls() if c[1] == "ssh"][0]
         self.assertEqual(ssh[2:4], ["dc-x-0001", "--"])
+        # The VM's sminos started with the session variable cleared, for that call alone: a client that sends it
+        # and a host that accepts it would otherwise have the transport's call refused as a session's (H3). `vm up`
+        # runs here, under this session, as above.
+        self.assertEqual(ssh[4:9], ["env", "-u", "CLAUDE_CODE_SESSION_ID", "sminos", "spawn"])
         there = vm_side(ssh)
         request = json.loads(there.asked_from)
         self.assertEqual(request, {"v": 1, "nonce": NONCE, "org": "org-1", "origin": KEY,
@@ -497,8 +525,8 @@ class New(On):
                                           "project_name": sminos.resolve_project(self.work).name,
                                           "machine": "testhost"}})
         self.assertEqual(there.cwd, "~/Developer/GitHub/repo")
-        self.assertTrue(all(w.startswith(("--asked-from=", "--cwd=", "--permission-mode=")) for w in ssh[6:9]),
-                        "each value one word, the request's too: %r" % ssh[6:9])
+        self.assertTrue(all(w.startswith(("--asked-from=", "--cwd=", "--permission-mode=")) for w in ssh[9:12]),
+                        "each value one word, the request's too: %r" % ssh[9:12])
 
     def test_devcloud_reads_each_value_of_vm_up_as_it_was_sent(self):
         """Each value `vm up` is given is one `--flag=value` word, read here by devcloud's own parser: a label
@@ -508,7 +536,7 @@ class New(On):
                                           "--", "-review", "a task")
         self.assertEqual(code, 0, err)
         [up] = [c for c in self.calls() if c[1] == "up"]
-        args = devcloud_parser().parse_args(up[1:])
+        args = devcloud_reads(up[1:])
         self.assertEqual((args.command, args.label, args.project, args.expect_creator, args.enroll, args.keep,
                           args.confirmed), ("up", "-review", ["-odd/repo@-ref"], self.sid[:8], True, True, True))
 
@@ -1358,6 +1386,26 @@ class VmSide(On):
         code, lines, err, _ = self.asked(launch=("", sminos.LaunchOutput("No such file or directory: 'claude'")))
         self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1, "why": "other"}))
 
+    def test_a_launcher_whose_output_is_not_utf8_keeps_its_status(self):
+        """A launcher that exits 0 after a byte that is not UTF-8, through the real run_claude_bg: its output is
+        read with that byte replaced, so its status is kept and it is a launcher started that named no job, not
+        a refusal (H1)."""
+        code, lines, err, _ = self.asked(launcher=r"printf 'starting \377\n'; exit 0")
+        self.assertEqual(on.judge(lines, NONCE, "w", code), ("unknown", "no outcome line came back"), err)
+        self.assertIn("was started here and named no job (it exited 0 without naming a job)", err)
+
+    def test_a_request_carrying_the_markers_is_refused_with_its_line(self):
+        """`unanswered` and `launched` are this side's own state: a request that carries them (extra keys pass
+        the shape) is refused before any launcher ran with its outcome line, as any other (H2)."""
+        self.unenroll()
+        for markers in ({"unanswered": True}, {"launched": "a1b2c3d4"}, {"unanswered": True, "launched": "a1b2c3d4"}):
+            with self.subTest(markers=markers):
+                code, lines, err, launched = self.asked(**markers)
+                self.assertEqual(on.judge(lines, NONCE, "w", code),
+                                 ("refused", {"ok": False, "exit": 1, "why": "not-enrolled"}), err)
+                self.assertNotIn("was launched here", err)
+                self.assertEqual(launched, {}, "nothing launched")
+
     def test_a_success_it_cannot_say_whole_prints_no_line_and_names_the_job(self):
         """After a launch nothing is a refusal (§8 steps 6 and 8): no outcome line, so the Mac takes row 29; the
         VM's own diagnostic kept, and the job named."""
@@ -1453,13 +1501,14 @@ class VmSide(On):
                     code, out, err = self.sminos_argv(*argv)
                 self.assertEqual(code, 0, err)
                 words = sent["args"][sent["args"].index("--") + 1:]
-                self.assertEqual(words[0], "sminos")
+                self.assertEqual(words[:len(REMOTE_HEAD)], REMOTE_HEAD)
+                words = words[len(REMOTE_HEAD):]
                 said = io.StringIO()
                 with contextlib.redirect_stderr(said):
                     try:
-                        there = sminos.build_parser().parse_args(words[1:])
+                        there = sminos.build_parser().parse_args(words)
                     except SystemExit:
-                        self.fail("the VM's parser refused %r: %s" % (words[1:], said.getvalue()))
+                        self.fail("the VM's parser refused %r: %s" % (words, said.getvalue()))
                 self.assertEqual((there.alias, there.task, there.brief, there.role, there.stamp),
                                  (mac.alias, "-", mac.brief, mac.role, mac.stamp))
                 self.assertIsNotNone(there.asked_from)

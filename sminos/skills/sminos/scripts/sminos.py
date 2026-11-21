@@ -12908,9 +12908,10 @@ def run_claude_bg(args, cwd, settings):
         return "", NoLaunchDir(cwd)
     timeout = float(os.environ.get("SMINOS_LAUNCH_TIMEOUT") or 300)
     try:
+        # A byte that is not UTF-8 is replaced, never raised while decoding: the launcher's status is kept.
         p = subprocess.run(["claude"] + args, cwd=cwd, env=launch_env(settings),
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, text=True, timeout=timeout)
+                           stderr=subprocess.STDOUT, text=True, errors="replace", timeout=timeout)
         banner = LaunchOutput(ANSI_RE.sub("", p.stdout or ""), status=p.returncode)
         if p.returncode != 0:
             return "", banner

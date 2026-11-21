@@ -118,7 +118,7 @@ r.establish(sys.argv[2], r.default_provenance("hook"))' "$SCRIPTS" "$S"
 (cd "$WORK" && "$SMINOS" list >/dev/null 2>&1) || true
 PROJECT_NAME="$(cd "$WORK" && "$SMINOS" project show 2>/dev/null | sed -n 's/^project *\([^ ]*\).*/\1/p' | head -1)"
 
-standin() { # JSON of devcloud-standin.json's members besides sminos and ssh_hosts.vm1
+standin() { # JSON of devcloud-standin.json's members besides sminos and ssh_hosts.vm1 (vm1_env: more of vm1's env)
   python3 - "$HOME/devcloud-standin.json" "$SMINOS" "$T" "$PATH" "${1:-{\}}" <<'PY'
 import json, sys
 path, sminos, t, p, more = sys.argv[1:]
@@ -128,6 +128,8 @@ cfg = {"sminos": sminos, "ssh_hosts": {"vm1": {"env": {
 for k, v in json.loads(more).items():
     if k == "ssh_hosts":
         cfg["ssh_hosts"].update(v)
+    elif k == "vm1_env":
+        cfg["ssh_hosts"]["vm1"]["env"].update(v)
     else:
         cfg[k] = v
 json.dump(cfg, open(path, "w"))
@@ -193,6 +195,13 @@ assert_rc 2 "$RC" "refused, as a usage error"
 assert_contains "$OUT" "sminos: spawn: --asked-from is the form another machine's sminos calls over devcloud vm ssh, and a session is not one: drop it" "in the words say --notice's refusal has"
 assert_not_contains "$OUT" "sminos-spawn " "and no outcome line"
 assert_equals "$(seat_on_vm1 w9)" "" "no seat made"
+
+echo "== a client that sends the session variable and a host that accepts it: the call clears it there"
+standin "{\"vm1_env\": {\"CLAUDE_CODE_SESSION_ID\": \"$S\"}}"
+on w11 --on vm1
+assert_rc 0 "$RC" "spawned on vm1, the transport's call no session's"
+assert_not_contains "$OUT" "a session is not one" "not refused as a session"
+assert_equals "$(seat_on_vm1 w11)" "w11 boss" "the seat is vm1's"
 
 echo "== from a terminal, with the carried flags"
 standin

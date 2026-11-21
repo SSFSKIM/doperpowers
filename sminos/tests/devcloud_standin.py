@@ -32,7 +32,7 @@ file:
                its lines, a path touched, and no exit until another
                exists)}
   sminos       the launcher that stands for `sminos` at the head of a line
-               `vm ssh` runs
+               `vm ssh` runs (after a leading `env -u <name>…` too)
   ssh_hosts    `vm ssh <name> -- <words>`: {name: {env, exit, stdout, said,
                hold}}; said and hold, before anything: a path touched, and
                no going on until another exists.
@@ -132,8 +132,13 @@ def ssh(argv):
                          % (name, ", ".join(lacking)))
         sys.exit(2)
     words = argv[argv.index("--") + 1:] if "--" in argv else []
-    if words[:1] == ["sminos"] and cfg.get("sminos"):
-        words = [cfg["sminos"]] + words[1:]
+    head = 0
+    if words[:1] == ["env"]:   # `env -u <name>…` before the command: the command is the word after them
+        head = 1
+        while words[head:head + 1] == ["-u"]:
+            head += 2
+    if words[head:head + 1] == ["sminos"] and cfg.get("sminos"):
+        words = words[:head] + [cfg["sminos"]] + words[head + 1:]
     line = shlex.join(words)
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("CLAUDE_", "SMNS_", "MAWS_", "FAKE_CLAUDE_")) and k not in ("HOME", "SMINOS_HOME",

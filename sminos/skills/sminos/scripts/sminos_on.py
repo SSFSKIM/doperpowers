@@ -8,10 +8,10 @@ itself), the caller's route back (an address, a project this enrollment
 carries, a reach that is this machine's default), devcloud's CLI, and for
 `new` the projects the VM checks out. Then `devcloud vm up --enroll --keep
 --expect-creator <short>` for `new`, and the VM side over `devcloud vm ssh
-<vm> -- sminos spawn <alias> - --asked-from <request> …`, the task on
-standard input. It prints a spawn only on one whole outcome line from the VM
-that it can hold to its call; anything else is an outcome that is not known.
-It writes nothing in sminos's store.
+<vm> -- env -u CLAUDE_CODE_SESSION_ID sminos spawn <alias> - --asked-from
+<request> …`, the task on standard input. It prints a spawn only on one
+whole outcome line from the VM that it can hold to its call; anything else
+is an outcome that is not known. It writes nothing in sminos's store.
 
 The VM side is `cmd_spawn` itself (read_request, Answering, admit,
 expand_home, hold_to_origin, hold_to_org): the same spawn under the same
@@ -159,7 +159,10 @@ def read_request(a):
     if a.wait:
         with Answering(d["nonce"]):
             sminos.die("spawn: --asked-from with --wait: the machine that asked watches nothing here")
-    return d
+    # The protocol's fields alone: what this side marks on the request (`launched`, `unanswered`) is its own,
+    # never a key the wire carried.
+    return {"v": d["v"], "nonce": d["nonce"], "org": d["org"], "origin": d["origin"],
+            "by": None if by is None else {k: by[k] for k in BY_KEYS}}
 
 
 class Answering:
@@ -744,7 +747,9 @@ def remote(c, vm, request, directory):
     line (rows 25 to 33)."""
     a = c.a
     # The positionals after `--`, so that an alias the Mac's parser took after its own (`-alias`) is one there.
-    args = (["vm", "ssh", vm, "--", "sminos", "spawn",
+    # The session variable cleared there for this call alone: where a client sends it and a host accepts it, the
+    # VM's sminos would refuse the transport's call as a session's (§8 step 0).
+    args = (["vm", "ssh", vm, "--", "env", "-u", "CLAUDE_CODE_SESSION_ID", "sminos", "spawn",
              "--asked-from=%s" % json.dumps(request, separators=(",", ":"), ensure_ascii=False)]
             + carried(a, directory) + ["--", a.alias, "-"])
     bound = seconds("SMINOS_ON_TIMEOUT", REMOTE_TIMEOUT)
