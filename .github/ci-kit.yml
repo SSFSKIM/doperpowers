@@ -67,6 +67,14 @@ gates:
     timeout: 20
     paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
+  # The other direction of the same pair: sminos/tests/test_on.py imports devcloud's `vm` parser from this tree
+  # (devcloud/driver/cli.py). A devcloud change alone runs that one file (about 15 s), not the 10-minute part it
+  # belongs to, which every sminos change runs.
+  - name: sminos-on-devcloud
+    run: python3 -B sminos/tests/test_on.py
+    timeout: 5
+    paths: ["devcloud/driver/**"]
+
   # The idle uplink's cost on a machine of the owner's MacBook's shape, judged by its calls a second under a profiler
   # (bench_scale.py's idle gate): a count holds on a loaded runner, where a CPU share does not. About 3 minutes.
   - name: sminos-idle
@@ -190,7 +198,9 @@ gates:
       done
       DEVCLOUD_PART=unit bash devcloud/tests/run.sh
     timeout: 15
-    paths: ["devcloud/**", "devenv/**", ".github/ci-kit.yml", ".github/workflows/**"]
+    # sminos's scripts too: test_driver_owner.py runs this tree's sminos CLI for `who --thread`, so a change of its
+    # shape shows on the pull request that makes it.
+    paths: ["devcloud/**", "devenv/**", "sminos/skills/sminos/scripts/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: devcloud-image
     build_cache: gha
