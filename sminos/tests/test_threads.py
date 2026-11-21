@@ -938,6 +938,7 @@ def types_link(uplink, sent):
     link.plane = mock.Mock()
     link.plane.bridges.answers.return_value = None
     link.frames, link.members_sent, link.members_unsent = {}, {}, set()
+    link.serves_channels = False   # what a welcome that listed no channels leaves (CH1's M6)
     link.session_lane = LaneStub()
     return link
 
