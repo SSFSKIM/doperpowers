@@ -12935,6 +12935,19 @@ class LaunchOutput(str):
         out.status, out.timeout = status, timeout
         return out
 
+    def unanswered(self):
+        """Why a launcher that was started gave no usable acknowledgement, so
+        that a job may run all the same: stopped at its bound, ended by a
+        signal, or an exit 0 with no job's banner. "" for one that refused
+        in its own words (an exit above 0) or could not be started."""
+        if self.timeout is not None:
+            return "it gave no answer within %d s, and was stopped" % self.timeout
+        if self.status is not None and self.status < 0:
+            return "it was ended by signal %d" % -self.status
+        if self.status == 0:
+            return "it exited 0 without naming a job"
+        return ""
+
 
 class NoLaunchDir(LaunchOutput):
     """run_claude_bg's answer for a launch directory that is no directory:
@@ -13952,7 +13965,7 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     the record is a terminal spawn's (spawn_provenance), and no banner is
     printed, since the asking machine prints its own. Once the launcher has
     returned a job, `asked["launched"]` is its short id; where it was
-    started and gave no answer within its bound, `asked["unanswered"]`.
+    started and named none (LaunchOutput.unanswered), `asked["unanswered"]`.
 
     The new session's record (spawn_provenance) is fixed before it exists:
     left pending under a launch id its settings carry, claimed by its own
@@ -13994,13 +14007,14 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         records.drop_pending(launch_id)
         if isinstance(banner, NoLaunchDir):
             die(banner, EXIT_USAGE)
-        if asked is not None and banner.timeout is not None:
-            # Started and stopped at its bound, it may have started the job all the same: no refusal
-            # (sminos_on.Answering), so the asking machine says the outcome is not known and where to look.
+        why = banner.unanswered() if asked is not None and isinstance(banner, LaunchOutput) else ""
+        if why:
+            # Started and named no job, it may have started one all the same: no refusal (sminos_on.Answering), so
+            # the asking machine says the outcome is not known and where to look.
             asked["unanswered"] = True
-            die("spawn: the launcher (claude --bg) was started here and gave no answer within %d s, and was stopped: "
-                "a session may have started all the same; no outcome is reported for it, so the machine that asked "
-                "says it is not known: sminos list here shows whether one runs" % banner.timeout, 1)
+            die("spawn: the launcher (claude --bg) was started here and named no job (%s): a session may have "
+                "started all the same; no outcome is reported for it, so the machine that asked says it is not "
+                "known: sminos list here shows whether one runs" % why, 1)
         sys.stderr.write("sminos: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
         sys.exit(1)
     if asked is not None:
@@ -14291,12 +14305,6 @@ def cmd_spawn(a):
     if a.asked_from is None:
         spawn_here(a)
         return
-    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
-        # The transport's flag: the record it gives the new session is a terminal spawn's (spawn_provenance), so
-        # a session passing it would give its child this machine's default reach, not its own. Refused before
-        # anything, as `say --notice` is; over `devcloud vm ssh` no session runs it.
-        die("spawn: --asked-from is the form another machine's sminos calls over devcloud vm ssh, and a session is "
-            "not one: drop it (sminos spawn --on <vm> opens a session on another machine)")
     on = sibling_module("sminos_on")
     req = on.read_request(a)
     with on.Answering(req["nonce"], req) as answer:
@@ -18619,18 +18627,23 @@ def session_address(session, fallback_cwd=""):
     if named is None:
         return ""
     alias, project = named
-    who = "%s#%s" % (alias, session[:8]) if alias else session[:8]
+    # A name that is no name — a `claude --bg "<prompt>"` job joins under its
+    # prompt, the harness's first name for it — would make the line a
+    # paragraph the model rewrites: the short goes alone.
+    who = "%s#%s" % (alias, session[:8]) if ADDRESS_ALIAS_RE.fullmatch(alias) and alias != session[:8] \
+        else session[:8]
     return "%s: %s (%s on %s)" % (ADDRESS_KEY, who, project.name, host_name())
 
 
 def address_of(session, fallback_cwd=""):
-    """What a session's address line names, as sminos holds it: (the alias
-    the line carries, "" for none fit for it, its project), or None when it
-    has no address: in no project, an internal fork, or no member (its log
-    holds no membership and it is no member on sight, joinable). The alias
-    is the one its own `say` signs with (guide_text's). A caller that needs
-    these takes them here, never back out of the formatted line, whose
-    project name may hold spaces and parentheses."""
+    """Who a session's address line is for, as sminos holds it: (its alias,
+    the one its own `say` signs with (guide_text's), "" for none, and its
+    project), or None when it has no address: in no project, an internal
+    fork, or no member (its log holds no membership and it is no member on
+    sight, joinable). The alias is as recorded, never filtered for the
+    line's display (session_address); a caller that needs these takes them
+    here, never back out of the formatted line, whose project name and
+    alias may hold spaces and parentheses."""
     if os.environ.get("SMNS_INTERNAL") or not UUID_RE.fullmatch(session or ""):
         return None
     project = session_project(session, launch_cwd(session, fallback=fallback_cwd))
@@ -18645,10 +18658,7 @@ def address_of(session, fallback_cwd=""):
         return None
     alias = seat["alias"] if seat else held_alias(*own_alias(own, session), peer, session,
                                                   shadowing(project, session))[0]
-    # A name that is no name — a `claude --bg "<prompt>"` job joins under its
-    # prompt, the harness's first name for it — would make the line a
-    # paragraph the model rewrites: the short goes alone.
-    return (alias if ADDRESS_ALIAS_RE.fullmatch(alias or "") and alias != session[:8] else ""), project
+    return alias or "", project
 
 
 def parse_addresses(text, last_paragraph=False):
@@ -19506,6 +19516,12 @@ def main(argv=None):
         if a.cmd == "project":
             die("usage: sminos project init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]")
         die("unknown command: %s (try: sminos help)" % argv[0])
+    if a.cmd == "spawn" and a.asked_from is not None and a.on is None and os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        # The transport's flag: the record it gives the new session is a terminal spawn's (spawn_provenance), so
+        # a session passing it would give its child this machine's default reach, not its own. Refused before
+        # anything, the task's read included, as `say --notice` is; over `devcloud vm ssh` no session runs it.
+        die("spawn: --asked-from is the form another machine's sminos calls over devcloud vm ssh, and a session is "
+            "not one: drop it (sminos spawn --on <vm> opens a session on another machine)")
     stdin_body(a)
     migrate()
     HINTS["on"] = a.cmd in READING_VERBS

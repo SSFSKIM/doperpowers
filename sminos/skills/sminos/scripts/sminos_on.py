@@ -90,10 +90,10 @@ def outcome_whole(d):
     """Whether `d` is an outcome of §8's shape: a success's fields each of
     its type, or a refusal whose `why` and `exit` are a row of the table.
     Every key of the shape is there with its type (`head` too, null or 40
-    hex), and the optional `not_carried`, where it is, a string (one this
-    Mac does not know is still a reason the seat is not carried); a key
-    beyond these is ignored."""
-    if not isinstance(d, dict):
+    hex), and on any line the optional `not_carried`, where it is, a
+    string (on a success, present at all, the seat is not carried, a word
+    this Mac does not know included); a key beyond these is ignored."""
+    if not isinstance(d, dict) or not isinstance(d.get("not_carried", ""), str):
         return False
     if d.get("ok") is True:
         p = d.get("project")
@@ -101,8 +101,7 @@ def outcome_whole(d):
                 and all(_text(d.get(k)) for k in ("group", "alias", "short", "status", "machine", "cwd"))
                 and all(isinstance(d.get(k), str) and sminos.UUID_RE.fullmatch(d[k]) for k in ("seat", "session"))
                 and isinstance(p, dict) and _text(p.get("id")) and _text(p.get("name"))
-                and (d.get("head") is None or isinstance(d["head"], str) and bool(HEAD_RE.fullmatch(d["head"])))
-                and isinstance(d.get("not_carried", ""), str))
+                and (d.get("head") is None or isinstance(d["head"], str) and bool(HEAD_RE.fullmatch(d["head"]))))
     if d.get("ok") is False:
         code, why = d.get("exit"), d.get("why")
         return type(code) is int and isinstance(why, str) and why in WHYS and code in WHYS[why]
@@ -793,7 +792,7 @@ def remote(c, vm, request, directory):
     line = "seat %s on %s: %s/%s  [%s / %s]  status=%s" % ("re-filled" if d["refilled"] else "spawned", d["machine"],
                                                           d["group"], d["alias"], d["short"], d["seat"], d["status"])
     why = d.get("not_carried")
-    if isinstance(why, str) and why:
+    if why is not None:   # a string (outcome_whole): present at all, the seat is not carried
         # Launched in a project its machine's enrollment does not carry (a --worktree's checkout, say): no promise.
         print(line, flush=True)
         sminos.note("%s filed this seat in its project %s, which its enrollment does not carry%s: it will not be "

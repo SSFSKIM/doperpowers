@@ -373,6 +373,18 @@ class RouteBack(On):
         self.assertEqual(json.loads(vm_side(sent["args"]).asked_from)["by"],
                          {"alias": alias, "short": self.sid[:8], "project": pid, "project_name": "Build Tools (Core)",
                           "machine": "testhost"})
+        # An alias the address line does not show (parentheses): the line names the short alone, as it did, and
+        # the request still names the alias sminos holds.
+        self.sid, proc = self.session(root=d, name="Build (Core)")
+        self.peer_set(proc, nameSource="user")
+        self.recorded(self.sid)
+        self.assertEqual(sminos.session_address(self.sid, d),
+                         "Sminos-Session: %s (Build Tools (Core) on testhost)" % self.sid[:8])
+        self.assertEqual(sminos.address_of(self.sid, d)[0], "Build (Core)")
+        with mock.patch.object(on, "run_devcloud", side_effect=run):
+            code, out, err = self.spawn("--on", "vm1", "--cwd", "/srv/x", cwd=d)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(vm_side(sent["args"]).asked_from)["by"]["alias"], "Build (Core)")
 
 
 class Reach(On):
@@ -1031,6 +1043,9 @@ class Outcome(On):
         for reason, lines in cases:
             with self.subTest(reason=reason, lines=lines[0][:60]):
                 self.unknown(reason, *lines)
+        with self.subTest("a refusal whose not_carried is no string"):
+            self.unknown("the outcome line does not read as one",
+                         on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "other", "not_carried": None}), code=1)
         with self.subTest("ok beside a non-zero exit"):
             self.unknown("the outcome line and the exit status disagree", line, code=3, want=3)
         with self.subTest("a refusal beside exit 0"):
@@ -1071,7 +1086,12 @@ class Outcome(On):
         self.assertNotIn("a word a newer VM knows", err, "with no reason shown")
         self.answers("vm1", self.spawned(not_carried="", project={"id": "p-u", "name": "unshared"}))
         code, out, err = self.spawn("--on", "vm1")
-        self.assertIn("(message it: sminos say", out, "an empty value: carried, the promise as before")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("message it", out, "the key present, a string: not carried, whatever it says")
+        self.assertIn("which its enrollment does not carry: it will not be listed here", err, "and no reason shown")
+        self.answers("vm1", self.spawned(project={"id": "p-u", "name": "unshared"}))
+        code, out, err = self.spawn("--on", "vm1")
+        self.assertIn("(message it: sminos say", out, "no key: carried, the promise as before")
 
     def test_a_refusal_passes_its_exit_and_not_enrolled_is_refused_at_once_for_a_vm(self):
         self.answers("vm1", on.outcome_line(NONCE, {"ok": False, "exit": 4, "why": "other"}), code=4)
@@ -1086,7 +1106,9 @@ class Outcome(On):
 
     def test_under_new_a_line_outside_the_table_is_never_tried_again(self):
         for line, code in ((on.outcome_line(NONCE, {"ok": False, "exit": 2, "why": "not-enrolled"}), 2),
-                           (on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "elsewhere"}), 1)):
+                           (on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "elsewhere"}), 1),
+                           (on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled",
+                                                    "not_carried": 7}), 1)):
             with self.subTest(line=line):
                 self.forget_calls()
                 self.answers("dc-x-0001", line, code=code)
@@ -1133,11 +1155,12 @@ class VmSide(On):
     """The VM side's own line, for each way it ends, read by the Mac's check."""
 
     def asked(self, req=None, cwd=None, raw=None, task="a task", stdin=None, runcwd=None, session=None,
-              launch=None, **over):
+              launch=None, launcher=None, **over):
         """The VM side run here with `req` (each key of `over` set, DROP's taken out), or `raw` as the value:
         (exit, stdout's lines, stderr, what was launched); `runcwd`, the directory the engine says the job runs
         in (a --worktree's), else the directory asked for; `session`, the session it runs in (none, as over
-        `devcloud vm ssh`); `launch`, what the launcher answers, (short, banner), in place of a job."""
+        `devcloud vm ssh`); `launch`, what the launcher answers, (short, banner), in place of a job;
+        `launcher`, a shell script run as `claude` by the real run_claude_bg instead."""
         req = req or {"v": 1, "nonce": NONCE, "org": "org-1", "origin": None,
                       "by": {"alias": "boss", "short": "abcd1234", "project": "p", "project_name": "repo",
                              "machine": "mac"}}
@@ -1153,7 +1176,14 @@ class VmSide(On):
                 return launch
             sid, launched["proc"] = self.session(root=cwd_, kind="bg", sid=JOB)
             return "a1b2c3d4", "banner"
-        with mock.patch.object(sminos, "run_claude_bg", side_effect=start), \
+        bindir = os.path.join(self.home, "launcher-bin")
+        if launcher is not None:
+            os.makedirs(bindir, exist_ok=True)
+            with open(os.path.join(bindir, "claude"), "w") as f:
+                f.write("#!/bin/sh\n" + launcher + "\n")
+            os.chmod(os.path.join(bindir, "claude"), 0o755)
+        with mock.patch.object(sminos, "run_claude_bg", side_effect=start) if launcher is None else \
+                mock.patch.dict(os.environ, {"PATH": bindir + os.pathsep + os.environ["PATH"]}), \
                 mock.patch.object(sminos, "poll_uuid", return_value=(JOB, "working", runcwd or cwd or self.work)), \
                 mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": session} if session else {}), \
                 piped(stdin), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -1266,6 +1296,29 @@ class VmSide(On):
         code, lines, err, launched = self.asked()
         self.assertEqual(on.judge(lines, NONCE, "w", code)[0], "ok", err)
 
+    def test_inside_a_session_it_is_refused_at_once_with_standard_input_left_open(self):
+        """The real CLI, its standard input a pipe nobody closes: the refusal comes before the task is read,
+        so it never waits on it (G1)."""
+        request = json.dumps({"v": 1, "nonce": NONCE, "org": "org-1", "origin": None, "by": None})
+        script = os.path.join(HERE, "..", "skills", "sminos", "scripts", "sminos.py")
+        with open(os.path.join(self.home, "open-pipe.out"), "w+") as out, \
+                open(os.path.join(self.home, "open-pipe.err"), "w+") as err:
+            proc = subprocess.Popen([sys.executable, "-B", script, "spawn", "w", "-", "--asked-from=" + request,
+                                     "--cwd", self.work], stdin=subprocess.PIPE, stdout=out, stderr=err,
+                                    env={**os.environ, "CLAUDE_CODE_SESSION_ID": self.sid})
+            try:
+                code = proc.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                self.fail("it waited on standard input before refusing")
+            finally:
+                proc.stdin.close()
+            out.seek(0)
+            err.seek(0)
+            self.assertEqual((code, out.read()), (2, ""))
+            self.assertIn("a session is not one: drop it", err.read())
+
     def test_a_launcher_that_gave_no_answer_is_no_refusal_and_the_mac_says_not_known(self):
         """A launcher started and stopped at its bound may have started the job: no outcome line, so the Mac
         says the outcome is not known and where to look before a retry (row 29), never a refusal (G2). One that
@@ -1273,9 +1326,10 @@ class VmSide(On):
         code, lines, err, _ = self.asked(launch=("", sminos.LaunchOutput("timed out", timeout=300.0)))
         self.assertEqual(code, 1, err)
         self.assertEqual(on.judge(lines, NONCE, "w", code), ("unknown", "no outcome line came back"), lines)
-        self.assertIn("sminos: spawn: the launcher (claude --bg) was started here and gave no answer within 300 s, "
-                      "and was stopped: a session may have started all the same; no outcome is reported for it, so "
-                      "the machine that asked says it is not known: sminos list here shows whether one runs", err)
+        self.assertIn("sminos: spawn: the launcher (claude --bg) was started here and named no job (it gave no "
+                      "answer within 300 s, and was stopped): a session may have started all the same; no outcome is "
+                      "reported for it, so the machine that asked says it is not known: sminos list here shows "
+                      "whether one runs", err)
         self.answers("vm1", *lines, code=code)
         mac, out, said = self.spawn("--on", "vm1")
         self.assertEqual(mac, 1, said)
@@ -1284,6 +1338,24 @@ class VmSide(On):
         self.assertNotIn("answered exit", said)
         self.assertNotIn("seat spawned on", out)
         code, lines, err, _ = self.asked(launch=("", sminos.LaunchOutput("claude: refused", status=1)))
+        self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1, "why": "other"}))
+
+    def test_every_launcher_started_that_named_no_job_is_no_refusal(self):
+        """Started, and no usable acknowledgement: an exit 0 with no job's banner, or a kill before one, through
+        the real run_claude_bg; each prints no outcome line and says why. A launcher that refused in its own
+        words (a non-zero exit), or could not be started, is still a refusal (G2)."""
+        for script, why in (("echo starting; exit 0", "it exited 0 without naming a job"),
+                            ("kill -9 $$", "it was ended by signal 9")):
+            with self.subTest(why=why):
+                code, lines, err, _ = self.asked(launcher=script)
+                self.assertEqual(on.judge(lines, NONCE, "w", code), ("unknown", "no outcome line came back"), err)
+                self.assertIn("sminos: spawn: the launcher (claude --bg) was started here and named no job (%s): a "
+                              "session may have started all the same; no outcome is reported for it, so the machine "
+                              "that asked says it is not known: sminos list here shows whether one runs" % why, err)
+        code, lines, err, _ = self.asked(launcher="echo 'claude: not logged in' >&2; exit 1")
+        self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1, "why": "other"}),
+                         err)
+        code, lines, err, _ = self.asked(launch=("", sminos.LaunchOutput("No such file or directory: 'claude'")))
         self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1, "why": "other"}))
 
     def test_a_success_it_cannot_say_whole_prints_no_line_and_names_the_job(self):
