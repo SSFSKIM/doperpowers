@@ -2496,7 +2496,7 @@ def project_tiers(q):
     out, clash = _name_tiers(q)
     if clash:
         die(ambiguous_name(q, clash), EXIT_UNKNOWN)
-    if out and is_channel_id(out[0].id):
+    if out and is_channel_id(out[0].id) or not out and is_channel_id(q):   # a channel's id, registered or not
         die(not_a_project(q), EXIT_UNKNOWN)
     return out
 
@@ -2541,9 +2541,16 @@ LOG_KINDS = {"channel": "channel", "hub": "project", "machine": "machine project
 
 def log_label(p):
     """How the one refusal names a log: `<name>#<the first eight of its id>
-    (<kind>)`, which _name_tiers takes back; a log whose id is no UUID by
-    its whole id."""
-    return "%s#%s (%s)" % (p.name, p.id[:8] if UUID_RE.fullmatch(p.id) else p.id, LOG_KINDS[project_kind(p)])
+    (<kind>)`, a log whose id is no UUID by its whole id, each only when
+    _name_tiers takes it back to that log alone (a log may be named exactly
+    as another's short spelling); else `<name>#<its whole id>`, else its
+    bare id, which names it first."""
+    for spelling in ("%s#%s" % (p.name, p.id[:8]) if UUID_RE.fullmatch(p.id) else None, "%s#%s" % (p.name, p.id)):
+        if spelling is not None:
+            out, clash = _name_tiers(spelling)
+            if not clash and [x.id for x in out] == [p.id]:
+                return "%s (%s)" % (spelling, LOG_KINDS[project_kind(p)])
+    return "%s (%s)" % (p.id, LOG_KINDS[project_kind(p)])
 
 
 def ambiguous_name(q, logs):
@@ -2559,15 +2566,20 @@ def not_a_project(q):
 
 def names_channel(q):
     """The channel `q` names (by its id, `name#short` or a name only it
-    answers to), else None; a name several logs answer to exits with the one
-    refusal. An id of a channel's form is a channel's, registered here or
-    not. Asked first by the paths that say why a channel cannot be used
-    there (say, a tag, a verb's target, join)."""
+    answers to), else None; a name several logs answer to, a channel among
+    them, exits with the one refusal. An id of a channel's form is a
+    channel's, registered here or not. A clash of projects alone is None:
+    asked first by the paths that say why a channel cannot be used there
+    (say, a tag, a verb's target, join), this decides nothing of a store
+    with no channel, whose errors come in the order they came before
+    channels (the verb's own lookup refuses that clash where it did)."""
     if is_channel_id(q):
         return known_project(q) or make_project(q, q, "", "")
     out, clash = _name_tiers(q)
     if clash:
-        die(ambiguous_name(q, clash), EXIT_UNKNOWN)
+        if any(is_channel_id(p.id) for p in clash):
+            die(ambiguous_name(q, clash), EXIT_UNKNOWN)
+        return None
     return out[0] if out and is_channel_id(out[0].id) else None
 
 
@@ -2584,11 +2596,11 @@ def tag_project(p):
 def find_project(q, required=True):
     """A project known locally, by id or by name (project_tiers' first);
     with required=False, None when none is, a channel's name or id among
-    them (an ambiguous name still exits)."""
+    them, registered here or not (an ambiguous name still exits)."""
     out, clash = _name_tiers(q)
     if clash:
         die(ambiguous_name(q, clash), EXIT_UNKNOWN)
-    if out and is_channel_id(out[0].id):
+    if out and is_channel_id(out[0].id) or not out and is_channel_id(q):   # a channel's id, registered or not
         if not required:
             return None
         die(not_a_project(q), EXIT_UNKNOWN)

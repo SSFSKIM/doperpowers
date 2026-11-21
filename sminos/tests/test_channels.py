@@ -599,5 +599,57 @@ class HashNames(Machine):
         self.assertEqual(sminos.find_project("twin#" + TWIN2).id, TWIN2, "the whole id reaches the other")
 
 
+class Round2(Machine):
+    def test_an_unregistered_channel_id_is_no_project(self):
+        other = "9e000001-0000-8000-8000-0000000000e1"
+        self.project(PROJ, "app")
+        for verb in (("chat", other), ("list", other), ("list", "--project", other)):
+            rc, out, err = self.cli(*verb)
+            self.assertEqual(rc, 4, verb)
+            self.assertIn("'%s' is a channel, not a project" % other, err, verb)
+        for fn in (sminos.find_project, sminos.project_tiers):
+            self.assertEqual(exits(fn, other)[0], sminos.EXIT_UNKNOWN)
+        self.assertIsNone(sminos.find_project(other, required=False))
+        self.assertEqual(exits(channels.find_channel, other)[1].strip(),
+                         "sminos: no channel '%s' is known on this machine" % other)
+
+    def test_every_label_of_the_refusal_names_its_own_log(self):
+        root = os.path.join(self.home, "w")
+        os.makedirs(root)
+        self.channel(DESK, "desk")
+        self.project(PROJ, "desk")
+        third = self.project(TWIN1, "desk#" + DESK[:8])   # a project literally named as the channel's short label
+        rc, out, err = self.cli("say", "--in", "desk", "hi", cwd=root)
+        self.assertEqual(rc, 4)
+        labels = ["desk#%s (channel)" % DESK, "desk#%s (project)" % PROJ[:8]]
+        self.assertEqual(err.strip(), "sminos: ambiguous name 'desk': %s — name one as listed, or by its id"
+                         % ", ".join(sorted(labels)))
+        rc, out, err = self.cli("say", "--in", "desk#" + DESK, "hi", cwd=root)
+        self.assertEqual(rc, 1, err)
+        self.assertIn("is a channel, and speaking in a channel is not available", err)
+        rc, out, err = self.cli("say", "--in", "desk#" + PROJ[:8], "hi", cwd=root)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([e["kind"] for e in self.log_events(PROJ)], ["human"])
+        self.assertEqual((self.log_events(DESK), self.log_events(third.id)), ([], []))
+        rc, out, err = self.cli("say", "--in", "desk#" + DESK[:8], "hi", cwd=root)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([e["kind"] for e in self.log_events(third.id)], ["human"], "the exact name is the third's")
+
+    def test_the_order_of_a_say_s_refusals_with_no_channel(self):
+        root = os.path.join(self.home, "w")
+        os.makedirs(root)
+        self.project(TWIN1, "twin")
+        self.project(TWIN2, "twin")
+        rc, out, err = self.cli("say", "--in", TWIN1, "@missing @twin/worker hi", cwd=root)
+        self.assertEqual(rc, 4)
+        self.assertIn("@missing", err)
+        self.assertNotIn("ambiguous", err, "the first tag is refused first, as before channels")
+        rc, out, err = self.cli("say", "--in", TWIN1, "@twin/worker @missing hi", cwd=root)
+        self.assertEqual(rc, 4)
+        self.assertIn("ambiguous name 'twin'", err)
+        self.assertEqual(self.log_events(TWIN1) + self.log_events(TWIN2), [])
+        self.assertIsNone(sminos.names_channel("twin"), "a clash of projects alone is no channel's")
+
+
 if __name__ == "__main__":
     unittest.main()
