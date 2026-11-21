@@ -319,6 +319,35 @@ class Known(unittest.TestCase):
         self.assertTrue(ep.restatement_applied(2))
         self.assertEqual((S1 in ep.members, ep.known()), (False, {APP}), "the new connection's restated decides")
 
+    def test_a_frame_whose_connection_is_replaced_while_it_waits_for_the_lock_is_not_applied(self):
+        """Which connection owns a frame is read under the state lock that
+        applies it: a `restated` (or a member) of the live connection that
+        waits for the lock while a replacement is installed finds that
+        connection replaced, and closes nothing."""
+        ep = started("known-race", capabilities=["channels"])
+        self.addCleanup(ep.stop)
+        c, _ = self.connect(ep)
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}}, member(S1), {"t": "restated"})
+        self.settle(c, ep)
+        first = ep.current
+        ep.restated_conns.clear()
+        replacement = mock.Mock(number=2)
+        for frame in ({"t": "restated"}, member(S1, channels=[C1])):
+            done = threading.Event()
+            with ep.cv:
+                late = threading.Thread(target=lambda f=frame: (ep.answer(first, f), done.set()), daemon=True)
+                late.start()
+                time.sleep(0.3)   # the old connection's frame is in answer(), waiting for the lock
+                self.assertFalse(done.is_set(), "it waits for the state lock")
+                ep.install(replacement, {"t": "hello", "capabilities": ["channels"]})
+            self.assertTrue(done.wait(10))
+            self.assertEqual(ep.unrestated, {S1}, "the replacement's restatement is still open (%s)" % frame["t"])
+            self.assertFalse(ep.restatement_applied(1) or ep.restatement_applied(2), "nothing applied")
+            self.assertIn(S1, ep.members)
+            self.assertNotIn("channels", ep.members[S1], "the old connection's member frame was not taken")
+            first, replacement = replacement, mock.Mock(number=replacement.number + 1)
+            ep.restated_conns.clear()
+
     def test_a_connection_that_ends_before_its_restated_withdraws_nothing(self):
         ep = started("known-cut", capabilities=["channels"])
         self.addCleanup(ep.stop)

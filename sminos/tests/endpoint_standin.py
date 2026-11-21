@@ -478,15 +478,7 @@ class Endpoint:
                     except OSError:
                         pass
                 return
-            old = None
-            with self.cv:
-                # The connection installed and its restatement opened in one step: a read between the two would
-                # take the new connection's empty hellos as the answer, which MAWS's last answer never is.
-                old, self.current = self.current, conn
-                self.unrestated = set(self.members)   # a welcome: every member held is to be restated
-                self.hellos.append((conn.number, hello))
-                self.received.append((conn.number, hello))
-                self.cv.notify_all()
+            old = self.install(conn, hello)
             if old is not None:
                 old.close()
             if self.policy is None and isinstance(hello.get("policy"), dict):
@@ -531,6 +523,20 @@ class Endpoint:
                 self.cv.notify_all()
             conn.close()
 
+    def install(self, conn, hello):
+        """A connection whose hello was taken made the live one, and its
+        restatement of every member held opened, in one step under the state
+        lock: a read between the two would take the new connection's empty
+        hellos as the answer, which MAWS's last answer never is. The
+        connection it replaces, or None."""
+        with self.cv:
+            old, self.current = self.current, conn
+            self.unrestated = set(self.members)   # a welcome: every member held is to be restated
+            self.hellos.append((conn.number, hello))
+            self.received.append((conn.number, hello))
+            self.cv.notify_all()
+        return old
+
     def answer(self, conn, frame):
         t = frame.get("t")
         out = list(self.handler(frame) or []) if self.handler is not None else []
@@ -542,11 +548,13 @@ class Endpoint:
             write_private(os.path.join(self.dir, "legacy.json"), {"org": frame.get("org"), "key": frame.get("key")})
         elif t == "rpc-result" and self.ack_results:
             out.append({"t": "rpc-ack", "opId": frame.get("opId"), "nonce": frame.get("nonce")})
-        elif t in ("member", "restated") and self.current is not conn:
-            pass   # a frame still buffered on a connection a new one replaced: that connection's, not applied
         elif t == "member" and isinstance(frame.get("session"), str):
             with self.cv:
-                if frame.get("gone") is True or is_channel_id(frame.get("project")):
+                # Whose frame it is is read under the lock that applies it: one still buffered on a connection a
+                # new one replaced (also while it waited for this lock) is that connection's, and not applied.
+                if self.current is not conn:
+                    pass
+                elif frame.get("gone") is True or is_channel_id(frame.get("project")):
                     self.members.pop(frame["session"], None)   # a channel is no member's project: that session gone
                 else:
                     self.members[frame["session"]] = frame
@@ -556,11 +564,12 @@ class Endpoint:
                 self.cv.notify_all()
         elif t == "restated":
             with self.cv:
-                for sid in self.unrestated or ():
-                    self.members.pop(sid, None)   # held, left out of the restatement: it left while away
-                if self.unrestated is not None:
-                    self.restated_conns.add(conn.number)
-                self.unrestated = None
+                if self.current is conn:   # read under the lock, as for a member
+                    for sid in self.unrestated or ():
+                        self.members.pop(sid, None)   # held, left out of the restatement: it left while away
+                    if self.unrestated is not None:
+                        self.restated_conns.add(conn.number)
+                    self.unrestated = None
                 self.known()
                 self.cv.notify_all()
         elif t == "words?" and not isinstance(frame.get("project"), str):
