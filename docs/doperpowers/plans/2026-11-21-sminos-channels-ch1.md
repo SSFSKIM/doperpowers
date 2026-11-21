@@ -47,7 +47,7 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) The plan's first review for buildability (fourteen findings); the composite revised for two of them (`95fef6b7`) and this plan revised on it (Decision Log, "The plan's review").
 - [x] (2026-11-21) The revision's review, the second and last before the build (eight findings; the composite made exact in one place, `331e2dd5`), folded in (Decision Log, "The plan's second review").
 - [x] (2026-11-21) M1 — A channel id is told from a project's at every door, and nothing is published under one. `dba3f5e8..eee82f3b`, three reviews (the bound), then the idle trim and round 3's last finding fixed (Decision Log, "M1's idle trim"); `sminos-idle` 32,161 calls a second.
-- [ ] M2 — A thread's declared set: one durable operation, its statement and the statement's reader.
+- [x] (2026-11-21) M2 — A thread's declared set: one durable operation, its statement and the statement's reader. `5ec8f9d6..ec4034c1`, clean at its third review; `sminos-idle` 32,165 calls a second.
 - [ ] M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption.
 - [ ] M4 — Requests on one machine, and the verbs that write them.
 - [ ] M5 — The roster, the listing and the pool.
@@ -2258,6 +2258,15 @@ while the milestones are built, one observation and its evidence each.
   list, a `thread`, an `op`). A finisher's timeout after the record has
   committed answers `applied`, nudges the daemon and leaves the entry for
   replay.
+- 2026-11-21 — **M2's review, round 2, as fixed** (`ec4034c1`). The
+  membership guard is the last read before the write: `set_channels` builds
+  the whole change first (positions, the walk of `answered`, the entry) and
+  only then reads the session's own events in the change's project.
+  `channel_positions` reads the channel's `project.json` itself: missing is
+  "not registered" and `{}`; a read error, unparseable JSON, or a file that
+  is not this channel's registration raises `PositionsUnread`, since where a
+  membership begins cannot then be known. `known_project` keeps its
+  tolerance; the two share `_registered_as`.
 
 ## Outcomes & Retrospective
 
