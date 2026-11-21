@@ -64,9 +64,23 @@ export function isLiveMarker(read: { value: unknown; version: number }): boolean
   return read.version === 0 && isRecord(marker) && Object.keys(marker).length === 2 && marker.owner === 'devcloud' && marker.version === 1
 }
 
-/** Whether these settings enable `cua@cua`, whose copy of the guard acts when devcloud's is not loaded. */
+/** Whether the user settings enable `cua@cua`, whose copy of the guard acts when devcloud's is not loaded. */
 export function isCuaEnabled(settings: unknown): boolean {
   return isRecord(settings) && isRecord(settings.enabledPlugins) && settings.enabledPlugins['cua@cua'] === true
+}
+
+/**
+ * Whether the managed settings seat `cua@cua` outside a bridge they seat in
+ * `prepend`: listed in their `prependPlugins` ahead of sminos, or ahead of
+ * nothing where sminos is only enabled (it then follows every listed plugin).
+ * A cua they enable and do not list ahead loads beneath the bridge: after it
+ * in `prepend`, or in `user` where they do not declare its marketplace.
+ */
+export function isCuaAhead(managed: unknown): boolean {
+  const listed = isRecord(managed) && Array.isArray(managed.prependPlugins) ? managed.prependPlugins : []
+  const cua = listed.indexOf('cua@cua')
+  const sminos = listed.findIndex((id) => typeof id === 'string' && id.split('@')[0] === 'sminos')
+  return cua !== -1 && (sminos === -1 || cua < sminos)
 }
 
 /**
@@ -77,7 +91,8 @@ export function isCuaEnabled(settings: unknown): boolean {
  *   installs loads in `user` there, beneath it by the engine's tier order,
  *   so no guard of a person's can be outside it, read or not. A guard the
  *   organization seats can be (listed ahead of sminos): its devcloud hears
- *   the marker read, and the managed settings name its cua.
+ *   the marker read, and its cua is read from where the managed settings
+ *   list it (isCuaAhead).
  * - `inner`: the organization's in any other tier. It is inside every plugin
  *   a person installs and cannot hear a person's devcloud.
  */

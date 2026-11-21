@@ -278,8 +278,8 @@ rows read from the transcript, and the export to the host).
   beneath its hook. If the guard loaded now is not among them, the bridge is
   inside it. devcloud's guard counts as loaded when its marker reads live
   (the answer at state version 0). Otherwise cua's copy counts when the user
-  settings enable `cua@cua` (the managed settings, for a bridge the
-  organization seats in `prepend`; below). A dispatch that lacks the loaded guard's link
+  settings enable `cua@cua` (for a bridge the organization seats in
+  `prepend`, when their `prependPlugins` list it ahead of sminos; below). A dispatch that lacks the loaded guard's link
   says `off` only when its trace reaches the engine and the guard's own
   plugin did not raise it: a trace cut short (a link answered the call
   itself) still says `safe` when it names the guard or no guard is loaded,

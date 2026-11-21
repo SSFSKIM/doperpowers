@@ -3,7 +3,7 @@ import type { EngineInterface, HookStream, HttpResponse, On, PermissionRequestDe
 import type {} from '../../../devcloud/types/devcloud'
 
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
-import { MANAGED_OFF_LINE, OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, seatOf, verdictOf } from './bridge-place'
+import { MANAGED_OFF_LINE, OFF_LINE, ON_LINE, isCuaAhead, isCuaEnabled, isLiveMarker, seatOf, verdictOf } from './bridge-place'
 import type { Guard, Place, Seat, Verdict } from './bridge-place'
 import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, WAKE_LINE, capped, isEffort, isLaneVerdict, isObserver, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Streaming, Wake } from './bridge-state'
@@ -1729,16 +1729,19 @@ async function bridgeSeat($: EngineInterface): Promise<Seat> {
 
 /**
  * Which secrets guard is loaded now: devcloud's when its marker is live, else
- * cua's copy when the settings that seat cua beside this bridge enable it,
- * the managed settings for an `outer` seat (a person's cua is beneath it),
- * the user settings otherwise. The same reads appeal makes, of another
- * plugin's state and of the settings.
+ * cua's copy when the user settings enable cua, or, for an `outer` seat,
+ * where the managed settings list cua ahead of sminos (every other cua is
+ * beneath it there). The same reads appeal makes, of another plugin's state
+ * and of the settings.
  */
 async function loadedGuard($: EngineInterface, seat: Seat): Promise<Guard | undefined> {
   if (isLiveMarker(await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' }))) {
     return 'devcloud'
   }
-  return isCuaEnabled(await $.settings.read({ source: seat === 'outer' ? 'policy' : 'user' })) ? 'cua' : undefined
+  if (seat === 'outer') {
+    return isCuaAhead(await $.settings.read({ source: 'policy' })) ? 'cua' : undefined
+  }
+  return isCuaEnabled(await $.settings.read({ source: 'user' })) ? 'cua' : undefined
 }
 
 /**

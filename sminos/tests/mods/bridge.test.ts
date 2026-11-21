@@ -6130,8 +6130,13 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     ["the organization's in prepend, cua enabled in the user settings, nothing of it beneath", { tier: 'prepend', policy: MANAGED, cua: true }, ['doperpowers'], 'safe'],
     ["the organization's in prepend, devcloud its too and listed before sminos (its marker heard), no devcloud beneath", { tier: 'prepend', policy: MANAGED, marker: LIVE_MARKER }, ['doperpowers'], 'off'],
     ["the organization's in prepend, devcloud its too, devcloud beneath", { tier: 'prepend', policy: MANAGED, marker: LIVE_MARKER }, ['doperpowers', 'devcloud'], 'safe'],
-    ["the organization's in prepend, cua enabled by the managed settings, no cua beneath", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'cua@cua': true } } }, ['doperpowers'], 'off'],
-    ["the organization's in prepend, cua enabled by the managed settings, cua beneath", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'cua@cua': true } } }, ['doperpowers', 'cua'], 'safe'],
+    ["the organization's in prepend, cua listed in the managed prependPlugins ahead of sminos, no cua beneath", { tier: 'prepend', policy: { prependPlugins: ['cua@cua', ...MANAGED.prependPlugins] } }, ['doperpowers'], 'off'],
+    ["the organization's in prepend, cua listed ahead of sminos, cua beneath", { tier: 'prepend', policy: { prependPlugins: ['cua@cua', ...MANAGED.prependPlugins] } }, ['doperpowers', 'cua'], 'safe'],
+    ["the organization's in prepend, only enabled there and cua listed, no cua beneath", { tier: 'prepend', policy: { prependPlugins: ['cua@cua'], enabledPlugins: { 'sminos@doperpowers': true } } }, ['doperpowers'], 'off'],
+    // Enabled and not listed ahead, cua loads beneath: after sminos in prepend, or in user without its marketplace declared there.
+    // A dispatch an organization's plugin raised runs none of a person's hooks, so its trace can lack cua's link.
+    ["the organization's in prepend, cua enabled by the managed settings and not listed, no cua beneath", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'cua@cua': true } } }, ['doperpowers'], 'safe'],
+    ["the organization's in prepend, cua listed after sminos, no cua beneath", { tier: 'prepend', policy: { prependPlugins: [...MANAGED.prependPlugins, 'cua@cua'] } }, ['doperpowers'], 'safe'],
     // Seated anywhere else by the organization: inside every plugin a person installs, blind to a person's devcloud.
     ["the organization's in append, no guard enabled, nothing beneath", { tier: 'append', policy: { appendPlugins: ['sminos@doperpowers'] } }, [], 'off'],
     ["the organization's in append, a person's devcloud outside it", { tier: 'append', policy: { appendPlugins: ['sminos@doperpowers'] } }, ['doperpowers'], 'off'],
