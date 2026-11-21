@@ -501,7 +501,7 @@ DV first and small: T1's two guards ask it. T1 next: it is what every other chil
 | T1 | its plan, `docs/doperpowers/plans/2026-11-17-sminos-threads-t1.md` (six milestones, one pull request); sminos 1.51.0 | landed: pull request #572, merged as `0387f2b7` on 2026-11-20 |
 | T2 | its plan, `docs/doperpowers/plans/2026-11-20-sminos-threads-t2.md` (five milestones, one pull request); sminos 1.52.0, doperpowers 7.223.0 | landed: pull request #582, merged as `f051d4f2` on 2026-11-21 |
 | MW | the contract of D6, agreed with MAWS's architect in the two projects' sminos chat on 2026-11-17; MAWS's execution document `docs/doperpowers/plans/2026-11-18-mw-sminos-channels.md` on its branch `mw-channels` | M1 on MAWS's master 2026-11-18 (its #765); M2, M3 and the fixture's thread lines 2026-11-20 (#766 and #786), after the owner's read of the hub's table found no version-8 id; the owner's machines run that master. M4, the acceptance, lacks a staging deploy that is the owner's, and is MAWS's to report |
-| CH | its own cut, `docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md` (two children: CH1, the channel and who is in it; CH2, speaking in a channel and what sessions are taught) | cut 2026-11-21; CH1's plan being written |
+| CH | its own cut, `docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md` (two children: CH1, the channel and who is in it; CH2, speaking in a channel and what sessions are taught) | cut 2026-11-21; CH1 in-flight (its plan `docs/doperpowers/plans/2026-11-21-sminos-channels-ch1.md`), CH2 blocked-by CH1 |
 | EN | — | not-dispatched: G1 unblocked by T2's landing, G2 blocked-by CH |
 | (independent) the notification dedup key | MAWS #761 | filed 2026-11-17 |
 

@@ -142,7 +142,7 @@ A statement names the request it answers by the channel and the request's `id`, 
 - **Design inheritance:** C1 to C4 and C6 (binding where marked); D3's Creating, The id, Names, Membership and "A channel exists while"; D6; D7. Advisory, from the code map: its §8.2's list of functions for this half; `lifecycle` as the one place a statement is appended; where a project is reconciled today as the place the log is kept equal to the record; an assertion in `append_host` as a second guard against a word to a human under a channel id; `requests.opening` and the host pass as the publishers of the pending set and host frames; the backtick guard's hard-coded verb list (`sminos/hooks/mods/backticks.tsx`), which needs `channel`.
 - **What it does not teach.** The session-start guide and the skill say nothing of channels until CH2: a session is not taught a place it cannot yet speak in. `sminos help` lists the verbs.
 - **Required:** required for this unit's acceptance.
-- **Status:** not-dispatched (dispatchable now).
+- **Status:** in-flight (its plan written and reviewed; the build dispatched 2026-11-21).
 
 ### CH2: Speaking in a channel, and what sessions are taught — plan
 
@@ -200,7 +200,7 @@ One after the other: both change `cmd_list` and the uplink, and CH2's plan is wr
 
 | Child | Artifact | Status |
 |---|---|---|
-| CH1 | its plan, `docs/doperpowers/plans/2026-11-21-sminos-channels-ch1.md` | not-dispatched |
+| CH1 | its plan, `docs/doperpowers/plans/2026-11-21-sminos-channels-ch1.md` (eight milestones, one pull request; reviewed twice for buildability) | in-flight: build dispatched 2026-11-21 on branch `sminos-channels-ch1` |
 | CH2 | — | not-dispatched; blocked-by CH1 |
 
 ## Surprises & Discoveries
