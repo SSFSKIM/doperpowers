@@ -1050,7 +1050,8 @@ class VmSide(On):
             with self.subTest(origin=origin):
                 with mock.patch.object(on, "hold_to_origin"):   # the inferred directory's own check, aside here
                     code, lines, err, launched = self.asked(cwd=bare, origin=origin)
-                self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1, "why": "other"}))
+                self.assertEqual(on.judge(lines, NONCE, "w", code),
+                                 ("refused", {"ok": False, "exit": 1, "why": "other"}))
                 self.assertIn("spawn: %s is in project nowhere, which this machine's enrollment does not carry (it "
                               "syncs through no hub), so the session there and the machine that asked could not reach "
                               "each other: nothing was spawned. Name a directory of a project the org shares with --cwd"

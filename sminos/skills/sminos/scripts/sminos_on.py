@@ -704,8 +704,9 @@ def remote(c, vm, request, directory):
     line (rows 25 to 33)."""
     a = c.a
     # The positionals after `--`, so that an alias the Mac's parser took after its own (`-alias`) is one there.
-    args = ["vm", "ssh", vm, "--", "sminos", "spawn", "--asked-from",
-            json.dumps(request, separators=(",", ":"), ensure_ascii=False)] + carried(a, directory) + ["--", a.alias, "-"]
+    args = (["vm", "ssh", vm, "--", "sminos", "spawn", "--asked-from",
+             json.dumps(request, separators=(",", ":"), ensure_ascii=False)]
+            + carried(a, directory) + ["--", a.alias, "-"])
     bound = seconds("SMINOS_ON_TIMEOUT", REMOTE_TIMEOUT)
     wait = seconds("SMINOS_ON_ENROLL_WAIT", ENROLL_WAIT)
     deadline = None
