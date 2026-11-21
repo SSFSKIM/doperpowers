@@ -2019,7 +2019,7 @@ def shorts_of(sessions):
 
 def owned_by(shorts):
     """Which hosts name these short ids, by devcloud's own word (X9): the
-    one function that runs devcloud. `devcloud vm owned-by <short>...`, the
+    one function that asks devcloud what a thread owns. `devcloud vm owned-by <short>...`, the
     CLI found by find_devcloud, bounded by devcloud_timeout() (then
     stop_tree), with the directory of sminos's own interpreter first on its
     PATH (the driver needs a Python 3.11, and finds a provider's tool on

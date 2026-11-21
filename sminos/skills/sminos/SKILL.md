@@ -216,7 +216,9 @@ on after, and `reply` reads its live transcript.
 `--on` opens the session on a devcloud VM instead: one that exists, or
 `new`, which devcloud makes with your worktree's pushed branch, keeps,
 and gives your thread to own (it takes minutes: run it as a background
-command). The new session is told your address. It is refused, saying
+command; a session the MAWS app launched is no thread, and nothing
+guards a VM it makes). The new session is told your address; from a
+terminal, which `new` refuses, it is told "the operator". It is refused, saying
 why, from a VM, from a machine or project the org does not share, from a
 session whose reach is not this machine's default, and with `--wait` or
 `--settings`. The VM itself, its caps and its end are the `devcloud:vm`

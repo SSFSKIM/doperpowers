@@ -49,21 +49,24 @@ Within the caps a session creates a VM on its own, kept or leased, with
 `devcloud vm up`, or with `sminos spawn --on new`, which also opens the
 session on it (below); there `--vm-confirmed` stands where `--confirmed`
 does, under the same rule. The
-caps are the person's, in their profile: at most 3 VMs made without
-their yes alive at once (across every account and every session, kept
-and leased together), at most 8 vCPU, and no disk added beyond the
-type's own over 200 GB. Beyond any of them `up` exits 4; `--dry-run`'s
+caps are the person's, in their profile; by default at most 3 VMs made
+without their yes alive at once (across every account and every
+session, kept and leased together), at most 8 vCPU, and no disk added
+beyond the type's own over 200 GB. Beyond any of them `up` exits 4; `--dry-run`'s
 caps line gives each cap's verdict. `adopt` and registering a provider
 always need the person.
 
-`--confirmed` tells the driver the person approved this exact request; it
-cannot check, so the flag is honest only when they did. Get the
+`--confirmed` tells the driver the person approved this exact request;
+it cannot check, so the flag is honest only when they did. Get the
 specification and the hourly price from `--dry-run`, ask the person
-through the ask tool — type, vCPUs, lifetime, price per hour and in total
-— and pass `--confirmed` only on a request identical to what they
-approved. A refusal from the cloud itself (a quota, a type unavailable)
-is exit 3: that is not a cap, and `--confirmed` does not lift it; choose
-a smaller type, or tell the person.
+through the ask tool — type, vCPUs, lifetime, price per hour and in
+total — and pass `--confirmed` only on a request identical to what they
+approved. `--on new` always asks for an enrolled, kept VM, so its
+request is `devcloud vm up --dry-run --enroll --keep` with the same
+projects, in the same order and at the same ref. A refusal from the
+cloud itself (a quota, a type unavailable) is exit 3: that is not a cap,
+and `--confirmed` does not lift it; choose a smaller type, or tell the
+person.
 
 ## Putting work on it
 
@@ -79,57 +82,65 @@ a smaller type, or tell the person.
 repository unless `--cwd` names another directory. `--on new` makes the
 VM first: enrolled, kept, owned by your thread, with your worktree's
 branch, which must be pushed at its commit (or the projects
-`--vm-project` names); it takes no `--type` or `--account`, so its size
-is what `up` picks from the first project's `devenv/host.toml` or the
-person's defaults, which a `--dry-run` with the same projects shows. It
-takes minutes, so run it as a background
-command; devcloud's own lines come through, and an exit 4 is a cap, as
-above. Either way the seat is a session on the VM that the person sees
-and steers from the desk like any other, and its first message names
-you and how to reach you: it reports back the way any seat does, with
-commits pushed, pull requests and `sminos say` to you. Work that is not
-pushed lives only on the VM.
+`--vm-project` names). It takes no `--type`, `--account` or `--ttl`: for
+another size or lifetime, make the VM with `devcloud vm up --enroll
+--keep --type …` (`--ttl <duration>` in place of `--keep` for a lease),
+then spawn with `--on <name>`. It takes minutes, so run it as a
+background command; devcloud's own lines come through. Only devcloud's
+cap line from `vm up` makes an exit 4 a question for the person; an exit
+4 that ends with the line that the VM is kept (the alias already filled
+there) means: spawn on that VM with `--on <name>` under another alias,
+rather than make another. Either way the seat is a session on the VM
+that the person sees and steers from the desk like any other, and its
+first message names you and how to reach you: it reports back the way
+any seat does, with commits pushed, pull requests and `sminos say` to
+you. Work that is not pushed lives only on the VM.
 
 ## Its end
 
 A VM is owned by a thread: the one whose session made it, or the one it
-was last handed to. A kept VM costs its hourly price until someone downs
-it. After three days with no Claude session, no terminal login and no
-load, it sends its owning thread a sminos message with its idle time,
-what it has cost, and its unpushed work, and again every three idle
-days; down it when its work is done, or tell the person why it stays. A
-leased VM is deleted at its lease end with everything on it; thirty
-minutes before, its owning thread gets a message naming the repositories
-with unpushed work. Each message reaches that thread's current session
-(once the VM has seen the thread move to it), waking it if it is
-stopped. From a VM made from now on, read on an updated machine, it
-arrives from `devcloud@<name>`: the VM's own notice, not the person's
-words, and nobody to answer. From such a VM, when the owning thread is
-held and not woken, it goes on to that thread's project's live sessions,
-else into its log. When the owning thread's machine is asleep or
-offline it is recorded and waits for that machine, so it is not timely.
-`devcloud vm lease <name> <duration>` sets the end to now plus the duration, and `lease <name> keep` removes
-it. A change between kept and leased makes the host rejoin the tailnet
-under the same name, and `lease` waits until it is back. When the work
-is done, push it and `devcloud vm down <name>`: it refuses (exit 5)
-while a checkout under `~/Developer/GitHub` has unpushed or uncommitted
-work, and `--force` discards that work, so use it only for work nobody
-needs. `devcloud vm ls` shows every VM, its lease, age, price and cost
-so far, and the unconfirmed count against the cap.
+was last handed to. (A session the MAWS app launched is no thread: a VM
+it makes is recorded under that session, and nothing guards that VM when
+the session ends.) A kept VM costs its hourly price until someone downs
+it. After three days with no activity (no transcript written, no
+terminal login, no load), it sends its owning thread a sminos message
+with its idle time, what it has cost, and its unpushed work, and again
+every three idle days; down it when its work is done, or tell the person
+why it stays. At a leased VM's lease end its departure starts, and it is
+deleted with everything on it; in the lease's last thirty minutes its
+owning thread gets a message naming the repositories with unpushed work.
+Each message is addressed to that thread's current session (once the VM
+has seen the thread move to it) and wakes it if stopped, as any
+addressed message does. It goes on to the thread's project's live
+sessions, else into its log, only where the VM's own `say` reports the
+thread ended, no member, or held and not woken; a machine asleep or
+offline is not such a case, so the message waits for it. Only from a VM
+made from now on, whose own sminos and the reader's are updated, does it
+arrive from `devcloud@<name>` (the VM's own notice, which nobody
+answers) and go on for a held thread. `devcloud vm lease <name>
+<duration>` sets the end to now plus the duration, and `lease <name>
+keep` removes it. A change between kept and leased makes the host rejoin
+the tailnet under the same name, and `lease` waits until it is back.
+When the work is done, push it and `devcloud vm down <name>`: it refuses
+(exit 5) while a checkout under `~/Developer/GitHub` has unpushed or
+uncommitted work, and `--force` discards that work, so use it only for
+work nobody needs. `devcloud vm ls` shows the VMs of every account it
+can list (it names the accounts it skips), each with its lease, age,
+price and cost so far, and the unconfirmed count against the cap.
 
 **Handing it on.** When you are done and another thread of this Mac
 still uses the VM, or should take it over, hand it on rather than down
 it:
 
-    devcloud vm owner <name> <thread>     # any name sminos knows the thread by
+    devcloud vm owner <name> <thread>     # any name sminos knows the thread by; prints its <alias>#<short>
 
 From then on the VM's notices go to that thread, and it is the one that
 cannot be retired while the VM exists. The verb sends that thread
-nothing: tell it (`sminos say "@<thread> …"`) that it owns the VM now
-and what the VM is for. `sminos retire` of a thread that owns a VM is
-refused, naming the VM, `devcloud vm down` and `devcloud vm owner`:
-which of the two is the owning thread's call, not that of whoever asked
-for the retire.
+nothing: tell it (`sminos say "@<alias>#<short> …"`, as the verb printed
+it) that it owns the VM now and what the VM is for. `sminos retire` of a
+thread that owns a VM is refused, naming the VM, `devcloud vm down` and
+`devcloud vm owner`: which of the two is the owning thread's call, not
+that of whoever asked for the retire.
 
 ## A cloud devcloud does not ship
 

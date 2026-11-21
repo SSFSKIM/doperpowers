@@ -504,12 +504,15 @@ that it runs until `down`), its estimated cost at the creation-time list
 price when known, and every checkout with unpushed work. It gives
 `devcloud vm down <name>` to end it; **idleness never stops or deletes a VM**.
 Delivery tries the thread that owns the host (the descriptor's tag, which
-reaches that thread's current session and wakes it if it is stopped), then
-its sminos project's live sessions: it goes on when that thread has ended,
-is no member, or is held and not woken with it (`say --exit-held`'s exit
-3). If none are live, it leaves an untagged note in that project's log for
-the next session. A host whose sminos does not know the two flags gets each
-step again without them. Without a usable route it goes to the journal and
+reaches that thread's current session once the host has seen the thread
+move to it, and wakes it if it is stopped as any addressed message does),
+then its sminos project's live sessions: it goes on only where the host's
+own `say` reports that thread ended, no member, or held and not woken with
+it (`say --exit-held`'s exit 3); a machine that is asleep or offline is
+not such a case, and the notice waits for it there. If none are live, it
+leaves an untagged note in that project's log for the next session. A host
+whose sminos does not know the two flags gets each step again without them,
+unmarked and not going on for a held thread. Without a usable route it goes to the journal and
 `wall`. The lease warning uses the same fallback. A host built before its
 boot library marked its notices keeps that library for its life: it sends
 them unmarked, and goes on only for an ended thread or no member. `devcloud vm ls`
@@ -696,10 +699,11 @@ run and any provider call, `--dry-run` too: `--enroll` makes a host that
 joins the org, the MAWS project added after those named when none of them
 provisions it, and is exit 3 under a profile whose `[desk]` names no
 provisioning; `--expect-creator <short>` makes nothing (exit 1) unless the
-creating session `up` reads is that one. sminos reads two of `up`'s lines:
-`<name>  ready in <m>m<ss>s`, the one line of that form in a whole `up`'s
-output, for the host's name, and the opening `no VM named` of a name no
-account holds; each is pinned by a test in `tests/unit` named for that reader.
+creating session `up` reads is that one. sminos reads two of the
+driver's lines: `<name>  ready in <m>m<ss>s`, the one line of that form in
+a whole `up`'s output, for the host's name, and, from `vm ssh`, the opening
+`no VM named` of `Context.find`'s refusal of a name no account holds; each
+is pinned by a test in `tests/unit` named for that reader.
 
 **Images.** `image build [--account A] [--arch x86|arm]` creates a builder (the smallest type
 of the account's default type's architecture, or of `--arch`,

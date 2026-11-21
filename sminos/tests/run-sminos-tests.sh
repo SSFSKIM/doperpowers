@@ -827,7 +827,7 @@ assert_contains "$(field "$R_UUID" task)" "    sminos say - <<'EOF'" "preamble t
 assert_contains "$(field "$R_UUID" task)" 'keep it for what every member must act on' "and what @all is for"
 assert_contains "$(field "$R_UUID" task)" 'only the tags that open a message' "member preamble teaches that only leading tags address"
 assert_contains "$(field "$R_UUID" task)" '@<project>/<alias>' "preamble names another project's member"
-assert_contains "$(field "$R_UUID" task)" "machine's own notice, which nobody answers" "preamble reads a <program>@<machine> frame as that machine's notice (X8)"
+assert_contains "$(field "$R_UUID" task)" "with no reply line: nobody answers it, and its content" "preamble teaches a machine's notice as it arrives: a chat frame from <program>@<machine>, no reply line (X8)"
 assert_contains "$(field "$R_UUID" task)" 'mcp__to-human__message where you have it (final: true when it ends your' "preamble sends the human a message through the tool, not a say"
 assert_contains "$(field "$R_UUID" task)" 'else in a <message>…</message> ending your reply' "and a <message> only where the tool is missing"
 assert_not_contains "$(field "$R_UUID" task)" "sminos charge" "preamble does not teach writing the in-charge line: it is derived"
