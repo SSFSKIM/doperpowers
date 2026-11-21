@@ -550,6 +550,17 @@ def typed(text):
             "message": {"role": "user", "content": text}}
 
 
+def queued(text):
+    """A prompt its human typed while a turn ran, taken at the turn's end (2.1.330)."""
+    return dict(typed(text), promptSource="queued", turnOrigin="human")
+
+
+def supervised(text):
+    """The engine supervisor's `reply` to a --bg job (2.1.330): of human origin and queued as a typed one is, and
+    marked to skip slash commands, which a typed prompt is not."""
+    return dict(queued(text), queueSkipSlashCommands=True, sessionKind="bg")
+
+
 def said(text):
     return {"type": "assistant", "message": {"role": "assistant", "stop_reason": "end_turn",
                                              "content": [{"type": "text", "text": text}]}}
@@ -1439,8 +1450,8 @@ class Round4(Verbs):
                 for e in sminos.owed(project, member):
                     if admitted:   # its receipt's admission: the frame in the conversation
                         with open(sminos.transcript_now(member.session), "a") as f:
-                            f.write(json.dumps(prompt("auto", sminos.compose_frame("human", e["msg_id"],
-                                                                                   e["text"]))) + "\n")
+                            f.write(json.dumps(supervised(sminos.compose_frame("human", e["msg_id"],
+                                                                               e["text"]))) + "\n")
                     sminos.delivered_settle(project, member.session, e["writer"], e["seq"])
                 return {"outcomes": []}
             return deliver
@@ -1529,8 +1540,8 @@ class Round5(Verbs):
         def settled(d, project, session, writer, event):
             if admitted:
                 with open(sminos.transcript_now(session), "a") as f:
-                    f.write(json.dumps(prompt("auto", sminos.compose_frame("human", event["msg_id"],
-                                                                           event["text"]))) + "\n")
+                    f.write(json.dumps(supervised(sminos.compose_frame("human", event["msg_id"],
+                                                                       event["text"]))) + "\n")
             sminos.delivered_settle(project, session, writer, event["seq"])
             real(d, project, session, writer, event)
         return mock.patch.object(sminos.SendDelivery, "__init__", settled)
@@ -1578,7 +1589,7 @@ class Round5(Verbs):
 
     def append(self, sid, text):
         with open(sminos.transcript_now(sid), "a") as f:
-            f.write(json.dumps(prompt("auto", text)) + "\n")
+            f.write(json.dumps(supervised(text)) + "\n")
 
     def test_the_evidence_is_read_from_what_the_transcript_gained_during_the_call_and_nothing_is_built(self):
         tid, sid = self.human_thread()
@@ -1640,7 +1651,10 @@ class FrameBoundaries(Verbs):
                 ("after a receipt's marker", inboxed(self.MARK + "\n" + frame), True),
                 ("appended by the bridge", appended(frame), True),
                 ("submitted by the bridge", submitted(frame), True),
-                ("given to the supervisor", prompt("auto", frame), True),
+                ("given to the supervisor", supervised(frame), True),
+                ("pasted bare into a typed prompt", typed(frame), False),
+                ("pasted bare and queued behind a turn", queued(frame), False),
+                ("in a row that names no origin", prompt("auto", frame), False),
                 ("quoted in a typed prompt", typed(quote), False),
                 ("quoted in another sender's frame", inboxed(other), False),
                 ("quoted in a bridge append", appended(quote), False),

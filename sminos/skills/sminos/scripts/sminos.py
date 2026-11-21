@@ -3688,20 +3688,29 @@ DELIVERED_MARKER_RE = re.compile(r"\[sminos receipt [0-9a-f]{24}\.[0-9a-f]{16} a
 
 
 def _delivered_text(row):
-    """The text a prompt row delivers, from its start: an inbox frame's
-    body (the engine's `origin.body`, else unwrapped from its envelope),
-    any other prompt's text whole (the bridge's, the supervisor's); a
-    receipt's marker before it passed over."""
+    """The text a prompt row delivers, from its start, when a push of
+    sminos's can have made the row, else "": an inbox frame's body (the
+    engine's `origin.body`, else unwrapped from its envelope); the bridge's
+    prompt (the plugin's origin, appended or submitted); the engine
+    supervisor's `reply` (of human origin, queued and marked to skip slash
+    commands, 2.1.330). A prompt its human typed, at once or queued behind a
+    turn, and a row that names no origin, are none: a frame pasted at its
+    start is no push. A receipt's marker before the frame is passed over."""
     text = _prompt_text(row)
+    origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
+    kind = origin.get("kind")
     if text is None:
         return ""
-    origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
-    if origin.get("kind") == "peer":
+    if kind == "peer":
         if isinstance(origin.get("body"), str):
             text = origin["body"]
         else:
             opened = re.match(r"(?:[^\n<]*\n)?<%s[^>\n]*>\n" % PEER_TAG, text)
             text = text[opened.end():] if opened else ""
+    elif kind == "plugin" and origin.get("name") == "sminos":
+        pass
+    elif not (kind == "human" and row.get("promptSource") == "queued" and row.get("queueSkipSlashCommands") is True):
+        return ""
     marked = DELIVERED_MARKER_RE.match(text)
     return text[marked.end():] if marked else text
 
