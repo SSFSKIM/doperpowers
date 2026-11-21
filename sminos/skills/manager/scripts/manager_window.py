@@ -476,8 +476,8 @@ class Classifier:
                 or stripped.startswith(("<system-reminder>", "(no content)")):
             return
         elif not frames(stripped):
-            words = without_note(stripped)
-            self._add(0, ts, "you·desk" if self.corroborate(words) else "you·desk?", words, via="bridge")
+            # A bare text (MAWS's RL10 send) carries no wake's line: read whole (without_note).
+            self._add(0, ts, "you·desk" if self.corroborate(stripped) else "you·desk?", stripped, via="bridge")
         else:
             # One push can carry several frames, each its own sender's: each is classified on its own, so one
             # frame's evidence never vouches for another sender's words.
