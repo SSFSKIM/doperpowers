@@ -138,6 +138,13 @@ class Deliveries(Wakers):
         s = next(x for x in sminos.seats() if x["alias"] == alias)
         self.assertTrue(wait_for(lambda: self.record(s["current"]) is not None))
         self.stop(s["current"])
+        # A real `spawn` and the send after it are two processes, and the second lists the transcripts itself. Here
+        # every verb runs in this one process, whose index may have been listed before the engine wrote this seat's
+        # transcript (spawn looks again only when it read the first turn as ended): a send inside TRANSCRIPT_FRESH
+        # would then be held for a transcript that is on disk. So the index is listed again.
+        sminos._TINDEX.at = None
+        sminos._TINDEXES.clear()
+        sminos.forget_caches()
         return sminos.reload_seat(s["seat_id"])
 
     def vault(self):
