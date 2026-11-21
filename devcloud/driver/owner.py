@@ -152,4 +152,9 @@ def _hand(ctx, name, given, t, record, entry, host, old, where, sides):
     if not held.takes_project:
         ctx.say(f"{name} was built before a host kept its owner's project: a notice no session of {t['alias']} "
                 "takes ends in its journal")
+    why = t.get("not_carried")     # sminos 1.53.0's: absent from an older answer
+    if isinstance(why, str) and why:
+        ctx.warn(f"devcloud vm: warning: {t['alias']}'s project, {project['name']}, is not one this machine's "
+                 f"enrollment carries ({why}), so no notice from {name} reaches {t['alias']}: they end in its "
+                 "journal and wall")
     return 0

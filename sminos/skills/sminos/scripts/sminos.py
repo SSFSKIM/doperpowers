@@ -193,7 +193,8 @@ back by a fill.
                    how to reach or resume it. Alone, inside a session: the line its commits carry
     sminos who      --thread <name>                       # for a program (devcloud vm owner): the thread a
                    name is, as one line of JSON (thread, session, short, alias, opened, state, ended, local,
-                   machine, project {id, name}); exit 4 when no thread, or several, answer to it
+                   machine, project {id, name}, not_carried: why a VM's notice could not reach that project
+                   from here, "" where it can); exit 4 when no thread, or several, answer to it
     sminos projects [--all]                               # every project known here: kind (hub, machine,
                    local), live and waiting sessions, their machines; --all: a retired machine's too
     sminos machines                                       # every machine enrolled in the org: its newest
@@ -18817,8 +18818,9 @@ def who_thread(name):
     for the one seat or member `find_target` resolves the name to (one
     leading `@` dropped), else a thread its human opened that has ended,
     named by a full id (ended_target); exit 4 for none or several. The
-    facts devcloud's `vm owner` decides on, and nothing of a record's
-    journal or its former sessions (X1)."""
+    facts devcloud's `vm owner` decides on (and `not_carried`, which it
+    warns from), and nothing of a record's journal or its former sessions
+    (X1)."""
     q = name[1:] if name.startswith("@") else name
     target = find_target(q)
     ended = False
@@ -18852,6 +18854,11 @@ def who_thread(name):
     out = {"thread": answer["thread"], "session": answer["session"], "short": answer["session"][:8]}
     out.update((k, answer[k]) for k in ("alias", "opened", "state", "ended", "local", "machine"))
     out["project"] = {"id": project.id, "name": project.name} if project is not None else None
+    # Why a VM's notice could not reach the thread's project from here (the uplink's own test), "" where it can or
+    # no project was read: devcloud's `vm owner` warns from it.
+    enrolled = enrollment()
+    out["not_carried"] = "" if project is None else not_carried(project, enrolled["org"]) if enrolled is not None \
+        else "this machine is not enrolled in the org"
     print(json.dumps(out))
 
 

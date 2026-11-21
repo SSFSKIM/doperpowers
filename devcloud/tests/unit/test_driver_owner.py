@@ -120,6 +120,23 @@ class HandedOn(OwnerBase):
         self.assertEqual(out, f"{NAME} was owned by @{OLD}; builder#{SHORT} (example on testmac) owns it now\n")
         self.assertEqual(err, "")
 
+    def test_a_thread_whose_project_is_not_carried_is_handed_the_vm_with_a_warning(self):
+        """A warning, not a refusal: sminos's `not_carried` says the VM's notices cannot reach that project."""
+        self.vm()
+        self.threads["builder"] = thread_answer(not_carried="it syncs through no hub")
+        code, out, err = self.owner()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.label(), SHORT)
+        self.assertEqual(out, f"{NAME} was owned by @{OLD}; builder#{SHORT} (example on testmac) owns it now\n")
+        self.assertEqual(err, f"devcloud vm: warning: builder's project, example, is not one this machine's "
+                              f"enrollment carries (it syncs through no hub), so no notice from {NAME} reaches "
+                              f"builder: they end in its journal and wall\n")
+        for carried in ({"not_carried": ""}, {}):   # carried, and a sminos that predates the key
+            with self.subTest(carried=carried):
+                self.threads["builder"] = thread_answer(**carried)
+                code, out, err = self.owner()
+                self.assertEqual((code, err), (0, ""))
+
     def test_the_project_goes_by_its_id_whatever_its_name(self):
         for name in ("shared-name", "two words"):
             with self.subTest(name=name):

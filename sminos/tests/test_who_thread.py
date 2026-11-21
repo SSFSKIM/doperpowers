@@ -38,7 +38,8 @@ sys.path.insert(0, HERE)
 from test_threads import Sessions, records, sminos, threads  # noqa: E402
 from test_threads_ended import Ending  # noqa: E402
 
-KEYS = ["thread", "session", "short", "alias", "opened", "state", "ended", "local", "machine", "project"]
+KEYS = ["thread", "session", "short", "alias", "opened", "state", "ended", "local", "machine", "project",
+        "not_carried"]
 
 
 class Who(Ending):
@@ -65,12 +66,15 @@ class Who(Ending):
             sminos.forget_caches()
         return code, out.getvalue(), err.getvalue()
 
-    def answer(self, name, cwd=None):
+    def answer(self, name, cwd=None, carried=False):
+        """The answer for `name`; without `carried`, all but `not_carried` (its own test reads it)."""
         code, out, err = self.who("who", "--thread", name, cwd=cwd)
         self.assertEqual(code, 0, (name, out, err))
         self.assertEqual(len(out.splitlines()), 1, "one line and nothing else: %r" % out)
         got = json.loads(out)
         self.assertEqual(list(got), KEYS)
+        if not carried:
+            got.pop("not_carried")
         return got
 
     def project(self, p=None):
@@ -187,6 +191,34 @@ class Fields(Who):
         self.assertEqual((got["thread"], got["session"], got["short"], got["state"], got["ended"]),
                          (seat_id, "", "", "vacant", False))
         self.assertEqual(got["project"], self.project())
+
+
+class Carried(Who):
+    def enroll(self, org="org-1"):
+        d = os.path.join(os.environ["SMINOS_HOME"], "daemon")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "identity.json"), "w") as f:
+            json.dump({"org": org, "hub": "http://127.0.0.1:9", "name": "testhost", "former": {}, "ref": "ref-1",
+                       "enrolled": "2026-11-05T00:00:00.000Z", "cutover": "2026-11-05T00:00:01.000Z", "build": "b"}, f)
+        os.chmod(os.path.join(d, "identity.json"), 0o600)
+        self.addCleanup(os.unlink, os.path.join(d, "identity.json"))
+        sminos.forget_caches()
+
+    def test_not_carried_says_why_a_vm_s_notice_cannot_reach_the_thread_and_is_empty_where_it_can(self):
+        """devcloud's `vm owner` warns from it: a VM's notice reaches a thread only through a project this
+        machine's enrollment carries (sminos.not_carried, the uplink's own test)."""
+        sid, _ = self.opened(name="carry")
+        self.reconcile()
+        self.assertEqual(self.answer("carry", carried=True)["not_carried"], "this machine is not enrolled in the org")
+        self.enroll()
+        self.assertEqual(self.answer("carry", carried=True)["not_carried"], "", "the project here is carried")
+        local = os.path.join(self.home, "local")
+        os.makedirs(local)
+        with open(os.path.join(local, ".smns"), "w") as f:
+            json.dump({"project": str(uuidlib.uuid4()), "name": "local", "remote": ""}, f)
+        self.session(root=local, name="there")
+        self.reconcile(sminos.resolve_project(local))
+        self.assertEqual(self.answer("there", cwd=local, carried=True)["not_carried"], "it syncs through no hub")
 
 
 class Refusals(Who):
