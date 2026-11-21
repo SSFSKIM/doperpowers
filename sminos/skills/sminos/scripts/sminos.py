@@ -5387,26 +5387,36 @@ def _current_here(session, project, joined):
     `joined` a later retirement ended (last_project's rule, read fresh): of
     each project's membership event in effect, its `joined` in effect here
     (`joined`) among them, the newest decides, and a `retired` `moved`
-    names its destination. So a project that joined it before its
+    names its destination; newest ones of one moment naming two projects
+    decide none (False for each, so nothing is written until the move's
+    retirement ends the tie). So a project that joined it before its
     retirement here (a dual membership of one tick) is where it is, and one
     that joined it and was then left again for this one (a join back inside
     that window, which writes no new `joined` here) is not. Read from the
     files as they are (no lock, nothing made: registrations read as files,
     the logs by literal paths); a scan of every registration, made only by
     C5's last guard."""
-    best, at = (project.id, joined), str(joined.get("ts") or "")
+    def names(pid, last):
+        return str(last.get("project") or "") if last["kind"] == "retired" and last.get("reason") == "moved" else pid
+
+    at = str(joined.get("ts") or "")
+    newest = {project.id}   # the projects the newest moment names
     for path in registration_paths():
         pid = os.path.basename(os.path.dirname(path))
         if pid == project.id or is_channel_id(pid):
             continue
         p = _registered_as(pid, registration(pid))
         last = threads_module().in_effect(_own_events(p, session)) if p is not None else None
-        if last is not None and str(last.get("ts") or "") > at:
-            best, at = (pid, last), str(last.get("ts") or "")
-    pid, last = best
-    if last["kind"] == "retired" and last.get("reason") == "moved":
-        pid = str(last.get("project") or "")
-    return pid == project.id
+        ts = str(last.get("ts") or "") if last is not None else ""
+        if last is None or ts < at:
+            continue
+        if ts > at:
+            at, newest = ts, set()
+        newest.add(names(pid, last))
+    # Two memberships in effect at one moment (a timestamp is a millisecond's) naming two projects: neither is
+    # where the session is, never by the scan's order; nothing is written, and a later pass decides once the
+    # move's retirement ends the tie.
+    return newest == {project.id}
 
 
 def _reconcile_channel(project, events, by_session):

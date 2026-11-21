@@ -32,6 +32,7 @@ import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from 
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import contextlib
 import io
+import json
 import os
 import sys
 import threading
@@ -325,6 +326,47 @@ class Kept(Life, T1.Sessions):
         self.assertFalse(self.is_member(sid), "retired from the project left")
         self.assertEqual([s["channels"] for s in self.statements(sid)], [[DESK]])
         self.assert_read(tid, sid, [DESK, LOBBY], p=other)
+
+    def test_two_memberships_in_effect_at_the_same_moment_state_nothing_until_the_retirement_lands(self):
+        """The destination's joined stamped at the very millisecond of the source's: neither is newer, so
+        neither project is where the session is, and nothing is written in either. The move's retirement ends
+        the tie; then the destination states the set, and the pass after is steady."""
+        other = self.project_of(self.repo("other"))
+        sid, _, tid = self.member()
+        self.add(tid, sid, DESK)
+        self.raw(tid, lambda r: (r.update(channels=[DESK, LOBBY]), r["began"].update({LOBBY: {}})))
+        source = threads.in_effect(self.own(sid))
+        self.assertEqual(source["kind"], "joined")
+
+        def destination_at_the_same_moment():
+            sminos.write_override(sid, other.id)
+            sminos.forget_caches()
+            with mock.patch.object(channels, "restate", return_value=False):
+                self.reconcile(other)
+            path = os.path.join(other.home, "log", sminos.writer_id(sid).replace("/", ".") + ".jsonl")
+            with open(path) as f:
+                events = [json.loads(line) for line in f if line.strip()]
+            for e in events:
+                if e["kind"] == "joined":
+                    e["ts"] = source["ts"]
+            with open(path, "w") as f:
+                f.write("".join(json.dumps(e) + "\n" for e in events))
+            sminos.forget_caches()
+            self.assertEqual(threads.in_effect(self.own(sid, other))["ts"], source["ts"], "the same moment")
+            self.assertTrue(self.is_member(sid))
+            # Its own pass, at the tie, writes nothing either.
+            self.reconcile(other)
+            self.assertEqual(self.statements(sid, other), [])
+        self.overtaken(destination_at_the_same_moment)
+        self.assertEqual([s["channels"] for s in self.statements(sid)], [[DESK]], "nothing in the project left")
+        self.assertEqual(self.statements(sid, other), [])
+        self.reconcile()   # the move's retirement lands here
+        self.assertEqual(threads.in_effect(self.own(sid))["reason"], "moved")
+        self.reconcile(other)
+        self.assertEqual([s["channels"] for s in self.statements(sid, other)], [[DESK, LOBBY]])
+        self.assertEqual([s["channels"] for s in self.statements(sid)], [[DESK]])
+        self.assert_read(tid, sid, [DESK, LOBBY], p=other)
+        self.assert_steady(tid, sid, other)
 
     def test_a_join_back_inside_that_window_is_restated_where_the_session_is(self):
         """The project moved to joins it before the project left retires it, and the session joins back to the
