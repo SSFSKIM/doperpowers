@@ -34,6 +34,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 SCRIPTS = os.path.join(os.path.dirname(HERE), "skills", "sminos", "scripts")
@@ -49,10 +50,13 @@ sys.path.insert(0, HERE)
 import channel_wire as wire  # noqa: E402
 import endpoint_standin  # noqa: E402
 import sminos  # noqa: E402
+import sminos_channels as channels  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_rl10 as rl10  # noqa: E402
 import sminos_threads as threads  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
+
+LIMIT = threads.CHANNEL_LIMIT
 
 ORG, MACHINE, URL = "org-1", "testhost", "http://127.0.0.1:9"
 CRED = {"org": ORG, "hub": URL, "machine": MACHINE, "key": None}
@@ -292,10 +296,225 @@ class Wire(unittest.TestCase):
         self.assertEqual({k: v for k, v in self.hellos(ep, 2).items() if k in ids}, {DESK: False, LOBBY: True})
         ep.wait(lambda f: f["t"] == "restated")
         time.sleep(0.5)   # what a tick after the restatement sends
-        self.assertEqual(wire.published(ep.received, ids, before), [])
+        self.assertEqual(wire.published(ep.received, ids, before), [],
+                         "a welcome that listed no channels: no member frame carries the key")
         self.assertEqual(wire.written(os.environ["SMINOS_HOME"], ids, MACHINE, before), [])
         self.assertFalse([f for f in ep.frames("session") if f["message"].get("project") in ids
                           and f["message"].get("kind") != "end"])
+
+
+
+# ------------------------------------------------------------- M6: the member frame's channels
+
+
+class Lane:
+    """A Link's lane that keeps what it is sent, written as taken at once."""
+
+    def __init__(self):
+        self.sent = []
+
+    def send(self, frames, then=None):
+        self.sent += frames
+        if then is not None:
+            then()
+
+    def posting(self):
+        return False
+
+    def queued(self):
+        return 0
+
+    def close(self):
+        pass
+
+
+def set_record(sid, **fields):
+    """The record of the thread whose current session `sid` is, its fields
+    written as given (staged: the tests of M2 hold the operation's own)."""
+    t = threads.thread_of(sid)
+    path = os.path.join(threads.store_dir(), t["thread"] + ".json")
+    with open(path) as f:
+        rec = json.load(f)
+    rec.update(fields)
+    sminos.write_json(path, rec)
+    sminos.forget_caches()
+    return t["thread"]
+
+
+class Frame(unittest.TestCase):
+    """member_frame's `channels`: given and lane A, the frame's last key, a
+    list; otherwise no key, never an empty list."""
+
+    def member(self, record):
+        return sminos.Member(session=S1, short=S1[:8], alias="w", name_source="user", machine=MACHINE, local=True,
+                             state="idle", state_age=None, charge="", charge_source="", status="", by="", worktree="",
+                             seat=None, record=record)
+
+    def test_the_key_last_for_lane_a_and_absent_otherwise(self):
+        lane_a = {"owners": ["@machine"], "origin": {"kind": "terminal"}}
+        frame = uplink.member_frame(APP, self.member(lane_a), "launch-1", True, (DESK, LOBBY))
+        self.assertEqual(list(frame)[-1], "channels")
+        self.assertEqual(frame["channels"], [DESK, LOBBY])
+        self.assertEqual(frame["project"], APP, "the thread's own project, never a channel")
+        self.assertNotIn("channels", uplink.member_frame(APP, self.member(lane_a), None, True, ()))
+        self.assertNotIn("channels", uplink.member_frame(APP, self.member(lane_a)), "by default none")
+        lane_b = {**lane_a, "controller": {"lane": "B", "since": "2026-11-21T00:00:00Z"}}
+        self.assertNotIn("channels", uplink.member_frame(APP, self.member(lane_b), None, True, (DESK,)),
+                         "a lane B session is no thread of a channel")
+        self.assertEqual(uplink.member_frame(APP, self.member(lane_a), None, True, ()),
+                         uplink.member_frame(APP, self.member(lane_a), None, True),
+                         "a thread in none: today's frame")
+
+
+class FrameKey(unittest.TestCase):
+    """What the frame carries is the record's set as channels_of reads it
+    (frame_channels), and the frame is built again when that set changes,
+    and only then; without the welcome's word nothing of it is read."""
+
+    setUp = Wire.setUp
+    stop_all = Wire.stop_all
+    live = Wire.live
+
+    def row(self, sid):
+        sminos.forget_caches()
+        return next(m for m in sminos.view_of(self.app).members if m.session == sid)
+
+    def link(self, serves=True):
+        link = uplink.Link(CRED, {}, transport=mock.Mock(number=1))
+        self.addCleanup(link.close)
+        link.generation = 1
+        link.log_lane = link.session_lane = Lane()
+        link.serves_channels = serves
+        return link
+
+    def test_frame_channels_is_channels_of_as_the_frame_carries_it(self):
+        self.live(S1, "worker")
+        self.row(S1)
+        self.assertEqual(channels.frame_channels(S1), (), "a thread in no channel")
+        set_record(S1, channels=[DESK, "not-a-channel", APP, LOBBY])
+        self.assertEqual(channels.frame_channels(S1), (DESK, LOBBY), "the entries that are channels' ids")
+        self.assertEqual(channels.frame_channels(S1), tuple(c for c in channels.channels_of(S1)
+                                                            if sminos.is_channel_id(c)))
+        many = ["%08x-0000-8000-8000-000000000000" % n for n in range(LIMIT + 2)]
+        set_record(S1, channels=many)
+        self.assertEqual(channels.frame_channels(S1), tuple(many[:LIMIT]), "the first 128")
+        set_record(S1, channels=[DESK], ended="2026-11-21T00:00:00.000Z")
+        self.assertEqual(channels.frame_channels(S1), (), "an ended thread's set is not carried")
+        self.assertEqual(channels.frame_channels(S2), (), "a session that is no thread")
+        self.assertEqual(channels.frame_channels(""), ())
+
+    def test_built_again_when_the_set_changes_and_only_then(self):
+        self.live(S1, "worker")
+        link = self.link()
+
+        def build():
+            with mock.patch.object(uplink, "member_frame", wraps=uplink.member_frame) as built:
+                frame = link.fresh_frame(APP, self.row(S1))
+            return built.call_count, frame
+
+        n, frame = build()
+        self.assertEqual((n, "channels" in frame), (1, False), "a thread in none: no key")
+        self.assertEqual(build()[0], 0, "nothing moved: not built again")
+        set_record(S1, channels=[DESK])
+        n, frame = build()
+        self.assertEqual((n, frame.get("channels")), (1, [DESK]), "its set changed: built again, carrying it")
+        self.assertEqual(build()[0], 0)
+        set_record(S1, channels=[])
+        n, frame = build()
+        self.assertEqual((n, "channels" in frame), (1, False), "emptied: no key, never an empty list")
+
+    def test_without_the_welcome_s_word_no_key_and_nothing_read(self):
+        self.live(S1, "worker")
+        self.row(S1)
+        set_record(S1, channels=[DESK])
+        link = self.link(serves=False)
+        with mock.patch.object(channels, "frame_channels", side_effect=AssertionError("read")) as read:
+            frame = link.fresh_frame(APP, self.row(S1))
+        self.assertNotIn("channels", frame)
+        self.assertEqual(read.call_count, 0, "a welcome that lists no channels costs the frame nothing")
+        self.assertEqual(self.link().fresh_frame(APP, self.row(S1))["channels"], [DESK])
+
+    def test_the_welcome_s_word(self):
+        link = self.link(serves=False)
+        with mock.patch.object(uplink.audience, "keep_capabilities"), \
+                mock.patch.object(link, "on_policy"):
+            link.welcomed_rl10({"capabilities": ["access", "channels"]})
+            self.assertTrue(link.serves_channels)
+            link.welcomed_rl10({"capabilities": ["access"]})
+            self.assertFalse(link.serves_channels)
+            link.welcomed_rl10({})
+            self.assertFalse(link.serves_channels)
+
+
+class WireWithChannels(unittest.TestCase):
+    """A real uplink against a stand-in that serves channels: the thread's
+    member frame carries its set while its welcome listed `channels`; a
+    channel's hello loses and gains `follow` as the last record naming it
+    goes and returns, with no `machine` frame either way; and the checker
+    passes over a first connection and a reconnection."""
+
+    setUp = Wire.setUp
+    stop_all = Wire.stop_all
+    live = Wire.live
+    uplink = Wire.uplink
+    hellos = Wire.hellos
+
+    def endpoint(self):
+        ep = endpoint_standin.Endpoint(os.path.join(os.environ["MAWS_USER_DATA"], "mawsd", "endpoint"),
+                                       org=self.org, capabilities=["channels"])
+        ep.start()
+        self.addCleanup(ep.stop)
+        return ep
+
+    def channel_hellos(self, ep):
+        return [(n, f.get("follow") is True) for n, f in ep.received if f.get("t") == "hello"
+                and f.get("project") == DESK]
+
+    def test_the_set_on_the_frame_and_the_channel_s_hello(self):
+        self.live(S1, "worker")
+        self.live(S2, "other")
+        sminos.view_of(self.app)
+        set_record(S1, channels=[DESK])
+        ids = [DESK, LOBBY]
+        before = wire.baseline(os.environ["SMINOS_HOME"], ids)
+        ep = self.endpoint()
+        self.uplink()
+        ep.wait_until(lambda: self.hellos(ep, 1).keys() >= {APP, DESK, LOBBY})
+        self.assertFalse(self.hellos(ep, 1)[DESK], "the desk opened without follow")
+        frame = ep.wait(lambda f: f["t"] == "member" and f.get("session") == S1)
+        self.assertEqual((frame["project"], frame["channels"]), (APP, [DESK]))
+        other = ep.wait(lambda f: f["t"] == "member" and f.get("session") == S2)
+        self.assertNotIn("channels", other, "a thread in none carries no key")
+        self.assertEqual(ep.known(), {APP, DESK}, "the stand-in counts the desk as known")
+        # The last record naming the desk lets it go: followed again, and the frame without the key.
+        set_record(S1, channels=[])
+        uplink_nudge()
+        ep.wait_until(lambda: self.channel_hellos(ep)[-1:] == [(1, True)])
+        ep.wait(lambda f: f["t"] == "member" and f.get("session") == S1 and "channels" not in f)
+        ep.wait_until(lambda: DESK not in ep.known())
+        set_record(S1, channels=[DESK])
+        uplink_nudge()
+        ep.wait_until(lambda: self.channel_hellos(ep)[-1:] == [(1, False)])
+        ep.wait_until(lambda: DESK in ep.known())
+        self.assertEqual([h for h in self.channel_hellos(ep)], [(1, False), (1, True), (1, False)])
+        ep.drop()
+        ep.wait_until(lambda: self.hellos(ep, 2).get(DESK) is False)
+        ep.wait(lambda f: f["t"] == "restated")
+        ep.wait_until(lambda: DESK in ep.known())
+        time.sleep(0.5)
+        welcomed = {n for n, w in ep.welcomes if "channels" in w["capabilities"]}
+        self.assertEqual(welcomed, {1, 2})
+        self.assertEqual(wire.published(ep.received, ids, before, welcomed=welcomed), [])
+        self.assertEqual(wire.written(os.environ["SMINOS_HOME"], ids, MACHINE, before), [])
+        self.assertFalse([f for f in ep.frames("session") if f["message"].get("project") in ids
+                          and f["message"].get("kind") != "end"], "no machine frame, no presence, either way")
+        self.assertFalse([f for f in ep.frames("member") if f.get("channels") == []], "never an empty list")
+
+
+def uplink_nudge():
+    """The daemon's nudge, as a write of the operation leaves it: the
+    uplink scans again within its tick."""
+    sminos.nudge_daemon()
 
 
 if __name__ == "__main__":

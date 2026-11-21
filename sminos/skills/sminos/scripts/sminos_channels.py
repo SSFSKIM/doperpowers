@@ -177,6 +177,21 @@ def channels_of(session):
     return tuple(threads.held_set(t)) if t is not None else ()
 
 
+def frame_channels(session, holders=None):
+    """channels_of(session) as a member frame carries it (§7, X5): its
+    entries that are channels' ids, in order, the first 128; () for a
+    thread in none, ended, or no thread. Read from the threads that hold a
+    set (sminos_threads.set_holders: the records channels_of reads, by the
+    same rule, kept while the stores' index is the same), so a thread in
+    none is one lookup; `holders`, that map as a caller read it once for
+    many."""
+    threads = sminos.threads_module()
+    t = (threads.set_holders() if holders is None else holders).get(session) if session else None
+    if t is None:
+        return ()
+    return tuple(c for c in threads.held_set(t) if sminos.is_channel_id(c))[:threads.CHANNEL_LIMIT]
+
+
 def began_of(thread_id, channel_id):
     """Where the thread's membership of the channel began (§4): its record's
     positions for it, {writer: seq}; None when the thread is not in it. A

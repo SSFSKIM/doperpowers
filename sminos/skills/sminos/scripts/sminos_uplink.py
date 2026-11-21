@@ -678,7 +678,7 @@ def drawn_from(pid, here):
 # ------------------------------------------------------------- one stream
 
 
-def member_frame(pid, m, launch=None, visibility=False):
+def member_frame(pid, m, launch=None, visibility=False, channels=()):
     """RL10's `member` for a local member's row (Plane.member_rows): its record's
     provenance and ownership (sminos.session_record; the defaults, `@machine`
     and a terminal origin, with no principal or inference, while it has
@@ -691,7 +691,10 @@ def member_frame(pid, m, launch=None, visibility=False):
     it says nothing (sminos_audience.policy_of); an older endpoint rejects a
     whole frame on a share grade it does not know, so none is sent to it.
     `principal` and `inference` cross because the endpoint is this machine;
-    they never ride a log event."""
+    they never ride a log event. `channels` (CH1, §7): the thread's declared
+    set, as the frame's last key, a list, for a lane A member and only when
+    it is not empty, so a thread in none is sent today's frame; `project`
+    stays the thread's own, never a channel."""
     rec = m.record or {}
     origin = rec.get("origin") if isinstance(rec.get("origin"), dict) else dict(sminos.DEFAULT_ORIGIN)
     frame = {"t": "member", "session": m.session, "alias": m.alias, "project": pid,
@@ -711,6 +714,8 @@ def member_frame(pid, m, launch=None, visibility=False):
             frame[key] = rec[key]
     if visibility:
         frame["access"], frame["shares"], frame["policyRev"] = audience.policy_of(rec)
+    if channels and frame["lane"] == "A":
+        frame["channels"] = list(channels)
     return frame
 
 
@@ -774,6 +779,7 @@ class Link:
         self.members_sent = {}    # RL10: session → the `member` frame last sent on this connection
         self.frames = {}          # RL10: session → (what its frame was built from, the frame or None): fresh_frame
         self.visibility = False   # RL10: the endpoint's welcome advertised `access` (P5 O18 D9): member frames carry it
+        self.serves_channels = False  # RL10: the welcome listed `channels` (CH1, §7): a thread's frame carries its set
         self.reach = False        # RL10: it advertised `reach` (P5 O18 D3): every peer push here waits for its answer
         self.members_unsent = set()   # RL10: the sessions whose frame is due and not yet queued (publish_members)
         self.member_read_for = None   # RL10: the running sessions the projects known here were last listed for
@@ -953,6 +959,7 @@ class Link:
         caps = [c for c in caps if isinstance(c, str)] if isinstance(caps, list) else []
         self.visibility = "access" in caps
         self.reach = "reach" in caps
+        self.serves_channels = "channels" in caps
         try:
             audience.keep_capabilities(caps)
         except OSError as e:
@@ -1909,6 +1916,7 @@ class Link:
         socks = plane.bridge_socks()
         records = sminos.records_module()
         where = records.records_dir()
+        holders = sminos.threads_module().set_holders() if self.serves_channels else None
         seen = set()
         for pid in sorted(pid for pid, rows in self.plane.member_rows.items() if rows and pid in self.member_known):
             for sid, m in sorted(self.plane.member_rows[pid].items()):
@@ -1918,7 +1926,7 @@ class Link:
                     # presence carries it); asked here too, so a session of
                     # a project not open on the stream has it as well.
                     self.plane.bridges.answers(sid, now, socks)
-                    frame = self.fresh_frame(pid, m, records, where)
+                    frame = self.fresh_frame(pid, m, records, where, holders)
                     if frame is None:
                         # An established record that cannot be read (P5 O18 D10): its policy is unknown, so no
                         # frame goes, and one sent before is withdrawn (`gone` below), until it reads again.
@@ -1954,7 +1962,7 @@ class Link:
         if not unsent:
             self.members_whole = True
 
-    def fresh_frame(self, pid, m, records=None, where=None):
+    def fresh_frame(self, pid, m, records=None, where=None, holders=None):
         """The member frame of a plane row from its session's record as it
         reads now (the row's may be a stale one, from before a repair or a
         policy change), or None while the record file exists and cannot be
@@ -1963,10 +1971,15 @@ class Link:
         moved: the record file's stat (inode, size, mtime, ctime, as
         file_bytes reads it: a record is written whole, by rename, and a
         chmod moves the ctime), the project, the row's fields the frame
-        carries, the launch the bridge names and the visibility. An
-        unchanged member costs a stat at each publish (twice a tick, every
-        member: their parse and build were most of an idle uplink's work,
-        2026-11-12). The stat is taken before the read, so a record
+        carries, the thread's declared set while the welcome listed
+        `channels` (sminos_channels.frame_channels, a lookup in what the
+        thread stores' index already holds; nothing read without the
+        welcome's word; `holders`, sminos_threads.set_holders as a publish
+        read it once for every member; without the word the set is (), so
+        the tuple stands for the word too), the launch the bridge names and
+        the visibility. An unchanged member costs a stat at each publish
+        (twice a tick, every member: their parse and build were most of an
+        idle uplink's work, 2026-11-12). The stat is taken before the read, so a record
         rewritten between them is built again at the next publish. Kept
         only when the read agrees with the stat (a record read from a file
         that was there, or none from one that was not), with the launch as
@@ -1984,7 +1997,12 @@ class Link:
                 at = (path, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
             except OSError:
                 at = (path, os.path.lexists(path))
-        made_of = (at, pid, m.session, m.alias, m.state, m.title, m.cwd, m.worktree, launch, self.visibility)
+        chans = ()
+        if self.serves_channels:
+            holders = sminos.threads_module().set_holders() if holders is None else holders
+            if sid in holders:
+                chans = sminos.channels_module().frame_channels(sid, holders)
+        made_of = (at, pid, m.session, m.alias, m.state, m.title, m.cwd, m.worktree, chans, launch, self.visibility)
         held = self.frames.get(m.session)
         if held is not None and held[0] == made_of:
             return held[1]
@@ -1993,7 +2011,7 @@ class Link:
             self.frames.pop(m.session, None)
             return None
         launch = self.plane.bridges.launch(m.session)
-        frame = member_frame(pid, m._replace(record=rec), launch, self.visibility)
+        frame = member_frame(pid, m._replace(record=rec), launch, self.visibility, chans)
         if (at is not None and len(at) == 5) == (rec is not None):
             self.frames[m.session] = (made_of[:-2] + (launch, self.visibility), frame)
         else:

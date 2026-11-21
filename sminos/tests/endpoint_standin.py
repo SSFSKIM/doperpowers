@@ -109,6 +109,18 @@ between every two of the stand-ins it names. What carries them between
 endpoints in production is MAWS's relay; the hand-off carries the frames
 themselves, never one written by hand.
 
+Declared channels (CH1's M6), as MAWS's endpoint at its master 8ae3b0843
+does them (the registry's `#knownNow`, rl10/link.ts's `sessionProjects`,
+rl10/members.ts's `memberChannels`): the welcome lists `channels`, when
+`capabilities` holds it, only to a hello that listed it (`welcomes` keeps
+each welcome sent, with its connection); a member frame whose `project` is
+a channel's id is that session gone; and `known()` (`known` in the state,
+sorted) is the machine's known logs: those the live connection's hellos
+opened without `follow` (each log's last hello there) whose id a held
+member names, by its `project` and, while that connection's hello listed
+`channels`, by a lane A member's `channels`, the entries that are channels'
+ids, the first 128.
+
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
 persist_legacy, answer_policy, ack_results, verdicts, verdict,
@@ -133,6 +145,12 @@ FIELDS = ("token", "identity", "policy", "revoked", "org", "build", "state_versi
           "audiences", "admit", "withheld", "archive", "refuse_audience", "withhold")
 TS_MS = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 TS_S = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+CHANNEL_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")   # MAWS's isChannelId
+CHANNEL_LIMIT = 128   # the member frame's channels MAWS counts
+
+
+def is_channel_id(value):
+    return isinstance(value, str) and CHANNEL_ID.fullmatch(value) is not None
 
 
 def iso(t=None):
@@ -312,6 +330,7 @@ class Endpoint:
         self.lines = []         # [(connection number, line)]: every line after a connection's hello, as it came
         self.logs = {}          # project id → {writer: {seq: the event in its upload form}}
         self.hellos = []        # [(connection number, hello)] accepted
+        self.welcomes = []      # [(connection number, welcome)] sent
         self.refused = []       # [(connection number, first line as JSON or text)] refused
         self.conns = 0
         self.current = None
@@ -440,9 +459,14 @@ class Endpoint:
             if self.policy is None and isinstance(hello.get("policy"), dict):
                 self.policy = hello["policy"]
                 write_private(os.path.join(self.dir, "policy.json"), self.policy)
-            conn.write({"t": "welcome", "protocol": {"major": 1, "minor": 0}, "capabilities": list(self.capabilities),
-                        "build": self.build, "identity": self.identity, "policy": self.policy,
-                        "stateVersion": self.state_version})
+            listed = hello.get("capabilities") if isinstance(hello.get("capabilities"), list) else []
+            welcome = {"t": "welcome", "protocol": {"major": 1, "minor": 0},
+                       "capabilities": [c for c in self.capabilities if c != "channels" or "channels" in listed],
+                       "build": self.build, "identity": self.identity, "policy": self.policy,
+                       "stateVersion": self.state_version}
+            with self.cv:
+                self.welcomes.append((conn.number, welcome))
+            conn.write(welcome)
             conn.write({"t": "revoked", **self.revoked})
             if self.org is not None:
                 conn.write({"t": "org", **self.org})
@@ -485,10 +509,12 @@ class Endpoint:
         elif t == "rpc-result" and self.ack_results:
             out.append({"t": "rpc-ack", "opId": frame.get("opId"), "nonce": frame.get("nonce")})
         elif t == "member" and isinstance(frame.get("session"), str):
-            if frame.get("gone") is True:
-                self.members.pop(frame["session"], None)
-            else:
-                self.members[frame["session"]] = frame
+            with self.cv:
+                if frame.get("gone") is True or is_channel_id(frame.get("project")):
+                    self.members.pop(frame["session"], None)   # a channel is no member's project: that session gone
+                else:
+                    self.members[frame["session"]] = frame
+                self.cv.notify_all()
         elif t == "words?" and not isinstance(frame.get("project"), str):
             out.append({"t": "words", "id": frame.get("id"), "verdict": "refuse"})   # O10 M6: no project, no words
         elif t == "words?":
@@ -666,6 +692,29 @@ class Endpoint:
                                               "follow": f.get("follow") is True, "at": at}
             return {"conn": conn, "projects": projects}
 
+    def known(self):
+        """The logs this machine is known to hold (MAWS's rule, the module's
+        docstring): those the live connection opened without `follow` whose
+        id a held member names."""
+        with self.cv:
+            conn = self.current.number if self.current is not None else None
+            if conn is None:
+                return set()
+            hello = next((h for n, h in reversed(self.hellos) if n == conn), {})
+            listed = hello.get("capabilities") if isinstance(hello.get("capabilities"), list) else []
+            unfollowed = {}
+            for n, f in self.received:
+                if n == conn and f.get("t") == "hello" and isinstance(f.get("project"), str):
+                    unfollowed[f["project"]] = f.get("follow") is not True
+            named = set()
+            for m in self.members.values():
+                if isinstance(m.get("project"), str):
+                    named.add(m["project"])
+                chans = m.get("channels")
+                if "channels" in listed and m.get("lane") == "A" and isinstance(chans, list):
+                    named.update(c for c in chans[:CHANNEL_LIMIT] if is_channel_id(c))
+            return {pid for pid, held in unfollowed.items() if held and pid in named}
+
     # ---------------------------------------------------- the test's reads
 
     def frames(self, t=None, conn=None):
@@ -703,7 +752,9 @@ class Endpoint:
                     "refused": [{"conn": n, "first": f} for n, f in self.refused],
                     "received": [{"conn": n, "frame": f} for n, f in self.received],
                     "identity": self.identity, "policy": self.policy, "revoked": self.revoked,
-                    "legacy": self.legacy(), "token": self.token}
+                    "legacy": self.legacy(), "token": self.token,
+                    "welcomes": [{"conn": n, "welcome": w} for n, w in self.welcomes],
+                    "known": sorted(self.known())}
 
 
 # ------------------------------------------------------------- the subprocess

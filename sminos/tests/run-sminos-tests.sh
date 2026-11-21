@@ -470,8 +470,8 @@ run_suites_b() {
     fail "hub projects, and the hub verbs on an endpoint's enrollment (test-hub.sh)"; fi
   if python3 "$SCRIPT_DIR/test_rl10.py"; then pass "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, legacy-key? (test_rl10.py)"; else
     fail "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, legacy-key? (test_rl10.py)"; fi
-  if python3 -B "$SCRIPT_DIR/test_endpoint_standin.py"; then pass "the endpoint stand-in's hand-off between two machines (test_endpoint_standin.py)"; else
-    fail "the endpoint stand-in's hand-off between two machines (test_endpoint_standin.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_endpoint_standin.py"; then pass "the endpoint stand-in: the hand-off between two machines, known by MAWS's rule (test_endpoint_standin.py)"; else
+    fail "the endpoint stand-in: the hand-off between two machines, known by MAWS's rule (test_endpoint_standin.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_streams.py"; then pass "audience streams on the writing side: the names, a session's own stream, the split say, the private sender's refusal, redaction, an unreadable record (test_streams.py)"; else
     fail "audience streams on the writing side: the names, a session's own stream, the split say, the private sender's refusal, redaction, an unreadable record (test_streams.py)"; fi
   if python3 "$SCRIPT_DIR/test_snapshots.py"; then pass "the endpoint's policy-cache rebuild: snapshots? answered in bounded pages, remote writers only, the last done (test_snapshots.py)"; else
@@ -497,11 +497,10 @@ run_suites_b() {
   if python3 "$SCRIPT_DIR/test_heads.py"; then pass "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; else
     fail "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; fi
   # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink
-  # (rl10_conformance.py): every line as written but those its AMENDMENTS name (sminos's threads), played as amended.
+  # (rl10_conformance.py): every line as written, its probes checked over the whole conversation instead.
   while IFS= read -r line; do
     case "$line" in
       "ok "*) pass "rl10 conformance: ${line#ok }" ;;
-      "amend "*) pass "rl10 conformance (amended for threads): ${line#amend }" ;;
       *) fail "rl10 conformance: ${line#FAIL }" ;;
     esac
   done < <(python3 -B "$SCRIPT_DIR/rl10_conformance.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/rl10-conversation.json" 2>&1)
@@ -573,8 +572,8 @@ run_channels() {
     pass "a channel id told from a project's at every door: the vectors, the kind, names, the .smns rule, an older join (test_channels.py)"
   else fail "a channel id told from a project's at every door: the vectors, the kind, names, the .smns rule, an older join (test_channels.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_channels_wire.py"; then
-    pass "nothing published under a channel id: the checker's breaches, a real uplink over an older copy's join (test_channels_wire.py)"
-  else fail "nothing published under a channel id: the checker's breaches, a real uplink over an older copy's join (test_channels_wire.py)"; fi
+    pass "the wire: the checker's breaches, a thread's channels on its member frame, a channel's follow, a real uplink over an older copy's join (test_channels_wire.py)"
+  else fail "the wire: the checker's breaches, a thread's channels on its member frame, a channel's follow, a real uplink over an older copy's join (test_channels_wire.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_channels_store.py"; then
     pass "a thread's declared set: one durable operation, its statement and its reader, against a wake (test_channels_store.py)"
   else fail "a thread's declared set: one durable operation, its statement and its reader, against a wake (test_channels_store.py)"; fi
@@ -590,6 +589,8 @@ run_channels() {
   echo
   if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; else
     fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; fi
+  if "$SCRIPT_DIR/test-channels-machines.sh"; then pass "channels across three machines: known for two holders and not a follower, a removal, a return, the last member (test-channels-machines.sh)"; else
+    fail "channels across three machines: known for two holders and not a follower, a removal, a return, the last member (test-channels-machines.sh)"; fi
 }
 summary() {
   echo

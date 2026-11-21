@@ -22,24 +22,20 @@ conversation stages no `reach?` (P5 O18 D3): its endpoint advertises
 `reach`, and each one sminos asks before a peer push is answered `deliver`
 at once, the push the conversation expects then made.
 
-Two kinds of line are not sminos's to send as written, each named in a table
-below with its reason:
-- PROBES: lines the endpoint's suite plays as a sminos would that misbehaves
-  (another body at a stored position, a `created` of its own, a `words?`
-  naming no project, for a session not addressed or not a member, or for a
-  revoked signer's event). Neither the probe nor the endpoint's answer to it
-  is played here; what sminos does instead is checked over the whole
-  conversation: it never sends such a line.
-- AMENDMENTS: lines sminos's threads (T1) change, each played as amended
-  and printed `amend` with its reason: a lane A session's lifecycle events
-  carry `thread`, and S2, lane B at its join and lane A once its bridge
-  relays the verdict, is adopted as a thread by one more `joined`. O10's
-  fixture is otherwise written to sminos's real frames (MAWS 6d57a6160,
-  which took M7b's amendment list), so any other line sminos cannot send
-  as written fails.
+One kind of line is not sminos's to send as written, named in a table below
+with its reason: PROBES, lines the endpoint's suite plays as a sminos would
+that misbehaves (another body at a stored position, a `created` of its own,
+a `words?` naming no project, for a session not addressed or not a member,
+or for a revoked signer's event). Neither the probe nor the endpoint's
+answer to it is played here; what sminos does instead is checked over the
+whole conversation: it never sends such a line. Every other line is
+sminos's as written: the fixture carries the threads' lines (T1) and the
+declared channel's (CH1's M6, its case 13, staged by registering the
+channel under the fixture's id and name and placing S1 by its own change),
+and nothing is amended here.
 
-Prints one `ok`, `amend` or `FAIL` line per line of the conversation it
-plays, for run-sminos-tests.sh to count, and exits 1 when one fails.
+Prints one `ok` or `FAIL` line per line of the conversation it plays, for
+run-sminos-tests.sh to count, and exits 1 when one fails.
 
     python3 -B rl10_conformance.py <skills/sminos/scripts> <rl10-conversation.json>
 """
@@ -219,10 +215,9 @@ def path_drop(d, path):
     return d
 
 
-def matches(expected, actual, vary=(), extra=()):
+def matches(expected, actual, vary=()):
     """Whether a line sminos sent is the expected one: equal once each `vary`
-    path is taken out of both, present in the line; `extra`, keys the line
-    may carry beyond the expected (an amendment's)."""
+    path is taken out of both, present in the line."""
     try:
         for p in vary:
             actual = path_drop(actual, p)
@@ -232,8 +227,6 @@ def matches(expected, actual, vary=(), extra=()):
                 pass
     except KeyError:
         return False
-    if extra and isinstance(actual, dict):
-        actual = {k: v for k, v in actual.items() if k not in extra or k in expected}
     return expected == actual
 
 
@@ -489,7 +482,8 @@ def stage_machine():
     MODS["S1"] = Mod(B["session:S1"], B["launch:L1"])
     MODS["S2"] = Mod(B["session:S2"], B["launch:L2"])
     # Each bridge child relays its launch's lane to the record on a thread of its own: S2, the engine host's
-    # launch (lane B at its join), turns lane A, and the reconciliation after adopts it as a thread (AMENDMENTS).
+    # launch (lane B at its join), turns lane A, and the reconciliation after adopts it as a thread with a second
+    # joined, stamped (case 4's upload).
     for name in ("S1", "S2"):
         if not wait_for(lambda name=name: (records.read(B["session:" + name]) or {}).get("controller"), timeout=10):
             raise RuntimeError("%s's bridge never relayed its lane" % name)
@@ -610,11 +604,40 @@ def stage_answer(rid):
     return lambda: MODS["S1"].settle(rid)
 
 
+PLACE = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos, sminos_channels as channels, sminos_threads as threads
+cid, name, op, sid = sys.argv[2:6]
+if sminos.known_project(cid) is None:
+    channels.register(cid, name)
+t = threads.current_record(sid)
+out = channels.change(t["thread"], cid, op, sid)
+if out.state != "applied":
+    sys.exit("%s %s" % out)
+"""
+
+
+def stage_channel(op):
+    """Case 13: the channel registered under the fixture's own id and name, as
+    the org's directory registers one, and S1 placed in it (`add`) or taken
+    out (`remove`) by its own change (sminos_channels.change), in a process
+    of its own, as a verb runs: a statement in P's log and nothing in the
+    channel's, whose hello's `have` is {}."""
+    def stage():
+        r = subprocess.run([sys.executable, "-B", "-c", PLACE, SCRIPTS, B["channel:C"], "desk-integration", op,
+                            B["session:S1"]], capture_output=True, text=True)
+        if r.returncode:
+            raise RuntimeError("S1's own %s of the channel: %s" % (op, r.stderr.strip()))
+    return stage
+
+
 STAGE = {(0, 3): stage_open_main, (2, 0): stage_read_only(True), (2, 2): stage_read_only(False),
          (4, 13): stage_whole_second, (6, 6): stage_operator_words, (6, 8): stage_unrelayed,
          (8, 0): stage_host, (8, 2): stage_raise, (9, 5): stage_relaunch,
          (11, 3): stage_restart, (12, 0): stage_ask("req-3"), (12, 2): stage_ask("req-4"),
-         (12, 4): stage_answer("req-3"), (12, 6): stage_answer("req-4")}
+         (12, 4): stage_answer("req-3"), (12, 6): stage_answer("req-4"),
+         (13, 0): stage_channel("add"), (13, 4): stage_channel("remove")}
 
 
 # ------------------------------------------------------------- what sminos did with a down line
@@ -719,9 +742,9 @@ def check_send_entered():
 CHECK = {(0, 2): check_no_identity, (0, 5): check_identity, (0, 6): check_revoked(3), (0, 7): check_org,
          (2, 1): check_policy(True), (2, 3): check_policy(False), (5, 1): check_present,
          (6, 1): check_delivered("S1", "run the tests"), (6, 7): check_delivered("S1", "asked while RL1 is down"),
-         (7, 13): check_delivered("S2", "from b1"), (11, 38): check_delivered("S2", "from b2"),
-         (11, 7): check_revoked(3), (11, 28): check_revoked(4),
-         (11, 31): check_revoked(5, ["b1"]), (9, 13): check_send_entered}
+         (7, 13): check_delivered("S2", "from b1"), (11, 39): check_delivered("S2", "from b2"),
+         (11, 7): check_revoked(3), (11, 29): check_revoked(4),
+         (11, 32): check_revoked(5, ["b1"]), (9, 13): check_send_entered}
 
 
 def late_checks(P):
@@ -729,11 +752,11 @@ def late_checks(P):
     CHECK.update({(5, 3): check_spent(P, own("human"), 7), (5, 7): check_spent(P, own("human"), 8),
                   (7, 1): check_stored(hub_b, 1, "device"), (7, 3): check_spent(P, hub_b, 2),
                   (7, 7): check_stored("old-mini/human", 1, "legacy"), (7, 9): check_spent(P, hub_b, 3),
-                  (9, 10): check_spawn, (11, 21): check_vector(hub_b, 5),
-                  (11, 29): check_stored(hub_b, 6, "device"), (11, 33): check_spent(P, hub_b, 7)})
+                  (9, 10): check_spawn, (11, 22): check_vector(hub_b, 5),
+                  (11, 30): check_stored(hub_b, 6, "device"), (11, 34): check_spent(P, hub_b, 7)})
 
 
-# ------------------------------------------------------------- probes and amendments
+# ------------------------------------------------------------- probes
 
 
 def words_lines():
@@ -813,69 +836,14 @@ PROBES = {
     (6, 11): ("the endpoint's answer to it", None),
     (7, 16): ("a words? for a session with no member here", probe_members),
     (7, 17): ("the endpoint's answer to it", None),
-    (11, 35): ("a revoked signer's words asked again", probe_revoked),
-    (11, 36): ("the endpoint's answer to it", None),
+    (11, 36): ("a revoked signer's words asked again", probe_revoked),
+    (11, 37): ("the endpoint's answer to it", None),
 }
 
-# O10's fixture is written to sminos's real frames (MAWS 6d57a6160). The lines
-# below are the ones sminos's threads (T1 of the channels-and-threads design)
-# change, each played as amended and said so; any other line sminos cannot send
-# as written fails.
-#
-# - A lane A session's lifecycle events carry `thread`, its thread's id (minted
-#   here: compared for presence, as a `vary` path is). S1 and S4 are lane A from
-#   their first join; S3 (a `maws` origin and no bridge) stays lane B, unstamped.
-# - S2 is the engine host's launch (origin `maws`), so it joins as lane B,
-#   unstamped, at its writer's seq 1. Its bridge child then relays lane A, the
-#   verdict of a launch with no lane mark (sminos_bridge's relay_controller),
-#   and the next reconciliation adopts it as a thread (sminos.adopt): one
-#   stamped `joined` again, its writer's seq 2.
-# - S4, a thread, stays a member when its process ends (T1's M3): stopped,
-#   with no `retired`, so its writer stays at its `joined`'s seq 1.
-S2_WRITER = "{{name}}/{{session:S2}}"
-S4_WRITER = "{{name}}/{{session:S4}}"
-STAMPED = (("{{session:S1}}", "joined"), ("{{session:S1}}", "titled"), ("{{session:S4}}", "joined"))
-
-
-def amend_s2_adopted(step):
-    """A vector of P: S2's writer at 2, its adoption's `joined`."""
-    step = copy.deepcopy(step)
-    step["up"]["have"][S2_WRITER] = 2
-    return step, {}
-
-
-def amend_s2_adopted_s4_stopped(step):
-    """A vector of P after S3 and S4 ended: S2's writer at 2, and S4's at 1,
-    a thread stopped rather than retired."""
-    step, _ = amend_s2_adopted(step)
-    step["up"]["have"][S4_WRITER] = 1
-    return step, {}
-
-
-def amend_threads_upload(step):
-    """The first upload: `thread` on the lane A sessions' lifecycle events,
-    and S2's adoption `joined` after its first, as joined_again builds it
-    (that first's fields) at its own ts with its own `thread`."""
-    step = copy.deepcopy(step)
-    events = step["up"]["events"]
-    ts_varied = {int(p.split(".")[1]) for p in step.get("vary", []) if p.endswith(".ts")}
-    rows = [(e, i in ts_varied, (e.get("session"), e["kind"]) in STAMPED) for i, e in enumerate(events)]
-    at = next(i for i, (e, _, _) in enumerate(rows) if e["writer"] == S2_WRITER) + 1
-    rows.insert(at, (dict(rows[at - 1][0], seq=2), True, True))
-    step["up"]["events"] = [e for e, _, _ in rows]
-    step["vary"] = ["events.%d.ts" % i for i, (_, ts, _) in enumerate(rows) if ts] + \
-                   ["events.%d.thread" % i for i, (_, _, stamped) in enumerate(rows) if stamped]
-    return step, {}
-
-
-AMENDMENTS = {
-    (4, 0): ("S2's writer at 2: lane B at its join, then lane A by its bridge, adopted as a thread (T1)",
-             amend_s2_adopted),
-    (4, 4): ("thread on the lane A sessions' lifecycle events, and S2's adoption joined at its seq 2 (T1)",
-             amend_threads_upload),
-    (11, 18): ("S2's writer at 2: its adoption joined (T1); S4's at 1: a thread stopped, not retired (T1's M3)",
-               amend_s2_adopted_s4_stopped),
-}
+# A line that says what sminos sent after another line was: matched only past
+# that one's. Case 13's frame with no channels key is S1's after its
+# removal, not one of the same shape it sent before it was placed.
+AFTER = {(13, 4): (13, 2)}
 
 # A step whose line comes on the next connection: none since the fixture
 # places the host resend on the reconnect, before its restated.
@@ -946,8 +914,9 @@ def up(ci, si, step, opts):
     conn = conn_of(step)
     want = subst(step["up"])
     vary = step.get("vary", [])
-    pred = opts.get("pred") or (lambda f: f.get("t") == want["t"] and matches(want, f, vary, opts.get("extra", ())))
-    i = find(conn, pred)
+    pred = opts.get("pred") or (lambda f: f.get("t") == want["t"] and matches(want, f, vary))
+    since = STEPS.get(AFTER.get((ci, si)))
+    i = find(conn, pred, after=since[1] if since is not None and since[0] == conn.number else -1)
     if i is None:
         near = [f for f in conn.frames if f.get("t") == want["t"]]
         return False, "no such line on connection %d; expected %s; of its kind sminos sent %s" % (
@@ -986,21 +955,11 @@ def closed(step):
 
 def check_restated(ci, si):
     """`restated` follows every line of its case's restatement on its
-    connection. After the endpoint's restart (case 11), that restatement
-    holds S4 too: a thread stopped, not retired (T1's M3), its `member` as
-    lane A and `stopped`, which the fixture (from before threads) withdraws
-    in a scene the replay passes by."""
+    connection."""
     conn, at = STEPS[(ci, si)]
     later = [k for k, (n, i) in STEPS.items() if k[0] == ci and n == conn and i > at and k != (ci, si)]
     if later:
         return False, "the case's restatement is before restated: not %r" % later
-    if ci == 11:
-        s4 = subst("{{session:S4}}")
-        frames = CONNS["main"].frames[:at] if CONNS["main"].number == conn else []
-        rows = [f for f in frames if f.get("t") == "member" and f.get("session") == s4]
-        if not rows or (rows[-1].get("lane"), rows[-1].get("state")) != ("A", "stopped"):
-            return False, "the restatement before restated holds S4, lane A and stopped: sent %s" % (
-                json.dumps(rows)[:600] or "none")
     return True, "the case's restatement is before restated"
 
 
@@ -1009,7 +968,7 @@ def run_deferred(conn_name):
         ok, why2 = up(ci, si, step, opts)
         if ok:
             n, i = STEPS[(ci, si)]
-            restated = STEPS.get((11, 13))
+            restated = STEPS.get((11, 14))
             ok = restated is not None and restated[0] == n and i < restated[1]
             why2 = "" if ok else "not before the restated of connection %d" % n
         say("ok" if ok else "FAIL", "%s (%s)%s" % (name_of(ci, si, step), why, "" if ok else " — " + why2))
@@ -1043,13 +1002,8 @@ def replay():
                 if (ci, si) in NEXT_CONNECTION:
                     DEFERRED.append(((ci, si), NEXT_CONNECTION[(ci, si)], step, {}))
                     continue
-                status, opts, why = "ok", {}, ""
-                if (ci, si) in AMENDMENTS:
-                    why, amend = AMENDMENTS[(ci, si)]
-                    step, opts = amend(step)
-                    status = "amend"
                 if "up" in step:
-                    ok, fail = up(ci, si, step, opts)
+                    ok, fail = up(ci, si, step, {})
                 elif "down" in step:
                     ok, fail = down(step)
                 elif "open" in step:
@@ -1065,8 +1019,7 @@ def replay():
                     fail = "" if ok else said
                     if ok and ci == 11:
                         run_deferred("main")
-                say("FAIL" if not ok else status, name + (" — amended: " + why if status == "amend" else "")
-                    + (" — " + fail if not ok else ""))
+                say("ok" if ok else "FAIL", name + (" — " + fail if not ok else ""))
         time.sleep(1.0)
         for (ci, si), (why, probe) in sorted(PROBES.items()):
             step = CASES[ci]["steps"][si]

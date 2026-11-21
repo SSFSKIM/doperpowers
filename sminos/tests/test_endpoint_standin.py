@@ -44,12 +44,12 @@ class Client:
     """A connection to a stand-in, as sminos's uplink holds one: its hello,
     then frames up, and every frame that came down kept."""
 
-    def __init__(self, ep_dir, token):
+    def __init__(self, ep_dir, token, capabilities=()):
         d = endpoint_standin.read_json(os.path.join(ep_dir, "rl10.json"))
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.connect(d["socket"])
         self.buf, self.down, self.asked = b"", [], 0
-        self.up({"t": "hello", "token": token, "capabilities": []})
+        self.up({"t": "hello", "token": token, "capabilities": list(capabilities)})
 
     def up(self, *frames):
         self.sock.sendall(b"".join(json.dumps(f).encode() + b"\n" for f in frames))
@@ -147,6 +147,107 @@ class Opened(unittest.TestCase):
             c2.close()
         finally:
             ep.stop()
+
+
+C1 = "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c"   # channels' ids (version 8)
+C2 = "0123abcd-4567-8abc-a123-456789abcdef"
+C3 = "9e8d7c6b-5a49-8382-b1a0-0f1e2d3c4b5a"
+APP = "7d2b9c40-1f3e-4a6b-8c5d-9e0f1a2b3c4d"
+S1, S2, S3 = ("6c00000%d-0000-4000-8000-0000000000c%d" % (n, n) for n in (1, 2, 3))
+
+
+def member(sid, project=APP, lane="A", **fields):
+    return {"t": "member", "session": sid, "alias": "m", "project": project, "lane": lane, "state": "idle",
+            **fields}
+
+
+class Known(unittest.TestCase):
+    """`known`, MAWS's rule (its master at 8ae3b0843: the registry's
+    #knownNow, rl10/link.ts's sessionProjects, rl10/members.ts's
+    memberChannels): the logs the live connection opened without `follow`
+    whose id a held member names, by its `project` and, while the hello
+    listed `channels`, by a lane A member's `channels` that are channels'
+    ids, the first 128; a member frame whose project is a channel's id is
+    that session gone. And the welcome lists `channels` only to a hello
+    that listed it."""
+
+    def connect(self, ep, capabilities=("channels",)):
+        c = Client(ep.dir, ep.token, capabilities)
+        self.addCleanup(c.close)
+        welcome = c.read(lambda f: f.get("t") == "welcome")
+        return c, welcome
+
+    def settle(self, c, ep):
+        """Every frame sent before it is taken (a words? with no project is answered at once, in order)."""
+        c.asked += 1
+        sentinel = "known-%d" % c.asked
+        c.up({"t": "words?", "id": sentinel})
+        c.read(lambda f: f.get("t") == "words" and f.get("id") == sentinel)
+
+    def test_the_rule_on_hand_fed_frames(self):
+        ep = started("known", capabilities=["access", "channels"])
+        self.addCleanup(ep.stop)
+        self.assertEqual(ep.known(), set(), "no connection: nothing known")
+        c, welcome = self.connect(ep)
+        self.assertEqual(welcome["capabilities"], ["access", "channels"])
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}},
+             {"t": "hello", "project": C1, "name": "desk", "have": {}},
+             {"t": "hello", "project": C2, "name": "lobby", "have": {}, "follow": True},
+             member(S1, channels=[C1, C2, C3, "not-a-channel", APP]))
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP, C1}, "its project and the channel opened without follow: not the "
+                         "followed one, nor one not opened")
+        self.assertEqual(ep.state()["known"], sorted([APP, C1]), "in its state, for the shell suites")
+        c.up(member(S1))
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP}, "a member that states none no longer counts")
+        c.up(member(S2, lane="B", channels=[C1]))
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP}, "a lane B member's channels never count")
+        c.up(member(S3, channels=["%08x-0000-8000-8000-000000000000" % n for n in range(128)] + [C1]))
+        self.settle(c, ep)
+        self.assertNotIn(C1, ep.known(), "only the first 128 count")
+        c.up(member(S3, channels=[C1]), member(S1, project=C1, channels=[C1]))
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP, C1}, "S3's counts")
+        self.assertNotIn(S1, ep.members, "a member frame naming a channel as its project is that session gone")
+        c.up({"t": "member", "session": S3, "gone": True})
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP}, "S2, lane B, still names the app; S3 gone")
+        c.up({"t": "member", "session": S2, "gone": True})
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), set(), "no member: nothing known")
+
+    def test_without_the_capability_on_the_hello(self):
+        ep = started("known-old", capabilities=["access", "channels"])
+        self.addCleanup(ep.stop)
+        c, welcome = self.connect(ep, capabilities=())
+        self.assertEqual(welcome["capabilities"], ["access"], "the welcome lists channels only to a hello that did")
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}},
+             {"t": "hello", "project": C1, "name": "desk", "have": {}},
+             member(S1, channels=[C1]))
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP}, "a member's channels count only while the hello listed channels")
+
+    def test_a_reconnection_counts_what_its_own_hellos_opened(self):
+        ep = started("known-again", capabilities=["channels"])
+        self.addCleanup(ep.stop)
+        c, _ = self.connect(ep)
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}},
+             {"t": "hello", "project": C1, "name": "desk", "have": {}}, member(S1, channels=[C1]))
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP, C1})
+        c.close()
+        c2, _ = self.connect(ep)
+        ep.wait_until(lambda: ep.current is not None and ep.current.number == 2)
+        self.assertEqual(ep.known(), set(), "a new connection opened nothing yet")
+        c2.up({"t": "hello", "project": C1, "name": "desk", "have": {}, "follow": True})
+        self.settle(c2, ep)
+        self.assertEqual(ep.known(), set(), "followed on this connection")
+        c2.up({"t": "hello", "project": C1, "name": "desk", "have": {}}, {"t": "hello", "project": APP, "name": "app",
+                                                                        "have": {}})
+        self.settle(c2, ep)
+        self.assertEqual(ep.known(), {APP, C1}, "its last hello of each decides")
 
 
 class Hand(unittest.TestCase):
