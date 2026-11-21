@@ -2142,6 +2142,22 @@ while the milestones are built, one observation and its evidence each.
   runner; M8 sets it to about twice the measured run of the whole part.
   This replaces, for M1 to M7, Concrete Steps' "kept at about twice" and
   M1's "set again as the part grows".
+- 2026-11-21 — **M1's review, round 1, as fixed.** Every door holds
+  without registration: an explicit channel id at a refusing door is
+  classified by `is_channel_id` alone (an unregistered one stands in as a
+  project with no root, so `names_channel` keeps one type), while
+  `find_channel` still needs a registration; `join`'s channel refusal comes
+  before the seat's. A rooted guess and the seat's fallback never yield a
+  channel, so `known_projects` holds none and `say` never takes one as its
+  destination. A channel's reconciliation is its own function,
+  `_reconcile_channel`: it only undoes an older copy's `joined` (`retired`
+  `moved`) while a seat or a live process holds the session, and leaves a
+  closed one as it is; an import into a channel's log runs no project
+  reconciliation and no delivery, and still nudges the daemon. Every tag's
+  qualifier is checked before any member lookup. An exact project name wins
+  over a `name#short` spelling, the qualifier parsed from the right. An org
+  directory entry with a channel id is never a machine, and a record's
+  `channels` that is not a list reads as absent.
 
 ## Outcomes & Retrospective
 
