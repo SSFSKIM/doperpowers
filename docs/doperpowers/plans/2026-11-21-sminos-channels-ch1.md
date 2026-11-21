@@ -2475,6 +2475,21 @@ while the milestones are built, one observation and its evidence each.
   (`rl10_known_directory`) names a known log by the hello that opened it.
   The three-machine "return" is T1's end and return (`retire`, then the
   session running again); a removal and a re-add is its own case.
+- 2026-11-21 — **M6's review, round 1, as fixed** (`cdce4334`). The
+  stand-in's `known` follows MAWS's rule at `8ae3b0843` (its endpoint's
+  `registry.ts` and `rl10/members.ts`): a welcome opens a restatement of
+  the members it holds, `restated` withdraws those left out, a connection
+  cut before its `restated` withdraws nothing, and while no connection is
+  live or a restatement is open `known()` is the last answer; a member's
+  channels are counted as `memberChannels` counts them (distinct valid ids
+  up to 128, invalid and repeated entries passed by). The stand-in keeps
+  its members across connections, as MAWS does. `Link.holders()` asks
+  `sminos.channels_here()` first, so a publish under a welcome listing
+  `channels` never reads the thread stores on a machine with no channel
+  (`NoChannelHere`; `bench_scale.py`'s idle endpoint negotiates no
+  `channels`, so this test stands in for the gate there). A fresh store's
+  checker takes an empty baseline: only the older-copy case grandfathers
+  events.
 
 ## Outcomes & Retrospective
 
