@@ -515,8 +515,10 @@ see a hold it published before), and the notice waits for it there. If the
 broadcast finds no live session (exit 4), it leaves an untagged note in that
 project's log for the next session; a broadcast that fails otherwise goes
 to the journal and `wall`. A host
-whose sminos does not know the two flags gets each step again without them,
-unmarked and not going on for a held thread. Without a usable route it goes to the journal and
+whose sminos does not know the two flags (exit 2) gets each step again without them,
+unmarked and not going on for a held thread; any other failure, the refusal
+of a sminos whose machine name its notice mark does not take included
+(exit 1), is a step that failed, never sent again unmarked. Without a usable route it goes to the journal and
 `wall`. The lease warning uses the same fallback. A host built before its
 boot library marked its notices keeps that library for its life: it sends
 them unmarked, and goes on only for an ended thread or no member. `devcloud vm ls`

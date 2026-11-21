@@ -193,6 +193,29 @@ class Say(Notices):
                                   "and hyphens (32 at most): %s" % value, out)
                     self.assertEqual(self.events(text), [], "nothing appended")
 
+    def test_a_writer_notice_of_would_not_mark_is_refused_with_the_general_failure_and_nothing_appended(self):
+        """A machine whose own name is outside the grammar, or reserved, would write a `human` event that
+        notice_of rejects and owner_event accepts: a person's words. Refused with exit 1, the general failure a
+        host's delivery reads as "this step failed, go on" (devcloudlib.notices); never 2, which it reads as an
+        older sminos and answers by sending the same text unmarked."""
+        sid, _ = self.session(name="live-a")
+        self.reconcile()
+        for machine in ("_mac", "m" * 64, "a machine", "hub", "Legacy"):
+            for how in ("tag", "project", "in"):
+                with self.subTest(machine=machine, how=how):
+                    text = "unmarkable %d %s" % (len(machine), how)
+                    argv = {"tag": ["@%s %s" % (sid[:8], text)], "project": ["--project", self.p.id, text],
+                            "in": ["--in", self.p.id, text]}[how]
+                    with mock.patch.object(sminos, "machine_identity", return_value=(machine, {})):
+                        code, out = self.say_notice(*argv)
+                    self.assertEqual(code, 1, out)
+                    self.assertIn("sminos: --notice: this machine's name, %s, is not one a machine's notice is "
+                                  "read under" % machine, out)
+                    self.assertEqual(self.events(text), [], "nothing appended")
+        with mock.patch.object(sminos, "machine_identity", return_value=("_mac", {})):
+            code, out = self.say("@%s unmarked from _mac" % sid[:8])
+        self.assertEqual(code, 0, "without the flag, as before: %s" % out)
+
     def test_a_project_named_by_its_id_where_two_logs_share_its_name(self):
         roots = []
         for d in ("twin-a", "twin-b"):

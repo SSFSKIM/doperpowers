@@ -76,8 +76,8 @@ back by a fill.
                    every live session of that scope but you (`list` with the same flags shows them), each woken
                    as @all wakes; recorded in each project it reaches, copied into yours; no @tags beside it
     sminos say      --notice <program> …                  # a machine's own program speaking (devcloud's hosts:
-                   devcloud), refused in a session: each event marked, shown from <program>@<machine>, never
-                   delivered as a person's words
+                   devcloud), refused in a session, and (exit 1) on a machine whose name the mark does not
+                   take: each event marked, shown from <program>@<machine>, never delivered as a person's words
     sminos say      --exit-held …                         # exit 3 when a tagged recipient's line says it is held
                    and not woken; the message is recorded as without it
     sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
@@ -9344,7 +9344,8 @@ def cmd_say(a):
     """Record a message in a project's log, and deliver it to whom it tags;
     with a selector, to every live session of its scope (say_scoped).
     `--notice <program>` marks every event it appends as that machine's
-    program's notice (X8), refused inside a session; `--exit-held` exits
+    program's notice (X8), refused inside a session and, with exit 1, on a
+    machine whose name notice_of would not mark; `--exit-held` exits
     EXIT_HELD when a tagged recipient's line was a held one (deliver_say),
     and changes nothing else."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
@@ -9353,6 +9354,13 @@ def cmd_say(a):
             "most): %s" % a.notice)
     if a.notice is not None and sid:
         die("--notice marks a notice of a machine's own program, and a session is not one: drop it")
+    if a.notice is not None and not notice_of({"kind": "human", "writer": writer_id(), "notice": a.notice}):
+        # Recorded, it would be read as a person's words (owner_event). Exit 1, the general failure a host's
+        # delivery goes on from (devcloud/boot/devcloudlib/notices.py); never 2, which it answers by sending the
+        # same text again without the flags.
+        die("--notice: this machine's name, %s, is not one a machine's notice is read under (letters, digits, '.', "
+            "'_' and '-', 63 at most, opening with a letter or a digit, and neither hub nor legacy), so the notice "
+            "would be read as a person's words: nothing was recorded" % host_name(), 1)
     scoped = selector_given(a)
     if scoped and leading_tags(a.text):
         die("a selector picks the recipients itself: drop the opening @tags, or the selector — tags name "

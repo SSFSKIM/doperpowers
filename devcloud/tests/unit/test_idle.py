@@ -214,6 +214,18 @@ class DeliveryTest(IdleBase):
         calls, said = self.deliver([2, 2, 2, 1, 0])
         self.assertEqual(calls[-1][0], ["wall", "devcloud: idle notice"], "a second refusal is a failure")
 
+    def test_a_general_failure_is_a_step_that_failed_and_never_a_reason_to_send_unmarked(self):
+        """sminos refuses `say --notice` with exit 1 under a writer its notice grammar does not mark (a host
+        whose own name is outside it): read here as a step that failed, so the delivery goes on marked and
+        ends in the journal and wall, and nothing is sent without the flags, which would be a person's words."""
+        calls, said = self.deliver([1, 1, 0])
+        self.assertEqual([c[0][3:5] for c in calls[:2]], [["--notice", "devcloud"], ["--notice", "devcloud"]])
+        self.assertEqual(calls[2][0], ["wall", "devcloud: idle notice"])
+        self.assertEqual(len(calls), 3, "no step run again without the flags")
+        self.assertNotIn("devcloud notice: this host's sminos does not know the notice flags; sent without them",
+                         said)
+        self.assertEqual(said[:2], ["devcloud notice: delivery failed (exit 1): refused"] * 2)
+
     def test_no_creator_starts_at_project(self):
         calls, _ = self.deliver([0], creator=None)
         self.assertEqual(calls[0][0][-6:], ["say", "--notice", "devcloud", "--project", "example", "idle notice"])
