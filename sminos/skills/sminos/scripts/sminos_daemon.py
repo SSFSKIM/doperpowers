@@ -1439,8 +1439,12 @@ def sweep_threads():
             if cur in running:
                 if set(threads.LIVE_CLEARS) & set(threads.waking(t, cur)):
                     # A process holds it, however it came up (a wake, its human in a terminal, an older copy): a
-                    # wake's failures and the job it accepted are past, as a wake that saw it live forgets them.
-                    threads.wake_cleared(tid, cur)
+                    # wake's failures and the job it accepted are past, as a wake that saw it live forgets them,
+                    # read again under the wake lock (this pass's reading may be older than a wake's job: a busy
+                    # lock is the next tick's).
+                    with resume_lock_out(tid) as out:
+                        if out and sminos.running_now(cur) is not None:
+                            threads.wake_cleared(tid, cur)
                 remove = [k for k in ("stopped", "swept") if t.get(k)]
                 if t.get("released") and threads.release_outlived(t["released"], running[cur]):
                     remove.append("released")

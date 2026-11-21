@@ -161,6 +161,42 @@ class Sweep(Transitions):
         self.assertIn("after it", frame)
         self.assertNotIn(sminos.wake_module().LINE_HEAD, frame)
 
+    def test_the_sweep_clears_a_wakes_state_only_for_a_process_it_reads_again_under_the_wake_lock(self):
+        # frontier review round 2, scalpel-2#2: the pass's reading saw a process; it exited and a replacement wake
+        # accepted its job before the sweep acted on that reading.
+        tid, sid = self.human_thread()
+        _, proc = self.session(sid=sid, kind="bg")
+        real = threads.all_threads
+
+        def after_its_reading():
+            # The pass has read the engine's records (a process holds it); then that process exits and another
+            # wake's banner is accepted.
+            self.end(proc)
+            self.assertTrue(threads.wake_job(tid, sid, sid[:8]))
+            return real()
+        with mock.patch.object(threads, "all_threads", after_its_reading):
+            self.sweep()
+        self.assertEqual(self.waking(tid, sid)["job"]["short"], sid[:8], "the replacement's job kept")
+        # A process that holds it, while the lock is busy: the next tick's.
+        self.edit(tid, waking={"session": sid, "failed": 2, "at": sminos.now()})
+        _, proc = self.session(sid=sid, kind="bg")
+        held, release = threading.Event(), threading.Event()
+
+        def launcher():
+            hold, _ = sminos.launch_hold(tid)
+            held.set()
+            release.wait(10)
+            hold.release()
+        t, _ = self.in_background(launcher)
+        self.assertTrue(held.wait(5))
+        self.sweep()
+        self.assertEqual(self.waking(tid, sid)["failed"], 2, "left while a launch holds the lock")
+        release.set()
+        t.join(10)
+        self.sweep()
+        self.assertEqual(self.waking(tid, sid), {}, "cleared once read again under it")
+        self.end(proc)
+
     def test_a_process_seen_by_the_sweep_clears_a_wakes_failures(self):
         # frontier review, scalpel-2#3: a terminal reopened after failed wakes, seen live by the sweep.
         tid, sid = self.human_thread()
