@@ -506,11 +506,15 @@ price when known, and every checkout with unpushed work. It gives
 Delivery tries the thread that owns the host (the descriptor's tag, which
 reaches that thread's current session once the host has seen the thread
 move to it, and wakes it if it is stopped as any addressed message does),
-then its sminos project's live sessions: it goes on only where the host's
-own `say` reports that thread ended, no member, or held and not woken with
-it (`say --exit-held`'s exit 3); a machine that is asleep or offline is
-not such a case, and the notice waits for it there. If none are live, it
-leaves an untagged note in that project's log for the next session. A host
+then, where the descriptor names a project, that project's live sessions:
+after any direct `say` that does not succeed (usually because it reports
+the thread ended, no member, or held and not woken with it, `say
+--exit-held`'s exit 3), and at once when there is no owner's tag. A machine
+that is asleep or offline is not by itself such a case (the host can still
+see a hold it published before), and the notice waits for it there. If the
+broadcast finds no live session (exit 4), it leaves an untagged note in that
+project's log for the next session; a broadcast that fails otherwise goes
+to the journal and `wall`. A host
 whose sminos does not know the two flags gets each step again without them,
 unmarked and not going on for a held thread. Without a usable route it goes to the journal and
 `wall`. The lease warning uses the same fallback. A host built before its

@@ -87,14 +87,17 @@ another size or lifetime, make the VM with `devcloud vm up --enroll
 --keep --type …` (`--ttl <duration>` in place of `--keep` for a lease),
 then spawn with `--on <name>`. It takes minutes, so run it as a
 background command; devcloud's own lines come through. Only devcloud's
-cap line from `vm up` makes an exit 4 a question for the person; an exit
-4 that ends with the line that the VM is kept (the alias already filled
-there) means: spawn on that VM with `--on <name>` under another alias,
-rather than make another. Either way the seat is a session on the VM
-that the person sees and steers from the desk like any other, and its
-first message names you and how to reach you: it reports back the way
-any seat does, with commits pushed, pull requests and `sminos say` to
-you. Work that is not pushed lives only on the VM.
+cap line from `vm up` makes an exit 4 a question for the person. Once a
+VM exists, any refusal or unknown outcome ends with the line that it is
+kept: read the VM's own line above it. Where it reports the alias as
+taken, spawn on that VM under another alias with `--on <name>`; where
+the outcome is not known, look first with the command the line names
+(`devcloud vm ssh <name> -- sminos list`), since trying again can open a
+second seat. However it is opened, the seat is a session on the VM that
+the person sees and steers from the desk like any other, and its first
+message names you and how to reach you: it reports back the way any seat
+does, with commits pushed, pull requests and `sminos say` to you. Work
+that is not pushed lives only on the VM.
 
 ## Its end
 
@@ -107,16 +110,18 @@ terminal login, no load), it sends its owning thread a sminos message
 with its idle time, what it has cost, and its unpushed work, and again
 every three idle days; down it when its work is done, or tell the person
 why it stays. At a leased VM's lease end its departure starts, and it is
-deleted with everything on it; in the lease's last thirty minutes its
-owning thread gets a message naming the repositories with unpushed work.
-Each message is addressed to that thread's current session (once the VM
-has seen the thread move to it) and wakes it if stopped, as any
-addressed message does. It goes on to the thread's project's live
-sessions, else into its log, only where the VM's own `say` reports the
-thread ended, no member, or held and not woken; a machine asleep or
-offline is not such a case, so the message waits for it. Only from a VM
-made from now on, whose own sminos and the reader's are updated, does it
-arrive from `devcloud@<name>` (the VM's own notice, which nobody
+deleted with everything on it; in the lease's last thirty minutes the VM
+tries to send its owning thread a message naming the repositories with
+unpushed work. Each message is addressed to that thread's current
+session (once the VM has seen the thread move to it) and wakes it if
+stopped, as any addressed message does. Where the VM's own `say` to the
+thread does not succeed (usually because it reports the thread held and
+not woken, ended, or no member), the VM tries the thread's project's
+live sessions, then, when none is live, its log; a machine asleep or
+offline is not by itself such a case (the VM can still see a hold that
+machine published before), and the message waits for it there. Only from
+a VM made from now on, whose own sminos and the reader's are updated,
+does it arrive from `devcloud@<name>` (the VM's own notice, which nobody
 answers) and go on for a held thread. `devcloud vm lease <name>
 <duration>` sets the end to now plus the duration, and `lease <name>
 keep` removes it. A change between kept and leased makes the host rejoin
