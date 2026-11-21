@@ -273,8 +273,10 @@ def restate(project, thread_id, session, writer, seen, appended=None):
     reconciliation read it there: `session` the thread's current session,
     a member of the project, its own events going under `writer` (the
     writer of its `joined` in effect), and `seen` the record's set. Each is
-    read again under the record's lock (set_channels), and if any of them
-    moved, or the record has an open entry or has ended, nothing is written
+    read again under the record's lock (set_channels; in its last guard the
+    writer, by this machine's name read afresh, and the project, as the one
+    the session's newest `joined` here names: sminos.restated_holds), and
+    if any of them moved, or the record has an open entry or has ended, nothing is written
     and the next reconciliation notices afresh: a reconciliation overtaken
     by a removal or a move never states the set it read. It only tries the
     wake lock: a wake in flight, another process's or one under way in this
@@ -297,7 +299,7 @@ def restate(project, thread_id, session, writer, seen, appended=None):
         except sminos.audience_module().StreamUnknown:
             return None
         return {"project": project, "session": session, "channels": list(threads.stated_set({"channels": seen})),
-                "answer": None}
+                "answer": None, "writer": writer}
     try:
         entry = threads.set_channels(thread_id, decide, wake_until=time.time())
     except (sminos.LockBusy, sminos.PositionsUnread):   # WakeBusy is a LockBusy

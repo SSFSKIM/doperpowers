@@ -68,9 +68,12 @@ class Life:
             if name.startswith("test_") and name not in cls.__dict__:
                 setattr(cls, name, None)
 
+    REGISTER = True
+
     def setUp(self):
         super().setUp()
-        self.register()
+        if self.REGISTER:
+            self.register()
 
     def register(self):
         for cid, name in ((DESK, "desk"), (LOBBY, "lobby"), (ROOM, "room")):
@@ -236,9 +239,9 @@ class Kept(Life, T1.Sessions):
         self.assertEqual(self.statements(sid), [])
         self.assert_read(tid, sid, [], elsewhere=False)
 
-    def test_nothing_is_asked_on_a_machine_with_no_set_and_no_statement(self):
-        """The idle cost (the holder's ruling): no thread here is in a channel and no log states one, so the
-        reconciliation's last step reads nothing per thread and calls nothing."""
+    def test_with_channels_registered_and_no_set_nothing_is_compared(self):
+        """No thread here is in a channel and no log states one: the reconciliation's last step makes no
+        comparison and calls nothing."""
         self.member()
         self.seated()
         with mock.patch.object(threads, "set_channels", side_effect=AssertionError("set_channels")), \
@@ -301,6 +304,41 @@ class Kept(Life, T1.Sessions):
         self.assertEqual([s["channels"] for s in self.statements(sid, other)], [[DESK, LOBBY]])
         self.assert_read(tid, sid, [DESK, LOBBY], p=other)
 
+    def test_a_reconciliation_overtaken_by_the_destinations_join_before_the_retirement_states_nothing(self):
+        """The window _reconcile allows (a dual membership of one tick): the project moved to joins the session
+        before the project left retires it. The pass of the project left, which read its difference before,
+        writes nothing there: the session's newest joined is the other project's."""
+        other = self.project_of(self.repo("other"))
+        sid, _, tid = self.member()
+        self.add(tid, sid, DESK)
+        self.raw(tid, lambda r: (r.update(channels=[DESK, LOBBY]), r["began"].update({LOBBY: {}})))
+
+        def destination_first():
+            sminos.write_override(sid, other.id)
+            self.reconcile(other)   # joins it there; the project left's retirement is its own pass's, paused
+            self.assertTrue(self.is_member(sid, other) and self.is_member(sid), "a member of both, for now")
+        self.overtaken(destination_first)
+        self.assertEqual([s["channels"] for s in self.statements(sid)], [[DESK]], "nothing in the project left")
+        self.assertEqual([s["channels"] for s in self.statements(sid, other)], [[DESK, LOBBY]],
+                         "stated where it is now, by that project's own pass")
+        self.reconcile()
+        self.assertFalse(self.is_member(sid), "retired from the project left")
+        self.assertEqual([s["channels"] for s in self.statements(sid)], [[DESK]])
+        self.assert_read(tid, sid, [DESK, LOBBY], p=other)
+
+    def test_a_reconciliation_overtaken_by_a_rename_of_the_machine_states_nothing(self):
+        """The writer's identity is read as it is at the write, not from the invocation's cache: a machine
+        renamed between the read and the write writes under no writer the thread no longer has."""
+        sid, _, tid = self.member()
+        self.add(tid, sid, DESK)
+        self.raw(tid, lambda r: (r.update(channels=[DESK, LOBBY]), r["began"].update({LOBBY: {}})))
+        renamed = mock.patch.dict(os.environ, {"DAEMON_HOST": "renamedhost"})
+        self.overtaken(renamed.start)   # this process's identity stays cached as it was read
+        renamed.stop()
+        self.assertEqual([s["channels"] for s in self.statements(sid)], [[DESK]], "nothing written")
+        self.reconcile()
+        self.assertEqual(self.statements(sid)[-1]["channels"], [DESK, LOBBY], "the next pass states it")
+
     def test_a_wake_in_flight_leaves_the_difference_to_the_next_pass(self):
         sid, _, tid = self.member()
         self.add(tid, sid, DESK)
@@ -354,6 +392,24 @@ class Kept(Life, T1.Sessions):
         self.assertEqual(channels.channels_of(old), ())
         self.assertEqual(self.row_of(old).channels, (), "the log states nothing for it")
         self.assert_read(tid, job, [DESK], elsewhere=False)
+
+
+class Idle(Life, T1.Sessions):
+    """The idle cost (the holder's ruling): on a machine where no channel is registered, the reconciliation
+    looks up no thread's set at all, not only compares none."""
+    REGISTER = False
+
+    def test_a_machine_with_no_channel_looks_up_no_holder(self):
+        self.member()
+        self.seated()
+        with mock.patch.object(threads, "set_holders", side_effect=AssertionError("the holders were looked up")), \
+                mock.patch.object(sminos, "_keep_sets", side_effect=AssertionError("the comparison was made")):
+            for _ in range(2):
+                self.reconcile()
+                sminos.forget_caches()
+                sminos.view_of(self.p)
+        self.register()   # a channel registered: the lookup is made again
+        self.assertEqual(sminos.channels_here(), True)
 
 
 class KeptOnAStream(Life, T1.Hub):
@@ -457,25 +513,41 @@ class Returns(Life, T1_ended.Ending):
         self.assert_read(tid, sid, [DESK, LOBBY], elsewhere=False)
 
     def test_a_channels_log_that_cannot_be_read_at_a_return_keeps_its_old_position(self):
+        """The holder's ruling ("A return over an unreadable channel log"): the return is committed, the
+        channel whose log raises keeps its earlier position, the others are written anew, and it is said once,
+        in daemon.log."""
         sid = self.closed()
         tid = threads.stamp(sid)
         self.touch(DESK)
-        self.add(tid, sid, DESK)
+        self.touch(LOBBY, writer="gamma/human")
+        self.add(tid, sid, DESK, LOBBY)
         self.stopped_since(sid, 2 * T1_ended.PERIOD)
         self.sweep()
         self.touch(DESK)
-        real = sminos.channel_positions
+        self.touch(LOBBY, writer="gamma/human")
+        real, asked = sminos.channel_positions, []
 
         def positions(cid):
+            asked.append(cid)
             if cid == DESK:
-                raise sminos.PositionsUnread("unreadable")
+                raise sminos.PositionsUnread("the log of channel %s could not be listed: EIO" % cid[:8])
             return real(cid)
         self.live(sid=sid, name="alpha")
-        with mock.patch.object(sminos, "channel_positions", positions), contextlib.redirect_stderr(io.StringIO()):
+        err = io.StringIO()
+        with mock.patch.object(sminos, "channel_positions", positions), contextlib.redirect_stderr(err):
+            self.reconcile()
             self.reconcile()
         t = threads.get(tid)
-        self.assertIsNone(t.get("ended"), "the return is not held up")
-        self.assertEqual(t["began"], {DESK: {"beta/human": 1}}, "the position from before its end")
+        self.assertIsNone(t.get("ended"), "the return is committed")
+        self.assertEqual(t["began"], {DESK: {"beta/human": 1}, LOBBY: {"gamma/human": 2}},
+                         "the unreadable channel's position from before its end, the other's anew")
+        self.assertIn(DESK, asked)
+        with open(os.path.join(sminos.root(), "daemon.log")) as f:
+            said = [line for line in f if "keeps where its membership" in line]
+        self.assertEqual(len(said), 1, "said once")
+        self.assertIn(DESK[:8], said[0])
+        self.assertNotIn(LOBBY[:8], said[0])
+        self.assertNotIn("keeps where its membership", err.getvalue(), "and only there")
 
 
 class ClearKept(Life, T1_stopped.Clear):
@@ -555,6 +627,62 @@ class Absorbed(Life, T1.LateHandOff):
         self.assert_absorbed(old, job, tid, theirs)
         self.assertEqual([a[:2] for a in threads.get(tid)["answered"]], [[DESK, "r1"], [DESK, "r2"]],
                          "both, one entry per request")
+
+    def test_the_answered_requests_united_are_oldest_first(self):
+        old, job, tid, theirs = self.late()
+
+        def answer(thread, sid, rid, at):
+            self.assertIsNotNone(threads.set_channels(thread, lambda rec: {
+                "project": self.p, "session": sid, "channels": [DESK],
+                "answer": {"channel": DESK, "id": rid, "ts": at, "result": "applied", "reason": None}}))
+            sminos.finish_thread(thread)
+        answer(tid, old, "r1", T1_ended.ago(40))
+        answer(theirs, job, "r2", T1_ended.ago(30))
+        answer(tid, old, "r3", T1_ended.ago(20))
+        answer(theirs, job, "r4", T1_ended.ago(10))
+        self.reconcile()
+        self.assert_absorbed(old, job, tid, theirs)
+        self.assertEqual([a[1] for a in threads.get(tid)["answered"]], ["r1", "r2", "r3", "r4"],
+                         "oldest first, the two ledgers' interleaved")
+
+    def full(self):
+        """A continuing record at 126 channels, the job's record bringing two it may take and one it may not."""
+        old, job, tid, theirs = self.late()
+        own = channel_ids(126)
+        self.raw(tid, lambda r: r.update(channels=own, began={c: {} for c in own}))
+        self.add(theirs, job, DESK, own[0], LOBBY, ROOM)
+        return old, job, tid, theirs, own
+
+    def test_the_notice_of_an_addition_past_the_limit_survives_a_cut(self):
+        """The notice is written with the merge, before its write lands: a cut after the write leaves it said
+        once, and a cut before the write lands says it again at the replay, which merges once."""
+        for cut, said in (("after", 1), ("before", 2)):
+            with self.subTest(cut=cut):
+                self.fresh()
+                self.register()
+                old, job, tid, theirs, own = self.full()
+                killer = self.kill_after_merge() if cut == "after" else self.kill_at_merge_write()
+                with killer, self.assertRaises(Killed):
+                    self.reconcile()
+                self.reconcile()
+                self.assert_absorbed(old, job, tid, theirs)
+                self.assertEqual(threads.get(tid)["channels"], own + [DESK, LOBBY])
+                lines = self.said()
+                self.assertEqual(len(lines), said)
+                self.assertTrue(all(ROOM[:8] in line for line in lines))
+
+    def kill_at_merge_write(self):
+        """The process dies inside the merge's write, its change made and not yet written."""
+        real = threads._change
+
+        def change(tid, mutate, *a, **k):
+            if mutate.__name__ == "merge":
+                def dies(view, raw):
+                    mutate(view, raw)
+                    raise Killed()
+                return real(tid, dies, *a, **k)
+            return real(tid, mutate, *a, **k)
+        return mock.patch.object(threads, "_change", side_effect=change)
 
     def test_an_addition_past_the_limit_is_dropped_and_said(self):
         old, job, tid, theirs = self.late()

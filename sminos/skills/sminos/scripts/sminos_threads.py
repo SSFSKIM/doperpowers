@@ -923,8 +923,12 @@ def set_channels(thread_id, decide, lock_until=None, wake_until=None):
         # that lands while the positions or the ledger are read is seen here, and nothing is written (`raw` is
         # dropped with the False). One that lands after this read is the accepted case: the statement goes to the
         # project left, after the writer's `retired`, and states nothing there.
-        if not member(sminos._own_events(change["project"], change["session"])):
+        own = sminos._own_events(change["project"], change["session"])
+        if not member(own):
             return False
+        if change.get("writer") is not None and not sminos.restated_holds(change["project"], change["session"],
+                                                                         change["writer"], own):
+            return False   # C5: the writer, and the project its newest joined names, as the reconciliation read them
         written.append(entry)
         return True
 
@@ -1546,7 +1550,7 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
             entry["until"] = sminos.positions_to(project, entry["settle"])
         _apply(entry, view, raw, fields, remove)
         if op == "return":
-            _began_anew(thread_id, view, raw)
+            unread[:] = _began_anew(view, raw)
         return "live" if op == "return" or more.get("last") == "purge" else True   # an open purge is read live
 
     # Opened under the record's wake lock (T2's M2), the hold its caller has or one taken here: a wake sees the
@@ -1555,36 +1559,43 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
     # The record a change of session may absorb changes owner: its wake lock too, taken before any store lock and
     # with the record's own in ascending order of thread id (claim_holds); _claimed absorbs only a record whose
     # lock is held, read again under the store locks.
+    unread = []   # a return's channels whose log could not be read (_began_anew), as its committed write left them
     holds = claim_holds(thread_id, op != "release", _absorbable_peek(thread_id, fields, absorbs, more.get("other")),
                         lock_until)
     try:
-        return entry if _change(thread_id, mutate, lock_until, bump=True,
-                                both=bool((fields or {}).get("current"))) else None
+        written = _change(thread_id, mutate, lock_until, bump=True, both=bool((fields or {}).get("current")))
     finally:
         for h in holds:
             h.release()
+    if written and unread:
+        with contextlib.suppress(OSError):   # said once, for the return as committed
+            sminos.daemon_log("return: thread %s keeps where its membership of %s began before its end: %s"
+                              % (thread_id[:8], ", ".join(c[:8] for c, _ in unread), "; ".join(w for _, w in unread)))
+    return entry if written else None
 
 
-def _began_anew(thread_id, view, raw):
+def _began_anew(view, raw):
     """A return's positions (CH1's §3, row C7), in its own record write:
     for every channel of the set, the log's positions now
     (sminos.channel_positions, read under the record's lock), so that every
     path that returns a thread leaves them. A channel whose log is there and
     cannot be read keeps the position from before the end, as a return an
-    older copy begins leaves them all (the accepted case): the return is
-    not held up for it, and is said once on standard error."""
+    older copy begins leaves them all (the holder's ruling, "A return over
+    an unreadable channel log"): the return is not held up for it. Those
+    channels, each with why, for begin to say once its write is made."""
     chans = held_set(view)
     if not chans:
-        return
+        return []
     kept = view.get("began") if isinstance(view.get("began"), dict) else {}
-    began = {}
+    began, unread = {}, []
     for c in chans:
         try:
             began[c] = sminos.channel_positions(c)
         except sminos.PositionsUnread as e:
-            sminos.warn("%s: thread %s's membership keeps where it began before its end" % (e, thread_id[:8]))
+            unread.append((c, str(e)))
             began[c] = copy.deepcopy(kept[c]) if isinstance(kept.get(c), dict) else {}
     raw["began"] = began
+    return unread
 
 
 def _holder(session, thread_id):
@@ -1908,9 +1919,10 @@ def _merge_absorbed(thread_id, entry, other, deadline):
     the absorbed record is reserved (nothing else writes a reserved record)
     and before the events: the continuing record's set, then the absorbed
     record's channels it lacks, up to CHANNEL_LIMIT, an addition past it
-    dropped and said in daemon.log; `began` kept for its own channels and
+    dropped and said in daemon.log (at least once: before the write lands,
+    so a cut repeats it and never loses it); `began` kept for its own channels and
     the absorbed record's taken for each channel brought; `answered`
-    united, one entry per request. Marked `merged` in the entry in that
+    united, one entry per request, oldest first. Marked `merged` in the entry in that
     same write, so a replay merges once. The statement is the
     reconciliation's: the entry's `joined` leaves the log stating nothing.
     An older finisher skips it (accepted: the composite's C3)."""
@@ -1938,6 +1950,7 @@ def _merge_absorbed(thread_id, entry, other, deadline):
             for a in _answered_after(theirs.get("answered"), None):
                 if not any(b[:2] == a[:2] for b in answered):
                     answered.append(a)
+            answered.sort(key=lambda a: a[2])   # oldest first (§3), the two ledgers' entries interleaved
             raw["channels"] = chans
             for key, value in (("began", began), ("answered", answered)):
                 if value:
@@ -1945,14 +1958,17 @@ def _merge_absorbed(thread_id, entry, other, deadline):
                 else:
                     raw.pop(key, None)
         raw["pending"]["merged"] = True
+        if dropped:
+            # Said before the write lands, in the same call: a cut after the write leaves it said, and one before
+            # it says it again at the replay, which merges then. At least once, never lost; a daemon.log that
+            # cannot be written is the one case it is not said, and the merge goes on regardless.
+            with contextlib.suppress(OSError):
+                sminos.daemon_log("absorb: thread %s takes %s's channels up to the limit of %d; %s dropped, past "
+                                  "the limit" % (thread_id[:8], other[:8], CHANNEL_LIMIT,
+                                                 ", ".join(c[:8] for c in dropped)))
         return True
 
     _change(thread_id, merge, deadline)
-    if dropped:
-        with contextlib.suppress(OSError):
-            sminos.daemon_log("absorb: thread %s takes %s's channels up to the limit of %d; %s dropped, past the "
-                              "limit"
-                              % (thread_id[:8], other[:8], CHANNEL_LIMIT, ", ".join(c[:8] for c in dropped)))
 
 
 def _project_seat(seat, deadline, holds=None):

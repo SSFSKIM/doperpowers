@@ -5241,10 +5241,46 @@ def _reconcile(project, events, local, by_session, all_seats=None):
             out += hand_off(project, sid, successor)
     # Last, after this pass's own appends: the log kept equal to the record (CH1's C5). Nothing is read for it
     # on a machine whose threads hold no set, over a log that states none (the idle cost: the holder's ruling).
-    holders = threads.set_holders()
-    if stated or holders:
-        out += _keep_sets(project, out, busy, joined, effect, stated, holders)
+    if stated or channels_here():
+        holders = threads.set_holders()
+        if stated or holders:
+            out += _keep_sets(project, out, busy, joined, effect, stated, holders)
     return out
+
+
+_CHANNELS_HERE = [None, None, False]   # [the cache generation, the registrations directory's stat key, the answer]
+
+
+def channels_here():
+    """Whether a channel is registered on this machine: a directory under
+    projects/ named by a channel's id (a log's kind is its id's, CH1's §1).
+    The reconciliation's gate before it looks up any thread's set: a
+    thread's set names channels registered here (every verb that adds one
+    finds it so), so a machine with none looks up nothing (the holder's
+    ruling on the idle cost). Asked again once per cache generation, by one
+    stat of the directory, listed again only once that moved; a listing is
+    not kept while the directory may still move (RACY_NS, as the thread
+    store's index)."""
+    gen = _GENERATION[0]
+    if _CHANNELS_HERE[0] == gen:
+        return _CHANNELS_HERE[2]
+    before = time.time_ns()
+    try:
+        st = os.stat(projects_root())
+    except OSError:
+        _CHANNELS_HERE[:] = [gen, None, False]
+        return False
+    key = (st.st_ino, st.st_mtime_ns)
+    if _CHANNELS_HERE[1] != key:
+        try:
+            names = os.listdir(projects_root())
+        except OSError:
+            names = []
+        answer = any(is_channel_id(n) for n in names)
+        _CHANNELS_HERE[:] = [gen, key if before - st.st_mtime_ns >= threads_module().RACY_NS else None, answer]
+    else:
+        _CHANNELS_HERE[0] = gen
+    return _CHANNELS_HERE[2]
 
 
 def _keep_sets(project, out, busy, joined, effect, stated, holders):
@@ -5308,6 +5344,53 @@ def _keep_sets(project, out, busy, joined, effect, stated, holders):
             continue
         channels_module().restate(project, t["thread"], sid, writer, seen, appended=appended)
     return appended
+
+
+def machine_name_now():
+    """This machine's name as its files say now (machine_identity's rule,
+    with no cache): what a guard under a record's lock reads, since the
+    invocation's cached identity may predate a rename."""
+    ident = sibling_module("sminos_rl10").cutover()
+    return ident["name"] if ident is not None else (os.environ.get("DAEMON_HOST") or socket.gethostname())
+
+
+def restated_holds(project, session, writer, own):
+    """C5's last guard (sminos_threads.set_channels, a Change that names its
+    `writer`), read-only and from files as they are: the session's `joined`
+    in effect in the project (`own`, its own events there) is under
+    `writer`; `writer` is the writer its own events go under now, by this
+    machine's name read afresh and its audience (own_audience); and that
+    `joined` is the session's newest on this machine, so a project another
+    reconciliation has joined it to since (a move whose retirement here is
+    not written yet: a dual membership of one tick) is where it is, and
+    nothing is stated here."""
+    joined = threads_module().in_effect(own)
+    if joined is None or joined.get("kind") != "joined" or joined.get("writer") != writer:
+        return False
+    try:
+        aud = audience_module().own_audience(session) if streams_here(project) else None
+    except audience_module().StreamUnknown:
+        return False
+    if stream_writer("%s/%s" % (machine_name_now(), session), aud) != writer:
+        return False
+    return not _joined_since(session, project, str(joined.get("ts") or ""))
+
+
+def _joined_since(session, project, ts):
+    """Whether another project's log here holds an own `joined` of the
+    session stamped after `ts`, read from its writer files as they are (no
+    lock, nothing made: registrations read as files, the logs by literal
+    paths). A scan of every registration, made only by C5's last guard."""
+    for path in registration_paths():
+        pid = os.path.basename(os.path.dirname(path))
+        if pid == project.id or is_channel_id(pid):
+            continue
+        p = _registered_as(pid, registration(pid))
+        if p is None:
+            continue
+        if any(e["kind"] == "joined" and str(e.get("ts") or "") > ts for e in _own_events(p, session)):
+            return True
+    return False
 
 
 def _reconcile_channel(project, events, by_session):
