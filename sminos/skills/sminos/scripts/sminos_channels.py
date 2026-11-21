@@ -905,8 +905,9 @@ def place(channel, op, targets, session, choices=None):
     carries the channel's other due requests too). [(target, outcome or
     None, line)] in the targets' order, a target named twice once, and
     whether any was refused or could not be recorded. `choices`: {thread:
-    (stream choice, None)} already made for a target (create's, made
-    against the channel before it was registered), written under as made."""
+    (stream choice, None)} made for a target before (create's, against the
+    channel before it was registered): the choice is made again at the
+    append, and one that refuses or differs writes nothing for it."""
     threads = sminos.threads_module()
     me = threads.current_record(session, fresh=True) if session else None
     rows, seen, written, bad, wrote = [], set(), [], False, False
@@ -933,7 +934,17 @@ def place(channel, op, targets, session, choices=None):
             else:
                 rows.append([t, got, _placed(op, channel, got)])
             continue
-        choice, refusal = (choices or {}).get(t.thread) or _choice(channel, session, t)
+        choice, refusal = _choice(channel, session, t)   # at the append, for this one recipient, always
+        before = (choices or {}).get(t.thread)
+        if before is not None and (refusal or choice[0][:2] != before[0][0][:2]):   # (writer, audience)
+            # create's first member, whose reach changed while the channel was registered: nothing is written for
+            # it under the stream chosen before (its ids would leave under an audience it no longer has), nor under
+            # another one the preflight did not see. The channel stays registered with no member (§8).
+            rows.append([t, None, "nothing was recorded (its reach changed as the channel was made): %s stays "
+                                  "registered with no member, and the same command run again brings it back"
+                                  % channel.name])
+            bad = True
+            continue
         if refusal:
             rows.append([t, None, "refused: not reachable: %s" % refusal])
             bad = True
@@ -1062,9 +1073,10 @@ def _create(name, thread, session):
     me = sminos.threads_module().current_record(session, fresh=True) if session else None
     choices = None
     if me is None or me["thread"] != first.thread:
-        # The first member is placed by a request: its stream is chosen once, against the channel about to be made,
-        # the last thing before the registration, and that same choice is the one the request is written under. A
-        # refusal (a private thread whose audience is not known yet) leaves nothing registered or written.
+        # The first member is placed by a request: its stream is chosen against the channel about to be made, the
+        # last thing before the registration, so a target already unreachable (a private thread whose audience is
+        # not known yet) leaves nothing registered or written. place chooses again at the append, and writes
+        # nothing if that choice refuses or differs (its reach changed while the channel was registered).
         choice, refusal = _choice(candidate, session, first)
         if refusal:
             sminos.die("%s: refused: not reachable: %s: nothing was written" % (first.label, refusal), 1)

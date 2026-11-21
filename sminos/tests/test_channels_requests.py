@@ -823,7 +823,7 @@ class Verbs(Requests):
         _, reqs = channels.requests_of(c)
         self.assertEqual(channels.judge(c, reqs[0], threads.get(tid), []), O("ignored", "not-here"))
 
-    def test_create_writes_under_the_one_stream_choice_it_made_before_registering(self):
+    def test_create_chooses_before_registering_and_again_at_the_append(self):
         tid, sid, _ = self.human()
         audience.keep_capabilities(["access", "channels"])
         real_choice, chosen = channels._choice, []
@@ -847,8 +847,9 @@ class Verbs(Requests):
         self.assertEqual([c.id for c in sminos.known_channels()], before)
         self.assertEqual(self.logs(), logs)
         self.assertEqual(len(chosen), 1)
-        # Its audience changes after the choice, as the channel is registered: the request goes under the stream
-        # chosen, with no second choice that could refuse once the channel is there.
+        # It goes private as the channel is registered, after the preflight: the choice made again at the append
+        # differs, so nothing is written for it under the stream the preflight chose (its ids would leave under an
+        # audience it no longer has), and the channel stays registered with no member.
         self.record(sid, access="listed")
         chosen.clear()
         real_register = channels.register
@@ -856,18 +857,49 @@ class Verbs(Requests):
         def narrowed(*a, **k):
             self.record(sid, access="private")
             return real_register(*a, **k)
+        self.narrowed_known(sid, real_register, counted, chosen)
+        chosen.clear()
+        logs = self.logs()
         with mock.patch.object(channels, "_choice", counted), mock.patch.object(channels, "register", narrowed):
             code, out = self.verb("channel", "create", "desk-new", sid)
         made = self.channel_named("desk-new")
-        self.assertEqual(len(chosen), 1, "one choice")
-        self.assertEqual(len(made), 1)
-        self.assertEqual(chosen, [made[0].id], "made against the channel about to be registered")
-        reqs = channels.requests_of(made[0])[1]
-        self.assertEqual([(r["writer"], r["thread"]) for r in reqs], [(sminos.writer_id(), tid)],
-                         "the request was written, under the stream chosen")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(len(made), 1, "registered")
+        self.assertEqual(chosen, [made[0].id, made[0].id], "chosen before the registration, and again at the append")
+        self.assertIn("created channel desk-new (%s)\n" % made[0].id, out)
+        self.assertIn("nothing was recorded (its reach changed as the channel was made): desk-new stays registered "
+                      "with no member, and the same command run again brings it back", out)
+        self.assertEqual(channels.requests_of(made[0])[1], [], "no request appended")
+        self.assertEqual(self.logs(), logs, "nothing written under any stream, in any log")
+        self.assertEqual(self.held(tid), [])
+        # Its audience known again, the same command brings the channel back.
+        self.record(sid, access="listed")
+        code, out = self.verb("channel", "create", "desk-new", sid)
         self.assertEqual(code, 0, out)
-        self.assertIn("created channel desk-new (%s) with " % made[0].id, out)
-        self.assertEqual(self.held(tid), [made[0].id], "placed: its statement waits for the audience (a warning)")
+        self.assertIn("desk-new exists and has no member: ", out)
+        self.assertEqual([c.id for c in self.channel_named("desk-new")], [made[0].id])
+        self.assertEqual(self.held(tid), [made[0].id])
+
+    def narrowed_known(self, sid, real_register, counted, chosen):
+        """Private with its audience known: the choice at the append gives another stream, not a refusal; nothing is
+        written under either, and the channel stays registered with no member."""
+        def narrowed(*a, **k):
+            self.record(sid, access="private")
+            d = audience._held_for_write()
+            d["sessions"][sid] = {"owners": ["member-1"], "members": ["member-1", "member-2"],
+                                  "policyRev": int(records.read(sid).get("policyRev") or 0)}
+            audience._write_audiences(d)
+            return real_register(*a, **k)
+        logs = self.logs()
+        with mock.patch.object(channels, "_choice", counted), mock.patch.object(channels, "register", narrowed):
+            code, out = self.verb("channel", "create", "desk-known", sid)
+        made = self.channel_named("desk-known")
+        self.assertEqual((code, len(made), len(chosen)), (1, 1, 2), out)
+        self.assertIn("nothing was recorded (its reach changed as the channel was made)", out)
+        self.assertEqual(channels.requests_of(made[0])[1], [])
+        self.assertEqual(self.logs(), logs)
+        self.assertFalse(glob.glob(os.path.join(made[0].home, "log", "*")), "no stream file either")
+        self.record(sid, access="listed")
 
     def test_a_terminals_create_the_daemon_carried_first_is_reported_from_its_answer(self):
         tid, sid, _ = self.human()
