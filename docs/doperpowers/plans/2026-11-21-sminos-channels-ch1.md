@@ -46,7 +46,7 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) This plan written against the composite at `ef34f2ca` and the code at `1fdc73a0` (sminos 1.52.0), commit `71575958`.
 - [x] (2026-11-21) The plan's first review for buildability (fourteen findings); the composite revised for two of them (`95fef6b7`) and this plan revised on it (Decision Log, "The plan's review").
 - [x] (2026-11-21) The revision's review, the second and last before the build (eight findings; the composite made exact in one place, `331e2dd5`), folded in (Decision Log, "The plan's second review").
-- [x] (2026-11-21) M1 — A channel id is told from a project's at every door, and nothing is published under one. `dba3f5e8..79985839`, three reviews (the bound); one finding left open to the holder (Decision Log, "M1's review, rounds 2 and 3").
+- [x] (2026-11-21) M1 — A channel id is told from a project's at every door, and nothing is published under one. `dba3f5e8..eee82f3b`, three reviews (the bound), then the idle trim and round 3's last finding fixed (Decision Log, "M1's idle trim"); `sminos-idle` 32,161 calls a second.
 - [ ] M2 — A thread's declared set: one durable operation, its statement and the statement's reader.
 - [ ] M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption.
 - [ ] M4 — Requests on one machine, and the verbs that write them.
@@ -2192,6 +2192,22 @@ while the milestones are built, one observation and its evidence each.
   at its gate, makes anything it adds to the tick conditional on a channel
   held or open, and brings to the holder, before it lands, any change that
   cannot keep the figure at main's. `bench_scale.py`'s limits stay.
+- 2026-11-21 — **M1's idle trim, and round 3's last finding, as built**
+  (`eee82f3b`, after the third review; no fourth). The uplink decides when
+  it opens a log whether it is a channel's and keeps the answer in
+  `Link.channels` beside `opened`; the tick's loops read that set and ask
+  no log's id, and the re-hello on a flip of `unfollowed` runs over the
+  channel set alone. `unfollowed` still asks the id of a log that is not
+  open (one that left), so a channel a thread here is in can come back;
+  that costs nothing while every log is open. The daemon's tick reads
+  projects and channels from one pass over the registrations
+  (`known_kinds`); the seat's guard sits inside `seat_project`'s cached
+  resolution; `_holding_projects` asks a log's id only after the listing
+  shows it holds the session. `sminos-idle`: 32,161 calls a second at 3.78
+  ticks (main 32,582 at 3.83; about 8,500 a tick either way). The project
+  resolvers (`project_tiers`, `find_project`) refuse a channel-shaped
+  argument before any name lookup, so a project named like a channel's id
+  no longer shadows it and stays reachable by its own id.
 
 ## Outcomes & Retrospective
 
