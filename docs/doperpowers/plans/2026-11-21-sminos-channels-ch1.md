@@ -46,7 +46,7 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) This plan written against the composite at `ef34f2ca` and the code at `1fdc73a0` (sminos 1.52.0), commit `71575958`.
 - [x] (2026-11-21) The plan's first review for buildability (fourteen findings); the composite revised for two of them (`95fef6b7`) and this plan revised on it (Decision Log, "The plan's review").
 - [x] (2026-11-21) The revision's review, the second and last before the build (eight findings; the composite made exact in one place, `331e2dd5`), folded in (Decision Log, "The plan's second review").
-- [ ] M1 — A channel id is told from a project's at every door, and nothing is published under one.
+- [x] (2026-11-21) M1 — A channel id is told from a project's at every door, and nothing is published under one. `dba3f5e8..79985839`, three reviews (the bound); one finding left open to the holder (Decision Log, "M1's review, rounds 2 and 3").
 - [ ] M2 — A thread's declared set: one durable operation, its statement and the statement's reader.
 - [ ] M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption.
 - [ ] M4 — Requests on one machine, and the verbs that write them.
@@ -2158,6 +2158,21 @@ while the milestones are built, one observation and its evidence each.
   over a `name#short` spelling, the qualifier parsed from the right. An org
   directory entry with a channel id is never a machine, and a record's
   `channels` that is not a list reads as absent.
+- 2026-11-21 — **M1's review, rounds 2 and 3.** Round 2's fixes: an
+  unregistered channel id is refused as a channel at the project-lookup
+  doors too (`chat`, `list`, `list --project`); a refusal's label for a log
+  is the first spelling that resolves back to that log alone (`name#short`,
+  then `name#<whole id>`, then the bare id), exact-name precedence
+  unchanged; the tag preflight exits only on a clash that includes a
+  channel, so a store with no channel refuses tags in today's order. Left
+  open after round 3, the owner's bound, and sent to the holder: a project
+  whose exact name is an unregistered channel's id is still found by that
+  name at `project_tiers` and `find_project` (`list <id>` shows it; `say
+  --in <id>` refuses it; nothing is written either way). Handed to M2: the
+  uplink's `open_projects()` classifies every open project at each tick on a
+  machine with no channel, against the constraint "The idle daemon stays
+  cheap" (sminos-idle once 0.5% over its calls ceiling at `79985839`, then
+  passed).
 
 ## Outcomes & Retrospective
 
