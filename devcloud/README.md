@@ -494,16 +494,25 @@ lifecycle lock, so they cannot block a lease write or a spot departure.
 A separate nonblocking notice lock prevents concurrent sends; a failed or
 interrupted send stays due, and each notice is marked only after delivery.
 
-The notice starts `devcloud on <name>:` to identify its automated origin,
-since sminos labels a host-shell message as `from human`. It names the VM,
+The notice is sent with `sminos say --notice devcloud`, which marks it as
+the host's own notice: a sminos that knows the mark delivers it as a peer's
+frame from `devcloud@<name>`, never as the person's words, and shows that
+sender in `sminos chat`. Its text still starts `devcloud on <name>:`, so a
+reader that does not know the mark sees whose line it is. It names the VM,
 its idle time and last activity, its lease end (or
 that it runs until `down`), its estimated cost at the creation-time list
 price when known, and every checkout with unpushed work. It gives
 `devcloud vm down <name>` to end it; **idleness never stops or deletes a VM**.
-Delivery tries the creating session, then its sminos project's live
-sessions. If none are live, it leaves an untagged note in that project's
-log for the next session. Without a usable route it goes to the journal
-and `wall`. The lease warning uses the same fallback. `devcloud vm ls`
+Delivery tries the thread that owns the host (the descriptor's tag, which
+reaches that thread's current session and wakes it if it is stopped), then
+its sminos project's live sessions: it goes on when that thread has ended,
+is no member, or is held and not woken with it (`say --exit-held`'s exit
+3). If none are live, it leaves an untagged note in that project's log for
+the next session. A host whose sminos does not know the two flags gets each
+step again without them. Without a usable route it goes to the journal and
+`wall`. The lease warning uses the same fallback. A host built before its
+boot library marked its notices keeps that library for its life: it sends
+them unmarked, and goes on only for an ended thread or no member. `devcloud vm ls`
 reads the host's idle clock over the tailnet; an unavailable clock shows `-`.
 
 **sminos.** Step 11 first links `/usr/local/bin/sminos` to the launcher in

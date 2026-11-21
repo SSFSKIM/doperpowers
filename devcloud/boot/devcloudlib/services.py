@@ -61,7 +61,7 @@ def service_list(user, interval=INTERVAL, persistent=False):
     identity) also runs the lease service and the deferred provisioning's."""
     lifecycle = [
         Service("lease", (DEVCLOUD, "lease", "tick"), False, LIFECYCLE_INTERVAL,
-                "devcloud: the lease: warn its creator, depart at its end"),
+                "devcloud: the lease: warn the thread that owns the host, depart at its end"),
         Service("enroll", (DEVCLOUD, "enroll"), False, LIFECYCLE_INTERVAL,
                 "devcloud: finish a MAWS provisioning left undecided"),
     ] if persistent else []
