@@ -216,6 +216,8 @@ class OwnChange(Store):
             with self.subTest(kind):
                 if kind == "spawned":
                     tid, sid, _ = self.spawned()
+                    with open(sminos.meta_path(tid)) as f:
+                        gen = json.load(f).get("gen")
                 else:
                     tid, sid, proc = self.human()
                     if kind == "stopped":
@@ -230,6 +232,10 @@ class OwnChange(Store):
                 self.assert_states(tid, sid, [], 4)
                 self.assertNotIn("began", threads.get(tid), "an empty set has no positions")
                 self.assertEqual(self.statements(sid)[-1]["channels"], [], "the empty set is stated")
+                if kind == "spawned":
+                    with open(sminos.meta_path(tid)) as f:
+                        self.assertEqual(json.load(f).get("gen"), gen, "no lifecycle generation moved: a turn's "
+                                         "watcher keeps its reply")
 
     def test_a_set_that_already_reads_so_writes_nothing_and_says_so(self):
         tid, sid, _ = self.human()
