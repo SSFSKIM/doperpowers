@@ -12540,13 +12540,15 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 def run_claude_bg(args, cwd, settings):
     """Run `claude --bg …` in cwd; return (short, banner). short is "" on
-    failure, a launch past SMINOS_LAUNCH_TIMEOUT (300 s) included. cwd must
-    be a real directory — callers validate with cwd_or_die; an unattended
-    worker is never silently launched somewhere else. One this
+    failure, a launch past SMINOS_LAUNCH_TIMEOUT (300 s) included. A cwd that
+    is no directory, at the look before the launch or as the engine is
+    started there, launches nothing: the banner is then a NoLaunchDir, which
+    each caller answers in its own way (a wake's hold `cwd`, a spawn's exit);
+    an unattended worker is never silently launched somewhere else. One this
     process may not look at (read_refused: a resume, on its seat's word) is
     launched in unlooked-at."""
     if not (cwd and (read_refused(cwd) or os.path.isdir(cwd))):
-        die("launch cwd does not exist or is not a directory: %s" % cwd, EXIT_USAGE)
+        return "", NoLaunchDir(cwd)
     timeout = float(os.environ.get("SMINOS_LAUNCH_TIMEOUT") or 300)
     try:
         p = subprocess.run(["claude"] + args, cwd=cwd, env=launch_env(settings),
@@ -12557,6 +12559,9 @@ def run_claude_bg(args, cwd, settings):
             return "", banner
     except subprocess.TimeoutExpired as e:
         return "", LaunchOutput(str(e), timeout=timeout)
+    except (FileNotFoundError, NotADirectoryError) as e:
+        # The directory gone since the look above: the engine's start there (its chdir) failed, nothing launched.
+        return "", NoLaunchDir(cwd) if e.filename == cwd else LaunchOutput(str(e))
     except Exception as e:  # noqa: BLE001 — any launch failure is a failure
         return "", LaunchOutput(str(e))
     m = BANNER_RE.search(banner)   # the engine's banner line, never a title's words
@@ -12572,6 +12577,14 @@ class LaunchOutput(str):
         out = super().__new__(cls, text)
         out.status, out.timeout = status, timeout
         return out
+
+
+class NoLaunchDir(LaunchOutput):
+    """run_claude_bg's answer for a launch directory that is no directory:
+    nothing was launched, and its text is what a verb exits with."""
+
+    def __new__(cls, cwd):
+        return super().__new__(cls, "launch cwd does not exist or is not a directory: %s" % cwd)
 
 
 # A path inside a message (the engine's, an exception's): the text from a `/` or `~/` that starts a word or follows a
@@ -13607,6 +13620,8 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
                                               permission_mode) + [task_text], cwd, settings)
     if not short:
         records.drop_pending(launch_id)
+        if isinstance(banner, NoLaunchDir):
+            die(banner, EXIT_USAGE)
         sys.stderr.write("sminos: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
         sys.exit(1)
     launch = {
@@ -14608,13 +14623,12 @@ def _wake_held(tid, session, due, returns, on_live):
             return WakeResult(why == "live", "" if why == "live" else why or "unknown")
         seat = reload_seat(tid) if t["opened"] == "spawned" else None
         settings = seat["settings"] if seat is not None else wm.option(flags, "--settings")
-        cwd = wm.thread_cwd(t)
-        if not (cwd and (read_refused(cwd) or os.path.isdir(cwd))):
-            # Gone since W2 read it: the hold not_woken answers for it, as run_claude_bg's own check would refuse it
-            # by exiting, which no wake does (a deliverer, the daemon or the uplink, goes on past it).
+        short, banner = run_claude_bg(wm.wake_argv(session, flags), wm.thread_cwd(t), settings)   # W5, W6
+        if isinstance(banner, NoLaunchDir):
+            # Gone since W2 read it, as the launch boundary found it: the hold not_woken answers for it, never an
+            # exit, which no wake makes (a deliverer, the daemon or the uplink, goes on past it).
             wake_line_dropped(tid, session, note["id"])
             return WakeResult(False, "cwd")
-        short, banner = run_claude_bg(wm.wake_argv(session, flags), cwd, settings)   # W5, W6
         if not short:                                                    # row 14
             rec = running_now(session)
             if rec is not None and str(rec.get("kind") or "") == "bg":

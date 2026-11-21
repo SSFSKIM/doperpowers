@@ -412,22 +412,28 @@ class OneLaunch(Deliveries):
         self.assertFalse(sminos.launch_in_flight(tid))
         self.assertTrue(sminos.wake_lock(tid, until=time.time() + 1)[0].release() is None, "the check took nothing")
 
+    def gone_at_the_launch(self, where):
+        """The directory `where` removed at the launch boundary itself: as the engine is run there, after W2 and
+        every other look at it, run_claude_bg's own included."""
+        real = subprocess.run
+
+        def run(argv, *a, **k):
+            if argv[:2] == ["claude", "--bg"] and k.get("cwd") == where and os.path.isdir(where):
+                shutil.rmtree(where)
+            return real(argv, *a, **k)
+        return mock.patch.object(subprocess, "run", run)
+
     def test_a_directory_gone_before_the_launch_holds_the_wake_for_cwd_with_nothing_left_held(self):
-        # frontier review round 2, sweep#4: gone after W2 read it, before the launch: a hold, never an exit that
-        # unwinds the delivery pass (the daemon lives on past one), and no line, wake lock or delivery lock kept.
+        # frontier review round 2, sweep#4: gone after W2 read it, at the launch: a hold, never an exit that unwinds
+        # the delivery pass (the daemon lives on past one), and no line, wake lock or delivery lock kept. Round 3:
+        # the launch boundary answers it (run_claude_bg), with no look of the wake's own beside it.
         for how in ("say", "the daemon's pass"):
             with self.subTest(how=how):
                 tid, sid = self.human_thread()
                 where = os.path.join(self.root, "sub-%s" % len(os.listdir(self.root)))
                 os.makedirs(where)
                 self.edit(tid, launch=dict(threads.get(tid).get("launch") or {}, cwd=where))
-                real = threads.wake_line
-
-                def then_gone(*a, **k):
-                    got = real(*a, **k)
-                    shutil.rmtree(where)   # W4's write made; the directory goes before W5
-                    return got
-                with mock.patch.object(threads, "wake_line", then_gone):
+                with self.gone_at_the_launch(where):
                     if how == "say":
                         code, out = self.say("@%s to a gone place" % sid[:8])
                         self.assertEqual(code, 0, out)
@@ -445,6 +451,27 @@ class OneLaunch(Deliveries):
                 self.assertTrue(sminos.wake_lock(tid, until=time.time() + 1)[0].release() is None, "the lock free")
                 with sminos.flocked(sminos.project_path(self.p, "delivered", sminos.reader_key(sid) + ".lock")):
                     pass   # the delivery lock free too
+
+    def test_a_fresh_spawn_into_a_directory_gone_at_its_launch_still_exits(self):
+        # Round 3: a verb, unlike a wake, exits on it, as run_claude_bg's own check did, its pending launch dropped.
+        for case in ("before the launch looks", "at the launch"):
+            with self.subTest(case=case):
+                where = os.path.join(self.root, "sub-%s" % len(os.listdir(self.root)))
+                os.makedirs(where)
+                records = sminos.records_module()
+                real = records.write_pending
+
+                def then_gone(*a, **k):
+                    got = real(*a, **k)
+                    shutil.rmtree(where)
+                    return got
+                with mock.patch.object(records, "write_pending", then_gone) if case == "before the launch looks" \
+                        else self.gone_at_the_launch(where):
+                    code, out = self.cli("spawn", "w-%d" % len(os.listdir(self.root)), "the task", cwd=where)
+                self.assertEqual(code, sminos.EXIT_USAGE, out)
+                self.assertIn("launch cwd does not exist or is not a directory: %s" % where, out)
+                self.assertNotIn("Traceback", out)
+                self.assertEqual(os.listdir(os.path.dirname(records.pending_path("x"))), [], "no launch left pending")
 
     def launches_of(self, sid):
         return len(self.resumes(sid))
