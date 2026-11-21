@@ -42,16 +42,29 @@ gates:
       bash scripts/bump-version.sh --since "$CI_KIT_BASE" "$CI_KIT_HEAD"
     timeout: 5
 
-  # The sminos plugin's suite in its two parts, run side by side (about 26 min
-  # serial: core about 7, suites 18 to 20 on 2026-11-02).
+  # The sminos plugin's suite in its parts, run side by side: core (about 9 min on
+  # 2026-11-21) and the suite files in three lists of about 8 min each. The one
+  # `sminos-suites` gate they replace took 24 to 27 min that day against a
+  # 30-minute timeout. A list past about 15 min is cut again, or its cut line
+  # in run-sminos-tests.sh moved.
   - name: sminos
     run: SMINOS_PART=core bash sminos/tests/run-sminos-tests.sh
     timeout: 20
     paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
-  - name: sminos-suites
-    run: SMINOS_PART=suites bash sminos/tests/run-sminos-tests.sh
-    timeout: 30
+  - name: sminos-suites-a
+    run: SMINOS_PART=suites-a bash sminos/tests/run-sminos-tests.sh
+    timeout: 20
+    paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
+
+  - name: sminos-suites-b
+    run: SMINOS_PART=suites-b bash sminos/tests/run-sminos-tests.sh
+    timeout: 20
+    paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
+
+  - name: sminos-suites-c
+    run: SMINOS_PART=suites-c bash sminos/tests/run-sminos-tests.sh
+    timeout: 20
     paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   # The idle uplink's cost on a machine of the owner's MacBook's shape, judged by its calls a second under a profiler

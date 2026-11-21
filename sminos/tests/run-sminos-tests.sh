@@ -382,12 +382,17 @@ held_mark() {   # <delivered record> <writer> <seq>: "<attempts> <whether seq is
   python3 -c 'import json,sys; w = json.load(open(sys.argv[1])).get(sys.argv[2], {}); print(w.get("attempts", 0), int(sys.argv[3]) in [int(x[0]) for x in w.get("held", [])])' "$1" "$2" "$3"
 }
 
-# ---- the suite's two parts ---------------------------------------------------
+# ---- the suite's parts -------------------------------------------------------
 # SMINOS_PART picks one, for a CI gate each: `core` is this file's own cases,
-# `suites` the files it runs beside them (run_suites); unset runs both.
+# `suites` the files it runs beside them (run_suites); unset runs both. The
+# files are cut into three lists of about equal duration, `suites-a`,
+# `suites-b` and `suites-c`, one CI gate each (about 8 min each on
+# 2026-11-21, when the one list took 24); a new file goes at the end of c,
+# and moving a cut line rebalances them.
 SMINOS_PART="${SMINOS_PART:-all}"
-case "$SMINOS_PART" in all | core | suites) ;; *) echo "SMINOS_PART is all, core or suites" >&2; exit 2 ;; esac
-run_suites() {
+case "$SMINOS_PART" in all | core | suites | suites-a | suites-b | suites-c) ;; *)
+  echo "SMINOS_PART is all, core, suites, suites-a, suites-b or suites-c" >&2; exit 2 ;; esac
+run_suites_a() {
   if python3 "$SCRIPT_DIR/test_tui_pending_send.py"; then pass "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; else
     fail "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; fi
   if python3 "$SCRIPT_DIR/test_list_fold.py"; then pass "stopped members fold only in text views (test_list_fold.py)"; else
@@ -442,6 +447,8 @@ run_suites() {
   echo
   if "$SCRIPT_DIR/test-bridge-order.sh"; then pass "the bridge's row order and snapshot cut (test-bridge-order.sh)"; else
     fail "the bridge's row order and snapshot cut (test-bridge-order.sh)"; fi
+}
+run_suites_b() {
   # The child's gate client on MAWS's holder socket and its relay to the mod (O12 M4a), O16's fixture replayed at the
   # child; what only the fix-wave host can show it prints as PENDING.
   if python3 -B "$SCRIPT_DIR/test_holder.py"; then
@@ -497,6 +504,8 @@ run_suites() {
       *) fail "rl10 conformance: ${line#FAIL }" ;;
     esac
   done < <(python3 -B "$SCRIPT_DIR/rl10_conformance.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/rl10-conversation.json" 2>&1)
+}
+run_suites_c() {
   if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the endpoint, two machines (test-sync.sh)"; else
     fail "sync through the endpoint, two machines (test-sync.sh)"; fi
   if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
@@ -555,6 +564,7 @@ run_suites() {
     pass "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"
   else fail "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"; fi
 }
+run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 summary() {
   echo
   # T2's M2: no launch carries a message. Every resume the stub saw went to the test engine, which wrote one that
@@ -571,7 +581,12 @@ summary() {
   fi
   exit 0
 }
-if [ "$SMINOS_PART" = suites ]; then run_suites; summary; fi
+case "$SMINOS_PART" in
+  suites) run_suites; summary ;;
+  suites-a) run_suites_a; summary ;;
+  suites-b) run_suites_b; summary ;;
+  suites-c) run_suites_c; summary ;;
+esac
 
 if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
 
