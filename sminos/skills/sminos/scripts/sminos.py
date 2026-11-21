@@ -16,12 +16,13 @@ of either kind, wakes it: its process is started again in the background under
 the same id, with no message, and the message is then pushed to it, followed by
 a `[sminos] ` line telling it that it was woken and that its human is not
 watching. One its machine does not wake (its directory or its conversation
-gone, another config dir, a directory in or holding a folder macOS protects,
-$HOME among them, a mode that asks for approval, its own or a first wake's
-capped by the machine's ceiling, a wake that failed, a launch whose process
-never came up included, tried again at widening intervals) holds the message
-until a process of it runs before it ends, and the sender is told why. After a
-/clear the new session takes its alias, and the one left goes by its short id. A
+gone, another config dir, a session its human opened in or above a folder
+macOS protects, $HOME among them, a mode that asks for approval, its own or
+a first wake's capped by the machine's ceiling, a wake that failed, a launch
+whose process never came up included, tried again at widening intervals)
+holds the message until a process of it runs before it ends, and the sender
+is told why. After a /clear the new session takes its alias, and the one left
+goes by its short id. A
 session ends when it is retired, or once it has been stopped for three days
 (while a devcloud host of its own remains, or devcloud cannot tell, it stays
 stopped instead); what was held for it is then settled, and a message to it
@@ -222,8 +223,9 @@ human's words, submitted once per log event however often it is delivered,
 and a --bg job with no bridge takes it through the engine supervisor's
 `reply`. `resume` is
 the process-level continuation the board pipeline relays through: a wake
-(`claude --bg --resume <id>`, carrying the invoking environment and no
-message) and the push of its message.
+(`claude --bg --resume <id>` with no message, in the environment the
+engine's background launch gives it, not the terminal's it was opened in)
+and the push of its message.
 
 State lives under $SMINOS_HOME (default ~/.claude/sminos; $DAEMON_HOME is the
 older name of the same root and is honored). Records are <seat-id>.json at the
@@ -8575,7 +8577,7 @@ def opened_by_human(session):
 
 def human_refusal(alias):
     return ("%s is a session its human opened: its sessions are its human's to open, and sminos starts no fresh one "
-            "for it (a message to it wakes the one it has)" % alias)
+            "for it (a message to it wakes the one it has where its machine can, and is held otherwise)" % alias)
 
 
 def thread_owed(session):

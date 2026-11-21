@@ -179,8 +179,9 @@ session id, and the message reaches it as a live member's does, with a
 `[sminos] ` line after it saying that it was woken and that its human is
 not watching. Its machine holds the message instead, and your line says
 why, where a wake would fail or stall: its directory or its conversation
-is gone, it runs under another config dir, its directory is in or holds a
-folder macOS protects (a home directory does), a wake would run it in a
+is gone, it runs under another config dir, it is a session its human
+opened whose directory is in or holds a folder macOS protects (a home
+directory does; a seat is woken there all the same), a wake would run it in a
 mode that asks for approval (its own, or the machine's ceiling), or a
 wake of it failed and its machine tries again. A held message is pushed
 when a process of the session runs before it ends; sending it again only
