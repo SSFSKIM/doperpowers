@@ -54,6 +54,13 @@ gates:
     timeout: 30
     paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
+  # The declared channels' suites (CH1; SMINOS_PART=channels, disjoint from the two above). Its timeout is about
+  # twice its last measured run, set again as the part grows; past about fifteen minutes it is split again.
+  - name: sminos-channels
+    run: SMINOS_PART=channels bash sminos/tests/run-sminos-tests.sh
+    timeout: 10
+    paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
+
   # The idle uplink's cost on a machine of the owner's MacBook's shape, judged by its calls a second under a profiler
   # (bench_scale.py's idle gate): a count holds on a loaded runner, where a CPU share does not. About 3 minutes.
   - name: sminos-idle

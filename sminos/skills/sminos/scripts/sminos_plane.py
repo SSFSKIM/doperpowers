@@ -2708,7 +2708,14 @@ class Plane:
         """The project's sessions on this machine, from its log as this
         machine reconciles it (sminos calls: the main thread's), and its
         local members' rows, each with the title this machine published for
-        it (a local row carries none of its own)."""
+        it (a local row carries none of its own). A channel's every map is
+        empty (CH1, C1): it has no member, and nothing of this machine is
+        published under its id, so no session an older copy joined into its
+        log is said here, or forced "not running" once it is retired."""
+        if sminos.is_channel_id(project.id):
+            self.here[project.id], self.member_rows[project.id] = {}, {}
+            self.members[project.id], self.left[project.id] = set(), {}
+            return
         self.read_at[project.id] = self.wall()   # before the read: whoever leaves after it is newer than this
         view = sminos.view_of(project, titles=False)
         here = {}

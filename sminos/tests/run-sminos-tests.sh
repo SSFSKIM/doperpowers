@@ -384,9 +384,12 @@ held_mark() {   # <delivered record> <writer> <seq>: "<attempts> <whether seq is
 
 # ---- the suite's two parts ---------------------------------------------------
 # SMINOS_PART picks one, for a CI gate each: `core` is this file's own cases,
-# `suites` the files it runs beside them (run_suites); unset runs both.
+# `suites` the files it runs beside them (run_suites), `channels` the declared
+# channels' suites (run_channels, CH1); unset runs all three. The parts are
+# disjoint: no suite runs in two.
 SMINOS_PART="${SMINOS_PART:-all}"
-case "$SMINOS_PART" in all | core | suites) ;; *) echo "SMINOS_PART is all, core or suites" >&2; exit 2 ;; esac
+case "$SMINOS_PART" in all | core | suites | channels) ;; *)
+  echo "SMINOS_PART is all, core, suites or channels" >&2; exit 2 ;; esac
 run_suites() {
   if python3 "$SCRIPT_DIR/test_tui_pending_send.py"; then pass "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; else
     fail "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; fi
@@ -555,6 +558,19 @@ run_suites() {
     pass "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"
   else fail "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"; fi
 }
+# The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a
+# gate of their own (sminos-channels).
+run_channels() {
+  if python3 -B "$SCRIPT_DIR/test_channels.py"; then
+    pass "a channel id told from a project's at every door: the vectors, the kind, names, the .smns rule, an older join (test_channels.py)"
+  else fail "a channel id told from a project's at every door: the vectors, the kind, names, the .smns rule, an older join (test_channels.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_wire.py"; then
+    pass "nothing published under a channel id: the checker's breaches, a real uplink over an older copy's join (test_channels_wire.py)"
+  else fail "nothing published under a channel id: the checker's breaches, a real uplink over an older copy's join (test_channels_wire.py)"; fi
+  echo
+  if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact (test-channels.sh)"; else
+    fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact (test-channels.sh)"; fi
+}
 summary() {
   echo
   # T2's M2: no launch carries a message. Every resume the stub saw went to the test engine, which wrote one that
@@ -572,6 +588,7 @@ summary() {
   exit 0
 }
 if [ "$SMINOS_PART" = suites ]; then run_suites; summary; fi
+if [ "$SMINOS_PART" = channels ]; then run_channels; summary; fi
 
 if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
 
@@ -7815,5 +7832,5 @@ assert_rc 2 "$RC" "daemon with no verb is a usage error"
 cd "$WORK"
 unset STUB_COUNTER
 
-[ "$SMINOS_PART" = core ] || run_suites
+if [ "$SMINOS_PART" = all ]; then run_suites; run_channels; fi
 summary

@@ -401,10 +401,12 @@ def hub_projects(cred):
     retirements it causes. The projects of this machine's declared
     locations are registered first, rooted there (sminos.register_declared),
     so a folder declared a moment ago is held before any session runs in
-    it."""
+    it. A channel's log is among them (sminos.known_logs): a channel the
+    org's directory lists is opened as every log is, `follow` unless a
+    thread of this machine is in it (Link.unfollowed)."""
     sminos.register_declared()
     out = {}
-    for p in sminos.known_projects():
+    for p in sminos.known_logs():
         if p.id in out or not (isinstance(p.hub, dict) and p.hub.get("org") == cred["org"]) \
                 or sminos.org_retired(p.id) or sminos.has_left(p):
             continue
@@ -720,7 +722,9 @@ class Here:
         self.link = link
 
     def project(self, pid):
-        return hub_project(pid, self.link.cred)
+        """An RPC's project: none for a channel's id (CH1), which MAWS's app
+        lists among a machine's projects until it has a channel view."""
+        return None if sminos.is_channel_id(pid) else hub_project(pid, self.link.cred)
 
     def has_session(self, project, sid):
         plane_ = self.link.plane
@@ -1146,8 +1150,10 @@ class Link:
         page, answered `snapshots {id, project, events, next, done}` with
         the page past `after` (snapshot_page), `done` on the project's last.
         A project that is no hub project of this org known here has none: one
-        page, empty and done, said in daemon.log. sminos carries what it
-        stored; the endpoint verifies each again before taking it."""
+        page, empty and done, said in daemon.log; so has a channel's log, a
+        log with no member (CH1, §7: an older copy's `joined` there is no
+        snapshot of one). sminos carries what it stored; the endpoint
+        verifies each again before taking it."""
         ask, pid = frame.get("id"), frame.get("project")
         if not isinstance(ask, str):
             log("a snapshots? with no id (%r): not answered" % (ask,))
@@ -1156,6 +1162,8 @@ class Link:
         if hl is None:
             log("snapshots? for project %r, which is no hub project of org %s known here: answered with none"
                 % (pid, self.cred["org"]))
+            events, after = [], None
+        elif sminos.is_channel_id(pid):
             events, after = [], None
         else:
             events, after = snapshot_page(hl, frame.get("after"))
@@ -1370,12 +1378,26 @@ class Link:
         """Whether this machine holds the project rather than follows it: its
         own machine project, or one with a local member (the plane's) or a
         known checkout here (as last read; a location declared here is
-        one)."""
+        one). What a held project is sent follows from it: the machine's
+        presence, its checkouts, its sessions' presence. Never a channel
+        (CH1, §7): nothing of this machine is published under one."""
+        if sminos.is_channel_id(pid):
+            return False
         return pid == self.own or bool(self.plane.members.get(pid)) or self.checkouts.get(pid, False)
+
+    def unfollowed(self, pid):
+        """Whether the log's `hello` carries no `follow`: a project this
+        machine holds; a channel a thread of this machine that has not ended
+        is in, read from its records alone (sminos_channels.opens_unfollowed),
+        which MAWS counts as a holder of it."""
+        if sminos.is_channel_id(pid):
+            return sminos.channels_module().opens_unfollowed(pid)
+        return self.holds(pid)
 
     def may_leave(self, p):
         """Whether the leaving rule reaches a project (§E.4): one followed
-        with no folder here — not held (holds), and no known checkout as it
+        with no folder here — not held (unfollowed: a channel no thread of
+        this machine is in is followed), and no known checkout as it
         is now (sminos_policy.known_checkouts: a registered root or a
         declared location that still resolves to it, a directory a session
         the plane read joined from here), whatever the project was open on
@@ -1384,7 +1406,7 @@ class Link:
         location this process may not look at (sminos.read_refused, macOS's
         protected folders) is an unknown, and an unknown is a folder: the
         project does not leave by it."""
-        return not self.holds(p.id) and p.id != sminos.machine_project_id(self.cred["org"], p.name) \
+        return not self.unfollowed(p.id) and p.id != sminos.machine_project_id(self.cred["org"], p.name) \
             and (sminos.org_entry(p.id) or {}).get("kind") != "machine" \
             and not (p.root and sminos.read_refused(p.root)) \
             and not any(sminos.read_refused(loc.path) for loc in sminos.declared_here(p.id)) \
@@ -1459,8 +1481,18 @@ class Link:
         tombstone mark), its rejections recorded as reported. What
         `deliveries` queues after it follows it on the same connection, so
         the endpoint takes it after the hello, and a write that fails ends
-        the connection before any continuation behind it runs."""
+        the connection before any continuation behind it runs.
+
+        A channel's log (CH1, §7) is sent its `hello` (`follow` unless a
+        thread of this machine is in it: unfollowed), the rejections not
+        yet reported and the RPC results owed, and nothing else: no machine
+        presence, no session presence, no pending set, and no former name
+        joined again. Its uploads, delivery outcomes and notices go as any
+        log's."""
         pid = hl.project.id
+        if sminos.is_channel_id(pid):
+            self.open_channel(hl)
+            return
         hl.rejoin_former()
         unreported = [] if self.reporting[pid] else [f for f in hl.unreported()
                                                        if f not in self.unrecorded.get(pid, ())]
@@ -1471,7 +1503,7 @@ class Link:
         read = self.plane.take_read(pid)
         # The project's bridges are followed before its set is drawn up: the
         # set goes now if they are read, else once they are (Requests.due).
-        self.requests.follow(self.bridged(self.opened | {hl.project.id}))
+        self.requests.follow(self.bridged(self.open_projects() | {hl.project.id}))
         self.requests.take()
         owed = self.requests.opening(hl.project.id)
         results = self.rpcs.opening(hl.project.id)
@@ -1499,6 +1531,28 @@ class Link:
             self.machine_sent[pid] = machine["message"]["body"]
         self.deliveries(hl)
         self.host_pass(hl, again=True)
+
+    def open_channel(self, hl):
+        """open's half for a channel's log."""
+        pid = hl.project.id
+        unreported = [] if self.reporting[pid] else [f for f in hl.unreported()
+                                                       if f not in self.unrecorded.get(pid, ())]
+        self.plane.refresh(hl.project)   # a channel has no members: every map of it empty
+        follow = not self.unfollowed(pid)
+        results = self.rpcs.opening(pid)
+        if unreported:
+            self.reporting[pid] += 1
+        self.rpcs.sending(results)
+
+        def answered():
+            self.rpcs.delivered(results)
+            if unreported:
+                self.reported(hl, unreported)
+
+        self.log_lane.send([hl.hello(follow)] + unreported + results, then=answered)
+        self.opened.add(pid)
+        self.follows[pid] = follow
+        self.deliveries(hl)
 
     def report(self, hl, rejections):
         """Rejections up, reported once they are written."""
@@ -1636,8 +1690,11 @@ class Link:
         moved or holds a session writer's event past the cursor as it is
         now (HubLog.host_files): one that did neither has nothing to send;
         the store listed again only once its directory moved (host_paths).
-        `state`: uplink.json as the caller read it just now."""
+        `state`: uplink.json as the caller read it just now. A channel's log
+        is passed by: its store holds no host event (sminos.append_host)."""
         pid = hl.project.id
+        if sminos.is_channel_id(pid):
+            return
         queued = self.host_queued.setdefault(pid, {})
         owed = self.host_owed.setdefault(pid, {})
         sent = hl.host_sent(state)
@@ -1712,14 +1769,24 @@ class Link:
         once when the policy changed (a `daemon policy` nudges one), and a
         project's at once when the plane's read moved the directories its
         sessions joined from since they were drawn; `machine` goes again for
-        each held project whose body changed."""
+        each held project whose body changed. A channel's log is hello'ed
+        again when `unfollowed` flips, and never sent a `machine` (CH1, §7)."""
         current = policy.wire_policy()   # as HubLog.presence says it
         fresh = now >= self.next_checkouts or any(self.machine_sent.get(pid, {}).get("policy") != current
-                                                  for pid in self.opened if not self.follows.get(pid))
+                                                  for pid in self.opened
+                                                  if not self.follows.get(pid) and not sminos.is_channel_id(pid))
         if fresh:
             self.next_checkouts = now + CHECKOUTS_EVERY
         for pid in sorted(self.opened):
             hl = self.logs[pid]
+            if sminos.is_channel_id(pid):
+                follow = not self.unfollowed(pid)
+                if follow != self.follows.get(pid):
+                    self.log_lane.send([hl.hello(follow)])
+                    self.follows[pid] = follow
+                    log("%s: %s" % (hl.project.name, "followed (no thread here is in the channel)" if follow else
+                                    "opened without follow (a thread here is in the channel)"))
+                continue
             machine = None
             # The checkouts come from the plane's last read (draw_machine),
             # which the plane's tick, after this scan, renews: a session's
@@ -1758,12 +1825,19 @@ class Link:
         continuation follows the write of its own frames and no other
         project's. A settlement leaves the outbox, relayed, once its frame
         is written; a
-        complete set is taken when queued (every connect sends one again)."""
-        self.requests.follow(self.bridged(self.opened))
+        complete set is taken when queued (every connect sends one again).
+        No channel's log: no pending set is sent under one (CH1, §7)."""
+        projects = self.open_projects()
+        self.requests.follow(self.bridged(projects))
         self.requests.take()
-        for frames in by_project(self.requests.due(self.opened)):
+        for frames in by_project(self.requests.due(projects)):
             self.requests.sending(frames)
             self.session_lane.send(frames, then=lambda f=frames: self.requests.delivered(f))
+
+    def open_projects(self):
+        """The ids of the logs open on this stream that are projects: every
+        one but a channel's, whose log has no member and no presence."""
+        return {pid for pid in self.opened if not sminos.is_channel_id(pid)}
 
     def relay_rpcs(self):
         """The RPCs' results, their compactions' progress and their desk
@@ -1798,7 +1872,7 @@ class Link:
             self.member_read_for, self.next_member_read = live, now + plane.MEMBERS_EVERY
             if whole:
                 self.next_member_whole = now + plane.MEMBERS_WHOLE
-            self.member_known = {p.id: p for p in sminos.known_projects()}
+            self.member_known = {p.id: p for p in sminos.known_logs()}   # the leaving rule's come-back reads a channel's
             self.unlisted.clear()
             # Those whose inputs moved, as the plane reads its own (Plane.stale).
             stale = self.plane.stale({pid: p for pid, p in self.member_known.items()
@@ -2266,7 +2340,7 @@ class Link:
                 self.failing = repr(e)
                 log("syncing failed: %r" % e)
         try:
-            self.post_session(self.plane.tick({pid: self.logs[pid].project for pid in self.opened}))
+            self.post_session(self.plane.tick({pid: self.logs[pid].project for pid in self.open_projects()}))
             self.relay_requests()
             self.relay_rpcs()
             known = self.members(time.monotonic())

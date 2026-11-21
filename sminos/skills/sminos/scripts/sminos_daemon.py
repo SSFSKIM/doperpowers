@@ -1305,7 +1305,8 @@ def worth_saying(out, before):
 
 
 def tick_all(quiet=False):
-    """One tick over every project known here: the caches forgotten first, one
+    """One tick over every project known here, then the channel pass over
+    every channel (channel_pass): the caches forgotten first, one
     seat read and one harness-session read shared across the projects, then
     the derivation duty, and the tick's end marked (mark_tick). A project
     whose tick fails is skipped, the failure kept as its record's error and
@@ -1314,8 +1315,11 @@ def tick_all(quiet=False):
     sminos.forget_caches()
     all_seats = sminos.seats()
     map_sessions()
-    projects = {}
-    for p in sminos.known_projects(all_seats):
+    projects, channels = {}, []
+    for p in sminos.known_logs(all_seats):
+        if sminos.is_channel_id(p.id):
+            channels.append(p)   # no project's tick: the channel pass's
+            continue
         # A project read off its .smns as it is now: the remote may have moved.
         # A root this process may not read is left as registered.
         fresh = sminos.resolve_project(p.root) if p.root and not sminos.read_refused(p.root) \
@@ -1342,11 +1346,39 @@ def tick_all(quiet=False):
             continue
         if not quiet or worth_saying(out, before):
             print(("%s " % sminos.now() if quiet else "") + tick_line(p, out))
+    channel_pass(channels, all_seats)
     sweep_threads()
     derive_duty()
     bridge_duty()
     override_duty()
     mark_tick()
+
+
+_CHANNEL_FAILED = {}   # channel id → the failure its pass last said, so a failure that keeps failing is said once
+
+
+def channel_pass(channels, all_seats):
+    """The channels' turn of a tick (CH1, Interfaces §6): no channel is
+    ticked as a project (none of rejoin_former, publish_state,
+    publish_titles, restate_withheld, publish_renames, deliver_owed, the
+    mirror or the archive runs for one), and each known here has its view
+    read, which reconciles its log (sminos.view_of: a `joined` an older copy
+    wrote there retired `moved` while a process or a seat holds its session)
+    and publishes nothing. `channels`: those known here (sminos.known_logs'
+    channels), a loop over nothing on a machine that knows none. A channel
+    whose pass fails is said in daemon.log when the failure is a new one."""
+    for c in sorted(channels, key=lambda c: (c.name, c.id)):
+        try:
+            sminos.view_of(c, all_seats, titles=False)
+        except MachineClaimed:
+            raise
+        except (Exception, SystemExit) as e:  # noqa: BLE001 — one channel's failure is not the daemon's
+            failed = repr(e)
+            if _CHANNEL_FAILED.get(c.id) != failed:
+                sminos.daemon_log("the pass of channel %s failed: %s" % (c.name, failed))
+            _CHANNEL_FAILED[c.id] = failed
+            continue
+        _CHANNEL_FAILED.pop(c.id, None)
 
 
 TICKED = "ticked"   # under daemon/: its mtime is when a tick last ended here
@@ -2831,7 +2863,7 @@ def cmd_status(_a):
           + (", last tick %s ago" % sminos.short_age(max(0.0, time.time() - ticked)) if ticked else ""))
     for line in uplink_status():
         print(line)
-    projects = sorted(sminos.known_projects(), key=lambda p: (p.name, p.id))
+    projects = sorted(sminos.known_logs(), key=lambda p: (p.name, p.id))   # a channel's log is uploaded too
     if rl10.cut_over():
         # Each one is a line in daemon.log, with its writer, seq and reason.
         for p in projects:
@@ -3150,7 +3182,7 @@ def cmd_owed(_a):
     e = enrollment_inspected(failed)
     kept = owed_kept(failed) if e is not None else {}
     owing, names = False, {}
-    for p in sorted(sminos.known_projects(all_seats=[]), key=lambda p: (p.name, p.id)):
+    for p in sorted(sminos.known_logs(all_seats=[]), key=lambda p: (p.name, p.id)):   # a channel's uploads too
         names[p.id] = p.name
         upstream = e is not None and isinstance(p.hub, dict) and p.hub.get("org") == e["org"] \
             and not sminos.org_retired(p.id)
