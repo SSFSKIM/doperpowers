@@ -15163,29 +15163,58 @@ def _put_in_turn(row):
     return origin.get("kind") == "plugin" and origin.get("asUser") is not True
 
 
+# The bridge's wake (bridge.tsx, wakeText): its first line, and the line that names the frame line of each row it
+# points at (frameOf: a delivered text's first line), joined by a space. Sent on the inbox after a stop, it is a
+# peer's message from this name (sminos_bridge.WAKE_SENDER), in the engine's envelope.
+WAKE_LINE = "[sminos bridge]"
+WAKE_UNREAD = "Unread: "
+WAKE_PEER = "sminos bridge"
+# A frame's head at a line's start (compose_frame, compose_chat_frame): one line, a quoted alias (frame_alias)
+# holding no break.
+FRAME_HEAD_RE = re.compile(r"^\[sminos (?:message from|chat) [^\n]*\]$", re.M)
+
+
+def _wake_names(row, head):
+    """Whether a prompt row is the bridge's wake naming the frame line
+    `head` on its `Unread:` line: the prompt the bridge submits as the
+    human's (a plugin's, `asUser`), or the one it sends on the inbox
+    after a stop (a peer's, WAKE_PEER)."""
+    origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
+    if not (origin.get("kind") == "plugin" and origin.get("asUser") is True
+            or origin.get("kind") == "peer" and origin.get("name") == WAKE_PEER):
+        return False
+    lines = (_prompt_text(row) or "").split("\n")
+    if WAKE_LINE not in lines:
+        return False
+    unread = next((line for line in lines[lines.index(WAKE_LINE):] if line.startswith(WAKE_UNREAD)), None)
+    return unread is not None and " %s " % head in " %s " % unread[len(WAKE_UNREAD):]
+
+
 def reply_to(session, msg_id, rows=None):
-    """(found, the assistant text that follows the row holding the message
-    `msg_id`, up to the next prompt that starts a turn, closed: whether
-    such a prompt follows it, which delimits the reply): what `--wait`
-    prints (T2's M2), whatever another sender's message got before or after
-    it. A row put into the turn that runs (_put_in_turn) delimits nothing:
-    the turn holding the message goes on past it, and its end is the
-    waiter's to read. Nor does a prompt that names the message itself (the
-    bridge's wake for a delivery it appended with no turn running, whose
-    `Unread:` line is the message's frame line): it starts the turn that
-    answers the message. `rows`: the transcript's rows as read
-    (TranscriptTail), else read whole."""
+    """(found, the reply to the message `msg_id`, closed: whether the next
+    prompt that starts a turn ends it): what `--wait` prints (T2's M2),
+    whatever another sender's message got before or after it. The message
+    is in the first prompt row holding its frame's head at a line's start
+    (R), never its id quoted in a body. The reply is the assistant text
+    after R, or, when the bridge's wake naming R's first frame line follows
+    R (_wake_names: R went in while a turn that never read it was ending,
+    or after a stop), after that wake: what was said before it is the turn
+    that did not read R. It runs to the next prompt that starts a turn; a
+    row put into the turn that runs (_put_in_turn) ends nothing, and the
+    turn's end is the waiter's to read. `rows`: the transcript's rows as
+    read (TranscriptTail), else read whole."""
     rows = transcript_rows(session) if rows is None else rows
-    marker = "id=%s]" % msg_id
-    start = next((i for i, r in enumerate(rows) if marker in (_prompt_text(r) or "")), None)
+    framed = re.compile(r"^\[sminos message from [^\n]* id=%s\]$" % re.escape(msg_id), re.M)
+    start = next((i for i, r in enumerate(rows) if framed.search(_prompt_text(r) or "")), None)
     if start is None:
         return False, "", False
+    head = FRAME_HEAD_RE.search(_prompt_text(rows[start])).group(0)
+    start = next((i for i in range(start + 1, len(rows)) if _wake_names(rows[i], head)), start)
     results = {str(b.get("tool_use_id") or ""): b for r in rows if r.get("type") == "user"
                for b in _blocks(r, "tool_result")}
     said, closed = [], False
     for r in rows[start + 1:]:
-        text = _prompt_text(r)
-        if text is not None and not _put_in_turn(r) and marker not in text:
+        if _prompt_text(r) is not None and not _put_in_turn(r):
             closed = True
             break
         if r.get("type") == "assistant" and r.get("answeredWithoutRequest") is not True:
