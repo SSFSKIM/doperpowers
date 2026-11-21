@@ -141,13 +141,23 @@ class Fold:
         """Folds one own `channels` event of `session` (C2): it is the
         session's statement in effect when the session's `joined` is in
         effect, its writer is that `joined`'s, and its seq is above that
-        `joined`'s; any other states nothing, and leaves the statement in
-        effect as it was."""
+        `joined`'s, and it has a statement's fields (is_statement); any other
+        states nothing, and leaves the statement in effect as it was."""
         joined = self.joined.get(session)
         if joined is None or self.effect.get(session) is not joined or event.get("writer") != joined.get("writer") \
-                or not isinstance(event.get("seq"), int) or event["seq"] <= joined.get("seq", 0):
+                or not isinstance(event.get("seq"), int) or event["seq"] <= joined.get("seq", 0) \
+                or not is_statement(event):
             return
         self.stated[session] = event
+
+
+def is_statement(event):
+    """Whether an event has what a statement must (§2): a `channels` list, a
+    `thread` and an `op`, each of its type. One that lacks any is no event of
+    its kind, and states nothing (a reader takes a field of the wrong type as
+    absent)."""
+    return isinstance(event.get("channels"), list) and isinstance(event.get("thread"), str) and bool(event["thread"]) \
+        and isinstance(event.get("op"), str) and bool(event["op"])
 
 
 def stated_set(event):
@@ -842,8 +852,12 @@ def set_channels(thread_id, decide, lock_until=None):
     enters the set `began` gains the positions of its log as read just
     then (sminos.channel_positions; no caller gives one, and no lock holds
     the log still: what is imported after that read counts as gained after
-    it); a channel that leaves the set loses them, and an empty set has no
-    `began`. An answer joins `answered`, whose entries older than a
+    it; PositionsUnread, nothing written, for a log there that cannot be
+    read); a channel that leaves the set loses them, and an empty set has no
+    `began`. The last read before the write, after the positions, is the
+    Change's session's own events in its project: nothing is written (None)
+    unless they leave it a member there, so a move that lands meanwhile
+    is never committed past (§3: the session a member of the project). An answer joins `answered`, whose entries older than a
     request's lifetime are dropped. A Change whose session is not the
     record's current one, whose `channels` holds more than CHANNEL_LIMIT
     ids, an id twice or an id that is no channel's, or whose project is a
@@ -870,6 +884,11 @@ def set_channels(thread_id, decide, lock_until=None):
         for c in after:
             if c not in before:
                 began[c] = sminos.channel_positions(c)
+        # Where the statement goes, read last before the write, after the positions: a move that lands while they
+        # are read is seen here, and nothing is written. One that lands after this read is the accepted case: the
+        # statement goes to the project left, after the writer's `retired`, and states nothing there.
+        if not member(sminos._own_events(change["project"], change["session"])):
+            return False
         raw["channels"] = after
         if began:
             raw["began"] = began
@@ -907,8 +926,8 @@ def _channels_entry(thread_id, view, change):
         raise ValueError("a statement is written under the record's current session, not %r" % (session,))
     if not isinstance(getattr(project, "id", None), str) or sminos.is_channel_id(project.id):
         raise ValueError("a statement goes to the thread's own project, not %r" % (project,))
-    if not isinstance(chans, list) or len(chans) > CHANNEL_LIMIT or len(set(chans)) != len(chans) \
-            or not all(sminos.is_channel_id(c) for c in chans):
+    if not isinstance(chans, list) or len(chans) > CHANNEL_LIMIT or not all(sminos.is_channel_id(c) for c in chans) \
+            or len(set(chans)) != len(chans):   # the ids first: set() of an unhashable element is a TypeError
         raise ValueError("a set is at most %d channel ids, each once: %r" % (CHANNEL_LIMIT, chans))
     statement = {"kind": "channels", "session": session, "thread": thread_id, "channels": list(chans)}
     answer = change.get("answer")

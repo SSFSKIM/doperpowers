@@ -5026,7 +5026,8 @@ def positions_to(project, session):
 def channel_positions(channel_id):
     """{writer: its latest seq} in the channel's log as this machine holds it
     now (CH1's §4): where a membership that begins now begins. {} for a log
-    that holds nothing, and for a channel not registered here. Read with no
+    that holds nothing, and for a channel not registered here; PositionsUnread
+    for a log or a writer file that is there and cannot be read. Read with no
     lock, each writer file's last line (_last_seq), its writer its first
     line's: by set_channels for a channel entering a set, by a return for
     every channel of its set, each under the record's store lock."""
@@ -5036,8 +5037,10 @@ def channel_positions(channel_id):
     where = os.path.join(project.home, "log")   # read as it is: nothing is made for a log that holds nothing
     try:
         names = sorted(n for n in os.listdir(where) if n.endswith(".jsonl"))
-    except OSError:
+    except FileNotFoundError:
         return {}
+    except OSError as e:
+        raise PositionsUnread("the log of channel %s could not be listed: %s" % (channel_id[:8], e)) from e
     out = {}
     for name in names:
         try:
@@ -5046,9 +5049,17 @@ def channel_positions(channel_id):
                                           if line.strip()) if e), None)
                 if first is not None:
                     out[first["writer"]] = max(out.get(first["writer"], 0), _last_seq(f))
-        except OSError:
-            continue
+        except OSError as e:
+            # A writer file that is there and cannot be read is no empty history: a boundary taken without it
+            # would stand for good. The transition is not made.
+            raise PositionsUnread("%s of channel %s could not be read: %s" % (name, channel_id[:8], e)) from e
     return out
+
+
+class PositionsUnread(Exception):
+    """channel_positions met a log or a writer file that is there and could
+    not be read: where a membership begins is not known, and nothing is
+    written (sminos_threads.set_channels lets it through)."""
 
 
 def settle_ended(project, session, lock_until=None, until=None):
@@ -10311,8 +10322,10 @@ def _writer_events(project, host, session, store="log", listed=None):
         # Its streams are those this machine kept the audience of as it wrote their first event (keep_stream): a
         # stat while the project's streams.json holds, never a listing of the log on every read.
         base = "%s/%s" % (host, session)
-        paths += [writer_path(project, w) for w in sorted(audience_module().streams_of(project))
-                  if writer_base(w) == base]
+        # Literal paths, as the plain writer's: a read creates nothing (writer_path reaches project_path, which may
+        # make the home or write its registration), so a reader under a store lock takes no other lock (CH1's §3).
+        paths += [os.path.join(where, w.replace("/", ".") + ".jsonl")
+                  for w in sorted(audience_module().streams_of(project)) if writer_base(w) == base]
     if listed is not None:
         paths = [path for path in paths if os.path.dirname(path) != where or os.path.basename(path) in listed[0]]
     files = []

@@ -19,10 +19,16 @@ the milestone's "Proves"; Interfaces §2 to §5).
   statement of the accepted rule and no guarantee of an order, an event
   imported between the positions' read and the record's write ending past
   them.
-- The journal: a cut after the record's write finished by this code's next
-  reconciliation with one statement, an answer's `answered` kept and pruned;
-  a cut followed by a `join` to another project, the statement landing in
-  the project left.
+- The journal: a cut after the record's write, and one after the
+  statement's append before the entry is cleared, each finished by this
+  code's next reconciliation with one statement; an answer's `answered`
+  kept and pruned; a cut followed by a `join` to another project, the
+  statement landing in the project left; a finish that cannot be had after
+  the commit, the change still applied.
+- What the operation reads under the lock creates nothing and takes no lock
+  (a cold audience stream); a move landing while the positions are read is
+  never committed past (the membership read last); a channel log there
+  that cannot be read writes nothing.
 - The wake: a thread's own change that times out on the wake lock fails and
   a quiet tick after it changes nothing; a launch paused before it records
   its job and a `resume` paused between its check and its stop, each with
@@ -41,6 +47,7 @@ Run: python3 -B sminos/tests/test_channels_store.py
 """
 import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
+import fcntl
 import json
 import os
 import subprocess
@@ -54,7 +61,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_threads import Machine, sminos, threads  # noqa: E402
+from test_threads import Killed, Machine, sminos, threads  # noqa: E402
 from test_wake import wait_for  # noqa: E402
 from test_wake_delivery import Deliveries  # noqa: E402
 import sminos_channels as channels  # noqa: E402
@@ -126,6 +133,8 @@ class Store(Machine):
 
 
 def ev(writer, seq, kind, session, ms, **fields):
+    if kind == "channels":   # a statement's other required fields (§2), unless a case says otherwise
+        fields = {"thread": "t-remote", "op": "e%d" % seq, **fields}
     return {"ts": "2026-11-21T10:00:%02d.%03dZ" % (ms // 1000, ms % 1000), "writer": writer, "seq": seq,
             "kind": kind, "session": session, **fields}
 
@@ -173,6 +182,24 @@ class Reader(unittest.TestCase):
         for why, (events, want) in cases.items():
             with self.subTest(why):
                 self.assertEqual(self.stated(events), want)
+
+    def test_an_event_missing_a_statements_fields_is_none_and_leaves_the_one_in_effect(self):
+        W = self.W
+        valid = [joined(W, 1, REMOTE, 1), ev(W, 2, "channels", REMOTE, 2, channels=[DESK])]
+        malformed = {"no channels": {"channels": None}, "channels no list": {"channels": DESK},
+                     "no thread": {"thread": None}, "an empty thread": {"thread": ""}, "no op": {"op": None},
+                     "an op of another type": {"op": 7}}
+        for why, wrong in malformed.items():
+            with self.subTest(why):
+                bad = ev(W, 3, "channels", REMOTE, 3, channels=[LOBBY])
+                for k, v in wrong.items():
+                    if v is None:
+                        bad.pop(k)
+                    else:
+                        bad[k] = v
+                self.assertEqual(self.stated(valid + [bad]), (DESK,), "no statement: the valid one stays")
+        self.assertEqual(self.stated(valid + [ev(W, 3, "channels", REMOTE, 3, channels=[])]), (),
+                         "a valid empty list is a statement of no channel")
 
     def test_a_129th_id_is_not_read(self):
         ids = channel_ids(129)
@@ -336,6 +363,7 @@ class OwnChange(Store):
         bad = {"a session that is not the record's": {"session": str(uuidlib.uuid4())},
                "129 ids": {"channels": channel_ids(129)},
                "an id twice": {"channels": [DESK, DESK]},
+               "an element no id at all, and unhashable": {"channels": [DESK, [LOBBY]]},
                "an id that is no channel's": {"channels": ["7d2b9c40-1f3e-4a6b-8c5d-9e0f1a2b3c4d"]},
                "a channel as the project": {"project": self.chan(DESK)},
                "an answer refused for no reason": {"answer": {"channel": DESK, "id": "r1", "ts": sminos.now(ms=True),
@@ -347,6 +375,110 @@ class OwnChange(Store):
                     threads.set_channels(tid, lambda rec: change)
                 self.assertEqual((threads.get(tid)["channels"], threads.get(tid).get("pending")), ([], None))
         self.assertIsNone(threads.set_channels(tid, lambda rec: None), "decide's None writes nothing")
+
+
+# ------------------------------------------------------------ what the operation reads, and when it stops
+
+
+def forbidden(*a, **k):
+    raise AssertionError("a read under the record's lock wrote or locked something")
+
+
+class Reads(Store):
+    def test_the_read_under_the_lock_of_a_cold_audience_stream_creates_nothing_and_takes_no_lock(self):
+        tid, sid, _ = self.human()
+        audience = ["member-1", "member-2"]
+        stream = sminos.stream_writer(sminos.writer_id(sid), audience)
+        sminos.keep_stream(self.p, stream, audience)
+        with open(os.path.join(self.p.home, "log", stream.replace("/", ".") + ".jsonl"), "w") as f:
+            f.write(json.dumps({"ts": sminos.now(ms=True), "writer": stream, "seq": 1, "kind": "titled",
+                                "session": sid, "title": "under its stream"}) + "\n")
+        sminos.forget_caches()   # cold: no home of this process's, no view, no stream read yet
+        real, read = sminos._own_events, []
+
+        def own(project, session, *a, **k):
+            with mock.patch.object(sminos, "project_path", forbidden), mock.patch.object(os, "makedirs", forbidden), \
+                    mock.patch.object(os, "mkdir", forbidden), mock.patch.object(fcntl, "flock", forbidden), \
+                    mock.patch.object(sminos, "write_json", forbidden):
+                got = real(project, session, *a, **k)
+            read.append({e["writer"] for e in got})
+            return got
+        with mock.patch.object(sminos, "_own_events", own):
+            self.assertEqual(channels.change(tid, DESK, "add", sid).state, "applied")
+        self.assertIn(stream, set().union(*read), "the stream's file was read, as it is")
+
+    def test_a_move_that_lands_while_the_positions_are_read_is_never_committed_past(self):
+        other = self.project_of(self.repo("other"))
+        for landed in ("between", "moved"):
+            with self.subTest(landed):
+                tid, sid, _ = self.human()
+                real, moved = sminos.channel_positions, []
+
+                def positions(cid):
+                    got = real(cid)
+                    if not moved:   # the move's `retired`, appended by another process during this read
+                        moved.append(True)
+                        dest = other.id if landed == "moved" else ""
+                        self.write_own(sid, [{"kind": "retired", "reason": "moved", "project": dest, "thread": tid}])
+                        if landed == "moved":
+                            self.write_own(sid, [self.old_joined(sid, alias="mover", thread=tid)], p=other)
+                    return got
+                with mock.patch.object(sminos, "channel_positions", positions):
+                    got = channels.change(tid, DESK, "add", sid)
+                if landed == "between":
+                    self.assertEqual(got, channels.Outcome("failed", "between"))
+                    t = threads.get(tid)
+                    self.assertEqual((t["channels"], t.get("pending"), t.get("began")), ([], None, None),
+                                     "nothing written")
+                    self.assertEqual(self.statements(sid), [])
+                else:
+                    self.assertEqual(got, channels.Outcome("applied", ""), "looked for again, and found there")
+                    self.assertEqual((self.statements(sid), len(self.statements(sid, other))), ([], 1),
+                                     "stated in the project it moved to, never in the one it left")
+
+    def test_a_channel_log_that_cannot_be_read_writes_nothing(self):
+        tid, sid, _ = self.human()
+        self.append(DESK, "beta/human", op="add", machine="beta", thread="x")
+        self.assertEqual(sminos.channel_positions("%08x-0000-8000-8000-000000000000" % 9), {}, "not registered: {}")
+        self.assertEqual(sminos.channel_positions(LOBBY), {}, "a log that holds nothing yet: {}")
+
+        def unreadable(f):
+            raise OSError(5, "Input/output error")
+        said = []
+        with mock.patch.object(sminos, "_last_seq", unreadable), mock.patch.object(sminos, "warn", said.append):
+            self.assertEqual(channels.change(tid, DESK, "add", sid), channels.Outcome("failed", "unreadable"))
+        log = os.path.join(self.chan(ROOM).home, "log")
+        if os.path.isdir(log):
+            os.rmdir(log)
+        with open(log, "w") as f:
+            f.write("not a directory")
+        with mock.patch.object(sminos, "warn", said.append):
+            self.assertEqual(channels.change(tid, ROOM, "add", sid), channels.Outcome("failed", "unreadable"))
+        self.assertEqual(len(said), 2, "each said once")
+        t = threads.get(tid)
+        self.assertEqual((t["channels"], t.get("pending"), t.get("began")), ([], None, None), "no partial boundary")
+        self.assertEqual(self.statements(sid), [])
+        self.assertEqual(channels.change(tid, DESK, "add", sid).state, "applied", "once it reads, it is made")
+        self.assertEqual(channels.began_of(tid, DESK), {"beta/human": 1})
+
+    def test_a_finish_that_cannot_be_had_after_the_commit_keeps_it_applied(self):
+        tid, sid, _ = self.human()
+        real, nudged = sminos.finish_thread, []
+
+        def finish(thread_id, *a, **k):
+            if (threads.get(thread_id) or {}).get("pending"):
+                raise sminos.LockBusy("the finisher lock is busy")
+            return real(thread_id, *a, **k)
+        said = []
+        with mock.patch.object(sminos, "finish_thread", finish), mock.patch.object(sminos, "warn", said.append), \
+                mock.patch.object(sminos, "nudge_daemon", lambda: nudged.append(True)):
+            got = channels.change(tid, DESK, "add", sid)
+        self.assertIn("left to the next reconciliation", said[0])
+        self.assertEqual((got, nudged), (channels.Outcome("applied", ""), [True]), "committed, said so, nudged")
+        self.assertEqual((threads.get(tid)["channels"], threads.get(tid)["pending"]["op"], self.statements(sid)),
+                         ([DESK], "channels", []), "the entry left for the replay")
+        self.reconcile()
+        self.assertEqual((len(self.statements(sid)), threads.get(tid).get("pending")), (1, None))
 
 
 # ------------------------------------------------------------ where a membership began (§4)
@@ -429,6 +561,24 @@ class Cut(Store):
         self.assertIsNone(threads.get(tid).get("pending"))
         self.reconcile()
         self.assertEqual(len(self.statements(sid)), 1, "and not twice")
+        self.assertEqual(self.member(sid).channels, (DESK,))
+
+    def test_a_cut_after_the_statements_append_is_finished_by_clearing_the_entry_with_no_second(self):
+        tid, sid, _ = self.human()
+        real = threads._change
+
+        def change(thread_id, mutate, *a, **k):
+            if thread_id == tid and mutate.__name__ == "clear":
+                raise Killed()   # the process stops after the append, before the write that clears the entry
+            return real(thread_id, mutate, *a, **k)
+        with mock.patch.object(threads, "_change", change), self.assertRaises(Killed):
+            channels.change(tid, DESK, "add", sid)
+        sminos.forget_caches()
+        entry = threads.get(tid)["pending"]
+        self.assertEqual([s["op"] for s in self.statements(sid)], [entry["id"]], "appended, its entry still open")
+        self.reconcile()
+        self.assertIsNone(threads.get(tid).get("pending"), "the replay clears it")
+        self.assertEqual([s["op"] for s in self.statements(sid)], [entry["id"]], "and appends nothing again")
         self.assertEqual(self.member(sid).channels, (DESK,))
 
     def test_an_answer_is_kept_once_and_pruned_once_its_request_could_no_longer_be_pending(self):
@@ -561,6 +711,10 @@ class WakeInFlight(Deliveries):
 
     def attempt(self, tid, sid):
         """Both attempts, made where the wake holds the lock: what each answered, and whether the hold is live after."""
+        asked = []
+        with self.assertRaises(sminos.WakeBusy, msg="the store's operation refuses its caller's hold itself"):
+            threads.set_channels(tid, lambda rec: asked.append(rec))
+        self.assertEqual(asked, [], "nothing decided under it")
         here = channels.change(tid, DESK, "add", sid)
         live = sminos.wake_held(tid) is not None
         there = change_elsewhere(tid, DESK, sid)

@@ -184,8 +184,10 @@ def change(thread_id, channel, op, session, lock_until=None):
     recorded: `wake` (a wake of the thread holds its wake lock, or this
     process does), `entry` (its record holds an operation not finished
     yet), `vacant` (it holds no session), `between` (its session is a member
-    of no project now) or `moved` (`session` is not the thread's current one
-    any more, or the thread ended). Never `pending`: no request exists for a
+    of no project now), `moved` (`session` is not the thread's current one
+    any more, or the thread ended) or `unreadable` (the channel's log is
+    there and could not be read, so where the membership begins is not
+    known). Never `pending`: no request exists for a
     later pass to carry out, so the caller says nothing was recorded and to
     run it again.
 
@@ -220,12 +222,13 @@ def change(thread_id, channel, op, session, lock_until=None):
             if not _member_of(project, session):
                 said.append("between")
                 return None
+            said.append("between")   # set_channels' own last read, after the positions, may find it moved since
             chans = threads.held_set(rec)
             if (cid in chans) == (op == "add"):
-                said.append("unchanged")
+                said[-1] = "unchanged"
                 return None
             if op == "add" and len(chans) >= threads.CHANNEL_LIMIT:
-                said.append("limit")
+                said[-1] = "limit"
                 return None
             after = chans + [cid] if op == "add" else [c for c in chans if c != cid]
             return {"project": project, "session": session, "channels": after, "answer": None}
@@ -233,8 +236,17 @@ def change(thread_id, channel, op, session, lock_until=None):
             entry = threads.set_channels(thread_id, decide, lock_until=lock_until)
         except sminos.WakeBusy:
             return Outcome("failed", "wake")
+        except sminos.PositionsUnread as e:
+            sminos.warn(str(e))
+            return Outcome("failed", "unreadable")
         if entry is not None:
-            sminos.finish_thread(thread_id, project=project, lock_until=lock_until)
+            # Committed: the record holds the change whatever comes of its statement now. A finish that cannot be
+            # had (its finisher lock busy past the deadline, a write that fails) leaves the entry to the replay.
+            try:
+                sminos.finish_thread(thread_id, project=project, lock_until=lock_until)
+            except (sminos.LockBusy, sminos.LogWriteFailed, OSError) as e:
+                sminos.warn("the statement of %s's channels is left to the next reconciliation: %s"
+                            % (thread_id[:8], e or "its lock is busy"))
             sminos.nudge_daemon()
             return Outcome("applied")
         if not said:   # decide was not asked: an entry opened since, or the record ended
