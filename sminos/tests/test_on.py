@@ -1035,6 +1035,26 @@ class VmSide(On):
         self.assertIn("sminos list here shows it", err)
         self.assertNotIn("was not", err)
 
+    def test_a_failure_after_the_launch_is_no_refusal_and_names_the_job(self):
+        """After the launcher returned a job, nothing is a refusal: no outcome line, so the Mac takes the
+        unknown-outcome path (row 29), and the job, which may run without a seat, named on standard error."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sminos, "run_claude_bg", return_value=("a1b2c3d4", "banner")), \
+                mock.patch.object(sminos, "meta_set", side_effect=OSError(28, "No space left on device")), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            request = json.dumps({"v": 1, "nonce": NONCE, "org": "org-1", "origin": None, "by": None})
+            try:
+                with self.assertRaises(OSError):
+                    sminos.main(["spawn", "w", "a task", "--asked-from", request, "--cwd", self.work])
+            finally:
+                sminos.forget_caches()
+        lines = out.getvalue().splitlines()
+        self.assertEqual(on.judge(lines, NONCE, "w", 1), ("unknown", "no outcome line came back"), lines)
+        self.assertIn("sminos: spawn: session a1b2c3d4 was launched here, and then this failed: [Errno 28] No space "
+                      "left on device; no outcome is reported for it, so the machine that asked says it is not known: "
+                      "sminos list here shows whether it runs, and claude stop a1b2c3d4 stops it", err.getvalue())
+
     def test_an_empty_task_on_standard_input_is_refused_with_a_line(self):
         code, lines, err, launched = self.asked(task="-", stdin=b"")
         self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 2, "why": "other"}))

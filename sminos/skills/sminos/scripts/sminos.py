@@ -13933,7 +13933,8 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     plan §8): {"by": the spawner it names, or None}. The preamble and the
     `joined` name that spawner (an address only: nothing of it is a grant),
     the record is a terminal spawn's (spawn_provenance), and no banner is
-    printed, since the asking machine prints its own.
+    printed, since the asking machine prints its own. Once the launcher has
+    returned a job, `asked["launched"]` is its short id.
 
     The new session's record (spawn_provenance) is fixed before it exists:
     left pending under a launch id its settings carry, claimed by its own
@@ -13977,6 +13978,8 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
             die(banner, EXIT_USAGE)
         sys.stderr.write("sminos: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
         sys.exit(1)
+    if asked is not None:
+        asked["launched"] = short   # from here a failure is no refusal (sminos_on.Answering)
     launch = {
         "current": "", "short": short, "name": alias, "alias": alias, "group": group,
         "role": role or "", "brief": brief or "",
@@ -14265,7 +14268,7 @@ def cmd_spawn(a):
         return
     on = sibling_module("sminos_on")
     req = on.read_request(a)
-    with on.Answering(req["nonce"]) as answer:
+    with on.Answering(req["nonce"], req) as answer:
         if a.task == "":
             die("spawn -: no text on standard input")
         on.admit(req, answer)

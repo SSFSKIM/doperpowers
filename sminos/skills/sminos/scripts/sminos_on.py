@@ -157,10 +157,13 @@ class Answering:
     """The VM side's last line on standard output, for every way it ends:
     `ok` prints the success; leaving otherwise (an exit, an exception)
     prints a refusal with the exit it ends with and the `why` set last
-    (`refuse`), "other" unless set."""
+    (`refuse`), "other" unless set. An exception once the launcher returned
+    a job (spawn_fresh marks the request `launched`) prints none: the job
+    may run without a seat, so nothing is a refusal, and the asking machine
+    says the outcome is not known; the job is named here."""
 
-    def __init__(self, nonce):
-        self.nonce, self.why, self.done = nonce, "other", False
+    def __init__(self, nonce, request=None):
+        self.nonce, self.request, self.why, self.done = nonce, request or {}, "other", False
 
     def __enter__(self):
         return self
@@ -191,6 +194,11 @@ class Answering:
             return False
         if isinstance(error, SystemExit):
             code = error.code if type(error.code) is int else 0 if error.code is None else 1
+        elif (job := self.request.get("launched")):
+            sys.stderr.write("sminos: spawn: session %s was launched here, and then this failed: %s; no outcome is "
+                             "reported for it, so the machine that asked says it is not known: sminos list here shows "
+                             "whether it runs, and claude stop %s stops it\n" % (job, error, job))
+            return False
         else:
             code = 1
         sys.stdout.flush()
