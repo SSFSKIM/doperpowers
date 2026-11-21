@@ -1608,7 +1608,8 @@ In `S/sminos_rl10.py`: `CAPABILITIES = ("audience", "record", "locations",
 
 In `S/sminos_uplink.py`:
 
-    Link.channels: bool                      # the welcome listed `channels` (welcomed_rl10)
+    Link.serves_channels: bool               # the welcome listed `channels` (welcomed_rl10); M6, since M1's
+                                             # `Link.channels` is the set of open channels' logs
     def Link.unfollowed(self, pid) -> bool   # the hello carries no `follow`: holds(pid) for a project,
                                              # sminos_channels.opens_unfollowed(pid) for a channel
     def Link.holds(self, pid) -> bool        # as today for a project; False for a channel
@@ -1623,13 +1624,13 @@ In `S/sminos_uplink.py`:
 | a channel no record here names | `follow` | none | the same |
 
 A thread's `member` frame names its own project as `project`, as today,
-and never a channel; while `Link.channels` it carries the thread's
+and never a channel; while `Link.serves_channels` it carries the thread's
 `channels`. A `snapshots?` for a channel is answered with one page, empty
 and done; a `subscribe` for one with the `end` a project gives for a
 session it does not hold.
 
 `fresh_frame` passes `channels_of(m.session)`'s entries that pass
-`is_channel_id`, the first 128, for a lane A member while `Link.channels`,
+`is_channel_id`, the first 128, for a lane A member while `Link.serves_channels`,
 and `()` otherwise; its key (`made_of`) takes that tuple.
 
 ### §8. The CLI
@@ -2457,6 +2458,23 @@ while the milestones are built, one observation and its evidence each.
   preflight requires the `joined` in effect to be stamped with the record's
   thread, still reading files alone. A pending target's fallback is the
   latest visible end, by its `retired` in effect.
+- 2026-11-21 — **M6 as built** (`442c9784..563c4531`). The welcome's word
+  is `Link.serves_channels` (§7 renamed: M1's `Link.channels` is the set of
+  open channels' logs). The frame's set is `sminos_channels.frame_channels(
+  session, holders)`, equal to `channels_of` filtered to channels' ids
+  (pinned) but reading `set_holders()` once a publish, so a thread in no
+  channel costs one lookup where MAWS lists `channels`; `made_of` takes the
+  tuple, which is `()` without the word, so a flip of the word is covered;
+  the lane A rule sits in `member_frame`. The replay plays all 112 lines of
+  the fixture `ok`, with no amendment; the harness gains `AFTER = {(13, 4):
+  (13, 2)}` (step 13.4 must match a frame sent after 13.2's, so the removal
+  is proven), which amends no line. Case 13 is staged in a subprocess
+  (`register`, then `change`), as a verb runs, so it does not race the
+  uplink's thread. The stand-in's `known` takes the first 128 entries and
+  then filters by the predicate (X5's reading); a suite's directory
+  (`rl10_known_directory`) names a known log by the hello that opened it.
+  The three-machine "return" is T1's end and return (`retire`, then the
+  session running again); a removal and a re-add is its own case.
 
 ## Outcomes & Retrospective
 
