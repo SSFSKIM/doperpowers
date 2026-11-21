@@ -1568,7 +1568,9 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
         for h in holds:
             h.release()
     if written and unread:
-        with contextlib.suppress(OSError):   # said once, for the return as committed
+        # A diagnostic, best-effort: one line in the ordinary run, said after the write commits; a cut between the
+        # two leaves none (what it says is only kept here, in memory), and the return stands as written either way.
+        with contextlib.suppress(OSError):
             sminos.daemon_log("return: thread %s keeps where its membership of %s began before its end: %s"
                               % (thread_id[:8], ", ".join(c[:8] for c, _ in unread), "; ".join(w for _, w in unread)))
     return entry if written else None
@@ -1582,7 +1584,8 @@ def _began_anew(view, raw):
     cannot be read keeps the position from before the end, as a return an
     older copy begins leaves them all (the holder's ruling, "A return over
     an unreadable channel log"): the return is not held up for it. Those
-    channels, each with why, for begin to say once its write is made."""
+    channels, each with why, for begin to say once its write is made (a
+    best-effort line: a cut after the write and before it leaves none)."""
     chans = held_set(view)
     if not chans:
         return []

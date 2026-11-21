@@ -326,6 +326,33 @@ class Kept(Life, T1.Sessions):
         self.assertEqual([s["channels"] for s in self.statements(sid)], [[DESK]])
         self.assert_read(tid, sid, [DESK, LOBBY], p=other)
 
+    def test_a_join_back_inside_that_window_is_restated_where_the_session_is(self):
+        """The project moved to joins it before the project left retires it, and the session joins back to the
+        first inside that window: `join` retires it from the other and writes no new joined here, where its
+        membership is still in effect. A joined the other's retirement ended competes with nothing: the next
+        pass here states the record's set, and the one after that is steady."""
+        other = self.project_of(self.repo("other"))
+        sid, _, tid = self.member()
+        self.add(tid, sid, DESK)
+        self.raw(tid, lambda r: (r.update(channels=[DESK, LOBBY]), r["began"].update({LOBBY: {}})))
+        sminos.write_override(sid, other.id)
+        sminos.forget_caches()
+        with mock.patch.object(channels, "restate", return_value=False):
+            self.reconcile(other)   # the destination first; its own statement aside
+        self.assertTrue(self.is_member(sid, other) and self.is_member(sid), "a member of both, for now")
+        joins = len(self.joins(sid))
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": sid}):
+            code, out = self.cli("join", self.p.name)
+        self.assertEqual(code, 0, out)
+        self.assertFalse(self.is_member(sid, other), "retired from the other")
+        self.assertEqual(threads.in_effect(self.own(sid, other))["project"], self.p.id, "moved back here")
+        self.assertEqual(len(self.joins(sid)), joins, "no new joined here: its membership stayed in effect")
+        self.assertEqual(sminos.last_project(sid).id, self.p.id)
+        self.reconcile()
+        self.assertEqual(self.statements(sid)[-1]["channels"], [DESK, LOBBY], "stated where it is")
+        self.assert_read(tid, sid, [DESK, LOBBY])
+        self.assert_steady(tid, sid)
+
     def test_a_reconciliation_overtaken_by_a_rename_of_the_machine_states_nothing(self):
         """The writer's identity is read as it is at the write, not from the invocation's cache: a machine
         renamed between the read and the write writes under no writer the thread no longer has."""
@@ -410,6 +437,22 @@ class Idle(Life, T1.Sessions):
                 sminos.view_of(self.p)
         self.register()   # a channel registered: the lookup is made again
         self.assertEqual(sminos.channels_here(), True)
+
+    def test_a_listing_that_fails_for_a_moment_is_not_kept(self):
+        """The registrations' directory stats but cannot be listed for a moment: the gate does not keep a "no
+        channel" it never read, and once the directory lists again it answers what is there."""
+        self.register()
+        root, real = sminos.projects_root(), os.listdir
+
+        def listdir(path="."):
+            if path == root:
+                raise OSError(5, "Input/output error")
+            return real(path)
+        with mock.patch.object(os, "listdir", listdir):
+            self.assertTrue(sminos.channels_here(), "unknown is no answer of none: the holders are looked up")
+        self.assertTrue(sminos.channels_here(), "the same generation, the directory listing again")
+        sminos.forget_caches()
+        self.assertTrue(sminos.channels_here(), "and the next")
 
 
 class KeptOnAStream(Life, T1.Hub):

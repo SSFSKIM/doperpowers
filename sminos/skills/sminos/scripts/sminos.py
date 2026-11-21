@@ -5260,22 +5260,26 @@ def channels_here():
     ruling on the idle cost). Asked again once per cache generation, by one
     stat of the directory, listed again only once that moved; a listing is
     not kept while the directory may still move (RACY_NS, as the thread
-    store's index)."""
+    store's index), and one that failed is not kept at all: a directory
+    that stats and cannot be listed answers yes, so the holders are looked
+    up, until it lists again."""
     gen = _GENERATION[0]
     if _CHANNELS_HERE[0] == gen:
         return _CHANNELS_HERE[2]
     before = time.time_ns()
     try:
         st = os.stat(projects_root())
-    except OSError:
-        _CHANNELS_HERE[:] = [gen, None, False]
+    except FileNotFoundError:
+        _CHANNELS_HERE[:] = [gen, None, False]   # no registration at all: none, for this generation
         return False
+    except OSError:
+        return True   # unknown is no answer of none: the holders are looked up, and nothing is kept
     key = (st.st_ino, st.st_mtime_ns)
     if _CHANNELS_HERE[1] != key:
         try:
             names = os.listdir(projects_root())
         except OSError:
-            names = []
+            return True   # a listing that failed for a moment is kept as nothing, under no key
         answer = any(is_channel_id(n) for n in names)
         _CHANNELS_HERE[:] = [gen, key if before - st.st_mtime_ns >= threads_module().RACY_NS else None, answer]
     else:
@@ -5359,11 +5363,12 @@ def restated_holds(project, session, writer, own):
     `writer`), read-only and from files as they are: the session's `joined`
     in effect in the project (`own`, its own events there) is under
     `writer`; `writer` is the writer its own events go under now, by this
-    machine's name read afresh and its audience (own_audience); and that
-    `joined` is the session's newest on this machine, so a project another
-    reconciliation has joined it to since (a move whose retirement here is
-    not written yet: a dual membership of one tick) is where it is, and
-    nothing is stated here."""
+    machine's name read afresh and its audience (own_audience); and the
+    project is where the session is now (_current_here: membership in
+    effect and moves' destinations, never a past `joined`), so a project
+    another reconciliation has joined it to since (a move whose retirement
+    here is not written yet: a dual membership of one tick) is where it is,
+    and nothing is stated here."""
     joined = threads_module().in_effect(own)
     if joined is None or joined.get("kind") != "joined" or joined.get("writer") != writer:
         return False
@@ -5373,24 +5378,35 @@ def restated_holds(project, session, writer, own):
         return False
     if stream_writer("%s/%s" % (machine_name_now(), session), aud) != writer:
         return False
-    return not _joined_since(session, project, str(joined.get("ts") or ""))
+    return _current_here(session, project, joined)
 
 
-def _joined_since(session, project, ts):
-    """Whether another project's log here holds an own `joined` of the
-    session stamped after `ts`, read from its writer files as they are (no
-    lock, nothing made: registrations read as files, the logs by literal
-    paths). A scan of every registration, made only by C5's last guard."""
+def _current_here(session, project, joined):
+    """Whether `project` is where the session is now, by its membership in
+    effect in every log here and by where its moves went, never by a past
+    `joined` a later retirement ended (last_project's rule, read fresh): of
+    each project's membership event in effect, its `joined` in effect here
+    (`joined`) among them, the newest decides, and a `retired` `moved`
+    names its destination. So a project that joined it before its
+    retirement here (a dual membership of one tick) is where it is, and one
+    that joined it and was then left again for this one (a join back inside
+    that window, which writes no new `joined` here) is not. Read from the
+    files as they are (no lock, nothing made: registrations read as files,
+    the logs by literal paths); a scan of every registration, made only by
+    C5's last guard."""
+    best, at = (project.id, joined), str(joined.get("ts") or "")
     for path in registration_paths():
         pid = os.path.basename(os.path.dirname(path))
         if pid == project.id or is_channel_id(pid):
             continue
         p = _registered_as(pid, registration(pid))
-        if p is None:
-            continue
-        if any(e["kind"] == "joined" and str(e.get("ts") or "") > ts for e in _own_events(p, session)):
-            return True
-    return False
+        last = threads_module().in_effect(_own_events(p, session)) if p is not None else None
+        if last is not None and str(last.get("ts") or "") > at:
+            best, at = (pid, last), str(last.get("ts") or "")
+    pid, last = best
+    if last["kind"] == "retired" and last.get("reason") == "moved":
+        pid = str(last.get("project") or "")
+    return pid == project.id
 
 
 def _reconcile_channel(project, events, by_session):
