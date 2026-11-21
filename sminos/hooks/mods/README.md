@@ -318,8 +318,9 @@ rows read from the transcript, and the export to the host).
   above. Seated by the organization in `prepend`, it is outside every
   plugin a person installs, and a person's devcloud does not hear its
   marker read: no guard of a person's turns it off, and a guard the
-  organization seats ahead of it is judged as above, on the dispatches
-  that run a person's hooks (not one an organization's mod raised). Seated by the
+  organization seats ahead of it is judged as above, cua's only on the
+  dispatches that run a person's hooks (not one an organization's mod
+  raised), since a cua the managed settings enable may load in `user`. Seated by the
   organization anywhere else, it is inside every plugin a person installs
   and cannot read a person's devcloud, so it turns off at its first check
   unless both guards are beneath it. Either way its off line names the

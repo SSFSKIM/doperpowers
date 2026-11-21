@@ -78,7 +78,7 @@ export function isCuaEnabled(settings: unknown): boolean {
  *   so no guard of a person's can be outside it, read or not. A guard the
  *   organization seats can be (listed ahead of sminos): its devcloud hears
  *   the marker read, and the managed settings enable its cua. A dispatch an
- *   organization's mod raised runs none of a person's hooks, so a link
+ *   organization's mod raised runs none of a person's hooks, so cua's link
  *   missing from its trace proves nothing there.
  * - `inner`: the organization's in any other tier. It is inside every plugin
  *   a person installs and cannot hear a person's devcloud.
@@ -137,7 +137,10 @@ export type Verdict = 'guarded' | 'unguarded' | 'off'
  *   `/secret` appending its note);
  * - for an `outer` seat, a person's hooks do not run on a dispatch an
  *   organization's mod raised (`prepend` or `append`), and a cua the
- *   managed settings enable may load in `user`.
+ *   managed settings enable may load in `user`. A devcloud whose marker
+ *   such a bridge reads is the organization's, whose hooks run there.
+ *   Accepted: such a dispatch, while a cua seated ahead of the bridge is
+ *   new to it, posts before the next one the engine raised turns it off.
  */
 export async function verdictOf(
   trace: readonly { plugin: string }[],
@@ -163,5 +166,5 @@ export async function verdictOf(
   if (!beneath.has('engine') || raisedBy.plugin === guard) {
     return undefined
   }
-  return at === 'outer' && (raisedBy.tier === 'prepend' || raisedBy.tier === 'append') ? undefined : 'off'
+  return at === 'outer' && guard === 'cua' && (raisedBy.tier === 'prepend' || raisedBy.tier === 'append') ? undefined : 'off'
 }

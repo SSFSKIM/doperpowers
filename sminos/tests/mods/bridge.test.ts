@@ -6180,6 +6180,15 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     expectOn(h)
   })
 
+  test("seated in prepend by the organization, a dispatch an organization's mod raised still decides devcloud's place: a devcloud the bridge hears is the organization's, whose hooks run on it", async () => {
+    const h = harness({ tier: 'prepend', policy: MANAGED, marker: LIVE_MARKER, verdictPending: true })
+    await h.ready()
+    await callBeneath(h, ['doperpowers'], { origin: 'doperpowers', originTier: 'prepend' })
+    await h.settle()
+    expect(h.ofType('tool').filter((e) => e.phase === 'result')).toEqual([])
+    expect(h.toasts.filter((t) => t === MANAGED_OFF_LINE)).toHaveLength(1)
+  })
+
   test("the managed off line names the managed settings' prependPlugins, not the user settings", () => {
     expect(MANAGED_OFF_LINE).toBe(
       "sminos: the bridge is off — sminos must load outside devcloud and cua; the managed settings seat it, so list sminos@doperpowers in their prependPlugins, ahead of devcloud and cua",
