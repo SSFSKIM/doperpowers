@@ -1144,19 +1144,31 @@ def _sweep():
             if m.session:
                 seen.setdefault(m.session, []).append(p.id)
     where = {sid: _where_now(sid, views) for sid, pids in seen.items() if len(set(pids)) > 1}
-    rosters_, had, rows = {}, {}, {}
+    kept, had = [], {}
     for p, v in views:
         for m in v.members:
             if m.thread:
                 had.setdefault(m.thread, set()).update((m.session,) + tuple(m.former) + tuple(m.thread_sessions))
             if m.session in where and where[m.session] != p.id:
                 continue
-            if m.session:
-                rows.setdefault(m.session, (p, m))
-            if sminos.has_ended(m):
-                continue
-            for c in m.channels:
-                rosters_.setdefault(c, []).append((p, m))
+            kept.append((p, v, m))
+    # One row a stamped thread across the views: a refill displaces a session in one project and joins its
+    # replacement in another, and the two halves can be imported in either order.
+    by_thread = {}
+    for p, v, m in kept:
+        if m.thread:
+            by_thread.setdefault(m.thread, []).append((p, v, m))
+    current = {tid: _newest_row(found) for tid, found in by_thread.items() if len(found) > 1}
+    rosters_, rows = {}, {}
+    for p, v, m in kept:
+        if m.thread in current and current[m.thread] != (p.id, m.session):
+            continue
+        if m.session:
+            rows.setdefault(m.session, (p, m))
+        if sminos.has_ended(m):
+            continue
+        for c in m.channels:
+            rosters_.setdefault(c, []).append((p, m))
     value = {"rosters": rosters_, "had": had, "rows": rows, "views": views, "ended": None}
     _SWEPT["views"], _SWEPT["value"] = views, value
     return value
@@ -1182,18 +1194,34 @@ def _where_now(session, views):
     return next(iter(newest)) if len(newest) == 1 else None
 
 
+def _in_effect_at(v, session):
+    """The timestamp of the session's membership event in effect in a view's log ("" for none)."""
+    return str(((v.info.get(session) or {}).get("latest") or {}).get("ts") or "")
+
+
+def _newest_row(found):
+    """(project id, session) of the row, among one thread's rows in several views, whose membership in
+    effect is the newest; None when the newest of one moment are two (neither is kept, as _where_now)."""
+    at = max(_in_effect_at(v, m.session) for _, v, m in found)
+    newest = [(p.id, m.session) for p, v, m in found if _in_effect_at(v, m.session) == at]
+    return newest[0] if len(newest) == 1 else None
+
+
 def _ended_row(thread_id, session):
     """(Project, Member) of a thread's ended row in a view here (View.ended:
     a row the log shows unlisted to this reader is none of them), by its
-    thread, else by the session; None for none. Read only where no member
-    row is there, and never put back in a roster."""
+    thread, else by the session, the one whose end is the latest; None for
+    none. Read only where no member row is there, and never put back in a
+    roster."""
     swept = _sweep()
     if swept["ended"] is None:
-        swept["ended"] = [(p, m) for p, v in swept["views"] for m in v.ended]
-    for p, m in swept["ended"]:
-        if thread_id and m.thread == thread_id:
-            return p, m
-    return next(((p, m) for p, m in swept["ended"] if m.session == session), None)
+        swept["ended"] = [(p, m, _in_effect_at(v, m.session)) for p, v in swept["views"] for m in v.ended]
+    found = [x for x in swept["ended"] if thread_id and x[1].thread == thread_id] \
+        or [x for x in swept["ended"] if x[1].session == session]
+    if not found:
+        return None
+    p, m, _ = max(found, key=lambda x: x[2])   # the latest visible end, across every project's view
+    return p, m
 
 
 def rosters():
@@ -1457,7 +1485,8 @@ def show(channel, as_json=False):
 def _states(channel, record, session):
     """Whether the session is its thread's current one (a thread of this
     machine that has not ended, lane A) and its own events in the project it
-    is in state the channel: what a reader of the roster honours an env
+    is in state the channel under a `joined` in effect stamped with that
+    thread: what a reader of the roster honours an env
     event by. Read from files as they are, reconciling nothing and writing
     nothing (no view is read), so a refusal leaves every log as it was."""
     threads, records = sminos.threads_module(), sminos.records_module()
@@ -1467,8 +1496,12 @@ def _states(channel, record, session):
     project = sminos.last_project(session)
     if project is None:
         return False
-    stated = sminos._projection(sminos.own_events_now(project, session)).get(session, {}).get("stated")
-    return channel.id in threads.stated_set(stated)
+    row = sminos._projection(sminos.own_events_now(project, session)).get(session) or {}
+    # The `joined` in effect is the record's thread's: the env event is stamped with that thread, and a reader
+    # honours it only through that thread's row.
+    if (row.get("joined") or {}).get("thread") != record["thread"]:
+        return False
+    return channel.id in threads.stated_set(row.get("stated"))
 
 
 def env(channel, op, machine, session):

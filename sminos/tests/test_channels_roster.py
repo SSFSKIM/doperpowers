@@ -520,7 +520,9 @@ class Pool(Roster):
 WEB = "7d2b9c41-1f3e-4a6b-8c5d-9e0f1a2b3c4d"   # a second hub project
 
 
-class Round1(Roster):
+class TwoHubs(Roster):
+    """Roster, with a second hub project `web` and an org directory listing this machine, beta and gamma."""
+
     def setUp(self):
         super().setUp()
         sminos.register_if_absent(sminos.make_project(WEB, "web", "", "", HUB))
@@ -528,6 +530,8 @@ class Round1(Roster):
         self.web = sminos.known_project(WEB)
         self.org(sminos.host_name(), "beta", "gamma")
 
+
+class Round1(TwoHubs):
     def test_env_refused_with_a_reconciliation_due_writes_nothing(self):
         tid, sid, _ = self.human(root=self.app_root)
         self.placed(tid, sid, DESK)
@@ -640,6 +644,100 @@ class Round1(Roster):
         self.assertNotIn("channels", rows["lost"], "its machine retired: in no roster, so no key")
         self.assertEqual(rows["ghost"]["channels"], [DESK], "an ordinary gone member still belongs")
         self.assertEqual(self.sessions_of(DESK), [(APP, ghost)])
+
+
+# ------------------------------------------------------------ fix round 2
+
+
+def imported(p, w, **e):
+    """An event in writer `w`'s file of `p`'s log as an import leaves it: its writer's next seq, its own ts
+    (log_append stamps now, and its own `project` is the log's)."""
+    path = sminos.writer_path(p, w)
+    seq = 0
+    if os.path.exists(path):
+        with open(path) as f:
+            seq = max((json.loads(line)["seq"] for line in f if line.strip()), default=0)
+    with open(path, "a") as f:
+        f.write(json.dumps({"ts": e.pop("ts"), "writer": w, "seq": seq + 1, **e}) + "\n")
+    sminos.forget_caches()
+
+
+class Round2(TwoHubs):
+    def refilled(self, source_first):
+        """Another machine's spawned thread in DESK, refilled: its session in app displaced (`retired`
+        `replaced`), its replacement joined in web, stamped with the same thread; the halves imported in either
+        order, the displacement older by its ts."""
+        tid, old, w = self.far("filler")
+        new = str(uuidlib.uuid4())
+        nw = "beta/" + new
+        time.sleep(0.005)
+        displaced_at = sminos.now(ms=True)
+        time.sleep(0.005)
+
+        def displace():
+            imported(self.app, w, ts=displaced_at, kind="retired", session=old, reason="replaced", by="", thread=tid)
+
+        def fill():
+            sminos.log_append(self.web, nw, "joined", session=new, alias="filler", name_source="seat",
+                              machine="beta", cwd="/w", worktree="", role="", seat="", by="fill",
+                              session_kind="bg", thread=tid)
+            sminos.log_append(self.web, nw, "state", session=new, state="idle", machine="beta")
+            self.state(self.web, nw, new, tid, [DESK])
+        seen = []
+        for step in ((displace, fill) if source_first else (fill, displace)):
+            step()
+            seen.append(self.sessions_of(DESK))
+            code, out = self.cli("channel", "show", "desk", "--json")
+            self.assertEqual(code, 0, out)
+            shown = json.loads(out)
+            threads_shown = [m["thread"] for m in shown["members"]]
+            self.assertEqual(len(threads_shown), len(set(threads_shown)), "one row a thread: %s" % threads_shown)
+            self.assertEqual(sum(e["live"] for e in shown["pool"]), len(seen[-1]), "counted once in the pool")
+            code, out = self.cli("list", "--channel", "desk", "--json")
+            self.assertEqual(len({r["thread"] for r in json.loads(out)}), len(json.loads(out)))
+        return new, seen
+
+    def test_a_refill_across_projects_is_one_row_the_replacement_imported_first(self):
+        new, seen = self.refilled(source_first=False)
+        self.assertEqual(seen, [[(WEB, new)], [(WEB, new)]], "the row its newest membership points to")
+
+    def test_a_refill_across_projects_is_one_row_the_displacement_imported_first(self):
+        new, seen = self.refilled(source_first=True)
+        self.assertEqual(seen, [[], [(WEB, new)]])
+
+    def test_env_refused_when_the_joined_in_effect_names_another_thread(self):
+        tid, sid, _ = self.human(root=self.app_root)
+        self.placed(tid, sid, DESK)
+        # The session's own events now hold a `joined` in effect stamped with another thread, and a statement of
+        # DESK after it; its record still names it as its thread's current session.
+        self.write_own(sid, [self.old_joined(sid, thread="t-other"),
+                             {"kind": "channels", "thread": "t-other", "op": "x1", "channels": [DESK]}], p=self.app)
+        self.assertEqual(threads.get(tid)["current"], sid)
+        before = logs(os.environ["SMINOS_HOME"])
+        code, out = self.as_session(sid, "channel", "env", "add", "desk", "beta", cwd=self.app_root)
+        self.assertEqual(code, 1, out)
+        self.assertIn("is not in desk", out)
+        self.assertEqual(logs(os.environ["SMINOS_HOME"]), before, "nothing was written, nor reconciled")
+
+    def test_the_ended_row_kept_is_the_latest_end_across_projects(self):
+        tid = str(uuidlib.uuid4())
+        order = [p.id for p in sminos.known_projects() if p.id in (APP, WEB)]
+        first, second = (self.app, self.web) if order[0] == APP else (self.web, self.app)
+        ends = []
+        for p, machine, alias in ((first, "beta", "earlier"), (second, "gamma", "later")):
+            sid = str(uuidlib.uuid4())
+            w = "%s/%s" % (machine, sid)
+            sminos.log_append(p, w, "joined", session=sid, alias=alias, name_source="user", machine=machine,
+                              cwd="/w", worktree="", role="", seat="", by="", session_kind="interactive", thread=tid)
+            time.sleep(0.005)
+            sminos.log_append(p, w, "retired", session=sid, reason="retire", by="", thread=tid)
+            time.sleep(0.005)
+            ends.append(sid)
+        sminos.forget_caches()
+        self.request(DESK, "add", ends[0], tid)
+        code, out = self.cli("channel", "show", "desk", "--json")
+        self.assertEqual([(r["machine"], r["target"].split("#")[0]) for r in json.loads(out)["requests"]],
+                         [("gamma", "later")], "the latest visible end, not the first project's")
 
 
 if __name__ == "__main__":
