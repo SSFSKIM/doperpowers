@@ -2,8 +2,8 @@
 
 > **Composite:** `docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md`,
 > child **CH1** (The channel and who is in it). **Parent pin:** branch
-> `sminos-channels-ch` at `95fef6b7`, that file's blob
-> `6723ab5034724df88b835e0c1d0eb4e89629254b`. The design the composite is itself
+> `sminos-channels-ch` at `331e2dd5`, that file's blob
+> `669a75c0d3e646c3d3cc2a03baa163c53803c45c`. The design the composite is itself
 > a child of, `docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md`
 > ("the parent" below), is read as that same commit holds it, blob
 > `ea0bee4ad3df40cc846a8fcbc8ec4856136b4d9a`: CH's cut revised four of its
@@ -45,7 +45,7 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) CH cut into two children; its design reviewed twice and revised (`ef34f2ca`); MAWS's fixture on its master at `8ae3b0843`.
 - [x] (2026-11-21) This plan written against the composite at `ef34f2ca` and the code at `1fdc73a0` (sminos 1.52.0), commit `71575958`.
 - [x] (2026-11-21) The plan's first review for buildability (fourteen findings); the composite revised for two of them (`95fef6b7`) and this plan revised on it (Decision Log, "The plan's review").
-- [ ] The revision's review (the second and last before the build), and its findings folded in.
+- [x] (2026-11-21) The revision's review, the second and last before the build (eight findings; the composite made exact in one place, `331e2dd5`), folded in (Decision Log, "The plan's second review").
 - [ ] M1 — A channel id is told from a project's at every door, and nothing is published under one.
 - [ ] M2 — A thread's declared set: one durable operation, its statement and the statement's reader.
 - [ ] M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption.
@@ -178,8 +178,10 @@ lock, the delivery lock and held. Added here:
   store lock, and lets it go at its record write; it takes no lifecycle
   lock and no delivery lock, and holds no store lock while it takes any
   other lock: what it reads under the store lock it reads without a lock.
-  A wake in flight is a wait: nothing is written and the caller is told
-  `pending`. A command waits for the wake lock as a transition does
+  A wake in flight is a wait: nothing is written, a request stays
+  `pending` for the next pass, and a thread's own change, which no later
+  pass would carry out, fails and says so. A command waits for the wake
+  lock as a transition does
   (`SWEEP_WAIT`); a reconciliation and a pass only try it. Interfaces §3
   names the lock of each writer this child adds.
 - **No delivery record is touched.** This child delivers nothing in a
@@ -212,14 +214,23 @@ lock, the delivery lock and held. Added here:
   the end, so a later release may push what the channel's log gained while
   the thread was ended; a session an older copy joined into a channel and
   that is closed before this code's next reconciliation is listed in
-  neither until it runs again; an older copy's `list --json` shows a spawned
-  thread's record keys it does not know, the set, the answered ids and the
-  positions among them; a narrowing whose withdrawn audience could not be
-  named leaves the old row standing in a roster as in the project's view;
-  requests of two machines whose clocks disagree are carried out in the
-  stamped order, and a request stamped more than seven days behind is never
-  carried out; two adds contending for a thread's last place under the
-  limit are not ordered.
+  neither until it runs again; a 1.51.0 or 1.52.0 copy's `list --json`
+  shows a spawned thread's record keys it does not know, the positions and
+  the answered ids (the set it knows, and hides); a narrowing whose
+  withdrawn audience could not be named leaves the old row standing in a
+  roster as in the project's view; requests of two machines whose clocks
+  disagree are carried out in the stamped order, and a request stamped
+  more than seven days behind is never carried out; two adds contending
+  for a thread's last place under the limit are not ordered; two machines,
+  or two commands at once, creating one name make two channels of that
+  name, which the name rule refuses until one is named by its id. And no
+  lock holds a channel's log still: where a membership began, and the
+  order of requests, are observed at the last read before the record's
+  write, so an event imported between that read and the write counts as
+  after it (a message so placed is one CH2 pushes; a request so placed is
+  carried out as one that arrived later). The rereads of §6 bound what one
+  call acts on; they do not close that window, and nothing claims the
+  stamped order across it.
 - **What sessions are taught does not change.** The session-start guide,
   `sminos/skills/sminos/SKILL.md`, the spawn preamble and the manager's
   skill say nothing of channels until CH2, and the tests that pin their
@@ -457,7 +468,12 @@ channel's log and no `joined` of this code's; a `snapshots?` and a
 over a real uplink against the stand-in, a first connection, a
 reconnection, a channel this machine's records name (staged by writing a
 record's `channels` in the test) and one they do not, and a store in which
-an older copy's `join` wrote a `joined` under the channel, baselined first.
+an older copy's `join` wrote a `joined` under the channel, the baseline
+taken before this code reads it. The checker's own tests feed it breaches
+and expect each named: a position the baseline holds for one channel
+appearing with another event, or under a second channel; a `retired` under
+a channel with no older `joined` of that session there; one with a reason
+other than `moved`; and each frame of the breach list.
 
 ### M2 — A thread's declared set: one durable operation, its statement and the statement's reader
 
@@ -524,8 +540,13 @@ Consumes T1's journal (`_change`, `finish`'s steps, `open_entries`), T2's
   session is a member at the write, checked under the lock from that
   session's own events there. A thread with no session (a vacant spawned
   thread) or whose session is a member of no project at that moment
-  (between the two halves of a move) is not written: its caller is told
-  `pending`.
+  (between the two halves of a move) is not written.
+- What cannot be written is said by what can still happen to it. A request
+  stays `pending`: it is in the log, and a later pass carries it out. A
+  thread's own add or remove has no request, so `change` answers `failed`
+  with the reason (the wake lock, an open entry, no session or no project
+  now): the command exits 1, says that nothing was recorded and to run it
+  again, and no tick ever finishes it.
 - A move between the record's write and the statement does not redirect
   the statement: it is appended in the project the entry names, under the
   session's writer there, after that writer's `retired`, where it states
@@ -557,10 +578,16 @@ this code's next verb does); a cut after the record's write followed by a
 `join` to another project, the statement landing in the project left; both
 interleavings with a wake, injected (a `resume` paused between its check
 and its stop, and a launch paused before it records its job, each with the
-operation attempted meanwhile), asserting that the operation wrote nothing
-and said `pending`, the engine's process count, its launch count, and the
-record's job and grace; `update` raising on each of the three keys; and
-`list --json` holding neither `began` nor `answered`.
+operation attempted meanwhile, from another process and from the caller
+that holds the wake lock itself), asserting that the operation wrote
+nothing, the engine's process count, its launch count, the record's job
+and grace, and that the caller's own hold is still live afterwards; a
+thread's own change that timed out on the wake lock answering `failed`,
+and a quiet tick after it changing nothing; as a statement of the accepted
+rule and no guarantee of an order, an event imported into the channel's
+log between the positions' read and the record's write ending past `began`;
+`update` raising on each of the three keys; and `list --json` holding
+neither `began` nor `answered`.
 
 ### M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption
 
@@ -669,22 +696,41 @@ three verbs. Consumes §3's `set_channels`, §5's `channels_of`,
   `decide`, on a fresh read: the outcome is the second one's. The command,
   the daemon's tick and (M7) the uplink at an answer are the pass's
   callers.
-- The earlier requests and the expiry are read from the channel's log as it
-  is at the decision: `decide` compares the signature of the log's files
-  (the one the merged read is kept by) with the one `earlier` was read
-  under, and a difference writes nothing; `carry_out` then reads the log
-  again and tries again, three times, and past that says `pending`.
+- The earlier requests and the expiry are those of the last read before
+  the record's write: `decide` compares the signature of the log's files
+  and of this machine's queued appends for it (the one the read is kept
+  by) with the one `earlier` was read under, and a difference writes
+  nothing; `carry_out` then reads again and tries again, three times in
+  one call, and past that says `pending`. That bounds what one call acts
+  on. It holds no log still: a request imported after the last read is
+  carried out as one that arrived later (the constraints' accepted list).
+- The ordered input of a carrying out is the channel's log as merged and
+  then this machine's queued appends for that log, in the queue's order: a
+  second terminal's command sees the first one's queued request ahead of
+  its own, and waits behind it.
+- A word is bound to the event it was asked about, as the reach path binds
+  a permit: the request's log, writer, position and event hash. The
+  `answered` ledger stays keyed by channel and id. A request whose id an
+  earlier request of that log under another writer already used is not
+  carried out, and `channel show` says so: a second writer cannot ride on
+  the first one's answer or its word.
+- The second evaluation is fresh in fact, not a second look at this
+  process's caches (§3): the records by `current_record(..., fresh=True)`,
+  what `outside_origin` and the same-owner case rest on read from their
+  files then, and a session's existing writer files read by a path that
+  takes no lock and writes nothing.
 - A word of the endpoint's, `deliver` or `refuse`, is bound to the thread
   it was asked for before it is read as a verdict: if the thread's current
   session or its reach is no longer what the question was put for, the
   word is dropped and the request asked about again (M7 builds the asking;
   this milestone proves the table with words handed in).
 - A command carries out the request it just wrote from the event in hand,
-  as `log_append` returned it, and not by finding it in the merged log: an
-  operator's append to a log this machine has just registered can be queued
-  with no position yet (`waits_for_head`). The pass takes such a request as
-  one more, after the log's. When the queued event later reaches the log
-  the record already holds its answer.
+  as `log_append` returned it, and does not depend on finding it in the
+  merged log: an operator's append to a log this machine has just
+  registered can be queued with no position yet (`waits_for_head`). It is
+  then in the queue, which the ordered input reads, behind whatever was
+  queued before it. When the queued event later reaches the log the record
+  already holds its answer.
 - A request for a private thread is written under the stream
   `stream_choice` gives for that one recipient; a choice that refuses is
   the command's "refused: not reachable" for that target, with nothing
@@ -697,14 +743,18 @@ three verbs. Consumes §3's `set_channels`, §5's `channels_of`,
   session's writer.
 - `channel create` checks, before it registers anything, the capability,
   the name, the first member and the limit. It refuses a name a log known
-  on this machine already answers to, naming it, with one exception that
-  makes an interrupted creation retryable: a channel of that name
-  registered here whose log holds no event, that no record of this machine
-  names and that the org's directory does not list is the one an earlier
-  `create` left, and the command goes on with it. It mints the id (again
-  if the machine knows it), registers the channel, and places the first
-  member by the same paths as `add`.
-- A request that names no thread of this machine as §6's second row reads
+  on this machine already answers to, naming it, with one exception: a
+  channel of that name registered here that has no member as this machine
+  can tell (no record of this machine names it, and the org's directory it
+  keeps does not list it) is brought back under its id, whether its
+  creation was interrupted or its last member left, and the command says
+  so (§8). That is what "it returns when a member does" means for a name.
+  Otherwise it mints the id (again if the machine knows it), registers
+  the channel, and places the first member by the same paths as `add`. A
+  session's own first membership that cannot be recorded is a failure as
+  any own change is (M2): the channel stays registered with no member,
+  and the same command run again brings it back.
+- A request that names no thread of this machine as §6's third row reads
   it (not this machine's, ended, a session it never had, a session that is
   now another thread's, lane B) gets no statement here and expires: a
   statement is written under a thread's writer, and no thread here is the
@@ -721,8 +771,21 @@ pin every row of §6's table, each also with the fact it reads changed
 between the first evaluation and the lock (the owners, the policy, the
 revocation set, the capability); a word of each kind, `deliver` and
 `refuse`, handed in for a session and for a reach the thread no longer
-has, neither recorded; an earlier-sorting request imported while a carrier
-is paused after its read, the later one not carried out ahead of it; an
+has, neither recorded; a request of a second writer under an id the first
+writer's request already used, arriving while the first one's question is
+outstanding, not carried out and not given that word; the facts the
+second evaluation reads (the owners, the policy, the revocation set, the
+capability, the machine's identity, the session's membership) changed by
+another process after this one's caches were warmed and with no
+`forget_caches` in between, and on a stream whose writer file this
+process never read, the fresh value deciding and nothing locked or
+written by the read; an earlier-sorting request imported while a carrier
+is paused after its read, the later one not carried out ahead of it, and,
+as a statement of the accepted rule, one imported between the last read
+and the record's write carried out as a later arrival; two terminals'
+requests for one thread both queued, the first command cut after its
+append, the second waiting behind it, and the membership after the queue
+drains; an
 add then a remove of one thread in one channel, and the reverse, with each
 carried by the command or by the tick and the words handed over in either
 order; two requests in two channels answered once each by the statement
@@ -731,7 +794,10 @@ thread changed session, project and reach, and after its record was
 absorbed; a request behind an open entry, and behind a wake in flight; five
 requests for one thread from two requesters; an operator's request queued
 for its writer's head, carried out by the command and not again when it
-reaches the log; `create` cut after its registration and run again; the
+reaches the log; `create` cut after its registration and run again, and
+`create` of a name whose channel was emptied, each bringing the channel
+back under its id with the line §8 gives; a session's `create` whose first
+membership could not be recorded exiting 1; the
 limit at `create` (before registration), at `add` for oneself, at `add`
 for another (a refusing statement), and with two adds for the 128th place;
 each refusal before writing, `remove` without the capability among them,
@@ -781,7 +847,11 @@ requests.
   `answers`, in any project's log this machine reads, whatever statement is
   in effect there now and whatever project the thread has since moved to;
   an answer is a request's only when its `thread` stamp is the request's
-  `thread`. A request with no answer is pending, with the machine the
+  `thread` and its writer's session is one that thread has had, as this
+  reader can tell (§5): the stamp alone is a field any writer can set. A
+  request whose id another writer's earlier request used reads `not
+  carried out` (§6's `duplicate`). A request with no answer is pending,
+  with the machine the
   target's row was last seen on and the request's age (the hub's
   withholding is M7's reader). A request older than seven days by its own
   timestamp is not shown, answered or not.
@@ -809,12 +879,15 @@ section; two members of one alias labelled apart; `--channel` with
 `--machine`, `--state` and words; `channel show` with a roster spanning two
 projects and each of applied, refused and pending; the answers index with
 several requests for one target, an answer followed by a restatement, an
-answer left in a project the thread then moved from, and an unrelated
-thread's statement naming the same channel and id, not taken; the pool's
+answer left in a project the thread then moved from, an unrelated
+thread's statement naming the same channel and id, and a statement with
+the request's thread stamp under a writer that thread never had, neither
+taken; a request shown as not carried out for its reused id; the pool's
 counts, a machine added and removed by hand, an env event from a writer no
 longer in the roster, one whose thread id is another thread's, and one
-with none, each ignored; the guard refusing a `sminos channel …` call that
-holds a live backtick.
+with none, each ignored; `channel env` without the capability refused
+with nothing appended to any log; the guard refusing a `sminos channel …`
+call that holds a live backtick.
 
 ### M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture
 
@@ -917,10 +990,13 @@ project's withheld positions for the CLI), `T/test_channels_wire.py`,
   stopped thread is asked about and placed while it stays stopped.
 - The ask pass is itself a caller of `carry_due`, and asks about each
   request that pass left pending `endpoint` (`ask_of`), one ask out at a
-  time for a request. An ask is held under a key of its own (the channel,
-  the thread, the request's id), with what it was put for: the session and
-  its reach (`reach_token`). `on_reach` hands an answer for such an ask,
-  whichever word it is, to `carry_due` with that binding; a word whose
+  time for a request. An ask is held under the event it asks about
+  (`event_key`: the channel, the request's writer, position and event
+  hash, as a reach permit is keyed), with what it was put for: the session
+  and its reach (`reach_token`). `on_reach` hands an answer for such an
+  ask, whichever word it is, to `carry_due` under that key and with that
+  binding, so a word answers the event it was asked about and no other
+  request, whatever id that other carries; a word whose
   binding no longer holds under the lock is recorded as nothing, and the
   request is asked about again at the next pass. An answer past
   `REACH_WAIT` is none, and the request is asked again, with no count and
@@ -943,7 +1019,9 @@ pending); A5's last clause; A1's "placed on another machine when its daemon
 runs". Its tests pin: one ask per due request and none for one that needs
 no word; an answer used once; a `deliver` and a `refuse` each arriving
 after the thread's hand-off, and after a change of its reach, neither
-recorded and each leading to a second ask; two requests for one thread and
+recorded and each leading to a second ask; a second writer's request
+under the same id imported while the first one's question is outstanding,
+the answer then carrying out the first alone; two requests for one thread and
 channel asked one at a time in order; a stopped thread placed with no
 launch recorded by the test engine; each outcome at the requester on two
 machines, the withheld one staged by the stand-in refusing the upload
@@ -984,9 +1062,10 @@ detail is), `docs/doperpowers/TECH-DEBT.md`, the files
   `joined` the copy writes for the session is followed, at this code's next
   reconciliation, by a statement of the same set; the copy lists the
   registered channel as a project with no member and this code still lists
-  it as none. Accepted and asserted as it is: a copy's `list --json` shows
-  a spawned thread's new record keys; a return a 1.51.0 or 1.52.0 copy
-  begins leaves `began` as it was before the end.
+  it as none. Accepted and asserted as it is: a 1.51.0 or 1.52.0 copy's
+  `list --json` hides a spawned thread's `channels`, which it knows, and
+  shows its `began` and `answered`, which it does not; a return such a
+  copy begins leaves `began` as it was before the end.
 - Then, for each copy: its `join <channel id>` by hand from a running
   session, after which this code's next reconciliation leaves the session a
   member of its one project with its set as it was and a `retired` `moved`
@@ -1194,10 +1273,9 @@ Each as its log stores it, beside the log's own `ts`, `writer` and `seq`.
 A reader takes a field of the wrong type as absent, and an event missing a
 required field as no event of its kind. A request's `op` is the request's
 verb and has nothing to do with the journal's `op` on a lifecycle event;
-the field's name is C2's. `channel-env`'s `thread` is this plan's addition
-to C2's two fields, by the kind's owner (Y2): a session id can come to be
-another thread's, and the writer's session alone would let that thread's
-membership honour an event it never wrote.
+the field's name is C2's. `channel-env` names its writer's thread because
+a session id can come to be another thread's, and the writer's session
+alone would let that thread's membership honour an event it never wrote.
 
 ### §3. The record and its operation (X1, Y3)
 
@@ -1236,18 +1314,26 @@ the making of a record write `channels: []` themselves, not through
         #           "answer": {"channel", "id", "ts", "result", "reason"} | None}
         #
         # In that write `began` gains, for each channel entering the set, sminos.channel_positions(id) as read
-        # then, and loses each channel leaving it; no caller gives a position. A Change whose session is not the
+        # just before it, under the lock, and loses each channel leaving it; no caller gives a position. No
+        # lock holds the channel's log still: what is imported after that read counts as gained after it. A Change whose session is not the
         # record's current one, or whose `channels` holds more than CHANNEL_LIMIT ids or an id that is no
         # channel's, is a caller's error (ValueError), never written.
 
 `decide` runs while the record's store lock is held, and for a spawned
 thread that is the lock every seat's write waits on. It reads the record it
-is given, other records by `get` and `current_record`, a session's own
-writer files in one project (`_own_events`), a channel's log files'
-signature, a session's record, the policy and the kept capabilities, all
-without a lock, and nothing else. It never reads a view, a roster or a
-target (`view_of`, `members`, `find_target`): each of those reconciles, and
-a reconciliation takes store locks this process then already holds.
+is given, other records by `get` and `current_record(..., fresh=True)`, a
+session's own writer files in one project, the signature of a channel's
+log files and of its queue, a session's record, the machine's identity and
+enrollment, the policy, the kept capabilities and the revocation set, and
+nothing else. Each of those reads is fresh in fact: from its file as it is
+then, never from a value this process cached for its invocation, since
+nothing forgets those caches between a caller's first read and the lock.
+And each takes no lock and writes nothing: the writer files are read as
+existing files (no project registered, no directory made, no stream
+kept), a file that is not there reading as none. It never reads a view, a
+roster or a target (`view_of`, `members`, `find_target`): each of those
+reconciles, and a reconciliation takes store locks this process then
+already holds.
 
 The entry, which owes the statement and nothing else:
 
@@ -1286,7 +1372,9 @@ the record within a scan.
 
 In `S/sminos_channels.py`, the callers that build `decide`:
 
-    def change(thread_id, channel, op, session, lock_until=None) -> Outcome   # C1, C2 (§6's Outcome)
+    def change(thread_id, channel, op, session, lock_until=None) -> Outcome
+        # C1, C2 (§6's Outcome): `applied`, or `failed` with why it could not be recorded (`wake`, `entry`,
+        # `vacant`, `between`); never `pending`, since no request exists for a later pass to carry out
     def restate(project, thread_id, session, writer, seen) -> bool
         # C5: `seen` the set the reconciliation read from the record. Only tries the wake lock. True when a
         # statement was owed and its entry begun; a failure to finish it is the next reconciliation's
@@ -1381,12 +1469,16 @@ fold above, which keeps only the statement in effect:
         # (sminos.known_projects), in the merged read's order, whatever is in effect there now; kept beside each
         # merged log and for the cache generation
     def answer_of(request) -> dict | None
-        # the first of answers() for its channel and id whose `thread` stamp is the request's `thread`; None for
-        # none this reader may read
+        # the first of answers() for its channel and id whose `thread` stamp is the request's `thread` and whose
+        # writer's session is one that thread has had, as this reader can tell: a session its row lists (its
+        # current one, those it continues, its thread's others), or one whose own `joined` in the log the
+        # statement lies in is stamped with that thread, a project the thread has since left included. None
+        # for none this reader may read
 
 So an answer still answers after the thread restated its set, moved to
-another project or changed writer, and a statement of another thread that
-names the same channel and id answers nothing.
+another project or changed writer; a statement of another thread that
+names the same channel and id answers nothing; and neither does one that
+carries the right stamp under a writer the thread never had.
 
 ### §6. Requests and their carrying out
 
@@ -1395,12 +1487,15 @@ In `S/sminos_channels.py`:
     REQUEST_TTL = 7 * 86400       # seconds a request can be pending, by its own ts; SMINOS_CHANNEL_REQUEST_TTL
     REASONS = ("not-reachable", "read-only", "limit")
     class Outcome(NamedTuple):
-        state: str                # "applied" | "refused" | "pending" | "ignored"
-        why: str                  # refused: one of REASONS; pending and ignored: a word of the tables below;
-                                  # applied: "unchanged" when the set already read so, "" else
+        state: str                # "applied" | "refused" | "pending" | "ignored" | "failed"
+        why: str                  # refused: one of REASONS; pending, ignored and failed: a word of the tables
+                                  # below; applied: "unchanged" when the set already read so, "" else
     def requests_of(channel) -> (signature, list[dict])
-        # the log's `channel-request` events of §2's shape, in the merged read's order, with the signature of the
-        # log's files they were read under (the one the merged read is kept by)
+        # the ordered input: the log's `channel-request` events of §2's shape in the merged read's order, then
+        # those among this machine's queued appends for that log, in the queue's order (seq None, read without
+        # changing the queue); with the signature of the files both were read under
+    def event_key(channel, request) -> tuple
+        # (the channel's id, the request's writer, its seq, its event hash): what a word is asked and kept under
     def expired(request, now=None) -> bool        # its ts is unreadable or older than REQUEST_TTL
     def sender_verified(channel, request) -> True | False | None
         # True for a writer of this machine in a log where its name is provenance (own_writers_here). Else from the
@@ -1411,23 +1506,24 @@ In `S/sminos_channels.py`:
         # while the record cannot be read
     def judge(channel, request, record, earlier, word=None, asked=None) -> Outcome
         # the table below and nothing else: reads, no write, no lock. `record`: the target's, as its caller read
-        # it. `earlier`: the requests before this one for the same thread. `word`: the endpoint's ("deliver" |
-        # "refuse" | None). `asked`: {"session", "reach"} the word was asked for. "applied" and "refused" are
-        # what a write would record; nothing has been written
+        # it. `earlier`: the requests of the ordered input before this one. `word`: the endpoint's ("deliver" |
+        # "refuse" | None), the one kept under this request's event_key and no other. `asked`: {"session",
+        # "reach"} the word was asked for. "applied" and "refused" are what a write would record; nothing has
+        # been written
     def carry_out(channel, request, word=None, asked=None, lock_until=None) -> Outcome
         # one request: judge() on what it reads, then, when that says a statement is owed, set_channels with a
         # decide that runs judge() again on the record it is given and on fresh reads, and writes that second
-        # answer or nothing. A log whose signature moved since `earlier` was read is read again, three times,
-        # then pending `moved`
+        # answer or nothing. An input whose signature moved since `earlier` was read is read again, three
+        # times in the call, then pending `moved`
     def ask_of(request) -> dict | None
-        # what the endpoint is asked about a request left pending `endpoint`, read now: {"thread", "session": the
-        # thread's current session, "project": the thread's own project, "reach": reach_token(session)}; None
-        # when row 2 or 6 holds, or the record cannot be read
+        # what the endpoint is asked about a request left pending `endpoint`, read now: {"key": its event_key,
+        # "thread", "session": the thread's current session, "project": the thread's own project, "reach":
+        # reach_token(session)}; None when row 3 or 7 holds, or the record cannot be read
     def carry_due(channel, words=None, also=(), lock_until=None) -> list[(dict, Outcome)]
-        # the pass: every request of the log that is not expired and names a thread of this machine, in order,
-        # then the requests of `also` the log does not hold yet (a command's own, queued for its writer's
-        # head), each through carry_out; a request pending leaves the later ones for its thread pending
-        # `earlier`. `words`: {request id: (word, asked)}
+        # the pass: every request of the ordered input that is not expired and names a thread of this machine,
+        # in order, then the requests of `also` it does not hold (a command's own, in hand), each through
+        # carry_out; a request pending leaves the later ones for its thread pending `earlier`.
+        # `words`: {event_key: (word, asked)}
 
 `judge` answers by the first row that holds. T is the record whose id is
 the request's `thread`.
@@ -1435,29 +1531,33 @@ the request's `thread`.
 | # | What is read | Outcome |
 |---|---|---|
 | 1 | the request is expired | ignored `expired` |
-| 2 | T is no record of this machine, or has ended, or never had the request's `session`, or that session is now another record's current one, or T's session is lane B | ignored `not-here`: nothing is written for either thread, and the request expires |
-| 3 | T's `answered` holds the request's channel and id | ignored `answered` |
-| 4 | a request among `earlier` is not expired, passes row 2, and is not in T's `answered` | pending `earlier` |
-| 5 | T has an open entry | pending `entry` |
-| 6 | T holds no session; or its session is a member of no project now | pending `vacant`; pending `between` |
-| 7 | the request is from elsewhere (`policy.outside_origin`) and the kept welcome lists no `channels` | pending `no-channels` |
-| 8 | the request is from elsewhere and the machine admits nothing from outside (`policy.read_only`) | refused `read-only` |
-| 9 | its writer is this machine's own and shares the thread's owners: a session's writer by `same_owner_local`, the human writer by `owners_meet("", session)` | honoured |
-| 10 | `sender_verified` is False; is None | refused `not-reachable`; pending `unverifiable` |
-| 11 | no word | pending `endpoint` |
-| 12 | a word, either one, and T's current session or its `reach_token` is not what `asked` holds | pending `moved`: the word is dropped and the request asked about again |
-| 13 | the word is `refuse` | refused `not-reachable` |
-| 14 | the word is `deliver` | honoured |
+| 2 | a request among `earlier` under another writer carries this request's `id` | ignored `duplicate`: not carried out, and `channel show` says so |
+| 3 | T is no record of this machine, or has ended, or never had the request's `session`, or that session is now another record's current one, or T's session is lane B | ignored `not-here`: nothing is written for either thread, and the request expires |
+| 4 | T's `answered` holds the request's channel and id | ignored `answered` |
+| 5 | a request among `earlier` for the same thread is not expired, passes rows 2 and 3, and is not in T's `answered` | pending `earlier` |
+| 6 | T has an open entry | pending `entry` |
+| 7 | T holds no session; or its session is a member of no project now | pending `vacant`; pending `between` |
+| 8 | the request is from elsewhere (`policy.outside_origin`) and the kept welcome lists no `channels` | pending `no-channels` |
+| 9 | the request is from elsewhere and the machine admits nothing from outside (`policy.read_only`) | refused `read-only` |
+| 10 | its writer is this machine's own and shares the thread's owners: a session's writer by `same_owner_local`, the human writer by `owners_meet("", session)` | honoured |
+| 11 | `sender_verified` is False; is None | refused `not-reachable`; pending `unverifiable` |
+| 12 | no word for this event | pending `endpoint` |
+| 13 | a word, either one, and T's current session or its `reach_token` is not what `asked` holds | pending `moved`: the word is dropped and the request asked about again |
+| 14 | the word is `refuse` | refused `not-reachable` |
+| 15 | the word is `deliver` | honoured |
 
 Honoured: an add of a channel the set lacks while it holds 128 is refused
 `limit`; anything else is applied. Before `set_channels`, `carry_out`
-finishes T's open entry if it can (row 5 is what is left). A wake lock
+finishes T's open entry if it can (row 6 is what is left). A wake lock
 that cannot be had (a wake holds it past the caller's wait, or the calling
-process holds it) is `pending` `wake`, with nothing written. Under the lock `decide` runs the whole table again,
-with `earlier` taken as read only if the log's signature is the one it was
-read under: what it then answers is what is written, and an answer that is
-no longer `applied` or `refused` writes nothing and is the outcome.
-Requests for different channels are not ordered against each other.
+process holds it) is `pending` `wake`, with nothing written. Under the
+lock `decide` runs the whole table again, on reads that are fresh in fact
+(§3), with `earlier` taken as read only if the input's signature is the
+one it was read under: what it then answers is what is written, and an
+answer that is no longer `applied` or `refused` writes nothing and is the
+outcome. That is the last read before the record's write; what is
+imported after it is a later arrival. Requests for different channels are
+not ordered against each other.
 
 The pass's three callers: the command, for each request it wrote for a
 thread of its own machine (handed in as `also`, no words); the daemon's
@@ -1472,6 +1572,7 @@ The words a command and `channel show` print:
 | `not-reachable` | its machine does not let you message it |
 | `read-only` | its machine admits nothing from outside |
 | `limit` | it is in 128 channels, the limit |
+| `duplicate` | not carried out: another request in this channel used its id first |
 | `earlier` | behind an earlier request for it in this channel |
 | `entry` | its record holds an unfinished operation |
 | `wake` | it is being woken; its machine's next pass carries this out |
@@ -1480,6 +1581,7 @@ The words a command and `channel show` print:
 | `unverifiable` | its machine cannot read its revocation set |
 | `endpoint` | its machine's endpoint has not said whether you may message it |
 | `moved` | its session, its reach or the channel's log changed while its machine decided: tried again |
+| `failed` (a thread's own change) | nothing was recorded (`<the pending word for why>`): run the command again |
 
 On another machine a requester reads none of the pending words: it reads
 `pending on <machine> since <time>`, which covers a machine that is off, one
@@ -1527,13 +1629,15 @@ and `()` otherwise; its key (`made_of`) takes that tuple.
 
 A `<channel>` is an id, a `name#short` or a name (`find_channel`); a
 `<thread>` is what `find_target` takes. Exit 0 when every target was
-applied or is pending; 1 when the verb or any target was refused; 4 for a
-name that is unknown or ambiguous; 2 for usage.
+applied or is pending; 1 when the verb or any target was refused, or the
+caller's own change could not be recorded; 4 for a name that is unknown or
+ambiguous; 2 for usage.
 
 **Refused before anything is written,** each naming its target: `create`,
 `add`, `remove` and `env` where the kept welcome lists no `channels`;
 `create` with a name that is no valid name, or that a log known here
-already answers to (but the channel an interrupted `create` left: M4); a
+already answers to (but a channel of that name registered here with no
+member, which `create` brings back: M4); a
 target that is no thread as this machine reads it (its row carries no
 `thread`, or on this machine its lane is B); one that has ended; one that
 holds no session; an add, and a `create`, that would be a 129th channel
@@ -1562,7 +1666,12 @@ machine the org's directory does not list.
 <channel>`, `already in <channel>`, `was not in <channel>`, `refused: <§6's
 words>`, `pending: <§6's words>`, or, for a thread of another machine,
 `asked; pending on <machine>: its machine carries it out when its daemon
-reads the request`.
+reads the request`. `pending` is said only of a request, which a later
+pass carries out. The caller's own add or remove that could not be
+recorded says `nothing was recorded (<§6's words>): run the command again`
+and exits 1. `create` says `created channel <name> (<id>) with <thread>`;
+of a channel of that name registered here with no member, `<name> exists
+and has no member: <thread> is in it again`.
 
 **`list`.** A bare `list` from a thread: its project's section exactly as
 today, the `+N hidden` line included, then for each channel of
@@ -1578,14 +1687,15 @@ and no key otherwise; the sections add nothing to it.
 with the project column (`(none)` for none); `requests`, one line each for
 the log's requests that have not expired, oldest first: its time, its verb,
 its target, its requester, and `applied`, `refused: <words>`, `refused: not
-reachable (the hub withheld it)` (from M7) or `pending on <machine> since
+reachable (the hub withheld it)` (from M7), `not carried out: another
+request in this channel used its id first`, or `pending on <machine> since
 <time>`; `pool`, one line a machine: its name, `<n> live, <m> stopped`
 counted from the roster's rows there (`live`: a state of `FILLED`;
 `stopped`: `stopped` or `gone`), and `added by hand` for one a
 `channel-env` holds in. With `--json`: `{"id", "name", "members": [<a list
 --json row, with its project keys>], "requests": [{"id", "op", "thread",
 "session", "target", "by", "ts", "state": "applied" | "refused" |
-"withheld" | "pending", "reason", "machine"}], "pool": [{"machine",
+"withheld" | "duplicate" | "pending", "reason", "machine"}], "pool": [{"machine",
 "live", "stopped", "by_hand"}]}`.
 
 `sminos help` (the module's docstring) lists the six lines above. The
@@ -1599,11 +1709,13 @@ store it was given, so a suite over a store an older copy wrote into takes
 the baseline first:
 
     ALLOWED = ("channel-request", "channel-env", "retired", "void")
-    def baseline(sminos_home, channel_ids) -> frozenset
-        # the (writer, seq) of every event the channels' logs hold now: what was there before this code ran
-    def published(frames, channel_ids, before=frozenset(), allowed=ALLOWED) -> list[str]
+    def baseline(sminos_home, channel_ids) -> dict
+        # {(channel id, writer, seq): the event held there} for every event the channels' logs hold now: what
+        # was there before this code ran. Taken before any verb, tick or uplink of this code reads the store,
+        # since a reading verb reconciles
+    def published(frames, channel_ids, before={}, allowed=ALLOWED) -> list[str]
         # each breach among the frames a stand-in kept, one line each; [] for none
-    def written(sminos_home, channel_ids, machine, before=frozenset(), allowed=ALLOWED) -> list[str]
+    def written(sminos_home, channel_ids, machine, before={}, allowed=ALLOWED) -> list[str]
         # the same over the store: the channel's log files of this machine's writers, its host store, and any
         # delivery record under a channel's log
 
@@ -1612,17 +1724,21 @@ session-plane message whose project is one (`presence`, `machine`, `host`,
 a subscription's), but the `end` that refuses a `subscribe`; a `pending`
 frame for one; a `words?` for one; a `reach?` for one whose event is no
 `channel-request`; a `snapshots` answer for one that carries an event; an
-`events` frame for one carrying, at a position not in `before`, a kind
-outside `allowed`, or a `retired` for a session whose `joined` there is
-not in `before`; a `member` frame with `channels` that is empty, holds
-more than 128 ids, holds an id that is no channel's, or is sent on a
-connection whose welcome did not list `channels`; on disk, an event of
-this machine's writers in a channel's log, at a position not in `before`,
+`events` frame for one carrying, at a position the baseline does not hold
+for that channel with that same event, a kind outside `allowed`; a
+`member` frame with `channels` that is empty, holds more than 128 ids,
+holds an id that is no channel's, or is sent on a connection whose welcome
+did not list `channels`; on disk, an event of this machine's writers in a
+channel's log, at a position the baseline does not hold with that event,
 of a kind outside `allowed`, anything in a channel's host store, or (in
-this child) a delivery record under a channel's log. An event in `before`
-is uploaded in its writer's order like any own event and is no breach. CH2
-calls the checker with the kinds it adds and without the delivery-record
-rule.
+this child) a delivery record under a channel's log. A new `retired` under
+a channel, on the wire as on disk, is accepted only as the undo of an
+older `joined`: its reason is `moved`, and the baseline holds, in that
+same channel, a `joined` of its session with no `retired` after it; any
+other is a breach. An event the baseline holds is uploaded in its writer's
+order like any own event and is no breach. The checker has negative tests
+of its own (M1). CH2 calls it with the kinds it adds and without the
+delivery-record rule.
 
 **The stand-in** (`T/endpoint_standin.py`) gains what MAWS's endpoint does
 for channels, read from MAWS's master at `8ae3b0843` (`#knownNow` in
@@ -1684,8 +1800,9 @@ each.
   over by the `doperpowers:adversarial-reviewer` agent, on buildability: the
   milestones against the code, the names of Interfaces against the two
   designs, and §3's and §6's tables against the store's locks. The first
-  round returned fourteen findings (the entry "The plan's review" below); a
-  second round reads this revision, and there is no third before the build.
+  round returned fourteen findings and the second, on the revision, eight
+  (the two entries at the end of this log); there is no third before the
+  build.
   The build runs under `doperpowers:plan-executor`, a fresh executor a
   milestone; each milestone is reviewed at its close by the execution
   loop's reviewer, three reviews at most (the owner's bound). The range M1
@@ -1774,7 +1891,7 @@ each.
   caller's read is from before the lock, and the positions must be the
   log's at the write that enters the channel.
 - 2026-11-21 — **A request that names no thread here gets no statement,**
-  for every case of §6's row 2, and expires. The composite says so for a
+  for every case of §6's row 3, and expires. The composite says so for a
   session that became another thread's and for lane B; an ended thread and
   a session the thread never had are the same case to this machine, and to
   one that holds no such thread at all the request is simply another
@@ -1864,7 +1981,7 @@ each.
     is the composite's accepted one.
   - *The whole of §6's table is evaluated again under the lock, and a word
     of either kind is bound to the thread it was asked for before it is
-    read* (§6, rows 12 to 14; M4, M7). *Lost: re-reading only the rows that
+    read* (§6, rows 13 to 15; M4, M7). *Lost: re-reading only the rows that
     name the record, and binding `deliver` alone:* a refusal for a reach
     the thread no longer has would be recorded for good, and an owner, a
     policy or a revocation changed between the first read and the lock
@@ -1908,6 +2025,8 @@ each.
     merging the channel's log under the store lock:* that lock is the one
     every seat's write waits on. *Lost too: trusting the pass's read:* a
     request that sorts earlier can be imported while a carrier is paused.
+    What this leaves open is in the second review's entry: no lock holds
+    the log still.
   - *Among projects, names keep today's tiers; a channel is in no tier*
     (the composite's C6; §1; M1's test of a hub and a machine project of
     one name). *Lost: refusing every name several logs answer*, which
@@ -1929,6 +2048,59 @@ each.
     reader is built. *Lost: M5's list of request states including it.*
   - *The new gate stands on four conditions* (M1). *Lost: a timeout of
     thirty minutes by habit, and parts that overlap.*
+
+- 2026-11-21 — **The plan's second review, and what it changed.** The
+  last review before the build kept the cut of eight milestones and
+  returned eight findings and four notes. One made the composite exact
+  (`331e2dd5`); the rest changed this plan alone. Each line gives what
+  stands now and the alternative that lost.
+  - *No lock holds a channel's log still* (the composite's C3; the
+    constraints' accepted list). Where a membership began and the order of
+    requests are observed at the last read before the record's write, and
+    what is imported after it counts as after it. *Lost: presenting the
+    three rereads as closing that window.* They bound what one call acts
+    on; the tests state the rule at the boundary and promise no order.
+  - *The ordered input of a carrying out includes this machine's queued
+    appends for the channel's log* (§6's `requests_of`; M4). *Lost: the
+    merged log and the caller's own request alone:* a second terminal's
+    command would not see the first one's queued request ahead of its own.
+  - *A word is kept and used under the event it was asked about* (the
+    request's log, writer, position and hash; §6's `event_key`, rows 2 and
+    12; M4, M7), and a request whose id another writer used first is not
+    carried out and is shown so. *Lost: a word keyed by the request's id:*
+    a second writer's request under that id would have been carried out on
+    the first one's answer. The `answered` ledger stays keyed by channel
+    and id.
+  - *The evaluation under the lock reads what it rests on from its files
+    then, by reads that lock and write nothing* (§3; M4's test with warmed
+    caches and another process's change). *Lost: calling the same
+    functions a second time:* several of them answer from a cache this
+    process keeps for its invocation.
+  - *A thread's own change that cannot be recorded fails* (`change`
+    answers `failed`; exit 1; §3, §6, §8; M2), and so does the first
+    membership of a channel a session creates. *Lost: `pending`:* no
+    request exists for a later pass to carry out, so nothing would ever
+    finish it.
+  - *`create` of a name whose channel is registered here with no member
+    brings that channel back under its id,* interrupted or emptied (§8;
+    M4). *Lost: taking back only a channel whose log is empty.* Two
+    creators of one name at once make two channels of it; accepted, and
+    said in the constraints.
+  - *The wire check's baseline is keyed by channel, writer and position
+    with the event held, taken before this code reconciles, and a new
+    `retired` under a channel passes only as the `moved` undo of an older
+    `joined` in that channel* (§9; M1's negative tests). *Lost: a set of
+    writer and position:* it passed a position of another channel and any
+    `retired`.
+  - *An answer is taken only when its writer's session is one the
+    request's thread has had* (§5's `answer_of`; M5). *Lost: the `thread`
+    stamp alone,* a field any writer can set.
+  - *Notes taken:* `channel env` without the capability is asserted in M5,
+    with nothing appended; the wake tests also try from a caller that
+    holds the lock and confirm its hold is live afterwards (M2); 1.51.0
+    and 1.52.0 hide `channels` and expose `began` and `answered` (M8, the
+    accepted list); §2 no longer calls `channel-env`'s `thread` an
+    addition, since the composite's C2 names it.
 
 ## Outcomes & Retrospective
 
