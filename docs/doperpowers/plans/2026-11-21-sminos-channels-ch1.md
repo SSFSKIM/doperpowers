@@ -1514,13 +1514,15 @@ In `S/sminos_channels.py`:
     def reach_token(session) -> tuple | None
         # the session's record's owners with its access, shares and policyRev (sminos_audience.policy_of); None
         # while the record cannot be read
-    def judge(channel, request, record, earlier, word=None, asked=None) -> Outcome
+    def judge(channel, request, record, earlier, word=None, asked=None, *, project=None, now=None, facts=None) -> Outcome
+        # (M4: `project` chosen before the lock and never looked up under it; `now` for the expiry; `facts`
+        # the evaluation's fresh reader)
         # the table below and nothing else: reads, no write, no lock. `record`: the target's, as its caller read
         # it. `earlier`: the requests of the ordered input before this one. `word`: the endpoint's ("deliver" |
         # "refuse" | None), the one kept under this request's event_key and no other. `asked`: {"session",
         # "reach"} the word was asked for. "applied" and "refused" are what a write would record; nothing has
         # been written
-    def carry_out(channel, request, word=None, asked=None, lock_until=None) -> Outcome
+    def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_until=None) -> Outcome
         # one request: judge() on what it reads, then, when that says a statement is owed, set_channels with a
         # decide that runs judge() again on the record it is given and on fresh reads, and writes that second
         # answer or nothing. An input whose signature moved since `earlier` was read is read again, three
@@ -1529,7 +1531,8 @@ In `S/sminos_channels.py`:
         # what the endpoint is asked about a request left pending `endpoint`, read now: {"key": its event_key,
         # "thread", "session": the thread's current session, "project": the thread's own project, "reach":
         # reach_token(session)}; None when row 3 or 7 holds, or the record cannot be read
-    def carry_due(channel, words=None, also=(), lock_until=None) -> list[(dict, Outcome)]
+    def carry_due(channel, words=None, also=(), lock_until=None, wake_until=None) -> list[(dict, Outcome)]
+        # (M4: the daemon passes `wake_until` now, so it only tries the wake lock; a command waits SWEEP_WAIT)
         # the pass: every request of the ordered input that is not expired and names a thread of this machine,
         # in order, then the requests of `also` it does not hold (a command's own, in hand), each through
         # carry_out; a request pending leaves the later ones for its thread pending `earlier`.
@@ -1821,6 +1824,9 @@ while the milestones are built, one observation and its evidence each.
 - (M2) `project_path` creates a project's home and its `project.json` on
   first use, so a reader that must create nothing (`channel_positions`)
   joins `project.home` itself.
+- (M4) `same_owner_local`, `outside_origin` and `own_writers_here` read
+  identity and enrollment from per-invocation caches, so the second
+  evaluation re-reads them from `identity.json` itself (`_Facts`).
 
 ## Decision Log
 
@@ -2347,6 +2353,27 @@ while the milestones are built, one observation and its evidence each.
   and a finisher step). `channels_here()` never caches a failed listing:
   only ENOENT answers no channel, for the generation; any other error
   looks the holders up.
+- 2026-11-21 — **M4 as built** (`04cc6146..f5f93f62`). `judge` takes
+  `project` (chosen before the lock by `last_project`, passed in, never
+  looked up under it), `now` and `facts`, the second evaluation's fresh
+  reader (`_Facts`: identity and enrollment from `identity.json`, the
+  policy by `stored()`, since `sminos_policy.load` writes to `daemon.log`);
+  `carry_out` and `carry_due` take `wake_until` (§6 amended). `carry_due`
+  passes by, unjudged, a request whose thread is gone, ended or expired, or
+  that the record already answered; a command's own request is always
+  judged. Every pass judges afresh, so a request ignored `not-here` while
+  its thread was lane B is carried out once it is lane A again. Words
+  added: pending `busy` (the store lock) and `unreadable`; ignored
+  `expired` and `not-here`, which a command prints with exit 1; and
+  `change`'s failures (`OWN_FAILED`) with M2's `moved` and `unreadable`.
+  A command whose own request the daemon answered first prints what the
+  record holds now. `create` brings a channel back only when it is the
+  one log answering the name, no live record names it and `org.json`
+  lists it not; otherwise the name is refused. A channel id is a uuid4
+  with its version nibble set to 8. Row 3's lane B is read from the
+  target's current session's record. A queued request is dropped from the
+  ordered input once the log holds its writer and id. Every path keeps M3's
+  gate: a request is carried out only for a channel registered here.
 
 ## Outcomes & Retrospective
 
