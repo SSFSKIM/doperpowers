@@ -279,8 +279,10 @@ def first_flags(record, turn, ceiling, accepted_bypass):
     machine's ceiling; `bypassPermissions` lowered to `auto` unless the
     engine's disclaimer was accepted, E22), `--model` (the last turn's,
     else the launch's), `--effort` and `--settings` (the launch's; a
-    settings file that is gone is not passed, a relative one is read
-    against the launch's directory), in that order. Never `--add-dir`,
+    settings file that is gone is not passed, nor one this process may not
+    look at, decided from its path's string and never probed
+    (sminos.read_refused), and a relative one is read against the launch's
+    directory), in that order. Never `--add-dir`,
     `--output-style` or a name. Not carried: every option of
     `launch.options` not passed and every name of `launch.dropped`; None
     when the record does not say what was dropped (no `options`, or a
@@ -300,7 +302,7 @@ def first_flags(record, turn, ceiling, accepted_bypass):
     cwd = str(launch.get("cwd") or "")
     if settings and (os.path.isabs(os.path.expanduser(settings)) or cwd):
         path = os.path.join(cwd, os.path.expanduser(settings))
-        if os.path.isfile(path):
+        if not sminos.read_refused(path) and os.path.isfile(path):
             flags += ["--settings", os.path.abspath(path)]
     dropped = launch.get("dropped")
     if options is None or not isinstance(dropped, list):

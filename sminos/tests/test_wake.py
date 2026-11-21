@@ -315,6 +315,25 @@ class Flags(Wakes):
         self.assertEqual(wake.first_flags(rec, {"mode": "", "model": ""}, "auto", False)[0], [],
                          "a relative path with no directory to read it against is not passed")
 
+    def test_a_settings_file_this_process_may_not_look_at_is_neither_probed_nor_carried(self):
+        # frontier review round 2, sweep#3: a recorded --settings in a folder macOS protects, which the thread's
+        # own directory is not in, decided from the path's string (read_refused), never with a look at it.
+        vault = os.path.join(self.home, "Documents")
+        os.makedirs(vault)
+        kept = os.path.join(vault, "s.json")
+        with open(kept, "w") as f:
+            f.write("{}")
+        real_isfile, looked = os.path.isfile, []
+        for path, cwd in ((kept, self.root), ("s.json", vault)):
+            with self.subTest(path=path):
+                rec = self.human(cwd=cwd, options=["--model", "m", "--settings", path], dropped=[])
+                with mock.patch.object(sminos, "read_refused", lambda p: os.path.abspath(p).startswith(vault)), \
+                        mock.patch("os.path.isfile", lambda p: looked.append(p) or real_isfile(p)):
+                    flags, missing = wake.first_flags(rec, {"mode": "", "model": ""}, "auto", False)
+                self.assertEqual(flags, ["--model", "m"], "not carried")
+                self.assertEqual(missing, ["--settings"], "and named among the options not carried")
+        self.assertEqual([p for p in looked if p.startswith(vault)], [], "never looked at")
+
     def test_a_mode_above_the_ceiling_is_lowered_to_it(self):
         rec = self.human(options=[], dropped=[])
         for mode, ceiling, flag in (("bypassPermissions", "auto", "auto"), ("dontAsk", "acceptEdits", "acceptEdits"),
