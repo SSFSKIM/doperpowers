@@ -47,6 +47,24 @@ SCRIPT = os.path.join(os.path.dirname(HERE), "skills", "sminos", "scripts", "smi
 INBOX = os.path.join(HERE, "inbox_standin.py")
 
 
+def interleave_hook(case, sid):
+    """The record hook of a process that comes up holding the session, made to land inside the next count of a
+    failed wake: just before that count's write, between the record's read and its compare-and-set. The list it
+    returns holds that process once it came up."""
+    real, came_up = threads.update, []
+
+    def update(thread_id, fields, *a, **k):
+        if not came_up and "failed" in (fields.get("waking") or {}):
+            came_up.append(case.session(sid=sid, kind="bg")[1])
+            case.assertTrue(threads.stop_seen(sid), "the hook cleared the accepted job")
+        return real(thread_id, fields, *a, **k)
+    p = mock.patch.object(threads, "update", update)
+    p.start()
+    case.addCleanup(p.stop)
+    case.addCleanup(lambda: [case.end(proc) for proc in came_up])
+    return came_up
+
+
 class Wakers(Engine):
     """The engine first on PATH, polls short."""
 
@@ -488,6 +506,27 @@ class Human(Wakers):
         self.assertEqual(self.launches(), 2, "a sender's own call launches again")
         self.assertIn("the wake of %s failed: its job %s was accepted and never ran" % (sid[:8], sid[:8]),
                       self.daemon_log(), "the one that never ran counted")
+
+    def test_a_hook_that_clears_the_accepted_job_before_its_count_wins(self):
+        # Round 3: the wake reads its accepted job dead, and a process of the session comes up before the count
+        # lands; its record hook (stop_seen, under the record's lock alone) clears the job first. The count is made
+        # only while the record holds that very job, in the field's own compare-and-set: nothing is counted, and
+        # the line stays for the process that runs.
+        tid, sid = self.human_thread()
+        self.switch("late-process", 30)
+        with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "2"}):
+            self.assertEqual(self.wake(sid).why, "starting")
+        line = self.waking(tid, sid)["line"]
+        self.claude("stop", sid[:8])   # its job read dead by the next wake
+        came_up = interleave_hook(self, sid)
+        got = self.wake(sid)
+        self.assertTrue(came_up, "the hook landed between the observation and the count")
+        self.assertTrue(got.live, got)
+        waking = self.waking(tid, sid)
+        self.assertNotIn("failed", waking, "nothing counted")
+        self.assertEqual(waking.get("line"), line, "the line kept for the process that runs")
+        self.assertNotIn("accepted and never ran", self.daemon_log())
+        self.assertEqual(self.launches(), 1, "nothing launched beside it")
 
     def test_a_launch_that_timed_out_with_its_process_running_is_live_through_w8(self):
         tid, sid = self.human_thread()

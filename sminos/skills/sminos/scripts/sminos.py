@@ -14576,7 +14576,8 @@ def _wake_held(tid, session, due, returns, on_live):
                     return WakeResult(False, "starting")
             # Dead, failed or gone, or its grace passed while no process holds the session (W2): that launch
             # failed, counted as one, so §4's schedule holds the next; this wake goes on only while one is due.
-            accepted_failed(tid, session, job["short"])
+            if not accepted_failed(tid, session, job):
+                continue   # a process's hook cleared it first: W2 again, which reads what holds the session now
             if not due and not wm.wake_due(threads.get(tid), session):
                 return WakeResult(False, "failed")
         row = wm.row_of(session)
@@ -14720,12 +14721,14 @@ def _wake_wait(session, short):
     return ""
 
 
-def _wake_failed(tid, session, line_id, what):
+def _wake_failed(tid, session, line_id, what, job=None):
     """§3's "failed": the failure counted in `waking`, this wake's line
-    removed, said in daemon.log; not live."""
+    removed, said in daemon.log; not live. With `job` (accepted_failed),
+    None when the record holds that job no more: nothing counted or said."""
     threads = threads_module()
     try:
-        threads.wake_failed(tid, session, line_id)
+        if not threads.wake_failed(tid, session, line_id, job=job) and job is not None:
+            return None
     except (OSError, LockBusy) as e:
         warn("the failed wake of %s was not counted: %s" % (session[:8], e or "its lock is busy"))
     daemon_log("the wake of %s failed: %s" % (session[:8], what))
@@ -14739,15 +14742,19 @@ def _wake_failed(tid, session, line_id, what):
 WAKE_SAID_AT = 5   # the failure in a row at which daemon.log names the thread (§4)
 
 
-def accepted_failed(tid, session, short):
+def accepted_failed(tid, session, job):
     """§3's "failed" for a launch whose banner's job was accepted (`waking.job`)
     and never ran: the job dead, failed or gone from the job list, or its
     grace passed while no process held the session. Counted as any failed
     wake, with the line bound to that job (its `short`) removed: no process
-    of that launch will take it. Under the caller's wake lock."""
-    line = threads_module().waking(threads_module().get(tid), session).get("line") or {}
-    return _wake_failed(tid, session, line.get("id") if line.get("short") == short else None,
-                        "its job %s was accepted and never ran" % short)
+    of that launch will take it. Under the caller's wake lock, which the
+    record hook does not take: so only while the record still holds the job
+    observed (`job`, its `short` and `at`), decided in the field's own
+    compare-and-set (wake_failed), and a process that came up meanwhile,
+    whose hook cleared the job first (stop_seen), keeps its line, nothing
+    counted. Whether it was counted."""
+    return _wake_failed(tid, session, None, "its job %s was accepted and never ran" % job["short"], job=job) \
+        is not None
 
 
 def wake_lapsed(tid, session):
@@ -14766,8 +14773,7 @@ def wake_lapsed(tid, session):
     if not isinstance(job, dict) or not job.get("short") or wm.starting(t, session) is not None \
             or running_now(session) is not None:
         return False
-    accepted_failed(tid, session, job["short"])
-    return True
+    return accepted_failed(tid, session, job)
 
 
 def resume_session(s, locks=None, quiet=False, event=None, project=None, carried=None, words=None, returns=False,

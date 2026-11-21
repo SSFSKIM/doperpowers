@@ -837,14 +837,21 @@ def wake_line(thread_id, session, line, lock_until=None):
     return _waking_change(thread_id, session, change, lock_until)
 
 
-def wake_failed(thread_id, session, line_id, lock_until=None):
+def wake_failed(thread_id, session, line_id, lock_until=None, job=None):
     """A wake failed: `failed` counted, `at` now, and the line it wrote removed
-    (`line_id` None: it wrote none, and another wake's line stays)."""
+    (`line_id` None: it wrote none, and another wake's line stays). `job`: an
+    accepted job observed dead ({"short", "at"}, §3 row 10b), counted only
+    while the field still holds that very job, the line bound to it (its
+    `short`) removed with it; a process's hook that cleared it first
+    (stop_seen) wins, and nothing is written."""
     def change(w):
+        if job is not None and w.get("job") != job:
+            return None
         w["failed"] = (w["failed"] if isinstance(w.get("failed"), int) and w["failed"] > 0 else 0) + 1
         w["at"] = sminos.now(ms=True)
         w.pop("job", None)
-        if line_id is not None and (w.get("line") or {}).get("id") == line_id:
+        line = w.get("line") or {}
+        if line_id is not None and line.get("id") == line_id or job is not None and line.get("short") == job["short"]:
             w.pop("line")
         return w
     return _waking_change(thread_id, session, change, lock_until)

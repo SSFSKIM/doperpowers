@@ -36,7 +36,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_wake_seat import Wakers, sminos, threads, wait_for  # noqa: E402
+from test_wake_seat import Wakers, interleave_hook, sminos, threads, wait_for  # noqa: E402
 
 
 class Transitions(Wakers):
@@ -139,6 +139,26 @@ class Sweep(Transitions):
         asked = threads.shorts_of(threads.owner_sessions(threads.get(tid)))
         self.assertTrue(self.daemon.end_stopped(threads, tid, sid, old, asked), "and ended by the rule")
         self.assertEqual(self.launches(), 3)
+
+    def test_the_sweep_counts_no_lapsed_job_a_hook_cleared_before_its_count(self):
+        # Round 3: the sweep reads the accepted job's grace passed with no process, and a process of the session
+        # comes up before the count lands; its record hook clears the job first, and wins: nothing is counted, and
+        # the line stays for the process that runs.
+        tid, sid = self.human_thread()
+        self.switch("late-process", 60)
+        with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "2", "SMINOS_WAKE_GRACE": "1"}):
+            self.assertEqual(self.wake(sid).why, "starting")
+            line = self.waking(tid, sid)["line"]
+            self.claude("stop", sid[:8])
+            time.sleep(1.1)
+            came_up = interleave_hook(self, sid)
+            self.sweep()
+        self.assertTrue(came_up, "the hook landed between the observation and the count")
+        waking = self.waking(tid, sid)
+        self.assertNotIn("failed", waking, "nothing counted")
+        self.assertNotIn("job", waking, "the hook's clearing stands")
+        self.assertEqual(waking.get("line"), line, "the line kept for the process that runs")
+        self.assertNotIn("accepted and never ran", self.daemon_log())
 
     def test_a_dead_accepted_launchs_line_goes_to_no_process_resumed_after_it(self):
         # frontier review round 2, scalpel-2#4: the accepted worker gone before it published; a background resume
