@@ -2316,6 +2316,22 @@ while the milestones are built, one observation and its evidence each.
   earlier positions to keep, so it stays `failed unreadable` with nothing
   written (M2). The holder folds this into the composite (C3, Y3) at CH1's
   landing.
+- 2026-11-21 — **M3's review, round 1, as fixed** (`483a1e69`). A
+  restatement's last guard, under the record's lock, is
+  `sminos.restated_holds`, reading files as they are: the session's
+  `joined` in effect is under the Change's `writer`; that writer is the one
+  its events go under now, with the machine's name read afresh
+  (`machine_name_now`), not from the per-invocation cache; and that
+  `joined` is the session's newest on this machine (`_joined_since`), which
+  is what "its current project" means here. C1 to C4 keep M2's guard. The
+  reconciliation's step is gated first by `channels_here()` (one stat of
+  `projects/` a cache generation), and `set_holders()` runs only when the
+  log states a set or a channel is registered here; so a set made only of
+  channels not registered here is not kept equal to the record, which only
+  M2's test-only `change` can make today. The notice of channels dropped
+  past the limit at an absorption is written before the merge's write, so
+  a cut repeats it rather than losing it. The united `answered` is sorted
+  oldest first.
 
 ## Outcomes & Retrospective
 
