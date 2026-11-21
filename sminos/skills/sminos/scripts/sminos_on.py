@@ -164,10 +164,11 @@ class Answering:
     """The VM side's last line on standard output, for every way it ends:
     `ok` prints the success; leaving otherwise (an exit, an exception)
     prints a refusal with the exit it ends with and the `why` set last
-    (`refuse`), "other" unless set. An exception once the launcher returned
-    a job (spawn_fresh marks the request `launched`) prints none: the job
-    may run without a seat, so nothing is a refusal, and the asking machine
-    says the outcome is not known; the job is named here."""
+    (`refuse`), "other" unless set. Once the launcher returned a job
+    (spawn_fresh marks the request `launched`), any end but a whole success
+    prints none, an exit or an exception alike: the job may run without a
+    seat, so nothing is a refusal, and the asking machine says the outcome
+    is not known; the job is named here."""
 
     def __init__(self, nonce, request=None):
         self.nonce, self.request, self.why, self.done = nonce, request or {}, "other", False
@@ -189,6 +190,11 @@ class Answering:
              "session": spawned["session"], "status": spawned["status"],
              "project": {"id": project.id, "name": project.name} if project is not None else None,
              "machine": sminos.host_name(), "cwd": spawned["cwd"], "head": head_of(spawned["cwd"])}
+        # The project the seat was filed in (the engine's directory, a --worktree's included), when this machine's
+        # enrollment does not carry it: one of sminos.NOT_CARRIED_WORDS, which an older Mac ignores.
+        why = sminos.not_carried(project, self.request["org"]) if project is not None and self.request else ""
+        if why:
+            d["not_carried"] = why
         if not outcome_whole(d):
             sminos.die("spawn: seat %s/%s was spawned here (session %s), and its result could not be reported in the "
                        "outcome line's shape (%s): sminos list here shows it"
@@ -199,15 +205,16 @@ class Answering:
     def __exit__(self, kind, error, tb):
         if self.done:
             return False
-        if isinstance(error, SystemExit):
-            code = error.code if type(error.code) is int else 0 if error.code is None else 1
-        elif (job := self.request.get("launched")):
+        code = (error.code if type(error.code) is int else 0 if error.code is None else 1) \
+            if isinstance(error, SystemExit) else 1
+        if (job := self.request.get("launched")):
+            # After a launch nothing is a refusal, an exit or an exception alike (§8 steps 6 and 8).
+            what = "it ended with exit %d, its own line above saying why" % code if isinstance(error, SystemExit) \
+                else str(error)
             sys.stderr.write("sminos: spawn: session %s was launched here, and then this failed: %s; no outcome is "
                              "reported for it, so the machine that asked says it is not known: sminos list here shows "
-                             "whether it runs, and claude stop %s stops it\n" % (job, error, job))
+                             "whether it runs, and claude stop %s stops it\n" % (job, what, job))
             return False
-        else:
-            code = 1
         sys.stdout.flush()
         print(outcome_line(self.nonce, {"ok": False, "exit": code, "why": self.why}), flush=True)
         return False
@@ -773,9 +780,19 @@ def remote(c, vm, request, directory):
             sminos.note("%s is up and not enrolled in the org yet: waiting up to %d minutes for its endpoint (the host "
                         "tries again every 5), then spawning" % (vm, round(wait / 60)))
         time.sleep(min(seconds("SMINOS_ON_ENROLL_POLL", ENROLL_POLL), max(0.0, deadline - time.monotonic())))
-    print("seat %s on %s: %s/%s  [%s / %s]  status=%s  (message it: sminos say \"@%s …\"; it is listed here once %s's "
-          "events arrive)" % ("re-filled" if d["refilled"] else "spawned", d["machine"], d["group"], d["alias"],
-                              d["short"], d["seat"], d["status"], d["session"][:8], d["machine"]), flush=True)
+    line = "seat %s on %s: %s/%s  [%s / %s]  status=%s" % ("re-filled" if d["refilled"] else "spawned", d["machine"],
+                                                          d["group"], d["alias"], d["short"], d["seat"], d["status"])
+    why = d.get("not_carried")
+    if isinstance(why, str) and why:
+        # Launched in a project its machine's enrollment does not carry (a --worktree's checkout, say): no promise.
+        print(line, flush=True)
+        sminos.note("%s filed this seat in its project %s, which its enrollment does not carry%s: it will not be "
+                    "listed here, and nothing said from here reaches it" % (
+                        d["machine"], d["project"]["name"],
+                        " (%s)" % why if why in sminos.NOT_CARRIED_WORDS else ""))
+    else:
+        print("%s  (message it: sminos say \"@%s …\"; it is listed here once %s's events arrive)"
+              % (line, d["session"][:8], d["machine"]), flush=True)
     if c.made is not None:
         sminos.note(c.kept()[len(". The VM "):] + ", and it sends a notice after three idle days")
         # Only where the session runs in the checkout the branch was derived for, which an explicit --cwd or a

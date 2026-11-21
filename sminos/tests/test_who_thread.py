@@ -219,6 +219,27 @@ class Carried(Who):
         self.session(root=local, name="there")
         self.reconcile(sminos.resolve_project(local))
         self.assertEqual(self.answer("there", cwd=local, carried=True)["not_carried"], "it syncs through no hub")
+        other = os.path.join(self.home, "other")
+        os.makedirs(other)
+        with open(os.path.join(other, ".smns"), "w") as f:
+            json.dump({"project": str(uuidlib.uuid4()), "name": "other", "remote": "", "hub": {"org": "org-2"}}, f)
+        self.session(root=other, name="away")
+        self.reconcile(sminos.resolve_project(other))
+        self.assertEqual(self.answer("away", cwd=other, carried=True)["not_carried"], "its .smns names another org")
+
+    def test_not_carried_is_one_of_a_fixed_set_of_words_and_never_a_name(self):
+        """The holder's ruling (F10): the value is a fixed word or "", never free text, a path, an id or a hub's
+        name; sminos.not_carried returns only these."""
+        self.assertEqual(sminos.NOT_CARRIED_WORDS, (
+            "it syncs through no hub", "its .smns names another org", "the org's directory has retired it",
+            "it has left this machine", "this machine is not enrolled in the org"))
+        project = sminos.make_project("p-1", "Release Tools (x)", "", "", hub={"url": "", "org": "org-9"})
+        for hub in (None, {"url": "", "org": "org-9"}, {"url": "", "org": ""}, {"org": 7}):
+            with self.subTest(hub=hub):
+                why = sminos.not_carried(project._replace(hub=hub), "org-1")
+                self.assertIn(why, sminos.NOT_CARRIED_WORDS)
+                self.assertNotIn("Release", why)
+                self.assertNotIn("org-9", why)
 
 
 class Refusals(Who):

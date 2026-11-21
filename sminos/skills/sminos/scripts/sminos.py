@@ -1186,14 +1186,22 @@ def not_carried(project, org):
     this machine."""
     hub = project.hub if isinstance(project.hub, dict) else None
     if hub is None or not isinstance(hub.get("org"), str) or not hub["org"]:
-        return "it syncs through no hub"
+        return NO_HUB
     if hub["org"] != org:
-        return "its .smns names another org"
+        return OTHER_ORG
     if org_retired(project.id):
-        return "the org's directory has retired it"
+        return RETIRED_HERE
     if has_left(project):
-        return "it has left this machine"
+        return LEFT_HERE
     return ""
+
+
+# Why a project is not carried, each a fixed word, never a name, a path or an id: `who --thread`'s and the outcome
+# line's `not_carried` carry one of NOT_CARRIED_WORDS, or "" (EN.G1's plan, §4 and §8).
+NO_HUB, OTHER_ORG = "it syncs through no hub", "its .smns names another org"
+RETIRED_HERE, LEFT_HERE = "the org's directory has retired it", "it has left this machine"
+NOT_ENROLLED = "this machine is not enrolled in the org"
+NOT_CARRIED_WORDS = (NO_HUB, OTHER_ORG, RETIRED_HERE, LEFT_HERE, NOT_ENROLLED)
 
 
 def machine_retired(name):
@@ -18858,7 +18866,7 @@ def who_thread(name):
     # no project was read: devcloud's `vm owner` warns from it.
     enrolled = enrollment()
     out["not_carried"] = "" if project is None else not_carried(project, enrolled["org"]) if enrolled is not None \
-        else "this machine is not enrolled in the org"
+        else NOT_ENROLLED
     print(json.dumps(out))
 
 

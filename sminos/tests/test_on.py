@@ -983,6 +983,20 @@ class Outcome(On):
                       "sminos may predate this call", err)
         self.assertNotIn("nothing was spawned", err)
 
+    def test_a_seat_filed_in_a_project_its_machine_does_not_carry_is_said_without_the_promise(self):
+        self.answers("vm1", self.spawned(not_carried="it syncs through no hub",
+                                         project={"id": "p-u", "name": "unshared"}))
+        code, out, err = self.spawn("--on", "vm1")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines()[-1], "seat spawned on vm1: repo/w  [a1b2c3d4 / %s]  status=working" % SEAT)
+        self.assertNotIn("message it", out)
+        self.assertIn("sminos: note: vm1 filed this seat in its project unshared, which its enrollment does not carry "
+                      "(it syncs through no hub): it will not be listed here, and nothing said from here reaches it",
+                      err)
+        self.answers("vm1", self.spawned(not_carried="", project={"id": "p-u", "name": "unshared"}))
+        code, out, err = self.spawn("--on", "vm1")
+        self.assertIn("(message it: sminos say", out, "an empty value: carried, the promise as before")
+
     def test_a_refusal_passes_its_exit_and_not_enrolled_is_refused_at_once_for_a_vm(self):
         self.answers("vm1", on.outcome_line(NONCE, {"ok": False, "exit": 4, "why": "other"}), code=4)
         code, _, err = self.spawn("--on", "vm1")
@@ -1042,9 +1056,10 @@ class Outcome(On):
 class VmSide(On):
     """The VM side's own line, for each way it ends, read by the Mac's check."""
 
-    def asked(self, req=None, cwd=None, raw=None, task="a task", stdin=None, **over):
+    def asked(self, req=None, cwd=None, raw=None, task="a task", stdin=None, runcwd=None, **over):
         """The VM side run here with `req` (each key of `over` set, DROP's taken out), or `raw` as the value:
-        (exit, stdout's lines, stderr, what was launched)."""
+        (exit, stdout's lines, stderr, what was launched); `runcwd`, the directory the engine says the job runs
+        in (a --worktree's), else the directory asked for."""
         req = req or {"v": 1, "nonce": NONCE, "org": "org-1", "origin": None,
                       "by": {"alias": "boss", "short": "abcd1234", "project": "p", "project_name": "repo",
                              "machine": "mac"}}
@@ -1059,7 +1074,7 @@ class VmSide(On):
             sid, launched["proc"] = self.session(root=cwd_, kind="bg", sid=JOB)
             return "a1b2c3d4", "banner"
         with mock.patch.object(sminos, "run_claude_bg", side_effect=start), \
-                mock.patch.object(sminos, "poll_uuid", return_value=(JOB, "working", cwd or self.work)), \
+                mock.patch.object(sminos, "poll_uuid", return_value=(JOB, "working", runcwd or cwd or self.work)), \
                 piped(stdin), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
             try:
@@ -1078,6 +1093,7 @@ class VmSide(On):
         self.assertEqual((d["session"], d["alias"], d["machine"], d["cwd"], d["head"]),
                          (JOB, "w", "testhost", self.work, self.commit))
         self.assertNotIn("seat spawned:", "\n".join(lines))
+        self.assertNotIn("not_carried", d, "a project this enrollment carries: no key")
         self.assertIn('boss (@abcd1234, in repo on mac; sminos say "@abcd1234 …" reaches it)', launched["task"])
 
     def test_each_refusal_ends_with_a_whole_line_of_its_why(self):
@@ -1122,6 +1138,21 @@ class VmSide(On):
                               % bare, err)
                 self.assertEqual(launched, {}, "nothing launched")
 
+    def test_a_worktree_the_engine_runs_in_whose_project_is_not_carried_is_said_in_the_outcome(self):
+        """The reviewer's probe: `--worktree` puts the job in a linked worktree whose `.smns` names no hub, which
+        admission (the directory asked for) cannot see before the launch. The launch is no refusal (F6): the
+        outcome says it, with the fixed word for why the project is not carried."""
+        wt = os.path.join(self.work, ".claude", "worktrees", "wt")
+        gitq("worktree", "add", "-q", "-b", "worktree-wt", wt, cwd=self.work)
+        with open(os.path.join(wt, ".smns"), "w") as f:
+            json.dump({"project": str(uuidlib.uuid4()), "name": "unshared", "remote": ""}, f)
+        code, lines, err, _ = self.asked(runcwd=wt)
+        verdict, d = on.judge(lines, NONCE, "w", code)
+        self.assertEqual((code, verdict), (0, "ok"), err)
+        self.assertEqual((d["cwd"], d["project"]["name"], d.get("not_carried")),
+                         (wt, "unshared", "it syncs through no hub"))
+        self.assertIn(d["not_carried"], sminos.NOT_CARRIED_WORDS)
+
     def test_a_request_this_version_does_not_read_prints_no_line(self):
         for bad in ({"v": 2}, {"v": True}, {"nonce": "short"}, {"org": ""}, {"by": {"alias": "a"}},
                     {"by": {"alias": "a", "short": "XYZ", "project": "p", "project_name": "n", "machine": "m"}},
@@ -1135,34 +1166,39 @@ class VmSide(On):
                 code, lines, err, _ = self.asked(raw=bad)
                 self.assertEqual((code, lines), (2, []), err)
 
-    def test_a_success_it_cannot_say_whole_ends_with_a_refusal_and_says_why(self):
+    def test_a_success_it_cannot_say_whole_prints_no_line_and_names_the_job(self):
+        """After a launch nothing is a refusal (§8 steps 6 and 8): no outcome line, so the Mac takes row 29; the
+        VM's own diagnostic kept, and the job named."""
         with mock.patch.object(on, "head_of", return_value="not a commit"):
             code, lines, err, launched = self.asked()
-        self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1, "why": "other"}))
+        self.assertEqual(code, 1)
+        self.assertEqual(on.judge(lines, NONCE, "w", code), ("unknown", "no outcome line came back"), lines)
         self.assertIn("spawn: seat repo/w was spawned here (session %s), and its result could not be reported in "
                       "the outcome line's shape (" % JOB, err)
-        self.assertIn("sminos list here shows it", err)
-        self.assertNotIn("was not", err)
+        self.assertIn("sminos: spawn: session a1b2c3d4 was launched here, and then this failed: it ended with exit 1, "
+                      "its own line above saying why; no outcome is reported for it, so the machine that asked says it "
+                      "is not known: sminos list here shows whether it runs, and claude stop a1b2c3d4 stops it", err)
 
-    def test_a_failure_after_the_launch_is_no_refusal_and_names_the_job(self):
-        """After the launcher returned a job, nothing is a refusal: no outcome line, so the Mac takes the
-        unknown-outcome path (row 29), and the job, which may run without a seat, named on standard error."""
-        out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(sminos, "run_claude_bg", return_value=("a1b2c3d4", "banner")), \
-                mock.patch.object(sminos, "meta_set", side_effect=OSError(28, "No space left on device")), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+    def test_a_launch_with_no_usable_session_id_prints_no_line_and_names_the_job(self):
+        with mock.patch.object(sminos, "poll_uuid", return_value=None):
+            out, err = io.StringIO(), io.StringIO()
             request = json.dumps({"v": 1, "nonce": NONCE, "org": "org-1", "origin": None, "by": None})
-            try:
-                with self.assertRaises(OSError):
+            with mock.patch.object(sminos, "run_claude_bg", return_value=("a1b2c3d4", "banner")), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+                try:
                     sminos.main(["spawn", "w", "a task", "--asked-from", request, "--cwd", self.work])
-            finally:
-                sminos.forget_caches()
-        lines = out.getvalue().splitlines()
-        self.assertEqual(on.judge(lines, NONCE, "w", 1), ("unknown", "no outcome line came back"), lines)
-        self.assertIn("sminos: spawn: session a1b2c3d4 was launched here, and then this failed: [Errno 28] No space "
-                      "left on device; no outcome is reported for it, so the machine that asked says it is not known: "
-                      "sminos list here shows whether it runs, and claude stop a1b2c3d4 stops it", err.getvalue())
+                    code = 0
+                except SystemExit as e:
+                    code = e.code
+                finally:
+                    sminos.forget_caches()
+        self.assertEqual(code, 1)
+        self.assertEqual(on.judge(out.getvalue().splitlines(), NONCE, "w", code),
+                         ("unknown", "no outcome line came back"))
+        self.assertIn("produced no usable session uuid", err.getvalue())
+        self.assertIn("sminos: spawn: session a1b2c3d4 was launched here, and then this failed: it ended with exit 1",
+                      err.getvalue())
 
     def test_an_empty_task_on_standard_input_is_refused_with_a_line(self):
         code, lines, err, launched = self.asked(task="-", stdin=b"")
