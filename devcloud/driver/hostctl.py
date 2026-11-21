@@ -267,6 +267,75 @@ def host_expires(ctx, host):
         return None
 
 
+# --- who owns it (`devcloud vm owner`, EN.G1's plan §5) ----------------------------------
+
+OWNER_PROGRAM = pathlib.Path(__file__).with_name("owner_host.py")
+OWNER_TIMEOUT = 90        # the program waits up to 20 s for a notice being sent
+LOST_CODE = 255           # ssh's own exit (driver.ssh.LOST): the connection, not the program
+
+
+@dataclasses.dataclass(frozen=True)
+class HostOwner:
+    tag: str | None            # the descriptor's DEVCLOUD_CREATOR; None for none
+    project: str | None        # its DEVCLOUD_CREATOR_PROJECT; None for none
+    takes_project: bool        # whether the host's own parser knows that key
+
+
+def _owner_answer(result):
+    """The HostOwner of a whole answer: exit 0 and a last line of the shape
+    the program prints, its three keys each there (a null is said, never
+    taken from a key that is missing); else None."""
+    if result.code != 0:
+        return None
+    lines = (result.out or "").strip().splitlines()
+    try:
+        data = json.loads(lines[-1])
+    except (ValueError, IndexError):
+        return None
+    if not isinstance(data, dict) or set(data) != {"tag", "project", "takes_project"} \
+            or not isinstance(data["takes_project"], bool) \
+            or not all(data[k] is None or isinstance(data[k], str) for k in ("tag", "project")):
+        return None
+    return HostOwner(data.get("tag"), data.get("project"), data["takes_project"])
+
+
+def seen_of(result):
+    """What a call that gave no whole answer showed: its exit and the
+    program's last line."""
+    lines = ((result.err or "").strip() or (result.out or "").strip()).splitlines()
+    exit_ = "no exit status" if result.code is None or result.code == LOST_CODE else f"exit {result.code}"
+    return f"{exit_}: {lines[-1]}" if lines else exit_
+
+
+def owner_set(ctx, host, tag, project, seen=None):
+    """The owner program run on the host as root, to write. What the host
+    holds afterwards, as a HostOwner; DriverError in §5's words for a
+    departure that has started (the program's exit 3) and for a notice being
+    sent (4); None when no whole answer came back (a lost connection, a
+    timeout, any other exit, a line that is not the answer), which says
+    nothing of whether the write was made or is still being made. `seen`, a
+    list, is given what such a call showed (seen_of)."""
+    command = f"python3 -P - write {shlex.quote(tag)} {shlex.quote(project)}"
+    result = ctx.remote.run(host.name, host.alias, command, input=OWNER_PROGRAM.read_bytes(), timeout=OWNER_TIMEOUT)
+    if result.code == 3:
+        raise DriverError(FAILED, f"{host.name}'s departure has started; its owner stays as it is")
+    if result.code == 4:
+        raise DriverError(FAILED, f"{host.name} is sending a notice now, and a handover waits for it, so that none goes "
+                                  "to the thread that gives the host up once it is done: nothing was changed; run it "
+                                  "again in a minute")
+    answer = _owner_answer(result)
+    if answer is None and seen is not None:
+        seen.append(seen_of(result))
+    return answer
+
+
+def host_owner(ctx, host):
+    """The owner program run to read: the HostOwner the host's own parser
+    gives, None when no whole answer came back."""
+    return _owner_answer(ctx.remote.run(host.name, host.alias, "python3 -P - read",
+                                        input=OWNER_PROGRAM.read_bytes(), timeout=60))
+
+
 def as_root(user, command):
     """`command` run as root by the login `user`: sudo, without a password,
     for a user other than root."""

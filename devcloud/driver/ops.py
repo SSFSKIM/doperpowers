@@ -122,7 +122,9 @@ def ls(ctx, as_json=False):
         ctx.say(json.dumps({"unconfirmed": {"alive": alive, "cap": cap}, "vms": rows}, indent=1))
         return 0
     ctx.say(f"unconfirmed {alive}/{cap}")
-    table = [("NAME", "ACCOUNT", "LIFETIME", "LEASE", "STATE", "AGE", "PRICE", "SPENT", "CREATOR", "IDLE")]
+    # The thread that owns each host: the one that made it, or the one it was handed to (`vm owner`); --json keeps
+    # the key `creator`, the label's word.
+    table = [("NAME", "ACCOUNT", "LIFETIME", "LEASE", "STATE", "AGE", "PRICE", "SPENT", "OWNER", "IDLE")]
     for row in rows:
         if row.get("tailnet_only"):
             table.append((row["name"], "tailnet only", "-", "-", row["state"], "-", "-", "-", "-", "-"))
@@ -160,9 +162,11 @@ def ssh(ctx, name, root, command):
 def lease(ctx, name, text):
     """The lease end set to now + duration, or removed (`keep`): the host
     first (under its lock), then the label with the lease the host printed
-    back (§4.1). When that changed the kind of the host's tailnet node, the
-    host rejoins as the other kind under the same name, and the driver waits
-    for it to come back. No cap applies: a lease changes when a VM ends,
+    back (§4.1), merged under this Mac's lock for the host
+    (Context.merge_labels), so a handover beside it keeps its owner. When
+    that changed the kind of the host's tailnet node, the host rejoins as
+    the other kind under the same name, and the driver waits for it to come
+    back. No cap applies: a lease changes when a VM ends,
     never how many are alive (§2)."""
     keep = text == "keep"
     try:
@@ -179,15 +183,13 @@ def lease(ctx, name, text):
         _follow(ctx, record.host, done)
         return 0
     entry = ctx.find(name)
-    vm = entry.vm
     done = hostctl.lease_set(ctx, entry.host, wanted)
     if done.expires is None:
         # Kept; devcloud-confirmed stays as `up` set it, so the count cap still sees the VM.
-        entry.client.set_labels(vm["id"], {"devcloud-lifetime": "keep"}, merge=True, drop=("devcloud-expires",))
+        ctx.merge_labels(entry, {"devcloud-lifetime": "keep"}, drop=("devcloud-expires",))
         ctx.say(f"{name} is kept, without a lease")
     else:
-        entry.client.set_labels(vm["id"], {"devcloud-expires": str(done.expires), "devcloud-lifetime": "ttl"},
-                                merge=True)
+        ctx.merge_labels(entry, {"devcloud-expires": str(done.expires), "devcloud-lifetime": "ttl"})
         ctx.say(f"{name} lease ends {iso(done.expires)} ({_relative(done.expires, now)})")
     _follow(ctx, entry.host, done)
     return 0

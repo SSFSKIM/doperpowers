@@ -20,6 +20,7 @@ connection is keyed by the machine's name (§8.3)."""
 import base64
 import dataclasses
 import json
+import os
 import pathlib
 import re
 import shlex
@@ -77,12 +78,78 @@ def path(ctx, name):
     return _dir(ctx) / f"{name}.json"
 
 
-def save(ctx, record):
+def _write(ctx, record):
+    """The record written whole through a temporary file named for this
+    process, so two writers never share one; the caller holds the lock."""
     directory = _dir(ctx)
     directory.mkdir(parents=True, exist_ok=True)
-    staged = directory / f".{record.name}.json.tmp"
+    staged = directory / f".{record.name}.json.{os.getpid()}.tmp"
     staged.write_text(json.dumps(dataclasses.asdict(record), indent=1) + "\n")
     staged.replace(path(ctx, record.name))
+
+
+def save(ctx, record):
+    """The record's first write, under the host's lock (Context.host_lock),
+    and only that: a record already there is never replaced from a copy
+    (every write after the first goes through `update`)."""
+    with ctx.host_lock(record.name):
+        if path(ctx, record.name).exists():
+            raise DriverError(FAILED, f"an adoption record named {record.name} is there already (another adoption "
+                                      "made it meanwhile): nothing was written; see devcloud vm ls")
+        _write(ctx, record)
+
+
+def current(ctx, record):
+    """A resumed adoption's copy held to the record as it is now, read under
+    the host's lock before anything is replayed: the caller's copy brought
+    up to it (a handover's `creator` among it); §5's sentence when the
+    record is gone, and a refusal when another run moved its phase on, so a
+    copy read before the checks never stands for a record that advanced."""
+    with ctx.host_lock(record.name):
+        now = load(ctx, record.name)
+    if now is None:
+        raise gone(record.name)
+    if now.phase != record.phase:
+        raise DriverError(FAILED, f"{record.name}'s adoption moved on to phase {now.phase} while this run checked the "
+                                  f"machine (another adopt of it ran): nothing was written; run devcloud vm adopt "
+                                  "again to resume from there")
+    for field in dataclasses.fields(now):
+        setattr(record, field.name, getattr(now, field.name))
+    return record
+
+
+def update(ctx, name, **fields):
+    """Under ctx.host_lock(name): the adoption record of `name` read again
+    and replaced with only `fields` changed; the record as written, or
+    None, with nothing written, when the record is gone. Every write of a
+    record after its first goes through it, so a writer that read the
+    record before a call to the host (minutes, for a boot) writes back
+    nothing another changed meanwhile (a handover's `creator`)."""
+    with ctx.host_lock(name):
+        record = load(ctx, name)
+        if record is None:
+            return None
+        record = dataclasses.replace(record, **fields)
+        _write(ctx, record)
+        return record
+
+
+def gone(name):
+    """`vm lease`'s, a resumed adoption's and the handover's sentence for a
+    record removed while they ran."""
+    return DriverError(FAILED, f"{name}'s adoption record was removed while this ran (the machine was released): "
+                               "nothing more was written")
+
+
+def _update(ctx, record, **fields):
+    """`update`, the caller's copy brought up to the record as written; the
+    sentence above when the record is gone."""
+    written = update(ctx, record.name, **fields)
+    if written is None:
+        raise gone(record.name)
+    for field in dataclasses.fields(written):
+        setattr(record, field.name, getattr(written, field.name))
+    return record
 
 
 def load(ctx, name):
@@ -110,7 +177,8 @@ def records(ctx):
 
 
 def remove(ctx, record):
-    path(ctx, record.name).unlink(missing_ok=True)
+    with ctx.host_lock(record.name):
+        path(ctx, record.name).unlink(missing_ok=True)
     ctx.remote.forget(record.name)
 
 
@@ -209,12 +277,13 @@ def run(ctx, opts):
         if fresh:
             ctx.remote.forget(record.name)
         raise
+    if not fresh:
+        current(ctx, record)
     begun = ctx.clock()
     if record.phase == "preparing":
-        _prepare(ctx, record, chan, keys)
+        _prepare(ctx, record, chan, keys, fresh)
     if record.phase in ("preparing", "seeded"):
-        record.phase = "seeded"
-        save(ctx, record)
+        _update(ctx, record, phase="seeded")
         hostctl.deliver_seed(ctx, address, record.name)
     if record.phase in ("seeded", "booted"):
         _boot(ctx, record)
@@ -263,10 +332,13 @@ def _preflight(ctx, chan, record):
                                   "account; nothing was changed")
 
 
-def _prepare(ctx, record, chan, keys):
+def _prepare(ctx, record, chan, keys, fresh=True):
     """`preparing`: the keys the machine had saved (once), the driver's key
-    authorized for root, the recipe and setup.sh, the descriptor staged."""
-    save(ctx, record)
+    authorized for root, the recipe and setup.sh, the descriptor staged. A
+    fresh adoption writes its record first; a resumed one's is there, as
+    `current` just read it."""
+    if fresh:
+        save(ctx, record)
     _script(ctx, chan, f"save-keys {record.user}", "saving the machine's authorized_keys")
     encoded = base64.b64encode("\n".join(keys).encode()).decode()
     _script(ctx, chan, f"authorize {encoded}", "authorizing the driver's key for root")
@@ -289,8 +361,7 @@ def _boot(ctx, record):
     from .up import wait_boot
     host = record.host
     if record.phase != "booted":
-        record.phase = "booted"
-        save(ctx, record)
+        _update(ctx, record, phase="booted")
     finished = _finished(ctx, host)
     if not finished:
         target = record.address if _answers(ctx, record.address, host) else record.name
@@ -300,8 +371,7 @@ def _boot(ctx, record):
         if result.code != 0:
             raise DriverError(FAILED, f"starting the boot on {record.name} failed (exit {result.code})")
         wait_boot(ctx, host, record.address, ctx.clock() + BOOT_WAIT)
-    record.ready = int(ctx.clock())
-    save(ctx, record)
+    _update(ctx, record, ready=int(ctx.clock()))
 
 
 def _answers(ctx, target, host):
@@ -323,10 +393,10 @@ def _finished(ctx, host):
 def lease(ctx, record, wanted):
     """The lease on the host alone, under its lock, then the record: there
     are no labels (§6.5); `wanted` None keeps it. Returns the host's
-    LeaseSet."""
+    LeaseSet. The record is read again for its write (update), so a
+    handover made while the host answered stands."""
     done = hostctl.lease_set(ctx, record.host, wanted)
-    record.expires, record.lifetime = done.expires, "keep" if done.expires is None else "ttl"
-    save(ctx, record)
+    _update(ctx, record, expires=done.expires, lifetime="keep" if done.expires is None else "ttl")
     return done
 
 
@@ -365,8 +435,7 @@ def down(ctx, record, force):
         if dirty:
             raise DriverError(5, f"{record.name} has unpushed work in {', '.join(r for r, _ in dirty)}: push it, or "
                                  "pass --force")
-    record.phase = "released"
-    save(ctx, record)
+    _update(ctx, record, phase="released")
     outcome = hostctl.release(ctx, host, target, no_hold=force, login=login)
     if outcome == hostctl.HELD:
         raise DriverError(FAILED, f"{record.name}'s release is held (its ship failed, or sessions keep starting): fix "

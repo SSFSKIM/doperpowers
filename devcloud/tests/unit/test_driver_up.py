@@ -18,7 +18,7 @@ HOUR = 3600
 
 def opts(**kw):
     base = dict(label=None, project=[], account=None, type=None, location=None, disk=None, ttl=None, keep=False,
-                spot=False, confirmed=False, dry_run=False)
+                spot=False, confirmed=False, dry_run=False, enroll=False, expect_creator=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -266,6 +266,31 @@ class CreateTest(UpBase):
         self.assertIn("secrets", self.err.getvalue() + self.out.getvalue())
         self.assertIn("dc-vm-7f3a", self.servers())
 
+    def test_a_boot_that_fails_says_a_lease_bounds_the_vm_only_where_it_has_one(self):
+        """A VM made with --keep has no lease: its failure names the down that removes it instead."""
+        for failed, how in (("secrets", "a failed step"), (None, "15 minutes")):
+            for kw, bound in (({"keep": True}, False), ({"ttl": "3h"}, True)):
+                with self.subTest(how=how, **kw):
+                    self.state_file.write_text(json.dumps({"servers": [], "images": [], "deleted": [], "calls": [],
+                                                           "behavior": {}}))
+                    self.hexes = iter(["7f3a"])
+                    self.ctx = self.make_ctx(token_hex=lambda: next(self.hexes))
+                    if failed:
+                        self.booted(failed=failed)
+                    else:
+                        self.remote.rules = [r for r in self.remote.rules if "status.json" not in r["needle"]]
+                        self.remote.on("status.json", out='{"steps": []}\nactivating')
+                    code, message = self.refused(**kw)
+                    self.assertEqual(code, 1)
+                    if bound:
+                        self.assertTrue(message.endswith("the VM dc-vm-7f3a is kept for inspection, its lease "
+                                                         "bounds it"), message)
+                    else:
+                        self.assertNotIn("lease bounds", message)
+                        self.assertTrue(message.endswith("the VM dc-vm-7f3a is kept for inspection, with no lease: "
+                                                         "devcloud vm down dc-vm-7f3a removes it"), message)
+                    self.assertIn("dc-vm-7f3a", self.servers())
+
     def test_a_boot_unit_that_failed_without_a_failed_step_is_exit_1(self):
         self.remote.rules = [r for r in self.remote.rules if "status.json" not in r["needle"]]
         self.remote.on("status.json", out=status_json(steps_ok=3) + "\nfailed")
@@ -452,8 +477,141 @@ class CountTest(UpBase):
         code, message = self.refused()
         self.assertEqual(code, 1)
         self.assertIn("recount", message)
+        self.assertIn("; deleted dc-vm-7f3a", message, "sminos_on.make_vm reads `deleted <name>` as no VM kept")
         self.assertNotIn("dc-vm-7f3a", self.servers())
         self.assertNotIn("seed", " ".join(self.remote.commands()))
+
+
+class EnrollTest(UpBase):
+    """`up --enroll` and `--expect-creator` (EN.G1's plan, §9): what
+    `sminos spawn --on new` asks of devcloud, each checked before the
+    reaper's run and before any call to a provider."""
+
+    def desk(self):
+        toml = self.profile_dir / "driver.toml"
+        toml.write_text(toml.read_text() + f'\n[desk]\nprovisioning_secret_v2 = "desk-provisioning-v2"\n'
+                        f'delegation_id = "{MawsTest.DELEGATION}"\n')
+        self.ctx = self.make_ctx(token_hex=lambda: next(self.hexes))
+
+    def created(self):
+        return MawsTest.created(self)
+
+    def test_enroll_adds_the_maws_project_after_those_named_when_none_of_them_provisions(self):
+        self.desk()
+        self.assertEqual(self.up(project=["example/repo@topic"], enroll=True, keep=True), 0)
+        create, desc = self.created()
+        self.assertEqual(desc.projects, ("example/repo@topic", "maws"))
+        self.assertEqual(create["labels"]["devcloud-enroll"], "key")
+        self.assertEqual(desc.maws_secret, "desk-provisioning-v2")
+        self.assertIn("enroll    the MAWS project is added: its setup installs the endpoint this host enrolls with",
+                      self.out.getvalue())
+
+    def test_enroll_adds_nothing_when_a_named_project_provisions(self):
+        self.desk()
+        self.assertEqual(self.up(project=["example/repo", "maws@main"], enroll=True), 0)
+        _, desc = self.created()
+        self.assertEqual(desc.projects, ("example/repo", "maws@main"))
+        self.assertNotIn("enroll    ", self.out.getvalue())
+
+    def test_enroll_under_a_profile_that_names_no_provisioning_is_3_before_any_provider_call(self):
+        for dry in (True, False):
+            with self.subTest(dry_run=dry):
+                code, message = self.refused(project=["example/repo"], enroll=True, dry_run=dry)
+                self.assertEqual(code, 3)
+                self.assertEqual(message, "--enroll: the profile's [desk] names no provisioning "
+                                          "(provisioning_secret_v2 with delegation_id), so a host it makes cannot "
+                                          "join the org: nothing was made")
+        self.assertEqual(self.state()["calls"], [], "no provider was called, the reaper's run included")
+
+    def skipped_provisioning(self):
+        from devcloudlib import status
+        steps = [{"name": n, "state": "ok", "at": "t", "detail": ""} for n in status.STEPS]
+        steps[-1] = {"name": "maws", "state": "skipped", "at": "t", "detail": "no mawsd here (mawsd): skipped"}
+        self.remote.rules = [r for r in self.remote.rules if "status.json" not in r["needle"]]
+        self.remote.on("status.json", out=json.dumps({"steps": steps}) + "\nactive")
+
+    def test_enroll_whose_boot_skipped_the_provisioning_fails_naming_the_kept_vm(self):
+        """--enroll asks for a host that joins the org: a boot that skipped the provisioning that enrolls (a
+        project that installs no mawsd) is a failure of up, the VM named and kept, never `ready`."""
+        self.desk()
+        self.skipped_provisioning()
+        code, message = self.refused(project=["maws"], enroll=True, keep=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(message, "--enroll: the boot of dc-vm-7f3a skipped the provisioning it enrolls with (maws "
+                                  "skipped: no mawsd here (mawsd): skipped), so it will not join the org; the VM "
+                                  "dc-vm-7f3a is kept for inspection, with no lease: devcloud vm down dc-vm-7f3a "
+                                  "removes it")
+        self.assertNotIn("ready in", self.out.getvalue())
+        self.assertIn("dc-vm-7f3a", self.servers())
+
+    def test_without_enroll_a_skipped_provisioning_is_ready_as_before(self):
+        self.desk()
+        self.skipped_provisioning()
+        self.assertEqual(self.up(project=["maws"], keep=True), 0)
+        self.assertIn("dc-vm-7f3a  ready in", self.out.getvalue())
+
+    def test_expect_creator_the_context_reads_makes_the_host_as_before(self):
+        self.assertEqual(self.up(expect_creator="abcd1234"), 0)
+        self.assertIn("create", self.ops())
+        self.assertEqual(self.servers()["dc-vm-7f3a"]["labels"]["devcloud-creator"], "abcd1234")
+
+    def test_expect_creator_with_another_or_no_creator_read_is_1_and_no_provider_is_called(self):
+        cases = ((lambda: ("@abcd1234", "abcd1234"),
+                  "--expect-creator: the caller expects @12345678 as this host's creator, and devcloud read "
+                  "@abcd1234: nothing was made"),
+                 (lambda: (None, None),
+                  "--expect-creator: the caller expects @12345678 as this host's creator, and devcloud read no "
+                  "creating session here (sminos who --session gave it no address it reads): nothing was made"))
+        for creator, words in cases:
+            for dry in (True, False):
+                with self.subTest(words=words[60:90], dry_run=dry):
+                    self.ctx = self.make_ctx(token_hex=lambda: next(self.hexes), creator=creator)
+                    code, message = self.refused(expect_creator="12345678", dry_run=dry)
+                    self.assertEqual((code, message), (1, words))
+        self.assertEqual(self.state()["calls"], [], "no provider was called at all, the reaper's run included")
+
+    def test_expect_creator_that_is_no_short_id_is_usage(self):
+        for value in ("abcd123", "ABCD1234", "@abcd1234", "abcd12345"):
+            with self.subTest(value=value):
+                self.assertEqual(self.refused(expect_creator=value, dry_run=True)[0], 2)
+        self.assertEqual(self.state()["calls"], [])
+
+
+class ReadyLineReaderTest(UpBase):
+    """sminos's reader of `up`'s output (S/sminos_on.py, READY_RE and
+    CREATED_RE): in everything a whole `up` prints, made from an image and
+    enrolling, the host is named by exactly one line of the form `<name>
+    ready in <m>m<ss>s`, with five lines after it, and before it by exactly
+    one `created   <name> (id <id>) from …`, the line sminos reads the VM's
+    name from when `up` fails after making it."""
+
+    READY_RE = re.compile(r"(\S+)  ready in \d+m\d\ds")
+    CREATED_RE = re.compile(r"created   (\S+) \(id [^)]*\) from .*")
+
+    def setUp(self):
+        super().setUp()
+        EnrollTest.desk(self)
+
+    def test_the_whole_output_of_an_up_holds_one_ready_line_naming_its_host(self):
+        from devcloudlib import status
+        steps = [{"name": n, "state": "ok", "at": "t", "detail": ""} for n in status.STEPS]
+        steps[-1] = {"name": "maws", "state": "deferred", "at": "t", "detail": "its certificate not yet live"}
+        self.remote.rules = [r for r in self.remote.rules if "status.json" not in r["needle"]]
+        self.remote.on("status.json", out=json.dumps({"steps": steps}) + "\nactive")
+        ImageTest.images(self, ("current", compose.recipe_hash(_path.DEVCLOUD), NOW - HOUR, "image"))
+        self.assertEqual(self.up(project=["maws"]), 0)
+        lines = (self.out.getvalue() + self.err.getvalue()).splitlines()
+        ready = [i for i, line in enumerate(self.out.getvalue().splitlines()) if self.READY_RE.fullmatch(line)]
+        self.assertEqual([self.READY_RE.fullmatch(lines[i]).group(1) for i in ready], ["dc-vm-7f3a"])
+        self.assertEqual(len(self.out.getvalue().splitlines()) - ready[0] - 1, 5)
+        self.assertTrue(any(line.startswith("maws      deferred") for line in lines))
+        self.assertEqual([m.group(1) for line in self.out.getvalue().splitlines()
+                          if (m := self.CREATED_RE.fullmatch(line))], ["dc-vm-7f3a"])
+        caps = [i for i, line in enumerate(self.out.getvalue().splitlines()) if line.startswith("caps      ")]
+        created = [i for i, line in enumerate(self.out.getvalue().splitlines()) if self.CREATED_RE.fullmatch(line)]
+        self.assertTrue(len(caps) == 1 and caps[0] < created[0], "the caps line, before anything is made")
+        self.assertIn("created   dc-vm-7f3a (id ", self.out.getvalue())
+        self.assertIn(") from image img-current (id current)", self.out.getvalue())
 
 
 class RecountTest(UpBase):
@@ -482,8 +640,73 @@ class RecountTest(UpBase):
         code, message = self.refused()
         self.assertEqual(code, 4)
         self.assertNotIn("dc-vm-7f3a", self.servers(), "its own VM, the newest, deleted")
+        self.assertIn("; deleted dc-vm-7f3a: ", message, "sminos_on.make_vm reads `deleted <name>` as no VM kept")
         self.assertIn("dc-other-0001", self.servers())
         self.assertNotIn("seed", " ".join(self.remote.commands()))
+
+    def racing(self):
+        """Another driver's VM lands between this driver's count and its recount: its own, the newest, is over."""
+        self.add_server("dc-x-0000", vm_labels(expires=NOW + HOUR), created=NOW - 60)
+        self.add_server("dc-x-0001", vm_labels(lifetime="keep"), created=NOW - 60)
+        original_fleet = self.ctx.fleet
+        calls = {"n": 0}
+
+        def fleet(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                self.add_server("dc-other-0001", vm_labels(expires=NOW + HOUR), created=NOW - 1)
+            return original_fleet(*a, **kw)
+        self.ctx.fleet = fleet
+
+    def test_a_vm_over_the_cap_whose_delete_is_refused_is_said_kept_and_never_deleted(self):
+        self.racing()
+        self.ctx.delete = lambda entry, **kw: False    # the ownership gate refused it (a label changed meanwhile)
+        code, message = self.refused(keep=True)
+        self.assertEqual(code, 4)
+        self.assertNotIn("deleted dc-vm-7f3a", message)
+        self.assertEqual(message, "over the count cap (4 unconfirmed alive after the create, cap 3: another driver "
+                                  "created one meanwhile); dc-vm-7f3a could not be deleted, so the VM dc-vm-7f3a is "
+                                  "kept for inspection, with no lease: devcloud vm down dc-vm-7f3a removes it, over "
+                                  "the cap: ask the person whether it stays")
+        self.assertIn("dc-vm-7f3a", self.servers())
+
+
+class DeletedLineReaderTest(UpBase):
+    """sminos's reader of the recount's own diagnostic (S/sminos_on.py,
+    DELETED_RE): `up` says a VM it made is gone only in these two forms,
+    each the whole line on standard error after `devcloud vm: `, and never
+    where its delete was not confirmed."""
+
+    DELETED_RE = re.compile(r"devcloud vm: (?:over the count cap \(.*\); deleted (?P<cap>\S+): ask the person, then "
+                            r"pass --confirmed|the recount after the create failed: .*; deleted (?P<failed>\S+))")
+
+    racing = RecountTest.racing
+
+    def line(self, message):
+        return "devcloud vm: %s" % message
+
+    def test_the_two_forms_name_the_vm_deleted_and_a_refused_delete_matches_neither(self):
+        self.racing()
+        _, message = self.refused()
+        m = self.DELETED_RE.fullmatch(self.line(message))
+        self.assertEqual(m and m.group("cap"), "dc-vm-7f3a", message)
+        self.setUp()
+        self.racing()
+        self.ctx.delete = lambda entry, **kw: False
+        _, message = self.refused()
+        self.assertIsNone(self.DELETED_RE.fullmatch(self.line(message)), message)
+        self.setUp()
+        original_fleet, calls = self.ctx.fleet, {"n": 0}
+
+        def failing(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                self.behave(fail={"list": 1})
+            return original_fleet(*a, **kw)
+        self.ctx.fleet = failing
+        _, message = self.refused()
+        m = self.DELETED_RE.fullmatch(self.line(message))
+        self.assertEqual(m and m.group("failed"), "dc-vm-7f3a", message)
 
     def test_a_confirmed_vm_is_not_counted_and_the_recount_spares_it(self):
         for i in range(3):

@@ -6,7 +6,11 @@ devcloud relies on, and nothing else (Python 3.9 compatible: a Mac's
   daemon install    writes the systemd user unit as the real one does
   daemon run        the unit's program: records its environment and waits;
                     on SIGTERM (the daemon's stop) records that and exits
-  say <text>        records the text
+  say [--notice <program>] [--exit-held] [--project P | --in P] <text>
+                    records the call, as a sminos that knows the notice
+                    flags; with `sminos-old-say` in the state directory, as
+                    one that predates them, a call carrying either is a
+                    usage error (exit 2) and the plain call is recorded
   spawn <alias> <prompt>
                     launches a stand-in `claude` process directly, as the real
                     spawn does without the daemon
@@ -82,8 +86,19 @@ elif args == ["daemon", "run"]:
         print("daemon stderr value", (home / ".pgpass").read_text().strip(), file=sys.stderr, flush=True)
     while True:
         time.sleep(60)
-elif args[:1] == ["say"] and len(args) == 2:
-    record()
+elif args[:1] == ["say"] and len(args) >= 2:
+    rest, flags = args[1:], []
+    while rest[:1] in (["--notice"], ["--exit-held"]):
+        flags.append(rest[0])
+        rest = rest[2:] if rest[0] == "--notice" and len(rest) > 2 else rest[1:]
+    if flags and (state / "sminos-old-say").exists():
+        record(error="not played")
+        exit_with("2 stand-in sminos: unrecognized arguments: " + " ".join(flags))
+    if len(rest) == 1 or (len(rest) == 3 and rest[0] in ("--project", "--in")):
+        record()
+    else:
+        record(error="not played")
+        exit_with(f"2 stand-in sminos: {' '.join(args)} is not played here")
 elif args[:1] == ["spawn"] and len(args) >= 3:
     record()
     claude = pathlib.Path(os.environ.get("FAKE_CLAUDE") or pathlib.Path(__file__).with_name("claude"))

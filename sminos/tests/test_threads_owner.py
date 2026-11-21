@@ -245,10 +245,14 @@ class Owned(Owner):
         self.assertIn("alpha (session %s) is not retired" % sid[:8], out)
         self.assertIn("dc-a-0001 (hetzner, account main)", out)
         self.assertIn("lab-box (an adopted machine)", out)
-        self.assertIn("it made or adopted hosts that still exist", out)
-        self.assertIn("deleting or releasing a host is its owner's call", out, "left to the host's owner (M6's evaluation)")
-        self.assertIn("`devcloud vm down dc-a-0001` deletes it", out)
-        self.assertIn("`devcloud vm down lab-box` releases it and leaves it running", out, "an adopted machine is released")
+        # §6 of EN.G1's plan: a thread can own a host it did not make, and the handover is the other way on.
+        self.assertIn("is not retired: it owns hosts that still exist: dc-a-0001 (hetzner, account main), lab-box "
+                      "(an adopted machine); what becomes of a host is its owner's call: once nothing on it is needed, "
+                      "`devcloud vm down dc-a-0001` deletes it; `devcloud vm down lab-box` releases it and leaves it "
+                      "running; or hand it to a thread of this machine that stays, `devcloud vm owner dc-a-0001 "
+                      "<thread>`, `devcloud vm owner lab-box <thread>`; then it can be retired", out,
+                      "left to the host's owner (M6's evaluation)")
+        self.assertNotIn("made", out)
         self.assertNotIn("dc-z-0009", out, "another thread's host")
         self.assertTrue(self.is_member(sid))
         self.assertFalse(self.ended(threads.stamp(sid)))
@@ -259,7 +263,7 @@ class Owned(Owner):
         self.standin(hosts=[host("dc-a-0001", sid[:8], account="adopted")])
         code, out = self.cli("retire", "alpha")
         self.assertEqual(code, 1, out)
-        self.assertIn("it made hosts that still exist: dc-a-0001 (hetzner, account adopted)", out)
+        self.assertIn("it owns hosts that still exist: dc-a-0001 (hetzner, account adopted)", out)
         self.assertIn("`devcloud vm down dc-a-0001` deletes it", out, "X9's marker, not the account's name")
         self.assertNotIn("releas", out)
 
@@ -270,6 +274,7 @@ class Owned(Owner):
         self.assertEqual(code, 1, out)
         self.assertIn("`devcloud vm down 'dc a-0001'` deletes it", out)
         self.assertIn("`devcloud vm down 'lab;box'` releases it", out)
+        self.assertIn("`devcloud vm owner 'dc a-0001' <thread>`, `devcloud vm owner 'lab;box' <thread>`", out)
 
     def test_purge_and_remove_are_refused_too_for_a_seat_and_for_a_session_its_human_opened(self):
         sid, _ = self.opened()
@@ -279,7 +284,9 @@ class Owned(Owner):
                      ("retire", "g/w", "--purge"), ("remove", "g/w")):
             code, out = self.cli(*argv)
             self.assertEqual(code, 1, (argv, out))
-            self.assertIn("deleting a host is its owner's call: once nothing on it is needed, `devcloud vm down", out, argv)
+            self.assertIn("what becomes of a host is its owner's call: once nothing on it is needed, `devcloud vm down "
+                          "dc-", out, argv)
+            self.assertIn("or hand it to a thread of this machine that stays, `devcloud vm owner dc-", out, argv)
             self.assertNotIn("releas", out, argv)
         self.assertTrue(self.is_member(sid) and self.is_member(wsid))
         self.assertIsNotNone(sminos.reload_seat(seat_id))
@@ -464,9 +471,11 @@ class Owned(Owner):
 
 
 class Unknown(Owner):
-    def rows(self):
+    def rows(self, short="abcd1234"):
         """Each way of getting no answer that reads unknown: (what it is, a
-        context that makes it, what the refusal names)."""
+        context that makes it, what the refusal names). `short`: the short id
+        of the thread asked about, which a row whose fault is its host's form
+        names, so that the form is what the reply is rejected for."""
         layout = os.path.join(self.home, "layout")
         bare = os.path.join(self.home, "bare")
         os.makedirs(bare, exist_ok=True)
@@ -526,7 +535,7 @@ class Unknown(Owner):
                 "answer": "none", "vms": [], "unknown": [SPARE], "listed": []}) + "\n"), "a malformed answer"),
             ("a host with no provider that is no adopted machine", standin(stdout=json.dumps({
                 "answer": "owned", "vms": [{"name": "dc-a-0001", "account": "main", "provider": None,
-                                            "creator": "@abcd1234"}], "unknown": [], "listed": []}) + "\n"),
+                                            "creator": "@" + short}], "unknown": [], "listed": []}) + "\n"),
              "a malformed answer"),
             ("an owned answer whose host names a creator not asked about", standin(stdout=json.dumps({
                 "answer": "owned", "vms": [{"name": "dc-z-0009", "account": "main", "provider": "hetzner",
@@ -551,12 +560,13 @@ class Unknown(Owner):
             with self.subTest(what):
                 if i:
                     self.fresh()
-                what, ctx, named = self.rows()[i]
                 sid, tid, at = self.due()
+                what, ctx, named = self.rows(sid[:8])[i]
                 with ctx:
                     code, out = self.cli("retire", "alpha")
                     self.assertEqual(code, 1, out)
                     self.assertIn("is not retired", out)
+                    self.assertIn("devcloud could not tell whether it owns a host that still exists: ", out)
                     self.assertIn(named, out)
                     self.assertIn("sminos retire alpha --owner-unknown", out)
                     self.assertTrue(self.is_member(sid))
@@ -567,6 +577,16 @@ class Unknown(Owner):
                 said = self.logged("stopped and not ended")
                 self.assertEqual(len(said), 1, said)
                 self.assertIn(named, said[0])
+
+    def test_the_row_of_a_host_with_no_provider_is_believed_with_a_provider_named(self):
+        sid, _ = self.opened()
+        self.standin(stdout=json.dumps({
+            "answer": "owned", "vms": [{"name": "dc-a-0001", "account": "main", "provider": "hetzner",
+                                        "creator": "@" + sid[:8]}], "unknown": [], "listed": []}) + "\n")
+        code, out = self.cli("retire", "alpha")
+        self.assertEqual(code, 1, out)
+        self.assertIn("it owns hosts that still exist: dc-a-0001 (hetzner, account main)", out)
+        self.assertNotIn("--owner-unknown", out, "an answer, not an unknown one")
 
     def test_a_host_is_of_one_form_a_provider_s_or_an_adopted_machine_with_none(self):
         def reply(**vm):

@@ -5,6 +5,7 @@ from stand-ins."""
 
 import contextlib
 import dataclasses
+import fcntl
 import functools
 import json
 import os
@@ -77,7 +78,7 @@ class Context:
     def __init__(self, paths, env=None, secrets=None, remote=None, clock=time.time, sleep=time.sleep,
                  out=sys.stdout, err=sys.stderr, machine=None, tailnet=None, sminos_machines=None, creator=None,
                  timeouts=None, plugin=PLUGIN_DIR, key_pushed=None, token_hex=None, monotonic=time.monotonic,
-                 host_file=None, tailnet_api=None):
+                 host_file=None, tailnet_api=None, thread=None):
         self.paths = paths
         self.env = dict(os.environ if env is None else env)
         self.clock = clock
@@ -98,7 +99,10 @@ class Context:
         self.sminos_machines = sminos_machines or (lambda timeout: run_sminos_machines(self.env, timeout))
         identity = functools.cache(lambda: session_creator(self.env))
         self.creator = creator or (lambda: identity()[:2])
-        self.creator_project = (lambda: None) if creator else (lambda: identity()[2])
+        # The thread a name is, as sminos answers it (§4 of EN.G1's plan); DriverError in `vm owner`'s words.
+        self.thread = thread or (lambda name: sminos_thread(self.env, name))
+        self.creator_project = (lambda: None) if creator else functools.cache(
+            lambda: creator_project(self.env, identity()[2], self.thread))
         self.key_pushed = key_pushed or (lambda: key_in_remote(self))
         self.token_hex = token_hex or (lambda: secrets_mod.token_hex(2))
         self.monotonic = monotonic
@@ -144,6 +148,39 @@ class Context:
 
     def remaining(self):
         return None if self._deadline is None else self._deadline - self.monotonic()
+
+    @contextlib.contextmanager
+    def host_lock(self, name):
+        """This Mac's lock for one host name, the file `<state>/locks/<name>.lock`
+        held exclusively, waited for, across one read-and-replace of that
+        host's labels or of its adoption record. Never held across a call to
+        the host. A lock that cannot be made or taken (a full disk, a
+        directory that cannot be written) is a DriverError, as a failed write
+        of what it guards is, never a traceback."""
+        path = self.paths.state / "locks" / f"{name}.lock"
+        f = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            f = open(path, "a")
+            fcntl.flock(f, fcntl.LOCK_EX)
+        except OSError as error:
+            if f is not None:
+                f.close()
+            raise DriverError(FAILED, f"this Mac's lock for {name} ({path}) could not be taken "
+                                      f"({error.strerror or error}): nothing it guards was written") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+            f.close()
+
+    def merge_labels(self, entry, labels, drop=()):
+        """`entry.client.set_labels(id, labels, merge=True, drop=drop)` under
+        host_lock(entry.vm["name"]): the one way the driver merges a server's
+        labels, since a merge is a read and a whole replacement, and one that
+        read before another's write would put back what that write changed."""
+        with self.host_lock(entry.vm["name"]):
+            return entry.client.set_labels(entry.vm["id"], labels, merge=True, drop=drop)
 
     def say(self, line=""):
         print(line, file=self.out, flush=True)
@@ -368,15 +405,97 @@ def session_creator(env):
     if not session or not cli:
         return None, None, None
     try:
-        done = subprocess.run([cli, "who", "--session", session], capture_output=True, text=True, timeout=30)
+        # Each value one `--flag=value` word, as sminos's parser reads it whatever it opens with.
+        done = subprocess.run([cli, "who", f"--session={session}"], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return None, None, None
-    match = re.search(r"^Sminos-Session: (?:[^\n#]+#)?([0-9a-f]{8}) \(([^\s()]+) on [^\s()]+\)$",
+    # As sminos writes it (`session_address`): the project's name as it is, spaces and parentheses included, then
+    # ` on <machine>)`, a machine name holding neither.
+    match = re.search(r"^Sminos-Session: (?:[^\n#]+#)?([0-9a-f]{8}) \((.+) on [^\s()]+\)$",
                       done.stdout.strip(), re.MULTILINE)
     if done.returncode != 0 or not match:
         return None, None, None
     short, project = match.groups()
     return f"@{short}", short, project
+
+
+def creator_project(env, name, thread):
+    """The creating session's project as a new host is told it (EN.G1's
+    plan, §9): its id where `sminos who --thread <the calling session>`
+    answers for that very session, its thread's current one, local, a
+    thread that has not ended, with an id the descriptor takes for the key
+    (the host's parser: one token, no `(`, `)` or `,`, not opening with
+    `-`); else `name`, the project the address line named, as before, where
+    the descriptor takes it too, and no project where it does not (a name
+    with a space). It never refuses an `up` and never changes the creator."""
+    session = env.get("CLAUDE_CODE_SESSION_ID")
+    named = name if _descriptor_takes(name) else None
+    if not name or not session:
+        return named
+    try:
+        answer = thread(session)
+    except DriverError:
+        return named
+    project = answer.get("project") or {}
+    pid = project.get("id")
+    if answer.get("session") == session and answer.get("local") is True and answer.get("thread") \
+            and answer.get("ended") is False and _descriptor_takes(pid):
+        return pid
+    return named
+
+
+def _descriptor_takes(value):
+    """Whether a host's parser takes `value` for DEVCLOUD_CREATOR_PROJECT."""
+    return isinstance(value, str) and bool(re.fullmatch(r"[^\s(),]+", value)) and not value.startswith("-")
+
+
+THREAD_TIMEOUT = 30
+THREAD_KEYS = {"thread": str, "session": str, "short": str, "alias": str, "opened": str, "state": str,
+               "ended": bool, "local": bool, "machine": str}
+
+
+def sminos_thread(env, name):
+    """`sminos who --thread <name>`'s answer, as a dict (EN.G1's plan, §4);
+    DriverError(FAILED, …) in `vm owner`'s words when sminos is not found,
+    exits non-zero or prints no answer. Only sminos says which thread a
+    name is."""
+    cli = _sminos(env)
+    if not cli:
+        raise DriverError(FAILED, "owner: no sminos CLI was found, and only sminos says which thread a name is: "
+                                  "nothing was changed")
+    try:
+        # One `--thread=<name>` word: a name that opens with `-` (`-review`) is the name, not a flag.
+        done = subprocess.run([cli, "who", f"--thread={name}"], capture_output=True, text=True, env=env,
+                              timeout=THREAD_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        line = f"no answer within {THREAD_TIMEOUT} s"
+    except OSError as error:
+        line = f"it could not be run: {error.strerror}"
+    else:
+        if done.returncode == 2:
+            raise DriverError(FAILED, "owner: this machine's sminos does not answer who --thread (it is older than "
+                                      "1.53.0): update the sminos plugin; nothing was changed")
+        answer = _thread_answer(done.stdout) if done.returncode == 0 else None
+        if answer is not None:
+            return answer
+        said = done.stderr.strip().splitlines()
+        line = said[-1] if said else (f"exit {done.returncode}" if done.returncode else "it printed no answer")
+    raise DriverError(FAILED, f"owner: sminos names no thread for {name} ({line}): nothing was changed")
+
+
+def _thread_answer(stdout):
+    """§4's one line, held to its shape; None for anything else."""
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not all(isinstance(data.get(k), t) for k, t in THREAD_KEYS.items()):
+        return None
+    project = data.get("project")
+    if project is not None and not (isinstance(project, dict) and all(
+            isinstance(project.get(k), str) and project.get(k) for k in ("id", "name"))):
+        return None
+    return data
 
 
 def key_in_remote(ctx):

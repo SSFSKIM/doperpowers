@@ -419,7 +419,8 @@ class WarningTest(LeaseBase):
         self.assertEqual(lease.iso(NOW), "2026-10-14T17:46Z")
         self.assertEqual(lease.warning_text("dc-build-7f3a", NOW, [("app", "2 unpushed commits"),
                                                                   ("lib", "uncommitted changes")]), text)
-        self.assertEqual(argv, ["/usr/bin/python3", str(self.cli), "say", f"@build#4f2a {text}"])
+        self.assertEqual(argv, ["/usr/bin/python3", str(self.cli), "say", "--notice", "devcloud", "--exit-held",
+                                f"@build#4f2a {text}"])
         self.assertEqual(user, self.user)
 
     def test_without_a_creator_or_unenrolled_the_journal_and_wall(self):
