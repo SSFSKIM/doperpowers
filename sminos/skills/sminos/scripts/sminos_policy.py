@@ -119,13 +119,13 @@ def read_only():
     return load()["read_only"]
 
 
-def outside_origin(e):
+def outside_origin(e, fresh=False):
     """Whether a log event came from outside this machine: its writer is the
     hub's (`hub/<member>`), `legacy/…`, or another machine's. A writer this
     machine used under a former name, for a session it held then, is its own
-    (sminos.is_self)."""
+    (sminos.is_self; `fresh`, by the identity its file holds now)."""
     head, _, _ = str(e.get("writer") or "").rpartition("/")
-    return not (head and sminos.is_self(head, sminos.writer_session(e.get("writer") or "")))
+    return not (head and sminos.is_self(head, sminos.writer_session(e.get("writer") or ""), fresh))
 
 
 def known_checkouts(project, here=None):

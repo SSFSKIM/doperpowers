@@ -32,6 +32,7 @@ project. What is here:
   asked for (reach_token, event_key).
 - The verbs `channel create`, `add` and `remove` (cmd_channel, place).
 """
+import glob
 import os
 import sys
 import time
@@ -183,9 +184,10 @@ def began_of(thread_id, channel_id):
 
 def _member_of(project, session):
     """Whether the session's own events in the project's log leave it a
-    member there, read from its writer files as they are (no lock taken,
+    member there, read from its writer files as they are, chosen by this
+    machine's names as its identity file holds them now (no lock taken,
     nothing written): what decide() may read (§3)."""
-    return project is not None and sminos.threads_module().member(sminos._own_events(project, session))
+    return project is not None and sminos.threads_module().member(sminos.own_events_now(project, session))
 
 
 def change(thread_id, channel, op, session, lock_until=None):
@@ -344,6 +346,8 @@ WORDS = {
     "endpoint": "its machine's endpoint has not said whether you may message it",
     "moved": "its session, its reach or the channel's log changed while its machine decided: tried again",
     "unreadable": "the channel's log is there and could not be read; its machine's next pass carries this out",
+    "queued": "it waits in its machine's queue under a name the machine wrote as before; it is carried out once the "
+              "queue is released",
     "expired": "not carried out: the request is more than seven days old",
     "not-here": "not carried out: it names a session that is no longer that thread's, or a thread that has ended",
 }
@@ -374,28 +378,52 @@ def _logged_requests(events):
     return [e for e in events if is_request(e)]
 
 
+def input_signature(channel):
+    """The signature of the files the ordered input of a carrying out is
+    read from (requests_of): the channel log's writer files and its queued
+    appends, each as a stat gives it, read by stats alone (no file parsed,
+    no lock, nothing written): what decide() compares under the record's
+    lock, so the input is read and merged only outside it."""
+    def keys(paths):
+        out = []
+        for path in paths:
+            try:
+                st = os.stat(path)
+                out.append((path, st.st_ino, st.st_size, st.st_mtime_ns))
+            except OSError:
+                out.append((path, None))
+        return tuple(out)
+    return (keys(sminos._store_paths(channel, "log")),
+            keys(sorted(glob.glob(os.path.join(glob.escape(channel.home), sminos.QUEUED, "*.jsonl")))))
+
+
 def requests_of(channel):
     """(signature, requests): the ordered input of a carrying out (§6). The
     channel log's requests in the merged read's order, then those among this
     machine's queued appends for that log (an append that waits for its
     writer's head), in the queue's order, each with `seq` None, read without
     changing the queue; one whose writer and id the log holds already (a
-    release cut short) once. The signature is of the files both were read
-    from: a carrying out compares it at the record's write."""
-    sig, events = sminos._store_whole(channel, "log", shared=True)
+    release cut short) once. The signature (input_signature) is taken
+    before the read, so a file that moves during it moves it too."""
+    sig = input_signature(channel)
+    _, events = sminos._store_whole(channel, "log", shared=True)
     logged = sminos.log_memo(events, "channel-requests", _logged_requests)
     queues = sminos.queued_operators(channel)
-    keys = []
-    for path in sorted(queues.values()):
-        try:
-            st = os.stat(path)
-            keys.append((path, st.st_ino, st.st_size, st.st_mtime_ns))
-        except OSError:
-            keys.append((path, None))
     held = {(e["writer"], e["id"]) for e in logged}
     queued = [{**e, "seq": None} for e in sminos.said_order(queues) if is_request(e)
               and (e["writer"], e["id"]) not in held] if queues else []
-    return (sig, tuple(keys)), [dict(e) for e in logged] + queued
+    return sig, [dict(e) for e in logged] + queued
+
+
+def _queued_under_former_name(request):
+    """Whether a request is one of this machine's queued appends made under
+    a name it no longer writes as (seq None, its writer's machine not its
+    name now): its release rewrites it under the name now, with the same id
+    (sminos.release_queued), and until then nothing here can tell who wrote
+    it. Never a logged event: a former name extends no trust to what a log
+    holds."""
+    return request.get("seq") is None \
+        and sminos.writer_base(str(request.get("writer") or "")).rpartition("/")[0] != sminos.machine_name_now()
 
 
 def event_key(channel, request):
@@ -408,13 +436,13 @@ def event_key(channel, request):
 
 class _Facts:
     """What judge() reads beside the record, each from its file as it is
-    when first asked (no value this process cached for its invocation: the
-    machine's identity and enrollment, the policy, the kept capabilities,
-    the revocation set, the session records), taking no lock and writing
-    nothing (§3). One evaluation's: a fact asked twice in it reads once."""
+    when asked: the machine's identity and enrollment (the shared helpers'
+    `fresh` reading, never the invocation's cache), the policy, the kept
+    capabilities, the revocation set, the session records and the thread
+    stores, taking no lock and writing nothing (§3). One evaluation's: a
+    record asked for twice in it reads once."""
 
     def __init__(self):
-        self._ident = ()
         self._current = {}
 
     def current_record(self, session):
@@ -423,34 +451,14 @@ class _Facts:
             self._current[session] = sminos.threads_module().current_record(session, fresh=True)
         return self._current[session]
 
-    def ident(self):
-        if self._ident == ():
-            self._ident = sminos.sibling_module("sminos_rl10").cutover()
-        return self._ident
-
-    def name(self):
-        ident = self.ident()
-        return ident["name"] if ident is not None else sminos.machine_name_now()
-
-    def is_self(self, name, session=""):
-        ident = self.ident()
-        former = ident["former"] if ident is not None else {}
-        return name == self.name() or (bool(session) and session in former.get(name, ()))
-
     def outside_origin(self, e):
-        """policy.outside_origin, by this machine's identity read now."""
-        writer = str(e.get("writer") or "")
-        head = writer.rpartition("/")[0]
-        return not (head and self.is_self(head, sminos.writer_session(writer)))
+        return sminos.sibling_module("sminos_policy").outside_origin(e, fresh=True)
 
     def own_writers_here(self, channel):
-        """sminos.own_writers_here, by the enrollment read now."""
-        if channel is None or channel.remote:
-            return False
-        if channel.hub is not None:
-            ident = self.ident()
-            return ident is not None and channel.hub.get("org") == ident["org"]
-        return True
+        return sminos.own_writers_here(channel, fresh=True)
+
+    def is_self(self, name, session=""):
+        return sminos.is_self(name, session, fresh=True)
 
     def read_only(self):
         """The policy's `read_only`, read now; a file that is no policy reads
@@ -466,25 +474,17 @@ class _Facts:
         return bool(session) and records.lane_of(records.read(session)) == "B"
 
     def shares_owners(self, channel, e, session):
-        """Row 10: the request's writer is this machine's own, in a log where
-        its name is provenance, and shares the thread's owners: a session's
-        writer by sminos.same_owner_local's rule, the human writer by
-        sminos.owners_meet("", session); this machine's name read now."""
-        if not self.own_writers_here(channel):
-            return False
+        """Row 10: the request's writer is this machine's own and shares the
+        thread's owners: a session's writer by sminos.same_owner_local, the
+        human writer, which that rule does not answer for, by
+        sminos.owners_meet("", session) in a log where this machine's name
+        is provenance; each by the identity read now."""
         writer = str(e.get("writer") or "")
         head, _, tail = sminos.writer_base(writer).rpartition("/")
-        if head != self.name():
-            return False
-        if tail == "human":
-            return sminos.owners_meet("", session)
-        sender = sminos.writer_session(writer)
-        records, au = sminos.records_module(), sminos.audience_module()
-        if not sender or tail != sender or not (au.is_local(sender) and au.is_local(session)):
-            return False
-        a, b = records.read(sender), records.read(session)
-        oa, ob = (a or {}).get("owners"), (b or {}).get("owners")
-        return isinstance(oa, list) and isinstance(ob, list) and bool(oa) and set(oa) == set(ob)
+        if tail != "human":
+            return sminos.same_owner_local(e, session, channel, fresh=True)
+        return self.own_writers_here(channel) and head == sminos.machine_name_now() \
+            and sminos.owners_meet("", session)
 
 
 def sender_verified(channel, request, facts=None):
@@ -572,6 +572,8 @@ def judge(channel, request, record, earlier, word=None, asked=None, project=_LOO
         return Outcome("ignored", "expired")
     if _duplicate(request, earlier):
         return Outcome("ignored", "duplicate")
+    if _queued_under_former_name(request):
+        return Outcome("pending", "queued")
     if not _names_here(record, request, facts):
         return Outcome("ignored", "not-here")
     answered = _answered(record)
@@ -661,7 +663,7 @@ def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_unt
         said = []
 
         def decide(rec, project=project, sig=sig, earlier=earlier):
-            if requests_of(channel)[0] != sig:
+            if input_signature(channel) != sig:
                 said.append("input")
                 return None
             out = judge(channel, request, rec, earlier, word, asked, project)
@@ -836,17 +838,56 @@ def _placed(op, channel, outcome):
     return "pending: %s" % WORDS.get(outcome.why, outcome.why)
 
 
-def _answered_line(op, channel, target):
+def _answer_of_record(thread_id, channel_id, request_id):
+    """The statement that answers a request for this machine's thread: in
+    its record's open entry, else among its sessions' own events in the
+    projects known here. None when neither can be read."""
+    threads = sminos.threads_module()
+    record = threads.get(thread_id)
+    if record is None:
+        return None
+
+    def answers(e):
+        a = e.get("answers") if isinstance(e, dict) else None
+        return e.get("kind") == "channels" and isinstance(a, dict) and a.get("channel") == channel_id \
+            and a.get("id") == request_id and e.get("result") in CARRIED
+    for e in ((record.get("pending") or {}).get("events") or []):
+        if answers(e):
+            return e
+    sessions = [x for x in dict.fromkeys(record["sessions"] + [record["current"]]) if x]
+    for project in sminos.known_projects():
+        for session in sessions:
+            for e in sminos._own_events(project, session):
+                if answers(e) and e.get("thread") == thread_id:
+                    return e
+    return None
+
+
+def _answered_line(op, channel, target, request):
     """A request this command wrote that its thread's machine answered first
-    (the daemon's pass, between the append and the command's own): what the
-    record holds now. (line, whether it says what was asked)."""
+    (the daemon's pass, between the append and the command's own): what
+    the statement answering it says, read from the thread's open entry or
+    its sessions' own events; when neither can be read, that it was
+    answered, and the thread's membership now as such, not as the verdict.
+    (line, whether it was refused)."""
+    answer = _answer_of_record(target.thread, channel.id, request["id"])
+    if answer is not None:
+        if answer["result"] == "refused":
+            return "refused: %s" % WORDS.get(answer.get("reason"), answer.get("reason")), True
+        return ("in %s" if op == "add" else "out of %s") % channel.name, False
     threads = sminos.threads_module()
     held = channel.id in threads.held_set(threads.get(target.thread))
-    if op == "add":
-        return ("in %s" % channel.name, True) if held else (
-            "not in %s: its machine answered the request first and refused it" % channel.name, False)
-    return ("out of %s" % channel.name, True) if not held else (
-        "still in %s: its machine answered the request first" % channel.name, False)
+    return "answered already by its machine; it is %s %s now" % ("in" if held else "not in", channel.name), False
+
+
+def _choice(channel, session, target):
+    """The stream a request of `session`'s for `target` goes under in the
+    channel's log (sminos.stream_choice for that one recipient): (choice,
+    None), or (None, why it is refused). Local: it writes nothing, so it
+    can be asked of a channel not registered yet."""
+    choice, refusal = sminos.stream_choice(channel, session, [{"session": target.session, "alias": target.alias}],
+                                           "the request for %s" % target.label)
+    return (None, refusal[0]) if refusal else (choice, None)
 
 
 def place(channel, op, targets, session):
@@ -885,19 +926,21 @@ def place(channel, op, targets, session):
             else:
                 rows.append([t, got, _placed(op, channel, got)])
             continue
-        choice, refusal = sminos.stream_choice(channel, session, [{"session": t.session, "alias": t.alias}],
-                                               "the request for %s" % t.label)
+        choice, refusal = _choice(channel, session, t)
         if refusal:
-            rows.append([t, None, "refused: not reachable: %s" % refusal[0]])
+            rows.append([t, None, "refused: not reachable: %s" % refusal])
             bad = True
             continue
         writer, audience, _, _ = choice[0]
-        sminos.keep_stream(channel, writer, audience)
         try:
+            sminos.keep_stream(channel, writer, audience)
             e = sminos.log_append(channel, writer, "channel-request", op=op, session=t.session, thread=t.thread,
                                   id=uuid.uuid4().hex)
-        except OSError as err:
-            sminos.die("the request for %s could not be written in %s's log: %s" % (t.label, channel.name, err), 1)
+        except (OSError, sminos.audience_module().StreamUnknown) as err:
+            # This target's outcome alone: the requests already written are still reported and carried out.
+            rows.append([t, None, "the request could not be written in %s's log: %s" % (channel.name, err)])
+            bad = True
+            continue
         wrote = True
         if t.local:
             written.append(e)
@@ -915,8 +958,8 @@ def place(channel, op, targets, session):
                 o = got.get((e["writer"], e["id"]), Outcome("pending", "earlier"))
                 row[1] = o
                 if o.state == "ignored" and o.why == "answered":
-                    row[2], ok = _answered_line(op, channel, row[0])
-                    bad = bad or not ok
+                    row[2], refused = _answered_line(op, channel, row[0], e)
+                    bad = bad or refused
                 elif o.state == "ignored":
                     row[2] = WORDS[o.why]
                     bad = True
@@ -993,7 +1036,7 @@ def _create(name, thread, session):
     if len(first.channels) >= sminos.threads_module().CHANNEL_LIMIT:
         sminos.die(LIMIT_REFUSAL % first.label, 1)
     named = [p for p in sminos.known_logs() if p.name == name]
-    back = None
+    back, cid = None, None
     if named:
         if len(named) == 1 and sminos.is_channel_id(named[0].id) and _memberless(named[0]):
             back = named[0]
@@ -1001,7 +1044,22 @@ def _create(name, thread, session):
             sminos.die("cannot create channel %s: %s already answers to that name — name it otherwise: nothing was "
                        "written" % (name, ", ".join(sorted(map(sminos.log_label, named)))), 1)
     if back is None:
+        enrolled = sminos.enrollment()
+        if enrolled is None:
+            sminos.die("cannot create channel %s: this machine is not enrolled at a desk hub: a channel's log syncs "
+                       "through one" % name, 1)
         cid = mint_channel_id()
+        candidate = sminos.make_project(cid, name, "", "", {"url": enrolled["url"], "org": enrolled["org"]})
+    else:
+        candidate = back
+    me = sminos.threads_module().current_record(session, fresh=True) if session else None
+    if me is None or me["thread"] != first.thread:
+        # The first member is placed by a request: its stream is chosen now, against the channel about to be made,
+        # so a refusal (a private thread whose audience is not known yet) leaves nothing registered or written.
+        _, refusal = _choice(candidate, session, first)
+        if refusal:
+            sminos.die("%s: refused: not reachable: %s: nothing was written" % (first.label, refusal), 1)
+    if back is None:
         try:
             channel = register(cid, name)
         except ValueError as e:

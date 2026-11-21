@@ -922,8 +922,10 @@ def set_channels(thread_id, decide, lock_until=None, wake_until=None):
         # The last guard before the write, after everything it writes is made: where the statement goes. A move
         # that lands while the positions or the ledger are read is seen here, and nothing is written (`raw` is
         # dropped with the False). One that lands after this read is the accepted case: the statement goes to the
-        # project left, after the writer's `retired`, and states nothing there.
-        own = sminos._own_events(change["project"], change["session"])
+        # project left, after the writer's `retired`, and states nothing there. The writer files are chosen by this
+        # machine's names as its identity file holds them now: a rename the invocation has not seen never hides a
+        # move made under the new name (own_events_now).
+        own = sminos.own_events_now(change["project"], change["session"])
         if not member(own):
             return False
         if change.get("writer") is not None and not sminos.restated_holds(change["project"], change["session"],

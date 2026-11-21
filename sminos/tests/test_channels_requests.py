@@ -47,8 +47,10 @@ import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from 
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import contextlib
 import fcntl
+import glob
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -58,7 +60,9 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_channels_store import DESK, HUB, LOBBY, Store, channel_ids, sminos, threads  # noqa: E402
+from test_channels_store import DESK, HUB, LOBBY, SCRIPTS, Store, channel_ids, sminos, threads  # noqa: E402
+from test_channels_life import Life  # noqa: E402
+import test_threads as T1  # noqa: E402
 import sminos_audience as audience  # noqa: E402
 import sminos_channels as channels  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
@@ -74,6 +78,10 @@ def forbidden(*a, **k):
     raise AssertionError("a read under the record's lock wrote or locked something")
 
 
+def merged(*a, **k):
+    raise AssertionError("the channel's input was read and merged under the record's lock")
+
+
 class Requests(Store):
     """Store, on a machine cut over to its endpoint, whose kept welcome lists `channels`."""
 
@@ -84,10 +92,10 @@ class Requests(Store):
         audience.keep_capabilities(["channels"])
         sminos.forget_caches()
 
-    def identity(self, name):
+    def identity(self, name, former=None):
         os.makedirs(os.path.dirname(rl10.identity_path()), mode=0o700, exist_ok=True)
         sminos.write_json(rl10.identity_path(), {
-            "org": HUB["org"], "hub": HUB["url"], "name": name, "former": {}, "ref": "machine-ref-1",
+            "org": HUB["org"], "hub": HUB["url"], "name": name, "former": former or {}, "ref": "machine-ref-1",
             "enrolled": "2026-11-10T00:00:00.000Z", "cutover": "2026-11-10T00:00:01.000Z", "build": "b"}, mode=0o600)
 
     # -- writing requests as their writers would
@@ -435,7 +443,8 @@ class UnderTheLock(Requests):
             "the revocation set": ("remote", lambda sid: sminos.write_json(rl10.revoked_path(), {
                 "version": 2, "devices": [], "members": [], "keys": ["key-other"]}), O("refused", "not-reachable")),
             "the capability": ("remote", lambda sid: audience.keep_capabilities([]), O("pending", "no-channels")),
-            "the machine's identity": ("person", lambda sid: self.identity("renamed"),
+            # Renamed, the session held under the old name: the old name's human writer is no longer this machine's.
+            "the machine's identity": ("person", lambda sid: self.identity("renamed", {"testhost": [sid]}),
                                        O("refused", "not-reachable")),
             "the session's membership": ("person", lambda sid: self.write_own(sid, [
                 {"kind": "retired", "reason": "moved", "project": ""}]), O("pending", "between")),
@@ -466,6 +475,7 @@ class UnderTheLock(Requests):
                          [tuple(want)] if want.state == "refused" else [], "the fresh value decided")
 
     def test_the_read_under_the_lock_locks_and_writes_nothing_on_a_cold_stream(self):
+        """Nor does it read or merge the channel's input there: its files' signature alone is compared."""
         tid, sid, _ = self.human()
         aud = ["member-1", "member-2"]
         stream = sminos.stream_writer(sminos.writer_id(sid), aud)
@@ -482,7 +492,9 @@ class UnderTheLock(Requests):
             def inner(rec):
                 with mock.patch.object(sminos, "project_path", forbidden), \
                         mock.patch.object(os, "makedirs", forbidden), mock.patch.object(os, "mkdir", forbidden), \
-                        mock.patch.object(fcntl, "flock", forbidden), mock.patch.object(sminos, "write_json", forbidden):
+                        mock.patch.object(fcntl, "flock", forbidden), mock.patch.object(sminos, "write_json", forbidden), \
+                        mock.patch.object(channels, "requests_of", merged), mock.patch.object(sminos, "_store_whole", merged), \
+                        mock.patch.object(sminos, "queued_operators", merged):
                     got = decide(rec)
                 decided.append(got)
                 return got
@@ -533,34 +545,6 @@ class Order(Requests):
         self.assertEqual(self.carry(DESK, words=self.words(DESK, imported[0], "deliver", sid)),
                          {imported[0]["id"]: O("applied")}, "then the one stamped before it, carried after it")
         self.assertEqual(self.held(tid), [])
-
-    def queue(self, cid, op, sid, tid):
-        """A terminal's request that waits for its writer's head, as the command queued it."""
-        return sminos._queue(self.chan(cid), sminos.writer_id(), [
-            {"kind": "channel-request", "op": op, "session": sid, "thread": tid, "id": os.urandom(16).hex()}])[0]
-
-    def test_two_terminals_queued_requests_the_first_cut_the_second_waiting_behind_it(self):
-        tid, sid, _ = self.human()
-        first = self.queue(DESK, "add", sid, tid)        # its command cut after the append
-        time.sleep(0.002)
-        second = self.queue(DESK, "remove", sid, tid)
-        got = [(r["id"], o) for r, o in channels.carry_due(self.chan(DESK), also=[second])]
-        self.assertEqual(got, [(first["id"], O("applied")), (second["id"], O("applied"))], "the first one first")
-        self.assertEqual(self.held(tid), [])
-        self.assertEqual([a[1] for a in self.answers(sid)], [first["id"], second["id"]])
-
-    def test_an_operators_queued_request_is_carried_out_by_the_command_and_not_again_in_the_log(self):
-        tid, sid, _ = self.human()
-        e = self.queue(DESK, "add", sid, tid)
-        self.assertIsNone(e["seq"])
-        self.assertEqual(self.carry(DESK, also=[e]), {e["id"]: O("applied")})
-        # It reaches the log once the head is known: the queue drained into the log, its ts kept.
-        c = self.chan(DESK)
-        sminos._append(c, e["writer"], [{k: v for k, v in e.items() if k not in ("writer", "seq")}], released=True)
-        os.unlink(sminos.queued_path(c, e["writer"]))
-        self.assertEqual(self.carry(DESK), {})
-        self.assertEqual(len(self.answers(sid)), 1)
-        self.assertEqual(self.held(tid), [DESK])
 
     def test_an_add_then_a_remove_and_the_reverse_whichever_path_and_whatever_order_the_words_came(self):
         for first, then, want in (("add", "remove", []), ("remove", "add", [DESK])):
@@ -642,6 +626,103 @@ class Order(Requests):
         self.assertEqual(self.carry(DESK, wake_until=time.time()), {e["id"]: O("applied")})
 
 
+CHILD = """
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import sminos, sminos_rl10 as rl10
+project, sid, old = sminos.known_project(sys.argv[2]), sys.argv[3], sys.argv[4]
+path = rl10.identity_path()
+with open(path) as f:
+    ident = json.load(f)
+ident.update(name="renamed", former={old: [sid]})
+sminos.write_json(path, ident, mode=0o600)
+sminos.forget_caches()
+writer = "renamed/" + sid
+sminos.log_append(project, writer, "joined", session=sid, alias="moved-on", name_source="user", machine="renamed",
+                  cwd="/d", worktree="", role="", seat="", by="", session_kind="interactive")
+sminos._append(project, writer, [{"kind": "retired", "session": sid, "reason": "moved", "project": ""}])
+"""
+
+
+class Renamed(Requests):
+    """Another process renames the machine and, under the new name, moves the session out of its project while
+    a carrier that read the old name is paused: the locked membership checks choose the writer files by the
+    identity as its file says now, so the old name's standing `joined` never lets the write through."""
+
+    def rename_and_move(self, sid):
+        subprocess.run([sys.executable, "-B", "-c", CHILD, SCRIPTS, self.p.id, sid, sminos.host_name()],
+                       check=True, env=dict(os.environ), timeout=60)
+
+    def staged(self):
+        tid, sid, _ = self.human()
+        e = self.remote(DESK, "add", sid, tid)
+        words = self.words(DESK, e, "deliver", sid)
+        sminos.forget_caches()
+        self.assertEqual(sminos.host_name(), "testhost", "the carrier's cached identity, warm")
+        return tid, sid, e, words
+
+    def test_paused_before_the_lock(self):
+        tid, sid, e, words = self.staged()
+        real = threads.set_channels
+
+        def paused(*a, **k):
+            if not os.path.exists(os.path.join(self.p.home, "log", "renamed.%s.jsonl" % sid)):
+                self.rename_and_move(sid)
+            return real(*a, **k)
+        with mock.patch.object(threads, "set_channels", paused):
+            got = {r["id"]: o for r, o in channels.carry_due(self.chan(DESK), words=words)}
+        self.assertEqual(got, {e["id"]: O("pending", "between")})
+        self.assertEqual(threads.get(tid)["channels"], [])
+        self.assertEqual(self.statements(sid), [])
+
+    def test_paused_inside_the_write_before_its_last_guard(self):
+        """The journal's own last guard (set_channels), after decide has passed."""
+        tid, sid, e, words = self.staged()
+        real, done = sminos.channel_positions, []
+
+        def during(cid):
+            got = real(cid)
+            if not done:
+                done.append(True)
+                self.rename_and_move(sid)
+            return got
+        with mock.patch.object(sminos, "channel_positions", during):
+            got = channels.carry_out(self.chan(DESK), e, *words[channels.event_key(self.chan(DESK), e)])
+        self.assertTrue(done)
+        self.assertEqual(got, O("pending", "between"))
+        self.assertEqual(threads.get(tid)["channels"], [])
+        self.assertNotIn("pending", threads.get(tid))
+        self.assertEqual(self.statements(sid), [])
+
+
+class Absorbed(Life, T1.LateHandOff):
+    """A request a provisional record answered, replayed after a real absorption (M3's fixture, T1's late
+    hand-off): the continuing thread holds the answer, and the request, naming the record absorbed, names no
+    thread here and is carried out for neither."""
+
+    def test_an_answered_request_replayed_after_the_absorption(self):
+        audience.keep_capabilities(["channels"])
+        old, job, tid, theirs = self.late()
+        c = self.chan(DESK)
+        e = sminos.log_append(c, "other/" + OTHER, "channel-request", op="add", session=job, thread=theirs,
+                              id="before-the-absorption", verified={"signer": SIGNER})
+        words = {channels.event_key(c, e): ("deliver", {"session": job, "reach": channels.reach_token(job)})}
+        sminos.forget_caches()
+        self.assertEqual({r["id"]: o for r, o in channels.carry_due(c, words=words)},
+                         {e["id"]: O("applied")})
+        self.reconcile()
+        self.assert_absorbed(old, job, tid, theirs)
+        t = threads.get(tid)
+        self.assertIn(DESK, t["channels"])
+        self.assertIn([DESK, e["id"]], [a[:2] for a in t["answered"]])
+        said = len(self.statements(job))
+        sminos.forget_caches()
+        self.assertEqual(channels.carry_due(c, words=words), [], "passed by: the record it names is gone")
+        self.assertEqual(channels.carry_out(c, e, *words[channels.event_key(c, e)]), O("ignored", "not-here"))
+        self.assertEqual(len(self.statements(job)), said, "nothing written for either thread")
+        self.assertEqual(threads.get(tid)["channels"].count(DESK), 1)
+
+
 # ------------------------------------------------------------ the verbs at the CLI
 
 
@@ -655,6 +736,141 @@ class Verbs(Requests):
 
     def channel_named(self, name):
         return [c for c in sminos.known_channels() if c.name == name]
+
+    def head_wait(self):
+        """The machine's enrolment marked, so an append of its operator writer in a channel's log waits for the
+        upstream's head (sminos.waits_for_head)."""
+        ident = rl10.cutover()
+        sminos.mark_enrolled(ident["name"], ident["enrolled"])
+        sminos.forget_caches()
+        self.assertTrue(sminos.waits_for_head(self.chan(DESK), sminos.writer_id()))
+
+    def release(self):
+        sminos.release_queued(self.chan(DESK), sminos.writer_id())
+        sminos.forget_caches()
+
+    def test_two_terminals_queued_requests_the_first_cut_the_second_waiting_behind_it(self):
+        tid, sid, _ = self.human()
+        self.head_wait()
+
+        def cut(*a, **k):
+            raise KeyboardInterrupt   # the first command stopped once its request is appended
+        with mock.patch.object(channels, "carry_due", cut), self.assertRaises(KeyboardInterrupt):
+            self.verb("channel", "add", "desk", sid)
+        queued = channels.requests_of(self.chan(DESK))[1]
+        self.assertEqual([(r["op"], r["seq"]) for r in queued], [("add", None)], "queued for its writer's head")
+        code, out = self.verb("channel", "remove", "desk", sid)
+        self.assertEqual(code, 0, out)
+        self.assertIn(": out of desk", out, "behind the first, which its pass carried out first")
+        self.assertEqual([x[1:3] for x in self.answers(sid)], [(queued[0]["id"], "applied"),
+                                                              (channels.requests_of(self.chan(DESK))[1][1]["id"],
+                                                               "applied")])
+        self.release()
+        logged = channels.requests_of(self.chan(DESK))[1]
+        self.assertEqual([(r["op"], type(r["seq"])) for r in logged], [("add", int), ("remove", int)],
+                         "the queue drained into the log, in its order")
+        self.assertEqual(self.carry(DESK), {})
+        self.assertEqual(self.held(tid), [])
+        self.assertEqual(len(self.answers(sid)), 2)
+
+    def test_an_operators_queued_request_is_carried_out_by_the_command_and_not_again_in_the_log(self):
+        tid, sid, _ = self.human()
+        self.head_wait()
+        code, out = self.verb("channel", "add", "desk", sid)
+        self.assertEqual(code, 0, out)
+        self.assertIn(": in desk", out)
+        self.assertEqual([r["seq"] for r in channels.requests_of(self.chan(DESK))[1]], [None])
+        self.release()
+        self.assertEqual([type(r["seq"]) for r in channels.requests_of(self.chan(DESK))[1]], [int])
+        self.assertEqual(self.carry(DESK), {})
+        self.assertEqual(len(self.answers(sid)), 1)
+        self.assertEqual(self.held(tid), [DESK])
+
+    def test_a_request_queued_under_a_former_name_waits_for_its_release(self):
+        """Nothing here can tell who wrote it until the release rewrites it under the name now: it is neither
+        refused nor carried out before, and once released it is carried out as this machine's own."""
+        tid, sid, _ = self.human()
+        self.identity("testhost", {"oldname": []})
+        sminos.forget_caches()
+        c = self.chan(DESK)
+        old = sminos._queue(c, "oldname/human", [{"kind": "channel-request", "op": "add", "session": sid,
+                                                  "thread": tid, "id": "said-under-the-old-name"}])[0]
+        self.assertEqual(self.carry(DESK), {old["id"]: O("pending", "queued")})
+        sminos.forget_caches()
+        daemon.channel_pass([c], sminos.seats())
+        self.assertEqual(self.statements(sid), [], "the daemon refused nothing")
+        sminos.release_queued(c, sminos.writer_id())
+        sminos.forget_caches()
+        self.assertEqual(self.carry(DESK), {"said-under-the-old-name": O("applied")}, "as this machine's own")
+        self.assertEqual([x[1:3] for x in self.answers(sid)], [("said-under-the-old-name", "applied")])
+        self.assertEqual(self.held(tid), [DESK])
+
+    def test_a_private_targets_refused_stream_at_a_terminals_create_registers_and_writes_nothing(self):
+        tid, sid, _ = self.human()
+        audience.keep_capabilities(["access", "channels"])
+        self.record(sid, access="private")   # its audience at this policyRev not known yet
+        self.verb("list")
+        before = [c.id for c in sminos.known_channels()]
+        logs = self.logs()
+        code, out = self.verb("channel", "create", "desk-new", sid)
+        self.assertEqual(code, 1, out)
+        self.assertIn("refused: not reachable: ", out)
+        self.assertIn("nothing was written", out)
+        self.assertEqual([c.id for c in sminos.known_channels()], before, "nothing registered")
+        self.assertEqual(self.logs(), logs, "no log changed")
+        self.assertEqual(self.held(tid), [])
+
+    def logs(self):
+        out = {}
+        for path in glob.glob(os.path.join(sminos.projects_root(), "*", "log", "*.jsonl")):
+            with open(path, "rb") as f:
+                out[path] = f.read()
+        return out
+
+    def raced(self, then):
+        """The command's request answered by another process (the daemon's pass) between its append and the
+        command's own pass, and `then` done after."""
+        real, once = sminos.nudge_daemon, []
+
+        def nudge():
+            if not once:
+                once.append(True)
+                sminos.forget_caches()
+                channels.carry_due(self.chan(DESK), wake_until=time.time())
+                then()
+            return real()
+        return mock.patch.object(sminos, "nudge_daemon", nudge)
+
+    def test_a_request_answered_first_elsewhere_is_reported_from_its_answer(self):
+        tid, sid, _, other = self.two()
+        with self.raced(lambda: channels.change(tid, DESK, "remove", sid)):
+            code, out = self.verb("channel", "add", "desk", sid, session=other)
+        self.assertEqual(code, 0, out)
+        self.assertIn(": in desk", out, "the add was applied, whatever was done after it")
+        self.assertEqual(self.held(tid), [])
+        with self.raced(lambda: None), mock.patch.object(channels, "_answer_of_record", lambda *a: None):
+            code, out = self.verb("channel", "add", "desk", sid, session=other)
+        self.assertEqual(code, 0, out)
+        self.assertIn(": answered already by its machine; it is in desk now", out)
+
+    def test_a_write_that_fails_for_one_target_leaves_the_others_reported_and_carried(self):
+        tid, sid, _, other = self.two()
+        tid3, sid3, _ = self.human()
+        real, calls = sminos.log_append, []
+
+        def flaky(*a, **k):
+            calls.append(True)
+            if len(calls) == 2:
+                raise OSError("no space left on the device")
+            return real(*a, **k)
+        with mock.patch.object(sminos, "log_append", flaky), mock.patch.object(sminos, "nudge_daemon") as nudged:
+            code, out = self.verb("channel", "add", "desk", sid, sid3, session=other)
+        self.assertEqual(code, 1, out)
+        self.assertIn(": in desk", out)
+        self.assertIn(": the request could not be written in desk's log: no space left on the device", out)
+        self.assertTrue(nudged.called)
+        self.assertEqual(self.held(tid), [DESK])
+        self.assertEqual(self.held(tid3), [])
 
     def test_create_cut_after_its_registration_and_run_again_brings_the_channel_back(self):
         tid, sid, _ = self.human()

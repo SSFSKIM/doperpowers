@@ -5350,12 +5350,32 @@ def _keep_sets(project, out, busy, joined, effect, stated, holders):
     return appended
 
 
-def machine_name_now():
-    """This machine's name as its files say now (machine_identity's rule,
-    with no cache): what a guard under a record's lock reads, since the
-    invocation's cached identity may predate a rename."""
+def machine_identity_now():
+    """machine_identity as its files say now, with no cache: what a guard or
+    a check under a record's lock reads, since the invocation's cached
+    identity may predate a rename."""
     ident = sibling_module("sminos_rl10").cutover()
-    return ident["name"] if ident is not None else (os.environ.get("DAEMON_HOST") or socket.gethostname())
+    if ident is not None:
+        return ident["name"], {n: frozenset(ss) for n, ss in ident["former"].items()}
+    return os.environ.get("DAEMON_HOST") or socket.gethostname(), {}
+
+
+def machine_name_now():
+    """This machine's name as its files say now (machine_identity_now)."""
+    return machine_identity_now()[0]
+
+
+def enrollment_now():
+    """enrollment as identity.json says now, with no cache."""
+    ident = sibling_module("sminos_rl10").cutover()
+    return {"url": ident["hub"], "org": ident["org"], "machine": ident["name"]} if ident is not None else None
+
+
+def own_events_now(project, session):
+    """_own_events under this machine's names as its files say now
+    (machine_identity_now): what a membership check under a record's lock
+    reads, so a rename this invocation has not seen never hides a move."""
+    return _own_events(project, session, identity=machine_identity_now())
 
 
 def restated_holds(project, session, writer, own):
@@ -5406,7 +5426,7 @@ def _current_here(session, project, joined):
         if pid == project.id or is_channel_id(pid):
             continue
         p = _registered_as(pid, registration(pid))
-        last = threads_module().in_effect(_own_events(p, session)) if p is not None else None
+        last = threads_module().in_effect(own_events_now(p, session)) if p is not None else None
         ts = str(last.get("ts") or "") if last is not None else ""
         if last is None or ts < at:
             continue
@@ -7915,7 +7935,7 @@ def reach_permit(project, session, e):
         _REACH_PERMITS.discard(key)
 
 
-def own_writers_here(project):
+def own_writers_here(project, fresh=False):
     """Whether a line under this machine's own name in `project`'s log was
     written here: a project with no git remote that is a hub project of this
     machine's org, where the hub brings this machine's writers back only as
@@ -7923,26 +7943,29 @@ def own_writers_here(project):
     remote, whatever its transport: a git mirror's merge can import a line
     under any writer name, and `project init --hub` keeps the log and the
     remote (its archive since), so a converted mirror still holds what git
-    imported. Not a project unknown here."""
+    imported. Not a project unknown here. `fresh`: the enrollment read from
+    its file now (enrollment_now)."""
     if project is None or project.remote:
         return False
     if project.hub is not None:
-        e = enrollment()
+        e = enrollment_now() if fresh else enrollment()
         return e is not None and project.hub.get("org") == e["org"]
     return True
 
 
-def same_owner_local(e, session, project):
+def same_owner_local(e, session, project, fresh=False):
     """Whether `e` is a session of this machine's own event (its writer
     `<this machine's name>/<session>` or a stream of it, in a log where that
     name is provenance: own_writers_here) to another session of this
     machine, both records reading and naming the same owners: a person's
-    own sessions on one machine, which no reach ever restricts."""
-    if not own_writers_here(project):
+    own sessions on one machine, which no reach ever restricts. `fresh`:
+    the machine's name and enrollment read from their file now (a check
+    under a record's lock, CH1's §3)."""
+    if not own_writers_here(project, fresh):
         return False
     writer = str(e.get("writer") or "")
     sender = writer_session(writer)
-    if not sender or writer_base(writer) != "%s/%s" % (host_name(), sender):
+    if not sender or writer_base(writer) != "%s/%s" % (machine_name_now() if fresh else host_name(), sender):
         return False
     records, au = records_module(), audience_module()
     if not (au.is_local(sender) and au.is_local(session)):
@@ -10538,21 +10561,24 @@ def _writer_events(project, host, session, store="log", listed=None):
     return list(heapq.merge(*files, key=lambda e: e["ts"]))
 
 
-def _former_events(project, session, store="log", listed=None):
+def _former_events(project, session, store="log", listed=None, identity=None):
     """The session's events under the names this machine wrote under before
     it enrolled, for a session it held under them (is_self), oldest name
     first: still the session's own, though nothing appends to them any more."""
-    return [e for host, held in machine_identity()[1].items() if session in held
+    return [e for host, held in (identity or machine_identity())[1].items() if session in held
             for e in _writer_events(project, host, session, store, listed)]
 
 
-def _own_events(project, session, store="log", listed=None):
+def _own_events(project, session, store="log", listed=None, identity=None):
     """The session's own writer files, read directly (the hook reads nothing
     else of the log): under this machine's former names, then its name now
     (its plain writer and its audience streams, merged by ts). `listed`:
-    the log's listing, which a file must be in (_writer_events)."""
-    return _former_events(project, session, store, listed) \
-        + _writer_events(project, host_name(), session, store, listed)
+    the log's listing, which a file must be in (_writer_events). `identity`:
+    (name, former) as machine_identity gives them, the invocation's by
+    default (own_events_now reads them from the file)."""
+    identity = identity or machine_identity()
+    return _former_events(project, session, store, listed, identity) \
+        + _writer_events(project, identity[0], session, store, listed)
 
 
 def _own_events_but(project, session, writer):
@@ -13134,13 +13160,14 @@ def host_name():
     return machine_identity()[0]
 
 
-def is_self(name, session=""):
+def is_self(name, session="", fresh=False):
     """Whether what a record says ran on machine `name` (a member's `machine`,
     a seat's `host`), for `session`, ran here: `name` is this machine's name
     now, or a name it wrote under before it enrolled and `session` one it held
     under that name. Another machine may enroll under a former name, so a
-    former name alone is never this machine."""
-    me, former = machine_identity()
+    former name alone is never this machine. `fresh`: the identity read from
+    its file now (machine_identity_now), not the invocation's."""
+    me, former = machine_identity_now() if fresh else machine_identity()
     return name == me or (bool(session) and session in former.get(name, ()))
 
 
