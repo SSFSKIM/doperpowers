@@ -225,10 +225,16 @@ def run(ctx, opts):
         hostctl.start_boot(ctx, address, host.alias)
     else:
         address = None
-    booted = wait_boot(ctx, host, address, started + BOOT_WAIT)
+    leased = expires is not None
+    booted = wait_boot(ctx, host, address, started + BOOT_WAIT, leased)
     maws = next((s for s in booted.get("steps", []) if s["name"] == "maws"), None)
     if maws is not None and maws["state"] == "deferred":
         ctx.say(f"maws      deferred: {maws['detail']}")
+    if opts.enroll and (maws is None or maws["state"] not in ("ok", "deferred")):
+        # What --enroll asked for will not happen: the host retries only a deferred provisioning.
+        state = f"maws {maws['state']}: {maws['detail']}" if maws is not None else "no maws step"
+        raise DriverError(FAILED, f"--enroll: the boot of {name} skipped the provisioning it enrolls with ({state}), "
+                                  f"so it will not join the org; {kept(name, leased)}")
     elapsed = int(ctx.clock() - begun)
     ctx.say(f"{name}  ready in {elapsed // 60}m{elapsed % 60:02d}s")
     ctx.say(f"  provider  {r.client.name}  location {r.location}  type {r.type['type']}")
@@ -264,7 +270,14 @@ def recount(ctx, entry, r):
                            "--confirmed")
 
 
-def wait_boot(ctx, host, address, deadline):
+def kept(name, leased):
+    """What a failure after the create says of the VM it leaves: a lease
+    bounds it only where it has one (a VM made with --keep has none)."""
+    return f"the VM {name} is kept for inspection, " + (
+        "its lease bounds it" if leased else f"with no lease: devcloud vm down {name} removes it")
+
+
+def wait_boot(ctx, host, address, deadline, leased=True):
     """§3 step 8: over the public address until the tailnet attach step is
     ok, then over the tailnet; a failed step prints the status and exits 1."""
     attached = address is None
@@ -285,7 +298,7 @@ def wait_boot(ctx, host, address, deadline):
                 if failed:
                     ctx.warn(status.render(data).rstrip())
                     raise DriverError(FAILED, f"the boot failed at step {failed[0]['name']} ({failed[0]['detail']}); "
-                                              f"the VM {host.name} is kept for inspection, its lease bounds it")
+                                              f"{kept(host.name, leased)}")
                 return data
             if unit == "failed":
                 raise DriverError(FAILED, f"devcloud-boot.service failed on {host.name} with no step recorded as "
@@ -294,6 +307,6 @@ def wait_boot(ctx, host, address, deadline):
             where = ("" if answer is not None or address is not None else
                      f"; it never answered over the tailnet, so its first boot may have failed before the boot "
                      f"started: see {compose.FIRST_BOOT_LOG} on it, through the provider's serial console")
-            raise DriverError(FAILED, f"the boot of {host.name} did not finish within 15 minutes{where}; the VM is "
-                                      "kept for inspection, its lease bounds it")
+            raise DriverError(FAILED, f"the boot of {host.name} did not finish within 15 minutes{where}; "
+                                      f"{kept(host.name, leased)}")
         ctx.sleep(POLL)

@@ -38,6 +38,8 @@ DEVCLOUD_ON_MIN = (0, 18, 0)                 # the devcloud that has `up --enrol
 CHECKOUTS = "~/Developer/GitHub"             # where a host's boot checks projects out
 LABEL_RE = re.compile(r"[a-z0-9-]{1,20}")    # devcloud's rule for --label
 READY_RE = re.compile(r"(\S+)  ready in \d+m\d\ds")   # the one line in which `vm up` names its host
+CREATED_RE = re.compile(r"created   (\S+) \(id [^)]*\) from .*")   # where `vm up` first names the VM it made
+CAPS_LINE = "caps      "                   # `vm up`'s caps line, printed before it makes anything
 ENROLL_WAIT, ENROLL_POLL, REMOTE_TIMEOUT = 660, 30, 480   # seconds; SMINOS_ON_ENROLL_WAIT, _POLL, SMINOS_ON_TIMEOUT
 LS_REMOTE_TIMEOUT = 30
 
@@ -303,6 +305,8 @@ class Call:
             self.session = ""
         self.made = None          # the VM `vm up` made, once it did
         self.ready = []           # the hosts `vm up`'s ready lines named, as its output was read
+        self.created = []         # the VMs its `created` lines named
+        self.past_caps = False    # whether it printed its caps line, after which it may make a VM
         self.devcloud = ""
         self.checked = None       # (branch, commit) of a derived project, for row 33
         self.reaching = None      # the VM a run of the VM side was started on whose outcome is not yet read
@@ -311,12 +315,15 @@ class Call:
         """The VM made: the one `vm up` was seen to name, once one was."""
         return self.made or (self.ready[0] if len(self.ready) == 1 else None)
 
+    def owner(self):
+        thread = sminos.threads_module().thread_of(self.session) if self.session else None
+        return "this session's thread" if thread is not None else "this session"
+
     def kept(self):
         vm = self.vm()
         if vm is None:
             return ""
-        thread = sminos.threads_module().thread_of(self.session) if self.session else None
-        return KEPT % {"vm": vm, "owner": "this session's thread" if thread is not None else "this session"}
+        return KEPT % {"vm": vm, "owner": self.owner()}
 
     def refuse(self, words, code=1):
         sminos.die(words + self.kept(), code)
@@ -540,6 +547,10 @@ def run_devcloud(c, args, stdin=None, timeout=None, keep_err=False, vm=None, non
             lines.append(line)
             if up and (m := READY_RE.fullmatch(line)):
                 c.ready.append(m.group(1))
+            if up and (m := CREATED_RE.fullmatch(line)):
+                c.created.append(m.group(1))
+            if up and line.startswith(CAPS_LINE):
+                c.past_caps = True
             if mark is None or not line.startswith(mark):
                 sys.stdout.write(line + "\n")
                 sys.stdout.flush()
@@ -616,12 +627,24 @@ def make_vm(c, projects):
     if a.vm_confirmed:
         args.append("--confirmed")
     sminos.note("making a VM (a few minutes; devcloud's own lines follow): devcloud vm up %s" % shlex.join(args))
-    code, _, _, _ = run_devcloud(c, ["vm", "up"] + args)
+    code, _, err, _ = run_devcloud(c, ["vm", "up"] + args, keep_err=True)
     if code != 0:
-        c.ready = []   # what became of a VM it named, its own lines say (row 22)
-        c.refuse("spawn --on new: devcloud vm up exited %d; its own lines above say why, and what became of any VM it "
+        words = ("spawn --on new: devcloud vm up exited %d; its own lines above say why, and what became of any VM it "
                  "made. Nothing was spawned%s" % (code, ". The cap is the person's: after their yes to this exact "
-                                                       "request, pass --vm-confirmed" if code == 4 else ""), code)
+                                                       "request, pass --vm-confirmed" if code == 4 else ""))
+        # A VM made with --keep has no lease to bound it: one devcloud named and did not delete (its recount's own
+        # `deleted <name>`) is said kept, as after `ready`. None named after its caps line, other than a cap's or
+        # a provider's refusal, may still exist: a provider can make one and lose the answer that names it.
+        c.ready = []
+        named = c.created[0] if len(c.created) == 1 else None
+        if named is not None and not re.search(r"\bdeleted %s\b" % re.escape(named), err):
+            c.made = named
+        elif named is None and c.past_caps and code not in (3, 4):
+            sys.stderr.write("sminos: %s\n" % words)
+            sminos.die("spawn --on new: a VM may have been made all the same, since a provider can make one and lose "
+                       "the answer that names it: before running this again, devcloud vm ls shows it, kept and owned "
+                       "by %s, and devcloud vm down <name> removes it" % c.owner(), code)
+        c.refuse(words, code)
     if len(c.ready) != 1:
         c.refuse("spawn --on new: devcloud vm up succeeded and did not name one host where sminos reads it: find the "
                  "VM with devcloud vm ls, then sminos spawn --on <name>")

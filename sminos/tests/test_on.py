@@ -457,6 +457,58 @@ class New(On):
                                    "--vm-confirmed", "--on", "new", called=["up"])
         self.assertIn("caps      over the count cap", out)
 
+    ACCOUNT = "account   main (fake)  location fsn1  type medium (4 vCPU, 8 GB, 160 GB disk)  lifetime keep"
+    CAPS = "caps      unconfirmed 0/3 ok, size 4/8 vCPU ok, disk 160/200 GB ok"
+    CREATED = "created   dc-x-0001 (id 1) from base, slow path"
+    MAYBE = ("sminos: spawn --on new: a VM may have been made all the same, since a provider can make one and lose "
+             "the answer that names it: before running this again, devcloud vm ls shows it, kept and owned by this "
+             "session's thread, and devcloud vm down <name> removes it\n")
+
+    def failed_up(self, lines, code, stderr):
+        self.forget_calls()
+        self.cfg["up"] = {"lines": lines, "exit": code, "stderr": stderr}
+        self.save()
+        return self.refused(code, "spawn --on new: devcloud vm up exited %d; its own lines above say why, and what "
+                                  "became of any VM it made. Nothing was spawned" % code, "--on", "new",
+                            called=["up"])
+
+    def test_an_up_that_failed_after_it_named_its_vm_says_it_is_kept_whose_it_is_and_what_ends_it(self):
+        """--keep: no lease bounds the VM, so sminos names it, its owner and its down, as after `ready`."""
+        _, err = self.failed_up([self.ACCOUNT, self.CAPS, self.CREATED], 1,
+                                "devcloud vm: the boot failed at step secrets (it broke); the VM dc-x-0001 is kept "
+                                "for inspection, with no lease: devcloud vm down dc-x-0001 removes it\n")
+        self.assertTrue(err.endswith("Nothing was spawned. The VM dc-x-0001 is kept and this session's thread owns it: "
+                                     "devcloud vm down dc-x-0001 ends it\n"), err)
+        self.assertNotIn("lease bounds", err)
+        self.assertNotIn("may have been made", err)
+        _, err = self.failed_up([self.ACCOUNT, self.CAPS, self.CREATED], 1,
+                                "devcloud vm: the recount after the create failed: list failed; dc-x-0001 could not "
+                                "be deleted: down it, or the reaper will\n")
+        self.assertIn(". The VM dc-x-0001 is kept and this session's thread owns it", err)
+
+    def test_an_up_whose_own_recount_deleted_the_vm_says_nothing_is_kept(self):
+        for code, words in ((4, "over the count cap (4 unconfirmed alive after the create, cap 3: another driver "
+                                "created one meanwhile); deleted dc-x-0001: ask the person, then pass --confirmed"),
+                            (1, "the recount after the create failed: list failed; deleted dc-x-0001")):
+            with self.subTest(code=code):
+                _, err = self.failed_up([self.ACCOUNT, self.CAPS, self.CREATED], code, "devcloud vm: %s\n" % words)
+                self.assertNotIn("is kept", err)
+                self.assertNotIn("may have been made", err)
+
+    def test_an_up_that_failed_past_its_caps_naming_no_vm_ends_saying_one_may_exist(self):
+        _, err = self.failed_up([self.ACCOUNT, self.CAPS], 1, "devcloud vm: fake: describe of server 7 failed\n")
+        self.assertTrue(err.endswith(self.MAYBE), err)
+        self.assertNotIn(". The VM ", err)
+
+    def test_an_up_refused_before_any_create_says_no_vm_may_exist(self):
+        for lines, code, words in (([self.ACCOUNT, self.CAPS], 4, "over the count cap: ask the person"),
+                                   ([self.ACCOUNT, self.CAPS], 3, "fake refused the create (limit)"),
+                                   ([], 1, "--enroll: nothing was made"), ([], 3, "--enroll: nothing was made")):
+            with self.subTest(code=code, words=words):
+                _, err = self.failed_up(lines, code, "devcloud vm: %s\n" % words)
+                self.assertNotIn("may have been made", err)
+                self.assertNotIn("is kept", err)
+
     def test_an_up_that_names_no_host_or_two(self):
         for lines in (["created   dc-x-0001"], ["a  ready in 0m01s", "b  ready in 0m02s"]):
             with self.subTest(lines=lines):
