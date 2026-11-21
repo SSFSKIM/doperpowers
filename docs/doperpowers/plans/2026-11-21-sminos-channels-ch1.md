@@ -48,7 +48,7 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) The revision's review, the second and last before the build (eight findings; the composite made exact in one place, `331e2dd5`), folded in (Decision Log, "The plan's second review").
 - [x] (2026-11-21) M1 — A channel id is told from a project's at every door, and nothing is published under one. `dba3f5e8..eee82f3b`, three reviews (the bound), then the idle trim and round 3's last finding fixed (Decision Log, "M1's idle trim"); `sminos-idle` 32,161 calls a second.
 - [x] (2026-11-21) M2 — A thread's declared set: one durable operation, its statement and the statement's reader. `5ec8f9d6..ec4034c1`, clean at its third review; `sminos-idle` 32,165 calls a second.
-- [ ] M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption.
+- [x] (2026-11-21) M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption. `54cacc3a..7748fde1`, three reviews (the bound), then round 3's last finding fixed; `sminos-idle` 32,024 calls a second.
 - [ ] M4 — Requests on one machine, and the verbs that write them.
 - [ ] M5 — The roster, the listing and the pool.
 - [ ] M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture.
@@ -2332,6 +2332,21 @@ while the milestones are built, one observation and its evidence each.
   past the limit at an absorption is written before the merge's write, so
   a cut repeats it rather than losing it. The united `answered` is sorted
   oldest first.
+- 2026-11-21 — **M3's review, rounds 2 and 3, as fixed** (`cb09530c`,
+  `7748fde1`). Where a session is now (`_current_here`, the restatement's
+  guard) is `last_project`'s rule read fresh and read-only: among the
+  membership events in effect in every log here the newest decides, a
+  `retired` `moved` standing for its destination, so a past `joined` a
+  later `retired` ended vetoes nothing (a join back is stated). A tie at
+  the newest moment that names two projects makes no project current and
+  writes nothing; the move's `retired`, newer than both, decides the next
+  pass. This last fix came after the third review and had none of its
+  own. The return's notice over an unreadable channel log is best-effort:
+  one line in an ordinary run, possibly none across a cut between the
+  return's write and the line (replaying it would need a new entry key
+  and a finisher step). `channels_here()` never caches a failed listing:
+  only ENOENT answers no channel, for the generation; any other error
+  looks the holders up.
 
 ## Outcomes & Retrospective
 
