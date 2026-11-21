@@ -793,6 +793,9 @@ class Link:
         self.logs = logs          # project id → HubLog, kept across streams
         self.generation = None
         self.opened = set()       # the projects `hello`ed on this stream
+        self.channels = set()     # the channels' logs among them (CH1), decided once, as each is opened: the tick's
+        #                           loops read this set and ask no log's id again, so a machine holding no channel
+        #                           pays nothing per tick for channels (the holder's ruling on their idle cost)
         self.parts = Parts()
         self.next_scan = self.next_upload = 0.0
         self.look_whole = True    # the next upload pass looks at every own writer (tick)
@@ -904,6 +907,7 @@ class Link:
     def on_welcome(self, frame, stream):
         self.generation = self.transport.number
         self.opened.clear()
+        self.channels.clear()
         self.machine_sent.clear()
         self.follows.clear()
         self.checkouts.clear()
@@ -1380,8 +1384,9 @@ class Link:
         known checkout here (as last read; a location declared here is
         one). What a held project is sent follows from it: the machine's
         presence, its checkouts, its sessions' presence. Never a channel
-        (CH1, §7): nothing of this machine is published under one."""
-        if sminos.is_channel_id(pid):
+        (CH1, §7): nothing of this machine is published under one; one not
+        open yet has no member and no checkout here, so it reads as none."""
+        if pid in self.channels:
             return False
         return pid == self.own or bool(self.plane.members.get(pid)) or self.checkouts.get(pid, False)
 
@@ -1389,8 +1394,10 @@ class Link:
         """Whether the log's `hello` carries no `follow`: a project this
         machine holds; a channel a thread of this machine that has not ended
         is in, read from its records alone (sminos_channels.opens_unfollowed),
-        which MAWS counts as a holder of it."""
-        if sminos.is_channel_id(pid):
+        which MAWS counts as a holder of it. A log not open on this stream
+        (one that left, which the leaving rule's come-back asks of) has its
+        id looked at here; an open one's kind is `channels`'."""
+        if pid in self.channels or pid not in self.opened and sminos.is_channel_id(pid):
             return sminos.channels_module().opens_unfollowed(pid)
         return self.holds(pid)
 
@@ -1490,7 +1497,8 @@ class Link:
         joined again. Its uploads, delivery outcomes and notices go as any
         log's."""
         pid = hl.project.id
-        if sminos.is_channel_id(pid):
+        if sminos.is_channel_id(pid):   # the one look at its id: kept in `channels` from here
+            self.channels.add(pid)
             self.open_channel(hl)
             return
         hl.rejoin_former()
@@ -1693,7 +1701,7 @@ class Link:
         `state`: uplink.json as the caller read it just now. A channel's log
         is passed by: its store holds no host event (sminos.append_host)."""
         pid = hl.project.id
-        if sminos.is_channel_id(pid):
+        if pid in self.channels:
             return
         queued = self.host_queued.setdefault(pid, {})
         owed = self.host_owed.setdefault(pid, {})
@@ -1772,21 +1780,21 @@ class Link:
         each held project whose body changed. A channel's log is hello'ed
         again when `unfollowed` flips, and never sent a `machine` (CH1, §7)."""
         current = policy.wire_policy()   # as HubLog.presence says it
+        projects = self.opened - self.channels if self.channels else self.opened
         fresh = now >= self.next_checkouts or any(self.machine_sent.get(pid, {}).get("policy") != current
-                                                  for pid in self.opened
-                                                  if not self.follows.get(pid) and not sminos.is_channel_id(pid))
+                                                  for pid in projects if not self.follows.get(pid))
         if fresh:
             self.next_checkouts = now + CHECKOUTS_EVERY
-        for pid in sorted(self.opened):
+        for pid in sorted(self.channels):
             hl = self.logs[pid]
-            if sminos.is_channel_id(pid):
-                follow = not self.unfollowed(pid)
-                if follow != self.follows.get(pid):
-                    self.log_lane.send([hl.hello(follow)])
-                    self.follows[pid] = follow
-                    log("%s: %s" % (hl.project.name, "followed (no thread here is in the channel)" if follow else
-                                    "opened without follow (a thread here is in the channel)"))
-                continue
+            follow = not self.unfollowed(pid)
+            if follow != self.follows.get(pid):
+                self.log_lane.send([hl.hello(follow)])
+                self.follows[pid] = follow
+                log("%s: %s" % (hl.project.name, "followed (no thread here is in the channel)" if follow else
+                                "opened without follow (a thread here is in the channel)"))
+        for pid in sorted(projects):
+            hl = self.logs[pid]
             machine = None
             # The checkouts come from the plane's last read (draw_machine),
             # which the plane's tick, after this scan, renews: a session's
@@ -1836,8 +1844,9 @@ class Link:
 
     def open_projects(self):
         """The ids of the logs open on this stream that are projects: every
-        one but a channel's, whose log has no member and no presence."""
-        return {pid for pid in self.opened if not sminos.is_channel_id(pid)}
+        one but a channel's, whose log has no member and no presence. The
+        open set itself while no channel is open (its callers only read it)."""
+        return self.opened - self.channels if self.channels else self.opened
 
     def relay_rpcs(self):
         """The RPCs' results, their compactions' progress and their desk

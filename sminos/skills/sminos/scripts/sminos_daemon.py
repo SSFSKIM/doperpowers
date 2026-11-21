@@ -1315,11 +1315,9 @@ def tick_all(quiet=False):
     sminos.forget_caches()
     all_seats = sminos.seats()
     map_sessions()
-    projects, channels = {}, []
-    for p in sminos.known_logs(all_seats):
-        if sminos.is_channel_id(p.id):
-            channels.append(p)   # no project's tick: the channel pass's
-            continue
+    projects = {}
+    known, channels = sminos.known_kinds(all_seats)   # a channel is no project's tick: the channel pass's
+    for p in known:
         # A project read off its .smns as it is now: the remote may have moved.
         # A root this process may not read is left as registered.
         fresh = sminos.resolve_project(p.root) if p.root and not sminos.read_refused(p.root) \
@@ -1364,7 +1362,7 @@ def channel_pass(channels, all_seats):
     mirror or the archive runs for one), and each known here has its view
     read, which reconciles its log (sminos.view_of: a `joined` an older copy
     wrote there retired `moved` while a process or a seat holds its session)
-    and publishes nothing. `channels`: those known here (sminos.known_logs'
+    and publishes nothing. `channels`: those known here (sminos.known_kinds'
     channels), a loop over nothing on a machine that knows none. A channel
     whose pass fails is said in daemon.log when the failure is a new one."""
     for c in sorted(channels, key=lambda c: (c.name, c.id)):

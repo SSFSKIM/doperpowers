@@ -2089,8 +2089,8 @@ def _holding_projects(session):
             return
     hosts = [host for host, held in machine_identity()[1].items() if session in held] + [host_name()]
     for name in _PROJECT_DIRS[0]:
-        if name.startswith(".") or is_channel_id(name):
-            continue   # what glob's `*` passes by; and a channel, which is no session's project (CH1)
+        if name.startswith("."):
+            continue   # what glob's `*` passes by
         listed = _log_listed(name)
         if listed is not None:
             names, bases = listed
@@ -2098,6 +2098,8 @@ def _holding_projects(session):
             if not any(f + ".jsonl" in names for f in plain) \
                     and not any(("%s/%s" % (host, session)).replace("/", ".") in bases for host in hosts):
                 continue
+        if is_channel_id(name):
+            continue   # a channel, which is no session's project (CH1): asked only of a log that holds the session
         p = known_project(name)
         if p is not None:
             yield p, listed
@@ -2224,8 +2226,11 @@ def seat_project(seat, fresh=False):
     if not fresh and key in _SEAT_PROJECTS:
         return _SEAT_PROJECTS[key]
     project = _session_project(key[0], seat_cwd(seat, fresh), fresh)
-    if project is UNREAD:
-        project = None   # in a directory this process may not read, nothing recorded telling: unknown, not local
+    if project is UNREAD or project is not None and is_channel_id(project.id):
+        # In a directory this process may not read, nothing recorded telling: unknown, not local. And a seat is
+        # never in a channel, whatever an older copy registered (CH1, §1): asked here, once a generation, so
+        # known_projects' seats hold none and its every call asks no seat's project of its id again.
+        project = None
     elif project is None:
         name = safe_name(os.path.basename(os.path.normpath(cwd))) or "fleet"
         project = make_project("local-" + name, name, "", os.path.abspath(cwd))
@@ -2454,7 +2459,7 @@ def _known(all_seats):
             (channels if held[3] else projects)[held[2].id] = held[2]
     for s in seats() if all_seats is None else all_seats:
         p = seat_project(s)
-        if p and not is_channel_id(p.id):   # a seat is never in a channel, whatever an older copy registered
+        if p:
             projects.setdefault(p.id, p)
     return projects, channels
 
@@ -2472,6 +2477,14 @@ def known_channels():
     """The logs registered here whose id is a channel's (is_channel_id), the
     org's directory's and this machine's own alike."""
     return list(_known([])[1].values())
+
+
+def known_kinds(all_seats=None):
+    """(known_projects, known_channels) from one read of the registrations,
+    for a caller that takes each its own way (the daemon's tick): the kind
+    kept with each registration, asked of no log again."""
+    projects, channels = _known(all_seats)
+    return list(projects.values()), list(channels.values())
 
 
 def known_logs(all_seats=None):
@@ -2493,10 +2506,12 @@ def project_tiers(q):
     tag `@<q>/<alias>` reads the next only when the first has no such member
     — a team names its project deliberately and a machine is named after a
     host, so the project is the likelier meaning."""
+    if is_channel_id(q):   # a channel's id, registered or not, before any name: no project's name shadows it
+        die(not_a_project(q), EXIT_UNKNOWN)
     out, clash = _name_tiers(q)
     if clash:
         die(ambiguous_name(q, clash), EXIT_UNKNOWN)
-    if out and is_channel_id(out[0].id) or not out and is_channel_id(q):   # a channel's id, registered or not
+    if out and is_channel_id(out[0].id):
         die(not_a_project(q), EXIT_UNKNOWN)
     return out
 
@@ -2597,10 +2612,11 @@ def find_project(q, required=True):
     """A project known locally, by id or by name (project_tiers' first);
     with required=False, None when none is, a channel's name or id among
     them, registered here or not (an ambiguous name still exits)."""
-    out, clash = _name_tiers(q)
+    channel = is_channel_id(q)   # a channel's id, registered or not, before any name: no project's name shadows it
+    out, clash = ([], []) if channel else _name_tiers(q)
     if clash:
         die(ambiguous_name(q, clash), EXIT_UNKNOWN)
-    if out and is_channel_id(out[0].id) or not out and is_channel_id(q):   # a channel's id, registered or not
+    if channel or out and is_channel_id(out[0].id):
         if not required:
             return None
         die(not_a_project(q), EXIT_UNKNOWN)
@@ -6749,7 +6765,8 @@ def view_of(project, all_seats=None, titles=True):
     by_session = seats_by_session(project, all_seats)
     local = _local_sessions(project, all_seats)
     read, events = _store_whole(project, "log", shared=True)
-    appended = (_reconcile_channel(project, events, by_session) if is_channel_id(project.id)
+    channel = is_channel_id(project.id)
+    appended = (_reconcile_channel(project, events, by_session) if channel
                 else _reconcile(project, events, local, by_session, all_seats))
     # Read again: what anyone appended since the read above is in the view — this reconciliation's own
     # events, and another process's join (or retire, rename, hand-off) that its guards then declined to
@@ -6765,7 +6782,7 @@ def view_of(project, all_seats=None, titles=True):
     queued = [e for e in appended if e.get("seq") is None]
     if queued:
         events = events + queued
-    if is_channel_id(project.id):
+    if channel:
         # A channel's view has no members, by construction and whatever its log holds (CH1, C1): an older
         # copy's `joined` there, undone above while a process or a seat holds its session, is no member
         # before or after, so nothing reads one to publish, deliver or address under a channel id. Its

@@ -444,8 +444,9 @@ class LegacyRoot(Machine):
             self.assertIsNone(sminos.registered_guess(os.path.join(self.root, "w")))
             self.assertEqual([p.id for p in sminos.known_projects([seat])], [PROJ])
         self.assertEqual([p.id for p in sminos.known_channels()], [DESK])
-        with mock.patch.object(sminos, "seat_project", lambda s, fresh=False: sminos.known_project(DESK)):
-            sminos.forget_caches()
+        with mock.patch.object(sminos, "_session_project", lambda *a, **k: sminos.known_project(DESK)):
+            sminos.forget_caches()   # a resolution that gave a channel all the same: the seat is in none
+            self.assertIsNone(sminos.seat_project(seat))
             self.assertEqual([p.id for p in sminos.known_projects([seat])], [PROJ], "a seat's fallback holds none")
 
     def test_a_say_whose_destination_is_a_channel_is_refused(self):
@@ -612,6 +613,15 @@ class Round2(Machine):
         self.assertIsNone(sminos.find_project(other, required=False))
         self.assertEqual(exits(channels.find_channel, other)[1].strip(),
                          "sminos: no channel '%s' is known on this machine" % other)
+        # A project whose exact name is a channel's id shadows nothing: the id is a channel's, the project its own.
+        named = self.project(TWIN1, other)
+        for verb in (("list", other), ("chat", other)):
+            rc, out, err = self.cli(*verb)
+            self.assertEqual(rc, 4, verb)
+            self.assertIn("'%s' is a channel, not a project" % other, err, verb)
+        self.assertIsNone(sminos.find_project(other, required=False))
+        self.assertEqual(sminos.find_project(TWIN1).id, named.id)
+        self.assertEqual([p.id for p in sminos.project_tiers(TWIN1)], [TWIN1])
 
     def test_every_label_of_the_refusal_names_its_own_log(self):
         root = os.path.join(self.home, "w")
