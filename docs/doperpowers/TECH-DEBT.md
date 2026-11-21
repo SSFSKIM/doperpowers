@@ -97,7 +97,7 @@ skill-infrastructure suites (`tests/sminos/`,
 
 **Shipped** through SSFSKIM/ci-kit. `.github/ci-kit.yml` names one gate per
 suite family that runs without model calls: shell-lint (the shell files a
-change touched), sminos and sminos-suites, issue-tracker, board-api,
+change touched), sminos and sminos-suites-a/b/c, issue-tracker, board-api,
 claude-code (its hermetic tier), mods, triaging-feedback, and
 repo-checks. Every pull request gets the checks, which run in parallel on
 GitHub's free hosted runners in about 8 minutes. `ci-gate`
