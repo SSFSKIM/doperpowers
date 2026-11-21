@@ -43,6 +43,7 @@ import glob
 import json
 import os
 import sys
+import time
 import unittest
 import uuid as uuidlib
 from unittest import mock
@@ -511,6 +512,134 @@ class Pool(Roster):
         self.assertEqual(logs(os.environ["SMINOS_HOME"]), before, "no log file changed")
         code, out = self.cli("channel", "show", "desk")
         self.assertEqual(code, 0, "show is a read: no capability is needed")
+
+
+# ------------------------------------------------------------ fix round 1
+
+
+WEB = "7d2b9c41-1f3e-4a6b-8c5d-9e0f1a2b3c4d"   # a second hub project
+
+
+class Round1(Roster):
+    def setUp(self):
+        super().setUp()
+        sminos.register_if_absent(sminos.make_project(WEB, "web", "", "", HUB))
+        sminos.forget_caches()
+        self.web = sminos.known_project(WEB)
+        self.org(sminos.host_name(), "beta", "gamma")
+
+    def test_env_refused_with_a_reconciliation_due_writes_nothing(self):
+        tid, sid, _ = self.human(root=self.app_root)
+        self.placed(tid, sid, DESK)
+        _, outsider, _ = self.human(root=self.app_root)
+        # The record holds LOBBY too, which its log does not state yet: the next reconciliation restates it.
+        self.raw(tid, lambda r: (r.update(channels=[DESK, LOBBY]), r["began"].update({LOBBY: {}})))
+        before = logs(os.environ["SMINOS_HOME"])
+        for who, argv, words in ((sid, ("add", "desk", "zeta"), "zeta"),
+                                 (sid, ("add", "lobby", "beta"), "is not in lobby"),
+                                 (outsider, ("add", "desk", "beta"), "is not in desk")):
+            with self.subTest(argv=argv):
+                code, out = self.as_session(who, "channel", "env", *argv, cwd=self.app_root)
+                self.assertEqual(code, 1, out)
+                self.assertIn(words, out)
+                self.assertEqual(logs(os.environ["SMINOS_HOME"]), before, "nothing was written, nor reconciled")
+        self.reconcile(self.app)
+        self.assertEqual(self.statements(sid, self.app)[-1]["channels"], [DESK, LOBBY], "a restatement was due")
+
+    def moved(self, retired_first):
+        """Another machine's thread in DESK moves from app to web; the move's two halves are imported in either
+        order (the destination's `joined` and statement ahead of the source's older `retired`, or after it)."""
+        tid, sid, w = self.far("mover")
+        sminos.forget_caches()
+        time.sleep(0.005)
+        retired_at = sminos.now(ms=True)
+        time.sleep(0.005)
+
+        def retire():
+            # As an import leaves it (log_append's own `project` is the log's): the writer's next seq, its own ts.
+            path = sminos.writer_path(self.app, w)
+            with open(path) as f:
+                seq = max(json.loads(line)["seq"] for line in f if line.strip()) + 1
+            with open(path, "a") as f:
+                f.write(json.dumps({"ts": retired_at, "writer": w, "seq": seq, "kind": "retired", "session": sid,
+                                    "reason": "moved", "project": WEB, "by": ""}) + "\n")
+            sminos.forget_caches()
+
+        def join():
+            sminos.log_append(self.web, w, "joined", session=sid, alias="mover", name_source="user", machine="beta",
+                              cwd="/w", worktree="", role="", seat="", by="join", session_kind="interactive",
+                              thread=tid)
+            sminos.log_append(self.web, w, "state", session=sid, state="idle", machine="beta")
+            self.state(self.web, w, sid, tid, [DESK])
+        seen = []
+        for step in ((retire, join) if retired_first else (join, retire)):
+            step()
+            seen.append(self.sessions_of(DESK))
+            code, out = self.cli("list", "--channel", "desk", "--json")
+            self.assertEqual(code, 0, out)
+            ids = [r["session"] for r in json.loads(out)]
+            self.assertEqual(len(ids), len(set(ids)), "one row a session: %s" % ids)
+            code, out = self.cli("channel", "show", "desk", "--json")
+            shown = json.loads(out)
+            self.assertEqual(len(shown["members"]), len(seen[-1]))
+            self.assertEqual(sum(e["live"] for e in shown["pool"]), len(seen[-1]), "counted once in the pool")
+        return sid, seen
+
+    def test_a_move_seen_across_two_logs_is_one_row_the_destination_imported_first(self):
+        sid, seen = self.moved(retired_first=False)
+        self.assertEqual(seen, [[(WEB, sid)], [(WEB, sid)]], "the newest membership in effect decides")
+
+    def test_a_move_seen_across_two_logs_is_one_row_the_source_imported_first(self):
+        sid, seen = self.moved(retired_first=True)
+        self.assertEqual(seen, [[], [(WEB, sid)]])
+
+    def test_a_malformed_refusal_answers_nothing(self):
+        tid, sid, _ = self.human()
+        e = self.remote(DESK, "add", sid, tid)   # pending: the endpoint's word
+        self.carry(DESK)
+        w = sminos.writer_id(sid)
+        for reason in (["not-reachable"], None, "elsewhere"):
+            more = {} if reason is None else {"reason": reason}
+            sminos.log_append(self.p, w, "channels", session=sid, thread=tid, op=os.urandom(8).hex(), channels=[],
+                              answers={"channel": DESK, "id": e["id"]}, result="refused", **more)
+        sminos.forget_caches()
+        self.assertEqual(channels.answers().get((DESK, e["id"])), None, "none is indexed")
+        self.assertIsNone(channels.answer_of(self.chan(DESK), e))
+        code, out = self.cli("channel", "show", "desk")
+        self.assertEqual(code, 0, out)
+        self.assertIn("pending on %s" % sminos.host_name(), out)
+        code, out = self.cli("channel", "show", "desk", "--json")
+        self.assertEqual([r["state"] for r in json.loads(out)["requests"]], ["pending"])
+
+    def test_a_pending_request_keeps_the_machine_its_ended_target_was_last_seen_on(self):
+        far_t, far_s, w = self.far("faraway", chans=(), rev=1)
+        self.request(DESK, "add", far_s, far_t)
+        sminos.log_append(self.app, w, "retired", session=far_s, reason="retire", by="", thread=far_t)
+        sminos.forget_caches()
+        self.assertEqual(self.sessions_of(DESK), [])
+        code, out = self.cli("channel", "show", "desk", "--json")
+        shown = json.loads(out)
+        self.assertEqual([(r["state"], r["machine"], r["target"]) for r in shown["requests"]],
+                         [("pending", "beta", "faraway#%s" % far_s[:8])])
+        self.assertEqual(shown["members"], [], "its ended row is in no roster")
+        sminos.log_append(self.app, w, "unlisted", session=far_s, policyRev=2)   # then it went private
+        sminos.forget_caches()
+        code, out = self.cli("channel", "show", "desk", "--json")
+        self.assertEqual([r["machine"] for r in json.loads(out)["requests"]], [None],
+                         "nothing read past a narrowing of what this reader may read")
+
+    def test_a_row_of_a_retired_machine_carries_no_channels_and_a_gone_member_does(self):
+        self.far("lost", machine="gamma")
+        _, ghost, _ = self.far("ghost", state="gone", machine="beta")
+        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "org.json"), {
+            "projects": [], "machines": [{"name": "beta"}, {"name": "gamma", "retired": True}],
+            "at": sminos.now(ms=True)})
+        sminos.forget_caches()
+        code, out = self.cli("list", "--org", "--json")
+        rows = {r["alias"]: r for r in json.loads(out)}
+        self.assertNotIn("channels", rows["lost"], "its machine retired: in no roster, so no key")
+        self.assertEqual(rows["ghost"]["channels"], [DESK], "an ordinary gone member still belongs")
+        self.assertEqual(self.sessions_of(DESK), [(APP, ghost)])
 
 
 if __name__ == "__main__":

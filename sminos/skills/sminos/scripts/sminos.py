@@ -4288,8 +4288,8 @@ def member_json(m, project=None, private=True):
                  controller=rec.get("controller"))
     rec = session_running(m.session) if m.local and m.session else None
     d["engine"] = engine_facts(rec) if rec else None
-    if m.channels:   # only on a row in a channel, as the wire sends no key for a thread in none (CH1, §8)
-        d["channels"] = list(m.channels)
+    if m.channels and not has_ended(m):   # only on a row in a channel, as the roster reads one (CH1, §8): the
+        d["channels"] = list(m.channels)      # wire sends no key for a thread in none, an ended thread is in none
     if project is not None:
         d = {"project": project.name, "project_id": project.id, "project_kind": project_kind(project), **d}
     return d
@@ -18171,6 +18171,8 @@ def cmd_list(a):
         return
     projects, words, picked = list_scope(a)
     chosen = named_channels(a)
+    # The rows the rosters of the channels named hold (one a session, none ended): a row filter like the others.
+    in_chosen = {(p.id, m.session) for c in chosen for p, m in channels_module().roster(c)}
     sections, out, hidden, members_known = [], [], 0, set()
     folded = [word for word in HIDDEN if not (a.stopped and word == "stopped")]
     ended = a.all or "retired" in a.state
@@ -18178,8 +18180,8 @@ def cmd_list(a):
         every = project_rows(p) + (list(view_of(p).ended) if ended else [])
         members_known |= {m.session for m in every if m.session}
         rows = [m for m in every if row_matches(m, p, a, words)]
-        if chosen:   # a row filter: the rows in a channel named, as its roster holds them (none ended)
-            rows = [m for m in rows if not has_ended(m) and any(c.id in m.channels for c in chosen)]
+        if chosen:
+            rows = [m for m in rows if (p.id, m.session) in in_chosen]
         if a.json:
             out += [member_json(m, p, private=not a.org) for m in rows]
             continue
