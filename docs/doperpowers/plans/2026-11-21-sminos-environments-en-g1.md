@@ -23,7 +23,7 @@ How to see it working is the acceptance below, proved by suites that run a real 
 - [x] (2026-11-21, reviewed clean; gates GREEN on `a7cafd0a`) M1 — A machine's notice: the marker, the exit that lets it go on, and the host that sends both.
 - [x] (2026-11-21, reviewed clean after two fix waves; gates GREEN on `7fa45742`) M2 — A VM handed to another thread.
 - [x] (2026-11-21, reviewed clean after three fix waves; gates GREEN on `44529554`) M3 — A thread opened on a VM with one command.
-- [ ] M4 — What sessions are taught, what sits beside the code, and the gates on the final head.
+- [x] (2026-11-21, reviewed clean after two fix waves; gates GREEN on `a60f6429`) M4 — What sessions are taught, what sits beside the code, and the gates on the final head.
 - [ ] The whole range reviewed (Decision Log, "Verification"), its fixes, and the merge.
 - [ ] M5 — The live check, on the merged change.
 
@@ -1013,7 +1013,11 @@ What the code map and this plan's own reading found that D4 did not expect. Each
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+2026-11-21 — **M1 to M4 built, reviewed at each milestone, gates GREEN on the final head; the whole-range review and M5 are the holder's and still to come.** What the child set out to do holds against the stand-ins: one command opens a thread on a VM that exists or one it makes (`spawn --on`), a VM can be handed to another thread of the Mac (`devcloud vm owner`), and a VM's notice reaches the owning thread's current session as `devcloud@<vm>`, never as the person's words, and goes on to the project when the VM's own `say` reports the thread held. Acceptance 1 to 11 are proved by the suites the proof map names; 12 waits for M5, after the merge.
+
+What the build taught. *Each milestone needed fix waves its review found, and none needed a design change:* M1 one, M2 two, M3 three, M4 two. The findings were the plan's own edges met in code: a reply or record read whole or not at all (M2's host answer, M3's outcome line and request), a refusal before the first side effect (M3's usage checks, an empty task), a deadline that bounds every try, a stop answered at every stage, and taught words that promised more than delivery does (M4). *The plan's interface text was wrong about the code four times, each fixed in place:* `record_settled` was taken (`provenance_settled`); `remote get-url` applies `insteadOf` and `ls-remote origin` asks a remote's first url (the configured url, asked directly); `symbolic-ref --short` answers `heads/<b>` beside a tag; and `peer_for_session` needs a live inbox (`running_now`, failing closed). *A holder's ruling arrived mid-build and was absorbed in the milestone it touched* (`NOTICE_MACHINE_RE`, MAWS's machine-name grammar). *One limit surfaced only in evaluation:* `--on new` cannot size its VM, which the skills now teach around and TECH-DEBT records. *Two reds on the branch were a fault of main's wake suites,* root-caused by the holder and fixed on main (#590), and merged here before M4. *The first M3 commit's sminos tests came after its code;* every fix wave after had a behavioural RED first.
+
+Not proved here: the real `devcloud vm ssh` path to a live host (quoting, stdin, no tty), the endpoint's half of X8 in MAWS, and every older-copy row of §10 beyond what the stand-ins play. M5 checks the first on the fleet.
 
 ## For the composite's writer
 
