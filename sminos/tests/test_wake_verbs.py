@@ -1254,5 +1254,43 @@ class Round4(Verbs):
                 self.assertIn("reply to %s" % event["msg_id"], out, "the reply, not an empty one")
                 os.unlink(os.path.join(self.state, "reply-delay"))
 
+    def raced(self):
+        """deliver_next as when the daemon's pass took the event between the sender's release of the lock and the
+        sender's own pass: that pass then finds nothing of it."""
+        real = sminos.deliver_next
+
+        def daemon_first(project, member, due=False, **kw):
+            real(project, member, due=True)
+            return real(project, member, due=due, **kw)
+        return mock.patch.object(sminos, "deliver_next", daemon_first)
+
+    def test_a_message_the_daemon_delivered_first_is_said_delivered_not_owed(self):
+        for argv in (("send", "{short}", "taken first"), ("say", "@{short} taken first")):
+            with self.subTest(verb=argv[0]):
+                tid, sid = self.human_thread()
+                before = len(self.frames(sid))
+                with self.raced():
+                    code, out = self.cli(*[a.format(short=sid[:8]) for a in argv])
+                self.assertEqual(code, 0, out)
+                self.assertIn("delivered by a concurrent delivery", out)
+                self.assertNotIn("owed", out)
+                self.assertNotIn("pending", out)
+                self.assertEqual(sum(f.count("taken first") for f in self.frames(sid)[before:]), 1, "pushed once")
+
+    def test_a_live_send_through_receipts_settled_first_is_said_delivered_not_owed(self):
+        tid, sid = self.human_thread()
+        self.terminal(sid)
+
+        def settled_first(project, member, due=False, **kw):
+            for e in sminos.owed(project, member):
+                sminos.delivered_settle(project, member.session, e["writer"], e["seq"])
+            return {"outcomes": []}
+        with mock.patch.object(sminos.holder_module(), "handoff", lambda pid, session: "receipts"), \
+                mock.patch.object(sminos, "deliver_next", settled_first):
+            code, out = self.cli("send", sid[:8], "settled first")
+        self.assertEqual(code, 0, out)
+        self.assertIn("delivered by a concurrent delivery", out)
+        self.assertNotIn("owed", out)
+
 if __name__ == "__main__":
     unittest.main()

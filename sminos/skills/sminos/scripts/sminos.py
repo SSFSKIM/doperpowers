@@ -3606,6 +3606,14 @@ def _delivery(record, writer):
     return record.get(writer) or {"settled": 0, "pending": None, "attempts": 0}
 
 
+def settled_already(project, session, writer, seq):
+    """Whether the event `writer`:`seq` is in its writer's settled prefix of
+    the session's delivery record: another deliverer took it (the daemon,
+    between a sender's release of the lock and the sender's own pass),
+    which that pass then has no outcome for."""
+    return seq <= _delivery(delivered_load(project, session), writer)["settled"]
+
+
 def _entry(settled, pending=None, attempts=0, revoked=(), pushed=None, held=()):
     """A writer's delivery entry as written: of its revoked seqs, those
     directly above the settled prefix are passed by it (none is owed, so the
@@ -8915,6 +8923,9 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
         if mine:
             woken = {"woken": "sent (woken)", "woken?": "sent? (woken)"}   # §5: a live push's words, woken
             print("%s: %s" % (name(r), woken.get(mine[0], mine[0])))
+            continue
+        if member and settled_already(dest, member.session, writer, e["seq"]):
+            print("%s: sent (delivered by a concurrent delivery)" % name(r))
             continue
         if any(ev["writer"] == writer for ev in result.get("gated", ())):
             print("%s: %s" % (name(r), WORDS_RECORDED))
@@ -15809,8 +15820,9 @@ def record_message(project, session, alias, sender, via, text, msg_id, deliver=T
 def deliver_sent(project, session, alias, delivery):
     """A send recorded for a session no process answers for, delivered as
     the sender's own call (deliver_next, `due`: T2's M3): woken and pushed,
-    held for its thread and said why (§5), or owed behind an earlier event;
-    what was printed, as `send` prints it. `delivery`, released."""
+    held for its thread and said why (§5), delivered by another deliverer
+    (settled_already), or owed behind an earlier event; what was printed,
+    as `send` prints it. `delivery`, released."""
     member = next((m for m in members(project) if m.session == session), None)
     if member is None:
         print("recorded %s for %s: the daemon delivers it" % (event_ref(delivery.event), alias))
@@ -15826,6 +15838,9 @@ def deliver_sent(project, session, alias, delivery):
         print("recorded %s for %s: %s" % (event_ref(delivery.event), alias, held_line(why, session=session)))
     elif mine and mine[0] in PUSHED:
         print("sent to %s%s" % (alias, " (woken)" if mine[0] in ("woken", "woken?") else ""))
+        return
+    elif not mine and settled_already(project, session, delivery.writer, seq):
+        print("sent to %s (delivered by a concurrent delivery)" % alias)
         return
     elif not mine:
         print("recorded %s for %s: owed behind an earlier message (%s)" % (event_ref(delivery.event), alias,
@@ -15908,7 +15923,9 @@ def send_to_member(project, m, sender, via, text, msg_id):
         delivery.release()
         got = deliver_next(project, m)
         mine = [o for ev, o in got["outcomes"] if (ev["writer"], ev["seq"]) == (delivery.writer, delivery.event["seq"])]
-        print("sent to %s (%s)" % (m.alias, mine[0] if mine else "owed behind an earlier message"))
+        print("sent to %s (%s)" % (m.alias, mine[0] if mine else "delivered by a concurrent delivery"
+                                   if settled_already(project, m.session, delivery.writer, delivery.event["seq"])
+                                   else "owed behind an earlier message"))
         return
     try:
         control_module().push_live(peer, m.session, delivery.payload(True), delivery.queue[-1], project.id,
