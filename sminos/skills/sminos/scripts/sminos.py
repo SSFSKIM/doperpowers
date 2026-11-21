@@ -12037,18 +12037,32 @@ def engine_spare(rec):
 def hook_spare(session):
     """Whether the engine running this hook (CLAUDE_PID, beside the
     CLAUDE_CODE_SESSION_ID that names `session`) records it as a spare: its
-    SessionStart fires at the claim, after the record is written."""
+    SessionStart fires at the claim, after the record is written. Read from
+    the hook's own config dir (config_dir, its CLAUDE_CONFIG_DIR), which no
+    one may have registered yet: the hook records it only after this."""
     pid = os.environ.get("CLAUDE_PID", "")
     if os.environ.get("CLAUDE_CODE_SESSION_ID") != session or not pid.isdigit():
         return False
-    for p, _ in engine_record_paths():
-        if os.path.basename(p) != pid + ".json":
-            continue
+    try:
+        rec = json_at(os.path.join(config_dir(), "sessions", pid + ".json"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(rec, dict) and rec.get("sessionId") == session and engine_spare(rec)
+
+
+def spare_now(session):
+    """Whether a live process the engine records as a spare names the
+    session (engine_spare), read afresh: its bridge's socket, which the
+    bridge mod's child opens at its SessionStart, is then no process
+    holding a session (process_holds). Read again at every call, so the
+    session counts as any once its first frame drops the flag."""
+    for p, owners in engine_record_paths(fresh=True):
         try:
             rec = json_at(p)
         except (OSError, ValueError):
             continue
-        if isinstance(rec, dict) and rec.get("sessionId") == session and engine_spare(rec):
+        if isinstance(rec, dict) and rec.get("sessionId") == session and engine_spare(rec) \
+                and speaks_for(owners, rec) and pid_alive(rec.get("pid")):
             return True
     return False
 
@@ -14479,8 +14493,9 @@ def process_holds(session):
     """(held, readable): whether a process holds the session by E5's three
     signals (the engine's record of a process, the job list, the bridge's
     socket), each read afresh; `readable` False when one could not be read
-    (the job list failing) and none says held."""
-    if running_now(session) is not None or bridge_holds(session):
+    (the job list failing) and none says held. A spare's bridge answering
+    holds nothing (spare_now)."""
+    if running_now(session) is not None or (bridge_holds(session) and not spare_now(session)):
         return True, True
     job = job_holds(session)
     return bool(job), job is not None

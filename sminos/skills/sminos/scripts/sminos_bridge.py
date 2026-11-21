@@ -693,13 +693,15 @@ def read_seed(session):
 
 def presence_status(path, session):
     """The session record's `status` (idle, busy, shell, waiting), or None
-    when no record of this session can be read there."""
+    when no record of this session can be read there, or the record is a
+    spare's (sminos.engine_spare: no one's session until its first frame
+    drops the flag; read again at each call)."""
     try:
         with open(path) as f:
             d = json.load(f)
     except (OSError, ValueError):
         return None
-    if not isinstance(d, dict) or d.get("sessionId") != session:
+    if not isinstance(d, dict) or d.get("sessionId") != session or S.engine_spare(d):
         return None
     return d.get("status") if isinstance(d.get("status"), str) else None
 

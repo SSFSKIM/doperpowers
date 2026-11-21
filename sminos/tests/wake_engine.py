@@ -60,8 +60,9 @@ launch waits until the file is removed; `launches` counts those entered);
 turns run the second first: its prompt and reply, then the first's); `bridge` (the helper serves sminos's bridge
 socket for the session, a signal of E5's beside its record and its job); `spare` (each launch also leaves a
 session claimed from the engine's spare pool with no prompt yet, as 2.1.330 does: a helper whose record says
-`"spare": true` under a session id of its own, with an inbox and no job in the list, which drops the flag at its
-first frame; `spare(cwd)` starts one for a test directly).
+`"spare": true` under a session id of its own, with an inbox, sminos's bridge socket (the bridge mod's child starts
+at its SessionStart) and no job in the list, which drops the flag at its first frame; `spare(cwd)` starts one for a
+test directly).
 """
 import contextlib
 import fcntl
@@ -546,7 +547,7 @@ def start_spare(cwd):
     sid = str(uuid.uuid4())
     spec = {"sid": sid, "short": sid[:8], "cwd": cwd, "name": sid[:8], "nameSource": "", "mode": "auto",
             "model": "claude-spare", "transcript": transcript_for(sid, cwd), "message": None, "late_inbox": 0,
-            "late_process": 0, "bridge": False, "spare": True, "state": state()}
+            "late_process": 0, "bridge": True, "spare": True, "state": state()}
     spec_path = os.path.join(state(), "spec-%s.json" % uuid.uuid4().hex[:8])
     write_json(spec_path, spec)
     for d in ("helpers", "inputs"):

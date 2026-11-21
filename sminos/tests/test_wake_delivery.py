@@ -1297,6 +1297,56 @@ class Spare(Deliveries):
         self.assertIsNone(threads.thread_of(sid), "no thread record")
         self.assertEqual(self.members() & {sid}, set())
 
+    def test_its_bridge_answering_is_no_process_holding_it_until_its_flag_drops(self):
+        real = sminos.socket_ok
+
+        def answers(path):
+            """socket_ok by the socket's name from its directory: the rig's bridge path is longer than a socket's
+            path may be, as the test engine binds it."""
+            here = os.getcwd()
+            try:
+                os.chdir(os.path.dirname(path) or ".")
+                return real(os.path.basename(path))
+            except OSError:
+                return False
+            finally:
+                os.chdir(here)
+        p = mock.patch.object(sminos, "socket_ok", answers)
+        p.start()
+        self.addCleanup(p.stop)
+        sid, pid = wake_engine.spare(self.root)
+        bridge = os.path.join(sminos.root(), "bridge", sid + ".sock")
+        self.assertTrue(wait_for(lambda: sminos.socket_ok(bridge)), "its bridge's socket answers")
+        record = sminos.socket_path_of(self.spare_record(sid))
+        path = next(p for p, _ in sminos.engine_record_paths(fresh=True) if p.endswith("/%d.json" % pid))
+        bridged = vars(sminos.sibling_module("sminos_bridge"))
+        self.assertEqual(sminos.process_holds(sid), (False, True), "E5: no process holds a spare's session")
+        self.assertIsNone(bridged["presence_status"](path, sid), "nor is its record its bridge's presence")
+        sminos.send_frame(record, "a first prompt")
+        self.assertTrue(wait_for(lambda: "spare" not in self.spare_record(sid)), "the flag dropped at its turn")
+        self.assertEqual(sminos.process_holds(sid), (True, True), "a process holds it once it is a session")
+        self.assertIn(bridged["presence_status"](path, sid), ("idle", "busy"), "and its record is its presence")
+
+    def test_a_spare_under_a_config_dir_no_one_registered_writes_nothing_at_its_start(self):
+        alt = os.path.join(self.home, "fresh-config")
+        os.makedirs(os.path.join(alt, "sessions"))
+        sid = str(uuidlib.uuid4())
+        proc = subprocess.Popen(["sleep", "600"])
+        self.addCleanup(lambda: (proc.kill(), proc.wait()))
+        with open(os.path.join(alt, "sessions", "%d.json" % proc.pid), "w") as f:
+            json.dump({"pid": proc.pid, "sessionId": sid, "cwd": self.root, "kind": "bg", "name": sid[:8],
+                       "spare": True, "status": "idle"}, f)
+        payload = {"session_id": sid, "cwd": self.root, "hook_event_name": "SessionStart", "source": "startup",
+                   "transcript_path": os.path.join(alt, "projects", "x", sid + ".jsonl"), "agent_type": "claude"}
+        with mock.patch.dict(os.environ, {"CLAUDE_PID": str(proc.pid), "CLAUDE_CODE_SESSION_ID": sid,
+                                          "CLAUDE_CONFIG_DIR": alt}):
+            sminos.forget_caches()
+            sminos.cmd_record(None, payload)
+        sminos.forget_caches()
+        self.assertFalse(os.path.exists(sminos.config_dir_path(sid)), "no config-dir record")
+        self.assertEqual(self.own(sid), [], "no joined")
+        self.assertIsNone(threads.thread_of(sid), "no thread record")
+
     def test_one_whose_first_frame_dropped_the_flag_is_a_session_like_any(self):
         sid, pid = wake_engine.spare(self.root)
         sock = sminos.socket_path_of(self.spare_record(sid))
