@@ -363,13 +363,16 @@ def line_note(first, options, turn, not_carried=None, opened=""):
     """What `waking.line` holds for a wake about to launch (§7): `first`
     whether it is a first wake; `options` what it runs under (a first
     wake's flags, a later one's row options); the last turn's model beside
-    them; for a first wake the names not carried (None: not known); and how
-    the thread was opened, the record's `opened`."""
+    them; for a first wake the names not carried (None: not known); how
+    the thread was opened, the record's `opened`; and `at`, when it was
+    written, before the launch, which no process of that launch started
+    before. Its `short`, the job the launch's banner named, is added once
+    the banner is read (sminos_threads.wake_job, wake_line_bound)."""
     options = [t for t in options or [] if isinstance(t, str)]
     return {"id": uuid.uuid4().hex[:12], "first": bool(first), "mode": options_mode(options),
             "model": _option(options, "--model"), "turn_model": str((turn or {}).get("model") or ""),
             "not_carried": (list(not_carried) if not_carried is not None else None) if first else [],
-            "opened": str(opened or "")}
+            "opened": str(opened or ""), "at": sminos.now(ms=True)}
 
 
 def same_model(a, b):

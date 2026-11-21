@@ -346,6 +346,94 @@ class Together(Deliveries):
         self.assertEqual(self.resumes(sid), [])
 
 
+class OneLaunch(Deliveries):
+    """The line belongs to the launch that wrote it (frontier review round 2, scalpel-2#4 and sweep#8): it goes
+    only to a background process of the job that launch's banner named, started since the line was written."""
+
+    def by_hand(self, sid):
+        """A background resume of the session by hand (`claude --bg --resume <id>`): its process, of the session's
+        own job, started now."""
+        code, out, err = self.claude("--bg", "--resume", sid)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(wait_for(lambda: self.record(sid) is not None))
+        sminos.forget_caches()
+        return self.record(sid)
+
+    def test_a_line_whose_launch_never_was_accepted_or_is_another_processs_goes_with_no_push_and_is_removed(self):
+        tid, sid = self.human_thread()
+        rec = self.by_hand(sid)
+        old = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 3600))
+        after = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(rec["startedAt"] / 1000 + 2))
+        note = wake.line_note(False, [], {})
+        for case, line in (("never accepted", dict(note, at=old)),
+                           ("another job's", dict(note, at=old, short="0badf00d")),
+                           ("written after the process started", dict(note, at=after, short=rec["jobId"]))):
+            with self.subTest(case):
+                time.sleep(0.01)
+                self.assertTrue(threads.wake_line(tid, sid, line))
+                code, out = self.say("@%s %s" % (sid[:8], case))
+                self.assertEqual(self.shown(out, sid), ["sent"])
+                frame = self.frames(sid)[-1]
+                self.assertIn(case, frame)
+                self.assertNotIn(wake.LINE_HEAD, frame, "no other launch's line")
+                self.assertNotIn("line", self.waking(tid, sid), "removed")
+        self.assertTrue(threads.wake_line(tid, sid, dict(note, at=old, short=rec["jobId"])))
+        self.say("@%s its own" % sid[:8])
+        self.assertTrue(line_of(self.frames(sid)[-1])[1].startswith(wake.LINE_HEAD), "the launch's own process")
+
+    def test_a_line_whose_launch_is_in_flight_goes_to_a_process_started_since_and_waits_otherwise(self):
+        # E18: the engine's record and inbox precede the banner, so another sender's push may reach the new process
+        # before the launcher has read its banner and bound the line to its job: the line goes with that first push
+        # while a launch holds the wake lock and the process started since the line was written; a process older
+        # than it leaves the line for the launch's own; with no launch in flight it is no one's.
+        tid, sid = self.human_thread()
+        line = dict(wake.line_note(False, [], {}), at=sminos.now(ms=True))
+        ms = int(time.time() * 1000)
+        newer, older = {"kind": "bg", "startedAt": ms + 2000}, {"kind": "bg", "startedAt": ms - 2000}
+        self.assertEqual([sminos.line_owner(tid, line, p) for p in (newer, older)], ["other", "other"])
+        held, done = threading.Event(), threading.Event()
+
+        def launching():
+            hold, _ = sminos.launch_hold(tid)
+            held.set()
+            done.wait(10)
+            hold.release()
+        t = threading.Thread(target=launching)
+        t.start()
+        try:
+            self.assertTrue(held.wait(10))
+            self.assertTrue(sminos.launch_in_flight(tid))
+            self.assertEqual([sminos.line_owner(tid, line, p) for p in (newer, older)], ["this", "left"])
+            self.assertEqual(sminos.line_owner(tid, line, dict(newer, kind="interactive")), "other")
+        finally:
+            done.set()
+            t.join(10)
+        self.assertFalse(sminos.launch_in_flight(tid))
+        self.assertTrue(sminos.wake_lock(tid, until=time.time() + 1)[0].release() is None, "the check took nothing")
+
+    def test_a_copy_discarded_for_saved_options_leaves_no_line_for_a_process_found_after_it(self):
+        # Row 12, then the flagless pass's W2 finds a background process of the session (one resumed by hand
+        # meanwhile): the discarded copy's line is not that process's (sweep#8).
+        tid, sid = self.human_thread()
+        self.switch("row-elsewhere")   # the engine's rows where sminos does not look: a later wake passes flags
+        self.assertTrue(self.wake(sid).live)
+        self.stop(sid)
+        real = sminos.remove_copy
+
+        def then_by_hand(short, cause):
+            got = real(short, cause)
+            if cause == "the session keeps saved options":
+                self.by_hand(sid)
+            return got
+        with mock.patch.object(sminos, "remove_copy", then_by_hand):
+            code, out = self.say("@%s after the copy" % sid[:8])
+        self.assertEqual(code, 0, out)
+        frame = self.frames(sid)[-1]
+        self.assertIn("after the copy", frame)
+        self.assertNotIn(wake.LINE_HEAD, frame, "the discarded copy's line goes to no process")
+        self.assertNotIn("line", self.waking(tid, sid))
+
+
 # ------------------------------------------------------------ where the line goes
 
 
@@ -390,7 +478,10 @@ class Place(Deliveries):
         e = sminos.log_append(self.p, "testhost/%s" % a, "say", **{
             "from": "sender-a", "to": [{"session": sid, "alias": "x"}], "text": "with a receipt"})
         marker = sminos.holder_module().marker("a" * 24 + "." + "b" * 16, 1)
-        threads.wake_line(tid, sid, wake.line_note(False, [], {}))
+        peer = self.record(sid)   # a later wake's line, bound to the job of the process it started
+        threads.wake_line(tid, sid, dict(wake.line_note(False, [], {}), short=peer["jobId"],
+                                         at=time.strftime("%Y-%m-%dT%H:%M:%S.000Z",
+                                                          time.gmtime(peer["startedAt"] / 1000 - 1))))
         sminos.forget_caches()
         frame = sminos.compose_chat_frame(self.p.name, sminos.event_ref(e), "sender-a", "@you", 0, "with a receipt")
         sminos.control_module().push_live(sminos.peer_for_session(sid), sid, frame, e, self.p.id, marker=marker)

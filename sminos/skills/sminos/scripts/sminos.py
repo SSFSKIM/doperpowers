@@ -14222,18 +14222,24 @@ def live_now(session):
 
 def wake_line_for(peer, session):
     """(thread id, line) when the record of the session's thread holds a
-    wake's line for it (`waking.line`, T2's §7) and the process that holds
-    it, `peer`, is a background one (its engine record's `kind` `bg`): the
-    frame pushed to it now opens with that line (push_live). A line met for
-    a process its human started (a terminal reopened the session) is
-    removed and not sent. None otherwise."""
+    wake's line for it (`waking.line`, T2's §7) that belongs to the process
+    that holds it, `peer`: the text pushed to it now closes with that line
+    (push_live). The line belongs to the launch that wrote it (line_owner),
+    and is otherwise removed and not sent: met for a process its human
+    started (a terminal reopened the session), one of another job, one
+    started before the line was written, or with no job at all (its launch
+    never was accepted). None otherwise, and for a line whose launch is
+    still in flight that is not this process's, which is left for it."""
     threads = threads_module()
     try:
         t = threads.thread_of(session, ended=False)
         line = threads.waking(t, session).get("line") if t is not None and t["current"] == session else None
         if not isinstance(line, dict) or not line.get("id"):
             return None
-        if str((peer or {}).get("kind") or "") != "bg":
+        owner = line_owner(t["thread"], line, peer or {})
+        if owner == "left":
+            return None
+        if owner != "this":
             threads.wake_line_sent(t["thread"], session, line["id"])
             return None
     except (OSError, LockBusy):
@@ -14241,10 +14247,63 @@ def wake_line_for(peer, session):
     return t["thread"], line
 
 
+def line_owner(thread_id, line, peer):
+    """Whether a wake's line is the process `peer`'s: "this", "other"
+    (removed), or "left" (its launch still in flight, the line kept for
+    it). Only a background process (its record's `kind` `bg`) holds a
+    line, and only one its launch started: of the job the launch's banner
+    named (the line's `short`, the record's `jobId`) and claimed no earlier
+    than the line was written (its `at`, against the record's start,
+    process_started, at a whole second's precision). The short is the
+    session's own job, which a background resume of the same id by hand
+    shares, so it binds the line to a background run of this session, and
+    the start to one since the line was written; what tells this launch's
+    worker from a later one of the same job is that a launch that never
+    went live is counted failed with its line removed (§3, the accepted
+    job). A line with no short yet (the engine's record of the process and
+    its inbox precede the banner, E18) is the process's only while a launch
+    holds the thread's wake lock (launch_in_flight) and the process started
+    since the line was written: the first text pushed to it carries the
+    line, even another sender's before the launcher read its banner."""
+    if str(peer.get("kind") or "") != "bg":
+        return "other"
+    started, at = process_started(peer), _ts_epoch(line.get("at"))
+    since = None if started is None or at is None else int(started) >= int(at)
+    if line.get("short"):
+        return "this" if str(peer.get("jobId") or "") == line["short"] and since is not False else "other"
+    if not launch_in_flight(thread_id):
+        return "other"
+    return "this" if since else "left"
+
+
+def launch_in_flight(thread_id):
+    """Whether a launch holds the thread's wake lock now, in another thread
+    or process: the lock busy and its file naming a launch (LAUNCH_HOLD).
+    Never waits. A hold this thread has is no launch in flight: the wake it
+    took it for has returned, and its line is bound or gone."""
+    if wake_held(thread_id) is not None:
+        return False
+    try:
+        with open(wake_lock_path(thread_id)) as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except OSError:
+                return f.read().strip().startswith(LAUNCH_HOLD.split("%", 1)[0])
+            return False   # not held: let go as the file closes
+    except OSError:
+        return False
+
+
 def wake_line_pushed(thread_id, session, line):
     """The line pushed (push_live): removed, only while it is still that wake's."""
+    wake_line_dropped(thread_id, session, line["id"])
+
+
+def wake_line_dropped(thread_id, session, line_id):
+    """The line `line_id` removed, only while it is still that one: pushed,
+    or its launch made no process it belongs to (a copy removed)."""
     try:
-        threads_module().wake_line_sent(thread_id, session, line["id"])
+        threads_module().wake_line_sent(thread_id, session, line_id)
     except (OSError, LockBusy) as e:
         warn("the wake's line for %s was not cleared: %s" % (session[:8], e or "its lock is busy"))
 
@@ -14461,19 +14520,28 @@ def _wake_held(tid, session, due, returns, on_live):
             rec = running_now(session)
             if rec is not None and str(rec.get("kind") or "") == "bg":
                 # The launch timed out or lost its banner, and a background process of the session runs: this
-                # launch's, positively, so W8 as for any live launch, its short the one its record names, if any.
-                return _wake_live(tid, session, saved, on_live, str(rec.get("jobId") or ""))
+                # launch's, positively, so W8 as for any live launch, its short the one its record names, if any,
+                # and its line bound to that job.
+                job = str(rec.get("jobId") or "")
+                if job:
+                    try:
+                        threads.wake_line_bound(tid, session, note["id"], job)
+                    except (OSError, LockBusy) as e:
+                        warn("the wake of %s did not bind its line: %s" % (session[:8], e or "its lock is busy"))
+                return _wake_live(tid, session, saved, on_live, job)
             if rec is not None or process_holds(session)[0]:
-                return WakeResult(True)   # held by a process this launch did not start: live, nothing of W8
+                wake_line_dropped(tid, session, note["id"])   # held by a process this launch did not start: live,
+                return WakeResult(True)                        # nothing of W8, and its line no one's
             return _wake_failed(tid, session, note["id"], launch_failed(flags, banner))
         noted = copy_note(banner, session, short)
         if noted is not None:
             if noted[0] in ("open", "running"):                          # row 11
                 remove_copy(short, "the session was held")
-                threads.wake_line_sent(tid, session, note["id"])
+                wake_line_dropped(tid, session, note["id"])
                 return WakeResult(True) if process_holds(session)[0] else WakeResult(False, "starting")
             if flags and not flagless:                                   # row 12
                 remove_copy(short, "the session keeps saved options")
+                wake_line_dropped(tid, session, note["id"])   # the copy's: the retry writes its own, or none
                 flagless = saved = True
                 try:
                     threads.wake_saved(tid, session)   # kept whatever the retry comes to: the next wake passes none
@@ -14485,7 +14553,8 @@ def _wake_held(tid, session, due, returns, on_live):
         try:
             # The job the banner named, accepted before its process is seen (W6): a launch that is still starting at
             # W7's bound is neither stopped as lingering nor launched beside by the next wake, nor ended by the sweep.
-            threads.wake_job(tid, session, short)
+            # Its line is bound to it in the same write, and goes to that job's process alone.
+            threads.wake_job(tid, session, short, line_id=note["id"])
         except (OSError, LockBusy) as e:
             warn("the wake of %s did not note its job: %s" % (session[:8], e or "its lock is busy"))
         got = _wake_wait(session, short)                                 # W7

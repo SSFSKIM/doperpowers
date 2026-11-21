@@ -497,6 +497,7 @@ class Human(Wakers):
         rec = threads.get(tid)
         self.assertNotIn("stopped", rec, "the stop mark lifted")
         self.assertNotIn("failed", threads.waking(rec, sid), "the failures cleared")
+        self.assertEqual(threads.waking(rec, sid)["line"]["short"], sid[:8], "its line bound to that process's job")
 
     def lingering(self, between):
         """A thread woken once and stopped, its job's entry then reading working with no process (W3's job), and

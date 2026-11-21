@@ -891,14 +891,31 @@ def wake_cleared(thread_id, session, lock_until=None):
     return _waking_change(thread_id, session, change, lock_until)
 
 
-def wake_job(thread_id, session, short, lock_until=None):
+def wake_job(thread_id, session, short, lock_until=None, line_id=None):
     """`waking.job` set when a wake's banner named this session's job
     (`short`), before its process is seen (§3, W6): {"short", "at"}, so that
     while it may still be starting no wake stops it as lingering or launches
     again, and the sweep neither marks nor ends the thread
-    (sminos_wake.starting)."""
+    (sminos_wake.starting); in the same write the line that wake wrote
+    (`line_id`), while it is still there, bound to that job (its `short`)."""
     def change(w):
         w["job"] = {"short": short, "at": sminos.now(ms=True)}
+        if line_id is not None and (w.get("line") or {}).get("id") == line_id:
+            w["line"]["short"] = short
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_line_bound(thread_id, session, line_id, short, lock_until=None):
+    """The line `line_id` bound to the job `short` (its `short`), while it is
+    still that line: the job of the process its launch started, which alone
+    it is pushed to (§3 row 14: a launch that lost its banner while a
+    background process of the session runs, taken as that launch's)."""
+    def change(w):
+        line = w.get("line") or {}
+        if line.get("id") != line_id or line.get("short") == short:
+            return None
+        line["short"] = short
         return w
     return _waking_change(thread_id, session, change, lock_until)
 
