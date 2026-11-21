@@ -399,7 +399,7 @@ class Line(Wakes):
     def test_a_first_wake_names_what_it_did_not_carry(self):
         note = wake.line_note(True, ["--permission-mode", "auto", "--model", "claude-a"],
                               {"mode": "auto", "model": "claude-a"}, ["--add-dir", "--agent"], "human")
-        self.assertEqual(set(note), {"id", "first", "mode", "model", "turn_model", "not_carried", "opened"})
+        self.assertEqual(set(note), {"id", "first", "mode", "model", "turn_model", "not_carried", "opened", "at"})
         self.assertEqual(wake.line_text(note), self.HEAD + " You run in auto mode on claude-a." + self.TERMINAL + (
             " Options you were last started with that are not carried here: --add-dir, --agent."))
 
