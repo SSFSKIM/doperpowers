@@ -11,8 +11,8 @@ the outcome here, in the project's `outcomes.jsonl`, before the settlement:
     {"event": {"writer", "seq"}, "session", "outcome", "reason"}
 
 `outcome` is DX4's (composite 6fa2252d): `delivered` (pushed to the live
-session, or the stopped seat resumed with it), `uncertain` (the push was taken
-and its answer never came: settled, never pushed again), `recorded` (the
+session, or the stopped seat resumed with it), `uncertain` (the frame was
+written and no answer came: settled, never pushed again), `recorded` (the
 recipient was not running and is pushed nothing), `refused-read-only` (the
 machine's policy), `failed` (given up after DELIVERY_ATTEMPTS); on a machine
 cut over to its endpoint (RL10, O12 M6) also `refused-words` (the endpoint
@@ -68,8 +68,10 @@ READ_ONLY = "refused-read-only"
 REFUSED_WORDS = "refused-words"       # the endpoint's verdict on a person's words: refuse (O12 M6)
 REFUSED_REVOKED = "refused-revoked"   # signed by a key, device or member since revoked (O12 M6)
 REFUSED_REACH = "refused-reach"       # the endpoint's `reach` answer: refuse (P5 O18 D3); settled here, never reported
-UNCERTAIN = {"sent?": "uncertain: the session took the message and its answer never came",
-             "woken?": "uncertain: the stopped session was woken and took the message, and its answer never came"}
+# What is known of an uncertain push: the frame was written, and no answer came; never that the session took it.
+UNCERTAIN = {"sent?": "uncertain: the message was written to the session, and no answer came to say it took it",
+             "woken?": "uncertain: the stopped session was woken and the message written to it, and no answer came "
+                       "to say it took it"}
 
 
 def of_push(push, member):

@@ -725,7 +725,8 @@ class Hold(Rig):
 
     def test_a_woken_thread_s_delivery_says_its_session_was_woken(self):
         """A wake's push is a stopped session woken with the message, a seat's or a thread its human opened, which
-        has none (of_push's `woken`)."""
+        has none (of_push's `woken`). An uncertain push says only what is known: the frame was written and no
+        answer came, never that the session took it."""
         outcomes = sminos.sibling_module("sminos_outcomes")
         for seat in (None, {"seat_id": "s"}):
             with self.subTest(seat=seat):
@@ -733,8 +734,11 @@ class Hold(Rig):
                 self.assertEqual(outcomes.of_push("woken", member), ("delivered", "the stopped session was woken "
                                                                                   "with it"))
                 self.assertEqual(outcomes.of_push("woken?", member),
-                                 ("uncertain", "uncertain: the stopped session was woken and took the message, and "
-                                               "its answer never came"))
+                                 ("uncertain", "uncertain: the stopped session was woken and the message written to "
+                                               "it, and no answer came to say it took it"))
+                self.assertEqual(outcomes.of_push("sent?", member),
+                                 ("uncertain", "uncertain: the message was written to the session, and no answer came "
+                                               "to say it took it"))
 
 
 # ------------------------------------------------------------ X3: whether its machine wakes it

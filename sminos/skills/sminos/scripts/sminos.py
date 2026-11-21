@@ -8685,7 +8685,9 @@ def remote_held_wait(project, m, text, sender, via):
     (X3), on its `stopped` state or a `gone` one (a spawned thread whose
     conversation is not there, state_wake): recorded for its machine, the
     sender told what that machine
-    published (remote_line), and exit 4: no reply is waited for here."""
+    published (remote_line), and exit 4: no reply is waited for here. A
+    machine published `read-only` refuses the message there, which no
+    process of the thread waits for."""
     e = record_message(project, m.session, m.alias, sender, via, text, uuidlib.uuid4().hex[:8], deliver=False)
     if isinstance(e, WaitingSend):
         e.recorded_owed(m.alias)
@@ -8693,8 +8695,8 @@ def remote_held_wait(project, m, text, sender, via):
         print("recorded %s for %s: %s" % (event_ref(e), m.alias, remote_line(m) or held_line_151(m.machine)),
               flush=True)
         nudge_daemon()
-    die("nothing was started: %s runs on %s, which holds it; no reply is waited for" % (m.alias, m.machine),
-        EXIT_UNKNOWN)
+    die("nothing was started: %s runs on %s, which %s it; no reply is waited for" % (
+        m.alias, m.machine, "refuses" if why_of(m) == "read-only" else "holds"), EXIT_UNKNOWN)
 
 
 def push_member(member, text, tagged, session=None, event=None, project=None, words=None):

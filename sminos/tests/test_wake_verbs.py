@@ -1319,5 +1319,17 @@ class Round4(Verbs):
         self.assertEqual(sminos.hold_for(hsid), "mode")
         self.assertIn(self.CEILING, Remote.hint(self, hsid), "a thread its human opened: the ceiling named too")
 
+    def test_send_wait_to_a_remote_read_only_thread_says_it_refuses_never_that_it_holds(self):
+        """A machine published `read-only` refuses there what this one sends: nothing waits there for a process."""
+        for state in ("stopped", "gone"):
+            with self.subTest(state=state):
+                sid = Round.remote_in(self, state, "held", "read-only")
+                code, out = self.cli("send", "--wait", "far#%s" % sid[:8], "refused there, %s" % state)
+                self.assertEqual(code, 4, out)
+                self.assertIn("recorded: elsewhere admits nothing from another machine, and refuses it there", out)
+                self.assertNotIn("holds it", out)
+                self.assertIn("nothing was started: far runs on elsewhere, which refuses it; no reply is waited for",
+                              out)
+
 if __name__ == "__main__":
     unittest.main()
