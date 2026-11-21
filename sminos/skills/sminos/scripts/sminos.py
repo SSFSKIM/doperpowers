@@ -8574,19 +8574,16 @@ def verb_delivered(project, session, alias, delivery, msg_id, verb="", wait=Fals
     rec = running_now(session)
     terminal = rec is not None and str(rec.get("kind") or "bg") != "bg"
     t = threads_module().current_record(session, fresh=True) if stop_turn and rec is not None else None
-    reason = wake_module().not_woken(t, session, whole=True) if t is not None and not terminal else ""
-    if reason:
-        # A turn is stopped only for a wake that would start it again: the message goes to the process that runs.
-        warn("the turn of %s was not stopped: a wake would not start it again (%s); the message goes to the process "
-             "that runs" % (alias, hold_words(reason, session)))
     hold = None
-    if not reason and stop_turn and rec is not None and not terminal:
+    if t is not None and not terminal:
         # The stop and the wake that follows run under one hold of the wake lock (§3, W1), taken before anything
-        # is stopped and kept through this call's delivery pass, whose wake uses it: the sweep cannot act between
-        # them. A lock that cannot be had stops nothing, and the hold is the answer. (Taken under the delivery
-        # lock; the pass's delivery lock is then taken under it, which only a deliverer polling this wake lock,
-        # for its bounded wait, can meet.)
-        if t is not None and wake_held(t["thread"]) is None:
+        # is read or stopped and kept through this call's delivery pass, whose wake uses it: the sweep and a
+        # transition cannot act between them, and what would refuse the wake is decided under it, before the stop
+        # (wake_refusal). A lock that cannot be had stops nothing, and the hold is the answer. (Taken under the
+        # delivery lock; the pass's delivery lock is then taken under it, which only a deliverer polling this wake
+        # lock, for its bounded wait, can meet.) A session no record holds is no thread a wake would start again:
+        # nothing of it is stopped.
+        if wake_held(t["thread"]) is None:
             hold, why = launch_hold(t["thread"])
             if hold is None:
                 delivery.release()
@@ -8596,7 +8593,11 @@ def verb_delivered(project, session, alias, delivery, msg_id, verb="", wait=Fals
                 nudge_daemon()
                 die(verb_hold_words(why, session), EXIT_UNKNOWN)
         try:
-            stop_background_turn(session, "", alias)
+            reason = wake_refusal(t["thread"], session)
+            if reason:
+                turn_kept(alias, reason, session)   # a turn is stopped only for a wake that would start it again
+            else:
+                stop_background_turn(session, "", alias)
         except ResumeRefused as e:
             if hold is not None:
                 hold.release()
@@ -8605,6 +8606,10 @@ def verb_delivered(project, session, alias, delivery, msg_id, verb="", wait=Fals
             say_owed(session)
             die("%s; %s is recorded, and the daemon delivers it to the process that runs" % (
                 e.message, event_ref(delivery.event)), e.code)
+        except BaseException:
+            if hold is not None:
+                hold.release()
+            raise
     delivery.release()
     member = next((x for x in members(project) if x.session == session), None)
     ref = event_ref(delivery.event)
@@ -14433,10 +14438,10 @@ def launch_hold(thread_id):
     return wake_lock(thread_id, holder=LAUNCH_HOLD % (os.getpid(), now()))
 
 
-def _wake_found(tid, session, due, returns, flagless):
-    """W2: what the wake reads again under its lock, in §3's order: (the
-    record, "") to go on, or (None, the result's `why`; "live" for row 7)."""
-    threads, wm = threads_module(), wake_module()
+def _wake_thread(tid, session, returns):
+    """W2's reads ahead of the process, in §3's order: (the record, "") to
+    go on, or (None, the result's `why`) for rows 3 to 6."""
+    threads = threads_module()
     forget_caches()
     try:
         if threads.unreadable(tid) or records_module().unreadable(session):
@@ -14453,6 +14458,32 @@ def _wake_found(tid, session, due, returns, flagless):
         return None, "pending"                                           # row 5
     if not threads.lane_a(session):
         return None, "lane"                                              # row 6
+    return t, ""
+
+
+def wake_refusal(tid, session, returns=False):
+    """What `resume` reads under the wake lock it took before it stops a
+    live turn (T2's §6), so that a turn is stopped only for a wake that
+    would start it again: "" then, else why not. W2's reads in §3's order
+    but the process, which runs (it is the turn to stop): the record, the
+    session's thread and its reservation, its end, an open entry, the lane,
+    a reason of not_woken with the last turn read whole, and a job an
+    earlier wake accepted that is still within its grace (`starting`: never
+    stopped, and the wake that follows finds its process)."""
+    t, why = _wake_thread(tid, session, returns)
+    if t is None:
+        return why
+    return wake_module().not_woken(t, session, whole=True) \
+        or ("starting" if wake_module().starting(t, session) is not None else "")
+
+
+def _wake_found(tid, session, due, returns, flagless):
+    """W2: what the wake reads again under its lock, in §3's order: (the
+    record, "") to go on, or (None, the result's `why`; "live" for row 7)."""
+    wm = wake_module()
+    t, why = _wake_thread(tid, session, returns)
+    if t is None:
+        return None, why
     held, readable = process_holds(session)
     if held:
         return None, "live"                                              # row 7
@@ -14749,25 +14780,23 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
     # goes to the process that runs, its turn left as it is.
     took = None
     if stop_turn:
-        record = threads_module().get(seat_id)
-        reason = wake_module().not_woken(record, s["current"], whole=True) if record is not None else ""
-        if not reason:
-            # The stop and the wake that follows run under one hold of the wake lock (§3, W1), taken before
-            # anything is stopped: the sweep cannot act between them, and a lock that cannot be had stops nothing.
-            if wake_held(seat_id) is None:
-                took, why = launch_hold(seat_id)
-                if took is None:
-                    return WakeResult(False, why)
-            try:
-                if wake_module().starting(threads_module().get(seat_id), s["current"]) is None:
-                    stop_live_turn(s)   # never a job an earlier wake accepted that is still starting: the wake waits
-            except BaseException:
-                if took is not None:
-                    took.release()
-                raise
-        elif running_now(s["current"]) is not None:
-            warn("the turn of %s/%s was not stopped: a wake would not start it again (%s); the message goes to the "
-                 "process that runs" % (s["group"], s["alias"], hold_words(reason, s["current"])))
+        # The stop and the wake that follow run under one hold of the wake lock (§3, W1), taken before anything is
+        # read or stopped: the sweep and a transition cannot act between them, a lock that cannot be had stops
+        # nothing, and what would refuse the wake (wake_refusal) is decided under it, before the stop.
+        if wake_held(seat_id) is None:
+            took, why = launch_hold(seat_id)
+            if took is None:
+                return WakeResult(False, why)
+        try:
+            reason = wake_refusal(seat_id, s["current"], returns)
+            if not reason:
+                stop_live_turn(s)
+        except BaseException:
+            if took is not None:
+                took.release()
+            raise
+        if reason and running_now(s["current"]) is not None:
+            turn_kept("%s/%s" % (s["group"], s["alias"]), reason, s["current"])
 
     def on_live(short):
         # The seat's fields once its process runs (W8): the job's short and where it runs; `turns` and `status`
@@ -14799,6 +14828,17 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
         raise ResumeRefused("%s/%s was woken and its session runs, but its return is not finished (its record holds "
                             "it): its joined waits for the next reconciliation" % (s["group"], s["alias"]), 1)
     return woke
+
+
+def turn_kept(ref, why, session):
+    """What `resume` says of a live turn it left running, the wake that
+    would follow its stop refused (wake_refusal's `why`): for a reason of
+    not_woken, that the message goes to the process that runs."""
+    if why in wake_module().REASONS:
+        warn("the turn of %s was not stopped: a wake would not start it again (%s); the message goes to the process "
+             "that runs" % (ref, hold_words(why, session)))
+    else:
+        warn("the turn of %s was not stopped: %s" % (ref, wake_words(why)))
 
 
 def stop_live_turn(s):

@@ -358,6 +358,54 @@ class Human(Verbs):
 # ------------------------------------------------------------ a seat
 
 
+class StopDecided(Verbs):
+    """`resume` decides under the wake lock whatever would refuse the wake before it stops a live turn (frontier
+    review round 2, scalpel-1#1): a turn stopped and not started again is the failure."""
+
+    @contextlib.contextmanager
+    def entry_open(self, tid, opened):
+        """The record's entry open and kept open for the block (a hand-off's, say, whose carry cannot finish yet):
+        every finisher leaves it as it is."""
+        path = self.record_file(tid) if opened == "human" else sminos.meta_path(tid)
+        with open(path) as f:
+            rec = json.load(f)
+        rec["pending"] = {"id": "e1", "op": "advance", "events": []}
+        with open(path, "w") as f:
+            json.dump(rec, f)
+        sminos.forget_caches()
+        with mock.patch.object(threads, "finish", lambda *a, **k: []), \
+                mock.patch.object(sminos, "finish_thread", lambda *a, **k: []):
+            yield
+
+    def test_an_entry_open_under_the_lock_stops_no_turn_and_holds_the_message(self):
+        for opened in ("human", "spawned"):
+            with self.subTest(opened=opened):
+                if opened == "human":
+                    tid, sid = self.human_thread()
+                    target = sid[:8]
+                    self.say("@%s up" % target)
+                else:
+                    s = self.seat("w")
+                    tid, sid, target = s["seat_id"], s["current"], "w"
+                    self.cli("send", "w", "up")
+                self.assertTrue(wait_for(lambda: self.record(sid) is not None))
+                before, launched = len(self.calls()), self.launches()
+                with self.entry_open(tid, opened):
+                    code, out = self.cli("resume", target, "start over")
+                self.assertFalse([c for c in self.calls()[before:] if c["argv"][:1] == ["stop"]], "no turn stopped")
+                self.assertIn("was not stopped: it holds a transition not finished yet", out)
+                self.assertIsNotNone(self.record(sid), "its process still runs")
+                self.assertEqual(self.launches(), launched, "nothing launched")
+                if opened == "human":
+                    # A thread with no seat: its delivery pass pushes to the live process, as to any live session.
+                    self.assertEqual(code, 0, out)
+                    self.assertTrue(wait_for(lambda: sum(f.count("start over") for f in self.frames(sid)) == 1))
+                else:
+                    # A seat's wake answers the open entry (row 5): held, the daemon's to push once it is finished.
+                    self.assertEqual(code, 4, out)
+                    self.assertTrue(self.owes(sid, "start over"), "owed")
+
+
 class Seat(Verbs):
     def test_each_reason_records_holds_says_why_starts_nothing_and_exits_4(self):
         def gone(s):
