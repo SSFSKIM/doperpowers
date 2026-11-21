@@ -456,18 +456,22 @@ class Human(Wakers):
         self.assertNotIn("job", self.waking(tid, sid), "forgotten once a process is seen holding the session")
 
     def test_a_job_accepted_whose_grace_passed_lingers_as_any_other(self):
+        # Past its grace with no process seen, that launch failed (round 2, scalpel-2#1): counted, so a wake on the
+        # schedule waits; a sender's own call stops the job as lingering and launches again.
         tid, sid = self.human_thread()
         self.switch("late-process", 30)
         with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "2", "SMINOS_WAKE_GRACE": "0.3"}):
             self.assertEqual(self.wake(sid).why, "starting")
             time.sleep(0.4)
             os.unlink(os.path.join(self.state, "late-process"))
+            self.assertEqual(self.wake(sid, due=False).why, "failed", "counted: the schedule holds the next")
+            self.assertEqual(self.waking(tid, sid)["failed"], 1)
             got = self.wake(sid)
         self.assertTrue(got.live, got)
         self.assertTrue([c for c in self.calls() if c["argv"][:1] == ["stop"]], "stopped as lingering")
         self.assertEqual(self.launches(), 2, "launched again")
 
-    def test_a_job_accepted_and_read_failed_is_forgotten_and_the_wake_goes_on(self):
+    def test_a_job_accepted_and_read_failed_is_a_failed_wake_and_a_due_one_goes_on(self):
         tid, sid = self.human_thread()
         self.switch("late-process", 30)
         with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "2"}):
@@ -477,11 +481,13 @@ class Human(Wakers):
         with open(path) as f:
             entry = json.load(f)
         with open(path, "w") as f:
-            json.dump(dict(entry, state="failed"), f)   # and its job read as failed: forgotten
+            json.dump(dict(entry, state="failed"), f)   # and its job read as failed
         os.unlink(os.path.join(self.state, "late-process"))
         got = self.wake(sid)
         self.assertTrue(got.live, got)
-        self.assertEqual(self.launches(), 2, "the failed one forgotten: launched again")
+        self.assertEqual(self.launches(), 2, "a sender's own call launches again")
+        self.assertIn("the wake of %s failed: its job %s was accepted and never ran" % (sid[:8], sid[:8]),
+                      self.daemon_log(), "the one that never ran counted")
 
     def test_a_launch_that_timed_out_with_its_process_running_is_live_through_w8(self):
         tid, sid = self.human_thread()

@@ -100,6 +100,67 @@ class Sweep(Transitions):
         with mock.patch.dict(os.environ, {"SMINOS_WAKE_GRACE": "0"}):
             self.assertTrue(self.daemon.end_stopped(threads, tid, sid, old, asked), "ended once its grace passed")
 
+    def test_an_accepted_launch_that_never_runs_is_a_failed_wake_backed_off_and_the_thread_still_stops_and_ends(self):
+        # frontier review round 2, scalpel-2#1: each launch's banner accepted, its worker gone before it published.
+        # A wake that finds that job dead counts the failure, so the daemon's next wake waits on §4's schedule; the
+        # sweep counts one whose grace passed with no wake to look, and marks and ends the thread as any other.
+        tid, sid = self.human_thread()
+        self.switch("late-process", 60)
+        env = {"SMINOS_UUID_POLL": "2", "SMINOS_WAKE_RETRY": "1", "SMINOS_WAKE_RETRY_MAX": "60",
+               "SMINOS_WAKE_GRACE": "1.5"}
+        launched, deadline = [], time.monotonic() + 40
+        with mock.patch.dict(os.environ, env):
+            while len(launched) < 3 and time.monotonic() < deadline:
+                n = self.launches()
+                got = sminos.wake(threads.get(tid), sid)   # the daemon's: on the schedule
+                if self.launches() > n:
+                    launched.append(time.monotonic())
+                    self.assertEqual((got.live, got.why), (False, "starting"))
+                    self.claude("stop", sid[:8])   # its worker gone before it published
+                else:
+                    self.assertEqual((got.live, got.why), (False, "failed"), "held on the schedule")
+                time.sleep(0.05)
+            self.assertEqual(len(launched), 3, "three launches")
+            first, second = launched[1] - launched[0], launched[2] - launched[1]
+            self.assertGreater(first, 1, "the first retry waits")
+            self.assertGreater(second, first + 0.5, "and the next twice as long")
+            self.assertEqual(self.waking(tid, sid)["failed"], 2)
+            time.sleep(1.6)   # the third's grace passes with no wake to look
+            self.sweep()
+            waking = self.waking(tid, sid)
+            self.assertEqual(waking["failed"], 3, "the sweep counts it")
+            self.assertNotIn("job", waking)
+            self.assertNotIn("line", waking, "its line removed with it")
+            self.assertIn("its job %s was accepted and never ran" % sid[:8], self.daemon_log())
+            self.sweep(2)
+        self.assertIn("stopped", threads.get(tid), "marked stopped")
+        old = "2026-01-01T00:00:00.000Z"
+        self.assertTrue(threads.update(tid, {"stopped": old, "swept": old}))
+        asked = threads.shorts_of(threads.owner_sessions(threads.get(tid)))
+        self.assertTrue(self.daemon.end_stopped(threads, tid, sid, old, asked), "and ended by the rule")
+        self.assertEqual(self.launches(), 3)
+
+    def test_a_dead_accepted_launchs_line_goes_to_no_process_resumed_after_it(self):
+        # frontier review round 2, scalpel-2#4: the accepted worker gone before it published; a background resume
+        # of the same id by hand afterwards is no process of that launch, and is pushed no line of it.
+        tid, sid = self.human_thread()
+        self.switch("late-process", 60)
+        with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "2", "SMINOS_WAKE_GRACE": "1"}):
+            self.assertEqual(self.wake(sid).why, "starting")
+            self.assertEqual(self.waking(tid, sid)["line"]["short"], sid[:8])
+            self.claude("stop", sid[:8])
+            time.sleep(1.1)
+            self.sweep()
+        os.unlink(os.path.join(self.state, "late-process"))
+        code, out, err = self.claude("--bg", "--resume", sid)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(wait_for(lambda: self.record(sid) is not None))
+        code, out = self.cli("say", "@%s after it" % sid[:8])
+        self.assertEqual(code, 0, out)
+        [frame] = [i["message"]["content"] for i in self.inputs(sid)]
+        self.assertIn("after it", frame)
+        self.assertNotIn(sminos.wake_module().LINE_HEAD, frame)
+
     def test_a_process_seen_by_the_sweep_clears_a_wakes_failures(self):
         # frontier review, scalpel-2#3: a terminal reopened after failed wakes, seen live by the sweep.
         tid, sid = self.human_thread()

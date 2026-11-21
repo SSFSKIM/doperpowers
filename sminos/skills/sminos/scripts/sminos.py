@@ -14473,20 +14473,23 @@ def _wake_held(tid, session, due, returns, on_live):
         t, why = _wake_found(tid, session, due, returns, flagless)
         if t is None:
             return WakeResult(why == "live", "" if why == "live" else why)
-        job = wm.starting(t, session)
-        if job is not None:
-            # A job an earlier wake's banner named, its process not seen yet and its grace not passed: one still
-            # starting while the job list shows it working, which no wake stops as lingering or launches beside.
-            readable, entry = job_of(job["short"])
-            if not readable:
-                return WakeResult(False, "unknown")
-            if entry is not None and str(entry.get("sessionId") or session) == session \
-                    and normalize_state(entry) in ("working", "blocked"):
-                return WakeResult(False, "starting")
-            try:
-                threads.wake_job_cleared(tid, session, job["short"])   # gone or ended: today's rules from here
-            except (OSError, LockBusy) as e:
-                warn("the wake of %s did not forget its earlier job: %s" % (session[:8], e or "its lock is busy"))
+        job = threads.waking(t, session).get("job")
+        if isinstance(job, dict) and job.get("short"):
+            if wm.starting(t, session) is not None:
+                # A job an earlier wake's banner named, its process not seen yet and its grace not passed: one
+                # still starting while the job list shows it working, which no wake stops as lingering or launches
+                # beside.
+                readable, entry = job_of(job["short"])
+                if not readable:
+                    return WakeResult(False, "unknown")
+                if entry is not None and str(entry.get("sessionId") or session) == session \
+                        and normalize_state(entry) in ("working", "blocked"):
+                    return WakeResult(False, "starting")
+            # Dead, failed or gone, or its grace passed while no process holds the session (W2): that launch
+            # failed, counted as one, so §4's schedule holds the next; this wake goes on only while one is due.
+            accepted_failed(tid, session, job["short"])
+            if not due and not wm.wake_due(threads.get(tid), session):
+                return WakeResult(False, "failed")
         row = wm.row_of(session)
         lingering = stop_lingering(session, row)                         # W3
         if lingering == "live":
@@ -14639,6 +14642,37 @@ def _wake_failed(tid, session, line_id, what):
 
 
 WAKE_SAID_AT = 5   # the failure in a row at which daemon.log names the thread (§4)
+
+
+def accepted_failed(tid, session, short):
+    """§3's "failed" for a launch whose banner's job was accepted (`waking.job`)
+    and never ran: the job dead, failed or gone from the job list, or its
+    grace passed while no process held the session. Counted as any failed
+    wake, with the line bound to that job (its `short`) removed: no process
+    of that launch will take it. Under the caller's wake lock."""
+    line = threads_module().waking(threads_module().get(tid), session).get("line") or {}
+    return _wake_failed(tid, session, line.get("id") if line.get("short") == short else None,
+                        "its job %s was accepted and never ran" % short)
+
+
+def wake_lapsed(tid, session):
+    """The sweep's half of an accepted job that never ran (accepted_failed):
+    under the wake lock it holds out (sminos_daemon.resume_lock_out), the
+    record read again, and a job there whose grace has passed while no
+    process holds the session (the engine's records, read afresh) counted
+    as a failed wake. The sweep reads no job list for it, so an idle tick
+    stays a stat; a wake reads the list within the grace. Whether it
+    counted."""
+    threads, wm = threads_module(), wake_module()
+    t = threads.get(tid)
+    if t is None or t["current"] != session or t.get("pending") or threads.record_ended(t):
+        return False
+    job = threads.waking(t, session).get("job")
+    if not isinstance(job, dict) or not job.get("short") or wm.starting(t, session) is not None \
+            or running_now(session) is not None:
+        return False
+    accepted_failed(tid, session, job["short"])
+    return True
 
 
 def resume_session(s, locks=None, quiet=False, event=None, project=None, carried=None, words=None, returns=False,

@@ -1449,6 +1449,12 @@ def sweep_threads():
                 continue
             if sminos.wake_module().starting(t, cur) is not None:
                 continue   # a wake's job still starting (its grace not passed): neither marked nor ended
+            if threads.waking(t, cur).get("job"):
+                # Its grace passed and no process holds the session: that launch failed, counted under the wake
+                # lock (a busy one is the next tick's), and the thread is swept as any other from here.
+                with resume_lock_out(tid) as out:
+                    if out:
+                        sminos.wake_lapsed(tid, cur)
             if ending_pass and t.get("stopped") and now - (sminos._ts_epoch(t["stopped"]) or now) > after \
                     and (threads.thread_of(cur) or {}).get("thread") == tid:
                 due.append((tid, cur, t["stopped"]))   # the session's canonical record alone is ended (thread_of)

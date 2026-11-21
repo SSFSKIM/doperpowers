@@ -920,17 +920,6 @@ def wake_line_bound(thread_id, session, line_id, short, lock_until=None):
     return _waking_change(thread_id, session, change, lock_until)
 
 
-def wake_job_cleared(thread_id, session, short, lock_until=None):
-    """The accepted job `short` forgotten (read as failed, or gone from the
-    job list), only while it is still the one the field names."""
-    def change(w):
-        if (w.get("job") or {}).get("short") != short:
-            return None
-        w.pop("job")
-        return w
-    return _waking_change(thread_id, session, change, lock_until)
-
-
 def wake_line_sent(thread_id, session, line_id, lock_until=None):
     """The line pushed: removed, only while it is still the one of `line_id`."""
     def change(w):
