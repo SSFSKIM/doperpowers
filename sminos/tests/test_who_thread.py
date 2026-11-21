@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import unittest
+import uuid as uuidlib
 from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -155,6 +156,29 @@ class Fields(Who):
         got = self.answer(sid[:8])
         self.assertEqual((got["thread"], got["opened"], got["session"]), ("", "", sid))
 
+    def test_a_seat_a_session_of_no_thread_holds_is_no_thread(self):
+        """A seat `seat add` made for a lane B session (one the MAWS app
+        launched): no record represents a thread, as its retire's guard
+        reads it, so nothing is made up for it."""
+        sid, _ = self.session(name="maws-seated")
+        records.establish(sid, records.default_provenance())
+        records.set_controller(sid, "B")
+        code, out = self.cli("seat", "add", "g", "laneb", "--session", sid)
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(threads.get(next(s["seat_id"] for s in sminos.seats() if s["alias"] == "laneb")))
+        got = self.answer("g/laneb")
+        self.assertEqual((got["thread"], got["opened"], got["session"]), ("", "", sid))
+
+    def test_a_seat_an_older_copy_put_on_a_thread_its_human_opened_answers_with_that_thread(self):
+        sid, _ = self.opened(name="older")
+        tid = threads.stamp(sid)
+        seat_id = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d"
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "older", "group": "g", "cwd": self.root,
+                                  "status": "idle"})
+        sminos.forget_caches()
+        got = self.answer("g/older")
+        self.assertEqual((got["thread"], got["opened"], got["session"]), (tid, "human", sid), "not the wrapper seat")
+
     def test_a_vacant_seat_has_an_empty_session(self):
         code, out = self.cli("seat", "add", "g", "empty")
         self.assertEqual(code, 0, out)
@@ -176,11 +200,13 @@ class Refusals(Who):
         code, out, err = self.who("who", "--thread", "nobody")
         self.assertEqual((code, out, err), (4, "", "sminos: no seat or member matching 'nobody'\n"))
 
-    def test_thread_beside_a_target_or_a_session_is_a_usage_error(self):
-        for argv in (("who", "--thread", "x", "HEAD"), ("who", "--thread", "x", "--session", "y"), ("who", "--thread")):
+    def test_thread_beside_a_target_or_a_session_and_an_empty_name_are_usage_errors(self):
+        for argv in (("who", "--thread", "x", "HEAD"), ("who", "--thread", "x", "--session", "y"), ("who", "--thread"),
+                     ("who", "--thread", "")):
             with self.subTest(argv=argv):
-                code, out, _ = self.who(*argv)
-                self.assertEqual((code, out), (2, ""))
+                with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": str(uuidlib.uuid4())}):
+                    code, out, _ = self.who(*argv)
+                self.assertEqual((code, out), (2, ""), "never the session's trailer")
 
 
 class EarlyPath(Who):

@@ -326,6 +326,34 @@ class LostReply(OwnerBase):
                               f"was changed; run devcloud vm owner {NAME} builder again\n")
         self.assertEqual(self.label(), OLD)
 
+    def test_an_answer_of_another_shape_or_another_owner_is_no_answer_and_the_host_is_read(self):
+        """A reply missing a key (a null is never taken from an absent one),
+        and a whole reply naming another owner than the one asked for: the
+        recovery read decides, and the label moves only when it holds."""
+        for reply, lands in (({"takes_project": True}, False), ({"tag": "@0f1e2d3c", "project": "p-2222",
+                                                                   "takes_project": True}, False),
+                             ({"tag": "@0f1e2d3c", "project": "p-2222", "takes_project": True}, True)):
+            with self.subTest(reply=reply, lands=lands):
+                self.state_file.write_text(json.dumps({"servers": [], "images": [], "deleted": [], "calls": [],
+                                                       "behavior": {}}))
+                self.vm()
+                self.host.apply(f"@{OLD}", "example")
+
+                def write(tag, project, reply=reply, lands=lands):
+                    if lands:
+                        self.host.apply(tag, project)
+                    return Result(0, json.dumps(reply) + "\n", "", False)
+                self.host.on_write = write
+                code, out, err = self.owner()
+                if lands:
+                    self.assertEqual(code, 0, err)
+                    self.assertEqual(self.label(), SHORT)
+                else:
+                    self.assertEqual((code, out), (1, ""))
+                    self.assertIn(f"gave no whole answer to the new owner (", err)
+                    self.assertIn(f"and holds @{OLD} with project example now", err)
+                    self.assertEqual(self.label(), OLD, "the label never moves past a host left as it was")
+
     def test_the_providers_reply_lost_after_the_label_was_written_is_settled_by_the_read_back(self):
         self.vm()
         self.behave(fail_after=["set-labels"])
@@ -408,6 +436,38 @@ class ReadBack(OwnerBase):
         code, out, err = self.owner()
         self.assertEqual(code, 0, err)
         self.assertEqual(self.label(), SHORT)
+
+    def adopted(self):
+        adopt.save(self.ctx, adopt.Record(name="lab-box", address="203.0.113.50", user="root", lifetime="keep",
+                                          expires=None, projects=[], phase="booted", created=NOW, creator=OLD))
+
+    def test_a_record_that_cannot_be_written_or_read_is_said_from_both_sides(self):
+        self.adopted()
+        real = adopt._write
+
+        def full(ctx, record):
+            raise OSError(28, "No space left on device")
+        adopt._write = full
+        try:
+            code, out, err = self.owner(name="lab-box")
+        finally:
+            adopt._write = real
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("lab-box's adoption record: No space left on device", err)
+        self.assertIn(f"lab-box's owner is not settled: the host, which sends its notices, holds @{SHORT} with "
+                      f"project p-7c1e9a, and this Mac's adoption record, which decides whom sminos refuses to "
+                      f"retire, names @{OLD}", err)
+        self.assertNotIn("Traceback", err)
+
+        def corrupt(tag, project):
+            adopt.path(self.ctx, "lab-box").write_text("{not json")
+            self.host.apply(tag, project)
+            return self.host.answer()
+        self.host.on_write = corrupt
+        code, out, err = self.owner(name="lab-box")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("and this Mac's adoption record, which decides whom sminos refuses to retire, names what could "
+                      "not be read", err)
 
     def test_an_adoption_record_removed_meanwhile_writes_nothing_more(self):
         adopt.save(self.ctx, adopt.Record(name="lab-box", address="203.0.113.50", user="root", lifetime="keep",

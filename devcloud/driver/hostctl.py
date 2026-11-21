@@ -283,7 +283,8 @@ class HostOwner:
 
 def _owner_answer(result):
     """The HostOwner of a whole answer: exit 0 and a last line of the shape
-    the program prints; else None."""
+    the program prints, its three keys each there (a null is said, never
+    taken from a key that is missing); else None."""
     if result.code != 0:
         return None
     lines = (result.out or "").strip().splitlines()
@@ -291,8 +292,9 @@ def _owner_answer(result):
         data = json.loads(lines[-1])
     except (ValueError, IndexError):
         return None
-    if not isinstance(data, dict) or not isinstance(data.get("takes_project"), bool) or not all(
-            data.get(k) is None or isinstance(data.get(k), str) for k in ("tag", "project")):
+    if not isinstance(data, dict) or set(data) != {"tag", "project", "takes_project"} \
+            or not isinstance(data["takes_project"], bool) \
+            or not all(data[k] is None or isinstance(data[k], str) for k in ("tag", "project")):
         return None
     return HostOwner(data.get("tag"), data.get("project"), data["takes_project"])
 

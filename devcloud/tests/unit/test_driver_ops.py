@@ -387,22 +387,28 @@ class LabelLockTest(OpsBase):
         """`first` held at the provider's `get` inside its merge, `second` run
         until it asks for the lock; then the gate opened. Each returns 0."""
         self.behave(gate={"get": str(self.gate)})
-        results = {}
-        one = threading.Thread(target=lambda: results.update(first=first(self.ctx)))
-        one.start()
-        deadline = time.monotonic() + 30
-        while not pathlib.Path(str(self.gate) + ".waiting").exists():
-            self.assertLess(time.monotonic(), deadline, "the first never reached its merge")
-            time.sleep(0.02)
-        ctx, asked = self.ctx_waiting()
-        two = threading.Thread(target=lambda: results.update(second=second(ctx)))
-        two.start()
-        self.assertTrue(asked.wait(30), "the second never reached its merge")
-        time.sleep(0.3)
-        self.assertNotIn("second", results, "the second waits for the first's merge")
-        self.gate.write_text("")
-        one.join(30)
-        two.join(30)
+        results, threads = {}, []
+        try:
+            one = threading.Thread(target=lambda: results.update(first=first(self.ctx)))
+            threads.append(one)
+            one.start()
+            deadline = time.monotonic() + 30
+            while not pathlib.Path(str(self.gate) + ".waiting").exists():
+                self.assertLess(time.monotonic(), deadline, "the first never reached its merge")
+                time.sleep(0.02)
+            gets = self.ops().count("get")
+            ctx, asked = self.ctx_waiting()
+            two = threading.Thread(target=lambda: results.update(second=second(ctx)))
+            threads.append(two)
+            two.start()
+            self.assertTrue(asked.wait(30), "the second never reached its merge")
+            time.sleep(0.3)
+            self.assertNotIn("second", results, "the second waits for the first's merge")
+            self.assertEqual(self.ops().count("get"), gets, "the second's merge has not reached the provider")
+        finally:
+            self.gate.write_text("")
+            for each in threads:
+                each.join(30)
         self.assertEqual(results, {"first": 0, "second": 0})
         labels = self.servers()["dc-a-0001"]["labels"]
         self.assertEqual((labels["devcloud-expires"], labels["devcloud-creator"]),

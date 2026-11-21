@@ -63,9 +63,13 @@ def run(ctx, name, given):
     def holds(held):
         return held is not None and held.tag == tag and (held.project == project["id"] or not held.takes_project)
 
-    # The host first: it sends the notices, and a host that refuses changes nothing.
+    # The host first: it sends the notices, and a host that refuses changes nothing. An acknowledgement that does
+    # not confirm what was asked is no answer either: the recovery read says what the host holds.
     seen = []
     held = hostctl.owner_set(ctx, host, tag, project["id"], seen=seen)
+    if held is not None and not holds(held):
+        seen.append(f"exit 0: it answered {host_words(held)}")
+        held = None
     if held is None:
         now = hostctl.host_owner(ctx, host)
         if now is None:
@@ -79,7 +83,12 @@ def run(ctx, name, given):
     # Then the label or the record. A failure or a lost reply here does not end the verb: the read-back says.
     if old != short:
         if record is not None:
-            if adopt.update(ctx, name, creator=short) is None:
+            try:
+                written = adopt.update(ctx, name, creator=short)
+            except (OSError, DriverError) as error:
+                written = True       # not known to be gone: the read-back says what the record holds
+                ctx.warn(f"devcloud vm: {name}'s adoption record: {getattr(error, 'strerror', None) or error}")
+            if written is None:
                 raise adopt.gone(name)
         else:
             try:
@@ -90,10 +99,14 @@ def run(ctx, name, given):
     held = hostctl.host_owner(ctx, host)
     if record is not None:
         where = "this Mac's adoption record"
-        now = adopt.load(ctx, name)
-        if now is None:
-            raise adopt.gone(name)
-        label = now.creator
+        try:
+            now = adopt.load(ctx, name)
+        except DriverError:
+            label = UNREAD
+        else:
+            if now is None:
+                raise adopt.gone(name)
+            label = now.creator
     else:
         where = "its provider's label"
         try:

@@ -18690,8 +18690,8 @@ def cmd_who(a):
     the line this session's commits carry (`--session` names another of this
     machine's: the address mod's call), nothing when it has none. With
     `--thread`, the thread a name is, for a program (who_thread)."""
-    if a.thread:
-        if a.target or a.session:
+    if a.thread is not None:
+        if a.target or a.session or not a.thread:
             die("usage: sminos who --thread <name>  (alone: it names a thread, not a commit or a session)")
         who_thread(a.thread)
         return
@@ -18731,10 +18731,15 @@ def who_thread(name):
         project = seat_project(s)
         row = next((m for m in (project_rows(project) if project is not None else [])
                     if m.seat and m.seat["seat_id"] == s["seat_id"]), None)
-        rec = threads.get(s["seat_id"])
+        # The record that represents the seat's thread, as its retire's guard reads it (seat_owner_guard): its
+        # session's canonical one (a thread its human opened that an older copy seated), else the seat's own; none
+        # for a seat a session of no thread holds (lane B, one the MAWS app launched), which nothing guards.
+        cur = s["current"]
+        rec = threads.thread_of(cur) if cur else None
+        rec = rec if rec is not None and rec["current"] == cur else threads.get(s["seat_id"])
         state_word = row.state if row is not None else state(s)
-        answer = {"thread": rec["thread"] if rec else s["seat_id"], "session": s["current"], "alias": s["alias"],
-                  "opened": rec["opened"] if rec else "spawned", "state": state_word,
+        answer = {"thread": rec["thread"] if rec else "", "session": cur, "alias": s["alias"],
+                  "opened": rec["opened"] if rec else "", "state": state_word,
                   "ended": state_word == "retired" or threads.record_ended(rec), "local": True,
                   "machine": host_name()}
     else:
@@ -19219,7 +19224,7 @@ def build_parser():
     wh = sub.add_parser("who", add_help=False)
     wh.add_argument("target", nargs="?", default="")
     wh.add_argument("--session", default="")
-    wh.add_argument("--thread", default="")
+    wh.add_argument("--thread", default=None)   # None: not given; "" is a name refused as usage
     wh.set_defaults(fn=cmd_who)
 
     pjs = sub.add_parser("projects", add_help=False)
@@ -19326,7 +19331,7 @@ def main(argv=None):
         # running daemon, run beside it: neither migrates or takes a lock.
         cmd_daemon(a)
         return
-    if a.cmd == "who" and not a.target and not a.thread:
+    if a.cmd == "who" and not a.target and a.thread is None:
         # The address mod's, before a session's model requests: it reads and
         # never migrates, and never waits on the registry's lock. `--thread`
         # resolves a name through find_target, which reconciles: not here.

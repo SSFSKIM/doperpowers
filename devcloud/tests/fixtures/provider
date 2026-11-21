@@ -22,8 +22,8 @@ with a `behavior` object a test sets to make it misbehave:
   drop_on_list   list answers without this label key
   fail_after_create  create makes the server, then exits 1
   fail_after     [op]: the op is applied, then the provider exits 1 (a reply lost after the write)
-  gate           {op: path}: the next call of that op waits, holding no lock, until the path exists
-                 (writing `<path>.waiting` once it waits), and the gate is then spent
+  gate           {op: path}: the next call of that op claims the gate (it is spent for every later
+                 call), writes `<path>.waiting`, and waits, holding no lock, until the path exists
   image_state    the state image-create gives an image (default ready); null: none at all
 
 Every call is appended to `calls` ({op, argv, input, env, pid}); `record_env`
@@ -36,29 +36,32 @@ import time
 
 
 def wait_at_gate(path, op):
-    """A gated op waits before it takes the state's lock, so a test holds one
-    driver between a merge's read and its write while another runs."""
-    with open(path) as f:
-        fcntl.flock(f, fcntl.LOCK_SH)
-        gate = json.load(f).get("behavior", {}).get("gate", {}).get(op)
+    """A gated op claims the gate under the state's lock, so no later call
+    waits on it, then waits holding no lock: a test holds one driver between
+    a merge's read and its write while another runs."""
+    with open(path, "r+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        state = json.load(f)
+        gate = state.get("behavior", {}).get("gate", {}).pop(op, None)
+        if gate:
+            f.seek(0)
+            f.truncate()
+            json.dump(state, f, indent=1)
     if not gate:
-        return False
+        return
     open(gate + ".waiting", "w").close()
     while not os.path.exists(gate):
         time.sleep(0.02)
-    return True
 
 
 def main():
     path = os.environ["FAKE_PROVIDER_STATE"]
     op = sys.argv[1] if len(sys.argv) > 1 else None
     raw = sys.stdin.read()
-    gated = wait_at_gate(path, op)
+    wait_at_gate(path, op)
     with open(path, "r+") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         state = json.load(f)
-        if gated:
-            state["behavior"]["gate"].pop(op, None)
         code, out, err = handle(state, op, raw)
         f.seek(0)
         f.truncate()
