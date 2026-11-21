@@ -469,6 +469,27 @@ class ReadBack(OwnerBase):
         self.assertIn("and this Mac's adoption record, which decides whom sminos refuses to retire, names what could "
                       "not be read", err)
 
+    def test_a_lock_that_cannot_be_taken_is_a_label_write_that_failed_said_from_both_sides(self):
+        """This Mac's lock for the host cannot be made (its directory's place
+        is taken by a file): the host has its new owner, the label or record
+        does not, and the verb says both, with no traceback."""
+        self.vm()
+        self.adopted()
+        shutil.rmtree(self.state_dir / "locks")
+        (self.state_dir / "locks").write_text("")
+        for name, where in ((NAME, "its provider's label"), ("lab-box", "this Mac's adoption record")):
+            with self.subTest(name=name):
+                self.host.apply(f"@{OLD}", "example")
+                code, out, err = self.owner(name=name)
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn(f"this Mac's lock for {name} (", err)
+                self.assertIn("could not be taken", err)
+                self.assertIn(f"{name}'s owner is not settled: the host, which sends its notices, holds @{SHORT} with "
+                              f"project p-7c1e9a, and {where}, which decides whom sminos refuses to retire, names "
+                              f"@{OLD}", err)
+                self.assertNotIn("Traceback", err)
+        self.assertEqual(self.label(), OLD)
+
     def test_an_adoption_record_removed_meanwhile_writes_nothing_more(self):
         adopt.save(self.ctx, adopt.Record(name="lab-box", address="203.0.113.50", user="root", lifetime="keep",
                                           expires=None, projects=[], phase="booted", created=NOW, creator=OLD))

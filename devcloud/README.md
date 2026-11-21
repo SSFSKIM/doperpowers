@@ -821,7 +821,9 @@ streams the recipe and runs `setup.sh`, stages a descriptor with
 path of `up` does. Its record, `~/.local/state/devcloud/adopted/<name>.json`,
 holds the address, the login user, the lease and the phase, written before
 the step it names (`preparing`, `seeded`, `booted`, `released`); `adopt` run
-again for the same target resumes from it. `ls` lists adopted machines
+again for the same target resumes from it, after reading it again under this
+Mac's lock for the host: a record another run moved on, or removed, is
+refused, and the copy read before the checks is never written back. `ls` lists adopted machines
 (an unfinished adoption with its phase), never counted against the cap, and
 the reaper never touches them. `lease` writes the host's lease and the
 record (read again for the write, under the host's lock, so a handover made

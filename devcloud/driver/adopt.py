@@ -89,10 +89,33 @@ def _write(ctx, record):
 
 
 def save(ctx, record):
-    """The record's first write, under the host's lock (Context.host_lock):
-    every write after it goes through `update`."""
+    """The record's first write, under the host's lock (Context.host_lock),
+    and only that: a record already there is never replaced from a copy
+    (every write after the first goes through `update`)."""
     with ctx.host_lock(record.name):
+        if path(ctx, record.name).exists():
+            raise DriverError(FAILED, f"an adoption record named {record.name} is there already (another adoption "
+                                      "made it meanwhile): nothing was written; see devcloud vm ls")
         _write(ctx, record)
+
+
+def current(ctx, record):
+    """A resumed adoption's copy held to the record as it is now, read under
+    the host's lock before anything is replayed: the caller's copy brought
+    up to it (a handover's `creator` among it); §5's sentence when the
+    record is gone, and a refusal when another run moved its phase on, so a
+    copy read before the checks never stands for a record that advanced."""
+    with ctx.host_lock(record.name):
+        now = load(ctx, record.name)
+    if now is None:
+        raise gone(record.name)
+    if now.phase != record.phase:
+        raise DriverError(FAILED, f"{record.name}'s adoption moved on to phase {now.phase} while this run checked the "
+                                  f"machine (another adopt of it ran): nothing was written; run devcloud vm adopt "
+                                  "again to resume from there")
+    for field in dataclasses.fields(now):
+        setattr(record, field.name, getattr(now, field.name))
+    return record
 
 
 def update(ctx, name, **fields):
@@ -254,9 +277,11 @@ def run(ctx, opts):
         if fresh:
             ctx.remote.forget(record.name)
         raise
+    if not fresh:
+        current(ctx, record)
     begun = ctx.clock()
     if record.phase == "preparing":
-        _prepare(ctx, record, chan, keys)
+        _prepare(ctx, record, chan, keys, fresh)
     if record.phase in ("preparing", "seeded"):
         _update(ctx, record, phase="seeded")
         hostctl.deliver_seed(ctx, address, record.name)
@@ -307,10 +332,13 @@ def _preflight(ctx, chan, record):
                                   "account; nothing was changed")
 
 
-def _prepare(ctx, record, chan, keys):
+def _prepare(ctx, record, chan, keys, fresh=True):
     """`preparing`: the keys the machine had saved (once), the driver's key
-    authorized for root, the recipe and setup.sh, the descriptor staged."""
-    save(ctx, record)
+    authorized for root, the recipe and setup.sh, the descriptor staged. A
+    fresh adoption writes its record first; a resumed one's is there, as
+    `current` just read it."""
+    if fresh:
+        save(ctx, record)
     _script(ctx, chan, f"save-keys {record.user}", "saving the machine's authorized_keys")
     encoded = base64.b64encode("\n".join(keys).encode()).decode()
     _script(ctx, chan, f"authorize {encoded}", "authorizing the driver's key for root")

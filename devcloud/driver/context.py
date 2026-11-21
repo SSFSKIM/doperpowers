@@ -153,15 +153,25 @@ class Context:
         """This Mac's lock for one host name, the file `<state>/locks/<name>.lock`
         held exclusively, waited for, across one read-and-replace of that
         host's labels or of its adoption record. Never held across a call to
-        the host."""
-        directory = self.paths.state / "locks"
-        directory.mkdir(parents=True, exist_ok=True)
-        with open(directory / f"{name}.lock", "a") as f:
+        the host. A lock that cannot be made or taken (a full disk, a
+        directory that cannot be written) is a DriverError, as a failed write
+        of what it guards is, never a traceback."""
+        path = self.paths.state / "locks" / f"{name}.lock"
+        f = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            f = open(path, "a")
             fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+        except OSError as error:
+            if f is not None:
+                f.close()
+            raise DriverError(FAILED, f"this Mac's lock for {name} ({path}) could not be taken "
+                                      f"({error.strerror or error}): nothing it guards was written") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+            f.close()
 
     def merge_labels(self, entry, labels, drop=()):
         """`entry.client.set_labels(id, labels, merge=True, drop=drop)` under

@@ -700,6 +700,46 @@ class RecordLockTest(AdoptBase):
                                                 "was released): nothing more was written")
         self.assertIsNone(self.record())
 
+    def test_save_is_the_first_write_only(self):
+        self.write_record("booted", creator=SESSION[:8])
+        before = (self.state_dir / "adopted" / f"{NAME}.json").read_text()
+        stale = adopt.Record(**dict(json.loads(before), phase="preparing", creator="abcd1234"))
+        with self.assertRaises(DriverError) as caught:
+            adopt.save(self.ctx, stale)
+        self.assertIn("is there already", str(caught.exception))
+        self.assertEqual((self.state_dir / "adopted" / f"{NAME}.json").read_text(), before)
+
+    def test_a_resume_from_preparing_never_writes_back_the_copy_it_read_before_its_checks(self):
+        """While a resume checks the machine, another adoption of the name
+        moves it on and a handover lands, or the record goes: the resume
+        reads the record again under the lock before it replays anything,
+        and refuses; a handover alone is taken up."""
+        def advanced():
+            adopt.update(self.ctx, NAME, phase="booted")
+            adopt.update(self.ctx, NAME, creator=SESSION[:8])
+
+        def removed():
+            adopt.path(self.ctx, NAME).unlink()
+        for what, meanwhile, words in (
+                ("advanced", advanced, f"{NAME}'s adoption moved on to phase booted while this run checked the machine"),
+                ("removed", removed, f"{NAME}'s adoption record was removed while this ran")):
+            with self.subTest(what=what):
+                self.write_record("preparing")
+                self.remote.m.update(keys_saved=True, setup=0)
+                self.during["python3 - preflight"] = meanwhile
+                code, message = self.refused()
+                self.assertEqual(code, 1)
+                self.assertIn(words, message)
+                self.assertEqual(self.remote.m["setup"], 0, "nothing replayed")
+                if what == "advanced":
+                    self.assertEqual((self.record()["phase"], self.record()["creator"]), ("booted", SESSION[:8]))
+                else:
+                    self.assertIsNone(self.record())
+        self.write_record("preparing")
+        self.during["python3 - preflight"] = lambda: adopt.update(self.ctx, NAME, creator=SESSION[:8])
+        self.assertEqual(self.adopt(), 0)
+        self.assertEqual((self.record()["phase"], self.record()["creator"]), ("booted", SESSION[:8]))
+
     def test_two_processes_writing_one_record_leave_no_temporary_file_of_the_others(self):
         self.write_record("booted")
         script = (

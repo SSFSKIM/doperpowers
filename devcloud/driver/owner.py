@@ -93,7 +93,7 @@ def run(ctx, name, given):
         else:
             try:
                 ctx.merge_labels(entry, {"devcloud-creator": short})
-            except DriverError as error:
+            except (OSError, DriverError) as error:     # its lock, or the provider: the read-back says
                 ctx.warn(f"devcloud vm: {name}'s label: {error}")
     # Both sides read back, the host by its own parser.
     held = hostctl.host_owner(ctx, host)
