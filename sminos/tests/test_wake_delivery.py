@@ -1034,6 +1034,37 @@ class Decided(Deliveries):
             self.switch("fail-job")
             held_with("auto", True)
 
+    def test_a_marked_event_wakes_only_the_thread_its_mark_names(self):
+        # frontier review round 2, scalpel-3#1: the session goes to another thread (an absorption) after
+        # deliver_next passed the event's mark as current and before wake_member chooses the record to wake.
+        for messages in (1, 3):
+            with self.subTest(messages=messages):
+                tid, sid = self.human_thread()
+                member = self.member(sid)
+                marked = [self.addressed(sid, "owed to the old thread %d" % i) for i in range(messages)]
+                with sminos.flocked(sminos.project_path(self.p, "delivered", sminos.reader_key(sid) + ".lock")):
+                    for e in marked:
+                        sminos.delivered_held(self.p, sid, e["writer"], e["seq"], tid)
+                real, moved = sminos.stale_hold, []
+
+                def then_absorbed(record, session, e):
+                    got = real(record, session, e)
+                    if not moved:
+                        moved.append(1)
+                        self.edit(tid, current=str(uuidlib.uuid4()))   # the old thread went on elsewhere,
+                        new = threads.ensure(sid)                        # and the session is another thread's now
+                        self.assertNotEqual(new["thread"], tid)
+                        self.edit(new["thread"], launch={"cwd": self.root, "at": sminos.now()})   # one it could wake
+                    return got
+                with mock.patch.object(sminos, "stale_hold", then_absorbed):
+                    got = sminos.deliver_next(self.p, member, due=True)
+                outcomes = [o for x, o in got["outcomes"] if x["seq"] in {e["seq"] for e in marked}]
+                self.assertEqual(outcomes[:1], ["recorded"], "the stale hold, settled as stale_hold settles it")
+                self.assertEqual(self.resumes(sid), [], "no other thread woken for it")
+                self.assertEqual(self.frames(sid), [], "nothing pushed")
+                sminos.forget_caches()
+                self.assertEqual(self.owed(sid), [], "every marked one settled stale")
+
     def test_a_direct_send_marks_the_thread_its_hold_was_decided_for(self):
         # frontier review, scalpel-2#6: the hold's own thread, not the session's stamp read again after it.
         tid, sid = self.human_thread("plan")

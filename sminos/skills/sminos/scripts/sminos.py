@@ -8777,6 +8777,14 @@ def wake_member(project, member, session, e, words=None, due=False):
         hold.append(got)
         return ""
     try:
+        # The thread the event's hold mark names, when it has one, is the one woken and pushed to: a mark for
+        # another thread than the one chosen (the session went to it after the pass passed the mark) is the stale
+        # hold, settled `recorded` as stale_hold settles one, nothing woken or pushed, whether or not the lock is
+        # free. The mark is fixed under the delivery lock held here, and the wake's W2 reads the session still
+        # this thread's under the wake lock.
+        mark = _delivery(delivered_load(project, session), e["writer"]).get("held", {}).get(e["seq"])
+        if mark is not None and mark != t["thread"]:
+            return "recorded", None
         if t["opened"] == "spawned":
             s = reload_seat(t["thread"])
             if s is None or s["status"] == "retired" or s["current"] != session:
