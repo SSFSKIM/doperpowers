@@ -50,7 +50,7 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) M2 — A thread's declared set: one durable operation, its statement and the statement's reader. `5ec8f9d6..ec4034c1`, clean at its third review; `sminos-idle` 32,165 calls a second.
 - [x] (2026-11-21) M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption. `54cacc3a..7748fde1`, three reviews (the bound), then round 3's last finding fixed; `sminos-idle` 32,024 calls a second.
 - [x] (2026-11-21) M4 — Requests on one machine, and the verbs that write them. `04cc6146..9ffbe8c5`, three reviews (the bound), then round 3's last finding fixed; `sminos-idle` 32,232 calls a second.
-- [ ] M5 — The roster, the listing and the pool.
+- [x] (2026-11-21) M5 — The roster, the listing and the pool. `b4a9bdd7..10b8740a`, clean at its third review; `sminos-idle` 32,772 calls a second.
 - [ ] M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture.
 - [ ] M7 — Requests across machines: the endpoint's word, and what a requester is told.
 - [ ] The review of M1 to M7 as one range, by the composite's holder, and its fixes.
@@ -2450,6 +2450,13 @@ while the milestones are built, one observation and its evidence each.
   does not count queued `channel-env` appends (an `env` has a session
   writer, and the queue holds the operator's appends alone); it reads the
   merged log.
+- 2026-11-21 — **M5's review, round 2, as fixed** (`10b8740a`). After the
+  same-session move rule, a thread whose rows appear in several projects'
+  views keeps the row with the newest `joined` in effect (`_newest_row`;
+  a tie keeps neither), so a refill across projects is one row. `env`'s
+  preflight requires the `joined` in effect to be stamped with the record's
+  thread, still reading files alone. A pending target's fallback is the
+  latest visible end, by its `retired` in effect.
 
 ## Outcomes & Retrospective
 
