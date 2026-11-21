@@ -33,6 +33,7 @@ import contextlib
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -53,6 +54,7 @@ ORIGIN = "https://github.com/example/repo"
 KEY = "github.com/example/repo"
 SEAT = "6f0e9d8c-7b6a-4594-8382-716253443526"
 JOB = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+DROP = object()   # a key taken out of a request
 
 
 def gitq(*args, cwd=None):
@@ -60,10 +62,37 @@ def gitq(*args, cwd=None):
                            *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
+@contextlib.contextmanager
+def piped(data):
+    """Standard input holding `data` (bytes), as a pipe gives it; as it was where `data` is None."""
+    if data is None:
+        yield
+        return
+    with mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(data))):
+        yield
+
+
+def stop_soon(when):
+    """SIGTERM to this process, from a thread, once `when()` holds (within 20 s)."""
+    def go():
+        end = time.monotonic() + 20
+        while not when() and time.monotonic() < end:
+            time.sleep(0.02)
+        time.sleep(0.1)
+        os.kill(os.getpid(), signal.SIGTERM)
+    t = threading.Thread(target=go)
+    t.start()
+    return t
+
+
 class On(Machine):
     def setUp(self):
         super().setUp()
         h = os.environ["HOME"]
+        # git here reaches local repositories only: an origin no insteadOf rewrites fails, never reaches a network.
+        allow = mock.patch.dict(os.environ, {"GIT_ALLOW_PROTOCOL": "file"})
+        allow.start()
+        self.addCleanup(allow.stop)
         self.bare = os.path.join(self.home, "origin.git")
         gitq("init", "-q", "--bare", self.bare)
         with open(os.path.join(h, ".gitconfig"), "w") as f:
@@ -149,20 +178,20 @@ class On(Machine):
 
     # --- the verb
 
-    def spawn(self, *argv, session=True, cwd=None, alias="w"):
+    def spawn(self, *argv, session=True, cwd=None, alias="w", task="a task", stdin=None):
         """(exit, stdout, stderr) of `sminos spawn <alias> <task> <argv>` run here, from the session (or a
-        terminal), under a fixed nonce."""
+        terminal), under a fixed nonce; `stdin`, bytes, piped to it."""
         out, err = io.StringIO(), io.StringIO()
         env = {"CLAUDE_CODE_SESSION_ID": self.sid} if session else {}
         here = os.getcwd()
         os.chdir(cwd or self.work)
         try:
             with mock.patch.dict(os.environ, env), mock.patch.object(on.secrets, "token_hex", return_value=NONCE), \
-                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    piped(stdin), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 if not session:
                     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
                 try:
-                    sminos.main(["spawn", alias, "a task", *argv])
+                    sminos.main(["spawn", alias, task, *argv])
                     code = 0
                 except SystemExit as e:
                     code = e.code if isinstance(e.code, int) else 1
@@ -219,6 +248,29 @@ class Usage(On):
         with mock.patch.object(sminos.threads_module(), "find_devcloud", return_value=("PATH", cli)):
             self.refused(1, "spawn --on: the devcloud at %s is 0.17.3, and spawn --on needs 0.18.0 or later" % cli,
                          "--on", "vm1")
+
+
+    def test_vm_flags_without_on_are_row_1_and_nothing_is_launched(self):
+        with mock.patch.object(sminos, "run_claude_bg") as launch:
+            for argv in (["--vm-project", "a/b"], ["--vm-confirmed"]):
+                with self.subTest(argv=argv):
+                    self.refused(2, "--vm-project and --vm-confirmed are for the VM that --on new makes: drop them, "
+                                    "or pass --on new", *argv)
+        launch.assert_not_called()
+
+    def test_a_malformed_stamp_is_refused_before_devcloud_runs(self):
+        for where, stamp, words in (("vm1", "nofield", "--stamp takes field=value: nofield"),
+                                    ("new", "=x", "--stamp takes field=value: =x"),
+                                    ("new", "a_token=1", "'a_token' is a credential field")):
+            with self.subTest(where=where, stamp=stamp):
+                self.answers("vm1", self.spawned())
+                self.refused(2, words, "--on", where, "--stamp", stamp)
+
+    def test_the_fixtures_git_reaches_local_repositories_only(self):
+        done = subprocess.run(["git", "ls-remote", "https://127.0.0.1:9/example/repo"], capture_output=True,
+                              text=True)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("transport 'https' not allowed", done.stderr)
 
 
 class RouteBack(On):
@@ -311,6 +363,35 @@ class Reach(On):
         self.sid = with_owner
         code, out, err = self.spawn("--on", "vm1")
         self.assertEqual(code, 0, err)
+
+
+    def test_a_process_gone_while_the_vm_is_made_is_not_settled_and_the_vm_is_kept(self):
+        for basis in ("hook", "launch"):
+            with self.subTest(basis=basis):
+                self.forget_calls()
+                self.sid, proc = self.session(root=self.work)
+                records.establish(self.sid, records.default_provenance(basis))
+                sminos.forget_caches()
+                self.reconcile(sminos.resolve_project(self.work))
+                gate = os.path.join(self.home, "gate-" + basis)
+                self.cfg["up"] = {"gate": gate}
+                self.answers("dc-x-0001", self.spawned(machine="dc-x-0001"))
+
+                def gone():
+                    end = time.monotonic() + 20
+                    while "up" not in self.verbs() and time.monotonic() < end:
+                        time.sleep(0.02)
+                    proc.kill()
+                    proc.wait()
+                    os.unlink(self.peer_path(proc.pid))   # sminos's own copy of the engine's records is not told
+                    open(gate, "w").close()
+                t = threading.Thread(target=gone)
+                t.start()
+                out, err = self.refused(1, "spawn --on: this session's reach could not be read (its record is not "
+                                           "settled: no running process of it is found on this machine)",
+                                        "--on", "new", called=["up"])
+                t.join()
+                self.assertIn(". The VM dc-x-0001 is kept and", err)
 
 
 class New(On):
@@ -493,6 +574,128 @@ class New(On):
         self.assertIn("is kept and this session's thread owns it", err)
 
 
+    def test_a_tag_named_as_the_branch_reads_the_branch(self):
+        gitq("tag", "topic", cwd=self.work)
+        self.answers("dc-x-0001", self.spawned(machine="dc-x-0001"))
+        code, _, err = self.spawn("--on", "new")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.up_args()[-2:], ["--project", "example/repo@topic"])
+
+    def test_devcloud_reading_no_creating_session_makes_nothing_and_spawns_nothing(self):
+        self.cfg["up"] = {"creator": None}
+        self.save()
+        out, err = self.refused(1, "spawn --on new: devcloud vm up exited 1; its own lines above say why, and what "
+                                   "became of any VM it made. Nothing was spawned", "--on", "new", called=["up"])
+        self.assertIn("devcloud vm: --expect-creator: the caller expects @%s as this host's creator, and devcloud "
+                      "read no creating session here" % self.sid[:8], err)
+
+    def test_a_line_of_up_that_opens_the_mark_is_passed_through(self):
+        said = "sminos-spawn %s {}" % NONCE
+        self.cfg["up"] = {"lines": [said, "dc-x-0001  ready in 0m01s"]}
+        self.answers("dc-x-0001", self.spawned(machine="dc-x-0001"))
+        code, out, err = self.spawn("--on", "new")
+        self.assertEqual(code, 0, err)
+        self.assertIn(said, out.splitlines())
+
+    def waited(self, *answers, wait="60", poll="30", bound="480"):
+        """`--on new` under a clock that only sleeping moves, devcloud answering `up` with a host and each
+        `vm ssh` with the next of `answers` ((exit, lines, timed out)): (exit, stderr, each try's (start, bound))."""
+        clock, tries, left = [1000.0], [], list(answers)
+
+        def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
+            if args[:2] == ["vm", "up"]:
+                return 0, ["dc-x-0001  ready in 0m01s"], "", False
+            tries.append((clock[0], timeout))
+            code, lines, timed_out = left.pop(0)
+            return code, lines, "", timed_out
+        fake = mock.Mock(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        env = {"SMINOS_ON_ENROLL_WAIT": wait, "SMINOS_ON_ENROLL_POLL": poll, "SMINOS_ON_TIMEOUT": bound}
+        with mock.patch.object(on, "run_devcloud", side_effect=run), mock.patch.object(on, "time", fake), \
+                mock.patch.dict(os.environ, env):
+            code, out, err = self.spawn("--on", "new")
+        self.assertNotIn("seat spawned on", out)
+        return code, err, tries
+
+    def test_the_wait_starts_no_try_at_its_deadline_and_bounds_each_by_what_is_left(self):
+        no = (1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled"})], False)
+        code, err, tries = self.waited(no, no, (0, [self.spawned(machine="dc-x-0001")], False))
+        self.assertEqual(tries, [(1000.0, 480.0), (1030.0, 30.0)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("spawn --on new: dc-x-0001 did not enroll within 1 minutes: nothing was spawned", err)
+        self.assertIn(". The VM dc-x-0001 is kept and", err)
+
+    def test_a_try_cut_short_by_the_deadline_may_have_spawned(self):
+        no = (1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled"})], False)
+        code, err, tries = self.waited(no, (-15, [], True))
+        self.assertEqual(tries, [(1000.0, 480.0), (1030.0, 30.0)])
+        self.assertEqual(code, 1, err)
+        self.assertIn("spawn --on: dc-x-0001 gave no outcome within 1 minutes, and the call was stopped: a session may "
+                      "or may not have started there, and devcloud vm ssh dc-x-0001 -- sminos list shows", err)
+        self.assertNotIn("nothing was spawned", err)
+        self.assertIn(". The VM dc-x-0001 is kept and", err)
+
+    def test_stopped_between_two_tries_of_the_wait_keeps_the_vm(self):
+        def guard(*_):
+            raise AssertionError("the SIGTERM reached this test's own handler, not sminos's")
+        self.addCleanup(signal.signal, signal.SIGTERM, signal.signal(signal.SIGTERM, guard))
+        no = (1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled"})], "", False)
+        real = time.sleep
+
+        def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
+            return (0, ["dc-x-0001  ready in 0m01s"], "", False) if args[:2] == ["vm", "up"] else no
+
+        def term(seconds):
+            os.kill(os.getpid(), signal.SIGTERM)
+            real(1)   # the signal lands here
+
+        def interrupt(seconds):
+            raise KeyboardInterrupt
+        for how, sleep in (("SIGTERM", term), ("an interrupt", interrupt)):
+            with self.subTest(how=how):
+                with mock.patch.object(on, "run_devcloud", side_effect=run), \
+                        mock.patch.object(on, "time", mock.Mock(monotonic=time.monotonic, sleep=sleep)):
+                    code, out, err = self.spawn("--on", "new")
+                self.assertEqual(code, 1, err)
+                self.assertIn("spawn --on: stopped: nothing was spawned. The VM dc-x-0001 is kept and", err)
+
+    def stopped(self, *argv):
+        """`spawn --on …` given a SIGTERM once devcloud's stand-in has reached its gate."""
+        self.addCleanup(signal.signal, signal.SIGTERM, signal.signal(signal.SIGTERM, lambda *_: None))
+        marker = os.path.join(self.home, "said")
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(marker)   # a call before this one's
+        for held in [self.cfg.get("up") or {}] + list(self.cfg["ssh_hosts"].values()):
+            if "hold" in held:
+                held["said"] = marker
+        self.save()
+        t = stop_soon(lambda: os.path.exists(marker))
+        code, out, err = self.spawn(*argv)
+        t.join()
+        self.assertEqual(code, 1, err)
+        self.assertNotIn("seat spawned on", out)
+        return err
+
+    def test_stopped_while_up_runs_after_it_named_its_host_keeps_the_vm(self):
+        self.cfg["up"] = {"hold": os.path.join(self.home, "never")}
+        self.answers("dc-x-0001", self.spawned(machine="dc-x-0001"))
+        err = self.stopped("--on", "new")
+        self.assertIn("spawn --on: stopped while devcloud ran", err)
+        self.assertIn(". The VM dc-x-0001 is kept and", err)
+        self.assertEqual(self.verbs(), ["up"])
+
+    def test_stopped_while_the_vm_side_runs_says_where_to_look(self):
+        for argv, vm in ((["--on", "vm1"], "vm1"), (["--on", "new"], "dc-x-0001")):
+            with self.subTest(vm=vm):
+                self.forget_calls()
+                self.cfg = {"ssh_hosts": {vm: {"stdout": "", "exit": 0, "hold": os.path.join(self.home, "never")}}}
+                err = self.stopped(*argv)
+                self.assertIn("a session may or may not have started there, and devcloud vm ssh %s -- sminos list "
+                              "shows" % vm, err)
+                self.assertNotIn("nothing was spawned", err)
+                if vm == "dc-x-0001":
+                    self.assertIn(". The VM dc-x-0001 is kept and", err)
+
+
 class Outcome(On):
     """The outcome line, through `vm ssh`'s answer (§8)."""
 
@@ -530,6 +733,14 @@ class Outcome(On):
             ("the outcome line does not read as one",
              [on.outcome_line(NONCE, {k: v for k, v in json.loads(line.split(" ", 2)[2]).items() if k != "refilled"})]),
             ("the outcome line does not read as one", [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "x"})]),
+            ("the outcome line does not read as one",
+             [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": {"not": "a word"}})]),
+            ("the outcome line does not read as one", [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": []})]),
+            ("the outcome line does not read as one", [on.outcome_line(NONCE, {"ok": False, "exit": 1})]),
+            ("the outcome line does not read as one",
+             [on.outcome_line(NONCE, {k: v for k, v in json.loads(line.split(" ", 2)[2]).items() if k != "head"})]),
+            ("the outcome line does not read as one", [self.spawned(project=None)]),
+            ("the outcome line does not read as one", [self.spawned(head="")]),
         ]
         for reason, lines in cases:
             with self.subTest(reason=reason, lines=lines[0][:60]):
@@ -541,9 +752,12 @@ class Outcome(On):
                          on.outcome_line(NONCE, {"ok": False, "exit": 4, "why": "other"}), code=0, want=1)
 
     def test_a_task_holding_a_line_with_another_nonce_changes_nothing(self):
-        self.answers("vm1", 'sminos-spawn %s {"ok": true}' % ("e" * 16), self.spawned())
-        code, _, err = self.spawn("--on", "vm1")
+        other = 'sminos-spawn %s {"ok": true}' % ("e" * 16)
+        self.answers("vm1", other, self.spawned())
+        code, out, err = self.spawn("--on", "vm1")
         self.assertEqual(code, 0, err)
+        self.assertIn(other, out.splitlines(), "a line of another call is passed through")
+        self.assertNotIn(self.spawned(), out)
 
     def test_no_line_and_a_usage_exit_is_a_copy_that_may_predate_the_call(self):
         _, err = self.unknown("no outcome line came back", code=2, want=2)
@@ -590,16 +804,36 @@ class Outcome(On):
                                               "claude needs it; open it on that Mac"), err)
 
 
+    def test_the_standin_runs_nothing_under_a_host_env_that_lacks_a_variable(self):
+        ran = os.path.join(self.home, "ran")
+        script = os.path.join(self.home, "sminos-here")
+        with open(script, "w") as f:
+            f.write("#!/bin/sh\ntouch %s\n" % ran)
+        os.chmod(script, 0o755)
+        full = {"HOME": self.home, "SMINOS_HOME": self.home, "DAEMON_HOST": "vm1", "PATH": "/usr/bin:/bin"}
+        for lacking in ("HOME", "SMINOS_HOME", "DAEMON_HOST", "PATH"):
+            with self.subTest(lacking=lacking):
+                self.cfg = {"sminos": script,
+                            "ssh_hosts": {"vm1": {"env": {k: v for k, v in full.items() if k != lacking}}}}
+                self.save()
+                code, out, err = self.spawn("--on", "vm1")
+                self.assertIn("devcloud stand-in: ssh_hosts.vm1.env lacks %s" % lacking, err)
+                self.assertFalse(os.path.exists(ran), "nothing was launched")
+
+
 class VmSide(On):
     """The VM side's own line, for each way it ends, read by the Mac's check."""
 
-    def asked(self, req=None, cwd=None, **over):
+    def asked(self, req=None, cwd=None, raw=None, **over):
+        """The VM side run here with `req` (each key of `over` set, DROP's taken out), or `raw` as the value:
+        (exit, stdout's lines, stderr, what was launched)."""
         req = req or {"v": 1, "nonce": NONCE, "org": "org-1", "origin": None,
                       "by": {"alias": "boss", "short": "abcd1234", "project": "p", "project_name": "repo",
                              "machine": "mac"}}
         req.update(over)
+        req = {k: v for k, v in req.items() if v is not DROP}
         out, err = io.StringIO(), io.StringIO()
-        argv = ["spawn", "w", "a task", "--asked-from", json.dumps(req), "--cwd", cwd or self.work]
+        argv = ["spawn", "w", "a task", "--asked-from", raw or json.dumps(req), "--cwd", cwd or self.work]
         launched = {}
 
         def start(args, cwd_, settings):
@@ -652,12 +886,61 @@ class VmSide(On):
         self.assertEqual(on.judge(lines, NONCE, "w", code)[0], "ok", err)
 
     def test_a_request_this_version_does_not_read_prints_no_line(self):
-        for bad in ({"v": 2}, {"nonce": "short"}, {"org": ""}, {"by": {"alias": "a"}},
-                    {"by": {"alias": "a", "short": "XYZ", "project": "p", "project_name": "n", "machine": "m"}}):
+        for bad in ({"v": 2}, {"v": True}, {"nonce": "short"}, {"org": ""}, {"by": {"alias": "a"}},
+                    {"by": {"alias": "a", "short": "XYZ", "project": "p", "project_name": "n", "machine": "m"}},
+                    {"origin": 7}, {"origin": DROP}, {"by": DROP}, {"v": DROP}):
             with self.subTest(bad=bad):
                 code, lines, err, _ = self.asked(**bad)
-                self.assertEqual((code, lines), (2, []))
+                self.assertEqual((code, lines), (2, []), err)
                 self.assertIn("spawn: --asked-from is not a request this version reads", err)
+        for bad in ("[]", "null", "7", "{"):
+            with self.subTest(bad=bad):
+                code, lines, err, _ = self.asked(raw=bad)
+                self.assertEqual((code, lines), (2, []), err)
+
+    def test_a_success_it_cannot_say_whole_ends_with_a_refusal_and_says_why(self):
+        with mock.patch.object(on, "head_of", return_value="not a commit"):
+            code, lines, err, launched = self.asked()
+        self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1, "why": "other"}))
+        self.assertIn("was spawned", err)
+        self.assertIn(JOB, err)
+
+    def task_given(self, *argv, stdin=None):
+        """The task `sminos spawn <argv>` run here hands the launch (spawn_fresh), launching nothing."""
+        given = []
+
+        def fresh(*args, **kw):
+            given.append(args[5])
+            for held in args[12]:   # the seat's lock, which spawn_fresh's own path releases
+                held.close()
+            raise SystemExit(0)
+        err = io.StringIO()
+        with mock.patch.object(sminos, "spawn_fresh", side_effect=fresh), piped(stdin), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            with contextlib.suppress(SystemExit):
+                sminos.main(["spawn", "w", *argv, "--cwd", self.work])
+        sminos.forget_caches()
+        self.assertEqual(len(given), 1, err.getvalue())
+        return given[0]
+
+    def test_the_session_on_the_vm_gets_the_task_a_spawn_here_would_give_it(self):
+        request = json.dumps({"v": 1, "nonce": NONCE, "org": "org-1", "origin": None, "by": None})
+        for how, body in (("positional", "x\n"), ("positional", "x\r\n"), ("piped", b"x\n"), ("piped", b"x\r\n"),
+                          ("piped", b"x\n\n")):
+            with self.subTest(how=how, body=body):
+                task, stdin = (body, None) if how == "positional" else ("-", body)
+                here = self.task_given(task, stdin=stdin)
+                sent = {}
+
+                def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
+                    sent["task"] = stdin
+                    return 0, [self.spawned()], "", False
+                with mock.patch.object(on, "run_devcloud", side_effect=run):
+                    code, _, err = self.spawn("--on", "vm1", task=task, stdin=stdin)
+                self.assertEqual(code, 0, err)
+                there = self.task_given("-", "--asked-from", request, stdin=sent["task"].encode("utf-8"))
+                self.assertEqual(there, here)
 
     def test_without_the_flag_spawn_is_as_before(self):
         out = io.StringIO()

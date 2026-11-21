@@ -14250,6 +14250,8 @@ def cmd_spawn(a):
     if a.on is not None:
         sibling_module("sminos_on").spawn_on(a)
         return
+    if a.vm_project or a.vm_confirmed:
+        die(sibling_module("sminos_on").VM_ONLY)
     if a.asked_from is None:
         spawn_here(a)
         return
@@ -19376,6 +19378,10 @@ def stdin_body(a):
         die("%s -: the text is read from standard input; pipe it, or give it as a heredoc:\n"
             "  sminos %s ... - <<'EOF'\n  <text>\n  EOF" % (a.cmd, a.cmd))
     text = sys.stdin.buffer.read().decode("utf-8", "replace")
+    if a.cmd == "spawn" and getattr(a, "asked_from", None) is not None:
+        # The task another machine's --on sends is the one its own spawn read (EN.G1's plan, §8): taken as sent.
+        setattr(a, field, text)
+        return
     text = text[:-2] if text.endswith("\r\n") else text[:-1] if text.endswith("\n") else text
     if not text.strip():
         die("%s -: no text on standard input" % a.cmd)

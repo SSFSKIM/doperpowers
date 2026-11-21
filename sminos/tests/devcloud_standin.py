@@ -27,14 +27,20 @@ file:
                0m01s` and the five lines after it), name (dc-x-0001),
                stderr, exit (0), gate (a path: no answer until it exists),
                creator (the short id devcloud reads: `--expect-creator`
-               naming another is refused as devcloud refuses it)}
+               naming another is refused as devcloud refuses it, and
+               null is no creating session read), said and hold (after
+               its lines, a path touched, and no exit until another
+               exists)}
   sminos       the launcher that stands for `sminos` at the head of a line
                `vm ssh` runs
-  ssh_hosts    `vm ssh <name> -- <words>`: {name: {env, exit, stdout}}.
+  ssh_hosts    `vm ssh <name> -- <words>`: {name: {env, exit, stdout, said,
+               hold}}; said and hold, before anything: a path touched, and
+               no going on until another exists.
                The words are joined as devcloud joins them (shlex.join)
                and run with /bin/sh -c, standard input passed on, under
-               the host's `env` (its HOME, SMINOS_HOME, DAEMON_HOST, PATH,
-               …) and none of this process's session variables; `stdout`,
+               the host's `env` (HOME, SMINOS_HOME, DAEMON_HOST and PATH
+               each required, one lacking exit 2 with nothing run; any
+               more) and none of this process's session variables; `stdout`,
                when set, is printed in place of what the line printed.
                With `exit`, or with no `env`, nothing is run: `stdout` is
                printed and `exit` (0) answered (2: a copy that predates the
@@ -65,13 +71,28 @@ with open(os.path.join(home, "devcloud-standin.calls"), "a") as f:
                         "child": child}) + "\n")
 
 
+HOST_ENV = ("HOME", "SMINOS_HOME", "DAEMON_HOST", "PATH")
+
+
+def held(d):
+    if d.get("said"):
+        open(d["said"], "w").close()
+    while d.get("hold") and not os.path.exists(d["hold"]):
+        time.sleep(0.05)
+
+
 def up(argv):
     u = cfg.get("up") or {}
     name = u.get("name", "dc-x-0001")
     while u.get("gate") and not os.path.exists(u["gate"]):
         time.sleep(0.05)
-    if "--expect-creator" in argv and u.get("creator"):
+    if "--expect-creator" in argv and "creator" in u:
         expected = argv[argv.index("--expect-creator") + 1]
+        if u["creator"] is None:
+            sys.stderr.write("devcloud vm: --expect-creator: the caller expects @%s as this host's creator, and "
+                             "devcloud read no creating session here (sminos who --session gave it no address it "
+                             "reads): nothing was made\n" % expected)
+            sys.exit(1)
         if expected != u["creator"]:
             sys.stderr.write("devcloud vm: --expect-creator: the caller expects @%s as this host's creator, and "
                              "devcloud read @%s: nothing was made\n" % (expected, u["creator"]))
@@ -85,6 +106,7 @@ def up(argv):
         "  price     0.1 EUR/h", "  image     built from base, slow path"]
     for line in lines:
         print(line, flush=True)
+    held(u)
     sys.stderr.write(u.get("stderr", ""))
     sys.exit(u.get("exit", 0))
 
@@ -95,10 +117,17 @@ def ssh(argv):
     if host is None:
         sys.stderr.write("devcloud vm: no VM named %s in any usable account\n" % name)
         sys.exit(1)
+    held(host)
     if "exit" in host or "env" not in host:
         # Nothing run: no host's environment to run it under (never this process's HOME).
         sys.stdout.write(host.get("stdout", ""))
         sys.exit(host.get("exit", 0))
+    lacking = [k for k in HOST_ENV if not host["env"].get(k)]
+    if lacking:
+        # A host's environment, whole, or nothing runs: what it lacks would be this machine's.
+        sys.stderr.write("devcloud stand-in: ssh_hosts.%s.env lacks %s, which every host has: nothing was run\n"
+                         % (name, ", ".join(lacking)))
+        sys.exit(2)
     words = argv[argv.index("--") + 1:] if "--" in argv else []
     if words[:1] == ["sminos"] and cfg.get("sminos"):
         words = [cfg["sminos"]] + words[1:]

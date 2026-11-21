@@ -524,12 +524,17 @@ class EnrollTest(UpBase):
         self.assertEqual(self.state()["calls"], [])
 
 
-class ReadyLineReaderTest(MawsTest):
+class ReadyLineReaderTest(UpBase):
     """sminos's reader of `up`'s output (S/sminos_on.py, READY_RE): in
-    everything a whole `up` prints, the host is named by exactly one line
-    of the form `<name>  ready in <m>m<ss>s`, with five lines after it."""
+    everything a whole `up` prints, made from an image and enrolling, the
+    host is named by exactly one line of the form `<name>  ready in
+    <m>m<ss>s`, with five lines after it."""
 
     READY_RE = re.compile(r"(\S+)  ready in \d+m\d\ds")
+
+    def setUp(self):
+        super().setUp()
+        EnrollTest.desk(self)
 
     def test_the_whole_output_of_an_up_holds_one_ready_line_naming_its_host(self):
         from devcloudlib import status
@@ -537,12 +542,15 @@ class ReadyLineReaderTest(MawsTest):
         steps[-1] = {"name": "maws", "state": "deferred", "at": "t", "detail": "its certificate not yet live"}
         self.remote.rules = [r for r in self.remote.rules if "status.json" not in r["needle"]]
         self.remote.on("status.json", out=json.dumps({"steps": steps}) + "\nactive")
+        ImageTest.images(self, ("current", compose.recipe_hash(_path.DEVCLOUD), NOW - HOUR, "image"))
         self.assertEqual(self.up(project=["maws"]), 0)
         lines = (self.out.getvalue() + self.err.getvalue()).splitlines()
         ready = [i for i, line in enumerate(self.out.getvalue().splitlines()) if self.READY_RE.fullmatch(line)]
-        self.assertEqual([self.READY_RE.fullmatch(lines[i]).group(1) for i in ready], ["dc2-vm-7f3a"])
+        self.assertEqual([self.READY_RE.fullmatch(lines[i]).group(1) for i in ready], ["dc-vm-7f3a"])
         self.assertEqual(len(self.out.getvalue().splitlines()) - ready[0] - 1, 5)
         self.assertTrue(any(line.startswith("maws      deferred") for line in lines))
+        self.assertIn("created   dc-vm-7f3a (id ", self.out.getvalue())
+        self.assertIn(") from image img-current (id current)", self.out.getvalue())
 
 
 class RecountTest(UpBase):
