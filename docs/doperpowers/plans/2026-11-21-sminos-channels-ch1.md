@@ -1794,14 +1794,13 @@ The controller records here what changes the understanding of the design
 while the milestones are built, one observation and its evidence each.
 
 - (M1) `_stated_decision` would take an org-frame location statement that
-  names a channel's id as that folder's project. Nothing guards it here:
-  MAWS refuses linking a folder to a channel id, so no such statement
-  reaches a machine. A guard is cheap if one ever does.
+  names a channel's id as that folder's project; MAWS refuses linking a
+  folder to a channel id. Guarded by the holder's ruling (Decision Log,
+  2026-11-21, "A location statement naming a channel").
 - (M1) An older copy's `end_closed` writing a `retired` for a closed session
   into a channel's log is stopped by nothing but `lifecycle`'s guard; the
   undoing `retired` is the one write the constraint allows there (C4).
-- (M1) The `sminos-channels` gate runs in about 20 to 25 seconds; its timeout
-  is one minute, ci-kit's smallest whole unit, raised as the part grows.
+- (M1) The `sminos-channels` gate runs in about 20 to 25 seconds at M1.
 
 ## Decision Log
 
@@ -2131,6 +2130,18 @@ while the milestones are built, one observation and its evidence each.
   stand-in's `(conn, frame)` pairs or bare frames, `welcomed` the
   connections whose welcome listed `channels`; `written(..., deliveries=True)`,
   which CH2 passes false.
+- 2026-11-21 — **A location statement naming a channel** (the holder's
+  ruling). C1 and C4 hold at every door by this copy's own check, not by
+  another program's refusal: an org location statement that names a
+  channel id as a folder's project is read as no statement for that folder,
+  which resolves as if it were absent, with one test beside M1's door
+  tests.
+- 2026-11-21 — **The `sminos-channels` gate's timeout** (the holder's
+  ruling). Five minutes through the build, since the part grows at every
+  milestone to M7 and one minute for a 24-second run goes red on a slow
+  runner; M8 sets it to about twice the measured run of the whole part.
+  This replaces, for M1 to M7, Concrete Steps' "kept at about twice" and
+  M1's "set again as the part grows".
 
 ## Outcomes & Retrospective
 
