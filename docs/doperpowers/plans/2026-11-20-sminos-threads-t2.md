@@ -35,7 +35,7 @@ composite (G2, eleven items), proved as Concrete Steps maps it.
 - [x] (2026-11-20 19:35Z) M3 — Delivery wakes every stopped thread, and holds what it cannot push. Commits `ca38e7f7`..`b482b4ce`; three reviews, the last fix read by the controller; gates GREEN on `b482b4ce`.
 - [x] (2026-11-21 00:10Z) M4 — The verbs, what a sender is told on any machine, and the direct send. Commits `eb5ef1ca`..`18dcfeb2`; three reviews, the last fix read by the controller; gates GREEN on `2d98a842`, and on `18dcfeb2` RED 1/8 on one teardown timeout of `test_manager.py`'s bridge stand-in, which M4 does not touch and which passed six concurrent local runs (reported to the holder).
 - [x] (2026-11-21) The frontier review of M1 to M4 as one range, by the composite's holder, and its fixes: three rounds (30, 27 and 5 confirmed), fixed on the branch through `ec582142` (Decision Log, "The frontier review, round 1/2/3"); `origin/main` merged after it (`ccad9a51`).
-- [ ] M5 — What sessions are told, older copies, several senders, and the acceptance on a real engine.
+- [x] (2026-11-21 06:30Z) M5 — What sessions are told, older copies, several senders, and the acceptance on a real engine. Commits `1d93ce48`..`a6c365dc`, the engine's spares and the alias rule among them (the holder's rulings); three reviews, the last fix read by the controller; the live pass's six steps on 2.1.330; gates GREEN on `a6c365dc` (all nine, `version-bump` included).
 
 ## Words this document adds
 
@@ -1335,6 +1335,33 @@ is read defensively (§1). devcloud is not touched.
   files; the suite passed on the three heads before it, and six concurrent
   local runs of the file passed.
 
+- Observation (M5, engine 2.1.330, which the fleet moved to during M5):
+  the engine's pre-started spare writes no session record until it is
+  claimed; at a claim (an `/exit` in an attached `claude --resume` view) it
+  writes `sessions/<pid>.json` with `"spare": true`, a fresh session id,
+  `kind bg`, and runs SessionStart once (`source: startup`), whose input
+  carries no spare field. sminos's hooks joined it, so the project listed a
+  member nobody opened. A frame pushed to a spare runs in that same id and
+  the record drops the flag: no other session receives it.
+- Observation (M5, 2.1.330): a woken session's worker writes an `ai-title`
+  after its first woken turn (record `nameSource auto`), and a later
+  process restores that title as `nameSource user`; the transcript's
+  `custom-title` stands. `claude --bg --resume <id> -n <name>` names a
+  session with no job row (`nameSource peer`, a `custom-title` row) and,
+  for one with a row, starts a copy instead.
+- Observation (M5): a wake sminos runs does not carry a launch's
+  `--plugin-dir`, so a live pass loads the plugin from a directory
+  marketplace in the scratch config. The first push after a wake never took
+  the bridge (the woken worker's bridge is not up yet); it goes through the
+  inbox or the supervisor. `claude --resume <id>` on a live background
+  session re-executes as the installed engine's `attach`.
+- Observation (M5): a prompt typed while a turn runs is recorded with
+  `origin.kind human` and `promptSource queued`, as the supervisor's rows
+  are; only the supervisor's carry `queueSkipSlashCommands: true`.
+- Observation (M5): the board's `resume` relied on a wake carrying the
+  invoking environment (its run identity prefixed to the command), which a
+  background resume does not carry (E11). The board's dispatch is dormant.
+
 ## Decision Log
 
 - 2026-11-20 — **Verification.** The plan is reviewed before it is handed
@@ -1727,6 +1754,86 @@ is read defensively (§1). devcloud is not touched.
   delivery finds its queue empty) still say a concurrent delivery
   delivered it with no evidence. This closes the frontier review.
 
+- 2026-11-21 — **M5, the holder's rulings.** (1) Spares are fixed in M5:
+  a record with `"spare": true` is no session to any reader of the
+  engine's records (`peer_records`, the uplink's scan), the record hook
+  writes nothing for its own spare (read from its own config dir by
+  `CLAUDE_PID`), and a spare's answering bridge holds nothing: the bridge's
+  child names its parent's engine record beside its socket
+  (`bridge/<session>.parent`), so the flag is read wherever that process
+  runs. Members joined before the fix are left to the three-day rule. (2)
+  The name: an engine-made name never displaces an alias the log holds. A
+  name that is the transcript's latest `ai-title` and not its latest
+  `custom-title` counts as made up, whatever source the record gives
+  (`titled_by_engine`); a name its human set takes. G2.11 is met as the
+  alias and the transcript's title kept; the engine's own job list shows
+  its title, which sminos does not control. `-n` stays out of the wake. (3)
+  A copy a wake removes stays a member until the three-day rule (a
+  TECH-DEBT row). (4) The note through the bridge is proven by the suites
+  only.
+- 2026-11-21 — **M5, the executor's decisions.** The live pass ran on
+  2.1.330, the engine the fleet runs now, not the 2.1.329 Concrete Steps
+  names, with the plugin installed from a directory marketplace in the
+  scratch config in place of `--plugin-dir`, since a wake does not carry a
+  launch's flags. The guide is unchanged: nothing in it became false (X6).
+  The small evaluation left §2's line as written (the control already read
+  absence from the to-human tool; the note did no harm) and changed
+  `human_refusal`'s words, after which no sample told its human that sminos
+  cannot start the session. "sent" where "sent (woken)" was meant (a race
+  of several senders) is a TECH-DEBT row: the message is delivered once
+  either way. A frame counts as evidence of a push only where a push of
+  sminos's puts it: the first thing its row delivers, on a peer, plugin or
+  supervisor row (the supervisor's marked `queueSkipSlashCommands`); a
+  typed or pasted prompt never counts. The title and the name rule share
+  one bounded backward read of the transcript.
+- 2026-11-21 — **M5's reviews.** Three rounds: five Important and a Minor,
+  then three Important and a Minor, then one Important (a spare's bridge
+  under a config dir no registry here holds); the third fixed once and read
+  by the controller. The gate on `f3c6ba4f` failed one assertion of the
+  spawn preamble that a reflow had split across lines, fixed in `43a2f04c`.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**Outcome (2026-11-21).** The purpose holds: a message addressed to a
+stopped session starts it again in the background under the same id and
+name, in the mode and on the model of its last turn, and it reads the note
+on its first frame; a message that cannot wake its session is held, its
+sender is told why, and it is pushed when a process of the session runs.
+`sminos.wake` is the one `--resume` launcher (G2.9).
+
+- **G2, the proof map.** Every row the map assigns to a suite is proved
+  there; the gates are GREEN on the final head (sminos, sminos-suites,
+  sminos-idle, sminos-mods, issue-tracker, board-api, shell-lint,
+  repo-checks, version-bump), and every suite that passed on the merge base
+  passes (parent 8). Older copies (1.27.10 and 1.51.0) run beside this code
+  in `test-older-cli.sh`; several senders against one wake in
+  `test_wake_senders.py`.
+- **The live pass.** Concrete Steps' six steps ran on a real engine, 2.1.330
+  (the fleet's engine by then), under a scratch home, config and
+  `SMINOS_HOME`: a terminal session woken by a peer's say with its mode,
+  model, directory and name; a second wake without the first-run sentence;
+  `mode` and `cwd` held with §5's lines; a push to an attached session with
+  no job; two senders at once, one job, each message once; `resume --wait`
+  printing the reply; `fill` refused, nothing started. Each wake put exactly
+  one note on the first text after it, and no other push carried one.
+- **Not seen live.** The note through the bridge (the first push after a
+  wake always went before the woken worker's bridge was up; the suites prove
+  the placement); the `protected`, `config` and `transcript` reasons and a
+  failed wake; the remote half (no second machine); a hand-opened process
+  racing the launch. Each rests on its suite.
+- **What the engine changed under it.** 2.1.330 brought the spare (a
+  claimed spare looked like a session nobody opened) and its own titles for
+  a woken session; both are handled in M5 by the holder's rulings. Members
+  joined before the spare fix, and a copy a wake removed, stay listed until
+  the three-day rule.
+
+**Retrospective.** The engine moving mid-plan was the largest source of
+work in M5: the two behaviours it brought were found only by the live pass,
+not by any suite, which argues for a live pass before a plan's last
+milestone when the engine is a moving dependency. The three-review ceiling
+per milestone held every milestone to three rounds; the frontier review of
+M1 to M4 as one range found what per-milestone reviews could not (62
+confirmed across three rounds, most in interactions between milestones).
+The test engine (`wake_engine.py`, twin and shell stub) carried every
+milestone: a behaviour measured on the real engine became a switch in it
+before the code that depends on it.
