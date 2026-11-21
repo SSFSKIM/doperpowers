@@ -1380,8 +1380,9 @@ class Round4(Verbs):
         return mock.patch.object(sminos, "deliver_next", daemon_first)
 
     def unseen(self, alias):
-        """What a sender is told of its message another delivery settled with nothing of it in the conversation."""
-        return "settled by another delivery, and nothing of it is in %s's conversation" % alias
+        """What a sender is told of its message another delivery settled with no frame of it seen in the
+        conversation."""
+        return "settled by another delivery, which could not be confirmed to have reached %s" % alias
 
     def test_a_message_the_daemon_delivered_first_is_said_delivered_not_owed(self):
         for argv in (("send", "{short}", "taken first"), ("say", "@{short} taken first")):
@@ -1423,7 +1424,7 @@ class Round4(Verbs):
                 code, out = self.say("@all for the live alone")
             self.assertEqual(code, 0, out)
             [said] = self.shown(out, sid)
-            self.assertIn("settled by another delivery, and nothing of it is in", said)
+            self.assertIn("settled by another delivery, which could not be confirmed to have reached", said)
             self.assertNotIn("delivered", said)
             self.assertNotIn("sent", said)
             self.assertEqual(self.resumes(sid), [], "nothing woken")
@@ -1608,6 +1609,90 @@ class Round5(Verbs):
         self.noted(sid, [a, b, c])
         self.append(sid, sminos.compose_chat_frame(self.p.name, sminos.event_ref(a), "bee", "@you", 0, a["text"]))
         self.assertFalse(sminos.frame_landed(self.p, sid, a), "a frame another event's would show the same")
+
+
+class FrameBoundaries(Verbs):
+    """M5's review round 1 (I1, I2): a frame is evidence of a push only where a push puts it, the first thing its row
+    delivers (the engine's envelope and a receipt's marker before it); a frame quoted anywhere else is none. The
+    scan starts where the transcript ended before the call appended, on every path that appends, and ends where it
+    ended when the scan opened it."""
+
+    MARK = "[sminos receipt %s.%s attempt 1]" % ("a" * 24, "b" * 16)
+    chat, noted, append = Round5.chat, Round5.noted, Round5.append
+
+    def envelope(self, text):
+        """An inbox frame as an engine with no `origin.body` records it (the test engine's form)."""
+        return {"type": "user", "isMeta": True, "origin": {"kind": "peer"},
+                "message": {"role": "user", "content": "<cross-session-message from-name=\"bee\">\n%s\n"
+                            "</cross-session-message>" % text}}
+
+    def landed(self, sid, e, row):
+        self.noted(sid, [e])
+        with open(sminos.transcript_now(sid), "a") as f:
+            f.write(json.dumps(row) + "\n")
+        return sminos.frame_landed(self.p, sid, e)
+
+    def cases(self, frame):
+        quote = "look at this one:\n" + frame
+        other = sminos.compose_frame("cee", "ffff0000", "quoting:\n" + frame)
+        return [("on the inbox", inboxed(frame), True),
+                ("on the inbox with no body", self.envelope(frame), True),
+                ("after a receipt's marker", inboxed(self.MARK + "\n" + frame), True),
+                ("appended by the bridge", appended(frame), True),
+                ("submitted by the bridge", submitted(frame), True),
+                ("given to the supervisor", prompt("auto", frame), True),
+                ("quoted in a typed prompt", typed(quote), False),
+                ("quoted in another sender's frame", inboxed(other), False),
+                ("quoted in a bridge append", appended(quote), False),
+                ("quoted in an envelope", self.envelope(quote), False)]
+
+    def test_a_sends_frame_is_evidence_only_where_a_push_puts_it(self):
+        tid, sid = self.human_thread()
+        e = {"writer": "testhost/human", "seq": 4, "kind": "human", "from": "human", "text": "hi",
+             "msg_id": "abcd1234"}
+        for name, row, counts in self.cases(sminos.compose_frame("human", "abcd1234", "hi")):
+            with self.subTest(row=name):
+                self.assertEqual(self.landed(sid, e, row), counts)
+
+    def test_a_chat_frame_is_evidence_only_where_a_push_puts_it(self):
+        tid, sid = self.human_thread()
+        e = self.chat("testhost/%s" % uuidlib.uuid4(), 3, "the words")
+        frame = sminos.compose_chat_frame(self.p.name, sminos.event_ref(e), "bee", "@you", 0, e["text"])
+        for name, row, counts in self.cases(frame):
+            with self.subTest(row=name):
+                self.assertEqual(self.landed(sid, e, row), counts)
+
+    def test_the_scan_ends_where_the_transcript_ended_when_it_opened(self):
+        tid, sid = self.human_thread()
+        self.noted(sid)
+        self.append(sid, "needle, not the one")
+        seen = []
+
+        def holds(text):
+            seen.append(text)
+            if len(seen) == 1:
+                self.append(sid, "needle, the one")   # written while the scan reads
+            return text == "needle, the one"
+        self.assertFalse(sminos._transcript_holds(sid, b"needle", holds))
+        self.assertEqual(seen, ["needle, not the one"])
+
+    def test_a_scoped_broadcast_notes_its_recipients_before_it_appends(self):
+        tid, sid = self.human_thread()
+        self.terminal(sid)
+        self.append(sid, "from before the call")
+        st = os.stat(sminos.transcript_now(sid))
+        sminos.TRANSCRIPT_AT.clear()
+        self.addCleanup(sminos.TRANSCRIPT_AT.clear)
+        real = sminos.log_append
+        at_append = []
+
+        def appending(*a, **k):
+            at_append.append(sminos.TRANSCRIPT_AT.get(sid))
+            return real(*a, **k)
+        with mock.patch.object(sminos, "log_append", appending):
+            code, out = self.cli("say", "--here", "to every one here")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(at_append, [(st.st_dev, st.st_ino, st.st_size)], "noted where it ended, before the append")
 
 
 class WakePayload(unittest.TestCase):

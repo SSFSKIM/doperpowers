@@ -3628,7 +3628,7 @@ def settled_already(project, session, writer, seq):
 # frame in the conversation; a settlement alone proves none, since a stale hold, an @all whose recipient stopped and
 # a refusal settle too.
 DELIVERED_ELSEWHERE = "delivered by a concurrent delivery"
-SETTLED_UNSEEN = "settled by another delivery, and nothing of it is in %s's conversation"
+SETTLED_UNSEEN = "settled by another delivery, which could not be confirmed to have reached %s"
 
 
 # Where each recipient's transcript ended as this call found it, before it appended its message
@@ -3652,35 +3652,65 @@ def note_transcripts(sessions):
 
 def frame_landed(project, session, e):
     """Whether the event's frame is in the session's conversation, at one
-    look over what it gained during this call (_transcript_holds): a send's
-    by its head, which names its id; a chat event's by its head and its text
-    together, and never when another chat event of the log shows the same
-    reference and a text that frame would show as well (event_ref drops a
-    stream's suffix, and each stream numbers its own events): such a frame
-    cannot be told from the other's, and claims no push."""
+    look over what it gained during this call (_transcript_holds), and only
+    where a push puts a frame: the first thing its row delivers
+    (_delivered_text), a frame quoted anywhere else being none. A send's
+    is known by its head, which names its id; a chat event's by its head and
+    its text together, and never when another chat event of the log shows
+    the same reference and a text that frame would show as well (event_ref
+    drops a stream's suffix, and each stream numbers its own events): such a
+    frame cannot be told from the other's, and claims no push. A frame after
+    another in one push of several is not told from a quote either, and
+    claims none."""
     if e.get("msg_id"):
-        framed = re.compile(r"^\[sminos message from [^\n]* id=%s\]$" % re.escape(e["msg_id"]), re.M)
+        framed = re.compile(r"\[sminos message from [^\n]* id=%s\](?:\n|$)" % re.escape(e["msg_id"]))
         return _transcript_holds(session, ("id=%s]" % e["msg_id"]).encode(),
-                                 lambda text: framed.search(text) is not None)
+                                 lambda text: framed.match(text) is not None)
     ref, body = event_ref(e), sender_text(str(e.get("text") or ""))
     if any(x.get("kind") in CHAT_KINDS and (x.get("writer"), x.get("seq")) != (e["writer"], e["seq"])
            and event_ref(x) == ref and sender_text(str(x.get("text") or "")).startswith(body)
            for x in log_read(project) if x.get("writer") is not None and x.get("seq") is not None):
         return False
-    head = re.compile(r"^\[sminos chat %s %s from [^\n]*\]\n" % (re.escape(project.name), re.escape(ref)), re.M)
+    head = re.compile(r"\[sminos chat %s %s from [^\n]*\]\n" % (re.escape(project.name), re.escape(ref)))
 
     def holds(text):
-        return any(text.startswith(body, m.end()) and text[m.end() + len(body):m.end() + len(body) + 1] in ("", "\n")
-                   for m in head.finditer(text))
+        m = head.match(text)
+        return m is not None and text.startswith(body, m.end()) \
+            and text[m.end() + len(body):m.end() + len(body) + 1] in ("", "\n")
     return _transcript_holds(session, (" %s from " % ref).encode(), holds)
+
+
+# What a push puts before its frame: a receipt's marker (sminos_holder_deliveries.MARKER), and on the inbox the
+# engine's envelope (peer_envelope), with the line the engine opens it with.
+DELIVERED_MARKER_RE = re.compile(r"\[sminos receipt [0-9a-f]{24}\.[0-9a-f]{16} attempt [1-9][0-9]{0,8}(?: wake)?\]\n")
+
+
+def _delivered_text(row):
+    """The text a prompt row delivers, from its start: an inbox frame's
+    body (the engine's `origin.body`, else unwrapped from its envelope),
+    any other prompt's text whole (the bridge's, the supervisor's); a
+    receipt's marker before it passed over."""
+    text = _prompt_text(row)
+    if text is None:
+        return ""
+    origin = row.get("origin") if isinstance(row.get("origin"), dict) else {}
+    if origin.get("kind") == "peer":
+        if isinstance(origin.get("body"), str):
+            text = origin["body"]
+        else:
+            opened = re.match(r"(?:[^\n<]*\n)?<%s[^>\n]*>\n" % PEER_TAG, text)
+            text = text[opened.end():] if opened else ""
+    marked = DELIVERED_MARKER_RE.match(text)
+    return text[marked.end():] if marked else text
 
 
 def _transcript_holds(session, needle, holds):
     """Whether a prompt row the session's transcript gained since this call
     noted it (TRANSCRIPT_AT; the whole file when it noted none there, or the
-    file is another or shorter now) has a text `holds` accepts: read a line
-    at a time to the first that does, a line parsed only when it holds the
-    bytes `needle`, nothing kept."""
+    file is another or shorter now), up to where the file ended when this
+    opened it, delivers a text `holds` accepts (_delivered_text): read a
+    line at a time to the first that does, a line parsed only when it holds
+    the bytes `needle`, nothing kept."""
     path = transcript_now(session)
     if not path:
         return False
@@ -3688,16 +3718,21 @@ def _transcript_holds(session, needle, holds):
     try:
         with open(path, "rb") as f:
             st = os.fstat(f.fileno())
-            if at and (st.st_dev, st.st_ino) == at[:2] and st.st_size >= at[2]:
-                f.seek(at[2])
-            for line in f:
+            start = at[2] if at and (st.st_dev, st.st_ino) == at[:2] and st.st_size >= at[2] else 0
+            f.seek(start)
+            left = st.st_size - start
+            while left > 0:
+                line = f.readline(left)
+                if not line:
+                    break
+                left -= len(line)
                 if needle not in line:
                     continue
                 try:
                     row = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(row, dict) and holds(_prompt_text(row) or ""):
+                if isinstance(row, dict) and holds(_delivered_text(row)):
                     return True
     except OSError:
         pass
@@ -3707,7 +3742,8 @@ def _transcript_holds(session, needle, holds):
 def settled_words(project, session, e, alias):
     """(pushed, what is said) of an event another deliverer settled first
     (settled_already): DELIVERED_ELSEWHERE when its frame is in the
-    conversation (frame_landed), else SETTLED_UNSEEN, which claims no push."""
+    conversation (frame_landed), else SETTLED_UNSEEN, which claims no push
+    and no absence of one."""
     if frame_landed(project, session, e):
         return True, DELIVERED_ELSEWHERE
     return False, SETTLED_UNSEEN % alias
@@ -9135,6 +9171,8 @@ def say_scoped(a, home, sender, writer, kind, sid):
             warn("not recorded in %s, so not sent to its %d: %s" % (dest.name, len(ms), err))
             lost = True
             continue
+        # Where each recipient's transcript ends before its event is appended (frame_landed reads what follows).
+        note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)
         for split_writer, aud, rs, _text in splits:
             fields = {"from": sender, "to": rs, "text": a.text, "wake": True, "scope": scope}
             if home is not None and home.id != dest.id:
