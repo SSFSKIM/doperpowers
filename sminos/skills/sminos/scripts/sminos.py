@@ -14473,13 +14473,30 @@ def bridge_holds(session):
     return socket_ok(os.path.join(root(), "bridge", session + ".sock"))
 
 
+def bridge_spare(session):
+    """Whether the process sminos's bridge for the session serves is a spare
+    by its own record: the one its child names (sminos_bridge.parent_path),
+    in whatever config dir that process runs, registered here or not. A
+    record not there yet (a session whose engine has not written it) is no
+    spare: the bridge's signal stands."""
+    try:
+        named = json_at(os.path.join(root(), "bridge", session + ".parent")).get("record")
+        rec = json_at(named) if isinstance(named, str) else None
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(rec, dict) and rec.get("sessionId") == session and engine_spare(rec) \
+        and pid_alive(rec.get("pid"))
+
+
 def process_holds(session):
     """(held, readable): whether a process holds the session by E5's three
     signals (the engine's record of a process, the job list, the bridge's
     socket), each read afresh; `readable` False when one could not be read
     (the job list failing) and none says held. A spare's bridge answering
-    holds nothing (spare_now)."""
-    if running_now(session) is not None or (bridge_holds(session) and not spare_now(session)):
+    holds nothing: its parent's record, as its child names it, says spare
+    (bridge_spare), or a record of a dir known here does (spare_now)."""
+    if running_now(session) is not None or (bridge_holds(session) and not bridge_spare(session)
+                                            and not spare_now(session)):
         return True, True
     job = job_holds(session)
     return bool(job), job is not None

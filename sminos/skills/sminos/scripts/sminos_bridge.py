@@ -239,6 +239,14 @@ def kept_path(session):
     return os.path.join(bridge_dir(), session + ".json")
 
 
+def parent_path(session):
+    """Where the child names its parent's engine record (presence_path),
+    written before its socket is moved into place: a reader that finds the
+    socket answering reads whose session process it serves, in whatever
+    config dir that process runs (sminos.bridge_spare)."""
+    return os.path.join(bridge_dir(), session + ".parent")
+
+
 def _no_kept():
     return {"override": None, "delivered": {}}
 
@@ -1763,6 +1771,7 @@ def serve(session, lane=None, launch=None):
     # read after it, a newer child that moved its socket in meanwhile would
     # pass for this one, which would then take its path at exit.
     mine = os.lstat(tmp).st_ino
+    S.write_json(parent_path(session), {"record": presence_path(parent), "child": os.getpid()})
     os.replace(tmp, path)
     bridge = server.bridge = Bridge(session, path)
     bridge.child = [mine, os.getpid()]
@@ -1815,7 +1824,9 @@ def serve(session, lane=None, launch=None):
         try:
             if os.lstat(path).st_ino == mine:
                 os.unlink(path)
-        except OSError:
+                if S.json_at(parent_path(session)).get("child") == os.getpid():
+                    os.unlink(parent_path(session))
+        except (OSError, ValueError, AttributeError):
             pass
         server.server_close()
 

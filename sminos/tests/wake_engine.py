@@ -622,11 +622,12 @@ class Helper:
                     os.unlink(owned)
         except OSError:
             pass
-        for p in (self.record, self.sock, self.bridge, os.path.join(self.st, "helpers", str(self.pid)),
+        parent = self.bridge[:-len(".sock")] + ".parent"
+        for p in (self.record, self.sock, self.bridge, parent, os.path.join(self.st, "helpers", str(self.pid)),
                   os.path.join(self.st, "ready", "%d.record" % self.pid),
                   os.path.join(self.st, "ready", "%d.inbox" % self.pid)):
             try:
-                if p != self.bridge or self.spec.get("bridge"):
+                if p not in (self.bridge, parent) or self.spec.get("bridge"):
                     os.unlink(p)
             except OSError:
                 pass
@@ -677,6 +678,8 @@ class Helper:
 
     def serve_bridge(self):
         os.makedirs(os.path.dirname(self.bridge), exist_ok=True)
+        # As the bridge's child does before its socket is in place: its parent's record named beside it.
+        write_json(self.bridge[:-len(".sock")] + ".parent", {"record": self.record, "child": self.pid})
         srv = self.listener(self.bridge)
 
         def accept():
