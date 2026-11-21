@@ -295,7 +295,7 @@ class Wire(unittest.TestCase):
         ep.drop()
         ep.wait_until(lambda: self.hellos(ep, 2).keys() >= {APP, DESK, LOBBY})
         self.assertEqual({k: v for k, v in self.hellos(ep, 2).items() if k in ids}, {DESK: False, LOBBY: True})
-        ep.wait_until(lambda: on(ep, 2, lambda f: f["t"] == "restated"))
+        ep.wait_until(lambda: ep.restatement_applied(2))   # applied, not only received
         time.sleep(0.5)   # what a tick after the restatement sends
         self.assertEqual(wire.published(ep.received, ids, before), [],
                          "a welcome that listed no channels: no member frame carries the key")
@@ -520,7 +520,7 @@ class WireWithChannels(unittest.TestCase):
         self.assertEqual((frame["project"], frame["channels"]), (APP, [DESK]))
         other = ep.wait(lambda f: f["t"] == "member" and f.get("session") == S2)
         self.assertNotIn("channels", other, "a thread in none carries no key")
-        ep.wait_until(lambda: on(ep, 1, lambda f: f["t"] == "restated"))
+        ep.wait_until(lambda: ep.restatement_applied(1))   # applied, not only received
         self.assertEqual(ep.known(), {APP, DESK}, "the stand-in counts the desk as known")
         # The last record naming the desk lets it go: followed again, and the frame without the key.
         set_record(S1, channels=[])
@@ -537,7 +537,7 @@ class WireWithChannels(unittest.TestCase):
         ep.wait_until(lambda: self.hellos(ep, 2).get(DESK) is False)
         ep.wait_until(lambda: on(ep, 2, lambda f: f["t"] == "member" and f.get("session") == S1
                                  and f.get("channels") == [DESK]))
-        ep.wait_until(lambda: on(ep, 2, lambda f: f["t"] == "restated"))
+        ep.wait_until(lambda: ep.restatement_applied(2))   # applied, not only received
         self.assertIn(DESK, ep.known(), "after connection 2's own restatement, from its own frames")
         time.sleep(0.5)
         welcomed = {n for n, w in ep.welcomes if "channels" in w["capabilities"]}

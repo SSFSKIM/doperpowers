@@ -114,11 +114,15 @@ does them (the registry's `#knownNow`, rl10/link.ts's `sessionProjects`,
 rl10/members.ts's restatement and `memberChannels`): the welcome lists
 `channels`, when `capabilities` holds it, only to a hello that listed it
 (`welcomes` keeps each welcome sent, with its connection); a member frame
-whose `project` is a channel's id is that session gone; a welcome opens a
-restatement of every member held, which sminos's `restated` closes, each
-held member it left out then gone (a connection that ends before its
-`restated` withdraws nothing); and `known()` (`known` in the state,
-sorted) is the machine's known logs: those the live connection's hellos
+whose `project` is a channel's id is that session gone; a connection is
+made `current` with its restatement of every member held open, in one
+step, which its own `restated` closes, each held member it left out then
+gone (a connection that ends before its `restated` withdraws nothing; a
+member or `restated` frame still buffered on a connection a new one
+replaced is not applied; `restatement_applied(n)`, `restated` in the
+state, says connection n's was applied, not only received); and `known()`
+(`known` in the state, sorted) is the machine's known logs: those the live
+connection's hellos
 opened without `follow` (each log's last hello there) whose id a held
 member names, by its `project` and, while that connection's hello listed
 `channels`, by a lane A member's `channels` (memberChannels: its distinct
@@ -337,6 +341,7 @@ class Endpoint:
         self.reach_verdict = None
         self.members = {}   # session → its last `member` frame (the member state an action's context is read from)
         self.unrestated = None   # the members held at the latest welcome not restated since; None outside a restatement
+        self.restated_conns = set()   # the connections whose restatement its `restated` closed (applied, not received)
         self.last_known = set()  # known()'s last answer, which stands while away or restating
         self.relay = True
         self.capabilities = []   # the welcome's (an O18 endpoint's: ["access", "reach"])
@@ -475,7 +480,10 @@ class Endpoint:
                 return
             old = None
             with self.cv:
+                # The connection installed and its restatement opened in one step: a read between the two would
+                # take the new connection's empty hellos as the answer, which MAWS's last answer never is.
                 old, self.current = self.current, conn
+                self.unrestated = set(self.members)   # a welcome: every member held is to be restated
                 self.hellos.append((conn.number, hello))
                 self.received.append((conn.number, hello))
                 self.cv.notify_all()
@@ -491,7 +499,6 @@ class Endpoint:
                        "stateVersion": self.state_version}
             with self.cv:
                 self.welcomes.append((conn.number, welcome))
-                self.unrestated = set(self.members)   # a welcome: every member held is to be restated
             conn.write(welcome)
             conn.write({"t": "revoked", **self.revoked})
             if self.org is not None:
@@ -535,6 +542,8 @@ class Endpoint:
             write_private(os.path.join(self.dir, "legacy.json"), {"org": frame.get("org"), "key": frame.get("key")})
         elif t == "rpc-result" and self.ack_results:
             out.append({"t": "rpc-ack", "opId": frame.get("opId"), "nonce": frame.get("nonce")})
+        elif t in ("member", "restated") and self.current is not conn:
+            pass   # a frame still buffered on a connection a new one replaced: that connection's, not applied
         elif t == "member" and isinstance(frame.get("session"), str):
             with self.cv:
                 if frame.get("gone") is True or is_channel_id(frame.get("project")):
@@ -549,6 +558,8 @@ class Endpoint:
             with self.cv:
                 for sid in self.unrestated or ():
                     self.members.pop(sid, None)   # held, left out of the restatement: it left while away
+                if self.unrestated is not None:
+                    self.restated_conns.add(conn.number)
                 self.unrestated = None
                 self.known()
                 self.cv.notify_all()
@@ -732,6 +743,12 @@ class Endpoint:
                                               "follow": f.get("follow") is True, "at": at}
             return {"conn": conn, "projects": projects}
 
+    def restatement_applied(self, conn):
+        """Whether connection `conn`'s restatement was closed by its own
+        `restated`, applied (not only received): `known` is its own from then."""
+        with self.cv:
+            return conn in self.restated_conns
+
     def known(self):
         """The logs this machine is known to hold (MAWS's rule, the module's
         docstring): those the live connection opened without `follow` whose
@@ -795,7 +812,7 @@ class Endpoint:
                     "identity": self.identity, "policy": self.policy, "revoked": self.revoked,
                     "legacy": self.legacy(), "token": self.token,
                     "welcomes": [{"conn": n, "welcome": w} for n, w in self.welcomes],
-                    "known": sorted(self.known())}
+                    "known": sorted(self.known()), "restated": sorted(self.restated_conns)}
 
 
 # ------------------------------------------------------------- the subprocess

@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -44,12 +45,12 @@ class Client:
     """A connection to a stand-in, as sminos's uplink holds one: its hello,
     then frames up, and every frame that came down kept."""
 
-    def __init__(self, ep_dir, token, capabilities=()):
+    def __init__(self, ep_dir, token, capabilities=(), **hello):
         d = endpoint_standin.read_json(os.path.join(ep_dir, "rl10.json"))
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.connect(d["socket"])
         self.buf, self.down, self.asked = b"", [], 0
-        self.up({"t": "hello", "token": token, "capabilities": list(capabilities)})
+        self.up({"t": "hello", "token": token, "capabilities": list(capabilities), **hello})
 
     def up(self, *frames):
         self.sock.sendall(b"".join(json.dumps(f).encode() + b"\n" for f in frames))
@@ -173,8 +174,8 @@ class Known(unittest.TestCase):
     left out is gone at its `restated`. And the welcome lists `channels`
     only to a hello that listed it."""
 
-    def connect(self, ep, capabilities=("channels",)):
-        c = Client(ep.dir, ep.token, capabilities)
+    def connect(self, ep, capabilities=("channels",), **hello):
+        c = Client(ep.dir, ep.token, capabilities, **hello)
         self.addCleanup(c.close)
         welcome = c.read(lambda f: f.get("t") == "welcome")
         return c, welcome
@@ -266,6 +267,57 @@ class Known(unittest.TestCase):
         c2.up({"t": "hello", "project": C1, "name": "desk", "have": {}}, member(S3, channels=[C1]))
         self.settle(c2, ep)
         self.assertEqual(ep.known(), {APP, C1}, "its last hello of each, and the members held, decide")
+
+    def test_a_state_read_as_a_connection_is_installed_keeps_the_last_answer(self):
+        """The new connection is `current` and its restatement open in one
+        step: a read between the two (here, inside the policy's write, which
+        runs before the welcome) never takes the new connection's empty
+        hellos as the answer."""
+        ep = started("known-gap", capabilities=["channels"])
+        self.addCleanup(ep.stop)
+        c, _ = self.connect(ep)
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}}, member(S1), {"t": "restated"})
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP})
+        c.close()
+        ep.wait_until(lambda: ep.current is None)
+        ep.policy = None   # so the next hello's policy is written, between its install and its welcome
+        seen = []
+        write = endpoint_standin.write_private
+
+        def reading(path, data, mode=0o600):
+            if path.endswith("policy.json"):
+                seen.append((ep.current is not None, ep.state()["known"]))
+            return write(path, data, mode)
+        with mock.patch.object(endpoint_standin, "write_private", reading):
+            c2, _ = self.connect(ep, policy={"read_only": False, "ceiling": "default"})
+        self.assertEqual(seen, [(True, [APP])], "read in the gap: the last answer, the new connection installed")
+        self.assertEqual(ep.known(), {APP}, "and still, the restatement open")
+        c2.up({"t": "hello", "project": APP, "name": "app", "have": {}}, member(S1), {"t": "restated"})
+        self.settle(c2, ep)
+        self.assertEqual(ep.known(), {APP})
+
+    def test_a_late_frame_of_the_replaced_connection_changes_nothing(self):
+        """A member or `restated` still buffered on a connection a new one
+        replaced is that connection's, and is not applied: it neither
+        restates a member nor closes the new restatement."""
+        ep = started("known-late", capabilities=["channels"])
+        self.addCleanup(ep.stop)
+        c, _ = self.connect(ep)
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}}, member(S1), member(S3), {"t": "restated"})
+        self.settle(c, ep)
+        c2, _ = self.connect(ep)
+        ep.wait_until(lambda: ep.current is not None and ep.current.number == 2)
+        old = mock.Mock(number=1)
+        ep.answer(old, member(S1, channels=[C1]))
+        ep.answer(old, {"t": "restated"})
+        self.assertEqual(ep.unrestated, {S1, S3}, "the new restatement is still open, neither member restated")
+        self.assertFalse(ep.restatement_applied(2))
+        self.assertNotIn("channels", ep.members[S1], "the old connection's frame was not taken")
+        c2.up({"t": "hello", "project": APP, "name": "app", "have": {}}, member(S3), {"t": "restated"})
+        self.settle(c2, ep)
+        self.assertTrue(ep.restatement_applied(2))
+        self.assertEqual((S1 in ep.members, ep.known()), (False, {APP}), "the new connection's restated decides")
 
     def test_a_connection_that_ends_before_its_restated_withdraws_nothing(self):
         ep = started("known-cut", capabilities=["channels"])
