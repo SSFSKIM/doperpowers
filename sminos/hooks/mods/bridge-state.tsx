@@ -2,7 +2,7 @@ import type { EngineInterface, HookStream, HttpResponse, ProcessSpawnChunk, Proc
 
 import type { MediaAttachment, ModeKept, ReceiptReport, StoppedReceipt } from '../../types/sminos'
 
-import type { Place } from './bridge-place'
+import type { Place, Seat } from './bridge-place'
 import type { Catalog } from './bridge-catalog'
 
 /**
@@ -366,6 +366,8 @@ export type BridgeState = {
    * raised.
    */
   place?: Place
+  /** The bridge's seat (bridge-place.tsx), read once a dispatch first needs it, for this module instance. */
+  seat?: Seat
   /**
    * How many times the bridge turned off or back on. A dispatch begun before
    * the last of them read a chain that may no longer stand: it neither turns

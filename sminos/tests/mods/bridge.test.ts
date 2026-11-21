@@ -19,6 +19,7 @@ import {
   UNMEASURED_REASON,
   HEARTBEAT_MS,
   INTERRUPT_HOLD_MS,
+  MANAGED_OFF_LINE,
   OFF_LINE,
   ON_LINE,
   RECORD_WAIT_MS,
@@ -5621,7 +5622,7 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
   const CALL = { tool: 'Bash', tool_use_id: 'tu1', command: 'cat notes.txt' }
   const OUTPUT = 'the contents of notes.txt'
   type Harness = ReturnType<typeof harness>
-  type Beneath = { short?: boolean; origin?: string }
+  type Beneath = { short?: boolean; origin?: string; originTier?: string }
   /** A Bash call through the bridge's hook, these plugins' links settled beneath it. */
   const callBeneath = (h: Harness, plugins: string[], options: Beneath = {}) =>
     h.hook('tool.call', { tool: 'Bash' })(h.engine, CALL, beneath(async () => ({ text: OUTPUT }), plugins, options)) as Promise<Record<string, unknown>>
@@ -6114,6 +6115,193 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     expect(h.toasts).toHaveLength(1)
     expect(h.toasts[0]).toContain('cannot read which secrets guard is loaded')
     expect(h.toasts[0]).toContain('$.state.get: the host did not answer')
+  })
+
+  // The seat (issue #579): whose plugin sminos is, and in which tier. The
+  // managed settings' own seats are the organization's, and a person's hooks
+  // do not hear their calls: a person's devcloud does not answer the marker
+  // read of a bridge the organization seats, which the harness's `marker`
+  // stands for by reading nothing. A machine with managed settings loads
+  // every plugin a person enables in `user`.
+  const MANAGED = { prependPlugins: ['to-human@doperpowers', 'sminos@doperpowers', 'doperpowers@doperpowers'] }
+  /** The managed settings seating cua as the organization's: enabled, its marketplace declared. */
+  const MANAGED_CUA = { ...MANAGED, enabledPlugins: { 'cua@cua': true }, extraKnownMarketplaces: { cua: { source: { source: 'github', repo: 'cua/cua' } } } }
+  const seats: [string, Parameters<typeof harness>[0], string[], 'safe' | 'off'][] = [
+    // Seated in prepend by the organization: every plugin a person installs is beneath it.
+    ["the organization's in prepend, a person's devcloud beneath (its marker hidden), cua enabled in the user settings and not loaded", { tier: 'prepend', policy: MANAGED, cua: true }, ['doperpowers', 'devcloud'], 'safe'],
+    ["the organization's in prepend, cua enabled in the user settings, nothing of it beneath", { tier: 'prepend', policy: MANAGED, cua: true }, ['doperpowers'], 'safe'],
+    ["the organization's in prepend, devcloud its too and listed before sminos (its marker heard), no devcloud beneath", { tier: 'prepend', policy: MANAGED, marker: LIVE_MARKER }, ['doperpowers'], 'off'],
+    ["the organization's in prepend, devcloud its too, devcloud beneath", { tier: 'prepend', policy: MANAGED, marker: LIVE_MARKER }, ['doperpowers', 'devcloud'], 'safe'],
+    ["the organization's in prepend, cua the managed settings seat (enabled, its marketplace declared), no cua beneath", { tier: 'prepend', policy: MANAGED_CUA }, ['doperpowers'], 'off'],
+    ["the organization's in prepend, cua the managed settings seat, cua beneath", { tier: 'prepend', policy: MANAGED_CUA }, ['doperpowers', 'cua'], 'safe'],
+    // Matched as the engine matches a managed enable to a plugin: case folded.
+    ["the organization's in prepend, cua the managed settings seat under ids in another case, no cua beneath", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'CUA@Cua': true }, extraKnownMarketplaces: { CUA: { source: { source: 'github', repo: 'cua/cua' } } } } }, ['doperpowers'], 'off'],
+    // Enabled with its marketplace undeclared, cua loads in user, beneath: not loaded, it is nowhere.
+    ["the organization's in prepend, cua enabled by the managed settings with its marketplace undeclared, a person's devcloud beneath, no cua", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'cua@cua': true } } }, ['doperpowers', 'devcloud'], 'safe'],
+    // With no guard read loaded, a cua link beneath it is a guard beneath it.
+    ["the organization's in prepend, no guard read loaded, cua beneath", { tier: 'prepend', policy: MANAGED }, ['doperpowers', 'cua'], 'safe'],
+    ["the organization's in prepend, cua listed but disabled by the managed settings, no cua beneath", { tier: 'prepend', policy: { prependPlugins: ['cua@cua', ...MANAGED.prependPlugins], enabledPlugins: { 'cua@cua': false } } }, ['doperpowers'], 'safe'],
+    // Seated anywhere else by the organization: inside every plugin a person installs, blind to a person's devcloud.
+    ["the organization's in append, no guard enabled, nothing beneath", { tier: 'append', policy: { appendPlugins: ['sminos@doperpowers'] } }, [], 'off'],
+    ["the organization's in append, a person's devcloud outside it", { tier: 'append', policy: { appendPlugins: ['sminos@doperpowers'] } }, ['doperpowers'], 'off'],
+    // A person's: in user whatever the managed settings hold, and in prepend or append with none (a person's own prependPlugins).
+    ["a person's in user under managed settings, cua enabled, no cua beneath", { policy: MANAGED, cua: true }, ['doperpowers'], 'off'],
+    ["a person's in prepend with no managed settings, cua enabled, no cua beneath", { tier: 'prepend', cua: true }, ['doperpowers'], 'off'],
+    ["a person's in prepend with no managed settings, devcloud's marker live, devcloud beneath", { tier: 'prepend', marker: LIVE_MARKER }, ['doperpowers', 'devcloud'], 'safe'],
+    ["a person's in append with no managed settings, devcloud's marker live, no devcloud beneath", { tier: 'append', marker: LIVE_MARKER }, ['doperpowers'], 'off'],
+    ["a person's in append with no managed settings, no guard loaded", { tier: 'append' }, ['doperpowers'], 'safe'],
+  ]
+  for (const [name, options, plugins, verdict] of seats) {
+    test(`seat: ${name}: ${verdict}`, async () => {
+      const h = harness({ ...options, verdictPending: true })
+      await h.ready()
+      await callBeneath(h, plugins)
+      await h.settle()
+      if (verdict === 'safe') {
+        expectSafe(h)
+        expect(h.logs).not.toContain(MANAGED_OFF_LINE)
+        return
+      }
+      expect(h.ofType('tool')).toEqual([])
+      expect(posted(h)).not.toContain(CALL.command)
+      expect(h.children.at(-1)!.killed).toBe(true)
+      // The line names the settings that can move the bridge: the managed ones where they seat it.
+      const said = options?.policy !== undefined && options.tier !== undefined && options.tier !== 'user' ? MANAGED_OFF_LINE : OFF_LINE
+      expect(h.toasts.filter((t) => t === said)).toHaveLength(1)
+      expect(h.logs.filter((l) => l === said)).toHaveLength(1)
+    })
+  }
+
+  test("seated in prepend by the organization, a dispatch an organization's mod raised decides nothing of cua: a person's hooks, a user-tier cua's among them, do not run on it", async () => {
+    const policy = MANAGED_CUA
+    const h = harness({ tier: 'prepend', policy, verdictPending: true })
+    await h.ready()
+    await rowBeneath(h, ['doperpowers'], { origin: 'doperpowers', originTier: 'prepend' })
+    await rowBeneath(h, [], { origin: 'to-human', originTier: 'prepend' })
+    expect(h.logs).not.toContain(MANAGED_OFF_LINE)
+    expect(h.ofType('tool')).toEqual([])
+    // One the engine raised runs every hook beneath: cua's link missing there is cua outside.
+    await rowBeneath(h, ['doperpowers'])
+    expect(h.toasts.filter((t) => t === MANAGED_OFF_LINE)).toHaveLength(1)
+    // A person's plugin's dispatch runs a user-tier cua too: beneath it, the bridge is on again.
+    await rowBeneath(h, ['doperpowers', 'cua'], { origin: 'other' })
+    expectOn(h)
+  })
+
+  test("seated in prepend by the organization, a dispatch an organization's mod raised still decides devcloud's place: a devcloud the bridge hears is the organization's, whose hooks run on it", async () => {
+    const h = harness({ tier: 'prepend', policy: MANAGED, marker: LIVE_MARKER, verdictPending: true })
+    await h.ready()
+    await callBeneath(h, ['doperpowers'], { origin: 'doperpowers', originTier: 'prepend' })
+    await h.settle()
+    expect(h.ofType('tool').filter((e) => e.phase === 'result')).toEqual([])
+    expect(h.toasts.filter((t) => t === MANAGED_OFF_LINE)).toHaveLength(1)
+  })
+
+  test("seated in prepend by the organization and off for a cua it seated ahead, a cua link beneath turns it back on once the managed settings no longer seat cua", async () => {
+    const h = harness({ tier: 'prepend', policy: MANAGED_CUA, cua: true, verdictPending: true })
+    await h.ready()
+    await rowBeneath(h, ['doperpowers'])
+    expect(h.toasts.filter((t) => t === MANAGED_OFF_LINE)).toHaveLength(1)
+    // The managed enable removed, the user's left: cua reloads in user, beneath the bridge.
+    h.setPolicy(MANAGED)
+    await rowBeneath(h, ['doperpowers', 'cua'])
+    expectOn(h)
+  })
+
+  test("a dispatch an organization's mod raised that cannot decide drops its own call and result: a later safe verdict does not post them", async () => {
+    const h = harness({ tier: 'prepend', policy: MANAGED_CUA, verdictPending: true })
+    await h.ready()
+    const SECRET_CALL = { tool: 'Bash', tool_use_id: 'tuOrg', command: 'cat org-notes.txt' }
+    await h.hook('tool.call', { tool: 'Bash' })(h.engine, SECRET_CALL, beneath(async () => ({ text: 'restored org output' }), ['doperpowers'], { origin: 'doperpowers', originTier: 'prepend' }))
+    await h.settle()
+    expect(h.logs).not.toContain(MANAGED_OFF_LINE)
+    // cua reloaded beneath: the next dispatch settles the place safe.
+    await callBeneath(h, ['doperpowers', 'cua'])
+    await h.settle()
+    expectSafe(h)
+    expect(posted(h)).not.toContain(SECRET_CALL.command)
+    expect(posted(h)).not.toContain('restored org output')
+  })
+
+  test("the managed off line names the managed settings' prependPlugins, not the user settings", () => {
+    expect(MANAGED_OFF_LINE).toBe(
+      "sminos: the bridge is off — sminos must load outside devcloud and cua; the managed settings seat it, so list sminos@doperpowers in their prependPlugins, ahead of devcloud and cua",
+    )
+  })
+
+  test("seated in append by the organization it stays off: no dispatch turns it back on, whatever guard settles beneath it but both", async () => {
+    const h = harness({ tier: 'append', policy: { appendPlugins: ['sminos@doperpowers'] }, verdictPending: true })
+    await h.ready()
+    await rowBeneath(h, [])
+    for (const plugins of [['devcloud'], ['cua'], [], ['doperpowers', 'devcloud']]) {
+      await rowBeneath(h, plugins)
+      await callBeneath(h, plugins)
+    }
+    await h.settle()
+    expect(h.logs).not.toContain(ON_LINE)
+    expect(h.children).toHaveLength(1)
+    expect(h.toasts.filter((t) => t === MANAGED_OFF_LINE)).toHaveLength(1)
+    // Both guards' links beneath leave none outside it: on again.
+    await rowBeneath(h, ['devcloud', 'cua'])
+    expectOn(h)
+  })
+
+  test("the seat is read once for the module, and only when the links beneath do not name both guards: the tier from its own hook, then, outside user, the managed settings", async () => {
+    const both = harness({ tier: 'prepend', policy: MANAGED, verdictPending: true })
+    await both.ready()
+    await callBeneath(both, ['doperpowers', 'devcloud', 'cua'])
+    await both.settle()
+    expect(both.seatReads).toEqual([])
+    expect(both.guardReads).toEqual([])
+    const outer = harness({ tier: 'prepend', policy: MANAGED, verdictPending: true })
+    await outer.ready()
+    await rowBeneath(outer, ['doperpowers'])
+    await rowBeneath(outer, ['doperpowers'])
+    expect(outer.seatReads).toEqual([{ op: 'state.get', args: { plugin: 'sminos', key: 'bridgeSeat' } }])
+    // The cua leg reads the managed settings each time: the organization's cua is named there.
+    expect(outer.guardReads).toEqual([
+      { op: 'settings.read', args: { source: 'policy' } },
+      { op: 'state.get', args: { plugin: 'devcloud', key: 'secrets-guard' } },
+      { op: 'settings.read', args: { source: 'policy' } },
+      { op: 'state.get', args: { plugin: 'devcloud', key: 'secrets-guard' } },
+      { op: 'settings.read', args: { source: 'policy' } },
+    ])
+    const inner = harness({ tier: 'append', policy: MANAGED, verdictPending: true })
+    await inner.ready()
+    await rowBeneath(inner, ['doperpowers'])
+    expect(inner.guardReads).toEqual([{ op: 'settings.read', args: { source: 'policy' } }])
+    const person = harness({ policy: MANAGED, verdictPending: true })
+    await person.ready()
+    await rowBeneath(person, ['doperpowers'])
+    expect(person.seatReads).toHaveLength(1)
+    expect(person.guardReads).toEqual([
+      { op: 'state.get', args: { plugin: 'devcloud', key: 'secrets-guard' } },
+      { op: 'settings.read', args: { source: 'user' } },
+    ])
+  })
+
+  test("the bridge's own hook answers the seat only to its own plugin: another plugin's read of the key falls through to the host", async () => {
+    const h = harness()
+    const host = { value: { value: undefined, version: 0 } }
+    const answer = await h.hook('state.get', { plugin: 'sminos', key: 'bridgeSeat' })(h.engine, { plugin: 'sminos', key: 'bridgeSeat' }, Object.assign(async () => host, { origin: { plugin: 'doperpowers', tier: 'prepend' }, trace: [] }))
+    expect(answer).toBe(host)
+    const own = await h.hook('state.get', { plugin: 'sminos', key: 'bridgeSeat' })(h.engine, { plugin: 'sminos', key: 'bridgeSeat' }, Object.assign(async () => host, { origin: { plugin: 'sminos', tier: 'prepend' }, trace: [] }))
+    expect(own).toEqual({ value: { value: 'prepend', version: 0 } })
+  })
+
+  test('a seat read that fails decides nothing, said as a read of its place that failed: the debug log each time, a toast once', async () => {
+    const h = harness({ tier: 'append', policyFails: true, verdictPending: true })
+    await h.ready()
+    await callBeneath(h, ['doperpowers'])
+    await rowBeneath(h, ['doperpowers'])
+    await h.settle()
+    expect(h.logs).not.toContain(MANAGED_OFF_LINE)
+    expect(h.ofType('tool')).toEqual([])
+    expect(h.logs.filter((l) => l.includes('$.settings.read: the host did not answer'))).toHaveLength(2)
+    expect(h.toasts).toHaveLength(1)
+    expect(h.toasts[0]).toContain('$.settings.read: the host did not answer')
+    // Read again at the next dispatch: a failed read is not kept as the seat.
+    expect(h.guardReads.filter((r) => r.op === 'settings.read')).toHaveLength(2)
   })
 })
 

@@ -1118,7 +1118,7 @@ failed and exits non-zero on any failure. The replay prints one `ok` or
 **At each milestone's end, and before the frontier review,** the gates, on
 the pushed commit (they run on GitHub Actions and test the committed HEAD):
 
-    ci-gate --gates sminos,sminos-suites,sminos-channels,sminos-idle,sminos-mods,shell-lint,repo-checks
+    ci-gate --gates sminos,sminos-suites-a,sminos-suites-b,sminos-suites-c,sminos-channels,sminos-idle,sminos-mods,shell-lint,repo-checks
 
 with `mods-types` from M5 on (the guard mod changes) and `version-bump` in
 M8. Expected: one `PASS` line per gate, then `GREEN` and the run's address.
@@ -2173,6 +2173,25 @@ while the milestones are built, one observation and its evidence each.
   machine with no channel, against the constraint "The idle daemon stays
   cheap" (sminos-idle once 0.5% over its calls ceiling at `79985839`, then
   passed).
+- 2026-11-21 — **CI's split of the suites gate** (PR #588, taken in with
+  `origin/main` at the boundary of M1 and M2). `sminos-suites` is three
+  gates, `sminos-suites-a`, `-b` and `-c` (`run_suites_a|b|c`, `run_suites`
+  calling all three); Concrete Steps' gate line names the three. The
+  channel part stays its own: `SMINOS_PART` takes `channels` beside the
+  three, and `all` runs every suites part and then `run_channels`. A suite
+  this child adds to the general list goes at the end of `run_suites_c`.
+- 2026-11-21 — **The idle cost of channels** (the holder's ruling). A
+  machine that holds no channel pays nothing per tick for channels: whether
+  a log is a channel's is decided once, when it is opened or first known,
+  and kept as state beside the open logs; the tick's loops read that state
+  and call no per-log function for it, and a duty only channels have runs
+  over the channel set alone. Built in M1 after its third review. Proof:
+  `sminos-idle`'s own figure back at main's within the spread between runs
+  (about 1%; main 32.6k calls a second, M1 at 33.4k to 33.7k before the
+  trim), no new test. From M2 to M7 every milestone records the idle figure
+  at its gate, makes anything it adds to the tick conditional on a channel
+  held or open, and brings to the holder, before it lands, any change that
+  cannot keep the figure at main's. `bench_scale.py`'s limits stay.
 
 ## Outcomes & Retrospective
 
