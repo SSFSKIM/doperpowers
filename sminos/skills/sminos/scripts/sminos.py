@@ -2852,8 +2852,12 @@ def moving_elsewhere(session):
 
 def known_project(pid):
     """A project registered here (its project.json), by id, or None."""
-    d = registration(pid)
-    if not valid_name(pid) or str(d.get("project") or "") != pid:
+    return _registered_as(pid, registration(pid))
+
+
+def _registered_as(pid, d):
+    """The project a registration's JSON `d` makes for `pid`, or None."""
+    if not valid_name(pid) or not isinstance(d, dict) or str(d.get("project") or "") != pid:
         return None
     return make_project(pid, str(d.get("name") or pid), str(d.get("remote") or ""), str(d.get("root") or ""),
                         d["hub"] if isinstance(d.get("hub"), dict) else None)
@@ -5026,14 +5030,25 @@ def positions_to(project, session):
 def channel_positions(channel_id):
     """{writer: its latest seq} in the channel's log as this machine holds it
     now (CH1's §4): where a membership that begins now begins. {} for a log
-    that holds nothing, and for a channel not registered here; PositionsUnread
-    for a log or a writer file that is there and cannot be read. Read with no
+    that holds nothing, and for a channel not registered here (no
+    registration file); PositionsUnread for a registration, a log or a
+    writer file that is there and cannot be read. Read with no
     lock, each writer file's last line (_last_seq), its writer its first
     line's: by set_channels for a channel entering a set, by a return for
     every channel of its set, each under the record's store lock."""
-    project = known_project(channel_id) if is_channel_id(channel_id) else None
-    if project is None:
+    if not is_channel_id(channel_id):
         return {}
+    # The registration read here, not through the tolerant lookup (registration reads a file it cannot read as
+    # none): a channel registered and unreadable for a moment is no channel without a log.
+    try:
+        d = json_at(os.path.join(projects_root(), channel_id, "project.json"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        raise PositionsUnread("the registration of channel %s could not be read: %s" % (channel_id[:8], e)) from e
+    project = _registered_as(channel_id, d)
+    if project is None:
+        raise PositionsUnread("the registration of channel %s is no registration of it" % channel_id[:8])
     where = os.path.join(project.home, "log")   # read as it is: nothing is made for a log that holds nothing
     try:
         names = sorted(n for n in os.listdir(where) if n.endswith(".jsonl"))

@@ -26,9 +26,10 @@ the milestone's "Proves"; Interfaces §2 to §5).
   statement landing in the project left; a finish that cannot be had after
   the commit, the change still applied.
 - What the operation reads under the lock creates nothing and takes no lock
-  (a cold audience stream); a move landing while the positions are read is
-  never committed past (the membership read last); a channel log there
-  that cannot be read writes nothing.
+  (a cold audience stream); a move landing while the positions are read or
+  the answer ledger is walked is never committed past (the membership read
+  last); a channel log, or its registration, there and unreadable writes
+  nothing.
 - The wake: a thread's own change that times out on the wake lock fails and
   a quiet tick after it changes nothing; a launch paused before it records
   its job and a `resume` paused between its check and its stop, each with
@@ -50,6 +51,7 @@ runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devclo
 import fcntl
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -407,34 +409,76 @@ class Reads(Store):
             self.assertEqual(channels.change(tid, DESK, "add", sid).state, "applied")
         self.assertIn(stream, set().union(*read), "the stream's file was read, as it is")
 
-    def test_a_move_that_lands_while_the_positions_are_read_is_never_committed_past(self):
+    def test_a_move_that_lands_while_the_write_is_prepared_is_never_committed_past(self):
+        """A move injected while set_channels reads the positions, and while it walks the answer ledger: the
+        membership read is the last guard before the write, after both."""
         other = self.project_of(self.repo("other"))
-        for landed in ("between", "moved"):
-            with self.subTest(landed):
-                tid, sid, _ = self.human()
-                real, moved = sminos.channel_positions, []
+        during = {"the positions' read": (sminos, "channel_positions"), "the ledger's walk": (threads, "_answered_after")}
+        for where, (module, name) in during.items():
+            for landed in ("between", "moved"):
+                with self.subTest(where=where, landed=landed):
+                    tid, sid, _ = self.human()
+                    self.raw(tid, lambda r: r.update(answered=[[LOBBY, "r%d" % i, sminos.now(ms=True)]
+                                                               for i in range(3)]))
+                    real, moved = getattr(module, name), []
 
-                def positions(cid):
-                    got = real(cid)
-                    if not moved:   # the move's `retired`, appended by another process during this read
-                        moved.append(True)
-                        dest = other.id if landed == "moved" else ""
-                        self.write_own(sid, [{"kind": "retired", "reason": "moved", "project": dest, "thread": tid}])
-                        if landed == "moved":
-                            self.write_own(sid, [self.old_joined(sid, alias="mover", thread=tid)], p=other)
-                    return got
-                with mock.patch.object(sminos, "channel_positions", positions):
-                    got = channels.change(tid, DESK, "add", sid)
-                if landed == "between":
-                    self.assertEqual(got, channels.Outcome("failed", "between"))
-                    t = threads.get(tid)
-                    self.assertEqual((t["channels"], t.get("pending"), t.get("began")), ([], None, None),
-                                     "nothing written")
-                    self.assertEqual(self.statements(sid), [])
-                else:
-                    self.assertEqual(got, channels.Outcome("applied", ""), "looked for again, and found there")
-                    self.assertEqual((self.statements(sid), len(self.statements(sid, other))), ([], 1),
-                                     "stated in the project it moved to, never in the one it left")
+                    def meanwhile(*a, real=real, moved=moved, sid=sid, tid=tid, landed=landed, **k):
+                        got = real(*a, **k)
+                        if not moved:   # the move's `retired`, appended by another process during this step
+                            moved.append(True)
+                            dest = other.id if landed == "moved" else ""
+                            self.write_own(sid, [{"kind": "retired", "reason": "moved", "project": dest,
+                                                  "thread": tid}])
+                            if landed == "moved":
+                                self.write_own(sid, [self.old_joined(sid, alias="mover", thread=tid)], p=other)
+                        return got
+                    with mock.patch.object(module, name, meanwhile):
+                        got = channels.change(tid, DESK, "add", sid)
+                    self.assertTrue(moved, "the move landed inside the step")
+                    if landed == "between":
+                        self.assertEqual(got, channels.Outcome("failed", "between"))
+                        t = threads.get(tid)
+                        self.assertEqual((t["channels"], t.get("pending"), t.get("began"), len(t["answered"])),
+                                         ([], None, None, 3), "nothing written")
+                        self.assertEqual(self.statements(sid), [])
+                    else:
+                        self.assertEqual(got, channels.Outcome("applied", ""), "looked for again, and found there")
+                        self.assertEqual((self.statements(sid), len(self.statements(sid, other))), ([], 1),
+                                         "stated in the project it moved to, never in the one it left")
+
+    def test_a_registration_that_cannot_be_read_writes_no_empty_boundary_over_a_populated_log(self):
+        tid, sid, _ = self.human()
+        for _ in range(2):
+            self.append(DESK, "beta/human", op="add", machine="beta", thread="x")
+        path = os.path.join(sminos.projects_root(), DESK, "project.json")
+        real, said = sminos.json_at, []
+
+        def json_at(p):
+            if p == path:
+                raise OSError(5, "Input/output error")
+            return real(p)
+        with mock.patch.object(sminos, "json_at", json_at), mock.patch.object(sminos, "warn", said.append):
+            self.assertIsNone(sminos.known_project(DESK), "the tolerant lookup, unchanged: none")
+            self.assertEqual(channels.change(tid, DESK, "add", sid), channels.Outcome("failed", "unreadable"))
+        with open(path) as f:
+            kept = f.read()
+        with open(path, "w") as f:
+            f.write('{"project": "' + DESK)   # cut short: no JSON
+        sminos.forget_caches()
+        with mock.patch.object(sminos, "warn", said.append):
+            self.assertEqual(channels.change(tid, DESK, "add", sid), channels.Outcome("failed", "unreadable"))
+        self.assertEqual(len(said), 2)
+        t = threads.get(tid)
+        self.assertEqual((t["channels"], t.get("pending"), t.get("began")), ([], None, None), "nothing written")
+        self.assertEqual(self.statements(sid), [])
+        with open(path, "w") as f:
+            f.write(kept)
+        sminos.forget_caches()
+        self.assertEqual(channels.change(tid, DESK, "add", sid).state, "applied", "once it reads, it is made")
+        self.assertEqual(channels.began_of(tid, DESK), {"beta/human": 2})
+        shutil.rmtree(os.path.join(sminos.projects_root(), ROOM))
+        sminos.forget_caches()
+        self.assertEqual(sminos.channel_positions(ROOM), {}, "a channel with no registration at all: {}")
 
     def test_a_channel_log_that_cannot_be_read_writes_nothing(self):
         tid, sid, _ = self.human()

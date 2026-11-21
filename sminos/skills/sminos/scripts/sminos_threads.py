@@ -853,18 +853,22 @@ def set_channels(thread_id, decide, lock_until=None):
     then (sminos.channel_positions; no caller gives one, and no lock holds
     the log still: what is imported after that read counts as gained after
     it; PositionsUnread, nothing written, for a log there that cannot be
-    read); a channel that leaves the set loses them, and an empty set has no
-    `began`. The last read before the write, after the positions, is the
-    Change's session's own events in its project: nothing is written (None)
-    unless they leave it a member there, so a move that lands meanwhile
-    is never committed past (§3: the session a member of the project). An answer joins `answered`, whose entries older than a
-    request's lifetime are dropped. A Change whose session is not the
+    read, its registration included); a channel that leaves the set loses
+    them, and an empty set has no `began`. An answer joins `answered`, whose
+    entries older than a request's lifetime are dropped. A Change whose
+    session is not the
     record's current one, whose `channels` holds more than CHANNEL_LIMIT
     ids, an id twice or an id that is no channel's, or whose project is a
     channel, is the caller's error (ValueError), never written. The entry
     as written, None when nothing was. A seat's lifecycle generation does
     not move: a turn's watcher stands down at a generation it did not see,
-    and a membership changed during a turn must not cost it its reply."""
+    and a membership changed during a turn must not cost it its reply.
+
+    The last guard before the write, once every part of it is made (the
+    positions, the ledger, the entry), is the Change's session's own events
+    in its project: nothing is written (None) unless they leave it a member
+    there, so a move that lands meanwhile is never committed past (§3: the
+    session a member of the project)."""
     if sminos.wake_held(thread_id) is not None:
         raise sminos.WakeBusy(thread_id)
     hold, _ = sminos.wake_lock(thread_id, until=lock_until, holder=sminos.TRANSITION_HOLD)
@@ -880,26 +884,25 @@ def set_channels(thread_id, decide, lock_until=None):
             return False
         entry = _channels_entry(thread_id, view, change)
         before, after = held_set(view), list(change["channels"])
-        began = {c: copy.deepcopy(p) for c, p in (view.get("began") or {}).items() if c in after}
+        kept = view.get("began") if isinstance(view.get("began"), dict) else {}
+        began = {c: copy.deepcopy(p) for c, p in kept.items() if c in after}
         for c in after:
             if c not in before:
                 began[c] = sminos.channel_positions(c)
-        # Where the statement goes, read last before the write, after the positions: a move that lands while they
-        # are read is seen here, and nothing is written. One that lands after this read is the accepted case: the
-        # statement goes to the project left, after the writer's `retired`, and states nothing there.
+        answered = _answered_after(view.get("answered"), change.get("answer"))
+        raw["channels"] = after
+        for key, value in (("began", began), ("answered", answered)):
+            if value:
+                raw[key] = value
+            else:
+                raw.pop(key, None)
+        raw["pending"] = entry
+        # The last guard before the write, after everything it writes is made: where the statement goes. A move
+        # that lands while the positions or the ledger are read is seen here, and nothing is written (`raw` is
+        # dropped with the False). One that lands after this read is the accepted case: the statement goes to the
+        # project left, after the writer's `retired`, and states nothing there.
         if not member(sminos._own_events(change["project"], change["session"])):
             return False
-        raw["channels"] = after
-        if began:
-            raw["began"] = began
-        else:
-            raw.pop("began", None)
-        answered = _answered_after(view.get("answered"), change.get("answer"))
-        if answered:
-            raw["answered"] = answered
-        else:
-            raw.pop("answered", None)
-        raw["pending"] = entry
         written.append(entry)
         return True
 
