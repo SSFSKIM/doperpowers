@@ -41,9 +41,15 @@ LABEL_RE = re.compile(r"[a-z0-9-]{1,20}")    # devcloud's rule for --label
 READY_RE = re.compile(r"(\S+)  ready in \d+m\d\ds")   # the one line in which `vm up` names its host
 CREATED_RE = re.compile(r"created   (\S+) \(id [^)]*\) from .*")   # where `vm up` first names the VM it made
 CAPS_LINE = "caps      "                   # `vm up`'s caps line, printed before it makes anything
+# `vm up`'s recount saying it deleted the VM it made, in its two forms, the whole line on standard error.
+DELETED_RE = re.compile(r"devcloud vm: (?:over the count cap \(.*\); deleted (?P<cap>\S+): ask the person, then pass "
+                        r"--confirmed|the recount after the create failed: .*; deleted (?P<failed>\S+))")
+MAYBE = ("spawn --on new: a VM may have been made all the same, since a provider can make one and lose the answer that "
+         "names it: before running this again, devcloud vm ls shows it, kept and owned by %s, and devcloud vm down "
+         "<name> removes it")
 ENROLL_WAIT, ENROLL_POLL, REMOTE_TIMEOUT = 660, 30, 480   # seconds; SMINOS_ON_ENROLL_WAIT, _POLL, SMINOS_ON_TIMEOUT
 LS_REMOTE_TIMEOUT = 30
-PIPE_DRAIN, PIPE_GRACE = 10, 1   # seconds devcloud's output is drained for once it exited; once its bound passed
+PIPE_DRAIN, PIPE_GRACE = 10, 1   # seconds devcloud's output is read for once it exited unbounded; past a deadline
 
 # `new` always means a VM to be made: a host of that name is reached with `devcloud vm ssh`, never with --on.
 NEW = "new"
@@ -330,14 +336,29 @@ class Call:
         self.made = None          # the VM `vm up` made, once it did
         self.ready = []           # the hosts `vm up`'s ready lines named, as its output was read
         self.created = []         # the VMs its `created` lines named
+        self.deleted = set()      # the VMs its recount said it deleted (DELETED_RE)
         self.past_caps = False    # whether it printed its caps line, after which it may make a VM
+        self.up_exit = None       # its exit, once it ended other than 0
         self.devcloud = ""
-        self.checked = None       # (branch, commit) of a derived project, for row 33
+        self.checked = None       # (branch, commit, the checkout derived for it) of a derived project, for row 33
         self.reaching = None      # the VM a run of the VM side was started on whose outcome is not yet read
 
     def vm(self):
-        """The VM made: the one `vm up` was seen to name, once one was."""
-        return self.made or (self.ready[0] if len(self.ready) == 1 else None)
+        """The VM made: the one `vm up` was seen to name, once one was: its
+        `ready` line, else its `created` line where its recount did not say
+        it deleted it. Only `ready` lets the VM side start (make_vm)."""
+        if self.made or len(self.ready) == 1:
+            return self.made or self.ready[0]
+        if len(self.created) == 1 and self.created[0] not in self.deleted:
+            return self.created[0]
+        return None
+
+    def maybe(self):
+        """Whether a VM may exist that `vm up` named nowhere: it named none,
+        got past its caps line, and did not end with a cap's (4) or a
+        provider's refusal (3), the two ways it ends there having made
+        nothing."""
+        return not (self.made or self.ready or self.created) and self.past_caps and self.up_exit not in (3, 4)
 
     def owner(self):
         thread = sminos.threads_module().thread_of(self.session) if self.session else None
@@ -350,6 +371,12 @@ class Call:
         return KEPT % {"vm": vm, "owner": self.owner()}
 
     def refuse(self, words, code=1):
+        """Every refusal or unknown outcome after usage, `vm up`'s failure, a
+        stop and an unusable `ready` output among them, says what may exist:
+        a VM named (KEPT), or one that may have been made (MAYBE, last)."""
+        if self.maybe():
+            sys.stderr.write("sminos: %s\n" % words)
+            sminos.die(MAYBE % self.owner(), code)
         sminos.die(words + self.kept(), code)
 
 
@@ -509,7 +536,7 @@ def derived_project(c, cwd):
     if rows[0][0] != commit:
         c.refuse("spawn --on new: origin's %s is at %s and this checkout is at %s, so the VM would clone without what "
                  "differs: push it, or name the ref with --vm-project %s@<ref>" % (branch, rows[0][0], commit, name))
-    c.checked = (branch, commit)
+    c.checked = (branch, commit, "%s/%s" % (CHECKOUTS, repo[1]))
     return "%s@%s" % (name, branch)
 
 
@@ -553,7 +580,11 @@ def _stopped(signum, frame):
 
 def run_devcloud(c, args, stdin=None, timeout=None, keep_err=False, vm=None, nonce=None):
     """devcloud run with `args`: (exit, standard output's lines, standard
-    error's text when kept, whether the bound passed). Each line of its
+    error's text when kept, whether the bound passed, whether its standard
+    output ended). `timeout` is one deadline for the run and the reading of
+    its output together: past it, what still holds the output (a descendant
+    of devcloud, the ssh under `vm ssh`) is left, with PIPE_GRACE to finish,
+    and the output is said not to have ended. Each line of its
     output is written through as it comes, but this call's outcome lines
     (§8: `nonce`'s, on `vm ssh <vm>`'s stream), held for the judgment; its
     standard error likewise. A signal to sminos, from the moment the
@@ -582,6 +613,8 @@ def run_devcloud(c, args, stdin=None, timeout=None, keep_err=False, vm=None, non
     def pump_err():
         for raw in proc.stderr:
             text = raw.decode("utf-8", "replace")
+            if up and (m := DELETED_RE.fullmatch(text.rstrip("\n"))):
+                c.deleted.add(m.group("cap") or m.group("failed"))
             if keep_err:
                 err.append(text)
             sys.stderr.write(text)
@@ -609,17 +642,19 @@ def run_devcloud(c, args, stdin=None, timeout=None, keep_err=False, vm=None, non
             pumps.append((threading.Thread(target=feed, daemon=True), proc.stdin))
         for t, _ in pumps:
             t.start()
+        deadline = None if timeout is None else time.monotonic() + timeout
         try:
             code = proc.wait(timeout)
         except subprocess.TimeoutExpired:
             threads.stop_tree(proc.pid, proc.wait)
             code, timed_out = proc.wait(), True
-        drained(pumps, PIPE_GRACE if timed_out else PIPE_DRAIN)
+        drained(pumps, PIPE_GRACE if timed_out else PIPE_DRAIN if deadline is None
+                else max(0.0, deadline - time.monotonic()) + PIPE_GRACE)
     except (Stopped, KeyboardInterrupt):
         if proc is not None:
             if proc.returncode is None:
                 threads.stop_tree(proc.pid, proc.wait)
-            drained([(t, f) for t, f in pumps if t.ident is not None], PIPE_DRAIN)
+            drained([(t, f) for t, f in pumps if t.ident is not None], PIPE_GRACE)
         if vm is not None:
             c.refuse("spawn --on: stopped while devcloud vm ssh ran, and devcloud was stopped with it: a session may "
                      "or may not have started there, and devcloud vm ssh %s -- sminos list shows" % vm)
@@ -627,7 +662,7 @@ def run_devcloud(c, args, stdin=None, timeout=None, keep_err=False, vm=None, non
                  "what became of anything it made")
     finally:
         signal.signal(signal.SIGTERM, previous)
-    return code, lines, "".join(err), timed_out
+    return code, lines, "".join(err), timed_out, not pumps[0][0].is_alive()
 
 
 def drained(pumps, within):
@@ -659,24 +694,13 @@ def make_vm(c, projects):
     if a.vm_confirmed:
         args.append("--confirmed")
     sminos.note("making a VM (a few minutes; devcloud's own lines follow): devcloud vm up %s" % shlex.join(args))
-    code, _, err, _ = run_devcloud(c, ["vm", "up"] + args, keep_err=True)
+    code, _, _, _, _ = run_devcloud(c, ["vm", "up"] + args, keep_err=True)
     if code != 0:
-        words = ("spawn --on new: devcloud vm up exited %d; its own lines above say why, and what became of any VM it "
+        # A VM made with --keep has no lease to bound it: what may exist is said (Call.refuse).
+        c.up_exit = code
+        c.refuse("spawn --on new: devcloud vm up exited %d; its own lines above say why, and what became of any VM it "
                  "made. Nothing was spawned%s" % (code, ". The cap is the person's: after their yes to this exact "
-                                                       "request, pass --vm-confirmed" if code == 4 else ""))
-        # A VM made with --keep has no lease to bound it: one devcloud named and did not delete (its recount's own
-        # `deleted <name>`) is said kept, as after `ready`. None named after its caps line, other than a cap's or
-        # a provider's refusal, may still exist: a provider can make one and lose the answer that names it.
-        c.ready = []
-        named = c.created[0] if len(c.created) == 1 else None
-        if named is not None and not re.search(r"\bdeleted %s\b" % re.escape(named), err):
-            c.made = named
-        elif named is None and c.past_caps and code not in (3, 4):
-            sys.stderr.write("sminos: %s\n" % words)
-            sminos.die("spawn --on new: a VM may have been made all the same, since a provider can make one and lose "
-                       "the answer that names it: before running this again, devcloud vm ls shows it, kept and owned "
-                       "by %s, and devcloud vm down <name> removes it" % c.owner(), code)
-        c.refuse(words, code)
+                                                       "request, pass --vm-confirmed" if code == 4 else ""), code)
     if len(c.ready) != 1:
         c.refuse("spawn --on new: devcloud vm up succeeded and did not name one host where sminos reads it: find the "
                  "VM with devcloud vm ls, then sminos spawn --on <name>")
@@ -722,13 +746,15 @@ def remote(c, vm, request, directory):
                          "machines lists it, sminos spawn --on %s spawns there" % (vm, round(wait / 60), vm))
             given = min(bound, left)
         c.reaching = vm
-        code, lines, err, timed_out = run_devcloud(c, args, stdin=a.task, timeout=given, keep_err=True, vm=vm,
-                                                   nonce=request["nonce"])
+        code, lines, err, timed_out, ended = run_devcloud(c, args, stdin=a.task, timeout=given, keep_err=True,
+                                                          vm=vm, nonce=request["nonce"])
         if timed_out:
             c.refuse("spawn --on: %s gave no outcome within %d minutes, and the call was stopped: a session may or may "
                      "not have started there, and devcloud vm ssh %s -- sminos list shows"
                      % (vm, math.ceil(given / 60), vm))
-        verdict, d = judge(lines, request["nonce"], a.alias, code)
+        # Output that never ended may hold more after what was read: no line read is the last one.
+        verdict, d = judge(lines, request["nonce"], a.alias, code) if ended else (
+            "unknown", "its output did not end: something it started still holds it open")
         if verdict == "unknown":
             unknown(c, vm, d, code, err)
         if verdict == "ok":
@@ -752,10 +778,19 @@ def remote(c, vm, request, directory):
                               d["short"], d["seat"], d["status"], d["session"][:8], d["machine"]), flush=True)
     if c.made is not None:
         sminos.note(c.kept()[len(". The VM "):] + ", and it sends a notice after three idle days")
-        # Only where the session runs in the checkout the branch was derived for: an explicit --cwd need not be it.
-        if c.checked is not None and not a.cwd and d["head"] and d["head"] != c.checked[1]:
+        # Only where the session runs in the checkout the branch was derived for, which an explicit --cwd or a
+        # --worktree need not be.
+        if c.checked is not None and in_checkout(d["cwd"], c.checked[2]) and d["head"] and d["head"] != c.checked[1]:
             sminos.note("origin's %s moved while the VM was made: the VM's checkout is at %s" % (c.checked[0], d["head"]))
     sys.exit(0)
+
+
+def in_checkout(cwd, checkout):
+    """Whether the VM's `cwd` is `checkout` (`~/…`, from the VM's home, which
+    this machine does not know: the same path below some home)."""
+    rel = checkout[2:] if checkout.startswith("~/") else None
+    cwd = cwd.rstrip("/")
+    return cwd == checkout.rstrip("/") if rel is None else cwd.endswith("/" + rel.rstrip("/"))
 
 
 def unknown(c, vm, reason, code, err):

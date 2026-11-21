@@ -644,6 +644,70 @@ class RecountTest(UpBase):
         self.assertIn("dc-other-0001", self.servers())
         self.assertNotIn("seed", " ".join(self.remote.commands()))
 
+    def racing(self):
+        """Another driver's VM lands between this driver's count and its recount: its own, the newest, is over."""
+        self.add_server("dc-x-0000", vm_labels(expires=NOW + HOUR), created=NOW - 60)
+        self.add_server("dc-x-0001", vm_labels(lifetime="keep"), created=NOW - 60)
+        original_fleet = self.ctx.fleet
+        calls = {"n": 0}
+
+        def fleet(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                self.add_server("dc-other-0001", vm_labels(expires=NOW + HOUR), created=NOW - 1)
+            return original_fleet(*a, **kw)
+        self.ctx.fleet = fleet
+
+    def test_a_vm_over_the_cap_whose_delete_is_refused_is_said_kept_and_never_deleted(self):
+        self.racing()
+        self.ctx.delete = lambda entry, **kw: False    # the ownership gate refused it (a label changed meanwhile)
+        code, message = self.refused(keep=True)
+        self.assertEqual(code, 4)
+        self.assertNotIn("deleted dc-vm-7f3a", message)
+        self.assertEqual(message, "over the count cap (4 unconfirmed alive after the create, cap 3: another driver "
+                                  "created one meanwhile); dc-vm-7f3a could not be deleted, so the VM dc-vm-7f3a is "
+                                  "kept for inspection, with no lease: devcloud vm down dc-vm-7f3a removes it, over "
+                                  "the cap: ask the person whether it stays")
+        self.assertIn("dc-vm-7f3a", self.servers())
+
+
+class DeletedLineReaderTest(UpBase):
+    """sminos's reader of the recount's own diagnostic (S/sminos_on.py,
+    DELETED_RE): `up` says a VM it made is gone only in these two forms,
+    each the whole line on standard error after `devcloud vm: `, and never
+    where its delete was not confirmed."""
+
+    DELETED_RE = re.compile(r"devcloud vm: (?:over the count cap \(.*\); deleted (?P<cap>\S+): ask the person, then "
+                            r"pass --confirmed|the recount after the create failed: .*; deleted (?P<failed>\S+))")
+
+    racing = RecountTest.racing
+
+    def line(self, message):
+        return "devcloud vm: %s" % message
+
+    def test_the_two_forms_name_the_vm_deleted_and_a_refused_delete_matches_neither(self):
+        self.racing()
+        _, message = self.refused()
+        m = self.DELETED_RE.fullmatch(self.line(message))
+        self.assertEqual(m and m.group("cap"), "dc-vm-7f3a", message)
+        self.setUp()
+        self.racing()
+        self.ctx.delete = lambda entry, **kw: False
+        _, message = self.refused()
+        self.assertIsNone(self.DELETED_RE.fullmatch(self.line(message)), message)
+        self.setUp()
+        original_fleet, calls = self.ctx.fleet, {"n": 0}
+
+        def failing(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                self.behave(fail={"list": 1})
+            return original_fleet(*a, **kw)
+        self.ctx.fleet = failing
+        _, message = self.refused()
+        m = self.DELETED_RE.fullmatch(self.line(message))
+        self.assertEqual(m and m.group("failed"), "dc-vm-7f3a", message)
+
     def test_a_confirmed_vm_is_not_counted_and_the_recount_spares_it(self):
         for i in range(3):
             self.add_server(f"dc-x-000{i}", vm_labels(expires=NOW + HOUR))

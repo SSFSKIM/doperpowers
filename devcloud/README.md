@@ -713,7 +713,9 @@ it has one; a kept VM is named with the `down` that removes it. sminos
 reads some of the driver's lines: `<name>  ready in <m>m<ss>s`, the one
 line of that form in a whole `up`'s output, for the host's name; where
 `up` fails, its `caps` line, its `created   <name> (id …) from …` and its
-recount's `deleted <name>`, for whether a VM was made and kept; and, from
+recount's line that it deleted the VM (said only once the delete was
+confirmed; a refused one says the VM is kept), for whether a VM was made
+and kept; and, from
 `vm ssh`, the opening `no VM named` of `Context.find`'s refusal of a name
 no account holds; each is pinned by a test in `tests/unit` named for that
 reader.

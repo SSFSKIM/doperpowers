@@ -264,10 +264,14 @@ def recount(ctx, entry, r):
     newest = max(counted, key=lambda vm: (vm["created"], vm["id"]))
     if newest["id"] != entry.vm["id"] or newest["name"] != entry.vm["name"]:
         return
-    ctx.delete(entry)
-    raise DriverError(CAP, f"over the count cap ({len(counted)} unconfirmed alive after the create, cap {cap}: another "
-                           f"driver created one meanwhile); deleted {entry.vm['name']}: ask the person, then pass "
-                           "--confirmed")
+    over = (f"over the count cap ({len(counted)} unconfirmed alive after the create, cap {cap}: another driver "
+            "created one meanwhile)")
+    name = entry.vm["name"]
+    if not ctx.delete(entry):
+        # Its delete was refused (the ownership gate): it stays, and is never said deleted.
+        raise DriverError(CAP, f"{over}; {name} could not be deleted, so {kept(name, r.lifetime == 'ttl')}, over the "
+                               "cap: ask the person whether it stays")
+    raise DriverError(CAP, f"{over}; deleted {name}: ask the person, then pass --confirmed")
 
 
 def kept(name, leased):

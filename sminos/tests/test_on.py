@@ -179,8 +179,12 @@ class On(Machine):
     # --- the verb
 
     def spawn(self, *argv, session=True, cwd=None, alias="w", task="a task", stdin=None):
-        """(exit, stdout, stderr) of `sminos spawn <alias> <task> <argv>` run here, from the session (or a
-        terminal), under a fixed nonce; `stdin`, bytes, piped to it."""
+        """(exit, stdout, stderr) of `sminos spawn <alias> <task> <argv>` (sminos_argv)."""
+        return self.sminos_argv("spawn", alias, task, *argv, session=session, cwd=cwd, stdin=stdin)
+
+    def sminos_argv(self, *argv, session=True, cwd=None, stdin=None):
+        """(exit, stdout, stderr) of `sminos <argv>` run here, `argv` whole, from the session (or a terminal), under
+        a fixed nonce; `stdin`, bytes, piped to it."""
         out, err = io.StringIO(), io.StringIO()
         env = {"CLAUDE_CODE_SESSION_ID": self.sid} if session else {}
         here = os.getcwd()
@@ -191,27 +195,7 @@ class On(Machine):
                 if not session:
                     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
                 try:
-                    sminos.main(["spawn", alias, task, *argv])
-                    code = 0
-                except SystemExit as e:
-                    code = e.code if isinstance(e.code, int) else 1
-        finally:
-            os.chdir(here)
-            sminos.forget_caches()
-        return code, out.getvalue(), err.getvalue()
-
-    def spawn_argv(self, *argv):
-        """(exit, stdout, stderr) of `sminos spawn <argv>` run here from the session, `argv` whole (an alias
-        after `--`), under a fixed nonce."""
-        out, err = io.StringIO(), io.StringIO()
-        here = os.getcwd()
-        os.chdir(self.work)
-        try:
-            with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": self.sid}), \
-                    mock.patch.object(on.secrets, "token_hex", return_value=NONCE), \
-                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                try:
-                    sminos.main(["spawn", *argv])
+                    sminos.main(list(argv))
                     code = 0
                 except SystemExit as e:
                     code = e.code if isinstance(e.code, int) else 1
@@ -529,6 +513,28 @@ class New(On):
                 self.assertNotIn("may have been made", err)
                 self.assertNotIn("is kept", err)
 
+    def test_an_up_that_succeeded_without_a_usable_ready_line_keeps_the_vm_it_created(self):
+        self.forget_calls()
+        self.cfg["up"] = {"lines": [self.ACCOUNT, self.CAPS, self.CREATED]}
+        self.save()
+        _, err = self.refused(1, "spawn --on new: devcloud vm up succeeded and did not name one host where sminos "
+                                 "reads it", "--on", "new", called=["up"])
+        self.assertTrue(err.endswith(". The VM dc-x-0001 is kept and this session's thread owns it: devcloud vm down "
+                                     "dc-x-0001 ends it\n"), err)
+        self.cfg["up"] = {"lines": [self.ACCOUNT, self.CAPS]}
+        self.save()
+        self.forget_calls()
+        _, err = self.refused(1, "did not name one host where sminos reads it", "--on", "new", called=["up"])
+        self.assertTrue(err.endswith(self.MAYBE), err)
+
+    def test_only_the_recounts_own_line_says_a_vm_was_deleted(self):
+        """Another line that holds `deleted <name>` is not the recount's: the VM is kept."""
+        _, err = self.failed_up([self.ACCOUNT, self.CAPS, self.CREATED], 1,
+                                "devcloud vm: the boot failed at step secrets (it was deleted dc-x-0001's key, then "
+                                "retried); the VM dc-x-0001 is kept for inspection, with no lease: devcloud vm down "
+                                "dc-x-0001 removes it\n")
+        self.assertIn(". The VM dc-x-0001 is kept and this session's thread owns it", err)
+
     def test_an_up_that_names_no_host_or_two(self):
         for lines in (["created   dc-x-0001"], ["a  ready in 0m01s", "b  ready in 0m02s"]):
             with self.subTest(lines=lines):
@@ -554,6 +560,15 @@ class New(On):
         # says nothing of that branch.
         self.answers("dc-x-0001", self.spawned(machine="dc-x-0001", head=other, cwd="/home/u/elsewhere"))
         code, out, err = self.spawn("--on", "new", "--cwd", "~/elsewhere")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("moved while", err)
+        # The derived checkout named with --cwd is compared; another checkout the engine ran in (--worktree) is not.
+        self.answers("dc-x-0001", self.spawned(machine="dc-x-0001", head=other))
+        code, out, err = self.spawn("--on", "new", "--cwd", "~/Developer/GitHub/repo")
+        self.assertIn("moved while", err)
+        self.answers("dc-x-0001", self.spawned(machine="dc-x-0001", head=other,
+                                               cwd="/home/u/Developer/GitHub/repo/.claude/worktrees/wt"))
+        code, out, err = self.spawn("--on", "new", "--worktree", "wt")
         self.assertEqual(code, 0, err)
         self.assertNotIn("moved while", err)
 
@@ -696,10 +711,10 @@ class New(On):
         def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
             if args[:2] == ["vm", "up"]:
                 c.ready.append("dc-x-0001")   # as run_devcloud's reading of the ready line records it
-                return 0, ["dc-x-0001  ready in 0m01s"], "", False
+                return 0, ["dc-x-0001  ready in 0m01s"], "", False, True
             tries.append((clock[0], timeout))
             code, lines, timed_out = left.pop(0)
-            return code, lines, "", timed_out
+            return code, lines, "", timed_out, True
         fake = mock.Mock(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
         env = {"SMINOS_ON_ENROLL_WAIT": wait, "SMINOS_ON_ENROLL_POLL": poll, "SMINOS_ON_TIMEOUT": bound}
         with mock.patch.object(on, "run_devcloud", side_effect=run), mock.patch.object(on, "time", fake), \
@@ -737,13 +752,13 @@ class New(On):
         def guard(*_):
             raise AssertionError("the SIGTERM reached this test's own handler, not sminos's")
         self.addCleanup(signal.signal, signal.SIGTERM, signal.signal(signal.SIGTERM, guard))
-        no = (1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled"})], "", False)
+        no = (1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled"})], "", False, True)
         real = time.sleep
 
         def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
             if args[:2] == ["vm", "up"]:
                 c.ready.append("dc-x-0001")   # as run_devcloud's reading of the ready line records it
-                return 0, ["dc-x-0001  ready in 0m01s"], "", False
+                return 0, ["dc-x-0001  ready in 0m01s"], "", False, True
             return no
 
         def term(seconds):
@@ -776,6 +791,23 @@ class New(On):
         self.assertEqual(code, 1, err)
         self.assertNotIn("seat spawned on", out)
         return err
+
+    def test_stopped_while_up_runs_after_it_made_its_vm_and_before_ready_keeps_it(self):
+        """One disposition for a failure, a stop and an unusable `ready` output: the VM a `created` line named, said
+        kept with its owner and its down; and no `vm ssh`, which only a `ready` line starts."""
+        self.cfg["up"] = {"lines": [New.ACCOUNT, New.CAPS, New.CREATED], "hold": os.path.join(self.home, "never")}
+        err = self.stopped("--on", "new")
+        self.assertIn("spawn --on: stopped while devcloud ran", err)
+        self.assertTrue(err.endswith(". The VM dc-x-0001 is kept and this session's thread owns it: devcloud vm down "
+                                     "dc-x-0001 ends it\n"), err)
+        self.assertEqual(self.verbs(), ["up"])
+
+    def test_stopped_while_up_runs_past_its_caps_naming_nothing_says_one_may_exist(self):
+        self.cfg["up"] = {"lines": [New.ACCOUNT, New.CAPS], "hold": os.path.join(self.home, "never")}
+        err = self.stopped("--on", "new")
+        self.assertIn("spawn --on: stopped while devcloud ran", err)
+        self.assertTrue(err.endswith(New.MAYBE), err)
+        self.assertEqual(self.verbs(), ["up"])
 
     def test_stopped_while_up_runs_after_it_named_its_host_keeps_the_vm(self):
         self.cfg["up"] = {"hold": os.path.join(self.home, "never")}
@@ -817,37 +849,69 @@ class New(On):
 
 
 class Bound(On):
-    def test_the_bound_holds_while_a_descendant_keeps_devcloud_s_output_open(self):
-        """The ssh under `devcloud vm ssh` is such a descendant: the call returns at its deadline, whatever still
-        holds the pipe. (A watchdog ends the descendant after 8 s, so that a call that waits on it fails here
-        rather than hangs.)"""
-        self.cfg.update(child=True, hang=True)
+    """One deadline for the run and the reading of its output: a descendant of devcloud that keeps the output open
+    (the ssh under `devcloud vm ssh`) holds neither past it. A watchdog ends the descendant after 8 s, so that a call
+    that waits on it fails here rather than hangs."""
+
+    def child(self):
+        with contextlib.suppress(OSError, ValueError, IndexError, KeyError):
+            with open(os.path.join(os.environ["HOME"], "devcloud-standin.calls")) as f:
+                return json.loads(f.readlines()[-1])["child"]
+
+    @contextlib.contextmanager
+    def watched(self):
+        returned = threading.Event()
+
+        def watchdog():
+            if not returned.wait(8) and self.child():
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(self.child(), signal.SIGKILL)
+        threading.Thread(target=watchdog, daemon=True).start()
+        began = time.monotonic()
+        took = []
+        try:
+            yield took
+        finally:
+            took.append(time.monotonic() - began)
+            returned.set()
+            pid = self.child()
+            if pid:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(pid, signal.SIGKILL)
+
+    def bounded(self, **cfg):
+        self.cfg.update(child=True, **cfg)
         self.save()
         c = on.Call(mock.Mock(on="vm1", alias="w"))
         c.devcloud = os.environ["SMINOS_DEVCLOUD"]
-        returned = threading.Event()
-
-        def child():
-            with contextlib.suppress(OSError, ValueError, IndexError, KeyError):
-                with open(os.path.join(os.environ["HOME"], "devcloud-standin.calls")) as f:
-                    return json.loads(f.readlines()[-1])["child"]
-
-        def watchdog():
-            if not returned.wait(8) and child():
-                with contextlib.suppress(ProcessLookupError):
-                    os.kill(child(), signal.SIGKILL)
-        threading.Thread(target=watchdog, daemon=True).start()
-        began = time.monotonic()
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        with self.watched() as took, contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
             got = on.run_devcloud(c, ["vm", "owned-by", "abcd1234"], timeout=0.3, keep_err=True)
-        took = time.monotonic() - began
-        returned.set()
-        pid = child()
-        if pid:
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(pid, signal.SIGKILL)
+        return got, took[0]
+
+    def test_the_bound_holds_while_a_descendant_keeps_devcloud_s_output_open(self):
+        got, took = self.bounded(hang=True)
         self.assertTrue(got[3], "the bound passed")
+        self.assertFalse(got[4], "its output did not end")
         self.assertLess(took, 3, "returned at its deadline, not when the descendant let go")
+
+    def test_a_child_that_exits_at_once_holds_the_call_no_longer_than_the_deadline(self):
+        got, took = self.bounded()
+        self.assertEqual((got[0], got[3], got[4]), (0, False, False), "exit 0, within the bound, output not ended")
+        self.assertLess(took, 3, "returned at its deadline (took %.1f s)" % took)
+
+    def test_an_outcome_line_from_output_that_never_ended_is_not_known(self):
+        self.answers("vm1", self.spawned())
+        self.cfg["child"] = True
+        self.save()
+        with self.watched() as took, mock.patch.dict(os.environ, {"SMINOS_ON_TIMEOUT": "0.5"}):
+            code, out, err = self.spawn("--on", "vm1")
+        self.assertLess(took[0], 4)
+        self.assertEqual(code, 1, err)
+        self.assertNotIn("seat spawned on", out)
+        self.assertIn("spawn --on: the outcome on vm1 is not known (its output did not end: something it started "
+                      "still holds it open): a session may or may not have started there, and devcloud vm ssh vm1 -- "
+                      "sminos list shows", err)
 
 
 class Outcome(On):
@@ -1137,7 +1201,7 @@ class VmSide(On):
 
                 def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
                     sent["task"] = stdin
-                    return 0, [self.spawned()], "", False
+                    return 0, [self.spawned()], "", False, True
                 with mock.patch.object(on, "run_devcloud", side_effect=run):
                     code, _, err = self.spawn("--on", "vm1", task=task, stdin=stdin)
                 self.assertEqual(code, 0, err)
@@ -1148,21 +1212,26 @@ class VmSide(On):
     def test_option_like_values_reach_the_vm_as_the_mac_read_them(self):
         """`--brief=--review` and an alias after `--`, through the real parser on both sides: the forwarded words
         parse on the VM to what they parsed to on the Mac."""
-        for argv, alias, task in ((["--on", "vm1", "--brief=--review", "--role=-r", "--stamp=k=-v"], "w", "a task"),
-                                  (["--on", "vm1", "--", "-alias", "-dash task"], None, None)):
+        for argv in (["spawn", "w", "a task", "--on", "vm1", "--brief=--review", "--role=-r", "--stamp=k=-v"],
+                     ["spawn", "--on", "vm1", "--", "-alias", "-dash task"]):
             with self.subTest(argv=argv):
                 sent = {}
 
                 def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
                     sent["args"] = args
-                    return 0, [self.spawned(alias=c.a.alias)], "", False
-                mac = sminos.build_parser().parse_args(["spawn", alias, task, *argv] if alias else ["spawn", *argv])
+                    return 0, [self.spawned(alias=c.a.alias)], "", False, True
+                mac = sminos.build_parser().parse_args(argv)
                 with mock.patch.object(on, "run_devcloud", side_effect=run):
-                    code, out, err = self.spawn(*argv) if alias else self.spawn_argv(*argv)
+                    code, out, err = self.sminos_argv(*argv)
                 self.assertEqual(code, 0, err)
                 words = sent["args"][sent["args"].index("--") + 1:]
                 self.assertEqual(words[0], "sminos")
-                there = sminos.build_parser().parse_args(words[1:])
+                said = io.StringIO()
+                with contextlib.redirect_stderr(said):
+                    try:
+                        there = sminos.build_parser().parse_args(words[1:])
+                    except SystemExit:
+                        self.fail("the VM's parser refused %r: %s" % (words[1:], said.getvalue()))
                 self.assertEqual((there.alias, there.task, there.brief, there.role, there.stamp),
                                  (mac.alias, "-", mac.brief, mac.role, mac.stamp))
                 self.assertIsNotNone(there.asked_from)
