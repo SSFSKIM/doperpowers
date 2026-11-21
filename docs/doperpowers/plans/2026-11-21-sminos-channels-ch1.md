@@ -1375,7 +1375,8 @@ In `S/sminos_channels.py`, the callers that build `decide`:
     def change(thread_id, channel, op, session, lock_until=None) -> Outcome
         # C1, C2 (§6's Outcome): `applied`; `refused` `limit` for an add past 128, nothing written; or
         # `failed` with why it could not be recorded (`wake`, `entry`, `vacant`, `between`, `moved`: the
-        # session is no longer the thread's current one, or the record ended or is gone); never `pending`,
+        # session is no longer the thread's current one, or the record ended or is gone; `unreadable`: the
+        # channel's log or a writer file of it is there and could not be read); never `pending`,
         # since no request exists for a later pass to carry out
     def restate(project, thread_id, session, writer, seen) -> bool
         # C5: `seen` the set the reconciliation read from the record. Only tries the wake lock. True when a
@@ -2241,6 +2242,22 @@ while the milestones are built, one observation and its evidence each.
   them as before. `T/test-older-cli.sh` runs 1.52.0 on the cut case alone:
   that copy wakes a stopped thread itself, so the every-copy expectation
   "launched nothing" cannot hold for it, and its own expectations are M8's.
+- 2026-11-21 — **M2's review, round 1, as fixed** (`e78b7204`). The read
+  under the store lock is read-only on every stream (audience streams read
+  by their literal paths, never through `project_path`). The membership
+  check that chooses the statement's project is the last read before the
+  record write, after the positions; a move during the position read
+  writes nothing, and `change` looks for the session again in its new
+  project or answers `failed between`. No lock coordinates with a move:
+  the window left is in effect the accepted move after the record's write,
+  which the reconciliation (M3) repairs. A log or writer file that is
+  there and cannot be read raises `sminos.PositionsUnread`, and `change`
+  answers `failed unreadable` with no partial `began` (§3 amended); a log
+  that does not exist still reads `{}`. The fold takes an event as a
+  statement only with a statement's fields (`is_statement`: a `channels`
+  list, a `thread`, an `op`). A finisher's timeout after the record has
+  committed answers `applied`, nudges the daemon and leaves the entry for
+  replay.
 
 ## Outcomes & Retrospective
 
