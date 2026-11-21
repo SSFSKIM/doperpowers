@@ -7,6 +7,7 @@
   devcloud vm owned-by <tag|short>...
   devcloud vm ssh <name> [--root] [-- command...]
   devcloud vm lease <name> <duration|keep>
+  devcloud vm owner <name> <thread>
   devcloud vm down <name> [--force]
   devcloud vm image build [--account A] [--arch x86|arm] | image ls
   devcloud vm reap [--install]
@@ -22,7 +23,7 @@ import os
 import signal
 import sys
 
-from . import adopt, conformance, images, ops, owned, reaper, up
+from . import adopt, conformance, images, ops, owned, owner, reaper, up
 from .context import Context, Paths
 from .errors import FAILED, NOT_DRIVER, USAGE, DriverError
 
@@ -80,6 +81,9 @@ def parser():
     p = sub.add_parser("lease", help="set a host's lease end to now + duration, or keep it without one")
     p.add_argument("name")
     p.add_argument("duration")
+    p = sub.add_parser("owner", help="hand a host to another thread of this machine, which then owns it")
+    p.add_argument("name")
+    p.add_argument("thread")
     p = sub.add_parser("down", help="depart and delete a host")
     p.add_argument("name")
     p.add_argument("--force", action="store_true")
@@ -114,6 +118,8 @@ def _dispatch(ctx, args, command):
         return ops.ssh(ctx, args.name, root=args.root, command=command)
     if args.command == "lease":
         return ops.lease(ctx, args.name, args.duration)
+    if args.command == "owner":
+        return owner.run(ctx, args.name, args.thread)
     if args.command == "down":
         return ops.down(ctx, args.name, force=args.force)
     if args.command == "image":

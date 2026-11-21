@@ -241,7 +241,7 @@ def _discard(ctx, entry, step):
     """A failed bake: the builder labeled with the step, then deleted.
     Whether it is gone."""
     try:
-        entry.client.set_labels(entry.vm["id"], {"devcloud-bake": f"failed-{step}"}, merge=True)
+        ctx.merge_labels(entry, {"devcloud-bake": f"failed-{step}"})
     except DriverError as error:
         ctx.warn(f"devcloud vm image build: labeling {entry.vm['name']} failed-{step}: {error}")
     if not _delete(ctx, entry):

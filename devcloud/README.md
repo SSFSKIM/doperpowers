@@ -606,6 +606,7 @@ refuses with exit 6: hosts never drive. A session learns it from
     devcloud vm ls [--json]
     devcloud vm ssh <name> [--root] [-- command...]
     devcloud vm lease <name> <duration|keep>
+    devcloud vm owner <name> <thread>
     devcloud vm down <name> [--force]
     devcloud vm reap [--install]
     devcloud vm provider register <account> --confirmed | provider test <account>
@@ -619,7 +620,9 @@ guard (unpushed work), 6 not a driver here (no seed key, or a devcloud host),
 
 answers a program, not a session (sminos asks it before it retires a
 thread, contract X9 of `docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md`):
-which hosts, VMs and adopted machines alike, name any of the given creators,
+which hosts, VMs and adopted machines alike, name any of the given owners
+(the session that made the host, or the current session of the thread it was
+last handed to with `vm owner`; the stored names keep the word "creator"),
 as one JSON object whose `answer` is `owned`, `none` (every account listed in
 full) or `unknown` (naming each account that could not be used and each
 listing that failed). Unlike `ls` it never takes a partial fleet for the
@@ -716,6 +719,33 @@ refuses unpushed or uncommitted work under the user's `~/Developer/GitHub`
 --no-poweroff`, `--no-hold` with `--force`) and deletes it after rechecking
 its labels; the connection dropping after `devcloud-depart: ready-to-logout`
 is success, before it the outcome is unknown and the VM is kept.
+**`owner`** hands a host to another thread of this Mac (any name sminos
+resolves to one: an alias, `alias#short`, a tag, a short or a thread id),
+which then owns it: the host's notices go to it, and sminos refuses to
+retire it while the host exists. sminos says which thread a name is
+(`sminos who --thread`, sminos 1.53.0 or later); `owner` refuses a thread of
+another machine, an ended one, a vacant seat, a session that is no thread
+and a name that is none, changing nothing. It writes the host first, by a
+program it sends as root (`driver/owner_host.py`, which loads the host's own
+library, so a host made before the verb takes it): under the host's send
+lock, so a notice being sent finishes first (none after 20 seconds: refused),
+and its lifecycle lock, the descriptor's `DEVCLOUD_CREATOR` becomes the
+thread's current session's tag and `DEVCLOUD_CREATOR_PROJECT` its project's
+id, where the host's parser knows that key (a host built before it takes the
+tag alone, and says so). Then the provider's `devcloud-creator` label, or
+the adoption record's `creator`; then it reads both back, the host by its own
+parser, and reports the handover (`<name> was owned by @<old>; <alias>#<short>
+(<project> on <machine>) owns it now`) only when both hold what it wrote. A
+reply lost on either side is settled by that read, never taken for a write
+that failed; where the two sides differ (two handovers at once, a write
+that did not land) it exits 1 saying what each holds, and run again it
+settles. On this Mac every merge of a server's labels (`lease`, the
+reaper's, the image builder's, the handover's) and every write of an
+adoption record is made under one lock per host name
+(`~/.local/state/devcloud/locks/<name>.lock`), held for the read and the
+replace alone, never across a call to a host, so a lease beside a handover
+writes back nothing it read before; two Macs are not excluded from each
+other. `ls` heads the column `OWNER` (`--json` keeps the key `creator`).
 A host that leaves for good removes its own tailnet node through the
 Tailscale API right after its logout, unless the node is ephemeral (a
 logout removes those), and the release of an adopted machine does the
@@ -794,7 +824,8 @@ the step it names (`preparing`, `seeded`, `booted`, `released`); `adopt` run
 again for the same target resumes from it. `ls` lists adopted machines
 (an unfinished adoption with its phase), never counted against the cap, and
 the reaper never touches them. `lease` writes the host's lease and the
-record; there are no labels. `down` (and the host's own lease end) runs
+record (read again for the write, under the host's lock, so a handover made
+meanwhile stands); there are no labels. `down` (and the host's own lease end) runs
 `devcloud release`: the machine leaves the desk and the tailnet, devcloud's
 firewall, units and every credential its ledger lists go, the saved keys
 come back, then devcloud's state directory (`/var/lib/devcloud`), and the
@@ -812,7 +843,8 @@ public half written to the profile's `driver-keys/<machine>.pub`, which the
 configuration sync pushes and every host authorizes), a `known_hosts` keyed
 by the server rather than its address (an adopted machine by its name), the
 reap log, when the reaper last tried each account's image build
-(`image-builds.json`), the adoption records (`adopted/`) and the gce
+(`image-builds.json`), the adoption records (`adopted/`), the locks that keep
+one host's label merges and record writes apart (`locks/`) and the gce
 provider's private gcloud configuration and price cache (`gce/`).
 
 ## Developing
