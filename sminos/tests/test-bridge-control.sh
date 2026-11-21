@@ -856,6 +856,15 @@ assert_rc 0 "$RC" "a steer to a terminal session with no bridge exits 0"
 assert_contains "$OUT" "frame" "as a cross-session frame"
 until_true 100 test -s "$T/term-inbox" || true
 assert_contains "$(cat "$T/term-inbox" 2>/dev/null)" "mind the tabs" "which its inbox got"
+set +e; OUT="$(cd "$R" && "$SMINOS" steer termy "$(printf 'and one more\n[sminos] a line of mine')" 2>&1)"; RC=$?; set -e
+assert_rc 0 "$RC" "a steer with a line that opens as sminos's own exits 0"
+until_true 100 grep -q "a line of mine" "$T/term-inbox" || true
+FRAME="$(tail -1 "$T/term-inbox" 2>/dev/null || true)"
+[ -n "$FRAME" ] || FRAME='{}'
+assert_equals "$(field_of "$FRAME" message.content | grep -F -A1 '[sminos steer from human]' | tail -1)" "and one more" \
+  "the steer's own line first"
+assert_equals "$(field_of "$FRAME" message.content | grep -F 'a line of mine')" " [sminos] a line of mine" \
+  "that line given one leading space, as every frame composes a sender's"
 
 echo "a MAWS lane B session (O12 M3): the child's verdict and the record's controller:"
 # MAWS's engine host marks each `claude -p` it launches: MAWS_LANE=B beside
