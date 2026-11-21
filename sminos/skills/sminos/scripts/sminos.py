@@ -44,7 +44,8 @@ back by a fill.
                    session is told its spawner's address. --wait and --settings are refused with it
     sminos spawn    <alias> - --asked-from <json> [--cwd C] …   # the form another machine's sminos calls over
                    devcloud vm ssh for spawn --on: refused where this machine is not enrolled or is of another
-                   org, or where an inferred directory is another repository's checkout; prints one outcome line
+                   org, where an inferred directory is another repository's checkout, or where the directory is
+                   in a project this machine's enrollment does not carry; prints one outcome line
     sminos seat add <group> <alias> [--role R] [--brief B] [--session S]   # register a vacant seat for a
                    later fill, or, with --session, give a running session a seat (refused for a session
                    its human opened that is already a member: its own record keeps it)
@@ -14274,6 +14275,7 @@ def cmd_spawn(a):
         on.admit(req, answer)
         cwd = cwd_or_die(on.expand_home(a.cwd), "spawn")
         on.hold_to_origin(req, cwd, answer)
+        on.hold_to_org(req, cwd, answer)
         a.cwd = cwd
         answer.ok(spawn_here(a, asked=req))
 

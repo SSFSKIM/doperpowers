@@ -14,9 +14,10 @@ that it can hold to its call; anything else is an outcome that is not known.
 It writes nothing in sminos's store.
 
 The VM side is `cmd_spawn` itself (read_request, Answering, admit,
-expand_home, hold_to_origin): the same spawn under the same locks, refused
-where this machine is not enrolled, is of another org, or holds another
-repository's checkout where the Mac inferred the directory, and ending, for
+expand_home, hold_to_origin, hold_to_org): the same spawn under the same
+locks, refused where this machine is not enrolled, is of another org, holds
+another repository's checkout where the Mac inferred the directory, or
+would put the session in a project its enrollment does not carry, and ending, for
 every way it ends after the request was read, with the outcome line. The
 line's shape is one, printed here and accepted here (outcome_whole)."""
 import json
@@ -267,6 +268,20 @@ def hold_to_origin(req, cwd, answer):
             return
     answer.refuse("other-repository", "spawn: %s is %s, and the machine that asked took it for its checkout of %s: "
                                       "nothing was spawned. Name the directory with --cwd" % (cwd, what, req["origin"]))
+
+
+def hold_to_org(req, cwd, answer):
+    """The project the spawn would be in (spawn_fresh's, of `cwd`'s group)
+    is one this machine's enrollment carries, by the uplink's own test, as
+    the Mac holds its spawner's: one it does not carry could neither reach
+    the spawner nor be seen by it. An explicit --cwd included."""
+    project = sminos.seat_project({"cwd": cwd, "group": sminos.derive_group(cwd)})
+    why = sminos.not_carried(project, req["org"]) if project is not None else ""
+    if why:
+        answer.refuse("other", "spawn: %s is in project %s, which this machine's enrollment does not carry (%s), so "
+                               "the session there and the machine that asked could not reach each other: nothing was "
+                               "spawned. Name a directory of a project the org shares with --cwd"
+                      % (cwd, project.name, why))
 
 
 # ------------------------------------------------------------------ the Mac side

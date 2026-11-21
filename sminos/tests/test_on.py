@@ -1013,6 +1013,24 @@ class VmSide(On):
         code, lines, err, _ = self.asked(origin=KEY)
         self.assertEqual(on.judge(lines, NONCE, "w", code)[0], "ok", err)
 
+    def test_a_directory_in_a_project_this_enrollment_does_not_carry_is_refused_before_the_launch(self):
+        """The session would be in the project spawn_fresh selects, which the uplink leaves out (a `.smns` that
+        names no hub): refused, an explicit --cwd included, as the Mac refuses its own spawner's (not_carried)."""
+        bare = os.path.join(self.home, "nowhere")
+        os.makedirs(bare)
+        with open(os.path.join(bare, ".smns"), "w") as f:
+            json.dump({"project": str(uuidlib.uuid4()), "name": "nowhere", "remote": ""}, f)
+        for origin in (None, KEY):
+            with self.subTest(origin=origin):
+                with mock.patch.object(on, "hold_to_origin"):   # the inferred directory's own check, aside here
+                    code, lines, err, launched = self.asked(cwd=bare, origin=origin)
+                self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1, "why": "other"}))
+                self.assertIn("spawn: %s is in project nowhere, which this machine's enrollment does not carry (it "
+                              "syncs through no hub), so the session there and the machine that asked could not reach "
+                              "each other: nothing was spawned. Name a directory of a project the org shares with --cwd"
+                              % bare, err)
+                self.assertEqual(launched, {}, "nothing launched")
+
     def test_a_request_this_version_does_not_read_prints_no_line(self):
         for bad in ({"v": 2}, {"v": True}, {"nonce": "short"}, {"org": ""}, {"by": {"alias": "a"}},
                     {"by": {"alias": "a", "short": "XYZ", "project": "p", "project_name": "n", "machine": "m"}},
