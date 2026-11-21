@@ -6124,14 +6124,22 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
   // stands for by reading nothing. A machine with managed settings loads
   // every plugin a person enables in `user`.
   const MANAGED = { prependPlugins: ['to-human@doperpowers', 'sminos@doperpowers', 'doperpowers@doperpowers'] }
+  /** The managed settings seating cua as the organization's: enabled, its marketplace declared. */
+  const MANAGED_CUA = { ...MANAGED, enabledPlugins: { 'cua@cua': true }, extraKnownMarketplaces: { cua: { source: { source: 'github', repo: 'cua/cua' } } } }
   const seats: [string, Parameters<typeof harness>[0], string[], 'safe' | 'off'][] = [
     // Seated in prepend by the organization: every plugin a person installs is beneath it.
     ["the organization's in prepend, a person's devcloud beneath (its marker hidden), cua enabled in the user settings and not loaded", { tier: 'prepend', policy: MANAGED, cua: true }, ['doperpowers', 'devcloud'], 'safe'],
     ["the organization's in prepend, cua enabled in the user settings, nothing of it beneath", { tier: 'prepend', policy: MANAGED, cua: true }, ['doperpowers'], 'safe'],
     ["the organization's in prepend, devcloud its too and listed before sminos (its marker heard), no devcloud beneath", { tier: 'prepend', policy: MANAGED, marker: LIVE_MARKER }, ['doperpowers'], 'off'],
     ["the organization's in prepend, devcloud its too, devcloud beneath", { tier: 'prepend', policy: MANAGED, marker: LIVE_MARKER }, ['doperpowers', 'devcloud'], 'safe'],
-    ["the organization's in prepend, cua enabled by the managed settings, no cua beneath", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'cua@cua': true } } }, ['doperpowers'], 'off'],
-    ["the organization's in prepend, cua enabled by the managed settings, cua beneath", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'cua@cua': true } } }, ['doperpowers', 'cua'], 'safe'],
+    ["the organization's in prepend, cua the managed settings seat (enabled, its marketplace declared), no cua beneath", { tier: 'prepend', policy: MANAGED_CUA }, ['doperpowers'], 'off'],
+    ["the organization's in prepend, cua the managed settings seat, cua beneath", { tier: 'prepend', policy: MANAGED_CUA }, ['doperpowers', 'cua'], 'safe'],
+    // Matched as the engine matches a managed enable to a plugin: case folded.
+    ["the organization's in prepend, cua the managed settings seat under ids in another case, no cua beneath", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'CUA@Cua': true }, extraKnownMarketplaces: { CUA: { source: { source: 'github', repo: 'cua/cua' } } } } }, ['doperpowers'], 'off'],
+    // Enabled with its marketplace undeclared, cua loads in user, beneath: not loaded, it is nowhere.
+    ["the organization's in prepend, cua enabled by the managed settings with its marketplace undeclared, a person's devcloud beneath, no cua", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'cua@cua': true } } }, ['doperpowers', 'devcloud'], 'safe'],
+    // With no guard read loaded, a cua link beneath it is a guard beneath it.
+    ["the organization's in prepend, no guard read loaded, cua beneath", { tier: 'prepend', policy: MANAGED }, ['doperpowers', 'cua'], 'safe'],
     ["the organization's in prepend, cua listed but disabled by the managed settings, no cua beneath", { tier: 'prepend', policy: { prependPlugins: ['cua@cua', ...MANAGED.prependPlugins], enabledPlugins: { 'cua@cua': false } } }, ['doperpowers'], 'safe'],
     // Seated anywhere else by the organization: inside every plugin a person installs, blind to a person's devcloud.
     ["the organization's in append, no guard enabled, nothing beneath", { tier: 'append', policy: { appendPlugins: ['sminos@doperpowers'] } }, [], 'off'],
@@ -6165,7 +6173,7 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
   }
 
   test("seated in prepend by the organization, a dispatch an organization's mod raised decides nothing of cua: a person's hooks, a user-tier cua's among them, do not run on it", async () => {
-    const policy = { ...MANAGED, enabledPlugins: { 'cua@cua': true } }
+    const policy = MANAGED_CUA
     const h = harness({ tier: 'prepend', policy, verdictPending: true })
     await h.ready()
     await rowBeneath(h, ['doperpowers'], { origin: 'doperpowers', originTier: 'prepend' })
@@ -6187,6 +6195,32 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     await h.settle()
     expect(h.ofType('tool').filter((e) => e.phase === 'result')).toEqual([])
     expect(h.toasts.filter((t) => t === MANAGED_OFF_LINE)).toHaveLength(1)
+  })
+
+  test("seated in prepend by the organization and off for a cua it seated ahead, a cua link beneath turns it back on once the managed settings no longer seat cua", async () => {
+    const h = harness({ tier: 'prepend', policy: MANAGED_CUA, cua: true, verdictPending: true })
+    await h.ready()
+    await rowBeneath(h, ['doperpowers'])
+    expect(h.toasts.filter((t) => t === MANAGED_OFF_LINE)).toHaveLength(1)
+    // The managed enable removed, the user's left: cua reloads in user, beneath the bridge.
+    h.setPolicy(MANAGED)
+    await rowBeneath(h, ['doperpowers', 'cua'])
+    expectOn(h)
+  })
+
+  test("a dispatch an organization's mod raised that cannot decide drops its own call and result: a later safe verdict does not post them", async () => {
+    const h = harness({ tier: 'prepend', policy: MANAGED_CUA, verdictPending: true })
+    await h.ready()
+    const SECRET_CALL = { tool: 'Bash', tool_use_id: 'tuOrg', command: 'cat org-notes.txt' }
+    await h.hook('tool.call', { tool: 'Bash' })(h.engine, SECRET_CALL, beneath(async () => ({ text: 'restored org output' }), ['doperpowers'], { origin: 'doperpowers', originTier: 'prepend' }))
+    await h.settle()
+    expect(h.logs).not.toContain(MANAGED_OFF_LINE)
+    // cua reloaded beneath: the next dispatch settles the place safe.
+    await callBeneath(h, ['doperpowers', 'cua'])
+    await h.settle()
+    expectSafe(h)
+    expect(posted(h)).not.toContain(SECRET_CALL.command)
+    expect(posted(h)).not.toContain('restored org output')
   })
 
   test("the managed off line names the managed settings' prependPlugins, not the user settings", () => {

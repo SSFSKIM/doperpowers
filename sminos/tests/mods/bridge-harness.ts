@@ -228,6 +228,7 @@ export function harness(
   /** What the bridge read to learn which secrets guard is loaded and whose its seat is: devcloud's marker, the user and the managed settings. */
   const guardReads: { op: string; args: unknown }[] = []
   let marker = options.marker ?? { value: undefined, version: 0 }
+  let managed = options.policy ?? {}
   /** The bridge's calls to its own hook to learn the tier it sits in (its seat's other read, of the managed settings, is a guard read). */
   const seatReads: { op: string; args: unknown }[] = []
   let isCuaEnabled = options.cua === true
@@ -529,7 +530,7 @@ export function harness(
           if (options.policyFails) {
             throw new Error('$.settings.read: the host did not answer')
           }
-          return options.policy ?? {}
+          return managed
         }
         return args?.source === 'user' && isCuaEnabled ? { enabledPlugins: { 'cua@cua': true } } : {}
       },
@@ -787,6 +788,8 @@ export function harness(
     toasts,
     guardReads,
     seatReads,
+    /** The managed settings change (a policy pushed mid-session). */
+    setPolicy: (policy: Record<string, unknown>) => (managed = policy),
     setMarker: (read: { value: unknown; version: number }) => (marker = read),
     setCua: (isEnabled: boolean) => (isCuaEnabled = isEnabled),
     /** Holds the guard reads until the returned function is called. */

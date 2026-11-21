@@ -278,8 +278,8 @@ rows read from the transcript, and the export to the host).
   beneath its hook. If the guard loaded now is not among them, the bridge is
   inside it. devcloud's guard counts as loaded when its marker reads live
   (the answer at state version 0). Otherwise cua's copy counts when the user
-  settings enable `cua@cua` (the managed settings, for a bridge the
-  organization seats in `prepend`; below). A dispatch that lacks the loaded guard's link
+  settings enable `cua@cua` (the managed settings' seat of cua, for a
+  bridge the organization seats in `prepend`; below). A dispatch that lacks the loaded guard's link
   says `off` only when its trace reaches the engine and the guard's own
   plugin did not raise it: a trace cut short (a link answered the call
   itself) still says `safe` when it names the guard or no guard is loaded,
@@ -318,9 +318,12 @@ rows read from the transcript, and the export to the host).
   above. Seated by the organization in `prepend`, it is outside every
   plugin a person installs, and a person's devcloud does not hear its
   marker read: no guard of a person's turns it off, and a guard the
-  organization seats ahead of it is judged as above, cua's only on the
-  dispatches that run a person's hooks (not one an organization's mod
-  raised), since a cua the managed settings enable may load in `user`. Seated by the
+  organization seats ahead of it is judged as above: a cua counts where
+  the managed settings enable it and declare its marketplace (ids
+  case-folded), and a `cua` link beneath it is a guard beneath it. cua's
+  missing link decides only on the dispatches that run a person's hooks;
+  one an organization's mod raised drops its own call and result and
+  leaves the place as it was. Seated by the
   organization anywhere else, it is inside every plugin a person installs
   and cannot read a person's devcloud, so it turns off at its first check
   unless both guards are beneath it. Either way its off line names the

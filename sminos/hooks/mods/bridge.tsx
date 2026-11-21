@@ -3,7 +3,7 @@ import type { EngineInterface, HookStream, HttpResponse, On, PermissionRequestDe
 import type {} from '../../../devcloud/types/devcloud'
 
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
-import { MANAGED_OFF_LINE, OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, seatOf, verdictOf } from './bridge-place'
+import { MANAGED_OFF_LINE, OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, isManagedCua, seatOf, verdictOf } from './bridge-place'
 import type { Guard, Place, Seat, Verdict } from './bridge-place'
 import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, WAKE_LINE, capped, isEffort, isLaneVerdict, isObserver, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Streaming, Wake } from './bridge-state'
@@ -1738,14 +1738,19 @@ async function loadedGuard($: EngineInterface, seat: Seat): Promise<Guard | unde
   if (isLiveMarker(await $.state.get({ plugin: 'devcloud', key: 'secrets-guard' }))) {
     return 'devcloud'
   }
-  return isCuaEnabled(await $.settings.read({ source: seat === 'outer' ? 'policy' : 'user' })) ? 'cua' : undefined
+  if (seat === 'outer') {
+    return isManagedCua(await $.settings.read({ source: 'policy' })) ? 'cua' : undefined
+  }
+  return isCuaEnabled(await $.settings.read({ source: 'user' })) ? 'cua' : undefined
 }
 
 /**
  * The bridge's place, judged again from what settled beneath one of its hooks
  * (bridge-place.tsx); `transitionsAt` is how many times it had turned off or
  * on when that dispatch began. Answers `off` when this dispatch read the
- * bridge inside a guard: what it would post is its own to drop.
+ * bridge inside a guard, or could not settle where a loaded guard is
+ * (`unsettled`, which changes nothing else): what it would post is its own
+ * to drop.
  *
  * - The first `guarded` or `unguarded` settles the place as safe and posts
  *   the tool events that waited for it.
@@ -1785,6 +1790,9 @@ async function judgePlace(
   }
   if (state.post === undefined || verdict === undefined) {
     return undefined
+  }
+  if (verdict === 'unsettled') {
+    return 'off'
   }
   const isCurrent = transitionsAt === state.transitions
   if (verdict === 'off') {
@@ -2305,9 +2313,7 @@ export function registerBridge(on: On) {
     if (isDialog && base.toolUseId !== null) {
       state.dialogCalls.set(base.toolUseId, askCallFor(first))
     }
-    if (!isDialog) {
-      emit({ type: 'tool', phase: 'call', ...base, input: input.value, ...(input.cut && { truncated: true }) })
-    }
+    const queuedCall = isDialog ? undefined : emit({ type: 'tool', phase: 'call', ...base, input: input.value, ...(input.cut && { truncated: true }) })
     let settle: (text: string | undefined) => void = () => undefined
     const done = new Promise<string | undefined>((resolve) => (settle = resolve))
     const owner = e.agentId === undefined ? state.mainTurn : state.foreground.get(e.agentId)
@@ -2345,6 +2351,12 @@ export function registerBridge(on: On) {
       const text = capped(shown)
       const denied = capped(result.deny)
       if (isDialog || isInside) {
+        // Its call too, while it still waits for the place: a later safe
+        // verdict would post it, read under the placement this one could not settle.
+        const at = queuedCall === undefined ? -1 : state.queue.indexOf(queuedCall)
+        if (at !== -1) {
+          state.queue.splice(at, 1)
+        }
         return result
       }
       emit({

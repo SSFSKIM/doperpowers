@@ -64,9 +64,23 @@ export function isLiveMarker(read: { value: unknown; version: number }): boolean
   return read.version === 0 && isRecord(marker) && Object.keys(marker).length === 2 && marker.owner === 'devcloud' && marker.version === 1
 }
 
-/** Whether these settings enable `cua@cua`, whose copy of the guard acts when devcloud's is not loaded. */
+/** Whether the user settings enable `cua@cua`, whose copy of the guard acts when devcloud's is not loaded. */
 export function isCuaEnabled(settings: unknown): boolean {
   return isRecord(settings) && isRecord(settings.enabledPlugins) && settings.enabledPlugins['cua@cua'] === true
+}
+
+/**
+ * Whether the managed settings seat cua as the organization's: they enable
+ * `cua@cua` and declare its marketplace, ids matched case-folded, as the
+ * engine matches them. A cua they enable without declaring its marketplace
+ * loads in `user`, beneath a bridge they seat in `prepend`.
+ */
+export function isManagedCua(managed: unknown): boolean {
+  if (!isRecord(managed) || !isRecord(managed.enabledPlugins) || !isRecord(managed.extraKnownMarketplaces)) {
+    return false
+  }
+  const enabled = Object.entries(managed.enabledPlugins).some(([id, on]) => on === true && id.toLowerCase() === 'cua@cua')
+  return enabled && Object.keys(managed.extraKnownMarketplaces).some((name) => name.toLowerCase() === 'cua')
 }
 
 /**
@@ -77,7 +91,8 @@ export function isCuaEnabled(settings: unknown): boolean {
  *   installs loads in `user` there, beneath it by the engine's tier order,
  *   so no guard of a person's can be outside it, read or not. A guard the
  *   organization seats can be (listed ahead of sminos): its devcloud hears
- *   the marker read, and the managed settings enable its cua. A dispatch an
+ *   the marker read, and the managed settings seat its cua (isManagedCua).
+ *   A `cua` link beneath it is a guard beneath it. A dispatch an
  *   organization's mod raised runs none of a person's hooks, so cua's link
  *   missing from its trace proves nothing there.
  * - `inner`: the organization's in any other tier. It is inside every plugin
@@ -109,14 +124,16 @@ export async function seatOf(tier: string, policy: () => Promise<unknown>): Prom
  * - `guarded`: a guard the reads report loaded has its link beneath, or both
  *   guards' links are;
  * - `unguarded`: the reads report no guard loaded;
- * - `off`: the loaded guard is outside the bridge.
+ * - `off`: the loaded guard is outside the bridge;
+ * - `unsettled`: the dispatch cannot tell where a loaded guard is, and what
+ *   it would post is its own to drop; the place stays as it was.
  *
  * Either of the first two settles the first verdict as safe. Only `guarded`
  * turns an off bridge back on: cua's leg reads the settings' intent, not
  * the modules loaded, so cua disabled in the settings without a reload
  * leaves its module outside the bridge while the reads say no guard.
  */
-export type Verdict = 'guarded' | 'unguarded' | 'off'
+export type Verdict = 'guarded' | 'unguarded' | 'off' | 'unsettled'
 
 /**
  * One settled dispatch's verdict. `trace` is the dispatch's `next.trace`,
@@ -139,8 +156,7 @@ export type Verdict = 'guarded' | 'unguarded' | 'off'
  *   organization's mod raised (`prepend` or `append`), and a cua the
  *   managed settings enable may load in `user`. A devcloud whose marker
  *   such a bridge reads is the organization's, whose hooks run there.
- *   Accepted: such a dispatch, while a cua seated ahead of the bridge is
- *   new to it, posts before the next one the engine raised turns it off.
+ *   Such a dispatch is `unsettled`: its own payload is dropped.
  */
 export async function verdictOf(
   trace: readonly { plugin: string }[],
@@ -158,7 +174,7 @@ export async function verdictOf(
   }
   const guard = await loaded(at)
   if (guard === undefined) {
-    return 'unguarded'
+    return at === 'outer' && beneath.has('cua') ? 'guarded' : 'unguarded'
   }
   if (beneath.has(guard)) {
     return 'guarded'
@@ -166,5 +182,5 @@ export async function verdictOf(
   if (!beneath.has('engine') || raisedBy.plugin === guard) {
     return undefined
   }
-  return at === 'outer' && guard === 'cua' && (raisedBy.tier === 'prepend' || raisedBy.tier === 'append') ? undefined : 'off'
+  return at === 'outer' && guard === 'cua' && (raisedBy.tier === 'prepend' || raisedBy.tier === 'append') ? 'unsettled' : 'off'
 }
