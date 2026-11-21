@@ -1,0 +1,6 @@
+#!/bin/sh
+# The tests' `claude` when a test puts no engine of its own first (devcloud_isolation.py puts this
+# directory first on PATH): an empty job list, and nothing started, read or written.
+[ "$*" = "agents --json --all" ] && { echo "[]"; exit 0; }
+echo "claude: no engine in these tests ($*)" >&2
+exit 127

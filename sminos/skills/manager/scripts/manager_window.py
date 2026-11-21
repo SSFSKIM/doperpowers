@@ -64,6 +64,9 @@ REPLY_LINE_RE = re.compile(r"\n\[To reply, run in Bash: [^\n]*\]\s*\Z")
 SENDER = r'((?:"(?:[^"\\\n]|\\.)*")?.*?)'
 CHAT_FRAME_RE = re.compile(r"^\[sminos chat (\S+) (\S+) from %s → ([^\]\n]*?)(?: \| unread \d+)?\]\n" % SENDER, re.M)
 MESSAGE_FRAME_RE = re.compile(r"^\[sminos message from %s id=(\S+)\]\n" % SENDER, re.M)
+# The line sminos puts after the last frame of the first text pushed after a wake (sminos_wake.line_text): the text's
+# last paragraph, one line opening with sminos.LINE_START, which no sender's line opens with (sminos.sender_text).
+WAKE_NOTE_RE = re.compile(r"\n\n%s[^\n]*\n*\Z" % re.escape(S.LINE_START))
 # The clause sminos.sender_labels puts after a sender's alias.
 SENDER_LABEL_RE = re.compile(r"(?:, owned by .*| \((?:owners unverified|unverified(?:, legacy)?|signed by a revoked key)\))\Z")
 
@@ -107,10 +110,20 @@ def _sender(raw):
     return SENDER_LABEL_RE.sub("", raw)
 
 
+def without_note(text):
+    """A delivered text less the line a wake puts after its last frame, which is sminos's and no sender's: cut
+    only from a text that opens with a frame. One that opens with none (a person's words the RL10 RPC sends the
+    bridge whole) keeps its last paragraph whatever it opens with."""
+    if not (CHAT_FRAME_RE.match(text) or MESSAGE_FRAME_RE.match(text)):
+        return text
+    return WAKE_NOTE_RE.sub("", text)
+
+
 def frames(text):
     """[(kind, sender, ref, body, whole)] for each sminos frame in a delivered text, in order: kind `chat` (ref
     its event's `writer:seq`) or `message` (ref its message id); `whole` the frame's own text, header line and
-    body. [] for a text that opens with none."""
+    body, the last one's less a wake's line (without_note). [] for a text that opens with none."""
+    text = without_note(text)
     heads = sorted([("chat", m) for m in CHAT_FRAME_RE.finditer(text)] +
                    [("message", m) for m in MESSAGE_FRAME_RE.finditer(text)], key=lambda h: h[1].start())
     if not heads or heads[0][1].start() != 0:
@@ -438,7 +451,7 @@ class Classifier:
         if m:
             name = name or (FROM_NAME_RE.search(m.group(1)) or [None, ""])[1]
             body = m.group(2)
-        body = REPLY_LINE_RE.sub("", body).strip()
+        body = without_note(REPLY_LINE_RE.sub("", body).strip())
         fs = frames(body)
         if fs and not name:
             name = fs[0][1]
@@ -463,6 +476,7 @@ class Classifier:
                 or stripped.startswith(("<system-reminder>", "(no content)")):
             return
         elif not frames(stripped):
+            # A bare text (MAWS's RL10 send) carries no wake's line: read whole (without_note).
             self._add(0, ts, "you·desk" if self.corroborate(stripped) else "you·desk?", stripped, via="bridge")
         else:
             # One push can carry several frames, each its own sender's: each is classified on its own, so one

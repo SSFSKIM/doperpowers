@@ -4162,6 +4162,20 @@ class Lifecycle(unittest.TestCase):
             alive[0], start[0] = True, "Fri Oct 16 11:00:00 2026"
             self.assertNotIn(self.sid, records.scan(), "its pid now holds another process")
 
+    def test_a_spare_s_record_is_no_session_until_its_flag_drops(self):
+        """2.1.330's spare (sminos.engine_spare): a process claimed from the engine's pool with no prompt yet."""
+        with open(self.path) as f:
+            rec = json.load(f)
+        with open(self.path, "w") as f:
+            json.dump(dict(rec, spare=True), f)
+        records = plane.Records()
+        with mock.patch.object(plane.sminos, "pid_alive", lambda _pid: True), \
+                mock.patch.object(plane.sminos, "read_proc_start", lambda _pid: rec["procStart"]):
+            self.assertNotIn(self.sid, records.scan(), "a spare holds no session")
+            with open(self.path, "w") as f:
+                json.dump(dict(rec, status="busy"), f)
+            self.assertIn(self.sid, records.scan(), "its first frame dropped the flag")
+
     def test_a_pid_reused_between_two_polls(self):
         """The process exits and its pid is reused between two scans: alive at
         both, only its start time changed. The identity is read again within

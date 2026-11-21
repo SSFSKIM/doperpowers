@@ -63,10 +63,12 @@ OPS = ("advance", "absorb", "end", "return", "release")
 RESERVED = "reserved"
 # The keys only a journaled operation writes (begin); update() refuses them.
 JOURNALED = ("current", "sessions", "ended", "released", "pending")
-# What a seat record gains; its `thread`, `current` and `alias` are its own.
-SEAT_KEYS = ("opened", "sessions", "launch", "channels", "stopped", "swept", "ended", "released", "pending")
+# What a seat record gains; its `thread`, `current` and `alias` are its own. `waking` is T2's (its plan's §7).
+SEAT_KEYS = ("opened", "sessions", "launch", "channels", "stopped", "swept", "ended", "released", "pending",
+             "waking")
 # A seat's marks that belong to the occupant they were written for: a seat that takes another session drops them.
-OCCUPANT_MARKS = ("ended", "stopped", "swept")
+# `waking` (T2) is one too: an earlier occupant back (A, B, A) never finds its old line or failures valid again.
+OCCUPANT_MARKS = ("ended", "stopped", "swept", "waking")
 
 # The engine's options `launch.options` keeps, in the order the process was
 # given them: those a first background resume may carry (T2 reads them, and
@@ -286,6 +288,8 @@ def _of_seat(s):
     for k in ("stopped", "swept", "released", "pending"):
         if s.get(k) and not (moved and k in OCCUPANT_MARKS):
             rec[k] = copy.deepcopy(s[k])
+    if isinstance(s.get("waking"), dict) and not moved:
+        rec["waking"] = copy.deepcopy(s["waking"])   # its reader checks the session it names too (waking)
     if ended is not None:
         rec["ended"] = dict(ended)
     return rec
@@ -360,6 +364,20 @@ def get(thread_id):
     if not _ID_RE.fullmatch(tid):
         return None
     return _human_at(_human_path(tid)) or _human_at(_human_path(tid, aside=True))
+
+
+def unreadable(thread_id):
+    """Whether a file of the thread's record is there and cannot be read as
+    one (get answers None for it as for none): a seat's that does not load,
+    or a human-opened record's that does not parse or is no record."""
+    tid = str(thread_id or "")
+    if not tid or not sminos.valid_name(tid):
+        return False
+    if os.path.exists(sminos.meta_path(tid)):
+        return sminos.reload_seat(tid) is None
+    if not _ID_RE.fullmatch(tid):
+        return False
+    return any(os.path.exists(p) and _human_at(p) is None for p in (_human_path(tid), _human_path(tid, aside=True)))
 
 
 _ASIDE = []   # [the set-aside store's stat key, {session: [thread ids of the records set aside that had it]}]
@@ -455,28 +473,53 @@ def _live_rule(session, live):
     return next((t for t in live if t["current"] == session and t["opened"] == "human"), None)
 
 
+def current_record(session, fresh=False):
+    """The record of the thread whose current session `session` is, not
+    ended and not reserved by an absorption, either kind; None otherwise.
+    `fresh`: thread_of read from the stores as they are; else through the
+    hold's index (_live_index)."""
+    if not session:
+        return None
+    # The live stores alone: an ended record holds nothing, so the archive is never read here.
+    t = thread_of(session, ended=False) if fresh else _live_index().get(session)
+    if t is None or t["current"] != session or record_ended(t) or reservation(t):
+        return None
+    return t
+
+
+class Hold(str):
+    """A hold's reason (hold_of), carrying the thread it was decided for
+    (`thread`, None when unknown): the thread a held event's mark names
+    (sminos.held_decided), whatever the session's stamp reads by then."""
+
+    def __new__(cls, reason, thread=None):
+        h = super().__new__(cls, reason)
+        h.thread = thread
+        return h
+
+
 def hold_of(session, fresh=False):
-    """Whether this machine holds delivery for a session (Interfaces §5): ""
-    when it delivers to the session or wakes it; "human" when it holds, for a
-    thread its human opened that has not ended, whose current session it is
-    and no process holds (the hold: what is addressed to it is recorded and
-    stays owed, and no process is started for it until its human reopens
-    it). T2 adds its reasons. The record is thread_of's for the session
-    (from the live stores: an ended thread is not held, what is owed to it
-    is settled; a seat is a spawned thread), through its index. `fresh`, at
-    a boundary that would push or ask (a delivery, a verdict's handler, the
-    uplink's question): the engine's records read afresh (sminos.running_now),
-    since a live pid alone is no evidence that its process still runs this
+    """Whether this machine holds delivery for a session (T2's §4): "" when
+    it delivers to the session or would wake it now; else the reason it
+    holds, for a thread of either kind that has not ended, whose current
+    session it is and no process holds: one of sminos_wake.REASONS
+    (not_woken's, read as a view or a tick reads it), or "failed" while a
+    wake that failed is not due again (wake_due). What is held is recorded
+    and stays owed; nothing is pushed or asked for it, and no process is
+    started for it until the reason passes. A session that is no thread
+    (lane B; no record) is never held here. `fresh`, at a boundary that
+    would push or ask (a delivery, a verdict's handler, the uplink's
+    question): the engine's records read afresh (sminos.running_now), since
+    a live pid alone is no evidence that its process still runs this
     session (a `/clear` moves the same process to another id), and the
     record is thread_of's own, read from the stores as they are, not the
     index's (hold_now)."""
-    if not session:
+    t = current_record(session, fresh)
+    if t is None or (sminos.running_now if fresh else sminos.session_running)(session):
         return ""
-    # The live stores alone, fresh or not: an ended record holds nothing, so the archive is never read here.
-    t = thread_of(session, ended=False) if fresh else _live_index().get(session)
-    if t is None or t["opened"] != "human" or t["current"] != session or record_ended(t) or reservation(t):
-        return ""
-    return "" if (sminos.running_now if fresh else sminos.session_running)(session) else "human"
+    wake = sminos.wake_module()
+    reason = wake.hold_reason(t, session) or ("" if wake.wake_due(t, session) else "failed")
+    return Hold(reason, t["thread"]) if reason else ""
 
 
 def hold_now(session):
@@ -484,6 +527,16 @@ def hold_now(session):
     every counted attempt asks last, under the delivery lock where one is
     held."""
     return hold_of(session, fresh=True)
+
+
+def stopped_human(session, fresh=False):
+    """Whether the session is the current one of a thread its human opened
+    that has not ended and no process holds (T1's rule, kept by derive, the
+    views' `stopped` word and `send --wait`'s choice): stopped, whatever a
+    wake would make of it."""
+    t = current_record(session, fresh)
+    return t is not None and t["opened"] == "human" \
+        and not (sminos.running_now if fresh else sminos.session_running)(session)
 
 
 _LIVE = []   # [the cache generation it was checked in, the stores' stat key, {current session: record}]
@@ -499,8 +552,10 @@ def _live_index():
     process's own writes (_forget_live); read whole again only once a
     store's directory moved (a record is written by a rename there: the
     thread store's, or the root the seats are in), and not kept while one
-    may still move (as _aside_index). Of the seats only those with an open
-    entry are read: no other seat outranks a human-opened record."""
+    may still move (as _aside_index). Every seat that is a thread is read
+    (T2: the hold is any thread's), after the rule's own (_live_rule): a
+    seat's record is the session's when no open entry and no record its
+    human opened outranks it, as thread_of reads it."""
     gen = sminos._GENERATION[0]
     if _LIVE and _LIVE[0] == gen:
         return _LIVE[2]
@@ -518,16 +573,14 @@ def _live_index():
         _LIVE[0] = gen
         return _LIVE[2]
     human = _human_threads() if st else []
-    seats = [_of_seat(x) for x in sminos.seats() if x.get("pending") and _is_thread(x)] if rt else []
+    seats = [_of_seat(x) for x in sminos.seats() if _is_thread(x)] if rt else []
     by_current = {}
     for t in seats + human:   # grouped by current session, each group in all_threads' order (seats first)
         if t["current"]:
             by_current.setdefault(t["current"], []).append(t)
     index = {}
     for cur, records in by_current.items():
-        t = _live_rule(cur, records)
-        if t is not None:
-            index[cur] = t
+        index[cur] = _live_rule(cur, records) or records[0]
     newest = max((x.st_mtime_ns for x in (st, rt) if x), default=0)
     _LIVE[:] = [gen, key, index] if before - newest >= RACY_NS else []
     return index
@@ -704,24 +757,194 @@ def update(thread_id, fields, remove=(), guard=None, lock_until=None):
     return _change(thread_id, mutate, lock_until)
 
 
-def launch_of(cwd, options=None):
+def launch_of(cwd, options=None, dropped=None):
     """A record's `launch`: the directory of the engine process that last
     started the thread's current session and, when they could be read, its
-    options (launch_options); `options` absent means unknown, never none."""
+    options (launch_options) and the names of those dropped for their value
+    (launch_dropped); `options` absent means unknown, never none, and a
+    launch written before T2 has no `dropped`."""
     launch = {"cwd": str(cwd or ""), "at": sminos.now()}
     if options is not None:
         launch["options"] = list(options)
+    if dropped is not None:
+        launch["dropped"] = list(dropped)
     return launch
 
 
-def note_launch(thread_id, cwd, options=None, lock_until=None):
+def note_launch(thread_id, cwd, options=None, dropped=None, lock_until=None):
     """The launch noted on its own (launch_of), a change that owes no event."""
-    return update(thread_id, {"launch": launch_of(cwd, options)}, lock_until=lock_until)
+    return update(thread_id, {"launch": launch_of(cwd, options, dropped)}, lock_until=lock_until)
 
 
 def set_channels(thread_id, channels):
     """CH's writer of the declared channels."""
     return update(thread_id, {"channels": [str(c) for c in channels]})
+
+
+# ------------------------------------------------------------ the wake's field (T2's plan, §7)
+
+
+def waking(record, session=None):
+    """The record's `waking` (T2's §7), only as written for the session that
+    fills it now (and is `session`, when given): {} otherwise, so a field an
+    older copy carried over to another occupant, or one left for a session
+    the thread has since left, is never read."""
+    w = (record or {}).get("waking")
+    if not isinstance(w, dict) or not w.get("session") or w["session"] != (record or {}).get("current"):
+        return {}
+    if session is not None and w["session"] != session:
+        return {}
+    return copy.deepcopy(w)
+
+
+def _waking_change(thread_id, session, change, lock_until=None):
+    """change(field) on the `waking` written for `session`, made through
+    update() only while the record's current session is `session` and the
+    field is still what it was read as; the field removed when nothing but
+    its session is left. change answers the new field, or None for no
+    write. A write that lost the field to another writer reads it again;
+    one refused for another reason (an open entry, another occupant) writes
+    nothing."""
+    for _ in range(3):
+        rec = get(thread_id)
+        if rec is None or rec["current"] != session or not session:
+            return False
+        before = rec.get("waking")
+        new = change(waking(rec, session) or {"session": session})
+        if new is None:
+            return False
+        new["session"] = session
+
+        def same(r, before=before):
+            return r["current"] == session and r.get("waking") == before
+        if set(new) - {"session"}:
+            done = update(thread_id, {"waking": new}, guard=same, lock_until=lock_until)
+        else:
+            done = update(thread_id, {}, remove=("waking",), guard=same, lock_until=lock_until)
+        if done:
+            return True
+        now = get(thread_id)
+        if now is None or now["current"] != session or now.get("pending") or now.get("waking") == before:
+            return False
+    return False
+
+
+def wake_line(thread_id, session, line, lock_until=None):
+    """`waking.line` set for the wake about to launch (§2, §7)."""
+    def change(w):
+        w["line"] = copy.deepcopy(line)
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_failed(thread_id, session, line_id, lock_until=None, job=None):
+    """A wake failed: `failed` counted, `at` now, and the line it wrote removed
+    (`line_id` None: it wrote none, and another wake's line stays). `job`: an
+    accepted job observed dead ({"short", "at"}, §3 row 10b), counted only
+    while the field still holds that very job, the line bound to it (its
+    `short`) removed with it; a process's hook that cleared it first
+    (stop_seen) wins, and nothing is written."""
+    def change(w):
+        if job is not None and w.get("job") != job:
+            return None
+        w["failed"] = (w["failed"] if isinstance(w.get("failed"), int) and w["failed"] > 0 else 0) + 1
+        w["at"] = sminos.now(ms=True)
+        w.pop("job", None)
+        line = w.get("line") or {}
+        if line_id is not None and line.get("id") == line_id or job is not None and line.get("short") == job["short"]:
+            w.pop("line")
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_done(thread_id, session, saved=None, lock_until=None):
+    """A wake made the session live: the failures and its accepted job
+    forgotten, and `saved` set when given (the engine said the session keeps
+    saved options, §3 row 12)."""
+    def change(w):
+        w.pop("failed", None)
+        w.pop("at", None)
+        w.pop("job", None)
+        if saved:
+            w["saved"] = True
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_saved(thread_id, session, lock_until=None):
+    """`saved` set as the flagless retry launches (§3 row 12): the engine said
+    the session keeps saved options, whatever that retry comes to."""
+    def change(w):
+        if w.get("saved"):
+            return None
+        w["saved"] = True
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+# What a process holding the session again makes past (wake_cleared): a wake's failures and the job it accepted.
+LIVE_CLEARS = ("failed", "at", "job")
+
+
+def wake_cleared(thread_id, session, lock_until=None):
+    """A wake's failures (`failed`, `at`) and its accepted job (`job`)
+    forgotten: a process holds the session again, however it came up."""
+    def change(w):
+        if not set(LIVE_CLEARS) & set(w):
+            return None
+        for k in LIVE_CLEARS:
+            w.pop(k, None)
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_job(thread_id, session, short, lock_until=None, line_id=None):
+    """`waking.job` set when a wake's banner named this session's job
+    (`short`), before its process is seen (§3, W6): {"short", "at"}, so that
+    while it may still be starting no wake stops it as lingering or launches
+    again, and the sweep neither marks nor ends the thread
+    (sminos_wake.starting); in the same write the line that wake wrote
+    (`line_id`), while it is still there, bound to that job (its `short`)."""
+    def change(w):
+        w["job"] = {"short": short, "at": sminos.now(ms=True)}
+        if line_id is not None and (w.get("line") or {}).get("id") == line_id:
+            w["line"]["short"] = short
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_line_bound(thread_id, session, line_id, short, lock_until=None):
+    """The line `line_id` bound to the job `short` (its `short`), while it is
+    still that line: the job of the process its launch started, which alone
+    it is pushed to (§3 row 14: a launch that lost its banner while a
+    background process of the session runs, taken as that launch's)."""
+    def change(w):
+        line = w.get("line") or {}
+        if line.get("id") != line_id or line.get("short") == short:
+            return None
+        line["short"] = short
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_line_sent(thread_id, session, line_id, lock_until=None):
+    """The line pushed: removed, only while it is still the one of `line_id`."""
+    def change(w):
+        if (w.get("line") or {}).get("id") != line_id:
+            return None
+        w.pop("line")
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
+
+
+def wake_forget(thread_id, session, lock_until=None):
+    """`saved` removed: sminos removed the session's row (§3), so the next wake is a first one."""
+    def change(w):
+        if "saved" not in w:
+            return None
+        w.pop("saved")
+        return w
+    return _waking_change(thread_id, session, change, lock_until)
 
 
 def note_alias(session, alias, lock_until=None, project=None):
@@ -868,7 +1091,7 @@ def repoint_seat(seat_id, fields, deadline=None, expect=None):
     record holds that session (_holder), as every claim, and while the seat
     has no open entry (§6, 6: nothing writes through one); its lifecycle
     generation moved. A seat that takes another session drops what was its
-    predecessor's: its end and stop marks (OCCUPANT_MARKS) and, for a lane
+    predecessor's: its end, stop and wake marks (OCCUPANT_MARKS) and, for a lane
     B session, the thread keys, since a lane B session's seat is no thread
     (D1; _is_thread). False, nothing written, when another record holds the
     session, an entry is open, the seat is gone, or (`expect`) it no longer
@@ -1001,10 +1224,12 @@ def awaits_seat(session, peer, own):
     is positively gone: bound to another session (a `claude` started from a
     seat's shell inherits it), or neither pending nor young (a launcher that
     failed). Another process sees no token: it waits on a background
-    session younger than the bound."""
+    session younger than the bound, unless the session is the current one
+    of a thread (T2: a woken thread its human opened is a background
+    process no seat will claim)."""
     records = sminos.records_module()
     if not own:
-        return str((peer or {}).get("kind") or "") == "bg" and _young(peer)
+        return str((peer or {}).get("kind") or "") == "bg" and _young(peer) and current_record(session) is None
     token = os.environ.get(records.LAUNCH_ENV, "")
     if not records.LAUNCH_RE.fullmatch(token):
         return False
@@ -1045,18 +1270,29 @@ def returns(record, peer, known=None):
     return started is not None and at is not None and int(started) > at
 
 
-def stop_seen(session, lock_until=None):
+def stop_seen(session, lock_until=None, thread_id=None):
     """A process holds the session again (§6, row 8), as its hook or a
     launch sees it before the sweep can: the stop mark of the thread whose
     current session it is, `stopped` and `swept`, removed, so the clock of
     the rule starts again at its next stop and never runs on a mark from
-    before. Nothing for a record with no mark, an ended one (its return
-    lifts the mark) or one with an open entry."""
-    t = thread_of(session, ended=False)
-    if t is None or t["current"] != session or not (t.get("stopped") or t.get("swept")) or record_ended(t):
+    before; a wake's failures (`waking.failed`, `at`) and its accepted job go with it, cleared by
+    the field's own compare-and-set (wake_cleared), never a write of the
+    field as read before the lock. Nothing for a record with no mark, an
+    ended one (its return lifts the mark) or one with an open entry.
+    `thread_id`: the record the caller decided on (the wake's W8), never
+    looked up again by the session."""
+    t = get(thread_id) if thread_id else thread_of(session, ended=False)
+    if t is None or t["current"] != session or record_ended(t):
         return False
-    return update(t["thread"], {}, remove=("stopped", "swept"),
-                  guard=lambda r: r["current"] == session and not record_ended(r), lock_until=lock_until)
+    tid = t["thread"]
+    cleared = False
+    if set(LIVE_CLEARS) & set(waking(t, session)):
+        cleared = wake_cleared(tid, session, lock_until)
+    if not (t.get("stopped") or t.get("swept")):
+        return cleared
+    return update(tid, {}, remove=("stopped", "swept"),
+                  guard=lambda r: r["thread"] == tid and r["current"] == session and not record_ended(r),
+                  lock_until=lock_until) or cleared
 
 
 # ------------------------------------------------------------ the journal (§6)
@@ -1079,7 +1315,12 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
     entry absorbs already passes; with `absorbs` (a session that may have
     made a record of its own first: a hand-off's job, a spawn's child), an
     absorbable one makes an advance an absorption of it; any other refuses
-    the change. The entry as written, None when nothing was."""
+    the change. The entry as written, None when nothing was. Every
+    operation but a release opens under the record's wake lock
+    (sminos.transition_hold: the hold the caller has, else one taken until
+    `lock_until`), so that no wake of the thread launches between what the
+    entry records and its write; WakeBusy when a wake holds it past the
+    deadline."""
     if op not in OPS:
         raise ValueError("not a journaled operation: %r" % (op,))
     owed = []
@@ -1105,8 +1346,20 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
         _apply(entry, view, raw, fields, remove)
         return "live" if op == "return" or more.get("last") == "purge" else True   # an open purge is read live
 
-    return entry if _change(thread_id, mutate, lock_until, bump=True,
-                            both=bool((fields or {}).get("current"))) else None
+    # Opened under the record's wake lock (T2's M2), the hold its caller has or one taken here: a wake sees the
+    # record before the entry or with it, never between. A release (a `/clear`) ends nothing and changes no
+    # occupant, and a hook that skipped it has nothing that replays it: it takes no wake lock.
+    # The record a change of session may absorb changes owner: its wake lock too, taken before any store lock and
+    # with the record's own in ascending order of thread id (claim_holds); _claimed absorbs only a record whose
+    # lock is held, read again under the store locks.
+    holds = claim_holds(thread_id, op != "release", _absorbable_peek(thread_id, fields, absorbs, more.get("other")),
+                        lock_until)
+    try:
+        return entry if _change(thread_id, mutate, lock_until, bump=True,
+                                both=bool((fields or {}).get("current"))) else None
+    finally:
+        for h in holds:
+            h.release()
 
 
 def _holder(session, thread_id):
@@ -1129,24 +1382,80 @@ def _claimed(thread_id, entry, view, fields, absorbs):
     changed in place). The caller holds both stores' locks: a seat's write
     takes the thread store's inside its own (_change's `both`), and a
     human-opened record's is the thread store's, which every seat's claim
-    holds too."""
+    holds too. A record absorbed changes owner, so it is absorbed only
+    while this thread holds its wake lock, taken before the store locks
+    (claim_holds); a wake of it in flight refuses the claim, which the next
+    reconciliation makes again."""
     session = str((fields or {}).get("current") or "")
     if not session or session == view["current"]:
         return True
     found = _holder(session, thread_id)
-    if found is None or found["thread"] == entry.get("other"):
+    if found is None:
         return True
+    if found["thread"] == entry.get("other"):
+        return sminos.wake_held(found["thread"]) is not None
     if absorbs and found["opened"] == "human" and entry["op"] == "advance" and not entry.get("other") \
-            and absorbable(found, session):
+            and absorbable(found, session) and sminos.wake_held(found["thread"]) is not None:
         entry["op"], entry["other"] = "absorb", found["thread"]
         return True
     return False
 
 
+def _absorbable_peek(thread_id, fields, absorbs, other=None):
+    """The record a change that makes `fields`' session current may absorb,
+    read with no lock (a peek, which _claimed checks again under the store
+    locks): the entry's `other`, else with `absorbs` a human-opened record
+    that holds the session; None for none."""
+    if other:
+        return other
+    session = str((fields or {}).get("current") or "")
+    if not absorbs or not session:
+        return None
+    try:
+        found = _holder(session, thread_id)
+    except (OSError, ValueError):
+        return None
+    return found["thread"] if found is not None and found["opened"] == "human" else None
+
+
+def claim_holds(thread_id, own, other, lock_until=None):
+    """The wake locks a transition needs, taken before any store lock in
+    ascending order of thread id, each a bounded poll until `lock_until`
+    (SWEEP_WAIT by default), and only those this thread does not hold
+    already: the record's own (`own`; WakeBusy when it stays busy) and the
+    record it may absorb (`other`; left untaken when busy, so the claim is
+    refused). The holds taken, for the caller to release in a finally."""
+    need = {}
+    if own:
+        need[thread_id] = True
+    if other and other != thread_id:
+        need[other] = False
+    taken = []
+    try:
+        for tid in sorted(need):
+            if sminos.wake_held(tid) is not None:
+                continue
+            hold, _ = sminos.wake_lock(tid, until=lock_until, holder=sminos.TRANSITION_HOLD)
+            if hold is None:
+                if need[tid]:
+                    raise sminos.WakeBusy(tid)
+                continue
+            taken.append(hold)
+    except BaseException:
+        for h in taken:
+            h.release()
+        raise
+    return taken
+
+
 def _apply(entry, view, raw, fields, remove):
     """An entry's change made in `raw`, the entry written in it: `fields`
     merged, `remove` dropped, a `current` it sets added to `sessions`, last;
-    an absorption's prior values kept in the entry (`was`, `unset`)."""
+    an absorption's prior values kept in the entry (`was`, `unset`). A
+    change of occupant drops `waking`: it was written for the session the
+    change replaces."""
+    if "current" in (fields or {}) and str(fields["current"] or "") != str(raw.get("current") or ""):
+        remove = tuple(remove) + ("waking",)
     if entry["op"] == "absorb":
         keys = [*(fields or {}), *remove, "sessions"]
         entry["was"] = {k: copy.deepcopy(raw[k]) for k in keys if k in raw}
@@ -1355,7 +1664,14 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
                 return "aside"
             return True
 
-        _change(thread_id, clear, deadline, both=True)
+        queued = ((get(thread_id) or {}).get("pending") or {}).get("next")
+        holds = claim_holds(thread_id, False, _absorbable_peek(thread_id, queued.get("fields"), queued.get("absorbs"),
+                                                               queued.get("other")), deadline) if queued else []
+        try:
+            _change(thread_id, clear, deadline, both=True)
+        finally:
+            for h in holds:
+                h.release()
         if not chained:
             return not (get(thread_id) or {}).get("pending")
 
@@ -1447,7 +1763,17 @@ def _hold(thread_id, entry, session, deadline):
         got.append("held")
         return True
 
-    _change(entry["other"], hold, deadline)
+    # The reservation under the absorbed record's own wake lock (T2's M2), as the absorber's entry is under its
+    # own: a wake of that record in flight past the deadline is "busy", tried again by the next finish.
+    try:
+        lock, took = sminos.transition_hold(entry["other"], deadline)
+    except sminos.WakeBusy:
+        return "busy"
+    try:
+        _change(entry["other"], hold, deadline)
+    finally:
+        if took:
+            lock.release()
     return got[0] if got else "held"
 
 
@@ -1482,7 +1808,23 @@ def launch_options(argv):
     """The option tokens of an engine's argument vector that `launch.options`
     keeps (LAUNCH_OPTIONS), in order, each `--name=value` as two tokens; an
     option whose value is inline JSON, or names a session, is dropped whole."""
-    out, i, args = [], 1, list(argv or [])
+    return _launch_tokens(argv)[0]
+
+
+def launch_dropped(argv):
+    """The names of the options of LAUNCH_OPTIONS that launch_options drops
+    for their value (inline JSON, or a session named), in order, each once:
+    `launch.dropped`, which a first wake reports as not carried (T2)."""
+    out = []
+    for name in _launch_tokens(argv)[1]:
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def _launch_tokens(argv):
+    """(the tokens kept, the names of the options dropped for their value)."""
+    out, dropped, i, args = [], [], 1, list(argv or [])
     while i < len(args):
         tok = args[i]
         i += 1
@@ -1502,10 +1844,13 @@ def launch_options(argv):
                 i += 1
                 if name not in _MANY:
                     break
-        if not values or any(_secretive(v) for v in values):
+        if not values:
+            continue
+        if any(_secretive(v) for v in values):
+            dropped.append(name)
             continue
         out += [name] + values
-    return out
+    return out, dropped
 
 
 def _secretive(value):

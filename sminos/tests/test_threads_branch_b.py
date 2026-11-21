@@ -236,13 +236,20 @@ class Held(Rig):
         self.tick()
         self.assertTrue(any("while you were away" in x for x in self.inbox(sid)), self.inbox(sid))
 
-    def test_a_message_never_held_to_a_running_socketless_session_is_recorded(self):
-        sid, _ = self.opened()
+    def test_a_message_to_a_running_socketless_session_is_held_until_its_inbox_answers(self):
+        """T2 (D2, "One path"): a process that holds the session and takes no push yet is one of the three
+        holds: the message is owed, marked, no attempt counted, and pushed once its inbox answers."""
+        sid, proc = self.opened()
         code, out = self.say("@alpha while you run")
         self.assertEqual(code, 0, out)
+        self.assertIn("its process is starting, and the daemon delivers it", out)
         self.tick()
-        self.assertEqual(self.owed_to(sid), [], "recorded: it reads it in the chat")
+        self.assertEqual(len(self.owed_to(sid)), 1, "held for its thread: owed")
         self.assertEqual(set(self.attempts(sid).values()) - {0}, set())
+        self.end(proc)
+        self.live(sid=sid, inbox=True)
+        self.tick()
+        self.assertTrue(any("while you run" in x for x in self.inbox(sid)), self.inbox(sid))
 
     def test_a_held_message_to_a_thread_that_ends_is_settled_by_the_end(self):
         sid = self.stopped()
@@ -587,16 +594,23 @@ class Send(Rig):
         self.assertEqual(self.inbox(sid), [])
 
     def test_a_running_session_its_human_opened_is_not_told_it_is_stopped(self):
+        """T2's §6: `resume` of one a terminal holds pushes to it and says so; `fill --resume` of a live one is
+        refused as a filled seat is, nothing recorded."""
         sid, _ = self.opened(inbox=True)
-        for argv in (("resume", "alpha", "x"), ("fill", "alpha", "x", "--resume")):
-            with self.subTest(argv=argv), mock.patch.object(sminos, "run_claude_bg") as launched:
-                code, out = self.cli(*argv)
-                self.assertEqual(code, 4, out)
-                launched.assert_not_called()
-                self.assertIn("nothing was started", out)
-                self.assertNotIn("stopped", out)
-                self.assertNotIn("reopens", out)
-                self.assertIn("its session runs", out)
+        with mock.patch.object(sminos, "run_claude_bg") as launched, \
+                mock.patch.object(sminos, "claude_stop") as stopped:
+            code, out = self.cli("resume", "alpha", "x")
+            self.assertEqual(code, 0, out)
+            self.assertIn("a terminal holds it", out)
+            self.assertNotIn("stopped", out)
+            self.assertNotIn("reopens", out)
+            self.assertEqual(len(self.inbox(sid)), 1, "pushed to the process that runs")
+            code, out = self.cli("fill", "alpha", "y", "--resume")
+            self.assertEqual(code, 4, out)
+            self.assertIn("is filled", out)
+            launched.assert_not_called()
+            stopped.assert_not_called()
+        self.assertEqual(len(self.inbox(sid)), 1, "the refused fill pushed nothing")
 
 
 class Canonical(Rig):

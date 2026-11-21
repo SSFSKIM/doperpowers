@@ -3087,8 +3087,24 @@ PY
   done
 }
 
+# Whether `sminos resume` recorded the message and left it owed to the session,
+# its daemon to deliver, whatever it exited: its stdout holds the line
+# `owed: <session>` (T2's M4). From a sminos before that line, an exit 4 whose
+# first line is a held one (`recorded and held`) or a hold that passes on its
+# own (the daemon delivers it).
+_resume_owed() {  # <resume stdout> <exit code> <session>
+  if printf '%s\n' "$1" | grep -qxF "owed: $3"; then
+    return 0
+  fi
+  [ "$2" = 4 ] || return 1
+  case "${1%%$'\n'*}" in
+    *"recorded and held"*|*"and the daemon delivers it"*) return 0 ;;
+  esac
+  return 1
+}
+
 _resume_one() {
-  local tid="$1" nonce="${2:-}" dir exports ids text prompt transcript delivered=""
+  local tid="$1" nonce="${2:-}" dir exports ids text prompt transcript delivered="" owed=""
   local pre_pending="" post_pending="" lane="" role=""
   local C_CLAIMED=0 C_RUN="" C_FENCE="" C_BEARER="" C_SESS="" C_PIN="" C_OBSOLETE=""
   # AN UNRESOLVED FORK IS NOT A RESUMABLE SESSION, and that is settled BEFORE
@@ -3230,11 +3246,21 @@ PY
   # credentials ride the invocation or the worker can write nothing. The wait
   # is bounded for the same reason phase 2 bounds it: this tick holds the
   # whole-tick lock throughout, and `sminos resume` defaults to hours.
-  if [ -n "$C_SESS" ] && BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
+  # What the resume printed is kept to be read below (and passed on as it was):
+  # its first line says whether the task was recorded and held.
+  local rout="" rrc=1
+  if [ -n "$C_SESS" ]; then
+    rrc=0
+    rout="$(BOARD_RUN_TOKEN="$C_BEARER" BOARD_RUN_ID="$C_RUN" \
        BOARD_RUN_FENCE="$C_FENCE" BOARD_API_URL="$BOARD_API_URL" \
        BOARD_REPO="$BOARD_REPO" \
        DAEMON_TIMEOUT="$RELAY_RESUME_TIMEOUT" \
-       "$SMINOS_CLI" resume --wait "$C_SESS" "$prompt"; then
+       "$SMINOS_CLI" resume --wait "$C_SESS" "$prompt")" || rrc=$?
+    [ -z "$rout" ] || printf '%s\n' "$rout"
+  fi
+  # The owed line is read before the exit code: a resume the last hop deferred
+  # to the endpoint prints it and exits 0, and its task is owed, not delivered.
+  if [ -n "$C_SESS" ] && [ "$rrc" = 0 ] && ! _resume_owed "$rout" "$rrc" "$C_SESS"; then
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → resumed session $C_SESS"
   elif [ -n "$C_SESS" ] && transcript="$(_transcript_for_uuid "$C_SESS")" \
@@ -3248,6 +3274,16 @@ PY
     # transcript is the marker, exactly as in phase 2.
     delivered="$C_SESS"
     echo "resume: #$tid run $C_RUN → the resume wait expired but the delivery landed in $C_SESS"
+  elif [ -n "$C_SESS" ] && _resume_owed "$rout" "$rrc" "$C_SESS"; then
+    # A RECORDED RESUME IS NOT A FAILED ONE. `sminos resume` records its message
+    # in the session's log before it wakes anything; one it could not push now
+    # (held for a reason its machine publishes, a wake still starting, queued
+    # behind an earlier message, or waiting for the endpoint's word) says the
+    # task is owed, whatever it exits, and its machine's daemon pushes it to the
+    # session. A fresh worker here would be a second one on the same run, the
+    # task arriving at both.
+    delivered="$C_SESS" owed=1
+    echo "resume: #$tid run $C_RUN → the task is recorded and owed to $C_SESS, which its machine delivers when a process of it runs; no fresh worker"
   else
     # AN AMBIGUOUS RESUME IS NOT A FAILED ONE. `sminos resume` has a third
     # outcome beside delivered and failed: the fork LAUNCHED, but its session
@@ -3383,8 +3419,11 @@ $(cat "$dir/body.md")"
   _journal "$CLAIMS_DIR/$nonce.json" "$C_RUN" 1 "$tid" "$delivered" "$C_SESS"
   # ACK ONLY AFTER DELIVERY, exactly as phase 2 does: a folded answer that was
   # never delivered stays on the feed for the next tick rather than being
-  # acked-and-dropped.
-  if [ -n "$ids" ]; then
+  # acked-and-dropped. An OWED task is not delivered yet: no worker has its
+  # answers until a process of the session takes it, and that one may never
+  # run. They stay on the feed, which the relay acks by their sentinels once
+  # the session's transcript holds them.
+  if [ -n "$ids" ] && [ -z "$owed" ]; then
     T_IDS="$ids" _api_py - <<'PY' || echo "resume: #$tid — ack failed; the feed re-serves next tick" >&2
 import os
 import _board_api as A

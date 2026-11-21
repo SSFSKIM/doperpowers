@@ -297,6 +297,50 @@ json.dump(m, open(sys.argv[1], "w"), indent=2)' "\$DHOME/u-old.json" "\$RESUME_P
   exit 1
 fi
 [ -n "\${RESUME_MUST_FAIL:-}" ] && exit 1
+# The resume recorded its message and could not wake the session now (T2's
+# §6): its first line says it is recorded and held, nothing was started, exit 4.
+# An older sminos says it in that first line alone; this one also prints the
+# line \`owed: <session>\` whenever the task is owed and not pushed, whatever it
+# exits: queued behind an earlier message (exit 4), or waiting for the
+# endpoint's word past the ack window (exit 1).
+if [ -n "\${RESUME_HELD:-}" ]; then
+  echo "recorded testhost/human:7 for w: recorded and held: the session is stopped and is not woken: its directory is gone; it is pushed when a process of it runs again before it ends (three days stopped, or a retire), else it stays in the log"
+  echo "sminos: nothing was started: its directory is gone" >&2
+  exit 4
+fi
+case "\${RESUME_OWED:-}" in
+  queued)
+    echo "recorded testhost/human:7 for w: owed behind an earlier message (failed:busy)"
+    echo "owed: \$1"
+    echo "sminos: no reply is waited for: it is delivered after the earlier one" >&2
+    exit 4 ;;
+  gated)
+    echo "recorded testhost/human:7 for w; the endpoint decides its delivery; no turn was stopped, and the message follows on that answer"
+    echo "owed: \$1"
+    echo "sminos: no evidence that w received the message within the ack window (no transcript marker) — not waiting for a reply" >&2
+    exit 1 ;;
+  handoff)
+    echo "sent to w"
+    echo "owed: \$1"
+    echo "sminos: no evidence that w received the message within the ack window (no transcript marker) — not waiting for a reply" >&2
+    exit 1 ;;
+  receipt)
+    echo "recorded testhost/human:7 for w: awaiting-admission"
+    echo "owed: \$1"
+    echo "sminos: not pushed now: its receipt waits for its process; the daemon delivers it, and no reply is waited for" >&2
+    exit 4 ;;
+  stopfail)
+    echo "owed: \$1"
+    echo "sminos: claude stop 1a2b3c4d failed for w — not resuming over a turn that may still be running" >&2
+    exit 1 ;;
+  reachheld)
+    echo "recorded testhost/human:7 for w: the endpoint decides its delivery"
+    echo "owed: \$1"
+    exit 0 ;;
+  other)
+    echo "owed: someone-else"
+    exit 1 ;;
+esac
 # A REAL transcript line: the delivery proof reads user-role JSONL entries whose
 # content is a plain string (a delivered prompt), never the raw bytes.
 T_P="$TRANSCRIPT" T_C="\$2" python3 - <<'PYX'
@@ -1982,6 +2026,119 @@ t  "the commits are still named for the successor"  "$PB_HEAD"       cat "$SPAWN
 t  "by way of the local worktree"                   "$PB_WT"         cat "$SPAWN_LOG"
 
 unset RESUME_MUST_FAIL
+
+# =========================================================================
+# A RECORDED RESUME IS NOT A FAILED ONE (T2's M4). `sminos resume` records its
+# message before it wakes anything; one aimed at a session its machine holds
+# (or whose wake is still starting) exits 4 saying the task is recorded and
+# held, and the daemon pushes it when a process of the session runs. A fresh
+# worker beside it would be a second one on the same run.
+# =========================================================================
+RHFIX="$TDIR/fix-resume-held.json"
+cat > "$RHFIX" <<'JSON'
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
+  "body":{"runId":95,"ticketId":12,"fence":4,"bearer":"tok-held","predecessorRun":41,
+          "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
+          "plan":null,"parentPin":null,"body":"work on"}},
+ {"method":"GET","path":"/answers/unrelayed","status":200,
+  "body":[{"answerEventId":195,"ticketId":12,"correlationId":"evt-95","replies":["held on"]}]},
+ {"method":"POST","path":"/answers/195/ack","status":200,"body":{"acked":true}},
+ {"method":"POST","path":"/runs/95/bind","status":200,"body":{"bound":true}},
+ {"method":"POST","path":"/runs/95/end","status":200,"body":{"ended":true}},
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]}
+]
+JSON
+rboard "$RHFIX"
+RHDH="$TDIR/dh-resume-held"; mkdir -p "$RHDH"
+printf '%s\n' '{"uuid":"u-old","current":"u-old","status":"idle","run_id":41,
+ "fence":3,"lane":"implementer","role":"IMPLEMENT","bind_confirmed":true,"ticket":"12"}' > "$RHDH/u-old.json"
+chmod 600 "$RHDH/u-old.json"
+: > "$SPAWN_LOG"
+OUTRH="$TDIR/resume-held.out"
+RESUME_HELD=1 RSW "$RHDH" > "$OUTRH" 2>&1 || true
+t  "a resume that recorded and held its task is read as owed" \
+   "the task is recorded and owed to u-old"                 cat "$OUTRH"
+t  "what the resume printed is passed on"  "recorded and held"  cat "$OUTRH"
+nt "so no fresh worker is spawned beside it"               "SPAWN"  cat "$SPAWN_LOG"
+t  "and the successor is bound to the session it is owed to" '"path": "/runs/95/bind"' cat "$RLOG"
+nt "and the run is not released"                          '"path": "/runs/95/end"' cat "$RLOG"
+nt "and no recovery cycle is charged"                     "recovery cycle" cat "$OUTRH"
+# The answers folded into it are no worker's yet: acknowledged, the feed would
+# drop them, and a session that never runs the task would leave them nowhere.
+# They stay on the feed, which the relay acknowledges by their sentinel once a
+# process of the session has taken the task.
+nt "and the answers folded into the owed task are not acknowledged" \
+   "/answers/195/ack"                                       cat "$RLOG"
+
+# The same for every outcome that leaves the task owed, read from the line
+# `owed: <session>` rather than the exit code or the prose: queued behind an
+# earlier message (exit 4), an endpoint-gated resume whose ack window
+# expired (exit 1), and one the last hop deferred to the endpoint (exit 0). A
+# line naming another session is no such word.
+_owed_drill() {  # <case> <run id>
+  local fix="$TDIR/fix-resume-owed-$1.json" dh="$TDIR/dh-resume-owed-$1" out="$TDIR/resume-owed-$1.out"
+  cat > "$fix" <<JSON
+[
+ {"method":"GET","path":"/runs/needing-resume","status":200,"once":true,
+  "body":[{"ticketId":12,"state":"in-progress","predecessorRunId":41}]},
+ {"method":"POST","path":"/runs/claim-successor","status":200,"once":true,
+  "body":{"runId":$2,"ticketId":12,"fence":4,"bearer":"tok-owed","predecessorRun":41,
+          "sessionLocator":{"storeNs":"local:h","projectKey":"r","sessionId":"u-old"},
+          "plan":null,"parentPin":null,"body":"work on"}},
+ {"method":"GET","path":"/answers/unrelayed","status":200,
+  "body":[{"answerEventId":1$2,"ticketId":12,"correlationId":"evt-$2","replies":["owed on"]}]},
+ {"method":"POST","path":"/answers/1$2/ack","status":200,"body":{"acked":true}},
+ {"method":"POST","path":"/runs/$2/bind","status":200,"body":{"bound":true}},
+ {"method":"POST","path":"/runs/$2/end","status":200,"body":{"ended":true}},
+ {"method":"GET","path":"/runs/needing-resume","status":200,"body":[]}
+]
+JSON
+  rboard "$fix"
+  mkdir -p "$dh"
+  printf '%s\n' '{"uuid":"u-old","current":"u-old","status":"idle","run_id":41,
+ "fence":3,"lane":"implementer","role":"IMPLEMENT","bind_confirmed":true,"ticket":"12"}' > "$dh/u-old.json"
+  chmod 600 "$dh/u-old.json"
+  : > "$SPAWN_LOG"
+  RESUME_OWED="$1" RSW "$dh" > "$out" 2>&1 || true
+  OUTOWED="$out"
+  OWEDLOG="$RLOG"
+}
+_owed_drill queued 96
+t  "a resume queued behind an earlier message is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside it"                 "SPAWN"  cat "$SPAWN_LOG"
+nt "nor its folded answer acknowledged"                      "/answers/196/ack" cat "$OWEDLOG"
+_owed_drill gated 97
+t  "an endpoint-gated resume whose wait expired is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside that one either"    "SPAWN"  cat "$SPAWN_LOG"
+nt "nor its folded answer acknowledged"                      "/answers/197/ack" cat "$OWEDLOG"
+_owed_drill stopfail 99
+t  "a resume whose stop of the running turn was refused is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside the running one"    "SPAWN"  cat "$SPAWN_LOG"
+_owed_drill handoff 100
+t  "a hand-off whose admission has not come by the deadline is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside the handed one"     "SPAWN"  cat "$SPAWN_LOG"
+_owed_drill receipt 101
+t  "a receipt that handed nothing off is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside the pending one"    "SPAWN"  cat "$SPAWN_LOG"
+_owed_drill reachheld 102
+t  "a resume the last hop deferred to the endpoint, exiting 0 with the owed line, is read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+nt "so no fresh worker is spawned beside the deferred one"   "SPAWN"  cat "$SPAWN_LOG"
+nt "nor its folded answer acknowledged"                      "/answers/1102/ack" cat "$OWEDLOG"
+_owed_drill other 98
+nt "a line owing the task to another session is not read as owed" \
+   "the task is recorded and owed to u-old"                   cat "$OUTOWED"
+t  "so a fresh worker takes the task"                        "SPAWN"  cat "$SPAWN_LOG"
+t  "and its folded answer, which that worker has, is acknowledged" \
+   "/answers/198/ack"                                       cat "$OWEDLOG"
 
 # The rboard mocks hold this suite's stdout open, so they go LAST — after every
 # board any drill above needed. One left running keeps a piped reader waiting

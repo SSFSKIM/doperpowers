@@ -623,9 +623,12 @@ def publish_state(project, view, record):
     session's own file. Only another machine reads a published word (a local
     view computes it live), so a project with neither a remote nor a hub
     publishes none.
-    A stopped thread's `state` says whether this machine wakes it (X3:
-    `wake`, which sminos.lifecycle adds for each of its writers); it is
-    written again when that value changes while the word does not.
+    A stopped thread's `state` says whether this machine wakes it, and why
+    not (X3: `wake` and `why`, which sminos.lifecycle adds for each of its
+    writers; a `gone` thread that has not ended says its hold the same way,
+    sminos.state_wake); it is written again when either changes while the word does
+    not (never when only a failed wake's schedule turns: `why` is `failed`
+    due or not).
     Returns how many events it appended."""
     before = record.get("candidates")
     before = before if isinstance(before, dict) else {}
@@ -639,8 +642,8 @@ def publish_state(project, view, record):
             # For a session that is a thread now (its joined in effect names one; an adopted seat stopped
             # before its adoption included), whatever stamped the state before. Only when lifecycle will stamp
             # what it writes, and so add the value: a write that could not carry it is not made, every tick.
-            if last == "stopped" and m.thread and published.get("wake") != \
-                    ("held" if sminos.hold_for(m.session) else "woken") and sminos.threads_module().stamp(m.session):
+            if last in sminos.HELD_STATES and m.thread and (published.get("wake") or None, published.get("why") or "") \
+                    != sminos.state_wake(m.session, last) and sminos.threads_module().stamp(m.session):
                 n += len(sminos.lifecycle(project, m.session, "state", required=False,
                                           state=m.state, machine=sminos.host_name()))
             continue
@@ -860,8 +863,14 @@ def late_former_writers(events, former, since):
 
 
 # (project id, session) → what a delivery pass over a held session read (held_reads), when that pass found
-# every writer's head held (HELD_HUMAN) and settled nothing: the tick passes the session by while it reads the same.
+# every writer's head held for a fact (a reason its thread is not woken, or a failed wake not due yet) and settled
+# nothing: the tick passes the session by while it reads the same.
 _HELD_PASSES = {}
+# The holds a pass is remembered for (T2's M3): the reasons a thread is not woken, each a fact that stays until a
+# file the memory's key holds changes, and `failed`, remembered until its wake falls due. What passes on its own
+# (a process starting, a wake in flight, the sweep's moment, an open entry, a lock) changes no file and is never
+# remembered.
+REMEMBERED = ("config", "transcript", "cwd", "protected", "mode", "failed")
 
 
 def _stat_key(path):
@@ -882,18 +891,35 @@ def held_reads(project, view, session):
     reused), the rest by stat."""
     return (view.events, _stat_key(os.path.join(project.home, "delivered", sminos.reader_key(session) + ".json")),
             _stat_key(sminos.holder_module().home(create=False)), _stat_key(rl10.revoked_path()),
-            _stat_key(sminos.sibling_module("sminos_policy").policy_path()))
+            _stat_key(sminos.sibling_module("sminos_policy").policy_path()), hold_inputs(session))
+
+
+def hold_inputs(session):
+    """Everything the hold of the session read (sminos_wake.hold_key: its
+    record, transcript, row, directory and the ceiling's files) and when a
+    failed wake falls due; None for a session that is no thread's."""
+    t = sminos.threads_module().current_record(session)
+    if t is None:
+        return None
+    wake = sminos.wake_module()
+    return wake.hold_key(t, session), wake.due_at(t, session)
 
 
 def _same_reads(a, b):
     return a[0] is b[0] and a[1:] == b[1:]
 
 
+def _fell_due(reads):
+    """Whether a failed wake the remembered pass held for has fallen due since."""
+    held = reads[-1]
+    return held is not None and held[1] is not None and time.time() >= held[1]
+
+
 def all_held(result, owed):
     """Whether a delivery pass found every writer of `owed` held at its head
     and settled nothing."""
     outcomes = result["outcomes"]
-    return bool(outcomes) and not result["delivered"] and all(o == sminos.HELD_HUMAN for _, o in outcomes) \
+    return bool(outcomes) and not result["delivered"] and all(sminos.hold_why(o) in REMEMBERED for _, o in outcomes) \
         and {e["writer"] for e, _ in outcomes} == {e["writer"] for e in owed}
 
 
@@ -911,11 +937,13 @@ def deliver_owed(project, view):
     bridge took it is reported `failed` once, after its delivery
     (sminos_outcomes.report_refused).
 
-    A session this machine holds (a stopped thread its human opened, M3) is
-    passed by without a delivery pass only on the memory of one that ran: a
-    pass in which every writer came out held and nothing settled, while
-    nothing that pass read has changed (held_reads) and the session is still
-    held. A writer's head the skip passes by is so always an addressed event
+    A session this machine holds (a stopped thread not woken, or whose
+    failed wake is not due: T2's §4) is passed by without a delivery pass
+    only on the memory of one that ran: a pass in which every writer came
+    out held for a fact (REMEMBERED) and nothing settled, while nothing that
+    pass read has changed (held_reads, the hold's own inputs among them)
+    and the session is still held; a failed wake's memory lasts until it
+    falls due. A writer's head the skip passes by is so always an addressed event
     a full pass found nothing to settle for, and a held backlog costs a tick
     that one comparison: no read of the log, no enumeration of the backlog,
     no lock, no ask. The memory of a session that left the view goes."""
@@ -942,7 +970,8 @@ def deliver_owed(project, view):
         held = sminos.hold_for(m.session)
         memory = _HELD_PASSES.get(key)
         reads = held_reads(project, view, m.session) if held else None
-        if memory is not None and reads is not None and _same_reads(memory, reads):
+        if memory is not None and reads is not None and _same_reads(memory, reads) \
+                and not _fell_due(reads):
             continue
         _HELD_PASSES.pop(key, None)
         owed = sminos._owed(to[m.session], m.session, sminos.delivered_load(project, m.session))
@@ -1408,12 +1437,28 @@ def sweep_threads():
             continue
         try:
             if cur in running:
+                if set(threads.LIVE_CLEARS) & set(threads.waking(t, cur)):
+                    # A process holds it, however it came up (a wake, its human in a terminal, an older copy): a
+                    # wake's failures and the job it accepted are past, as a wake that saw it live forgets them,
+                    # read again under the wake lock (this pass's reading may be older than a wake's job: a busy
+                    # lock is the next tick's).
+                    with resume_lock_out(tid) as out:
+                        if out and sminos.running_now(cur) is not None:
+                            threads.wake_cleared(tid, cur)
                 remove = [k for k in ("stopped", "swept") if t.get(k)]
                 if t.get("released") and threads.release_outlived(t["released"], running[cur]):
                     remove.append("released")
                 if remove:
                     threads.update(tid, {}, remove=remove, guard=lambda r, cur=cur: r["current"] == cur)
                 continue
+            if sminos.wake_module().starting(t, cur) is not None:
+                continue   # a wake's job still starting (its grace not passed): neither marked nor ended
+            if threads.waking(t, cur).get("job"):
+                # Its grace passed and no process holds the session: that launch failed, counted under the wake
+                # lock (a busy one is the next tick's), and the thread is swept as any other from here.
+                with resume_lock_out(tid) as out:
+                    if out:
+                        sminos.wake_lapsed(tid, cur)
             if ending_pass and t.get("stopped") and now - (sminos._ts_epoch(t["stopped"]) or now) > after \
                     and (threads.thread_of(cur) or {}).get("thread") == tid:
                 due.append((tid, cur, t["stopped"]))   # the session's canonical record alone is ended (thread_of)
@@ -1535,7 +1580,7 @@ def end_stopped(threads, tid, cur, stopped, asked=None):
     t = threads.get(tid)
     if t is None or t["current"] != cur or t.get("pending") or threads.record_ended(t) \
             or t.get("stopped") != stopped or not threads.asked_all(t, asked) or sminos.running_now(cur) \
-            or (threads.thread_of(cur) or {}).get("thread") != tid:
+            or (threads.thread_of(cur) or {}).get("thread") != tid or sminos.wake_module().starting(t, cur):
         return []
     return sminos.end_by_rule(t, stopped, asked)
 
@@ -1551,7 +1596,7 @@ def stop_and_close(threads, tid, cur, stopped):
     closing — goes through the same lock and the same checks."""
     t = threads.get(tid)
     if t is None or t["current"] != cur or t.get("pending") or threads.record_ended(t) \
-            or t.get("stopped") != stopped or sminos.running_now(cur):
+            or t.get("stopped") != stopped or sminos.running_now(cur) or sminos.wake_module().starting(t, cur):
         return
     if not stopped:
         stopped = sminos.now()
@@ -1559,6 +1604,9 @@ def stop_and_close(threads, tid, cur, stopped):
                               guard=lambda r: r["current"] == cur and not r.get("stopped")):
             return
         t = dict(t, stopped=stopped)
+    # What the thread's state publishes is what a wake would decide: its last turn read whole, once (M1; kept by
+    # the transcript's stat, so no later tick reads it again).
+    sminos.wake_module().last_turn(cur, whole=True)
     if t.get("swept") != stopped:
         sminos.close_questions(t)
         threads.update(tid, {"swept": stopped}, guard=lambda r: r["current"] == cur and r.get("stopped") == stopped)
@@ -1566,47 +1614,45 @@ def stop_and_close(threads, tid, cur, stopped):
 
 @contextlib.contextmanager
 def resume_lock_out(thread_id):
-    """The thread's resume lock (`<id>.resume.lock`, which resume_session
-    holds for the whole of a resume) held for the block, without waiting:
-    yields whether it is held. The block is the sweep's decision and its
-    append alone (stop_and_close). While held the file names the sweep
-    (sminos.SWEEP_HOLD), so a resume that meets it waits it out — no twin,
-    no failed delivery — and finds it gone. A seat's lock file is made when
-    it has none; a record its human opened has a lock file only once
-    something resumes it (none does in M3: the hold), so with none there is
-    nothing to keep out."""
-    path = os.path.join(sminos.root(), thread_id + ".resume.lock")
-    seat = os.path.exists(sminos.meta_path(thread_id))
-    try:
-        f = open(path, "a+" if seat else "r+")
-    except OSError:
-        yield not seat
+    """The thread's wake lock (`<id>.resume.lock`, sminos.wake_lock, which a
+    wake holds for the whole of its steps) held for the block, without
+    waiting: yields whether it is held. The block is the sweep's decision
+    and its append (stop_and_close, end_stopped): an end begun in it uses
+    this hold (sminos.WakeHold), which ends at that begin, before anything
+    is settled. While held the file names the sweep (sminos.SWEEP_HOLD), so
+    a wake that meets it waits it out and finds it gone. The file is made
+    when absent, for a record its human opened as for a seat (T2's M2), so
+    that the sweep and a first wake meet on one file."""
+    if sminos.wake_held(thread_id) is not None:
+        yield True
         return
-    with f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            yield False
-            return
-        try:
-            # Named as the sweep's, no launch's: a resume that meets it waits it out (sminos.SWEEP_HOLD).
-            f.seek(0)
-            f.truncate()
-            f.write(sminos.SWEEP_HOLD)
-            f.flush()
-            yield True
-        finally:
-            try:
-                f.seek(0)
-                f.truncate()
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+    try:
+        f = open(sminos.wake_lock_path(thread_id), "a+")
+    except OSError:
+        yield False
+        return
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        yield False
+        return
+    # Named as the sweep's, no launch's: a wake that meets it waits it out (sminos.SWEEP_HOLD).
+    f.seek(0)
+    f.truncate()
+    f.write(sminos.SWEEP_HOLD)
+    f.flush()
+    hold = sminos.WakeHold(thread_id, f)
+    try:
+        yield True
+    finally:
+        hold.release()
 
 
 def resume_locked(thread_id):
-    """Whether a resume of the thread holds its lock now (a seat's
-    `<seat id>.resume.lock`, held for the whole of resume_session)."""
-    path = os.path.join(sminos.root(), thread_id + ".resume.lock")
+    """Whether a wake of the thread, or a transition, holds its wake lock
+    now (`<thread id>.resume.lock`, sminos.wake_lock)."""
+    path = sminos.wake_lock_path(thread_id)
     try:
         f = open(path)
     except OSError:

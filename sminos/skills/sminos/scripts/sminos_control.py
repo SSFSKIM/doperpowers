@@ -221,6 +221,22 @@ def push_live(peer, session, text, event=None, project=None, words=None, marker=
     SendFailed("before") when none does."""
     S.reach_hold(project, session, [event] if carried is None else carried, words)
     peer = S.bound_peer(peer, session)
+    # The first push after a wake carries sminos's line (T2's §2, §4), put in before a route is chosen as the text's
+    # last paragraph, one empty line after its last frame: a frame's header stays the text's first line (a receipt's
+    # marker before it), and on the inbox the reply line alone follows the line. Removed once this push was made,
+    # only while it is still that wake's.
+    line = S.wake_line_for(peer, session)
+    if line is not None:
+        text = "%s\n\n%s" % (text.rstrip("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"), S.wake_module().line_text(line[1]))
+    _routes(peer, session, text, event, project, words, marker)
+    if line is not None:
+        S.wake_line_pushed(line[0], session, line[1])
+
+
+def _routes(peer, session, text, event, project, words, marker):
+    """push_live's routes, the peer bound: a receipt's marker to the inbox;
+    a person's words through the bridge, then the supervisor; else the inbox
+    frame."""
     if marker is not None:
         text = "%s\n%s" % (marker, text)
     else:
@@ -299,8 +315,9 @@ def cmd_steer(a):
                 print("steered %s through the engine supervisor (no bridge): read at its next step" % a.member)
                 return
             S.warn("the supervisor did not take the steer (%s); it goes as a cross-session frame" % took)
-        # The first line the bridge's steer row carries too (hooks/mods/bridge.tsx, STEER_LINE).
-        S.send_frame(S.socket_path_of(peer), "[sminos steer from human]\n%s" % a.text, "human")
+        # The first line the bridge's steer row carries too (hooks/mods/bridge.tsx, STEER_LINE); the owner's words
+        # as every frame carries a sender's (S.sender_text).
+        S.send_frame(S.socket_path_of(peer), "[sminos steer from human]\n%s" % S.sender_text(a.text), "human")
     except S.SendFailed as e:
         if e.phase == "after":
             S.die("the steer to %s is UNCERTAIN (%s); do not blindly repeat it" % (a.member, e), 1)

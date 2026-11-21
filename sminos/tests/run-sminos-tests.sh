@@ -138,15 +138,24 @@ cat > "$STUB_BIN/claude" <<'STUB'
 set -euo pipefail
 mkdir -p "$STUB_STATE/agents" "$STUB_STATE/log"
 echo "$*" >> "$STUB_STATE/log/calls.log"
+# The test engine (wake_engine.py, T2's §8) takes a wake with no message, and
+# the stop or removal of a job it started; its jobs are listed beside the stub's.
+export WAKE_ENGINE_STATE="${WAKE_ENGINE_STATE:-$STUB_STATE/wake}"
 
 case "${1:-}" in
   agents)
     # STUB_AGENTS_FAIL=1: the harness itself fails (distinct from an empty fleet).
     [ "${STUB_AGENTS_FAIL:-0}" = "1" ] && { echo "stub: agents unavailable" >&2; exit 1; }
-    python3 - "$STUB_STATE/agents" <<'PY'
+    [ -e "$WAKE_ENGINE_STATE/agents-fail" ] && { echo "stub: agents unavailable" >&2; exit 1; }
+    python3 - "$STUB_STATE/agents" "$WAKE_ENGINE_STATE/jobs" <<'PY'
 import glob, json, os, sys
+# One job per short, as the engine lists them: the test engine's (a wake of a session the stub spawned, under the
+# same short) stands for the stub's own entry of it.
+engine = set(os.path.basename(f)[:-5] for f in glob.glob(os.path.join(glob.escape(sys.argv[2]), '*.json')))
 out = []
 for f in glob.glob(os.path.join(sys.argv[1], '*')):
+    if os.path.basename(f) in engine:
+        continue
     m = dict(l.rstrip('\n').split('=', 1) for l in open(f) if '=' in l)
     row = {"id": m.get("short"), "sessionId": m.get("uuid"), "kind": m.get("kind", "background"),
            "name": m.get("name"), "state": m.get("state", "done"),
@@ -154,9 +163,31 @@ for f in glob.glob(os.path.join(sys.argv[1], '*')):
     if m.get("pid"):
         row["pid"] = int(m["pid"])
     out.append(row)
+for f in sorted(glob.glob(os.path.join(glob.escape(sys.argv[2]), '*.json'))):
+    try:
+        out.append(json.load(open(f)))
+    except (OSError, ValueError):
+        pass
 print(json.dumps(out))
 PY
     exit 0 ;;
+  stop|rm)
+    # A job the test engine started is its own to stop or remove; the stub's entry of the same short (the
+    # session the stub spawned, which the engine woke) follows it below.
+    if [ -n "${WAKE_ENGINE:-}" ] && [ -f "$WAKE_ENGINE_STATE/jobs/${2:-}.json" ]; then
+      python3 -B "$WAKE_ENGINE" "$@" || exit $?
+      [ -f "$STUB_STATE/agents/${2:-}" ] || exit 0
+    fi ;;
+esac
+# Every background resume is the test engine's (T2's M2): a wake, with no message after the id; one that
+# carries a message is written to its `violations` and exits 2, and the suite fails on any (summary).
+if [ -n "${WAKE_ENGINE:-}" ] && [[ " $* " == *" --bg "* ]] && [[ " $* " == *" --resume "* ]]; then
+  # STUB_FAIL_BG=1: the launch fails before anything starts, a wake's as a fresh launch's.
+  [ "${STUB_FAIL_BG:-0}" = "1" ] && { echo "stub: simulated --bg launch failure" >&2; exit 1; }
+  exec python3 -B "$WAKE_ENGINE" "$@"
+fi
+
+case "${1:-}" in
   stop)
     # STUB_STOP_FAIL=1: the supervisor refuses. STUB_STOP_NOOP=1: it accepts
     # but the turn keeps running (the row never leaves state=working).
@@ -266,38 +297,21 @@ if [ $has_bg -eq 1 ]; then
   n=$(cat "$counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$counter"
   short=$(printf '%08x' "$n")
   uuid="${short}-e808-4cad-a7e0-c1e6447bad28"
-  # `--bg --resume <id>` with NO other flag wakes the session itself (same
-  # id, same short, its saved options). Any additional flag makes the real
-  # harness start a COPY under a new id and say so (observed live, v2.1.257);
-  # STUB_RESUME_COPY=1 forces that copy-with-note path, =2 a silent copy.
-  if [ -n "$resume_uuid" ]; then
-    extra=0; k=0
-    while [ $k -lt $((${#args[@]} - 1)) ]; do
-      case "${args[$k]}" in --bg|--resume) ;; "$resume_uuid") ;; *) extra=1 ;; esac
-      k=$((k + 1))
-    done
-    oldfile="$(grep -l "^uuid=$resume_uuid$" "$STUB_STATE/agents"/* 2>/dev/null | head -1 || true)"
-    oldshort="${oldfile##*/}"
-    if [ $extra -eq 1 ] || [ "${STUB_RESUME_COPY:-0}" = "1" ]; then
-      echo "note: background session ${oldshort:-????????} keeps its own saved options, so the flags you passed started a copy as $short. Without flags, the same command continues ${oldshort:-????????} itself."
-    elif [ "${STUB_RESUME_COPY:-0}" = "2" ]; then
-      :
-    else
-      uuid="$resume_uuid"
-      if [ -n "$oldfile" ]; then short="$oldshort"; name="$(sed -n 's/^name=//p' "$oldfile")"; fi
-      echo "note: woke session $short with its saved options (--permission-mode, -n, --model)."
-    fi
-  fi
   [ "${STUB_NO_UUID:-0}" = "1" ] && uuid=""
   cwd="$PWD"; [ -n "$worktree" ] && cwd="$PWD/.claude/worktrees/$worktree"
   { echo "short=$short"; echo "uuid=$uuid"; echo "name=$name"; echo "state=${STUB_BG_STATE:-done}"
     echo "status=${STUB_BG_STATUS:-}"; echo "cwd=$cwd"; } > "$STUB_STATE/agents/$short"
-  if [ -z "$uuid" ]; then
-    :
-  elif [ -n "$resume_uuid" ]; then
-    write_asst "$uuid" "RESUMED:$resume_uuid:ANSWER:$prompt"
-  else
+  if [ -n "$uuid" ]; then
     write_asst "$uuid" "ANSWER:$prompt"
+    # The engine's row of a fresh background session (E8), its options saved: a later wake passes no flag.
+    python3 - "$HOME/.claude/jobs/${uuid:0:8}/state.json" "$uuid" "$cwd" "$name" "${args[@]}" <<'PY'
+import json, os, sys
+path, sid, cwd, name, argv = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+flags = [a for a in argv[:-1] if a != "--bg"]
+json.dump({"sessionId": sid, "cwd": cwd, "respawnFlags": flags, "state": "working", "name": name},
+          open(path, "w"))
+PY
   fi
   printf 'backgrounded · \033[36m%s\033[39m · %s\n' "$short" "$name"
   exit 0
@@ -306,6 +320,7 @@ fi
 echo "stub: unhandled invocation: $*" >&2; exit 1
 STUB
 chmod +x "$STUB_BIN/claude"
+CLAUDE_STUB="$STUB_BIN/claude"
 # Stand-in for the `codex` CLI's `queue` verb, in its own PATH dir so one case
 # can run without it. It knows the threads listed in $STUB_STATE/codex-threads
 # (one "<uuid> <name>" per line), appends every accepted message to
@@ -338,6 +353,8 @@ chmod +x "$CODEX_BIN/codex"
 export PATH="$STUB_BIN:$CODEX_BIN:$PATH"
 # What the stub's derive fork runs: the hook, and the CLI itself.
 export STUB_PLUGIN_ROOT="$PLUGIN_ROOT" STUB_SMINOS="$SMINOS"
+# The test engine the stub hands a wake to (T2's §8).
+export WAKE_ENGINE="$SCRIPT_DIR/wake_engine.py"
 
 # A stand-in for a live session's inbox socket (inbox_standin.py): appends
 # every frame it receives to inbox.received, one connection at a time,
@@ -352,6 +369,17 @@ for _ in $(seq 1 50); do [ -S "$SOCK" ] && break; sleep 0.05; done
 
 run() { # capture stdout+stderr and rc without aborting the suite
   set +e; OUT="$("$@" 2>&1)"; RC=$?; set -e
+}
+held_debt() {   # <session>: "<some event marked held> <attempts counted>" across its delivered records (T2's M3)
+  python3 - "$SMINOS_HOME" "$1" <<'PY_HELD_DEBT'
+import glob, json, os, sys
+ws = [w for p in glob.glob(os.path.join(sys.argv[1], "projects", "*", "delivered", sys.argv[2] + ".json"))
+      for w in json.load(open(p)).values() if isinstance(w, dict)]
+print(any(w.get("held") for w in ws), sum(w.get("attempts", 0) for w in ws))
+PY_HELD_DEBT
+}
+held_mark() {   # <delivered record> <writer> <seq>: "<attempts> <whether seq is marked held>" (T2's M3)
+  python3 -c 'import json,sys; w = json.load(open(sys.argv[1])).get(sys.argv[2], {}); print(w.get("attempts", 0), int(sys.argv[3]) in [int(x[0]) for x in w.get("held", [])])' "$1" "$2" "$3"
 }
 
 # ---- the suite's two parts ---------------------------------------------------
@@ -376,8 +404,20 @@ run_suites() {
     fail "a thread that made a VM is neither retired nor ended: devcloud asked, the census (test_threads_owner.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_threads_branch_a.py"; then pass "a seat's lifecycle verbs against the writers that race them (test_threads_branch_a.py)"; else
     fail "a seat's lifecycle verbs against the writers that race them (test_threads_branch_a.py)"; fi
-  if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10 beside this code: no session its human opened resumed, its ended passed by (test-older-cli.sh)"; else
-    fail "sminos 1.27.10 beside this code: no session its human opened resumed, its ended passed by (test-older-cli.sh)"; fi
+  if python3 -B "$SCRIPT_DIR/test_wake.py"; then pass "what a wake reads and says, the record's field, the test engine (test_wake.py)"; else
+    fail "what a wake reads and says, the record's field, the test engine (test_wake.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_wake_seat.py"; then pass "the wake: its table for both records, a seat's message after it (test_wake_seat.py)"; else
+    fail "the wake: its table for both records, a seat's message after it (test_wake_seat.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_wake_transitions.py"; then pass "the wake against the sweep, a retire, a hand-off, a return, a /clear (test_wake_transitions.py)"; else
+    fail "the wake against the sweep, a retire, a hand-off, a return, a /clear (test_wake_transitions.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_wake_delivery.py"; then pass "delivery wakes every stopped thread, and holds what it cannot push (test_wake_delivery.py)"; else
+    fail "delivery wakes every stopped thread, and holds what it cannot push (test_wake_delivery.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_wake_verbs.py"; then pass "the verbs, what a sender is told on any machine, and the direct send (test_wake_verbs.py)"; else
+    fail "the verbs, what a sender is told on any machine, and the direct send (test_wake_verbs.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_wake_senders.py"; then pass "one, two and five senders over the three ways against the wake, its holds, its grace and its transitions (test_wake_senders.py)"; else
+    fail "one, two and five senders over the three ways against the wake, its holds, its grace and its transitions (test_wake_senders.py)"; fi
+  if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10 and 1.51.0 beside this code, each held to its version (test-older-cli.sh)"; else
+    fail "sminos 1.27.10 and 1.51.0 beside this code, each held to its version (test-older-cli.sh)"; fi
   if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else
     fail "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager.py"; then pass "the session manager's command: windows, pending, subscriptions (test_manager.py)"; else
@@ -515,6 +555,12 @@ run_suites() {
 }
 summary() {
   echo
+  # T2's M2: no launch carries a message. Every resume the stub saw went to the test engine, which wrote one that
+  # did to its `violations` (each machine's state of the suite's tree).
+  local carried
+  carried="$(find "$TEST_ROOT" -name violations -type f -size +0 2>/dev/null | head -5)"
+  if [ -n "$carried" ]; then fail "no launch carried a message"; echo "    in: $carried"; head -3 $carried; else
+    pass "no launch carried a message"; fi
   if [ "$FAILURES" -eq 0 ]; then
     echo "all $PASSES assertions passed"
   else
@@ -1233,11 +1279,11 @@ run "$SMINOS" list work
 assert_contains "$OUT" "idle" "and the seat still reads idle rather than stopped"
 peer_with_procstart "Mon Jan  1 00:00:00 2001"
 run "$SMINOS" send orchestrator "procstart bogus"
-assert_rc 4 "$RC" "an unrelated procStart reads as a recycled pid and send refuses"
-assert_contains "$OUT" "is gone — no transcript for its session on this machine" "a seat with no live peer and no transcript is refused as gone"
-assert_contains "$OUT" 'sminos fill grp/orchestrator "<task>"' "the gone refusal points at a fresh fill"
-assert_contains "$OUT" "sminos retire grp/orchestrator" "and at retire"
-assert_equals "$(printf '%s' "$OUT" | wc -l | tr -d ' ')" "0" "the gone refusal is one line"
+assert_rc 0 "$RC" "an unrelated procStart reads as a recycled pid: the send is recorded and held (T2's §6)"
+assert_contains "$OUT" "recorded and held: the session is stopped and is not woken: no conversation of it is on that machine" "held for its thread, with no transcript for its session here (T2's §5)"
+assert_equals "$(printf '%s' "$OUT" | wc -l | tr -d ' ')" "0" "said in one line"
+assert_not_contains "$(cat "$RECEIVED")" "procstart bogus" "the recycled pid receives no frame"
+assert_equals "$(held_debt "$ORCH_UUID")" "True 0" "owed, marked for its thread, no attempt counted"
 assert_not_contains "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "procstart bogus" "no resume of a gone seat is attempted"
 printf '{"pid":%s,"sessionId":"%s","name":"my session","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$ORCH_UUID" "$WORK" "$SOCK" > "$HOME/.claude/sessions/$SOCK_PID.json"
@@ -1277,70 +1323,88 @@ assert_contains "$(cat "$TEST_ROOT/ack.out")" "sent to grp/orchestrator" "acknow
 assert_contains "$(cat "$TEST_ROOT/ack.out")" "--- reply ---" "acknowledged send --wait prints the reply block"
 assert_contains "$(cat "$TEST_ROOT/ack.out")" "ACKED $ACK_ID" "acknowledged send --wait prints the turn's reply"
 
-# Resume branch: 'researcher' has a session but no live peer → --bg --resume.
+# Wake branch (T2's M2): 'researcher' has a session but no live peer → its process started again with
+# `--bg --resume <id>` and no message, then the frame pushed to it as to a live session.
+wake_inputs() { cat "$STUB_STATE/wake/inputs/$1" 2>/dev/null || true; }
+# bg_row <session> <cwd>: the engine's row of a background session as a spawn under `auto` leaves it (E8), for a
+# seat added over a made-up session: its wakes pass no flag and its turns run in that mode, as a spawned seat's do
+# (with none, a wake runs it in the default mode, which asks, and the next wake is refused for it).
+bg_row() {
+  python3 - "$HOME/.claude/jobs/${1:0:8}/state.json" "$1" "$2" <<'PY_ROW'
+import json, os, sys
+os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
+json.dump({"sessionId": sys.argv[2], "cwd": sys.argv[3], "respawnFlags": ["--permission-mode", "auto"],
+           "state": "done"}, open(sys.argv[1], "w"))
+PY_ROW
+}
 run "$SMINOS" send researcher "again please"
 assert_rc 0 "$RC" "send to a stopped seat exits 0"
-assert_contains "$OUT" "via --bg --resume" "a send to a stopped seat resumes the session"
-assert_contains "$OUT" "sent to work/researcher" "the resume banner opens with the delivery"
+assert_contains "$OUT" "sent to work/researcher (woken)" "a send to a stopped seat wakes it and says so"
 RESUME_LINE="$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)"
-assert_contains "$RESUME_LINE" "--bg --resume $R_UUID [sminos message from human id=" "resume argv is exactly --bg --resume <id> <frame>"
-assert_not_contains "$RESUME_LINE" "--permission-mode" "no permission-mode flag rides a resume (it would start a copy)"
-assert_not_contains "$RESUME_LINE" "-n " "no name flag rides a resume"
-assert_equals "$(field "$R_UUID" current)" "$R_UUID" "same-id resume keeps current"
-assert_equals "$(field "$R_UUID" turns)" "2" "resume increments turns"
-assert_equals "$(field "$R_UUID" short)" "$R_SHORT" "a same-id resume keeps the session's short"
-assert_equals "$(field "$R_UUID" status)" "idle" "a resume whose turn already ended records idle"
+assert_equals "$RESUME_LINE" "--bg --resume $R_UUID" "the wake's argv ends at the session id: no flag (its row), no message"
+assert_equals "$(wake_inputs "$R_UUID" | grep -c 'again please')" "1" "the message reaches the woken process's inbox once"
+assert_contains "$(wake_inputs "$R_UUID")" "[sminos] A note from sminos on this machine" "opened by the wake's line"
+assert_equals "$(field "$R_UUID" current)" "$R_UUID" "same-id wake keeps current"
+assert_equals "$(field "$R_UUID" turns)" "2" "the push increments turns"
+assert_equals "$(field "$R_UUID" short)" "$R_SHORT" "a same-id wake keeps the session's short"
+assert_equals "$(field "$R_UUID" status)" "working" "a pushed message records working"
+assert_equals "$(has_key "$R_UUID" pending_short)" "False" "a wake writes no pending_short"
 run "$SMINOS" send researcher "with reply" --wait
 assert_contains "$OUT" "--- reply ---" "send --wait prints the reply block"
-assert_contains "$OUT" "RESUMED:$R_UUID" "send --wait prints the resumed turn's reply"
-STUB_RESUME_COPY=1 run "$SMINOS" send researcher "copy?"
-assert_rc 1 "$RC" "a resume whose banner says a copy started fails loudly"
-assert_contains "$OUT" "started a COPY" "copy detection is explained"
+assert_contains "$OUT" "reply to " "send --wait prints the reply to its own message"
+assert_not_contains "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "with reply" "a live seat is pushed to, not woken"
+"$CLAUDE_STUB" stop "$R_SHORT" >/dev/null
+NJOBS=$(ls "$STUB_STATE/wake/jobs" 2>/dev/null | wc -l | tr -d ' ')
+touch "$STUB_STATE/wake/silent-copy"
+run "$SMINOS" send researcher "silent copy?"
+rm -f "$STUB_STATE/wake/silent-copy"
+assert_rc 0 "$RC" "a send whose wake the engine answered with a silent copy is recorded and held (T2's §6)"
+assert_contains "$OUT" "recorded and held: the session is stopped and is not woken: waking it failed, and its machine tries again" "and says so"
 assert_equals "$(field "$R_UUID" current)" "$R_UUID" "the record is left untouched after a copy"
-assert_equals "$(field "$R_UUID" status)" "idle" "status is restored after a copy"
-COPY_SHORT="$(printf '%08x' "$(cat "$STUB_STATE/counter")")"
-assert_contains "$(tail -3 "$STUB_STATE/log/calls.log")" "stop $COPY_SHORT" "the announced copy is stopped"
-STUB_RESUME_COPY=2 run "$SMINOS" send researcher "silent copy?"
-assert_rc 1 "$RC" "a silent copy (different session id after polling) also fails loudly"
-COPY_SHORT="$(printf '%08x' "$(cat "$STUB_STATE/counter")")"
-assert_contains "$(tail -3 "$STUB_STATE/log/calls.log")" "stop $COPY_SHORT" "the silent copy is stopped"
-assert_equals "$(field "$R_UUID" current)" "$R_UUID" "the record is left untouched after a silent copy"
+assert_equals "$(ls "$STUB_STATE/wake/jobs" 2>/dev/null | wc -l | tr -d ' ')" "$NJOBS" "the copy is removed: no new job is left"
+assert_contains "$(tail -4 "$STUB_STATE/log/calls.log")" "rm " "the copy was removed with claude rm"
 
 # ---- 6b) resume: process-level continuation ---------------------------------
 echo "resume:"
 run "$SMINOS" resume plainworker "RES-1"
 assert_rc 0 "$RC" "resume exits 0"
 assert_contains "$OUT" "resumed work/plainworker" "resume reports the seat"
-assert_equals "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $P_UUID RES-1" "resume argv is exactly --bg --resume <id> <msg>"
+assert_equals "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $P_UUID" "resume's wake argv is exactly --bg --resume <id>"
+assert_equals "$(wake_inputs "$P_UUID" | grep -c 'RES-1')" "1" "its message is pushed to the woken process once"
+assert_contains "$(cat "$SMINOS_HOME"/projects/*/log/*.jsonl)" '"text": "RES-1"' "and recorded in the project's log first, as send records one"
 assert_equals "$(field "$P_UUID" turns)" "2" "resume increments turns"
 assert_equals "$(field "$P_UUID" current)" "$P_UUID" "same-id resume keeps current"
 run "$SMINOS" resume plainworker "RES-1b" --model opus --effort high
 assert_rc 0 "$RC" "resume accepts route flags for argv compatibility"
 assert_contains "$OUT" "keeps its saved options; --model/--settings/--effort ignored" "resume warns that route flags are ignored"
-assert_equals "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $P_UUID RES-1b" "route flags never reach a resume argv"
+assert_equals "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $P_UUID" "route flags never reach a resume argv"
 assert_equals "$(field "$P_UUID" model)" "" "resume leaves the recorded model untouched"
 assert_equals "$(field "$P_UUID" effort)" "" "resume leaves the recorded effort untouched"
 P_SHORT="$(field "$P_UUID" short)"
 sed -i.bak 's/^state=.*/state=working/; s/^status=.*/status=busy/' "$STUB_STATE/agents/$P_SHORT" && rm -f "$STUB_STATE/agents/$P_SHORT.bak"
 run "$SMINOS" resume plainworker "RES-2"
 assert_rc 0 "$RC" "resume of a live turn exits 0"
-assert_contains "$(grep -E '^(stop|--bg)' "$STUB_STATE/log/calls.log" | tail -2 | head -1)" "stop $P_SHORT" "a live turn is stopped before the resume"
+assert_contains "$(grep -E '^(stop|--bg)' "$STUB_STATE/log/calls.log" | tail -2 | head -1)" "stop $P_SHORT" "a live turn is stopped before the wake"
 run "$SMINOS" resume plainworker "RES-4" --wait
 assert_rc 0 "$RC" "resume --wait exits 0"
 assert_contains "$OUT" "--- reply ---" "resume --wait prints the reply block"
-assert_contains "$OUT" "RESUMED:$P_UUID:ANSWER:RES-4" "resume --wait prints the resumed turn's reply"
-# Resume lock: a resume already in flight refuses a twin.
+assert_contains "$OUT" "reply to " "resume --wait prints the reply to its own message"
+# The wake lock: a launch already in flight (its holder line) past the wait is not doubled.
+"$CLAUDE_STUB" stop "$R_SHORT" >/dev/null
 python3 - "$SMINOS_HOME/$R_UUID.resume.lock" <<'PY' &
 import fcntl, sys, time
 f = open(sys.argv[1], "a+")
 fcntl.flock(f, fcntl.LOCK_EX)
-time.sleep(3)
+f.seek(0); f.truncate(); f.write("pid 1 since 2026-01-01T00:00:00Z"); f.flush()
+time.sleep(8)
 PY
 LOCKER=$!
 sleep 0.4
+nb=$(grep -c -- '^--bg --resume' "$STUB_STATE/log/calls.log" || true)
 run "$SMINOS" send researcher "twin"
-assert_rc 1 "$RC" "a second resume while one is in flight is refused"
-assert_contains "$OUT" "already in flight" "twin refusal is explained"
+assert_rc 0 "$RC" "a send while another wake is in flight is recorded, not refused"
+assert_contains "$OUT" "researcher: recorded: its process is starting, and the daemon delivers it" "the wake in flight is a hold that passes on its own (T2's §5)"
+assert_equals "$(grep -c -- '^--bg --resume' "$STUB_STATE/log/calls.log" || true)" "$nb" "and no second launch is made"
 kill "$LOCKER" 2>/dev/null || true; wait "$LOCKER" 2>/dev/null || true
 
 # ---- 7) retire / fill --------------------------------------------------------
@@ -1367,7 +1431,9 @@ assert_contains "$(field "$R_UUID" task)" "FRESH-START" "fresh fill carries the 
 assert_equals "$(field "$R_UUID" turns)" "1" "fresh fill resets turns"
 run "$SMINOS" fill researcher "CONTINUE" --resume
 assert_rc 0 "$RC" "fill --resume exits 0"
-assert_equals "$(grep -- '^--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $NEWCUR CONTINUE" "fill --resume continues the current session with the bare resume argv"
+assert_contains "$OUT" "filled work/researcher" "fill --resume reports the seat"
+assert_equals "$(grep -- '^--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $NEWCUR" "fill --resume wakes the current session with the bare argv"
+assert_equals "$(wake_inputs "$NEWCUR" | grep -c 'CONTINUE')" "1" "and pushes its task to it once"
 assert_equals "$(field "$R_UUID" current)" "$NEWCUR" "fill --resume keeps the session id"
 printf '{"pid":%s,"sessionId":"%s","name":"researcher","kind":"bg","status":"idle","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$(field "$R_UUID" current)" "$SOCK" > "$HOME/.claude/sessions/live-researcher.json"
@@ -1473,7 +1539,7 @@ assert_contains "$OUT" "is filled (idle)" "saying it is filled"
 printf '{"pid":%s,"sessionId":"%s","name":"stale","kind":"bg","status":"idle","procStart":"Mon Jan  1 00:00:00 2001","messagingSocketPath":"%s/gone.sock"}\n' \
   "$$" "$STALE_UUID" "$TEST_ROOT" > "$HOME/.claude/sessions/stale.json"
 run "$SMINOS" fill grp/stale "REFILL" --resume
-assert_rc 0 "$RC" "a record whose live pid is another process is not live — resume proceeds"
+assert_not_contains "$OUT" "is filled" "a record whose live pid is another process is not live — fill is not refused as filled"
 rm -f "$HOME/.claude/sessions/stale.json"; "$SMINOS" remove grp/stale >/dev/null
 
 # sync promotes a natively-woken idle seat (harness shows it running) to working.
@@ -1495,8 +1561,8 @@ printf '{"pid":%s,"sessionId":"%s","name":"flaky","kind":"bg","status":"idle","p
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$FAIL_UUID.jsonl"   # resumable: its transcript is here
 kill "$SOCK_PID" 2>/dev/null || true; wait "$SOCK_PID" 2>/dev/null || true; rm -f "$SOCK"   # socket_ok now fails
 run "$SMINOS" send grp/flaky "PLEASE"
-assert_rc 0 "$RC" "send whose live socket vanished still exits 0 via the resume fallback"
-assert_contains "$OUT" "via --bg --resume" "the vanished-socket send fell through to resume"
+assert_rc 0 "$RC" "send whose live socket vanished still exits 0 via the wake"
+assert_contains "$OUT" "sent to grp/flaky (woken)" "the vanished-socket send fell through to a wake"
 rm -f "$HOME/.claude/sessions/flaky.json"; "$SMINOS" remove grp/flaky >/dev/null
 # restart the socket server for any later use / clean teardown
 python3 "$SCRIPT_DIR/inbox_standin.py" "$SOCK" "$RECEIVED" & SOCK_PID=$!; disown "$SOCK_PID"
@@ -1574,15 +1640,17 @@ assert_equals "$(field "$CXR_UUID" event_log)" "" "re-fill clears event_log"
 assert_file_exists "$TEST_ROOT/codexruns/cxr.rc" "re-fill leaves legacy scratch alone"
 "$SMINOS" remove work/cxr >/dev/null
 
-# A vanished cwd refuses a resume (exit 2) without launching anything.
+# A vanished cwd holds a resume (recorded, nothing started, exit 4) and a plain send, launching nothing.
 run "$SMINOS" spawn nocwd "N"
 "$SMINOS" meta set nocwd cwd "$TEST_ROOT/vanished" >/dev/null
 nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")
 run "$SMINOS" resume nocwd "x"
-assert_rc 2 "$RC" "resume with a vanished cwd exits 2"
-assert_contains "$OUT" "cwd does not exist" "the vanished cwd is named"
+assert_rc 4 "$RC" "resume with a vanished cwd records its message, starts nothing and exits 4 (T2's §6)"
+assert_contains "$(printf '%s\n' "$OUT" | head -1)" "recorded and held: the session is stopped and is not woken: its directory is gone" "its first line saying it is recorded and held, and why (T2's §5)"
+assert_contains "$OUT" "nothing was started: its directory is gone" "and that nothing was started"
 run "$SMINOS" send nocwd "x"
-assert_rc 2 "$RC" "a send that resumes, with a vanished cwd, exits 2"
+assert_rc 0 "$RC" "a plain send to a seat whose cwd vanished is recorded and held (T2's §6)"
+assert_contains "$OUT" "recorded and held: the session is stopped and is not woken: its directory is gone" "saying why (T2's §5)"
 assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log")" "$nb" "nothing is launched for a vanished cwd"
 "$SMINOS" meta set nocwd cwd "$WORK" >/dev/null; "$SMINOS" remove work/nocwd >/dev/null
 
@@ -1638,9 +1706,11 @@ DEAD_UUID="ffff5555-abab-4000-8000-0000000f5555"
 : > "$TEST_ROOT/dead.sock"
 printf '{"pid":%s,"sessionId":"%s","name":"deadsock","kind":"bg","status":"idle","procStart":"Mon Jan  1 00:00:00 2001","messagingSocketPath":"%s/dead.sock"}\n' \
   "$$" "$DEAD_UUID" "$TEST_ROOT" > "$HOME/.claude/sessions/deadsock.json"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$DEAD_UUID.jsonl"   # a conversation to wake
 run "$SMINOS" fill grp/deadsock "REFILL" --resume
 assert_rc 0 "$RC" "a record of another process whose socket file has no listener is not live — resume proceeds"
-rm -f "$HOME/.claude/sessions/deadsock.json"; "$SMINOS" remove grp/deadsock >/dev/null
+rm -f "$HOME/.claude/sessions/deadsock.json" "$HOME/.claude/projects/fake-proj/$DEAD_UUID.jsonl"
+"$SMINOS" remove grp/deadsock >/dev/null
 
 # seat add --session records the harness row's short, and clears it when the row is gone.
 SA_UUID="abcd6666-abab-4000-8000-000000ab6666"
@@ -1675,10 +1745,14 @@ for first_live in (True, False):
         return live if first_live or len(probes) > 1 else None   # dead-first: up only after the route
     sminos.peer_for_session = probe
     sminos.send_frame = lambda path, text, sender="": actions.append("socket")
-    sminos.resume_session = lambda *a, **k: actions.append("resume")
+    # The wake, answering that its process does not answer yet: the send then stops there, nothing pushed.
+    sminos.resume_session = lambda *a, **k: (actions.append("resume"), sminos.WakeResult(False, "starting"))[1]
     sminos.harness_row = lambda s: None
-    with contextlib.redirect_stdout(io.StringIO()):
-        sminos.send_to_seat(sminos.resolve_seat("grp/probed"), "frame", "abcd1234", False)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            sminos.send_to_seat(sminos.resolve_seat("grp/probed"), "frame", "abcd1234", False)
+        except SystemExit:
+            pass
     out.append("%s:%d:%s" % ("live-first" if first_live else "dead-first", len(probes), ",".join(actions)))
 print(" ".join(out))
 PY
@@ -1726,10 +1800,11 @@ python3 "$TEST_ROOT/oneshot.py" "$TEST_ROOT/oneshot.sock" & OS_PID=$!; disown "$
 for _ in $(seq 1 50); do [ -S "$TEST_ROOT/oneshot.sock" ] && break; sleep 0.05; done
 printf '{"pid":%s,"sessionId":"%s","name":"oneshot","kind":"bg","status":"idle","messagingSocketPath":"%s/oneshot.sock"}\n' \
   "$OS_PID" "$OS_UUID" "$TEST_ROOT" > "$HOME/.claude/sessions/oneshot.json"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$OS_UUID.jsonl"   # a conversation to wake
 run "$SMINOS" send grp/oneshot "HELLO"
-assert_rc 0 "$RC" "a socket that vanishes before the frame is written falls through to resume (exit 0)"
+assert_rc 0 "$RC" "a socket that vanishes before the frame is written falls through to a wake (exit 0)"
 assert_contains "$OUT" "failed before the frame was written" "the pre-write failure is explained"
-assert_contains "$OUT" "via --bg --resume" "the send completed via resume"
+assert_contains "$OUT" "sent to grp/oneshot (woken)" "the send completed after a wake"
 rm -f "$HOME/.claude/sessions/oneshot.json"; "$SMINOS" remove grp/oneshot >/dev/null
 AFTER_PHASE="$(python3 - "$PLUGIN_ROOT/skills/sminos/scripts" <<'PY'
 import sys
@@ -2111,9 +2186,12 @@ for w in blocked unknown working "done" error failed; do
 done
 run "$SMINOS" tui st --headless --width 140 --height 40 --keys "a,!focus:st/s-stop,s"
 assert_contains "$OUT" "send → st/s-stop ▏" "s on a stopped seat opens the send line (the send resumes it)"
+nb=$(grep -c -- '--bg' "$STUB_STATE/log/calls.log" || true)
 run "$SMINOS" send st/s-gone "hi"
-assert_rc 4 "$RC" "send to a gone seat is refused (exit 4)"
-assert_equals "$OUT" 'sminos: seat st/s-gone is gone — no transcript for its session on this machine; sminos fill st/s-gone "<task>" or sminos retire st/s-gone' "the gone refusal is one line pointing at fill and retire"
+assert_rc 0 "$RC" "a plain send to a gone seat is recorded and held (T2's §6)"
+assert_contains "$OUT" "for s-gone: recorded and held: the session is stopped and is not woken: no conversation of it is on that machine" "one line saying why (T2's §5)"
+assert_equals "$(held_debt "$ST_GONE")" "True 0" "owed, marked for its thread, no attempt counted"
+assert_equals "$(grep -c -- '--bg' "$STUB_STATE/log/calls.log" || true)" "$nb" "and nothing launched for it"
 run "$SMINOS" send st/s-ret "hi"
 assert_rc 4 "$RC" "send to a retired seat is refused even while its session answers"
 assert_contains "$OUT" "sminos fill st/s-ret" "pointing at fill"
@@ -2121,7 +2199,8 @@ nb=$(grep -c -- '^--bg --resume' "$STUB_STATE/log/calls.log" || true)
 run "$SMINOS" tui st --headless --width 140 --height 40 --keys "a,!focus:st/s-stop,s,text:back to work,enter"
 assert_contains "$OUT" "send s-stop back to work → rc=0 sent to st/s-stop" "the TUI's send to a stopped seat resumes it"
 assert_equals "$(grep -c -- '^--bg --resume' "$STUB_STATE/log/calls.log" || true)" "$((nb + 1))" "through one --bg --resume"
-assert_contains "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $ST_STOP [sminos message from human id=" "carrying the frame"
+assert_equals "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $ST_STOP" "carrying no message"
+assert_contains "$(cat "$STUB_STATE/wake/inputs/$ST_STOP" 2>/dev/null)" "back to work" "which is pushed to it once it runs"
 run "$SMINOS" tui st --headless --all --width 140 --height 40 --keys "!focus:st/s-ret,s"
 assert_not_contains "$OUT" "send → st/s-ret" "s on a retired seat opens no send line"
 assert_contains "$OUT" "s-ret is retired" "and says why"
@@ -2434,8 +2513,9 @@ run env -u CLAUDE_CODE_SESSION_ID "$SMINOS" tui --headless --keys "!focus:nothin
 assert_contains "$OUT" "chat · - · 0 messages" "no focused box selects no chat"
 run "$SMINOS" say '@b your migration renames my column'
 assert_rc 0 "$RC" "tag to a stopped member is recorded"
-assert_contains "$OUT" 'b: woken' "tag resumes a stopped member"
+assert_contains "$OUT" 'b: sent (woken)' "tag resumes a stopped member"
 assert_contains "$(cat "$STUB_STATE/log/calls.log")" "--bg --resume $B" "resume uses saved session"
+"$CLAUDE_STUB" stop "${B:0:8}" >/dev/null   # the woken process stopped again: b is a stopped member below
 run "$SMINOS" say '@all standup'
 assert_rc 0 "$RC" "broadcast is recorded"
 assert_contains "$OUT" 'lead: sent' "@all reaches a live member"
@@ -2483,8 +2563,8 @@ run "$SMINOS" list --json
 assert_contains "$OUT" '"alias": "lead"' "a member lists the project"
 assert_contains "$OUT" '"alias": "x"' "every member of it, whichever group its seat is in"
 run "$SMINOS" send other/x hi
-assert_rc 4 "$RC" "a send to a gone seat of the project is refused as gone, not as outside a family"
-assert_contains "$OUT" 'is gone' "naming why"
+assert_rc 0 "$RC" "a send to a gone seat of the project is recorded and held for it, not refused as outside a family"
+assert_contains "$OUT" 'for x: recorded and held: the session is stopped and is not woken: no conversation of it is on that machine' "naming why (T2's §5)"
 run "$SMINOS" say '@x hi'
 assert_rc 0 "$RC" "the project is a tag's reach: a seat of another group in the project is addressed"
 assert_contains "$OUT" 'x: recorded' "and recorded for it (no session of its runs here)"
@@ -2564,6 +2644,7 @@ print(ms[cur].by if cur in ms else "-", cur in ms)
 PY_SPAWNED
 )"
 assert_equals "$SPAWNED" "a True" "and stays a member, its spawner kept as provenance"
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$A.jsonl"   # a conversation for its wake
 "$SMINOS" fill fam/a "back" --resume >/dev/null
 rm -f "$HOME/.claude/sessions/b.json"
 printf 'short=bbbb0003\nuuid=%s\nname=b\nstate=stopped\nstatus=\ncwd=%s\n' "$B" "$WORK" > "$STUB_STATE/agents/bbbb0003"
@@ -2585,6 +2666,9 @@ assert_contains "$OUT" '"alias": "x"' "a pipeline worker lists the project"
 run "$SMINOS" spawn pipeline-child t
 assert_rc 0 "$RC" "a pipeline worker spawns"
 assert_equals "$(field "$(seat_id_of pipeline-child)" parent)" '' "what it spawns records no parent"
+X_SID=44444444-aaaa-4000-8000-000000000004
+printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$X_SID.jsonl"   # a conversation to wake
+bg_row "$X_SID" "$(field "$(seat_id_of x)" cwd)"
 run "$SMINOS" resume other/x 'pipeline resume'
 assert_rc 0 "$RC" "a pipeline worker can resume another seat"
 unset CLAUDE_CODE_SESSION_ID
@@ -2621,6 +2705,7 @@ printf 'short=dddd0001\nuuid=%s\nname=d1\nstate=stopped\n' "$D1" > "$STUB_STATE/
 printf 'short=dddd0002\nuuid=%s\nname=d2\nstate=stopped\n' "$D2" > "$STUB_STATE/agents/dddd0002"
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$D1.jsonl"
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/fake-proj/$D2.jsonl"
+bg_row "$D1" "$WORK"; bg_row "$D2" "$WORK"
 python3 - "$SMINOS_HOME/$D1.json" "$SMINOS_HOME/$D2.json" "$WORK" <<'PY_FIX_CWD'
 import json, sys
 for path, cwd in ((sys.argv[1], sys.argv[3] + '/no-such-sminos-cwd'), (sys.argv[2], sys.argv[3])):
@@ -2639,18 +2724,20 @@ for _ in $(seq 1 50); do [ -f "$TEST_ROOT/d1-lock-ready" ] && break; sleep .02; 
 run "$SMINOS" say '@d1 @d2 lock contention'
 wait "$d1_holder"
 assert_rc 0 "$RC" "one busy lifecycle lock does not abort sibling fan-out"
-assert_contains "$OUT" 'd1: failed:' "busy lifecycle lock is recorded per member"
-assert_contains "$OUT" 'd2: woken' "later member still resumes after lock contention"
+assert_contains "$OUT" "d1: recorded and held: the session is stopped and is not woken: its directory is gone" "a member held for its directory is said per member (T2's §5)"
+assert_contains "$OUT" 'd2: sent (woken)' "later member still resumes after lock contention"
+"$CLAUDE_STUB" stop "${D2:0:8}" >/dev/null   # stopped again, for the next fan-out to wake
 run "$SMINOS" say '@d1 @d2 please respond'
 assert_rc 0 "$RC" "one refused resume does not abort the fan-out"
-assert_contains "$OUT" 'd1: pending behind an earlier undelivered message (failed:' "a failed earlier message holds the later one back"
-assert_contains "$OUT" 'd2: woken' "the later tagged member resumes"
+assert_contains "$OUT" "d1: recorded and held: the session is stopped and is not woken: its directory is gone" "a held earlier message holds the later one too"
+assert_contains "$OUT" 'd2: sent (woken)' "the later tagged member resumes"
 assert_contains "$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D2.json")" "\"testhost/$DUO\": {\"settled\": $(last_seq "$FAMLOG/testhost.$DUO.jsonl")" "fan-out settles the successful member"
-assert_contains "$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D1.json")" "\"pending\": $(( $(last_seq "$FAMLOG/testhost.$DUO.jsonl") - 1 )), \"attempts\": 2" "and keeps the failed one pending with its attempts"
+assert_equals "$(python3 -c 'import json,sys; w = json.load(open(sys.argv[1]))["testhost/"+sys.argv[2]]; print(w.get("attempts", 0), sorted(int(x[0]) for x in w.get("held", [])))' "$SMINOS_HOME/projects/$FAMP/delivered/$D1.json" "$DUO")" \
+  "0 [$(( $(last_seq "$FAMLOG/testhost.$DUO.jsonl") - 1 )), $(last_seq "$FAMLOG/testhost.$DUO.jsonl")]" "and keeps both owed, held for its thread, no attempt counted"
 unset CLAUDE_CODE_SESSION_ID
-# A tagged member with no transcript on this machine (and no process) is gone: a
-# resume cannot work, so none is attempted — the message is recorded, the
-# sender is told to fill it, and the live member still gets the message.
+# A tagged member with no transcript on this machine (and no process) is not
+# woken (T2's §4): no resume is attempted, the message is held for its thread
+# and the sender told why, and the live member still gets the message.
 D4=4d4d4d4d-aaaa-4000-8000-0000000000d4
 "$SMINOS" seat add fam d4 --session "$D4" >/dev/null
 "$SMINOS" meta set fam/d4 cwd "$WORK" >/dev/null
@@ -2660,7 +2747,9 @@ printf '{"pid":%s,"sessionId":"%s","name":"d2","kind":"background","status":"idl
 CLAUDE_CODE_SESSION_ID="$DUO" run "$SMINOS" say '@d4 @d2 anyone there'
 assert_rc 0 "$RC" "a tagged gone member does not abort the chat"
 assert_contains "$OUT" 'd4: recorded' "a tagged gone member's message is recorded"
-assert_contains "$OUT" 'd4 is gone — no transcript for its session on this machine; fill it to reach it' "and the sender is told to fill it"
+assert_contains "$OUT" 'd4: recorded and held: the session is stopped and is not woken: no conversation of it is on that machine' "held for its thread, the sender told why (T2's §5)"
+assert_equals "$(held_mark "$SMINOS_HOME/projects/$FAMP/delivered/$D4.json" "testhost/$DUO" "$(last_seq "$FAMLOG/testhost.$DUO.jsonl")")" \
+  "0 True" "owed, marked for its thread, no attempt counted"
 assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "--resume $D4" "no resume of a gone member is attempted"
 assert_contains "$OUT" 'd2: sent' "and the fan-out still reaches the live member"
 rm -f "$HOME/.claude/sessions/fam-d2.json"
@@ -2675,11 +2764,15 @@ import json, sys
 p=sys.argv[1]; d=json.load(open(p)); d['cwd']=sys.argv[2]
 with open(p, 'w') as f: json.dump(d, f)
 PY_FIX_CWD2
-STUB_NO_UUID=1 run "$SMINOS" say '@d3 check'
-assert_rc 0 "$RC" "unconfirmed resume does not erase message"
-assert_contains "$OUT" 'd3: woken?' "unconfirmed uuid is reported as uncertain wake"
-assert_contains "$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D3.json")" "\"testhost/$D1\": {\"settled\": $(last_seq "$FAMLOG/testhost.$D1.jsonl")" "an uncertain wake is settled, never re-sent"
-assert_contains "$(field "$D3" pending_short)" 'dddd0003' "unconfirmed resume keeps recovery short"
+echo 3 > "$STUB_STATE/wake/late-process"   # its process appears after the wake's wait (T2's §3, row 16)
+run "$SMINOS" say '@d3 check'
+rm -f "$STUB_STATE/wake/late-process"
+assert_rc 0 "$RC" "a wake whose process is not seen in time does not erase the message"
+assert_contains "$OUT" 'd3: recorded: its process is starting, and the daemon delivers it' "it is held while its process starts, no attempt counted"
+assert_equals "$(held_mark "$SMINOS_HOME/projects/$FAMP/delivered/$D3.json" "testhost/$D1" "$(last_seq "$FAMLOG/testhost.$D1.jsonl")")" \
+  "0 True" "owed and marked for its thread"
+assert_not_contains "$(cat "$SMINOS_HOME/projects/$FAMP/delivered/$D3.json" 2>/dev/null)" "\"testhost/$D1\": {\"settled\": $(last_seq "$FAMLOG/testhost.$D1.jsonl")" "and not settled: the wake carried nothing"
+assert_equals "$(has_key "$D3" pending_short)" "False" "a wake writes no pending_short"
 unset CLAUDE_CODE_SESSION_ID
 run "$SMINOS" seat add fam solo --session aaaaaaaa-aaaa-4000-8000-00000000000a
 export CLAUDE_CODE_SESSION_ID=aaaaaaaa-aaaa-4000-8000-00000000000a
@@ -2993,8 +3086,9 @@ assert_contains "$(inbox e)" "welcome" "a later member is reached by a tag"
 assert_not_contains "$(inbox e)" "rebase in progress" "an @all written before a member joined is never delivered to it"
 # A tag to a stopped member resumes it.
 CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@d wake up"
-assert_contains "$OUT" "d: woken" "a tag resumes a stopped member"
+assert_contains "$OUT" "d: sent (woken)" "a tag resumes a stopped member"
 assert_contains "$(cat "$STUB_STATE/log/calls.log")" "--bg --resume $SD" "through its saved session"
+"$CLAUDE_STUB" stop "${SD:0:8}" >/dev/null   # its woken process stopped again: d stays a stopped member
 CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@a hi"
 assert_rc 2 "$RC" "a member cannot tag itself"
 CLAUDE_CODE_SESSION_ID="$SA" run "$SMINOS" say "@all @b hi"
@@ -3319,10 +3413,11 @@ mv "$HOME/.claude/sessions/pl-b.json" "$TEST_ROOT/pl-b.json.aside"   # b stops
 : > "$STUB_STATE/log/calls.log"
 run "$SMINOS" send demo/b "after a broadcast"
 assert_rc 0 "$RC" "a send to a stopped member behind a pending @all delivers"
-assert_contains "$OUT" "via --bg --resume" "by resuming it"
-assert_contains "$(cat "$STUB_STATE/log/calls.log")" "after a broadcast" "the resume carries the send"
-assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "stale broadcast" "but not the broadcast a stopped member is never resumed for"
+assert_contains "$OUT" "sent to demo/b (woken)" "by waking it"
+assert_contains "$(cat "$STUB_STATE/wake/inputs/$SB" 2>/dev/null)" "after a broadcast" "the push after the wake carries the send"
+assert_not_contains "$(cat "$STUB_STATE/wake/inputs/$SB" 2>/dev/null)" "stale broadcast" "but not the broadcast a stopped member is never woken for"
 assert_equals "$(owed_count "$SB")" 0 "the broadcast is settled by passing"
+"$CLAUDE_STUB" stop "${SB:0:8}" >/dev/null   # the woken process stopped: b is its inbox stand-in again
 mv "$TEST_ROOT/pl-b.json.aside" "$HOME/.claude/sessions/pl-b.json"
 rm -f "$STUB_STATE/agents/bbbb0b02"
 
@@ -3410,6 +3505,9 @@ def fake_push(member, text, tagged, session=None, event=None, project=None):
         f.write("sent:%s\n" % body)
     return "sent"
 mod.push_member = fake_push
+# The push's own mechanics: the hold and the wake (T2's M3) out of the way, g a session pushed to.
+mod.hold_now = lambda session: ""
+mod.wake_member = lambda *a, **k: ("", None)
 print(json.dumps({k: v for k, v in mod.deliver_next(project, member).items() if k != "outcomes"}))
 PY_DELIVER
 SG=09000009-0000-4000-8000-000000000009
@@ -3477,7 +3575,7 @@ for _ in range(9):
     mod.log_append(p, mod.writer_id(sys.argv[3]), "say", **{"from": "w", "to": "*", "text": "filler"})
 PY_FILLQ
 STUB_FAIL_BG=1 CLAUDE_CODE_SESSION_ID="$WQ" run "$SMINOS" say "@q ten"
-assert_contains "$OUT" "q: failed:resume failed" "event 10's push fails in the fast path: the resume does not launch"
+assert_contains "$OUT" "q: recorded and held: the session is stopped and is not woken: waking it failed" "event 10 is held in the fast path: the wake does not launch"
 assert_contains "$(tail -1 "$SMINOS_HOME/projects/$DEMO/log/testhost.$WQ.jsonl")" '"seq": 10, "kind": "say"' "it is the writer's event 10"
 start_inbox q
 live_peer q "$SQ" idle
@@ -3820,8 +3918,9 @@ run "$SMINOS" fill pc "continue" --resume
 assert_rc 0 "$RC" "fill --resume of the retired seat"
 assert_equals "$(field "$PC" current)" "$PC2" "keeps its session"
 assert_equals "$(events_of "$PC2")" "joined in-charge retired:retire joined " "and re-joins it under the same uuid"
+"$CLAUDE_STUB" stop "${PC2:0:8}" >/dev/null   # its woken process stopped
 run "$SMINOS" list --stopped
-assert_contains "$OUT" "pc" "the revived seat lists again with --stopped (the stub has no live peer)"
+assert_contains "$OUT" "pc" "the revived seat lists again with --stopped once its process stops"
 # seat add records joined; remove records retired.
 SAS=2a000007-0000-4000-8000-00000000002a
 run "$SMINOS" seat add pf-repo added --session "$SAS"
@@ -3841,6 +3940,7 @@ printf '{"uuid":"%s","current":"%s","alias":"hk","group":"pf-repo","status":"idl
   "$HK" "$HK" "$R" > "$SMINOS_HOME/$HK.json"
 chmod 600 "$SMINOS_HOME/$HK.json"
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/pl-proj/$HK.jsonl"
+bg_row "$HK" "$R"
 hook_run SessionStart "$HK" "$R" "$HOME/.claude/projects/pl-proj/$HK.jsonl" startup
 assert_equals "$(events_of "$HK")" "joined " "the hook joins a seat's session at its start, at the real time"
 CLOCK="$(python3 - "$SMINOS_PY" "$PF" "$HK" 2>&1 <<'PY_CLOCK'
@@ -3892,8 +3992,10 @@ assert_contains "$(inbox ib)" "[sminos message from human id=" "with send's own 
 assert_contains "$(tail -1 "$PFLOG/testhost.human.jsonl")" "\"session\": \"$IB\"" "recorded to its session"
 assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["testhost/human"]["settled"])' "$SMINOS_HOME/projects/$PF/delivered/$IB.json")" \
   "$(tail -1 "$PFLOG/testhost.human.jsonl" | python3 -c 'import json,sys; print(json.load(sys.stdin)["seq"])')" "and settled in its delivery record"
-run "$SMINOS" send ib "x" --wait
-assert_rc 2 "$RC" "send --wait to a seat-less member is refused: there is no record to watch"
+SMINOS_ACK_TIMEOUT=0.4 run "$SMINOS" send ib "waited for" --wait
+assert_rc 1 "$RC" "send --wait to a seat-less member pushes and waits for its reply by the message's id (T2's §6): none here"
+assert_contains "$OUT" "no evidence that ib received the message" "the waiter looked for the message's id in its transcript"
+assert_contains "$(inbox ib)" "waited for" "the message was pushed to its process"
 CLAUDE_CODE_SESSION_ID="$IB" run "$SMINOS" status ib "reading the schema"
 assert_rc 0 "$RC" "a seat-less member sets its status"
 assert_contains "$(tail -1 "$PFLOG/testhost.$IB.jsonl")" '"kind": "status"' "as a status event in its own file"
@@ -3920,8 +4022,8 @@ assert_not_contains "$OUT" "closer" "once its session exits, a plain list folds 
 assert_equals "$(events_of "$IE")" "joined " "and nothing retires it: it is stopped"
 run "$SMINOS" say "@closer are you there"
 assert_rc 0 "$RC" "a tag to it while it is closed is recorded"
-assert_contains "$OUT" "closer: recorded and held: the session is stopped, and a session its human opened is not woken" \
-  "saying it is held for its human to reopen"
+assert_contains "$OUT" "closer: recorded and held: the session is stopped and is not woken: no conversation of it is on that machine" \
+  "saying it is held, and why (T2's §5)"
 pf_peer closer "$IE" idle user                  # resumed outside sminos
 run "$SMINOS" list
 assert_contains "$OUT" "closer" "when it runs again it lists again"
@@ -4292,8 +4394,8 @@ chmod 400 "$PFLOG/testhost.$STP.jsonl"
 run "$SMINOS" say "@stp @ib wake both"
 chmod 600 "$PFLOG/testhost.$STP.jsonl"
 assert_rc 0 "$RC" "a say whose resumed recipient cannot be re-joined in the log still completes"
-assert_contains "$OUT" "stp: woken" "the resume launched with the frame"
-assert_contains "$OUT" "pf-repo/stp was resumed with the message, but recording joined of ${STP:0:8}" "a warning names the failed re-join"
+assert_contains "$OUT" "stp: sent (woken)" "the resume launched with the frame"
+assert_contains "$OUT" "pf-repo/stp was woken, but recording joined of ${STP:0:8}" "a warning names the failed re-join"
 assert_contains "$OUT" "ib: sent" "the fan-out goes on to the next recipient"
 assert_contains "$(inbox ib)" "wake both" "which is delivered"
 assert_equals "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["testhost/human"]["settled"])' "$SMINOS_HOME/projects/$PF/delivered/$STP.json")" \
@@ -4543,8 +4645,9 @@ run "$SMINOS" say "@quiet-seat are you there"
 assert_contains "$OUT" "quiet-seat: recorded" "a tagged say to it is recorded"
 assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and launches no claude --bg --resume of the running process"
 run "$SMINOS" send od-alpha/quiet-seat "are you there"
-assert_rc 4 "$RC" "send to a running seat whose inbox does not answer is refused (exit 4)"
-assert_contains "$OUT" "runs, but its inbox does not answer" "saying why"
+assert_rc 0 "$RC" "a plain send to a running seat whose inbox does not answer is recorded and held (T2's §6)"
+assert_contains "$OUT" "for quiet-seat: recorded: its process is starting, and the daemon delivers it" "saying the daemon delivers it once it answers (T2's §5)"
+assert_equals "$(held_debt "$OD_SEAT")" "True 0" "owed, marked for its thread, no attempt counted"
 assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and resumes nothing either"
 
 # The row: alias [short] always, kind, word, @machine, repo@branch, the
@@ -4759,14 +4862,14 @@ STUB_AGENTS_FAIL=1 run_in "$ODA" "$SMINOS" resume od-alpha/quiet-seat "go on"
 assert_rc 1 "$RC" "resume of a running seat it cannot stop is refused"
 assert_contains "$OUT" "still runs" "saying the session still runs"
 assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and launches no resume"
-# With a recorded short, the stop command succeeds, yet the process its
-# record names still runs: the turn is not down, so nothing is launched.
+# A short the seat recorded is no proof of a background job of this session (T2's M2): with no job list to show
+# one, nothing is stopped and nothing launched.
 "$SMINOS" meta set od-alpha/quiet-seat short 0d00ab02 >/dev/null
 : > "$STUB_STATE/log/calls.log"
 SMINOS_STOP_TIMEOUT=0.5 STUB_AGENTS_FAIL=1 run_in "$ODA" "$SMINOS" resume od-alpha/quiet-seat "go on"
-assert_contains "$(cat "$STUB_STATE/log/calls.log")" "stop 0d00ab02" "resume stops the running seat's recorded turn"
-assert_rc 1 "$RC" "and, its process still running after a stop that succeeded, refuses"
-assert_contains "$OUT" "is still running" "saying the turn is still running"
+assert_not_contains "$(cat "$STUB_STATE/log/calls.log")" "stop 0d00ab02" "resume never stops a short the seat recorded alone"
+assert_rc 1 "$RC" "and, its process still running, refuses"
+assert_contains "$OUT" "still runs" "saying the session still runs"
 assert_equals "$(grep -c -- '--resume' "$STUB_STATE/log/calls.log" || true)" "0" "and launches no resume"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/od-"*.json
@@ -7249,8 +7352,8 @@ assert_not_contains "$(md_inbox a)" "while h1 is read-only" "what was refused wa
 assert_equals "$(grep -c -- "--resume $C" "$MD/h1/stub/log/calls.log" || true)" "$RESUMES_C" "nor resumes c"
 
 # One machine, a project with no remote: the daemon delivers what the fast
-# path left owed. x and y are seats; a seat whose session is down is resumed
-# by a tag, and a resume that does not launch is a failed push.
+# path left owed. x and y are seats; a seat whose session is down is woken
+# by a tag, and a wake that does not launch holds the message (T2's §4).
 LR2="$MD/solo-repo"
 mkdir -p "$LR2"
 gitq init -q "$LR2"
@@ -7263,7 +7366,7 @@ SOLOP=local-solo-repo
 md_peer solo x "$X" idle bg "$LR2"
 STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" say "@x @y both of you"
 assert_contains "$OUT" "x: sent" "an event to two local members reaches the first"
-assert_contains "$OUT" "y: failed" "and the second's push fails"
+assert_contains "$OUT" "y: recorded and held: the session is stopped and is not woken: waking it failed" "and the second's wake fails: held"
 md_peer solo y "$Y" idle bg "$LR2"
 run env "${SOLO[@]}" "$SMINOS" daemon tick
 assert_contains "$OUT" "solo-repo: reconciled 0 · delivered 1 to y" "a later tick delivers it to the second"
@@ -7275,7 +7378,7 @@ assert_equals "$(bodies md-y | grep -c 'both of you$')" 1 "the second once"
 # A daemon restarted between the push and the record delivers at most once more.
 rm -f "$MD/solo/.claude/sessions/y.json"
 STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" say "@y restart me"
-assert_contains "$OUT" "y: failed" "an event to y is owed"
+assert_contains "$OUT" "y: recorded and held: the session is stopped and is not woken: waking it failed" "an event to y is owed"
 md_peer solo y "$Y" idle bg "$LR2"
 touch "$TEST_ROOT/in-md-y.received.hold"
 rm -f "$TEST_ROOT/in-md-y.received.held"
@@ -7292,33 +7395,31 @@ assert_contains "$OUT" "delivered 1 to y" "killed before settling it, the restar
 run env "${SOLO[@]}" "$SMINOS" daemon tick
 assert_contains "$OUT" "delivered 0" "and then never again"
 assert_equals "$(bodies md-y | grep -c '^@y restart me$')" 2 "at most once more: two frames in all"
-# A push that keeps failing is retried each tick and given up on the 60th
-# attempt: settled, with a line in daemon.log naming the event and the member.
+# A wake that keeps failing holds the message (T2's §4): no attempt is counted and it is never given up; the
+# daemon tries again on the wake's schedule, not every tick, and delivers it once a process of y takes it.
 rm -f "$MD/solo/.claude/sessions/y.json"
 STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" say "@y never arrives"
-GIVEUP_SEQ="$(seq_of "$MD/solo/sminos/projects/$SOLOP/log/solo.human.jsonl")"
-python3 - "$MD/solo/sminos/projects/$SOLOP/delivered/$Y.json" <<'PY_ATTEMPTS'
-import json, sys
-d = json.load(open(sys.argv[1]))
-d["solo/human"]["attempts"] = 58
-json.dump(d, open(sys.argv[1], "w"))
-PY_ATTEMPTS
-STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" daemon tick
-assert_contains "$OUT" "delivered 0" "the 59th attempt fails"
-assert_contains "$(cat "$MD/solo/sminos/projects/$SOLOP/delivered/$Y.json")" '"pending": '"$GIVEUP_SEQ"', "attempts": 59' "and stays pending"
-STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" daemon tick
-assert_contains "$(cat "$MD/solo/sminos/projects/$SOLOP/delivered/$Y.json")" '"settled": '"$GIVEUP_SEQ"', "pending": null' "the 60th settles it"
-assert_contains "$(cat "$MD/solo/sminos/daemon.log")" "gave up delivering solo/human:$GIVEUP_SEQ (solo-repo) to $Y after 60 attempts" "with a line in daemon.log"
+assert_contains "$OUT" "y: recorded and held: the session is stopped and is not woken: waking it failed" "the sender is told it is held, and why"
+HELD_SEQ="$(seq_of "$MD/solo/sminos/projects/$SOLOP/log/solo.human.jsonl")"
 CALLS_BEFORE="$(grep -c -- "--resume $Y" "$MD/solo/stub/log/calls.log")"
+STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" daemon tick
+assert_contains "$OUT" "delivered 0" "a tick before its wake is due delivers nothing"
+STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" daemon tick
+assert_equals "$(grep -c -- "--resume $Y" "$MD/solo/stub/log/calls.log")" "$CALLS_BEFORE" "and launches nothing"
+assert_equals "$(python3 -c 'import json,sys; w = json.load(open(sys.argv[1]))["solo/human"]; s = int(sys.argv[2]); print(w.get("attempts", 0), s in [int(x[0]) for x in w.get("held", [])], w["settled"] < s)' "$MD/solo/sminos/projects/$SOLOP/delivered/$Y.json" "$HELD_SEQ")" \
+  "0 True True" "held for its thread, owed, no attempt counted"
+assert_not_contains "$(cat "$MD/solo/sminos/daemon.log")" "gave up delivering solo/human:$HELD_SEQ" "never given up"
+md_peer solo y "$Y" idle bg "$LR2"
 run env "${SOLO[@]}" "$SMINOS" daemon tick
-assert_equals "$(grep -c -- "--resume $Y" "$MD/solo/stub/log/calls.log")" "$CALLS_BEFORE" "and it is never tried again"
+assert_contains "$OUT" "delivered 1 to y" "pushed once a process of y takes it"
+assert_equals "$(bodies md-y | grep -c '^@y never arrives$')" 1 "once"
 
 # daemon run: an owed event in a remote-less project is delivered while a
 # derivation child sleeps (one at a time), and a session that appears after
 # the loop started is seen.
 rm -f "$MD/solo/.claude/sessions/y.json"
 STUB_FAIL_BG=1 run env "${SOLO[@]}" "$SMINOS" say "@y from before the run"
-assert_contains "$OUT" "y: failed" "another event to y is owed"
+assert_contains "$OUT" "y: recorded and held: the session is stopped and is not woken: waking it failed" "another event to y is owed"
 SL=5c000005-0000-4000-8000-00000000005c
 SLX="$MD/solo/.claude/projects/sl/$SL.jsonl"
 mkdir -p "$(dirname "$SLX")"

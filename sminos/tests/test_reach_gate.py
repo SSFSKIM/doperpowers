@@ -116,17 +116,20 @@ class Rig(tw.WordsRig):
         sminos.transcripts_now()
 
     def launches(self):
-        """`claude --bg --resume` faked: each launch's message, the resumed
-        session reporting itself at once."""
+        """`claude --bg --resume` faked (T2's M2: a wake, which carries no
+        message): each launch's session, its process then holding it with an
+        inbox (self.inbox), as the engine's woken process does."""
         calls = []
 
         def bg(args, cwd, settings):
-            calls.append(args[args.index("--resume") + 2])
-            return "abcd1234", "backgrounded · abcd1234"
-        for name, fake in (("run_claude_bg", bg), ("poll_uuid", lambda short, **_: (SEATED, "working", self.hp.root))):
-            patcher = mock.patch.object(sminos, name, side_effect=fake)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+            sid = args[args.index("--resume") + 1]
+            self.assertEqual(args[:3], ["--bg", "--resume", sid])
+            calls.append(sid)
+            self.session(self.hp, sid, name="parked", inbox=True, bg=True)
+            return sid[:8], "backgrounded · %s" % sid[:8]
+        patcher = mock.patch.object(sminos, "run_claude_bg", side_effect=bg)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         return calls
 
     def corrupt(self, sid):
@@ -202,9 +205,10 @@ class Paths(Rig):
         self.assertEqual(launched, [], "nothing resumed for a refused message")
         self.assertIn(self.refused_line(SENDER[:8], self.seq("keep out"), SEATED), tw.daemon_log())
         self.cli("send", "crew/parked", "come in")
-        tw.wait_for(lambda: launched, timeout=WAIT)
-        self.assertEqual(len(launched), 1)
-        self.assertIn("come in", launched[0], "resumed with the admitted message as its prompt")
+        tw.wait_for(lambda: SEATED in self.inboxes and self.inbox(SEATED), timeout=WAIT)
+        self.assertEqual(launched, [SEATED], "woken once, for the admitted message")
+        [got] = self.inbox(SEATED)
+        self.assertIn("come in", got, "then pushed it, as to a live session")
         self.assertEqual(len(self.reach_asks(ep)), 2)
 
     def test_a_legacy_holders_direct_push(self):
@@ -595,14 +599,18 @@ class Projectless(Rig):
                 return e.code, err.getvalue()
         return 0, err.getvalue()
 
-    def test_a_resume_with_a_message_reaches_only_its_owners_sessions(self):
+    def test_a_resume_records_its_message_and_another_owners_seat_waits_for_the_endpoint(self):
+        """From T2's M2 a resume records its message as `send` records one,
+        so it is a log event the reach gate asks the endpoint about, and no
+        longer a bare text only its owners' sessions may send."""
         self.live(SENDER, "sender")
         self.seat("parked", SEATED, owners=ANOTHER)
         self.transcript(SEATED)
         launched = self.launches()
-        code, err = self.resume("crew/parked", "from outside")
-        self.assertNotEqual(code, 0)
-        self.assertIn("parked has no project, so only its owners' sessions reach it", err)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code, err = self.resume("crew/parked", "from outside")
+        self.assertEqual(code, 0, err)
+        self.assertIn("the endpoint decides its delivery", out.getvalue())
         self.assertEqual(launched, [], "nothing stopped or launched")
 
     def test_the_same_owner_passes(self):
@@ -610,34 +618,23 @@ class Projectless(Rig):
         self.seat("parked", SEATED)
         self.transcript(SEATED)
         launched = self.launches()
-        code, err = self.resume("crew/parked", "from my own session")
+        with contextlib.redirect_stdout(io.StringIO()):
+            code, err = self.resume("crew/parked", "from my own session")
         self.assertEqual(code, 0, err)
-        self.assertEqual(launched, ["from my own session"])
+        self.assertEqual(launched, [SEATED])
+        self.assertIn("from my own session", self.inbox(SEATED)[0])
 
-    def test_the_operator_is_the_machines_owners(self):
+    def test_the_operator_s_resume_is_a_person_s_words_the_endpoint_delivers(self):
+        """The operator's resume, recorded as its `send` is (T2's M2), is a
+        person's words on a machine cut over: held for the endpoint's
+        verdict, nothing launched here."""
         self.seat("parked", SEATED)
         self.transcript(SEATED)
         launched = self.launches()
-        self.assertEqual(self.resume("crew/parked", "from the terminal", session=None)[0], 0)
-        self.assertEqual(launched, ["from the terminal"])
-
-    def test_the_operator_meets_a_desk_spawned_seat_by_the_endpoints_word(self):
-        """A seat the owner's desk spawned names the member; the operator's
-        `@machine` is that member as the endpoint resolved a `@machine`
-        session's owners. Another member's seat stays refused."""
-        self.live(SENDER, "sender")
-        self.assertTrue(au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(SENDER, ["mem-1"])}))
-        self.seat("parked", SEATED, owners=["mem-1"])
-        self.seat("theirs", ELSEWHERE, owners=ANOTHER)
-        for sid in (SEATED, ELSEWHERE):
-            self.transcript(sid)
-        launched = self.launches()
-        self.assertEqual(self.resume("crew/parked", "from its owner", session=None)[0], 0)
-        code, err = self.resume("crew/theirs", "from outside", session=None)
-        self.assertNotEqual(code, 0)
-        self.assertIn("theirs has no project, so only its owners' sessions reach it", err)
-        self.assertEqual(launched, ["from its owner"])
-
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(self.resume("crew/parked", "from the terminal", session=None)[0], 0)
+        self.assertIn("the endpoint decides its delivery", out.getvalue())
+        self.assertEqual(launched, [])
 
 # ------------------------------------------------------------- the primitive
 
@@ -683,6 +680,31 @@ class Primitive(Rig):
         tw.wait_for(lambda: self.inbox(RECIP), timeout=WAIT)
         self.assertEqual(len(self.inbox(RECIP)), 1)
 
+
+
+# ------------------------------------------------------------- the thread's hold comes first (T2's §4)
+
+
+class ThreadHold(Rig):
+    def test_a_plain_send_to_a_seat_not_woken_is_held_for_its_thread_and_the_endpoint_is_asked_nothing(self):
+        """A seat with no transcript here is not woken (`transcript`): a plain send to it, a peer's that reach
+        would gate and an operator's that words would, is held and marked for its thread first, and no `reach?`
+        or `words?` is asked for it."""
+        self.live(SENDER, "sender")
+        ep = self.endpoint(reach_verdict="deliver")
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "hello")
+        for alias, sid, session in (("parked", SEATED, SENDER), ("idle-op", ELSEWHERE, None)):
+            with self.subTest(sender="a peer" if session else "the operator"):
+                self.seat(alias, sid, owners=ANOTHER)
+                out = self.cli("send", "crew/" + alias, "while away", session=session)
+                self.assertIn("recorded and held: the session is stopped and is not woken: no conversation of it is "
+                              "on that machine", out)
+                record = sminos.delivered_load(self.hp, sid)
+                self.assertTrue(any(w.get("held") for w in record.values()), record)
+        time.sleep(2.0)
+        self.assertEqual(self.reach_asks(ep), [])
+        self.assertEqual(ep.frames("words?"), [])
 
 if __name__ == "__main__":
     unittest.main()

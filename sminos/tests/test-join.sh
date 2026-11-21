@@ -538,13 +538,17 @@ S19_TX=$TX
 hook_payload SessionStart "$S19" "$CR" "$S19_TX" | CLAUDE_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
 : > "$STUB_STATE/calls"
 run_in "$CR" "$SMINOS" resume crew/tuned "go on"
-assert_contains "$OUT" "runs under $CFG" "is not resumed from a process under another config dir"
+# From T2's M4 another config dir is a hold, not a refusal: the message recorded and held, nothing started (§6).
+assert_contains "$OUT" "recorded and held: the session is stopped and is not woken: it runs under another config dir" \
+  "is not resumed from a process under another config dir"
 assert_not_contains "$(cat "$STUB_STATE/calls")" "--resume $S19" "nothing launched"
 run_in "$CR" in_session "$S18" "$SMINOS" say "@tuned are you there"
 assert_contains "$OUT" "tuned: recorded" "a message to it is recorded for it, not pushed"
 assert_not_contains "$(cat "$STUB_STATE/calls")" "--resume $S19" "the delivery resumes nothing either"
 run_in "$CR" env CLAUDE_CONFIG_DIR="$CFG" "$SMINOS" resume crew/tuned "go on"
-assert_contains "$(cat "$STUB_STATE/calls")" "--bg --resume $S19" "a process under its own config dir resumes it"
+# From T2's M2 a resume's message is recorded and delivered as a send's: on this machine, cut over, an operator's
+# is the endpoint's to decide, so the verb records it and wakes nothing itself.
+assert_contains "$OUT" "the endpoint decides its delivery" "a process under its own config dir is not refused: its message is recorded"
 S20=1a000020-0000-4000-8000-000000000020   # running under CFG, its engine yet to write a transcript
 live_pid
 S20_PID=$LIVE_PID
@@ -579,7 +583,8 @@ PY
 )" "$S21_TX" "so its transcript is still found"
 : > "$STUB_STATE/calls"
 run_in "$CR" "$SMINOS" resume crew/aged "back"
-assert_contains "$OUT" "runs under $CFG" "and a resume from here still refused"
+assert_contains "$OUT" "recorded and held: the session is stopped and is not woken: it runs under another config dir" \
+  "and a resume from here still refused"
 assert_not_contains "$(cat "$STUB_STATE/calls")" "--resume $S21" "launching nothing"
 
 echo "the hook's cheap look, on a machine not enrolled:"
