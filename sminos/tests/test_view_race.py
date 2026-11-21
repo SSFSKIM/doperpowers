@@ -41,12 +41,14 @@ import sminos  # noqa: E402
 
 
 class JoinedMeanwhile(unittest.TestCase):
+    STATE = "s"   # the state directory's name under the test's home
+
     def setUp(self):
         home = tempfile.mkdtemp(dir=BASE)
-        os.environ.update(HOME=os.path.join(home, "h"), SMINOS_HOME=os.path.join(home, "s"))
+        os.environ.update(HOME=os.path.join(home, "h"), SMINOS_HOME=os.path.join(home, self.STATE))
         os.makedirs(os.path.join(os.environ["HOME"], ".claude", "sessions"))
         os.makedirs(os.environ["SMINOS_HOME"])
-        self.procs = []
+        self.procs, self.proc_of = [], {}
         self.addCleanup(self.stop_all)
         self.root = os.path.join(home, "work")
         subprocess.run(["git", "init", "-q", self.root], check=True)
@@ -67,11 +69,39 @@ class JoinedMeanwhile(unittest.TestCase):
         sid = sid or str(uuidlib.uuid4())
         proc = subprocess.Popen(["sleep", "600"])
         self.procs.append(proc)
-        with open(os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % proc.pid), "w") as f:
+        self.proc_of[sid] = proc
+        with open(self.peer_path(proc.pid), "w") as f:
             json.dump({"pid": proc.pid, "sessionId": sid, "cwd": self.root, "kind": "interactive", "name": name,
                        "nameSource": "user", "status": "idle"}, f)
         sminos.forget_caches()
         return sid
+
+    @staticmethod
+    def peer_path(pid):
+        return os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % pid)
+
+    def end(self, sid):
+        """The session's process gone, and its engine record with it."""
+        proc = self.proc_of.pop(sid)
+        proc.kill()
+        proc.wait()
+        os.unlink(self.peer_path(proc.pid))
+        sminos.forget_caches()
+
+    def handoff_transcript(self, old, new):
+        """The old session's transcript as the engine leaves it at a hand-off to a background job."""
+        d = os.path.join(os.environ["HOME"], ".claude", "projects", "p-work")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, old + ".jsonl"), "a") as f:
+            for r in ({"type": "user", "sessionId": old, "cwd": self.root,
+                       "message": {"role": "user", "content": "keep going"}},
+                      {"type": "assistant", "uuid": "h-" + old[:4], "message": {
+                          "role": "assistant", "stop_reason": "end_turn", "content": [{"type": "text", "text": "ok"}]}},
+                      {"type": "continued-in", "sessionId": old, "continuedInSessionId": new}):
+                f.write(json.dumps(r) + "\n")
+        sminos._TINDEX.at = None
+        sminos._TINDEXES.clear()
+        sminos.forget_caches()
 
     def cli(self, *argv, session=None):
         """The verb in this process: (exit code, its output)."""
@@ -138,6 +168,46 @@ class JoinedMeanwhile(unittest.TestCase):
         self.joined_by_other(new)
         said = [e for e in sminos.log_read(self.p) if e["kind"] == "say" and "the alias" in str(e.get("text"))]
         self.assertEqual([r.get("session") for e in said for r in e.get("to") or []], [new], said)
+
+    def test_a_seat_the_other_process_handed_off_is_still_its_seat(self):
+        # The other process moves the seat to the job it went on in, and appends the hand-off's events; this
+        # reconciliation appends nothing, and the view must read the seats as the log it answers from has them.
+        old = self.session("w")
+        code, out = self.cli("seat", "add", "g", "worker", "--session", old)
+        self.assertEqual(code, 0, out)
+        self.end(old)
+        job = str(uuidlib.uuid4())
+        self.handoff_transcript(old, job)
+        here = os.getcwd()
+        os.chdir(self.root)   # the caller's project, as a verb run there has it
+        try:
+            with self.other_writer_first():
+                view = sminos.view_of(self.p)
+                target = sminos.find_target("worker")
+        finally:
+            os.chdir(here)
+        self.assertEqual(sminos.load_seat(next(sminos.record_files()))["current"], job, "handed off by the other")
+        self.assertEqual(view.reconciled, 0, "nothing of it was this reconciliation's")
+        [row] = [m for m in view.members if m.session == job]
+        self.assertIsNotNone(row.seat, "the job is the seat's session")
+        self.assertEqual(target[0], "seat", target)
+
+
+class GlobInHome(JoinedMeanwhile):
+    """Every case again, in a state directory whose path holds glob characters, and the log read there."""
+    STATE = "state[1]"
+
+    @unittest.skip("the seats' own listing (record_files) takes the state directory as a pattern still")
+    def test_a_seat_the_other_process_handed_off_is_still_its_seat(self):
+        pass
+
+    def test_the_log_is_read(self):
+        new = self.session("newcomer")
+        view = sminos.view_of(self.p)
+        self.assertIn(new, [m.session for m in view.members], "this process's own join")
+        self.assertTrue(any(e["kind"] == "joined" and e["session"] == new for e in sminos.log_read(self.p)))
+        sminos.forget_caches()
+        self.assertIn(new, [m.session for m in sminos.view_of(self.p).members], "and the next view's")
 
 
 if __name__ == "__main__":

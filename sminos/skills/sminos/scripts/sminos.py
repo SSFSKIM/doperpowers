@@ -3478,13 +3478,19 @@ def _store_read(project, store, since=None, kinds=(), to_session=None):
     if not (since or kinds or to_session):
         return _store_whole(project, store)[1]
     streams = {}
-    for path in sorted(glob.glob(os.path.join(project.home, store, "*.jsonl"))):
+    for path in _store_paths(project, store):
         for e in _log_file_events(path):
             if ((since and e["seq"] <= int(since.get(e["writer"], 0)))
                     or (kinds and e["kind"] not in kinds) or (to_session and not addressed_to(e, to_session))):
                 continue
             streams.setdefault(e["writer"], []).append(dict(e))
     return _merge(streams)
+
+
+def _store_paths(project, store):
+    """The store's writer files, its top-level *.jsonl, sorted; the directory's own path taken literally (a
+    state directory may be named `state[1]`)."""
+    return sorted(glob.glob(os.path.join(glob.escape(os.path.join(project.home, store)), "*.jsonl")))
 
 
 def _merge(streams):
@@ -3501,8 +3507,7 @@ def _store_whole(project, store, shared=False):
     `shared`: the merged list itself, no copy, for a reader that changes
     nothing in it (view_of's View); what is derived from it is kept with it
     (log_memo) until a file moves."""
-    files = tuple((path, *_log_file_held(path))
-                  for path in sorted(glob.glob(os.path.join(project.home, store, "*.jsonl"))))
+    files = tuple((path, *_log_file_held(path)) for path in _store_paths(project, store))
     sig = tuple((path, key) for path, key, _ in files)
     held = _MERGED.get((project.home, store))
     if held is None or held[0] != sig:
@@ -6562,17 +6567,19 @@ def view_of(project, all_seats=None, titles=True):
     all_seats = seats() if all_seats is None else all_seats
     by_session = seats_by_session(project, all_seats)
     local = _local_sessions(project, all_seats)
-    sig, events = _store_whole(project, "log", shared=True)
+    read, events = _store_whole(project, "log", shared=True)
     appended = _reconcile(project, events, local, by_session, all_seats)
-    if appended:   # a hand-off may have moved a seat to the session it continues in
-        all_seats = seats()
-        by_session = seats_by_session(project, all_seats)
-        local = _local_sessions(project, all_seats)
     # Read again: what anyone appended since the read above is in the view — this reconciliation's own
     # events, and another process's join (or retire, rename, hand-off) that its guards then declined to
     # repeat (#581). The same merged list when no file moved. An append that waits for its writer's head
     # is in no log file yet: it is added as written.
     sig, events = _store_whole(project, "log", shared=True)
+    if appended or sig != read:
+        # The seats as that log has them: a hand-off, this process's or another's, may have moved a seat to
+        # the session it continues in.
+        all_seats = seats()
+        by_session = seats_by_session(project, all_seats)
+        local = _local_sessions(project, all_seats)
     queued = [e for e in appended if e.get("seq") is None]
     if queued:
         events = events + queued
