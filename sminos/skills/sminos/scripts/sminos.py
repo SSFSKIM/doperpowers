@@ -9697,7 +9697,7 @@ def _lines_backward(f, end, budget=None):
 # 32 KiB of the transcript, the custom one first (planReAppendSessionMetadata),
 # so a current custom title sits within that window of the latest ai title.
 TITLE_REACH = 256 << 10
-_TITLES = {}  # session -> ((path, size, mtime_ns), title): valid while the file is unchanged
+_TITLES = {}  # session -> ((path, size, mtime_ns), (custom, ai)): valid while the file is unchanged
 
 
 def transcript_title(session_id):
@@ -9706,41 +9706,48 @@ def transcript_title(session_id):
     by /rename; an empty one clears it), else the latest `ai-title`; "" for
     neither. The ai title follows the conversation's topic; the custom one is
     the name the human gave it. The last fallback of the in-charge line (§5),
-    and what the daemon publishes as `titled` (§8). Read backward from the end,
-    at most 8 MiB, and at most TITLE_REACH past the latest ai title."""
+    and what the daemon publishes as `titled` (§8)."""
+    custom, ai = transcript_titles(session_id)
+    return custom or ai or ""
+
+
+def transcript_titles(session_id):
+    """(custom, ai): the latest `custom-title` and `ai-title` of a session's
+    transcript, None for one not found. Read backward from the end, at most
+    8 MiB, and at most TITLE_REACH past the latest ai title, or past a
+    custom one found first (the harness re-appends both together, so the
+    other is within that window when it is current); cached while the file
+    is unchanged."""
     path = transcript_path(session_id)
     if not path:
-        return ""
+        return None, None
     try:
         st = os.stat(path)
         key = (path, st.st_size, st.st_mtime_ns)
         held = _TITLES.get(session_id)
         if held and held[0] == key:
             return held[1]
-        custom, ai, ai_at = None, None, 0
+        custom = ai = None
+        reach = None   # where the window opened: the latest ai title, else a custom one that names something
         with open(path, "rb") as f:
             for at, line in _lines_backward(f, _complete_end(f), budget=8 << 20):
-                if ai is not None and ai_at - at > TITLE_REACH:
+                if reach is not None and reach - at > TITLE_REACH:
                     break
                 if b'-title"' not in line:
                     continue
                 r = _record(line) or {}
                 if custom is None and r.get("type") == "custom-title" and isinstance(r.get("customTitle"), str):
                     custom = " ".join(r["customTitle"].split())
-                    if custom or ai is not None:
-                        break
+                    reach = at if reach is None and custom else reach
                 elif ai is None and r.get("type") == "ai-title" and isinstance(r.get("aiTitle"), str):
-                    ai, ai_at = " ".join(r["aiTitle"].split()), at
-                    if custom is not None:
-                        break
-        title = custom or ai or ""
-        _TITLES[session_id] = (key, title)
-        return title
+                    ai = " ".join(r["aiTitle"].split())
+                    reach = at
+                if custom is not None and ai is not None:
+                    break
+        _TITLES[session_id] = (key, (custom, ai))
+        return custom, ai
     except OSError:
-        return ""
-
-
-_TITLE_PAIRS = {}  # session -> ((path, size, mtime_ns), (custom, ai)): valid while the file is unchanged
+        return None, None
 
 
 def titled_by_engine(session, name):
@@ -9749,33 +9756,10 @@ def titled_by_engine(session, name):
     `custom-title`): a name the engine made up, whatever source its record
     gives it. 2.1.330's background worker titles a woken session and names
     its record by the title (`nameSource auto`); a later process of the
-    session restores that name from the transcript as `user`. Read backward
-    from the transcript's end, at most 8 MiB, to the latest of each."""
-    path = transcript_path(session)
-    if not path or not name:
+    session restores that name from the transcript as `user`."""
+    if not name:
         return False
-    try:
-        st = os.stat(path)
-        key = (path, st.st_size, st.st_mtime_ns)
-        held = _TITLE_PAIRS.get(session)
-        if held and held[0] == key:
-            custom, ai = held[1]
-        else:
-            custom = ai = None
-            with open(path, "rb") as f:
-                for _, line in _lines_backward(f, _complete_end(f), budget=8 << 20):
-                    if b'-title"' not in line:
-                        continue
-                    r = _record(line) or {}
-                    if custom is None and r.get("type") == "custom-title" and isinstance(r.get("customTitle"), str):
-                        custom = " ".join(r["customTitle"].split())
-                    elif ai is None and r.get("type") == "ai-title" and isinstance(r.get("aiTitle"), str):
-                        ai = " ".join(r["aiTitle"].split())
-                    if custom is not None and ai is not None:
-                        break
-            _TITLE_PAIRS[session] = (key, (custom, ai))
-    except OSError:
-        return False
+    custom, ai = transcript_titles(session)
     name = " ".join(name.split())
     return ai == name and custom != name
 

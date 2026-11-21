@@ -39,7 +39,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
-from test_wake import Engine, line_of, rows, sminos, threads, wake, wait_for  # noqa: E402
+from test_wake import Engine, line_of, prompt, rows, sminos, threads, wake, wait_for  # noqa: E402
 import sminos_records as records  # noqa: E402
 import wake_engine  # noqa: E402
 
@@ -701,6 +701,23 @@ class Names(Wakers):
         sid = self.never_named()
         self.assertNotEqual(self.alias(sid), "greeting reply test")
         self.two_wakes(sid)
+
+    def test_the_title_and_the_names_rule_share_one_bounded_read(self):
+        sid = self.never_named()
+        filler = rows(*[prompt("auto", "x" * 1000) for _ in range(300)])   # about 300 KiB, past TITLE_REACH
+        self.transcript(sid, rows({"type": "custom-title", "customTitle": "long-ago", "sessionId": sid}) + filler)
+        self.titled(sid, "ai-title", "greeting reply test")
+        sminos._TITLES.clear()
+        real = sminos._lines_backward
+        with mock.patch.object(sminos, "_lines_backward", side_effect=real) as read:
+            self.assertEqual(sminos.transcript_title(sid), "greeting reply test",
+                             "a custom title past the reach of the latest ai title is not current")
+            self.assertTrue(sminos.titled_by_engine(sid, "greeting reply test"))
+            self.assertFalse(sminos.titled_by_engine(sid, "long-ago"))
+        self.assertEqual(read.call_count, 1, "one read, its cache shared")
+        self.titled(sid, "custom-title", "near")
+        self.assertEqual(sminos.transcript_titles(sid), ("near", "greeting reply test"))
+        self.assertEqual(sminos.transcript_title(sid), "near", "a custom title outranks the ai one")
 
     def test_a_rename_by_its_human_still_takes(self):
         tid, sid = self.human_thread()
