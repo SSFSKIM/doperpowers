@@ -50,6 +50,7 @@ sys.path.insert(0, HERE)
 from test_wake import answer, line_of, prompt, rows, wait_for  # noqa: E402
 from test_wake_delivery import FLAGS, STARTING, TAIL, WORDS, Deliveries, line  # noqa: E402
 from test_wake_seat import SCRIPT, sminos, threads, wake  # noqa: E402
+import wake_engine  # noqa: E402
 
 VERBS = (("resume",), ("fill", "--resume"), ("send", "--wait"))
 # §5's line for the sweep's moment: nothing launched, the daemon delivers it.
@@ -1291,6 +1292,32 @@ class Round4(Verbs):
         self.assertEqual(code, 0, out)
         self.assertIn("delivered by a concurrent delivery", out)
         self.assertNotIn("owed", out)
+
+    CEILING = sminos.CEILING_WORDS % "default"
+
+    def test_who_and_list_say_a_stopped_seat_is_held_and_why_naming_the_ceiling(self):
+        """A stopped seat a wake would not start (a first wake capped to an asking ceiling) is not said to be
+        resumed by a message: `who` and `list` read its hold, the ceiling's words for its cause, as a thread its
+        human opened is read."""
+        s = self.seat()
+        sid = s["current"]
+        self.assertIn("(the stopped seat is resumed)", Remote.hint(self, sid), "one a wake starts")
+        code, out = self.cli("list", "--stopped")
+        self.assertNotIn("not woken", out)
+        os.unlink(wake_engine.row_path(sid))   # no row: a first wake, its mode lowered to the ceiling
+        self.ceiling("default")
+        sminos.forget_caches()
+        self.assertEqual(sminos.hold_for(sid), "mode")
+        out = Remote.hint(self, sid)
+        self.assertNotIn("is resumed", out)
+        self.assertIn("not woken: %s" % self.CEILING, out)
+        self.assertIn("held until a process of it runs", out)
+        code, out = self.cli("list", "--stopped")
+        self.assertEqual(code, 0, out)
+        self.assertIn("not woken: %s" % self.CEILING, out)
+        tid, hsid = self.human_thread("auto")
+        self.assertEqual(sminos.hold_for(hsid), "mode")
+        self.assertIn(self.CEILING, Remote.hint(self, hsid), "a thread its human opened: the ceiling named too")
 
 if __name__ == "__main__":
     unittest.main()

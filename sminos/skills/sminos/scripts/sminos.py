@@ -17055,7 +17055,9 @@ def row_cells(m, project=None):
     """(columns, the rest) of a list row: `alias [short]`, kind, word,
     @machine, the project (a flat list only), repo@branch; then the
     in-charge line with its age, `· now:` the status, `· by` the spawner,
-    `· active` the age of its last activity."""
+    `· not woken:` why this machine holds a stopped thread of it, of either
+    kind (hold_for, the cached hold: T2's §5 words, the ceiling named when
+    it is the cause), `· active` the age of its last activity."""
     label = "%s [%s]" % (m.alias, m.short) if m.short else m.alias
     where = (m.repo + ("@" + m.branch if m.branch else "")) if m.repo else ""
     rec = session_running(m.session) if m.local and m.session else None
@@ -17069,6 +17071,9 @@ def row_cells(m, project=None):
         rest.append("· now: " + m.status)
     if m.by:
         rest.append("· by " + m.by)
+    why = hold_for(m.session) if m.local and m.session and m.state in HELD_STATES else ""
+    if why:
+        rest.append("· not woken: " + hold_words(why, m.session))
     if m.end == "retire":
         rest.append("· retired" + (" by " + m.end_by if m.end_by else ""))
     elif m.end == "ended":
@@ -18165,7 +18170,13 @@ def who_lines(addr):
         if charge_shown(m):
             out.append("  in charge: %s" % charge_shown(m))
         if m.state in FILLED or (m.seat and m.state != "retired"):
+            # A stopped seat by this machine's hold of it, as a view reads it (hold_for): one a wake would not start
+            # is said held and why (T2's §5), never resumed.
+            why = "" if m.state in FILLED else hold_for(m.session)
             out.append('  reach: sminos say "@%s ..."%s' % (m.short, "" if m.state in FILLED else
+                                                             "  (the stopped seat is not woken: %s; the message is "
+                                                             "held until a process of it runs)"
+                                                             % hold_words(why, m.session) if why else
                                                              "  (the stopped seat is resumed)"))
         elif m.state != "gone" or not m.local:
             where = "here" if m.local else "on %s" % m.machine
@@ -18186,7 +18197,8 @@ def who_lines(addr):
             elif wakes == "held":
                 # One its machine holds: an addressed message waits for a process of it (T1's M3, T2's §5).
                 out.append('  or leave it a message, held until a process of it runs%s: sminos say "@%s ..."' % (
-                    " (%s)" % (hold_words(why) if why in HOLD_WORDS else why) if why else "", m.short))
+                    " (%s)" % (hold_words(why, m.session if m.local else "") if why in HOLD_WORDS else why)
+                    if why else "", m.short))
             else:
                 out.append('  or leave it a note it reads when resumed: sminos say --in %s "..."' % tag_project(p))
     return out
