@@ -2,8 +2,8 @@
 
 > **Composite:** `docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md`,
 > child **CH1** (The channel and who is in it). **Parent pin:** branch
-> `sminos-channels-ch` at `ef34f2ca`, that file's blob
-> `1b7678de32030360d313da037c78dc372dda1cfe`. The design the composite is itself
+> `sminos-channels-ch` at `95fef6b7`, that file's blob
+> `6723ab5034724df88b835e0c1d0eb4e89629254b`. The design the composite is itself
 > a child of, `docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md`
 > ("the parent" below), is read as that same commit holds it, blob
 > `ea0bee4ad3df40cc846a8fcbc8ec4856136b4d9a`: CH's cut revised four of its
@@ -19,8 +19,9 @@
 > plan `docs/doperpowers/plans/2026-11-17-sminos-threads-t1.md`, its Interfaces
 > §1 (the record), §3 (the reducer) and §6 (transitions, the journal, older
 > copies); T2's plan `docs/doperpowers/plans/2026-11-20-sminos-threads-t2.md`,
-> its constraints (the lock order) and its Outcomes & Retrospective; and
-> `docs/doperpowers/TECH-DEBT.md`, section "sminos threads".
+> its constraints (the lock order, the wake lock) and its Outcomes &
+> Retrospective; and `docs/doperpowers/TECH-DEBT.md`, section "sminos
+> threads".
 
 After this child a declared channel exists and holds members, with nothing
 said in it yet. A thread runs `sminos channel create desk-integration` and
@@ -42,16 +43,18 @@ lists them), proved as Concrete Steps maps it.
 ## Progress
 
 - [x] (2026-11-21) CH cut into two children; its design reviewed twice and revised (`ef34f2ca`); MAWS's fixture on its master at `8ae3b0843`.
-- [x] (2026-11-21) This plan written against the composite at `ef34f2ca` and the code at `1fdc73a0` (sminos 1.52.0).
-- [ ] This plan reviewed for buildability (Decision Log, "Verification") and its findings folded in.
+- [x] (2026-11-21) This plan written against the composite at `ef34f2ca` and the code at `1fdc73a0` (sminos 1.52.0), commit `71575958`.
+- [x] (2026-11-21) The plan's first review for buildability (fourteen findings); the composite revised for two of them (`95fef6b7`) and this plan revised on it (Decision Log, "The plan's review").
+- [ ] The revision's review (the second and last before the build), and its findings folded in.
 - [ ] M1 — A channel id is told from a project's at every door, and nothing is published under one.
-- [ ] M2 — A thread's declared set: one operation, its statement, its marks, and the log kept equal to the record.
-- [ ] M3 — Requests on one machine, and the verbs that write them.
-- [ ] M4 — The roster, the listing and the pool.
-- [ ] M5 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture.
-- [ ] M6 — Requests across machines: the endpoint's word, and what a requester is told.
-- [ ] The review of M1 to M6 as one range, by the composite's holder, and its fixes.
-- [ ] M7 — Older copies, what is written beside the code, the version, and the acceptance.
+- [ ] M2 — A thread's declared set: one durable operation, its statement and the statement's reader.
+- [ ] M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption.
+- [ ] M4 — Requests on one machine, and the verbs that write them.
+- [ ] M5 — The roster, the listing and the pool.
+- [ ] M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture.
+- [ ] M7 — Requests across machines: the endpoint's word, and what a requester is told.
+- [ ] The review of M1 to M7 as one range, by the composite's holder, and its fixes.
+- [ ] M8 — Older copies, what is written beside the code, the version, and the acceptance.
 - [ ] The branch reviewed at its end (Decision Log, "Verification"), and its fixes.
 
 ## Words this document adds
@@ -64,20 +67,22 @@ lock, the delivery lock and held. Added here:
 
 - **The set** of a thread is its record's `channels`: the declared channels
   it is in, in the order they were added, on its own machine.
+- **Where a membership began** is, for one channel of the set, the positions
+  of that channel's log as the thread's machine held it when the thread
+  entered: each writer's latest seq then. The record keeps it (`began`,
+  Interfaces §4); nothing of it is written into a log.
 - **The statement** is the event of kind `channels` a thread's machine writes
   in the thread's project log (Interfaces §2). **What the log states** for a
   session is the set a reader takes from it by C2's rule (§5).
 - **A request** is an event of kind `channel-request` in a channel's log
   asking that one thread be added or removed. Its **requester** is its
-  writer; its **target** is the thread it names.
+  writer; its **target** is the thread it names. Its **answer** is the
+  statement that names its channel and id under its target's thread (§5).
 - **The thread's own project** is the project in whose log the thread's
   current session is a member: where its lifecycle events and its
   statements go, whatever log the thread was found through.
 - **The roster** of a channel is the read of §5: the rows, each from its
   thread's own project's view, of the threads whose log states the channel.
-- **A mark** is a writer's settled position in a delivery record
-  (`projects/<log>/delivered/<session>.json`, T1's and T2's file) raised to
-  what the log held at one moment, so that nothing up to it is owed (§4).
 - **Opens without `follow`** is said of a channel's log on a machine whose
   hello for it carries no `follow` key: MAWS counts that machine as a holder.
   `Link.holds` keeps today's meaning, everything a held project is sent
@@ -85,6 +90,8 @@ lock, the delivery lock and held. Added here:
   never true of a channel (§7).
 - **The endpoint's word** is its answer to a `reach?` frame: `deliver`,
   `refuse`, or none while it holds no record of the session asked about.
+- **A cut** is a process stopped between two writes of one transition; in a
+  test, the first write made and the rest not called.
 - **The stand-in** is `sminos/tests/endpoint_standin.py`, the scripted
   endpoint the suites run a real sminos against; two or three machines in a
   suite are two or three sminos homes, each with its daemon and its stand-in,
@@ -108,13 +115,26 @@ lock, the delivery lock and held. Added here:
   thread), X4, X5, X7, and Y1, Y2 and Y3, whose names Interfaces fixes.
 - **Nothing is published under a channel id.** No `member` frame names a
   channel as `project`; no session presence, machine presence or checkout,
-  no `pending` set and no host frame is sent under one; no `joined`, `state`,
-  `renamed`, `titled`, `in-charge`, `status`, `unlisted`, `channels`,
-  `message`, `question` or `answered` is written into a channel's log. What
-  a channel's log holds from this code is a `channel-request`, a
-  `channel-env`, and the `retired` that undoes a `joined` an older copy wrote
-  there. `T/channel_wire.py` (§9) is the check, and every suite of this child
-  that runs an uplink ends by calling it.
+  no `pending` set and no host frame is sent under one; this code writes no
+  `joined`, `state`, `renamed`, `titled`, `in-charge`, `status`, `unlisted`,
+  `channels`, `message`, `question` or `answered` into a channel's log. What
+  this code adds to a channel's log is a `channel-request`, a `channel-env`,
+  and the `retired` that undoes a `joined` an older copy wrote there. What
+  an older copy wrote into a channel's log under this machine's writers is
+  uploaded in its place in the writer's order, as any own event not yet
+  sent is (a writer's sequence has no hole), and this code's `retired`
+  follows it. A question the endpoint asks about a channel (a snapshot
+  request, a subscription) is answered as for a log with no member.
+  `T/channel_wire.py` (§9) is the check, over what this code added to the
+  store it found, and every suite of this child that runs an uplink ends by
+  calling it.
+- **Every verb that writes for a channel is refused without the
+  capability:** `channel create`, `add`, `remove` and `env`, where the kept
+  welcome lists no `channels`. Until M6 no real endpoint lists it (MAWS
+  echoes the capability only to a hello that listed it), so nothing this
+  code writes names a channel on the wire before then. One exception is
+  intended: a channel the org's directory lists is registered and its log
+  opened with `follow`, as every installed copy already does.
 - **A channel's view has no members, and the roster is a read of its own**
   (C1). `view_of` of a channel answers no member, by construction and
   whatever its log holds. No path that exists today (delivery, tag
@@ -124,31 +144,47 @@ lock, the delivery lock and held. Added here:
 - **A fact about a thread is written to the thread's own project.** No verb
   and no pass writes a lifecycle event, an in-charge line, a status or a
   statement for a thread into a channel's log.
-- **One writer of a thread's set.** A record's `channels` and `answered`
-  are written by `sminos_threads.set_channels` and by the journal's own
-  steps (an absorption's merge), and a `channels` event is appended by
-  `sminos_threads.finish` for an entry that owes one. Nothing else writes
-  either: `update` refuses both keys, the reconciliation calls
-  `set_channels` and never appends a statement itself.
+- **One writer of a thread's set.** A record's `channels`, `began` and
+  `answered` are written by `sminos_threads.set_channels` and by the
+  journal's own writes (a return's, an absorption's merge), and a `channels`
+  event is appended by `sminos_threads.finish` for an entry that owes one.
+  Nothing else writes any of them: `update` refuses the three keys, and the
+  reconciliation calls `set_channels` and never appends a statement itself.
+- **What must survive an older finisher is in the record's write.** Any
+  copy from 1.51.0 on finishes an open entry it finds: it appends the events
+  the entry owes and clears it, and skips a step it does not know. So the
+  operation's record write holds everything but the statement (the set,
+  where each membership began, the request answered), and its entry owes the
+  statement as an event and nothing else. A step only this code's `finish`
+  runs (the absorption's merge) is one whose loss the composite accepts.
 - **What an operation decides, it reads under the record's lock.** The new
-  set, whether a request is already answered, whether an earlier one still
-  waits, whether the thread's session and reach are the ones a question was
-  put for, the limit, and where the statement goes are read in the write
-  that makes the change, on a fresh read of the record, never taken from a
-  read made before it (Interfaces §3). What was read before the lock chooses
-  only whether to try. T1's branch review found most of its 82 defects
-  between a check and its write.
+  set, where a statement goes, and for a request the whole of §6's table
+  (whom it names, whether it is answered, the earlier requests and the
+  expiry, the branch that honours or refuses it, whether a word was asked
+  for the thread as it is now, the limit) are evaluated in the write that
+  makes the change, on a fresh read, never taken from a read made before
+  it. What was read before the lock chooses only whether to try. T1's
+  branch review found most of its 82 defects between a check and its
+  write. One window is accepted: a reach narrowed between that read and the
+  record's write is under another lock (the session record's), and a
+  request it would have refused is honoured.
 - **Lock order,** outermost first, as T2 fixed it and unchanged: the
   delivery lock; the seat's lifecycle lock; the wake lock; a store lock
   (`.metalock`, then `threads/.lock`); a log's lock. A record's finisher
   lock (`threads/.finish/<id>.lock`) is held by `finish` for its whole run,
-  outside the store and log locks it takes. The one place a delivery lock
-  is taken under a finisher lock is the journal's settlement, with a bounded
-  wait (T1); the marks are that same step and add no other. The membership
-  operation takes no wake lock and no lifecycle lock, and holds no store
-  lock while it takes any other lock: what it reads under the store lock
-  (other records, a session's record, log files) it reads without a lock.
-  Interfaces §3 names the lock of each writer this child adds.
+  outside the store and log locks it takes. The membership operation takes
+  the thread's wake lock as every transition of a thread does (T2: a wake
+  sees the record before an entry or with it, never between), before any
+  store lock, and lets it go at its record write; it takes no lifecycle
+  lock and no delivery lock, and holds no store lock while it takes any
+  other lock: what it reads under the store lock it reads without a lock.
+  A wake in flight is a wait: nothing is written and the caller is told
+  `pending`. A command waits for the wake lock as a transition does
+  (`SWEEP_WAIT`); a reconciliation and a pass only try it. Interfaces §3
+  names the lock of each writer this child adds.
+- **No delivery record is touched.** This child delivers nothing in a
+  channel and settles nothing there: where a membership began is the
+  record's, and CH2 delivers from it.
 - **Nothing is said into a channel.** Every form that would write a `say`
   or a `human` event into a channel's log is refused before anything is
   appended, from a session and from a terminal, in §8's words. This child is
@@ -165,18 +201,25 @@ lock, the delivery lock and held. Added here:
   carries one, and a statement never does.
 - **Older code on the same machine** keeps D7's rules. The new kinds are
   inert to every installed copy (no `to`; every copy's `_projection` skips a
-  kind it does not know), the record's new key is one older code leaves in
-  place, and nothing here defends against an older CLI run by hand beyond
-  what M7 asserts.
-- **Accepted, and not built** (the composite's second review; no milestone
-  tries to close them): a sender removed from the org between a request's
-  import and the endpoint's answer is honoured; an absorption that an older
-  copy finishes drops what the provisional record had gained; a narrowing
-  whose withdrawn audience could not be named leaves the old row standing in
-  a roster as in the project's view; requests of two machines whose clocks
-  disagree are carried out in the stamped order, and a request stamped more
-  than seven days behind is never carried out; two adds contending for a
-  thread's last place under the limit are not ordered.
+  kind it does not know), the record's new keys are ones older code leaves
+  in place, and nothing here defends against an older CLI run by hand beyond
+  what M2 and M8 assert.
+- **Accepted, and not built** (the composite's reviews; no milestone tries
+  to close them): a sender removed from the org between a request's import
+  and the endpoint's answer is honoured; an absorption that an older copy
+  finishes drops what the provisional record had gained; an older copy that
+  itself begins a return leaves the record's positions as they were before
+  the end, so a later release may push what the channel's log gained while
+  the thread was ended; a session an older copy joined into a channel and
+  that is closed before this code's next reconciliation is listed in
+  neither until it runs again; an older copy's `list --json` shows a spawned
+  thread's record keys it does not know, the set, the answered ids and the
+  positions among them; a narrowing whose withdrawn audience could not be
+  named leaves the old row standing in a roster as in the project's view;
+  requests of two machines whose clocks disagree are carried out in the
+  stamped order, and a request stamped more than seven days behind is never
+  carried out; two adds contending for a thread's last place under the
+  limit are not ordered.
 - **What sessions are taught does not change.** The session-start guide,
   `sminos/skills/sminos/SKILL.md`, the spawn preamble and the manager's
   skill say nothing of channels until CH2, and the tests that pin their
@@ -199,13 +242,14 @@ lock, the delivery lock and held. Added here:
   --json`, `chat`, `spawn`, `join`, `retire`, every event and every frame of
   the uplink are what they were for a machine that knows no channel and a
   thread that is in none, with one exception: the hello's capability list
-  gains `channels` (M5). A key or a line this child adds appears only where
-  a channel does.
+  gains `channels` (M6). A key or a line this child adds appears only where
+  a channel does. Two projects of one name in different tiers keep today's
+  precedence (the hub project is found first).
 - **What sits beside the code is written with it.** Each milestone adds
   what it built to `sminos/skills/sminos/scripts/CLAUDE.md` (the new
   module, the rules of this section that a later change could break, the
   tests' names), since the next milestone's executor reads that file before
-  it reads this one's code; M7 reads the whole against the tree.
+  it reads this one's code; M8 reads the whole against the tree.
 - **Tests are hermetic,** as in T1 and T2: the test engine, the stand-in,
   temporary `HOME` and `SMINOS_HOME`, invented names. The repository is
   public: no hostname, account, project id or local path enters a test, a
@@ -215,8 +259,9 @@ lock, the delivery lock and held. Added here:
   one and two requesters; the three callers of the carrying out (the
   command, the daemon's tick, the uplink at an answer) and the order of
   their answers; a request before and after a continuation, a refill, a
-  `join`, a change of reach, an end and a return. A guarantee tested with
-  one request to one live human-opened thread is not tested.
+  `join`, a change of reach, an end and a return; and a cut after each
+  write of each transition. A guarantee tested with one request to one live
+  human-opened thread is not tested.
 - **One change, one version.** No release is cut between milestones. The
   child merges as one pull request that leaves the repository releasable
   beside a machine on 1.52.0 (D7), with sminos's version bumped in it
@@ -233,40 +278,43 @@ lock, the delivery lock and held. Added here:
 Readers and refusals come first, writers after them, and the wire last. M1
 makes a channel id a channel to every lookup and closes every path that
 would publish under one, before anything in the tree can create a channel.
-M2 builds the one operation that writes a thread's set, with its statement,
-its marks and the reconciliation that keeps the log equal to the record,
-driven from tests alone. M3 adds requests and the verbs that write them, on
-one machine. M4 builds the roster and everything that prints it. M5 turns the
-wire on: the capability, the member frame's `channels`, MAWS's fixture. M6
-carries requests between machines, on the endpoint's word. Between M6 and M7
-the range is reviewed whole by the composite's holder. M7 runs older copies
-against the result, writes what sits beside the code, bumps the version and
-runs the acceptance.
+M2 builds the one operation that writes a thread's set, durable across a
+cut and across an older copy's finisher, with its statement and the
+statement's reader. M3 carries the set through a thread's life: the
+reconciliation that keeps the log equal to the record, a return, a
+continuation, an absorption. M4 adds requests and the verbs that write
+them, on one machine. M5 builds the roster and everything that prints it.
+M6 turns the wire on: the capability, the member frame's `channels`, MAWS's
+fixture. M7 carries requests between machines, on the endpoint's word.
+Between M7 and M8 the range is reviewed whole by the composite's holder. M8
+runs older copies against the result, reads what sits beside the code,
+bumps the version and runs the acceptance.
 
-Until M5 no real endpoint lists `channels` in its welcome (MAWS echoes the
-capability only to a hello that listed it), so `channel create` and
-`channel add` are refused on every real machine while M1 to M4 land; their
-tests stage the kept capability or run against the stand-in.
+Eight milestones, one more than the bound this plan was first cut to: its
+review advised reviewing the durable transition and the ownership of a set
+across transitions each on its own, and they are two verification
+strategies (cuts injected at the store; T1's hand-off, refill, `join` and
+return driven through their own fixtures), so M2 and M3 are two.
 
-**The frontier review.** When M6's review is clean the controller pushes the
+**The frontier review.** When M7's review is clean the controller pushes the
 branch and returns to the composite's holder with the word `FRONTIER`, the
 range (`git merge-base origin/main HEAD` to `HEAD`) and nothing else to
 decide. The holder reviews that range through doperpowers:review-code at the
 panel rung, with lenses given, not derived: lock order, and what is read
 outside the lock it is acted on under; an older copy on the same store;
 what leaves the machine (every frame and every event under a channel id,
-and whether anything names a private requester's session to a reader of its
-target); and the milestones' interactions (a request against an end, a
-return, a hand-off, an absorption, a `join`, a change of reach and the
-thread sweep; the reconciliation against each of them; the marks against a
-delivery pass). Its confirmed findings are fixed on the branch by the
-holder's fix wave, the range is read whole a second time if the first
-reading confirms more than ten, and there are three rounds at most. The
-controller is then continued for M7. It sits after M6 because every writer
-and every sender this child adds exists by then and M7 adds none; T2's
-review of its first four milestones as one range confirmed 62 findings over
-three rounds, five of them a lost message or a wrong recipient, after each
-milestone had been reviewed clean.
+and whether anything names a private requester's session, or another
+member's writer, to a reader of its target); and the milestones'
+interactions (a request against an end, a return, a hand-off, an
+absorption, a `join`, a change of reach, a wake and the thread sweep; the
+reconciliation against each of them). Its confirmed findings are fixed on
+the branch by the holder's fix wave, the range is read whole a second time
+if the first reading confirms more than ten, and there are three rounds at
+most. The controller is then continued for M8. It sits after M7 because
+every writer and every sender this child adds exists by then and M8 adds
+none; T2's review of its first four milestones as one range confirmed 62
+findings over three rounds, five of them a lost message or a wrong
+recipient, after each milestone had been reviewed clean.
 
 ### M1 — A channel id is told from a project's at every door, and nothing is published under one
 
@@ -277,12 +325,14 @@ wrote, an argument), is a channel to every lookup. `sminos projects` and
 refused and names `sminos channel add`; a `.smns` that names one files its
 directory in the machine's project and says why; `say --in <channel>`, a tag
 qualified by a channel, a selector naming one, and a verb's target qualified
-by one are refused in §8's words with nothing appended; a name that several
-logs answer is refused by one function, listing each with its kind and
-`name#short`. The channel's log is opened at the hub and kept; a `joined` an
-older copy wrote into it is retired `moved`; and nothing of the constraint
-"Nothing is published under a channel id" is sent or written. No verb
-creates a channel yet: the tests register one as the org's directory does.
+by one are refused in §8's words with nothing appended; a name that a
+channel shares with another log is refused by one function, listing each
+with its kind and `name#short`. The channel's log is opened at the hub with
+`follow` and kept; while a process or a seat holds the session, a `joined`
+an older copy wrote into it is retired `moved`; and nothing of the
+constraint "Nothing is published under a channel id" is sent or written. No
+verb creates a channel yet: the tests register one as the org's directory
+does.
 
 **Touches:** `S/sminos.py` (the predicate beside `UUID_RE`; `project_kind`;
 `known_projects`, new `known_channels` and `known_logs`; `_name_tiers`,
@@ -292,12 +342,13 @@ creates a channel yet: the tests register one as the org's directory does.
 `S/sminos_channels.py` (new: `find_channel`, `register`, `held_channels`,
 `opens_unfollowed`), `S/sminos_uplink.py` (`hub_projects`, `Here.project`,
 `Link.holds`, new `Link.unfollowed`, `open`, `machine_presence`,
-`host_pass`, `relay_requests`, `members`, `tick_passes`, `may_leave`),
-`S/sminos_plane.py` (`Plane.refresh`), `S/sminos_daemon.py` (`tick_all`, and
-the channel pass of §6 with its reconciling half alone),
-`T/test_channels.py` (new), `T/test-channels.sh` (new), `T/channel_wire.py`
-and `T/test_channels_wire.py` (new), `T/run-sminos-tests.sh` (a third part,
-`channels`), `.github/ci-kit.yml` (the gate `sminos-channels`).
+`host_pass`, `relay_requests`, `members`, `tick_passes`, `may_leave`,
+`on_snapshots`), `S/sminos_plane.py` (`Plane.refresh`),
+`S/sminos_daemon.py` (`tick_all`, and the channel pass of §6 with its
+reconciling half alone), `T/test_channels.py` (new), `T/test-channels.sh`
+(new), `T/channel_wire.py` and `T/test_channels_wire.py` (new),
+`T/run-sminos-tests.sh` (a third part, `channels`), `.github/ci-kit.yml`
+(the gate `sminos-channels`).
 
 **Interfaces:** exposes §1, §7's `unfollowed` and `holds`, §8's refusals,
 §9's checker. Consumes T1's `sminos_threads.all_threads` and
@@ -319,7 +370,13 @@ naming a channel until M2 writes one).
   (a channel matches none of its three tiers), `Here.project` (an RPC that
   names a channel as its project is answered as one naming no project
   here). `streams_here` keeps answering yes for a channel, which the hub
-  syncs: a request for a private thread goes under a stream (M3).
+  syncs: a request for a private thread goes under a stream (M4).
+- Names: among projects the tiers and their precedence are today's (a hub
+  project is found before a machine's of its name, and two of one tier are
+  the clash). A channel is in no tier: a name a channel shares with any
+  other log, a second channel included, is refused, every log of that name
+  listed. The refusal's text is rewritten once (§8), so two projects of one
+  tier now read it too.
 - `view_of` of a channel reconciles its log and returns no member and no
   seat row, whatever the log holds. `Plane.refresh` of a channel leaves
   every map of it empty (`here`, `member_rows`, `members`, `left`):
@@ -332,7 +389,10 @@ naming a channel until M2 writes one).
 - `join_refusal` answers for a channel first, before it reads the
   enrollment, so `session_project` reads an override that names a channel
   as absent on any machine and the session's next reconciliation moves it
-  back (`retire_moved`), as for any ineligible override.
+  back (`retire_moved`), as for any ineligible override. That
+  reconciliation acts on a session a process or a seat holds: one closed
+  before it stays as the older copy left it until it runs again (accepted,
+  the composite's C4), and this milestone builds nothing for it.
 - The `.smns` rule sits in `_smns_decision`, the one place a `.smns`
   becomes a decision: for a channel id the decision is the machine's
   project (`own_machine_project`; on a machine not enrolled, what
@@ -350,7 +410,14 @@ naming a channel until M2 writes one).
   `hello` when `unfollowed` flips and never a `machine` frame; `host_pass`
   passes it by; `Plane.tick` and `relay_requests` are given the open
   projects without the channels. Uploads, delivery outcomes and notices run
-  for it as for any log. `may_leave` reads `unfollowed`.
+  for it as for any log: an own writer's events there go up in sequence,
+  an older copy's `joined` among them, and the `retired` after it.
+  `may_leave` reads `unfollowed`.
+- What the endpoint asks about a channel is answered as for a log with no
+  member: `snapshots?` with one page, empty and done (a channel's log holds
+  no session's `joined` or `state` of this code's, and an older copy's is
+  no snapshot of a member); a `subscribe` with the `end` a project answers
+  for a session it does not hold, which the empty plane gives.
 - The daemon ticks no channel as a project: for each channel known here the
   channel pass reads its view (the reconciliation, and nothing published),
   and none of `rejoin_former`, `publish_state`, `publish_titles`,
@@ -360,9 +427,15 @@ naming a channel until M2 writes one).
   line for a channel (§8): reading a channel's log as a conversation is
   CH2's, with speaking in it.
 - The new suites are a third part of `T/run-sminos-tests.sh`
-  (`SMINOS_PART=channels`) with a gate of their own, so the two existing
-  gates run what they ran (A13 is read off them unchanged) and neither is
-  pushed toward its timeout.
+  (`SMINOS_PART=channels`) with a gate of their own, on the four conditions
+  agreed with the session that owns CI. The parts stay disjoint:
+  `SMINOS_PART=suites` runs no channel suite, `all` runs all three, and the
+  runner's own list of parts takes `channels`. The gate's `paths` are its
+  siblings' (`sminos/**`, `.github/ci-kit.yml`, `.github/workflows/**`). Its
+  timeout is about twice its first measured duration, set again as the part
+  grows, not thirty by habit. If the channel suites pass about fifteen
+  minutes the part is split again. When the pull request exists the
+  executor sends the holder its number, for that session to read the hunk.
 
 **Does not touch:** the thread record, any event kind, `LIFECYCLE`, the
 capability list, `member_frame`, `cmd_list`'s output, the guide, the skill.
@@ -372,62 +445,144 @@ ever the project a verb's target is found in), A12's test of its own, for a
 channel that holds no member yet. Its tests pin: `is_channel_id` on every
 entry of the shared vectors' `ids`; the kind; each lookup that lists
 projects with a channel registered beside them (text and `--json`
-unchanged against the same store without it); the one refusal for a name
-that a channel and a project share, two channels share, and two projects
-share, and `name#short` reaching each; each refusal of §8 with the logs'
-files unchanged; the `.smns` rule and the parity suite still passing; an
-override naming a channel read as absent and the session moved back with a
-`retired` `moved` in the channel's log and no `joined`; and, through the
-checker over a real uplink against the stand-in, a first connection, a
+unchanged against the same store without it); a hub project and a machine
+project of one name with no channel present, found as today; the one
+refusal for a name that a channel and a project share, two channels share,
+and two projects of one tier share, and `name#short` reaching each; each
+refusal of §8 with the logs' files unchanged; the `.smns` rule and the
+parity suite still passing; an override naming a channel read as absent
+and the running session moved back with a `retired` `moved` in the
+channel's log and no `joined` of this code's; a `snapshots?` and a
+`subscribe` for a channel id answered as above; and, through the checker
+over a real uplink against the stand-in, a first connection, a
 reconnection, a channel this machine's records name (staged by writing a
 record's `channels` in the test) and one they do not, and a store in which
-an older copy's `join` wrote a `joined` under the channel.
+an older copy's `join` wrote a `joined` under the channel, baselined first.
 
-### M2 — A thread's declared set: one operation, its statement, its marks, and the log kept equal to the record
+### M2 — A thread's declared set: one durable operation, its statement and the statement's reader
 
 **At its end:** `sminos_threads.set_channels` is the one way a record's
-`channels` and `answered` change (§3). Its entry is carried by `finish`:
-the marks, then the statement, appended through `lifecycle` in the thread's
-own project. An end and a return mark every channel of the set; an
-absorption gives the continuing thread the absorbed record's channels and
-answered requests. Every reader takes a session's membership from the log
-by C2's rule (`Fold.state`, the projection's row, `Member.channels`), and
-`_reconcile` notices a thread of this machine whose log states otherwise
-than its record and has the operation state the set. There is no verb yet:
-`sminos_channels.change` (a thread's own add or remove) and the
-reconciliation drive it from tests.
+`channels`, `began` and `answered` change (§3). Its record write holds the
+whole change, and its entry owes one event, the statement, which `finish`
+appends through `lifecycle` in the thread's own project; so a cut after the
+record's write is finished by the next reconciliation, this code's or a
+1.51.0 or 1.52.0 copy's, with the record as it was written. The write that
+puts a thread in a channel records where that membership began (§4), and a
+removal drops it. Every reader takes a session's membership from the log by
+C2's rule (`Fold.state`, the projection's row, `Member.channels`). There is
+no verb yet: `sminos_channels.change` (a thread's own add or remove) drives
+it from tests.
 
 **Touches:** `S/sminos_threads.py` (`OPS`, `JOURNALED`, `SEAT_KEYS`,
-`set_channels`, `update`, `begin`, `finish`, `Fold`, `stated_set`),
-`S/sminos.py` (`LIFECYCLE`, `_projection`, `Member`, `_member`,
-`_reconcile`'s last step, `finish_thread`, new `channel_marks` and
-`mark_channels`), `S/sminos_channels.py` (`change`, `restate`,
-`channels_of`, `Outcome`), `T/test_channels_store.py` (new), and the two
-tests of T1 that pin today's form (`T/test_threads_ended.py`, which calls
-`set_channels` with a list; `T/test_threads.py`, which expects `update` to
-answer false for `channels` on a held record, where it now raises).
+`_of_seat`, `set_channels`, `update`, `Fold`, `stated_set`), `S/sminos.py`
+(`LIFECYCLE`, `_projection`, `Member`, `_member`, what a listing exports of
+a seat, new `channel_positions`), `S/sminos_channels.py` (`change`,
+`channels_of`, `began_of`, `Outcome`), `T/test_channels_store.py` (new),
+`T/test-older-cli.sh` (the 1.52.0 pin and the cut-and-older-finisher
+cases), and the two tests of T1 that pin today's form
+(`T/test_threads_ended.py`, which calls `set_channels` with a list;
+`T/test_threads.py`, which expects `update` to answer false for `channels`
+on a held record, where it now raises).
 
-**Interfaces:** exposes §2 (the statement), §3, §4, §5's fold and
-`Member.channels`. Consumes T1's journal (`_change`, `_apply`, `finish`'s
-steps, `open_entries`) and §1.
+**Interfaces:** exposes §2 (the statement), §3's fields, `set_channels`
+and rows C1 and C2, §4, §5's fold and `Member.channels`, §6's `Outcome`.
+Consumes T1's journal (`_change`, `finish`'s steps, `open_entries`), T2's
+`transition_hold`, and §1.
 
 **Decisions:**
 
-- The operation is `channels` in `OPS`. It opens without the wake lock and
-  does not move a seat's lifecycle generation, as a release does not: a
-  membership ends no thread and changes no occupant, which are what the
-  wake lock and the generation guard, and a wake in flight must not turn a
-  local add into a third kind of wait (A1 names two). Its linearization
-  point is the record's write under its store lock.
+- The operation is `channels` in `OPS`. It takes the thread's wake lock as
+  `begin` takes it for every transition, by a bounded poll until its
+  deadline, reads and writes the record under it, and lets it go at that
+  write. The hold is always its own: where the calling process already
+  holds that wake lock (a wake of the thread is under way in it, and a
+  reconciliation runs inside), the operation is refused as for any wake in
+  flight, since an entry opened there would stand between the wake's check
+  and its own record writes. Without it a `resume` that had checked the wake and
+  was about to stop a live turn could find its wake refused by an entry
+  opened in between, the turn stopped and nothing started; and a launch
+  already made could lose the write that records its job and its grace.
+  The operation is not a lifecycle write of a seat and does not move its
+  generation: a turn's watcher stands down at a generation it did not see,
+  and a membership changed during a turn must not cost that turn its reply.
 - `set_channels(thread_id, decide)` runs `decide` on a fresh read of the
-  record under that lock, only when the record has no open entry, and
-  writes what it returns in one write (§3). Everything a caller knew before
-  the lock reaches `decide` as what to compare against, never as what to
-  write.
+  record under the store lock, only when the record has not ended and has
+  no open entry, and writes what it returns in one write (§3). Everything a
+  caller knew before the lock reaches `decide` as what to compare against,
+  never as what to write. Where each membership began is not the caller's
+  to give: `set_channels` reads it, under the lock, for each channel that
+  enters the set.
+- The entry owes the statement and nothing else, and `finish` gains no step
+  for it: every finisher from 1.51.0 on appends an entry's events and
+  clears it, whatever its operation. `T/test-older-cli.sh` proves that on
+  each pinned copy and does not take it from this paragraph.
 - `channels` joins `LIFECYCLE`, which invalidates the project's view at an
   append and at an import. `_projection` needs a branch of its own for it:
   as the code stands a `LIFECYCLE` kind it does not name falls into the
   last branch and is appended to the row's `status`.
+- Where a statement goes is the project in whose log the thread's current
+  session is a member at the write, checked under the lock from that
+  session's own events there. A thread with no session (a vacant spawned
+  thread) or whose session is a member of no project at that moment
+  (between the two halves of a move) is not written: its caller is told
+  `pending`.
+- A move between the record's write and the statement does not redirect
+  the statement: it is appended in the project the entry names, under the
+  session's writer there, after that writer's `retired`, where it states
+  nothing to a reader of membership; the project the thread moved to gets
+  its statement from the reconciliation (M3), and a requester finds the
+  answer wherever it lies (§5's answers).
+- This code's listings export neither `began` nor `answered`
+  (`public_seat`, `member_json`).
+
+**Does not touch:** `_reconcile`, `begin`, `finish`, requests, any verb,
+the uplink, `cmd_list`.
+
+**Proves:** A5's stop between the record's write and the statement; A9 for
+an own add and removal, and its last clause (an older copy that finishes an
+entry this version began leaves the positions as written); the reader half
+of A6. Its tests pin: the fold on hand-written logs (a statement before its
+writer's `joined`, under another writer than the `joined`'s, after a
+`retired`, two statements, one with an empty list, ids that are no
+channel's, a 129th id); rows C1 and C2 from `set_channels`, with a `decide`
+that is given a record changed between its caller's read and the lock;
+`began` after an add into a channel whose log is empty, holds other
+writers' events, and already holds events addressed to the thread, and its
+absence after a removal; a cut after the record's write, finished by this
+code's next reconciliation with exactly one statement; the same cut
+finished by each pinned copy's reading verb, after which this code reads
+the record's set, positions and answered requests as written and the log
+states the set once (1.27.10, which has no journal, finishes nothing, and
+this code's next verb does); a cut after the record's write followed by a
+`join` to another project, the statement landing in the project left; both
+interleavings with a wake, injected (a `resume` paused between its check
+and its stop, and a launch paused before it records its job, each with the
+operation attempted meanwhile), asserting that the operation wrote nothing
+and said `pending`, the engine's process count, its launch count, and the
+record's job and grace; `update` raising on each of the three keys; and
+`list --json` holding neither `began` nor `answered`.
+
+### M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption
+
+**At its end:** `_reconcile` notices a thread of this machine whose log
+states otherwise than its record and has the operation state the set, so
+every reader takes the record's set after a continuation, a refill, a
+`join`, a return, a change of reach and a `joined` an older copy wrote. A
+return writes anew where each membership began; a continuation carries the
+set and its positions untouched; an absorption gives the continuing thread
+the absorbed record's channels, their positions and its answered requests;
+a session that comes to be another thread's brings none of them.
+
+**Touches:** `S/sminos_threads.py` (`begin` for a return, `finish`'s merge
+for an absorption), `S/sminos.py` (`_reconcile`'s last step and the memo it
+reads), `S/sminos_channels.py` (`restate`), `T/test_channels_life.py`
+(new).
+
+**Interfaces:** exposes §3's rows C5 to C9 and `restate`. Consumes §3's
+`set_channels`, §4's `channel_positions`, §5's fold.
+
+**Decisions:**
+
 - The reconciliation is the last step of `_reconcile`, after its own
   appends, so that a `joined` this pass wrote is followed by its statement
   in the same pass. It compares, for each thread of this machine that has
@@ -435,83 +590,101 @@ steps, `open_entries`) and §1.
   effect in this log is a `joined` of this machine, what the log states (a
   memo beside the merged log, with this pass's appends folded in) with the
   record's set, and on a difference calls `restate` (§3, row C5) with what
-  it read. It appends nothing itself. A failure (a busy lock, a stream that
-  cannot be chosen) is warned of and left to the next pass, as its other
-  appends are.
-- Where a statement goes is the project in whose log the thread's current
-  session is a member at the write, checked under the lock from that
-  session's own events there. A thread with no session (a vacant spawned
-  thread) or whose session is a member of no project at that moment (between
-  the two halves of a move) is not written: its caller is told `pending`.
-- The marks of an end and a return are computed by `begin` for those two
-  operations, for every channel of the set, so that every path that ends or
-  returns a thread (a retire, the rule, a purge, a lane B end, an older
-  copy's retire taken as an end) leaves them without a change of its own.
+  it read. It appends nothing itself. It only tries the wake lock; a busy
+  lock (another process's wake, or one under way in this very process), or
+  a stream that cannot be chosen, is left to the next pass, as its other
+  appends' failures are.
+- `restate` is compare-and-state: under the lock the record's set, its
+  current session, that session's membership in the project and its writer
+  there must each be what the reconciliation read, else nothing is written
+  and the next reconciliation notices afresh. So a reconciliation overtaken
+  by a removal or a move states nothing.
+- A return's positions are written by `begin` for that operation, in its
+  record write, for every channel of the set, so that every path that
+  returns a thread leaves them without a change of its own. An older copy
+  that begins a return itself writes none: the positions stay as they were
+  before the end (accepted; the constraint's list).
 - The absorption's merge is a write of its own in `finish`, after the
   absorbed record is reserved (nothing writes a reserved record) and before
   the events: the continuing record's set, then the absorbed record's
   channels not in it, up to the limit, an addition past it dropped and said
-  in `daemon.log`; `answered` united; the marks of the channels added. The
-  statement follows from the reconciliation, since the entry's `joined`
-  leaves the log stating nothing.
+  in `daemon.log`; `began` kept for the continuing record's own channels
+  and taken from the absorbed record for those it brings; `answered`
+  united. The statement follows from the reconciliation, since the entry's
+  `joined` leaves the log stating nothing. An older finisher skips the
+  merge (accepted).
 
-**Does not touch:** requests, any verb, the uplink, `cmd_list`.
+**Does not touch:** requests, any verb, the uplink, `cmd_list`, an end (the
+set, its positions and the answered requests stay through one).
 
-**Proves:** A6 but for the roster's own rows (M4), A9 for an own add and
-removal, an end and a return, and the absorption's half of A8's limit. Its
-tests pin: the fold on hand-written logs (a statement before its writer's
-`joined`, under another writer than the `joined`'s, after a `retired`, two
-statements, one with an empty list, ids that are no channel's, a 129th id);
-each row of §3's table from `set_channels`, with a `decide` that is given a
-record changed between its caller's read and the lock; a process killed
-between the record's write and the statement, and between the marks and
-the statement, finished by the next reconciliation with one statement;
-`update` refusing both keys; the reconciliation after a continuation, a
-refill, a `join`, a `join` back to a project left with another set, a
-change of reach and back, a `joined` an older copy wrote, a return, and a
-`/clear` (the thread left keeps its set, the new one states none); the
-reconciliation paused between its read and its call while the thread is
-removed from the channel, and while it moves to another project, stating
-nothing in either case; the marks after each of the four transitions, with
-the channel's log already holding events addressed to the thread's
-sessions; the absorption with a set on both sides, at the limit, and its
-replay.
+**Proves:** A6 but for the roster's own rows (M5); A9's end and return,
+continuation, absorption and "a session that became another thread's
+brings none"; the absorption's half of A8's limit. Its tests pin, each
+through T1's own fixtures for the transition and for both kinds of thread
+where both can make it: the reconciliation after a continuation, a refill,
+a `join`, a `join` back to a project left with another set, a change of
+reach and back, a `joined` an older copy wrote, a return, and a `/clear`
+(the thread left keeps its set, the new one states none), every reader
+taking the record's set, the empty set included; the reconciliation paused
+between its read and its call while the thread is removed from the
+channel, and while it moves to another project, stating nothing in either
+case; a wake in flight leaving the difference to the next pass; `began`
+unchanged by an end, rewritten by the return with the log's positions
+then, also over events addressed to the thread while it was ended, and
+unchanged by a hand-off and a refill; a former session that runs again as a
+thread of its own holding an empty set and no positions; the absorption
+with a set on both sides, at the limit, its positions for the channels
+brought, its answered requests united, and its replay.
 
-### M3 — Requests on one machine, and the verbs that write them
+### M4 — Requests on one machine, and the verbs that write them
 
 **At its end:** `sminos channel create <name> [<thread>]`, `sminos channel
 add <channel> [<thread>...]` and `sminos channel remove <channel>
-[<thread>...]` work on one machine whose endpoint lists `channels`. A
-thread adds and removes itself with a statement alone. Another thread of
-the machine is named by a request the command writes into the channel's log
-and then carries out itself; a request left by a command that died is
-carried out by the daemon's tick. Each target is told applied, refused with
-its reason, or pending and why. What is refused before anything is written
-is refused (§8), and the limit binds every path.
+[<thread>...]` work on one machine whose endpoint lists `channels`, and are
+refused where it does not. A thread adds and removes itself with a
+statement alone. Another thread of the machine is named by a request the
+command writes into the channel's log and then carries out itself, from
+the request in hand; a request left by a command that died is carried out
+by the daemon's tick. Each target is told applied, refused with its
+reason, or pending and why. What is refused before anything is written is
+refused (§8), and the limit binds every path.
 
-**Touches:** `S/sminos_channels.py` (the requests of a log, `carry_out`,
-`carry_due`, `sender_verified`, `reach_token`, the three verbs),
-`S/sminos.py` (`build_parser`, `main`'s usage line for the family),
-`S/sminos_daemon.py` (the channel pass calls `carry_due`),
+**Touches:** `S/sminos_channels.py` (the requests of a log, `judge`,
+`carry_out`, `carry_due`, `sender_verified`, `reach_token`, the three
+verbs), `S/sminos.py` (`build_parser`, `main`'s usage line for the
+family), `S/sminos_daemon.py` (the channel pass calls `carry_due`),
 `T/test_channels_requests.py` (new), `T/test-channels.sh`.
 
-**Interfaces:** exposes §2 (the request), §6, §8's three verbs. Consumes
-§3's `set_channels`, §5's `channels_of`, `stream_choice`,
-`same_owner_local`, `owners_meet`, `policy.read_only`,
+**Interfaces:** exposes §2 (the request), §3's rows C3 and C4, §6, §8's
+three verbs. Consumes §3's `set_channels`, §5's `channels_of`,
+`stream_choice`, `same_owner_local`, `owners_meet`, `policy.read_only`,
 `policy.outside_origin`, `audience.advertised`.
 
 **Decisions:**
 
-- One function carries out a request, `carry_out`, and one pass calls it,
-  `carry_due`, in the order the channel's log is read; the command, the
-  daemon's tick and (M6) the uplink at an answer all call the pass. A
-  command that finds an earlier request for the same thread and channel
-  unanswered carries that one out first when it can, and reports its own
-  as pending behind it when it cannot.
-- `carry_out` takes the endpoint's word as an argument (§6). This milestone
-  proves the whole decision table by handing it each word over hand-written
-  requests, some carrying an import's `verified` key; M6 builds the path
-  that asks.
+- One function decides a request, `judge` (§6's table), with no effect; one
+  function carries it out, `carry_out`; one pass calls that in the log's
+  order, `carry_due`. `carry_out` evaluates `judge` before the lock, to say
+  `pending` or `ignored` without taking one, and again whole inside
+  `decide`, on a fresh read: the outcome is the second one's. The command,
+  the daemon's tick and (M7) the uplink at an answer are the pass's
+  callers.
+- The earlier requests and the expiry are read from the channel's log as it
+  is at the decision: `decide` compares the signature of the log's files
+  (the one the merged read is kept by) with the one `earlier` was read
+  under, and a difference writes nothing; `carry_out` then reads the log
+  again and tries again, three times, and past that says `pending`.
+- A word of the endpoint's, `deliver` or `refuse`, is bound to the thread
+  it was asked for before it is read as a verdict: if the thread's current
+  session or its reach is no longer what the question was put for, the
+  word is dropped and the request asked about again (M7 builds the asking;
+  this milestone proves the table with words handed in).
+- A command carries out the request it just wrote from the event in hand,
+  as `log_append` returned it, and not by finding it in the merged log: an
+  operator's append to a log this machine has just registered can be queued
+  with no position yet (`waits_for_head`). The pass takes such a request as
+  one more, after the log's. When the queued event later reaches the log
+  the record already holds its answer.
 - A request for a private thread is written under the stream
   `stream_choice` gives for that one recipient; a choice that refuses is
   the command's "refused: not reachable" for that target, with nothing
@@ -522,35 +695,50 @@ is refused (§8), and the limit binds every path.
   and honoured when the machine's owners meet the thread's
   (`owners_meet("", session)`): `same_owner_local` answers only for a
   session's writer.
-- `channel create` refuses, before anything is written, a name a log known
-  on this machine already answers to, naming it. It mints the id, registers
-  the channel, and places the first member by the same paths as `add`. An
-  id the machine already knows is minted again.
-- A request that names no thread of this machine as §6's first rows read it
-  (not this machine's, ended, a session it never had, a session that is now
-  another thread's, lane B) gets no statement here and expires: a statement
-  is written under a thread's writer, and no thread here is the one named.
+- `channel create` checks, before it registers anything, the capability,
+  the name, the first member and the limit. It refuses a name a log known
+  on this machine already answers to, naming it, with one exception that
+  makes an interrupted creation retryable: a channel of that name
+  registered here whose log holds no event, that no record of this machine
+  names and that the org's directory does not list is the one an earlier
+  `create` left, and the command goes on with it. It mints the id (again
+  if the machine knows it), registers the channel, and places the first
+  member by the same paths as `add`.
+- A request that names no thread of this machine as §6's second row reads
+  it (not this machine's, ended, a session it never had, a session that is
+  now another thread's, lane B) gets no statement here and expires: a
+  statement is written under a thread's writer, and no thread here is the
+  one named.
 
 **Does not touch:** the uplink, the capability list, `cmd_list`,
 `channel show`, `channel env`.
 
 **Proves:** A1; A4's cases at the function (the same owner on one machine;
 a verified sender with each word; an unverified sender; no word yet; an
-endpoint without `channels`); A5 but the last clause (M6); A8's capability
-and limit halves; A9 for a request's add and removal. Its tests pin every
-row of §6's table; an add then a remove of one thread in one channel, and
-the reverse, with each carried by the command or by the tick and the words
-handed over in either order; two requests in two channels answered once
-each by the statement naming its channel and id; a request read twice, and
-again after the thread changed session, project and reach, and after its
-record was absorbed; a request behind an open entry; five requests for one
-thread from two requesters; the limit at `create`, at `add` for oneself, at
-`add` for another (a refusing statement), and with two adds for the 128th
-place; each refusal before writing, with every log unchanged; a request
-whose `session` is another thread's current one changing neither; and no
-session's turn started by any of it.
+endpoint without `channels`); A5 but its last clause on the path (M7); A8's
+capability and limit halves; A9 for a request's add and removal. Its tests
+pin every row of §6's table, each also with the fact it reads changed
+between the first evaluation and the lock (the owners, the policy, the
+revocation set, the capability); a word of each kind, `deliver` and
+`refuse`, handed in for a session and for a reach the thread no longer
+has, neither recorded; an earlier-sorting request imported while a carrier
+is paused after its read, the later one not carried out ahead of it; an
+add then a remove of one thread in one channel, and the reverse, with each
+carried by the command or by the tick and the words handed over in either
+order; two requests in two channels answered once each by the statement
+naming its channel and id; a request read twice, and again after the
+thread changed session, project and reach, and after its record was
+absorbed; a request behind an open entry, and behind a wake in flight; five
+requests for one thread from two requesters; an operator's request queued
+for its writer's head, carried out by the command and not again when it
+reaches the log; `create` cut after its registration and run again; the
+limit at `create` (before registration), at `add` for oneself, at `add`
+for another (a refusing statement), and with two adds for the 128th place;
+each refusal before writing, `remove` without the capability among them,
+with every log unchanged; a request whose `session` is another thread's
+current one changing neither; and no session's turn started by any of it.
 
-### M4 — The roster, the listing and the pool
+### M5 — The roster, the listing and the pool
 
 **At its end:** `sminos list` run by a thread that is in channels prints
 its project as before and then each of its channels under `# <name>` with
@@ -564,14 +752,16 @@ requests of the last seven days with what became of each, and the pool;
 prints. `sminos help` lists the `channel` verbs, and the backtick guard
 knows the family.
 
-**Touches:** `S/sminos_channels.py` (`rosters`, `roster`, the requests as
-shown, `pool`, `show`, `env`), `S/sminos.py` (`cmd_list`, `list_scope`, the
-parser's `--channel`, `member_json`, the module docstring that is `help`),
-`sminos/hooks/mods/backticks.tsx` (`VERBS`), `T/mods/backticks.test.ts`,
-`T/test-channels.sh`, `T/test_channels.py`.
+**Touches:** `S/sminos_channels.py` (`rosters`, `roster`, `answers`,
+`answer_of`, the requests as shown, `pool`, `show`, `env`), `S/sminos.py`
+(`cmd_list`, `list_scope`, the parser's `--channel`, `member_json`, the
+module docstring that is `help`), `sminos/hooks/mods/backticks.tsx`
+(`VERBS`), `T/mods/backticks.test.ts`, `T/test-channels.sh`,
+`T/test_channels.py`.
 
-**Interfaces:** exposes §5's roster (Y1), §8's listing. Consumes §2, §5's
-`Member.channels`, §6's reading of requests.
+**Interfaces:** exposes §5's roster and answers (Y1), §2's `channel-env`,
+§8's listing. Consumes §2, §5's `Member.channels`, §6's reading of
+requests.
 
 **Decisions:**
 
@@ -586,17 +776,23 @@ parser's `--channel`, `member_json`, the module docstring that is `help`),
 - A row's `channels` key is present in `list --json` only when the row is
   in a channel, as the wire sends no key for a thread in none: the output
   for a store without channels is byte for byte what it was.
-- A request older than seven days by its own timestamp is not shown,
-  answered or not. What became of a newer one is read from the statement
-  that names its channel and id in any project's log this machine reads,
-  else from a position of this machine's the hub withheld (M6 adds that
-  reader), else it is pending, with the machine the target's row was last
-  seen on and the request's age.
-- `channel env` is refused from a terminal and from a thread that is not in
-  the channel, before anything is written: no reader would honour the
-  event. The machine named must be one the org's directory lists.
-- A `channel-env` event is honoured when its writer's session is, or was,
-  a session of a thread in the roster as it is read; the last by merge
+- What became of a request is read from an index of its own, not from the
+  fold that reads membership: every `channels` event that carries
+  `answers`, in any project's log this machine reads, whatever statement is
+  in effect there now and whatever project the thread has since moved to;
+  an answer is a request's only when its `thread` stamp is the request's
+  `thread`. A request with no answer is pending, with the machine the
+  target's row was last seen on and the request's age (the hub's
+  withholding is M7's reader). A request older than seven days by its own
+  timestamp is not shown, answered or not.
+- `channel env` is refused, before anything is written, without the
+  capability, from a terminal, and from a thread that is not in the
+  channel: no reader would honour the event. The machine named must be one
+  the org's directory lists.
+- A `channel-env` event carries its writer's thread id (§2) and is honoured
+  when the roster, as it is read, holds a row for that thread that lists
+  the writer's session among the sessions it has had; an association the
+  reader cannot make is not honoured. The last honoured event by merge
   order holds for each machine.
 
 **Does not touch:** delivery, tags, `find_target` (no path is given the
@@ -611,12 +807,16 @@ with the merge base's). Its tests pin: each section and its order; a
 stopped and a `gone` member shown in a roster and folded in the project's
 section; two members of one alias labelled apart; `--channel` with
 `--machine`, `--state` and words; `channel show` with a roster spanning two
-projects and each state of a request; the pool's counts, a machine added
-and removed by hand, an env event from a writer no longer in the roster
-ignored; the guard refusing a `sminos channel …` call that holds a live
-backtick.
+projects and each of applied, refused and pending; the answers index with
+several requests for one target, an answer followed by a restatement, an
+answer left in a project the thread then moved from, and an unrelated
+thread's statement naming the same channel and id, not taken; the pool's
+counts, a machine added and removed by hand, an env event from a writer no
+longer in the roster, one whose thread id is another thread's, and one
+with none, each ignored; the guard refusing a `sminos channel …` call that
+holds a live backtick.
 
-### M5 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture
+### M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture
 
 **At its end:** sminos advertises `channels` in its hello and, when the
 welcome lists it, sends a lane A thread's set as `channels` on its `member`
@@ -685,7 +885,7 @@ hello gaining and losing `follow` as the last record naming it goes and
 returns, with no `machine` frame either way; the stand-in's `known` against
 MAWS's rule on hand-fed frames; and the three-machine case.
 
-### M6 — Requests across machines: the endpoint's word, and what a requester is told
+### M7 — Requests across machines: the endpoint's word, and what a requester is told
 
 **At its end:** a request written on one machine for a thread of another
 is uploaded, reaches the target's machine, and is carried out there when
@@ -696,10 +896,10 @@ pending with the target's machine and since when; after seven days it reads
 nothing, and a request that arrives that old is not carried out.
 
 **Touches:** `S/sminos_uplink.py` (the request source of the ask pass,
-`on_reach`, the asks held), `S/sminos_channels.py` (`ask_of`, the
-binding of an answer, the withheld reading), `S/sminos_hublog.py` (a read
-of a project's withheld positions for the CLI),
-`T/test_channels_wire.py`, `T/test-channels-machines.sh`.
+`on_reach`, the asks held), `S/sminos_channels.py` (`ask_of`, the withheld
+reading in what `channel show` prints), `S/sminos_hublog.py` (a read of a
+project's withheld positions for the CLI), `T/test_channels_wire.py`,
+`T/test-channels-machines.sh`.
 
 **Interfaces:** exposes §6's `ask_of` and the answer's path. Consumes
 §6's `carry_due`, `Link.members_before`, the uplink's `asks`.
@@ -719,18 +919,19 @@ of a project's withheld positions for the CLI),
   request that pass left pending `endpoint` (`ask_of`), one ask out at a
   time for a request. An ask is held under a key of its own (the channel,
   the thread, the request's id), with what it was put for: the session and
-  its reach (`reach_token`). `on_reach` hands an answer for such an ask to
-  `carry_due` with that binding; the operation uses it only if, under the
-  lock, the thread's current session and reach are still those, and
-  otherwise the request is asked about again at the next pass. An answer
-  past `REACH_WAIT` is none, and the request is asked again, with no count
-  and no bound.
+  its reach (`reach_token`). `on_reach` hands an answer for such an ask,
+  whichever word it is, to `carry_due` with that binding; a word whose
+  binding no longer holds under the lock is recorded as nothing, and the
+  request is asked about again at the next pass. An answer past
+  `REACH_WAIT` is none, and the request is asked again, with no count and
+  no bound.
 - An import of a channel's log nudges the daemon and marks the ask pass
   due, as an import does today, so a request is carried out within a tick
   of its arrival.
 - The requester's machine reads "the hub withheld it" from the withheld
   positions its uplink keeps for the channel's log (`uplink.json`), by a
-  read that takes no lock and changes nothing.
+  read that takes no lock and changes nothing; `channel show` gains that
+  state here, with its proof.
 
 **Does not touch:** `deliver_reach` and the message asks (their keys,
 their hold filter, their counts stay), the fixture, `cmd_list`.
@@ -740,23 +941,24 @@ for; a sender it refuses; an unverified sender it would deliver words for,
 refused by sminos; no answer, pending; an endpoint without `channels`,
 pending); A5's last clause; A1's "placed on another machine when its daemon
 runs". Its tests pin: one ask per due request and none for one that needs
-no word; an answer used once; the answer after the thread's hand-off, and
-after a change of its reach, leading to a second ask; two requests for one
-thread and channel asked one at a time in order; a stopped thread placed
-with no launch recorded by the test engine; each outcome at the requester
-on two machines, the withheld one staged by the stand-in refusing the
-upload `not-reachable`; an expired request relayed late; the roster on both
+no word; an answer used once; a `deliver` and a `refuse` each arriving
+after the thread's hand-off, and after a change of its reach, neither
+recorded and each leading to a second ask; two requests for one thread and
+channel asked one at a time in order; a stopped thread placed with no
+launch recorded by the test engine; each outcome at the requester on two
+machines, the withheld one staged by the stand-in refusing the upload
+`not-reachable`; an expired request relayed late; the roster on both
 machines; and the checker over both stand-ins.
 
-### M7 — Older copies, what is written beside the code, the version, and the acceptance
+### M8 — Older copies, what is written beside the code, the version, and the acceptance
 
 **At its end:** `T/test-older-cli.sh` runs 1.27.10, 1.51.0 and 1.52.0
-beside this code over a store that holds statements, a thread in channels
-and a registered channel; `S/CLAUDE.md`, which each milestone added to,
-has been read whole against the tree;
-`docs/doperpowers/TECH-DEBT.md` holds what this child accepts;
-sminos is 1.53.0; and the acceptance has been run as Concrete Steps gives
-it, the narrow check on a real engine included.
+beside this code over a store that holds statements, a thread in channels,
+a registered channel and a `channel-env` event; `S/CLAUDE.md`, which each
+milestone added to, has been read whole against the tree;
+`docs/doperpowers/TECH-DEBT.md` holds what this child accepts; sminos is
+1.53.0; and the acceptance has been run as Concrete Steps gives it, the
+narrow check on a real engine included.
 
 **Touches:** `T/test-older-cli.sh`, `sminos/skills/sminos/scripts/CLAUDE.md`,
 `sminos/CLAUDE.md` (one sentence naming the channel family and where its
@@ -769,32 +971,33 @@ detail is), `docs/doperpowers/TECH-DEBT.md`, the files
 
 - The older-copy suite's machines are not enrolled, so `channel create` is
   refused on them: the store is staged through this code's own functions
-  (`sminos_channels.register`, `change`), and each older copy then runs its
-  verbs over it. 1.52.0 is pinned as the merge that released it
-  (`f051d4f2a28615d7b3517963aed0ac68233435fb`), fetched as the other two
-  are.
+  (`sminos_channels.register`, `change`, and a `channel-env` and a
+  `channel-request` appended as the verbs append them), and each older copy
+  then runs its verbs over it. 1.52.0 is pinned, since M2, as the merge
+  that released it (`f051d4f2a28615d7b3517963aed0ac68233435fb`), fetched as
+  the other two are.
 - Per version, asserted: each copy's `list`, `list --json`, a tagged `say`
   and a `send` to the thread in channels, and its `daemon tick`, do what
   they did over the same store without channels (the every-copy
-  expectations and each version's own, unchanged); the record's `channels`
-  and `answered` are what they were after each; a `joined` the copy writes
-  for the session is followed, at this code's next reconciliation, by a
-  statement of the same set; the copy lists the registered channel as a
-  project with no member and this code still lists it as none. Then, for
-  each copy: its `join <channel id>` by hand, after which this code's next
-  reconciliation leaves the session a member of its one project with its
-  set as it was, a `retired` `moved` in the channel's log, and the checker
-  clean over an uplink run on that store.
+  expectations and each version's own, unchanged); the record's
+  `channels`, `began` and `answered` are what they were after each; a
+  `joined` the copy writes for the session is followed, at this code's next
+  reconciliation, by a statement of the same set; the copy lists the
+  registered channel as a project with no member and this code still lists
+  it as none. Accepted and asserted as it is: a copy's `list --json` shows
+  a spawned thread's new record keys; a return a 1.51.0 or 1.52.0 copy
+  begins leaves `began` as it was before the end.
+- Then, for each copy: its `join <channel id>` by hand from a running
+  session, after which this code's next reconciliation leaves the session a
+  member of its one project with its set as it was and a `retired` `moved`
+  in the channel's log; the same with the session closed before that
+  reconciliation, listed in neither until it runs again, then recovered;
+  and the checker, baselined on the store as the older copy left it, clean
+  over an uplink run on it: the older copy's `joined` uploaded in its
+  place, then this code's `retired`, and nothing else of this code's.
 - TECH-DEBT rows, each with what would promote it: the composite's
-  accepted list (the constraint above); a wake that launches while a
-  membership entry is open loses its own record writes for that attempt
-  (the same shape as the row for a delayed release); a mark reports no
-  delivery outcome for an event it buries; `chat <channel>` and a target
-  qualified by a channel are refused until CH2; a session an older copy
-  joined into a channel that stops before this code's next reconciliation
-  is retired from the channel only once it runs again (`retire_moved` acts
-  on a session a process or a seat holds), and until then is listed in
-  neither.
+  accepted list (the constraint above); `chat <channel>` and a target
+  qualified by a channel are refused until CH2.
 - **A check on a real engine, narrow, and here.** The engine is in this
   child's path only where T1 already put it: a `/clear`, a hand-off to a
   background job and its absorption, whose order of hooks T1 and T2 each
@@ -819,6 +1022,7 @@ Every command runs from the repository's root in the child's worktree
 
     python3 -B sminos/tests/test_channels.py
     python3 -B sminos/tests/test_channels_store.py
+    python3 -B sminos/tests/test_channels_life.py
     python3 -B sminos/tests/test_channels_requests.py
     python3 -B sminos/tests/test_channels_wire.py
     bash sminos/tests/test-channels.sh
@@ -829,7 +1033,7 @@ Every command runs from the repository's root in the child's worktree
 A Python file is a `unittest` module: it ends with `OK` and its count, or
 names the test that failed. A shell file ends with its counts of passed and
 failed and exits non-zero on any failure. The replay prints one `ok` or
-`FAIL` line per line of the conversation it plays; from M5 on it prints no
+`FAIL` line per line of the conversation it plays; from M6 on it prints no
 `amend` line.
 
 **At each milestone's end, and before the frontier review,** the gates, on
@@ -837,33 +1041,35 @@ the pushed commit (they run on GitHub Actions and test the committed HEAD):
 
     ci-gate --gates sminos,sminos-suites,sminos-channels,sminos-idle,sminos-mods,shell-lint,repo-checks
 
-with `mods-types` from M4 on (the guard mod changes) and `version-bump` in
-M7. Expected: one `PASS` line per gate, then `GREEN` and the run's address.
+with `mods-types` from M5 on (the guard mod changes) and `version-bump` in
+M8. Expected: one `PASS` line per gate, then `GREEN` and the run's address.
 A `FAIL` that the base also shows, or one a recorded reason names, is not
-this change's; any other is diagnosed, not run again.
+this change's; any other is diagnosed, not run again. Each milestone's
+report gives the `sminos-channels` gate's duration; its timeout in
+`.github/ci-kit.yml` is kept at about twice that.
 
 **The proof map.** Where each acceptance item of CH1's section is proved.
 A1 to A14 number its items in the order the section lists them.
 
 | Item | Proved in (milestone: file) |
 |---|---|
-| A1 create, add, remove; with none named, the caller; placed when the command returns but for the two waits; refused before writing | M3: `test-channels.sh` (the verbs), `test_channels_requests.py` (the waits); M6: `test-channels-machines.sh` (another machine) |
-| A2 `list`, `--channel`, `channel show`, `channel env` and the pool's counts | M4: `test-channels.sh`, `test_channels.py` |
-| A3 across two machines: pending with the machine and since when, carried out by that machine's daemon, the roster on both; each outcome where it can be known | M6: `test-channels-machines.sh` |
-| A4 who may ask, case by case | M3: `test_channels_requests.py` (every row of §6); M6: `test_channels_wire.py` and `test-channels-machines.sh` (the path) |
-| A5 order and identity | M3: `test_channels_requests.py`; M2: `test_channels_store.py` (the stop between two writes; the absorbed record); M6: `test_channels_wire.py` (asked about again) |
-| A6 membership as others read it | M2: `test_channels_store.py` (every reader takes the record's set; the reconciliation overtaken; `/clear`); M4: `test-channels.sh` (private, ended, reopened, in the roster) |
-| A7 a remove does not retire; `known` for two holders and a follower; the last member; `list --org`; a return | M5: `test-channels-machines.sh`; M4: `test-channels.sh` (`list --org` on one machine) |
-| A8 `join`, `.smns`, the capability, the 129th | M1: `test-channels.sh`, `test_channels.py`; M3: `test-channels.sh`, `test_channels_requests.py`; M2: `test_channels_store.py` (an absorption) |
-| A9 the marks | M2: `test_channels_store.py` (own add and removal, end, return); M3: `test_channels_requests.py` (a request's) |
+| A1 create, add, remove; with none named, the caller; placed when the command returns but for its waits; refused before writing | M4: `test-channels.sh` (the verbs), `test_channels_requests.py` (an earlier request, an open entry, a wake in flight); M7: `test-channels-machines.sh` (another machine) |
+| A2 `list`, `--channel`, `channel show`, `channel env` and the pool's counts | M5: `test-channels.sh`, `test_channels.py` |
+| A3 across two machines: pending with the machine and since when, carried out by that machine's daemon, the roster on both; each outcome where it can be known | M7: `test-channels-machines.sh` |
+| A4 who may ask, case by case | M4: `test_channels_requests.py` (every row of §6, before and under the lock); M7: `test_channels_wire.py` and `test-channels-machines.sh` (the path) |
+| A5 order and identity | M4: `test_channels_requests.py`; M2: `test_channels_store.py` (the stop between two writes); M3: `test_channels_life.py` (the absorbed record's answers); M7: `test_channels_wire.py` (asked about again, for either word) |
+| A6 membership as others read it | M2: `test_channels_store.py` (the reader); M3: `test_channels_life.py` (every reader takes the record's set; the reconciliation overtaken; `/clear`); M5: `test-channels.sh` (private, ended, reopened, in the roster) |
+| A7 a remove does not retire; `known` for two holders and a follower; the last member; `list --org`; a return | M6: `test-channels-machines.sh`; M5: `test-channels.sh` (`list --org` on one machine) |
+| A8 `join`, `.smns`, the capability, the 129th | M1: `test-channels.sh`, `test_channels.py`; M4: `test-channels.sh`, `test_channels_requests.py`; M3: `test_channels_life.py` (an absorption) |
+| A9 where a membership began | M2: `test_channels_store.py` (an add, a removal), `test-older-cli.sh` (an older finisher leaves it); M3: `test_channels_life.py` (an end and a return, a continuation, an absorption, a session that became another thread's); M4: `test_channels_requests.py` (a request's add and removal) |
 | A10 nothing is said into a channel | M1: `test-channels.sh` (from a session and from a terminal) |
-| A11 a verb's fact goes to the thread's own project | M1: `test-channels.sh` (`charge`, `status`, `retire` naming a thread by its short, its id, `alias#short` and a channel-qualified name; M3 runs it again with the thread in a channel) |
-| A12 the wire | M5: `rl10_conformance.py`, `test_channels_wire.py`; M1: `test_channels_wire.py` (the checker before any member) |
-| A13 parent line 8 for this surface | every gate at every milestone; M4: the listing compared with the merge base's; M5: the frames of a thread in no channel compared with the old fixture's |
-| A14 older copies | M7: `test-older-cli.sh` |
+| A11 a verb's fact goes to the thread's own project | M1: `test-channels.sh` (`charge`, `status`, `retire` naming a thread by its short, its id, `alias#short` and a channel-qualified name; M4 runs it again with the thread in a channel) |
+| A12 the wire | M6: `rl10_conformance.py`, `test_channels_wire.py`; M1: `test_channels_wire.py` (the checker before any member) |
+| A13 parent line 8 for this surface | every gate at every milestone; M1: `test_channels.py` (two projects of one name); M5: the listing compared with the merge base's; M6: the frames of a thread in no channel compared with the old fixture's |
+| A14 older copies | M8: `test-older-cli.sh`; M2: `test-older-cli.sh` (the entry an older copy finishes) |
 
-**M7, the acceptance.** The gates GREEN on the final head; then the scene,
-which M6 builds as the last case of `T/test-channels-machines.sh` and which
+**M8, the acceptance.** The gates GREEN on the final head; then the scene,
+which M7 builds as the last case of `T/test-channels-machines.sh` and which
 is run alone, printing each command with what it printed:
 
     bash sminos/tests/test-channels-machines.sh --scene --show
@@ -900,9 +1106,10 @@ on each machine. Expected, step by step:
    remove desk-integration`; after a pass no stand-in lists the channel in
    `known`, and `sminos list --org` on `gamma` shows no section for it.
 7. `T/channel_wire.py`'s check passes over the three stand-ins and the
-   three stores.
+   three stores, and no delivery record exists under the channel's log on
+   any of them.
 
-**M7, the check on a real engine.** In a scratch tree `<scratch>`:
+**M8, the check on a real engine.** In a scratch tree `<scratch>`:
 `HOME=<scratch>/home`, `CLAUDE_CONFIG_DIR=<scratch>/home/.claude`,
 `SMINOS_HOME=<scratch>/sminos`, `MAWS_USER_DATA=<scratch>/maws`, the
 engine's credentials passed through the environment, the plugin loaded
@@ -923,9 +1130,10 @@ configuration.
    in another window: it is listed live in `# probe`.
 3. A is handed to a background job (the engine's own hand-off from inside
    the session, as T1's pass on a real engine did it). Expect, within two
-   ticks: one row for A's thread in `# probe`, under the job's
-   session id, and one statement of that set under the job's writer in A's
-   project log.
+   ticks: one row for A's thread in `# probe`, under the job's session id,
+   one statement of that set under the job's writer in A's project log,
+   and the record's positions for `probe` as they were before the
+   hand-off.
 
 Afterwards every scratch job is removed, the multiplexer and the scratch
 daemon are stopped, and the report keeps what each step printed beside the
@@ -951,9 +1159,10 @@ In `S/sminos.py`, beside `UUID_RE`:
     def known_channels() -> list[Project]                 # the logs registered here whose id is a channel's
     def known_logs(all_seats=None) -> list[Project]       # both: for what opens, reconciles or leaves logs
     def _name_tiers(q) -> (tiers, clash)
-        # as today over known_logs(), with two changes: `<name>#<short>` (short: the first hex digits of an id,
-        # eight or more) names the logs of that name whose id begins with it; and when a channel is among the logs
-        # a name answers and it is not the only one, every one of them is the clash, whatever tier it is in
+        # as today over known_logs(), with two changes. `<name>#<short>` (short: the first hex digits of an id,
+        # eight or more) names the logs of that name whose id begins with it. And a channel is in no tier: when
+        # a channel is among the logs a name answers and is not the only one, every one of them is the clash.
+        # Among projects alone the tiers, their order and their clash are today's
     def ambiguous_name(q, logs) -> str                    # the one refusal (§8), for every caller
     def project_tiers(q), find_project(q, required=True)  # as today; a channel is refused in §8's words
                                                           # (with required=False it answers None, as no project)
@@ -978,133 +1187,148 @@ Each as its log stores it, beside the log's own `ts`, `writer` and `seq`.
 
 | Kind | Log, writer | Fields |
 |---|---|---|
-| `channels` (the statement) | the thread's own project; the thread's current session's writer, as `lifecycle` chooses it (its plain writer, or its audience stream) | `session`: the writer's own session, and no other; `thread`; `op`: the journal entry's id; `channels`: the whole set, a list of channel ids in the order added, `[]` for none. When it answers a request: `answers`: `{"channel": <id>, "id": <the request's id>}`, `result`: `"applied"` or `"refused"`, and with `refused` `reason`: `"not-reachable"`, `"read-only"` or `"limit"`. A refusal carries the set unchanged |
+| `channels` (the statement) | the thread's own project; the thread's current session's writer, as `lifecycle` chooses it (its plain writer, or its audience stream) | `session`: the writer's own session, and no other; `thread`; `op`: the journal entry's id; `channels`: the whole set, a list of channel ids in the order added, `[]` for none. When it answers a request: `answers`: `{"channel": <id>, "id": <the request's id>}`, `result`: `"applied"` or `"refused"`, and with `refused` `reason`: `"not-reachable"`, `"read-only"` or `"limit"`. A refusal carries the set unchanged. Never a position of a channel's log |
 | `channel-request` | the channel's log; the requester's writer there: for a session, the stream `stream_choice` gives for the target as its one recipient; for a person at a terminal, the machine's human writer or its stream by the same choice | `op`: `"add"` or `"remove"`; `session`: the target thread's current session as the requester reads it; `thread`: the target's thread id; `id`: `uuid.uuid4().hex`, minted for this request. Nothing else, and never `to` |
-| `channel-env` | the channel's log; the writing thread's own stream there (`own_stream`) | `op`: `"add"` or `"remove"`; `machine`: a machine's name as the org's directory lists it |
+| `channel-env` | the channel's log; the writing thread's own stream there (`own_stream`) | `op`: `"add"` or `"remove"`; `machine`: a machine's name as the org's directory lists it; `thread`: the writer's own thread id |
 
 A reader takes a field of the wrong type as absent, and an event missing a
 required field as no event of its kind. A request's `op` is the request's
 verb and has nothing to do with the journal's `op` on a lifecycle event;
-the field's name is C2's.
+the field's name is C2's. `channel-env`'s `thread` is this plan's addition
+to C2's two fields, by the kind's owner (Y2): a session id can come to be
+another thread's, and the writer's session alone would let that thread's
+membership honour an event it never wrote.
 
 ### §3. The record and its operation (X1, Y3)
 
-In `S/sminos_threads.py`. Two keys of the record, both of the thread and
-kept across its occupants, an end and a return:
+In `S/sminos_threads.py`. Three keys of the record, all of the thread and
+kept across its occupants and an end:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `channels` | list of strings | the set (T1's field; `[]` when made) |
+| `began` | object, `{channel id: {writer: seq}}`, or absent for an empty set | where each membership began (§4): for every channel of the set, and for no other |
 | `answered` | list of `[channel id, request id, the request's ts]`, or absent | the requests this thread has answered, oldest first. An entry whose `ts` is older than the request lifetime (§6) is dropped by the next write of the operation: such a request can no longer be pending |
 
-Both are read for either store's record (`_of_seat` gives a seat's), and
-`answered` is exported by no listing, as `sessions` and `pending` are not.
-Adoption and the making of a record write `channels: []` themselves, not
-through `update`, and keep doing so.
+All three are read for either store's record (`_of_seat` gives a seat's).
+This code's listings export neither `began` nor `answered`. Adoption and
+the making of a record write `channels: []` themselves, not through
+`update`, and keep doing so.
 
     OPS = (..., "channels")
-    JOURNALED = (..., "channels", "answered")     # update() raises on either
-    SEAT_KEYS = (..., "answered")
+    JOURNALED = (..., "channels", "began", "answered")     # update() raises on any of them
+    SEAT_KEYS = (..., "began", "answered")
     CHANNEL_LIMIT = 128
 
     def set_channels(thread_id, decide, lock_until=None) -> dict | None
-        # The one way a thread's set, its answered requests or a statement is written. Under the record's store
-        # lock, on a fresh read, when the record has not ended and has no open entry: decide(record) answers None
-        # (nothing is written) or a Change, and the Change is written in one write with its entry. Returns the
-        # entry as written, None when nothing was. Takes no wake lock; does not move a seat's generation.
+        # The one way a thread's set, where its memberships began, its answered requests or a statement is
+        # written. Takes the thread's wake lock as begin() does for a transition (sminos.wake_lock, a bounded
+        # poll until `lock_until`, SWEEP_WAIT from now by default), and lets it go once the record is written;
+        # WakeBusy, nothing written, when a wake holds it past that or this process holds it already (a wake of
+        # the thread under way here: the hold is never a caller's). Under the record's store lock, on a fresh read,
+        # when the record has not ended and has no open entry: decide(record) answers None (nothing is written)
+        # or a Change, and the Change is written in one write with its entry. Returns the entry as written,
+        # None when nothing was. Does not move a seat's generation.
         #
         # Change = {"project": Project,       # the thread's own project: where the statement goes
         #           "session": str,           # the record's current session, which the statement is written under
         #           "channels": list[str],    # the set after the change (the same list for a refusal or a restatement)
-        #           "answer": {"channel", "id", "ts", "result", "reason"} | None,
-        #           "marks": {channel id: {writer: seq}}}      # §4; {} for none
+        #           "answer": {"channel", "id", "ts", "result", "reason"} | None}
         #
-        # A Change whose session is not the record's current one, or whose `channels` holds more than
-        # CHANNEL_LIMIT ids or an id that is no channel's, is a caller's error (ValueError), never written.
+        # In that write `began` gains, for each channel entering the set, sminos.channel_positions(id) as read
+        # then, and loses each channel leaving it; no caller gives a position. A Change whose session is not the
+        # record's current one, or whose `channels` holds more than CHANNEL_LIMIT ids or an id that is no
+        # channel's, is a caller's error (ValueError), never written.
 
 `decide` runs while the record's store lock is held, and for a spawned
 thread that is the lock every seat's write waits on. It reads the record it
 is given, other records by `get` and `current_record`, a session's own
-writer files in one project (`_own_events`), a channel's log positions
-(§4) and a session's record, all without a lock, and nothing else. It
-never reads a view, a roster or a target (`view_of`, `members`,
-`find_target`): each of those reconciles, and a reconciliation takes store
-locks this process then already holds.
+writer files in one project (`_own_events`), a channel's log files'
+signature, a session's record, the policy and the kept capabilities, all
+without a lock, and nothing else. It never reads a view, a roster or a
+target (`view_of`, `members`, `find_target`): each of those reconciles, and
+a reconciliation takes store locks this process then already holds.
 
-The entry:
+The entry, which owes the statement and nothing else:
 
     "pending": {"id": <minted>, "op": "channels", "at": <timestamp>, "project": <the Change's project's id>,
-                "events": [<the statement of §2, whole>],
-                "marks": {<channel id>: {<writer>: <seq>}}}
+                "events": [<the statement of §2, whole>]}
 
-`finish` carries it in this order and clears it: the marks (§4), then the
-statement, appended through `lifecycle` under the entry's id as every
-journaled event is (T1 §6, step 2: skipped when the session's own events
-hold a `channels` with that `op`). The entries of an **end** and a
-**return** gain `marks` too, written by `begin` for every channel of the
-record's set and carried with their settlement (a return's before its
-`joined`, an end's after its `retired`). An **absorption**'s entry gains
-`merged` (set once its merge is written) and the `marks` of the channels
-the merge added.
+`finish` carries it as it carries any entry (T1 §6, step 2): the statement
+is appended through `lifecycle` under the entry's id, skipped when the
+session's own events in that project hold a `channels` with that `op`, and
+the entry is cleared. It gains no step for this operation, so a finisher of
+1.51.0 or 1.52.0 carries the entry to the same end. Before `set_channels`
+a caller finishes the record's open entry with no wake lock held, as
+`thread_transition` does.
 
 **The transitions.** Each row's write is its linearization point; "the
-lock" is the record's store lock.
+lock" is the record's store lock, taken under the thread's wake lock.
 
-| # | What happens | Read under the lock (else nothing is written) | The record's write | Marks | The statement owed |
-|---|---|---|---|---|---|
-| C1 | a thread adds itself (`channel add <c>`, `channel create`) | its current session is the caller's; that session is a member of the project; the set lacks `c` and holds fewer than 128 | `channels` with `c` appended | `c` | the new set |
-| C2 | a thread removes itself | as C1, and the set holds `c` | `channels` without `c` | `c` | the new set |
-| C3 | a request is honoured | §6's rows 2 to 4 and 13 again, the limit for an add, the session a member of the project | `channels` with `c` appended or taken out (unchanged when it already reads so); `answered` gains the request | `c`, when the set changed | the set, with `answers` and `result` `applied` |
-| C4 | a request is refused | §6's rows 2 to 4 again, the session a member of the project | `answered` gains the request | none | the set unchanged, with `answers`, `result` `refused` and `reason` |
-| C5 | the log states otherwise than the record (the reconciliation) | the set, the current session, that session a member of the project the difference was read in, and its writer there (`own_stream`), each as the reconciliation read it | none but the entry | none | the set |
-| C6 | an end (T1 §6, rows 9 to 11 and 13) | T1's | T1's; the set and `answered` kept | every channel of the set | T1's `retired` |
-| C7 | a return (row 12) | T1's | T1's; the set and `answered` kept | every channel of the set | T1's `joined`; C5 follows at the next reconciliation |
-| C8 | an absorption (row 5) | T1's, and the absorbed record reserved | `channels`: its own, then the absorbed record's that it lacks, up to 128; `answered`: both, one entry per request | each channel added | T1's; C5 follows |
+| # | What happens | Read under the lock (else nothing is written) | The record's write | The statement owed |
+|---|---|---|---|---|
+| C1 | a thread adds itself (`channel add <c>`, `channel create`) | its current session is the caller's; that session is a member of the project; the set lacks `c` and holds fewer than 128 | `channels` with `c` appended; `began[c]` the log's positions now | the new set |
+| C2 | a thread removes itself | as C1, and the set holds `c` | `channels` without `c`; `began[c]` dropped | the new set |
+| C3 | a request is honoured | §6's table, whole, again; the session a member of the project | as C1 or C2 (nothing of the set or of `began` when it already reads so); `answered` gains the request | the set, with `answers` and `result` `applied` |
+| C4 | a request is refused | §6's table, whole, again; the session a member of the project | `answered` gains the request | the set unchanged, with `answers`, `result` `refused` and `reason` |
+| C5 | the log states otherwise than the record (the reconciliation) | the set, the current session, that session a member of the project the difference was read in, and its writer there (`own_stream`), each as the reconciliation read it | none but the entry | the set |
+| C6 | an end (T1 §6, rows 9 to 11 and 13) | T1's | T1's; the three keys untouched | T1's `retired` |
+| C7 | a return (row 12) | T1's | T1's, and in that write `began` written anew for every channel of the set, the log's positions now | T1's `joined`; C5 follows at the next reconciliation |
+| C8 | a continuation or a refill (rows 4 and 6) | T1's | T1's; the three keys untouched | T1's; C5 follows, the new session's `joined` leaving the log stating nothing |
+| C9 | an absorption (row 5) | T1's, and the absorbed record reserved | `channels`: its own, then the absorbed record's that it lacks, up to 128; `began`: its own kept, the absorbed record's for each channel brought; `answered`: both, one entry per request | T1's; C5 follows |
 
 A thread in no channel that has never been in one has no statement and
 needs none. C1 and C2 on a set that already reads so write nothing and say
-so. After any row the caller nudges the daemon, so the uplink sees the
-record within a scan.
+so. A former session of a thread that runs again as a thread of its own
+(T1's row 15) is a new record: an empty set, no positions, nothing
+answered. After any row the caller nudges the daemon, so the uplink sees
+the record within a scan.
 
 In `S/sminos_channels.py`, the callers that build `decide`:
 
-    def change(thread_id, channel, op, session) -> Outcome      # C1, C2: a thread's own add or remove (§6's Outcome)
+    def change(thread_id, channel, op, session, lock_until=None) -> Outcome   # C1, C2 (§6's Outcome)
     def restate(project, thread_id, session, writer, seen) -> bool
-        # C5: `seen` the set the reconciliation read from the record. True when a statement was owed and its
-        # entry begun; a failure to finish it is the next reconciliation's
+        # C5: `seen` the set the reconciliation read from the record. Only tries the wake lock. True when a
+        # statement was owed and its entry begun; a failure to finish it is the next reconciliation's
 
 **The lock of each writer this child adds.**
 
 | What is written | By | Under |
 |---|---|---|
-| the record's `channels`, `answered` and the entry | `set_channels`, called by a command, the daemon's tick, the uplink at an answer, and a reconciliation in any process | the record's store lock (`.metalock` for a spawned thread's, `threads/.lock` for a human-opened one's), one write; refused while an entry is open |
-| the merge of an absorption | `finish`, for the entry that absorbs | the absorbing record's finisher lock, then its store lock, one write, after the absorbed record is reserved |
+| the record's `channels`, `began`, `answered` and the entry | `set_channels`, called by a command, the daemon's tick, the uplink at an answer, and a reconciliation in any process | the thread's wake lock (its own hold: waited for by a command, only tried by a pass and a reconciliation, refused where the process holds it already), then the record's store lock (`.metalock` for a spawned thread's, `threads/.lock` for a human-opened one's), one write; refused while an entry is open |
+| `began` at a return | `begin`, as it writes the return (T1) | as every return: the wake lock, then the store lock, in the return's own write |
+| the merge of an absorption | `finish`, for the entry that absorbs | the absorbing record's finisher lock, then its store lock, one write, after the absorbed record is reserved; both records' wake locks were held where the absorption began (T1) |
 | the statement | `finish`, through `lifecycle`, whoever calls it | the record's finisher lock, then the writer file's lock, with the guard that the log holds none under the entry's id |
-| a mark | `finish`, through `sminos.mark_channels` | the record's finisher lock, then the delivery lock of that session for the channel's log, waited for with the settlement's bound; no store lock and no log lock held |
 | a request, a `channel-env` event | the command, by `log_append` under its caller's own writer in the channel's log | that writer file's lock alone |
 | a channel's registration | `channel create`, and `keep_org` as today | `register_if_absent`'s own lock |
 | the asks held for requests | the uplink | one process, its main thread |
 
-### §4. The marks (Y3)
+### §4. Where a membership began (Y3)
 
 In `S/sminos.py`:
 
-    def channel_marks(channel_ids) -> {channel id: {writer: seq}}
-        # for each channel registered here, every writer's latest seq in its log as this machine holds it now;
-        # {} for one not registered here. Read with no lock, by `decide` and by `begin` under the record's lock
-    def mark_channels(marks, sessions, lock_until=None) -> bool
-        # for each channel and each session, under that session's delivery lock for the channel's log: each
-        # writer's `settled` raised to the mark when it is below it, what the record held for a position at or
-        # below the mark (`pending`, `pushed`, `held`, `revoked`) dropped with it; never lowered. False when a
-        # lock could not be had in time: the entry stays open. Reports no delivery outcome
+    def channel_positions(channel_id) -> {writer: seq}
+        # every writer's latest seq in the channel's log as this machine holds it now; {} for a log that holds
+        # nothing, and for a channel not registered here. Read with no lock: by set_channels for a channel
+        # entering a set, by begin for a return, each under the record's lock
 
-`sessions` is every session the record has had (its `sessions`, as `finish`
-reads them): what a channel's log owes is kept per session, and a message
-addressed to a session the thread had before is one CH2 may carry to the
-session that continues it. After a mark, the thread is owed in that channel
-only what its log gains from then on.
+In `S/sminos_channels.py`:
 
-### §5. Reading membership (Y1)
+    def began_of(thread_id, channel_id) -> dict | None
+        # the record's positions for that channel; None when the thread is not in it. An entry the record lacks
+        # for a channel of its set (which this code never leaves) reads as {}: nothing was held then
+
+The positions are the thread's: they are in its record alone, a
+continuation and a refill leave them as they are, an absorption brings the
+absorbed record's for the channels it brings, a return writes them anew,
+and a removal drops them. They are never written into a log or a frame:
+they name the channel's other writers, and a statement is read by everyone
+who may read the thread. This child reads them nowhere but in tests; CH2
+owes a thread, in a channel, only what the log holds past them, and
+settles what it pushed or dropped in the thread's delivery records, which
+this child never opens for a channel.
+
+### §5. Reading membership and answers (Y1)
 
 **What the log states.** In `S/sminos_threads.py`, beside the reducer:
 
@@ -1118,10 +1342,9 @@ only what its log gains from then on.
         # once, the first 128; () for no statement
 
 Every reader of what a log states folds through `Fold.state`: `_projection`
-(the row's `stated`), the memo `_reconcile` reads, and the index `channel
-show` reads answers from. `Member.channels` (a tuple, `()` by default) is
-`stated_set` of its row's statement: what every machine that may read the
-thread's writer takes as its membership.
+(the row's `stated`) and the memo `_reconcile` reads. `Member.channels` (a
+tuple, `()` by default) is `stated_set` of its row's statement: what every
+machine that may read the thread's writer takes as its membership.
 
 **What the record holds,** on the thread's own machine, in
 `S/sminos_channels.py`:
@@ -1150,6 +1373,21 @@ the pool. They are never called from `view_of`, `_reconcile`, the plane,
 the uplink or anything those call, and in this child from no delivery or
 addressing path (C1; CH2 gives each of those the roster on purpose).
 
+**A request's answer** is read from an index of its own, never from the
+fold above, which keeps only the statement in effect:
+
+    def answers() -> {(channel id, request id): [statement, ...]}
+        # every `channels` event that carries a well-formed `answers`, in every project's log this machine reads
+        # (sminos.known_projects), in the merged read's order, whatever is in effect there now; kept beside each
+        # merged log and for the cache generation
+    def answer_of(request) -> dict | None
+        # the first of answers() for its channel and id whose `thread` stamp is the request's `thread`; None for
+        # none this reader may read
+
+So an answer still answers after the thread restated its set, moved to
+another project or changed writer, and a statement of another thread that
+names the same channel and id answers nothing.
+
 ### §6. Requests and their carrying out
 
 In `S/sminos_channels.py`:
@@ -1160,8 +1398,9 @@ In `S/sminos_channels.py`:
         state: str                # "applied" | "refused" | "pending" | "ignored"
         why: str                  # refused: one of REASONS; pending and ignored: a word of the tables below;
                                   # applied: "unchanged" when the set already read so, "" else
-    def requests_of(channel) -> list[dict]
-        # the log's `channel-request` events of §2's shape, in the merged read's order, kept beside the merged log
+    def requests_of(channel) -> (signature, list[dict])
+        # the log's `channel-request` events of §2's shape, in the merged read's order, with the signature of the
+        # log's files they were read under (the one the merged read is kept by)
     def expired(request, now=None) -> bool        # its ts is unreadable or older than REQUEST_TTL
     def sender_verified(channel, request) -> True | False | None
         # True for a writer of this machine in a log where its name is provenance (own_writers_here). Else from the
@@ -1170,20 +1409,28 @@ In `S/sminos_channels.py`:
     def reach_token(session) -> tuple | None
         # the session's record's owners with its access, shares and policyRev (sminos_audience.policy_of); None
         # while the record cannot be read
-    def carry_out(channel, request, earlier, word=None, asked=None, lock_until=None) -> Outcome
-        # one request, by the table below. `earlier`: the requests of this log before it for the same thread.
-        # `word`: the endpoint's ("deliver" | "refuse" | None). `asked`: {"session", "reach"} the word was asked for
+    def judge(channel, request, record, earlier, word=None, asked=None) -> Outcome
+        # the table below and nothing else: reads, no write, no lock. `record`: the target's, as its caller read
+        # it. `earlier`: the requests before this one for the same thread. `word`: the endpoint's ("deliver" |
+        # "refuse" | None). `asked`: {"session", "reach"} the word was asked for. "applied" and "refused" are
+        # what a write would record; nothing has been written
+    def carry_out(channel, request, word=None, asked=None, lock_until=None) -> Outcome
+        # one request: judge() on what it reads, then, when that says a statement is owed, set_channels with a
+        # decide that runs judge() again on the record it is given and on fresh reads, and writes that second
+        # answer or nothing. A log whose signature moved since `earlier` was read is read again, three times,
+        # then pending `moved`
     def ask_of(request) -> dict | None
         # what the endpoint is asked about a request left pending `endpoint`, read now: {"thread", "session": the
         # thread's current session, "project": the thread's own project, "reach": reach_token(session)}; None
         # when row 2 or 6 holds, or the record cannot be read
-    def carry_due(channel, words=None, only=None, lock_until=None) -> list[(dict, Outcome)]
+    def carry_due(channel, words=None, also=(), lock_until=None) -> list[(dict, Outcome)]
         # the pass: every request of the log that is not expired and names a thread of this machine, in order,
-        # each through carry_out; a request pending leaves the later ones for its thread pending `earlier`.
-        # `words`: {request id: (word, asked)}. `only`: thread ids to keep to (a command's own targets)
+        # then the requests of `also` the log does not hold yet (a command's own, queued for its writer's
+        # head), each through carry_out; a request pending leaves the later ones for its thread pending
+        # `earlier`. `words`: {request id: (word, asked)}
 
-`carry_out` answers by the first row that holds. T is the record whose id
-is the request's `thread`.
+`judge` answers by the first row that holds. T is the record whose id is
+the request's `thread`.
 
 | # | What is read | Outcome |
 |---|---|---|
@@ -1191,28 +1438,32 @@ is the request's `thread`.
 | 2 | T is no record of this machine, or has ended, or never had the request's `session`, or that session is now another record's current one, or T's session is lane B | ignored `not-here`: nothing is written for either thread, and the request expires |
 | 3 | T's `answered` holds the request's channel and id | ignored `answered` |
 | 4 | a request among `earlier` is not expired, passes row 2, and is not in T's `answered` | pending `earlier` |
-| 5 | T has an open entry that `finish` does not clear now | pending `entry` |
+| 5 | T has an open entry | pending `entry` |
 | 6 | T holds no session; or its session is a member of no project now | pending `vacant`; pending `between` |
 | 7 | the request is from elsewhere (`policy.outside_origin`) and the kept welcome lists no `channels` | pending `no-channels` |
 | 8 | the request is from elsewhere and the machine admits nothing from outside (`policy.read_only`) | refused `read-only` |
 | 9 | its writer is this machine's own and shares the thread's owners: a session's writer by `same_owner_local`, the human writer by `owners_meet("", session)` | honoured |
 | 10 | `sender_verified` is False; is None | refused `not-reachable`; pending `unverifiable` |
 | 11 | no word | pending `endpoint` |
-| 12 | the word is `refuse` | refused `not-reachable` |
-| 13 | the word is `deliver`, and T's current session or its `reach_token` is not what `asked` holds | pending `moved` |
+| 12 | a word, either one, and T's current session or its `reach_token` is not what `asked` holds | pending `moved`: the word is dropped and the request asked about again |
+| 13 | the word is `refuse` | refused `not-reachable` |
 | 14 | the word is `deliver` | honoured |
 
 Honoured: an add of a channel the set lacks while it holds 128 is refused
-`limit`; anything else is applied. Rows 2, 3, 4, 13 and the limit are read
-again by `decide` under the lock (§3, C3 and C4), which answers None when
-any has changed: the outcome is then that row's, and nothing was written.
+`limit`; anything else is applied. Before `set_channels`, `carry_out`
+finishes T's open entry if it can (row 5 is what is left). A wake lock
+that cannot be had (a wake holds it past the caller's wait, or the calling
+process holds it) is `pending` `wake`, with nothing written. Under the lock `decide` runs the whole table again,
+with `earlier` taken as read only if the log's signature is the one it was
+read under: what it then answers is what is written, and an answer that is
+no longer `applied` or `refused` writes nothing and is the outcome.
 Requests for different channels are not ordered against each other.
 
-The pass's three callers: the command that wrote a request for a thread of
-its own machine (`only` its targets, no words); the daemon's tick, for
-every channel known here, after the channel's reconciliation; the uplink,
-at each ask pass and at each answer (M6), which asks about what the pass
-left pending `endpoint`.
+The pass's three callers: the command, for each request it wrote for a
+thread of its own machine (handed in as `also`, no words); the daemon's
+tick, for every channel known here, after the channel's reconciliation;
+the uplink, at each ask pass and at each answer (M7), which asks about
+what the pass left pending `endpoint`.
 
 The words a command and `channel show` print:
 
@@ -1223,11 +1474,12 @@ The words a command and `channel show` print:
 | `limit` | it is in 128 channels, the limit |
 | `earlier` | behind an earlier request for it in this channel |
 | `entry` | its record holds an unfinished operation |
+| `wake` | it is being woken; its machine's next pass carries this out |
 | `vacant`, `between` | the thread holds no session now; its session is between two projects |
 | `no-channels` | its machine's endpoint does not serve channels |
 | `unverifiable` | its machine cannot read its revocation set |
 | `endpoint` | its machine's endpoint has not said whether you may message it |
-| `moved` | its session or its reach changed while its machine asked: asked again |
+| `moved` | its session, its reach or the channel's log changed while its machine decided: tried again |
 
 On another machine a requester reads none of the pending words: it reads
 `pending on <machine> since <time>`, which covers a machine that is off, one
@@ -1251,12 +1503,14 @@ In `S/sminos_uplink.py`:
 |---|---|---|---|
 | a project this machine holds | no `follow` | as today | as today |
 | a project it follows | `follow` | none, as today | as today |
-| a channel a record of this machine names | no `follow` | none | this machine's requests and `channel-env` events, and a `retired` that undoes an older copy's `joined` |
+| a channel a record of this machine names | no `follow` | none | its own writers' events in their order: this code's requests and `channel-env` events, what an older copy wrote there, and the `retired` that undoes an older copy's `joined` |
 | a channel no record here names | `follow` | none | the same |
 
 A thread's `member` frame names its own project as `project`, as today,
 and never a channel; while `Link.channels` it carries the thread's
-`channels`.
+`channels`. A `snapshots?` for a channel is answered with one page, empty
+and done; a `subscribe` for one with the `end` a project gives for a
+session it does not hold.
 
 `fresh_frame` passes `channels_of(m.session)`'s entries that pass
 `is_channel_id`, the first 128, for a lane A member while `Link.channels`,
@@ -1276,17 +1530,20 @@ A `<channel>` is an id, a `name#short` or a name (`find_channel`); a
 applied or is pending; 1 when the verb or any target was refused; 4 for a
 name that is unknown or ambiguous; 2 for usage.
 
-**Refused before anything is written,** each naming its target: `create`
-and `add` where the kept welcome lists no `channels`; `create` with a name
-that is no valid name, or that a log known here already answers to; a
+**Refused before anything is written,** each naming its target: `create`,
+`add`, `remove` and `env` where the kept welcome lists no `channels`;
+`create` with a name that is no valid name, or that a log known here
+already answers to (but the channel an interrupted `create` left: M4); a
 target that is no thread as this machine reads it (its row carries no
 `thread`, or on this machine its lane is B); one that has ended; one that
-holds no session; an add that would be a 129th channel where this machine
-can see the set (its own record, or the row's `channels`); a target the
-stream choice refuses; from a session, `create` with a thread named (the
-caller is the first member, and `add` places the others); from a terminal,
-no thread named, or for `create` a thread of another machine; `env` from a terminal, from a thread not in the
-channel, or naming a machine the org's directory does not list.
+holds no session; an add, and a `create`, that would be a 129th channel
+where this machine can see the set (its own record, or the row's
+`channels`), checked for `create` before the channel is registered; a
+target the stream choice refuses; from a session, `create` with a thread
+named (the caller is the first member, and `add` places the others); from
+a terminal, no thread named, or for `create` a thread of another machine;
+`env` from a terminal, from a thread not in the channel, or naming a
+machine the org's directory does not list.
 
 **The sentences that are decisions** (`%s` the name as given):
 
@@ -1296,9 +1553,9 @@ channel, or naming a machine the org's directory does not list.
 | a verb's target `<channel>/<alias>` (`find_target`) | 4 | `'%s' names a thread through a channel, which is not available in this version of sminos yet: name it by its own name (<alias>#<short> or <short>)` |
 | `join <channel>` | 1 | `cannot join %s: it is a channel, not a project — sminos channel add %s places a thread in it, and its project stays where it is` |
 | a project asked for, a channel named (`find_project`: `chat`, `list <name>`, `--project`) | 4 | `'%s' is a channel, not a project: sminos channel show %s prints it` |
-| a name several logs answer (`ambiguous_name`) | 4 | `ambiguous name '%s': <each> — name one as listed, or by its id`, each as `<name>#<the first eight of its id> (<kind>)`, kind one of `channel`, `project`, `machine project`, `local project`; a log whose id is no UUID by its whole id |
+| a name a channel shares with another log, or two projects of one tier share (`ambiguous_name`) | 4 | `ambiguous name '%s': <each> — name one as listed, or by its id`, each as `<name>#<the first eight of its id> (<kind>)`, kind one of `channel`, `project`, `machine project`, `local project`; a log whose id is no UUID by its whole id |
 | a `.smns` naming a channel id (a warning on standard error) | — | `ignoring %s: it names a channel's id, and a channel is no project; this directory is in the machine's project` |
-| `create`, `add` without the capability | 1 | `this machine's endpoint does not serve channels (its welcome listed no channels): nothing was written` |
+| `create`, `add`, `remove`, `env` without the capability | 1 | `this machine's endpoint does not serve channels (its welcome listed no channels): nothing was written` |
 | the limit, before writing | 1 | `%s is in 128 channels, the limit: nothing was written` |
 
 **What a target's line says:** `<alias>#<short>: in <channel>`, `out of
@@ -1321,14 +1578,15 @@ and no key otherwise; the sections add nothing to it.
 with the project column (`(none)` for none); `requests`, one line each for
 the log's requests that have not expired, oldest first: its time, its verb,
 its target, its requester, and `applied`, `refused: <words>`, `refused: not
-reachable (the hub withheld it)` or `pending on <machine> since <time>`;
-`pool`, one line a machine: its name, `<n> live, <m> stopped` counted from
-the roster's rows there (`live`: a state of `FILLED`; `stopped`: `stopped`
-or `gone`), and `added by hand` for one a `channel-env` holds in. With
-`--json`: `{"id", "name", "members": [<a list --json row, with its project
-keys>], "requests": [{"id", "op", "thread", "session", "target", "by",
-"ts", "state": "applied" | "refused" | "withheld" | "pending", "reason",
-"machine"}], "pool": [{"machine", "live", "stopped", "by_hand"}]}`.
+reachable (the hub withheld it)` (from M7) or `pending on <machine> since
+<time>`; `pool`, one line a machine: its name, `<n> live, <m> stopped`
+counted from the roster's rows there (`live`: a state of `FILLED`;
+`stopped`: `stopped` or `gone`), and `added by hand` for one a
+`channel-env` holds in. With `--json`: `{"id", "name", "members": [<a list
+--json row, with its project keys>], "requests": [{"id", "op", "thread",
+"session", "target", "by", "ts", "state": "applied" | "refused" |
+"withheld" | "pending", "reason", "machine"}], "pool": [{"machine",
+"live", "stopped", "by_hand"}]}`.
 
 `sminos help` (the module's docstring) lists the six lines above. The
 backtick guard's `VERBS` gains `channel`.
@@ -1336,24 +1594,35 @@ backtick guard's `VERBS` gains `channel`.
 ### §9. What the tests are built on
 
 **The checker,** `T/channel_wire.py`, called by every suite of this child
-that runs an uplink, and by CH2's:
+that runs an uplink, and by CH2's. It judges what this code added to the
+store it was given, so a suite over a store an older copy wrote into takes
+the baseline first:
 
     ALLOWED = ("channel-request", "channel-env", "retired", "void")
-    def published(frames, channel_ids, allowed=ALLOWED) -> list[str]
+    def baseline(sminos_home, channel_ids) -> frozenset
+        # the (writer, seq) of every event the channels' logs hold now: what was there before this code ran
+    def published(frames, channel_ids, before=frozenset(), allowed=ALLOWED) -> list[str]
         # each breach among the frames a stand-in kept, one line each; [] for none
-    def written(sminos_home, channel_ids, machine, allowed=ALLOWED) -> list[str]
-        # the same over the store: the channel's log files of this machine's writers, its host store
+    def written(sminos_home, channel_ids, machine, before=frozenset(), allowed=ALLOWED) -> list[str]
+        # the same over the store: the channel's log files of this machine's writers, its host store, and any
+        # delivery record under a channel's log
 
-A breach is: a `member` frame whose `project` is a channel id; any
-session-plane message (`presence`, `machine`, `host`, a subscription's)
-whose project is one; a `pending` frame for one; a `words?` for one; a
-`reach?` for one whose event is no `channel-request`; an `events` frame
-for one carrying a kind outside `allowed`; a `member` frame with
-`channels` that is empty, holds more than 128 ids, holds an id that is no
-channel's, or is sent on a connection whose welcome did not list
-`channels`; on disk, an event of this machine's writers in a channel's log
-of a kind outside `allowed`, or anything in a channel's host store. CH2
-calls it with the kinds it adds.
+A breach is: a `member` frame whose `project` is a channel id; a
+session-plane message whose project is one (`presence`, `machine`, `host`,
+a subscription's), but the `end` that refuses a `subscribe`; a `pending`
+frame for one; a `words?` for one; a `reach?` for one whose event is no
+`channel-request`; a `snapshots` answer for one that carries an event; an
+`events` frame for one carrying, at a position not in `before`, a kind
+outside `allowed`, or a `retired` for a session whose `joined` there is
+not in `before`; a `member` frame with `channels` that is empty, holds
+more than 128 ids, holds an id that is no channel's, or is sent on a
+connection whose welcome did not list `channels`; on disk, an event of
+this machine's writers in a channel's log, at a position not in `before`,
+of a kind outside `allowed`, anything in a channel's host store, or (in
+this child) a delivery record under a channel's log. An event in `before`
+is uploaded in its writer's order like any own event and is no breach. CH2
+calls the checker with the kinds it adds and without the delivery-record
+rule.
 
 **The stand-in** (`T/endpoint_standin.py`) gains what MAWS's endpoint does
 for channels, read from MAWS's master at `8ae3b0843` (`#knownNow` in
@@ -1374,19 +1643,23 @@ and computes no `known`: this addition is what lets two holders and a
 follower be shown, with three homes.
 
 **The engine** is T2's test engine (`T/wake_engine.py`, its shell stub):
-every suite of this child asserts that it recorded no launch.
+every suite of this child asserts that it recorded no launch, and M2's
+wake interleavings read its process and launch counts.
 
 **Where each new file sits,** and the neighbour it is built like:
-`test_channels.py`, `test_channels_store.py` and `test_channels_requests.py`
-are `unittest` modules that load the CLI's modules under a temporary home,
-as `test_threads.py` and `test_threads_ended.py` do; `test_channels_wire.py`
-runs a real `Link` against an in-process `endpoint_standin.Endpoint`, as
-`test_rl10.py` and `test_leaving.py` do; `test-channels.sh` drives the
-launcher on one cut-over home with a stand-in beside it, as `test-join.sh`
-does; `test-channels-machines.sh` joins two and three homes with
+`test_channels.py`, `test_channels_store.py`, `test_channels_life.py` and
+`test_channels_requests.py` are `unittest` modules that load the CLI's
+modules under a temporary home, as `test_threads.py` and
+`test_threads_ended.py` do (`test_channels_life.py` drives T1's
+transitions as `test_threads_branch_a.py` and `test_threads_stopped.py`
+stage them); `test_channels_wire.py` runs a real `Link` against an
+in-process `endpoint_standin.Endpoint`, as `test_rl10.py` and
+`test_leaving.py` do; `test-channels.sh` drives the launcher on one
+cut-over home with a stand-in beside it, as `test-join.sh` does;
+`test-channels-machines.sh` joins two and three homes with
 `rl10-machines.sh`, as `test-org.sh` joins three. All run in the `channels`
-part of `T/run-sminos-tests.sh`; the older-copy suite and the replay stay
-where they run today.
+part of `T/run-sminos-tests.sh` and in no other; the older-copy suite and
+the replay stay where they run today.
 
 ### Dependencies
 
@@ -1395,7 +1668,7 @@ where they run today.
   lists a known channel in the org frame as kind `hub`), installed on the
   owner's machines. Nothing in this child's suites runs MAWS: the stand-in
   and the conformance replay stand for it.
-- MAWS's fixture at `8ae3b0843` (M5) and its vectors `channel-rule.json`
+- MAWS's fixture at `8ae3b0843` (M6) and its vectors `channel-rule.json`
   at the pinned version 1 (M1).
 - Python's standard library alone, as every module of `S/` today.
 
@@ -1410,62 +1683,58 @@ each.
 - 2026-11-21 — **Verification.** This plan is reviewed before it is handed
   over by the `doperpowers:adversarial-reviewer` agent, on buildability: the
   milestones against the code, the names of Interfaces against the two
-  designs, and §3's and §6's tables against the store's locks. A second
-  round reads the revision if the first changes a milestone's cut or a
-  table, and there is no third before the build. The build runs under
-  `doperpowers:plan-executor`, a fresh executor a milestone; each milestone
-  is reviewed at its close by the execution loop's reviewer, three reviews
-  at most (the owner's bound). The range M1 to M6 is reviewed whole by the
-  composite's holder at the frontier, through doperpowers:review-code at the
-  panel rung with the four lenses named in Plan of Work, a second whole
-  reading if the first confirms more than ten, three rounds at most. After
-  M7 the branch is reviewed once more through doperpowers:review-code at the
-  panel rung, on the whole range, before the pull request merges. The
-  composite's own scene on two of the owner's machines is not this plan's:
-  the holder runs it once CH2 has landed.
-- 2026-11-21 — **Seven milestones, listing before the wire, the frontier
-  after the sixth.** Readers and refusals first (M1), the store's operation
-  alone (M2), then its two consumers on one machine (M3, M4), then the wire
-  (M5) and what crosses it (M6). *Alternative: the wire second, so that a
-  real endpoint could be used from the start.* It lost because MAWS echoes
-  the capability only to a hello that lists it: until the fixture is copied
-  no real endpoint serves channels anyway, and the copy needs the operation
-  to place the replay's session. *Alternative: M1 cut in two (names; the
-  publishers).* It lost to the bound of five to seven; M1 is one idea, the
-  predicate applied at every door, and one reviewer reads it as such.
-- 2026-11-21 — **"The thread's lock" is the record's store lock for the
-  write and its finisher lock for the carrying out; the operation takes no
-  wake lock.** C3 says "under the thread's own transition lock". Every
-  journaled operation but a release opens under the wake lock (`begin`),
-  because it ends a thread or changes its occupant; a membership does
-  neither. *Alternative: take the wake lock, as an end does.* It lost
-  because a wake in flight holds that lock for seconds: a local add would
-  then meet a third wait beside the two A1 names, and a reconciliation in a
-  reading verb would stall on it. What is given up: a wake that launches in
-  the instant a membership entry is open loses its own record writes for
-  that attempt, as it does across a delayed release (logged in M7).
+  designs, and §3's and §6's tables against the store's locks. The first
+  round returned fourteen findings (the entry "The plan's review" below); a
+  second round reads this revision, and there is no third before the build.
+  The build runs under `doperpowers:plan-executor`, a fresh executor a
+  milestone; each milestone is reviewed at its close by the execution
+  loop's reviewer, three reviews at most (the owner's bound). The range M1
+  to M7 is reviewed whole by the composite's holder at the frontier,
+  through doperpowers:review-code at the panel rung with the four lenses
+  named in Plan of Work, a second whole reading if the first confirms more
+  than ten, three rounds at most. After M8 the branch is reviewed once more
+  through doperpowers:review-code at the panel rung, on the whole range,
+  before the pull request merges. The composite's own scene on two of the
+  owner's machines is not this plan's: the holder runs it once CH2 has
+  landed.
+- 2026-11-21 — **Listing before the wire, the frontier after the seventh
+  milestone.** Readers and refusals first (M1), the store's operation and
+  its life (M2, M3), then its two consumers on one machine (M4, M5), then
+  the wire (M6) and what crosses it (M7). *Alternative: the wire second, so
+  that a real endpoint could be used from the start.* It lost because MAWS
+  echoes the capability only to a hello that lists it: until the fixture is
+  copied no real endpoint serves channels anyway, and the copy needs the
+  operation to place the replay's session. *Alternative: M1 cut in two
+  (names; the publishers).* It lost because M1 is one idea, the predicate
+  applied at every door, and one reviewer reads it as such.
+- 2026-11-21 — **The operation does not move a seat's lifecycle
+  generation.** `begin` moves it for every journaled operation, so that a
+  watcher whose snapshot predates a lifecycle write stands down. *Alternative:
+  move it, as every other operation does.* It lost because a turn's watcher
+  is one of those: a thread placed in a channel during its turn would have
+  that turn's reply go unrecorded.
 - 2026-11-21 — **`known_projects` returns no channel; `known_logs` returns
   both.** Some two dozen callers enumerate projects for a person or a
-  session, and a handful open, reconcile or leave logs. *Alternative: leave the enumeration
-  whole and filter where a channel must not show.* It lost because the two
-  failures are not alike: a caller that wrongly lacks a channel fails this
-  child's own tests (its log is never opened), while one that wrongly keeps
-  one prints or publishes a channel as a project in a path no test visits.
+  session, and a handful open, reconcile or leave logs. *Alternative: leave
+  the enumeration whole and filter where a channel must not show.* It lost
+  because the two failures are not alike: a caller that wrongly lacks a
+  channel fails this child's own tests (its log is never opened), while one
+  that wrongly keeps one prints or publishes a channel as a project in a
+  path no test visits.
 - 2026-11-21 — **A channel's view has no members by construction,** and
   `lifecycle` writes nothing but a `retired` under a channel id. C1 says
   the view "returns none, as it does today", which holds only while the log
   holds no `joined`; an older copy's `join` writes one. *Alternative: rely
   on the reconciliation retiring it.* It lost because the plane, the member
   set and the forced presence read the view before and after that
-  `retired`.
-- 2026-11-21 — **A channel shares no tier, and `name#short` is taken
-  wherever an argument takes a name.** Today a hub project is found before
-  a machine's of its name; the composite wants every log a name answers
-  listed once a channel is among them, with `name#short`, which nothing
-  accepts today. *Alternative: list full ids, as today's refusal does.* It
-  lost to C6's text. A tag's grammar (`TAG_RE`) cannot carry `#` in its
-  qualifier, so a tag takes the id; whether it should take more is CH2's,
-  with the tags.
+  `retired`, and because a closed session's is not retired at all until it
+  runs.
+- 2026-11-21 — **`name#short` is taken wherever an argument takes a
+  name.** The composite wants each log listed with `name#short`, which
+  nothing accepts today. *Alternative: list full ids, as today's refusal
+  does.* It lost to C6's text. A tag's grammar (`TAG_RE`) cannot carry `#`
+  in its qualifier, so a tag takes the id; whether it should take more is
+  CH2's, with the tags.
 - 2026-11-21 — **`find_project` refuses a channel, so `chat <channel>` and
   `list <channel>` are refused until CH2,** and `find_target` refuses a
   target qualified by a channel. Nothing in the composite gives CH1 a
@@ -1498,6 +1767,12 @@ each.
   pending", which is seven days from the request's own timestamp; keeping
   the timestamp makes the pruning and the expiry one comparison on one
   clock.
+- 2026-11-21 — **Where a membership began is `began`, keyed by channel,
+  and `set_channels` reads the positions itself.** The composite fixes what
+  is kept and when; the key's name and shape are this plan's. *Alternative:
+  the caller hands the positions in with its change.* It lost because a
+  caller's read is from before the lock, and the positions must be the
+  log's at the write that enters the channel.
 - 2026-11-21 — **A request that names no thread here gets no statement,**
   for every case of §6's row 2, and expires. The composite says so for a
   session that became another thread's and for lane B; an ended thread and
@@ -1506,17 +1781,6 @@ each.
   machine's. *Alternative: a refusing statement with a fourth reason.* It
   lost because C3 fixes the reasons at three and a statement needs a thread
   to be written under.
-- 2026-11-21 — **A mark covers every session the record has had, reports
-  no delivery outcome, and an absorption marks the channels it adds.** The
-  composite says "the thread's delivery record for that log"; the record is
-  kept per session, and CH2 carries a channel's debt from a session to the
-  one that continues it, which would bring back what only the current
-  session's mark had settled. *Alternative: the current session alone.* It
-  lost to that. *Alternative: an outcome for each outside event a mark
-  buries, as an end's settlement reports one.* It lost because CH1 has no
-  delivery in a channel and would be the first to send a `delivery` message
-  under a channel id; what the sender reads meanwhile is what it reads for
-  any thread on another machine.
 - 2026-11-21 — **A statement goes to the project in whose log the session
   is a member at the write; a thread with no session, or between two
   projects, waits.** *Alternative: the project the caller found the thread
@@ -1558,11 +1822,12 @@ each.
   a machine knows among its projects until it has a channel view, so such
   an RPC can arrive.
 - 2026-11-21 — **The channel suites are a part and a gate of their own**
-  (`SMINOS_PART=channels`, `sminos-channels`). The `sminos-suites` gate ran
-  18 to 20 of its 30 minutes before T1 and T2 added theirs. *Alternative:
-  add to `suites`.* It lost to that margin, and to reading A13 off two
-  gates this child does not change.
-- 2026-11-21 — **One narrow check on a real engine, in M7.** The composite
+  (`SMINOS_PART=channels`, `sminos-channels`), on the four conditions M1
+  states, agreed with the session that owns CI. The `sminos-suites` gate
+  ran 18 to 20 of its 30 minutes before T1 and T2 added theirs.
+  *Alternative: add to `suites`.* It lost to that margin, and to reading
+  A13 off two gates this child does not change.
+- 2026-11-21 — **One narrow check on a real engine, in M8.** The composite
   puts the pass on a real engine in CH2, where the engine is in the path.
   Here it is in the path only through a `/clear` and a hand-off, which
   this child adds a restatement and a merge to, and T2's retrospective
@@ -1573,6 +1838,97 @@ each.
   leave `known` to MAWS's own tests.* It lost because A7 is stated in terms
   of `known`, and a suite whose directory is written by hand follows a
   channel for a reason the fleet does not have.
+- 2026-11-21 — **The plan's review, and what it changed.** The first
+  review for buildability returned fourteen findings. Two changed the
+  composite (`95fef6b7`) and this plan follows it; the rest changed this
+  plan alone. Each line gives what stands now and the alternative that
+  lost.
+  - *Where a membership began is kept in the record, and no delivery record
+    is touched* (the composite's C3 and Y3; §3, §4). *Lost: a mark in the
+    thread's delivery records at each change* (this plan's first form, from
+    the composite's second): a delivery record is keyed by session, so a
+    mark could settle another thread's mail, and a finisher of 1.51.0 or
+    1.52.0 skips a step it does not know, where it leaves a record's keys
+    alone.
+  - *The operation takes the wake lock, as every transition does* (the
+    composite's C3; §3). *Lost: none, as a release takes none* (this plan's
+    first choice, overruled): a `resume` that has checked its wake and is
+    about to stop a live turn would find the wake refused by an entry
+    opened in between, and a launch already made would lose the write of
+    its job and its grace. A wake in flight is one more wait. The debt row
+    this plan had for the exposure is gone with it.
+  - *The entry owes the statement and nothing else, and `finish` gains no
+    step for the operation* (§3; M2's older-finisher cases). *Lost: steps
+    of this code's `finish` alone carrying part of the change.* Only the
+    absorption's merge stays such a step, and its loss to an older finisher
+    is the composite's accepted one.
+  - *The whole of §6's table is evaluated again under the lock, and a word
+    of either kind is bound to the thread it was asked for before it is
+    read* (§6, rows 12 to 14; M4, M7). *Lost: re-reading only the rows that
+    name the record, and binding `deliver` alone:* a refusal for a reach
+    the thread no longer has would be recorded for good, and an owner, a
+    policy or a revocation changed between the first read and the lock
+    would be acted on as read. The window that stays, a reach narrowed
+    between that read and the record's write, is under another lock and is
+    accepted (the constraints).
+  - *A statement owed when its thread moves lands in the project the entry
+    names* (M2). *Lost: appending it where the thread is by then:* the
+    journal skips an event by reading one project's log for the entry's id,
+    an older finisher would not redirect, and the requester finds an answer
+    wherever it lies.
+  - *An answer is read from an index of every statement that carries
+    `answers`, taken only under the request's own `thread`* (§5; M5).
+    *Lost: reading it from the statement in effect:* a restatement, a new
+    writer or a move replaces that statement, and another thread's
+    statement naming the same request would answer it.
+  - *`channel-env` carries its writer's thread id, and is honoured through
+    that thread's roster row* (§2; M5). *Lost: the writer's session
+    alone:* a session id can come to be another thread's.
+  - *Every verb that writes for a channel is refused without the
+    capability, `remove` and `env` included* (§8; the constraints). *Lost:
+    `create` and `add` alone, the composite's letter:* a removal's request
+    or an env event would name a channel on the wire before M6. The
+    followed hello for a channel the directory lists is the intended
+    exception.
+  - *The wire check judges what this code added to the store it found,
+    and an older copy's `joined` under a channel is uploaded in its
+    writer's order, followed by this code's `retired`* (§9; M1, M8). *Lost:
+    a check over everything the store holds, and holding an older copy's
+    event back from upload:* the first fails on what an older copy wrote,
+    and a writer's sequence admits no hole. A snapshot request and a
+    subscription for a channel are answered as for a log with no member.
+  - *A command carries out the request in hand, and an interrupted
+    `create` can be run again* (§6's `also`; M4). *Lost: finding its own
+    request in the merged log, and refusing every name already
+    registered:* an operator's append to a new log can be queued with no
+    position, and a channel registered with no member would hold its name
+    for good. The limit is checked before the channel is registered.
+  - *The earlier requests and the expiry are those of the log at the
+    decision, by its files' signature, with a retry* (§6; M4). *Lost:
+    merging the channel's log under the store lock:* that lock is the one
+    every seat's write waits on. *Lost too: trusting the pass's read:* a
+    request that sorts earlier can be imported while a carrier is paused.
+  - *Among projects, names keep today's tiers; a channel is in no tier*
+    (the composite's C6; §1; M1's test of a hub and a machine project of
+    one name). *Lost: refusing every name several logs answer*, which
+    would change what a session that never uses a channel is told.
+  - *The recovery after an older copy's `join` into a channel is for a
+    session a process or a seat holds* (the composite's C4; M1, M8). *Lost:
+    retiring a closed session's `joined` from the channel as well:*
+    `retire_moved` and the re-join act on what runs, and a closed thread
+    has no evidence to join it back with.
+  - *This code's listings export neither new key; an older copy's
+    `list --json` shows a spawned thread's* (the constraints; M8). *Lost:
+    the first draft's claim that no listing does,* which was false of an
+    older copy and is not worth building around.
+  - *M2 is two milestones* (the review's advice; Plan of Work). *Lost:
+    one, with two proofs:* a milestone is reviewed as one diff, and the
+    durable write and the ownership of a set across transitions are two
+    lenses and two kinds of test. The count is eight.
+  - *The proof that the hub's withholding is shown moves to M7,* where its
+    reader is built. *Lost: M5's list of request states including it.*
+  - *The new gate stands on four conditions* (M1). *Lost: a timeout of
+    thirty minutes by habit, and parts that overlap.*
 
 ## Outcomes & Retrospective
 
