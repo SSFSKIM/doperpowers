@@ -685,14 +685,16 @@ def make_vm(c, projects):
 
 
 def carried(a, directory):
-    """The VM side's flags: the directory, the mode, and each carried flag given."""
+    """The VM side's flags: the directory, the mode, and each carried flag
+    given, a free value as one `--flag=value` word, so that a value the
+    Mac's parser took (`--brief=--review`) is not read there as a flag."""
     out = ["--cwd", directory, "--permission-mode", a.permission_mode]
     for flag, value in (("--role", a.role), ("--brief", a.brief), ("--worktree", a.worktree or None),
                         ("--model", a.model), ("--effort", a.effort)):
         if value is not None:
-            out += [flag, value]
+            out.append("%s=%s" % (flag, value))
     for stamp in a.stamp or []:
-        out += ["--stamp", stamp]
+        out.append("--stamp=%s" % stamp)
     return out
 
 
@@ -701,8 +703,9 @@ def remote(c, vm, request, directory):
     tried again only on its own `not-enrolled`, for `new` only; then the
     line (rows 25 to 33)."""
     a = c.a
-    args = ["vm", "ssh", vm, "--", "sminos", "spawn", a.alias, "-", "--asked-from",
-            json.dumps(request, separators=(",", ":"), ensure_ascii=False)] + carried(a, directory)
+    # The positionals after `--`, so that an alias the Mac's parser took after its own (`-alias`) is one there.
+    args = ["vm", "ssh", vm, "--", "sminos", "spawn", "--asked-from",
+            json.dumps(request, separators=(",", ":"), ensure_ascii=False)] + carried(a, directory) + ["--", a.alias, "-"]
     bound = seconds("SMINOS_ON_TIMEOUT", REMOTE_TIMEOUT)
     wait = seconds("SMINOS_ON_ENROLL_WAIT", ENROLL_WAIT)
     deadline = None

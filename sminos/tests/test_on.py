@@ -200,6 +200,26 @@ class On(Machine):
             sminos.forget_caches()
         return code, out.getvalue(), err.getvalue()
 
+    def spawn_argv(self, *argv):
+        """(exit, stdout, stderr) of `sminos spawn <argv>` run here from the session, `argv` whole (an alias
+        after `--`), under a fixed nonce."""
+        out, err = io.StringIO(), io.StringIO()
+        here = os.getcwd()
+        os.chdir(self.work)
+        try:
+            with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": self.sid}), \
+                    mock.patch.object(on.secrets, "token_hex", return_value=NONCE), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    sminos.main(["spawn", *argv])
+                    code = 0
+                except SystemExit as e:
+                    code = e.code if isinstance(e.code, int) else 1
+        finally:
+            os.chdir(here)
+            sminos.forget_caches()
+        return code, out.getvalue(), err.getvalue()
+
     def refused(self, want_code, words, *argv, called=(), **kw):
         code, out, err = self.spawn(*argv, **kw)
         self.assertEqual(code, want_code, out + err)
@@ -1117,6 +1137,28 @@ class VmSide(On):
                 there = self.task_given("-", "--asked-from", request,
                                         stdin=sent["task"].encode("utf-8", "surrogateescape"))   # as run_devcloud feeds it
                 self.assertEqual(there, here)
+
+    def test_option_like_values_reach_the_vm_as_the_mac_read_them(self):
+        """`--brief=--review` and an alias after `--`, through the real parser on both sides: the forwarded words
+        parse on the VM to what they parsed to on the Mac."""
+        for argv, alias, task in ((["--on", "vm1", "--brief=--review", "--role=-r", "--stamp=k=-v"], "w", "a task"),
+                                  (["--on", "vm1", "--", "-alias", "-dash task"], None, None)):
+            with self.subTest(argv=argv):
+                sent = {}
+
+                def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
+                    sent["args"] = args
+                    return 0, [self.spawned(alias=c.a.alias)], "", False
+                mac = sminos.build_parser().parse_args(["spawn", alias, task, *argv] if alias else ["spawn", *argv])
+                with mock.patch.object(on, "run_devcloud", side_effect=run):
+                    code, out, err = self.spawn(*argv) if alias else self.spawn_argv(*argv)
+                self.assertEqual(code, 0, err)
+                words = sent["args"][sent["args"].index("--") + 1:]
+                self.assertEqual(words[0], "sminos")
+                there = sminos.build_parser().parse_args(words[1:])
+                self.assertEqual((there.alias, there.task, there.brief, there.role, there.stamp),
+                                 (mac.alias, "-", mac.brief, mac.role, mac.stamp))
+                self.assertIsNotNone(there.asked_from)
 
     def test_without_the_flag_spawn_is_as_before(self):
         out = io.StringIO()
