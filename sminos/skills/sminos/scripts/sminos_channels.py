@@ -20,6 +20,9 @@ project. What is here:
   one operation that writes a set (sminos_threads.set_channels); what the
   record holds of it (channels_of, began_of), and what a change came to
   (Outcome, §6).
+- The log kept equal to the record (restate, §3's row C5): what the
+  reconciliation (sminos._keep_sets) calls when a log states otherwise than
+  a thread's record, with what it read there.
 """
 import os
 import sys
@@ -263,3 +266,48 @@ def change(thread_id, channel, op, session, lock_until=None):
             return Outcome("failed", "between")
         project = again
     return Outcome("failed", "between")
+
+
+def restate(project, thread_id, session, writer, seen, appended=None):
+    """§3's row C5: the record's set stated in `project`'s log, as the
+    reconciliation read it there: `session` the thread's current session,
+    a member of the project, its own events going under `writer` (the
+    writer of its `joined` in effect), and `seen` the record's set. Each is
+    read again under the record's lock (set_channels), and if any of them
+    moved, or the record has an open entry or has ended, nothing is written
+    and the next reconciliation notices afresh: a reconciliation overtaken
+    by a removal or a move never states the set it read. It only tries the
+    wake lock: a wake in flight, another process's or one under way in this
+    one, writes nothing. The store's lock is waited for as any
+    reconciliation's write waits.
+
+    True when the statement was owed and its entry begun; the entry is
+    finished here (the statement appended through `lifecycle`, gaining
+    `appended`), and a finish cut short is the next reconciliation's. The
+    daemon is nudged after the write."""
+    threads = sminos.threads_module()
+    seen = list(seen)
+
+    def decide(rec):
+        if rec["current"] != session or threads.held_set(rec) != seen:
+            return None
+        try:
+            if sminos.own_stream(project, session)[0] != writer:
+                return None
+        except sminos.audience_module().StreamUnknown:
+            return None
+        return {"project": project, "session": session, "channels": list(threads.stated_set({"channels": seen})),
+                "answer": None}
+    try:
+        entry = threads.set_channels(thread_id, decide, wake_until=time.time())
+    except (sminos.LockBusy, sminos.PositionsUnread):   # WakeBusy is a LockBusy
+        return False
+    if entry is None:
+        return False
+    try:
+        sminos.finish_thread(thread_id, appended, project=project)
+    except (sminos.LockBusy, sminos.LogWriteFailed, OSError) as e:
+        sminos.warn("the statement of %s's channels is left to the next reconciliation: %s"
+                    % (thread_id[:8], e or "its lock is busy"))
+    sminos.nudge_daemon()
+    return True

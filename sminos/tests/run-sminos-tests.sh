@@ -578,6 +578,9 @@ run_channels() {
   if python3 -B "$SCRIPT_DIR/test_channels_store.py"; then
     pass "a thread's declared set: one durable operation, its statement and its reader, against a wake (test_channels_store.py)"
   else fail "a thread's declared set: one durable operation, its statement and its reader, against a wake (test_channels_store.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_life.py"; then
+    pass "the set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption (test_channels_life.py)"
+  else fail "the set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption (test_channels_life.py)"; fi
   echo
   if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact (test-channels.sh)"; else
     fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact (test-channels.sh)"; fi

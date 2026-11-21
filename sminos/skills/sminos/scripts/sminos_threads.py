@@ -642,6 +642,23 @@ def _forget_live():
     _LIVE.clear()
 
 
+_SETS = [None, {}]   # [the live index (_live_index) it was read from, {current session: record}]
+
+
+def set_holders():
+    """{current session: record} of this machine's threads that hold a set
+    (a non-empty `channels`) and have not ended and are not reserved, from
+    the hold's index (_live_index) and kept while that index is the same
+    one: what the reconciliation compares with what a log states (CH1's
+    C5). Empty, and read from nothing more, on a machine whose threads are
+    in no channel."""
+    index = _live_index()
+    if _SETS[0] is not index:
+        _SETS[:] = [index, {sid: t for sid, t in index.items()
+                            if held_set(t) and t["current"] == sid and not record_ended(t) and not reservation(t)}]
+    return _SETS[1]
+
+
 def released_alias(session, peer=None):
     """The alias a human-opened thread whose current session is `session`
     gave up at a `/clear` (its record's `released`, §1), "" for none: alias
@@ -828,7 +845,7 @@ def note_launch(thread_id, cwd, options=None, dropped=None, lock_until=None):
     return update(thread_id, {"launch": launch_of(cwd, options, dropped)}, lock_until=lock_until)
 
 
-def set_channels(thread_id, decide, lock_until=None):
+def set_channels(thread_id, decide, lock_until=None, wake_until=None):
     """The one way a thread's set (`channels`), where its memberships began
     (`began`) and the requests it answered (`answered`) change, and a
     statement is owed (CH1's §3, rows C1 to C5): a journaled operation
@@ -868,10 +885,15 @@ def set_channels(thread_id, decide, lock_until=None):
     positions, the ledger, the entry), is the Change's session's own events
     in its project: nothing is written (None) unless they leave it a member
     there, so a move that lands meanwhile is never committed past (§3: the
-    session a member of the project)."""
+    session a member of the project).
+
+    `wake_until`, when given, is the wake lock's own deadline (the store
+    lock keeps `lock_until`'s): a reconciliation passes the time now, so it
+    only tries the wake lock (C5) and still waits its turn at the store's."""
     if sminos.wake_held(thread_id) is not None:
         raise sminos.WakeBusy(thread_id)
-    hold, _ = sminos.wake_lock(thread_id, until=lock_until, holder=sminos.TRANSITION_HOLD)
+    hold, _ = sminos.wake_lock(thread_id, until=lock_until if wake_until is None else wake_until,
+                               holder=sminos.TRANSITION_HOLD)
     if hold is None:
         raise sminos.WakeBusy(thread_id)
     written = []
@@ -1523,6 +1545,8 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
             # (sminos_outcomes.end_stands), so it read nothing past them.
             entry["until"] = sminos.positions_to(project, entry["settle"])
         _apply(entry, view, raw, fields, remove)
+        if op == "return":
+            _began_anew(thread_id, view, raw)
         return "live" if op == "return" or more.get("last") == "purge" else True   # an open purge is read live
 
     # Opened under the record's wake lock (T2's M2), the hold its caller has or one taken here: a wake sees the
@@ -1539,6 +1563,28 @@ def begin(thread_id, op, project, events, fields=None, remove=(), guard=None, lo
     finally:
         for h in holds:
             h.release()
+
+
+def _began_anew(thread_id, view, raw):
+    """A return's positions (CH1's §3, row C7), in its own record write:
+    for every channel of the set, the log's positions now
+    (sminos.channel_positions, read under the record's lock), so that every
+    path that returns a thread leaves them. A channel whose log is there and
+    cannot be read keeps the position from before the end, as a return an
+    older copy begins leaves them all (the accepted case): the return is
+    not held up for it, and is said once on standard error."""
+    chans = held_set(view)
+    if not chans:
+        return
+    kept = view.get("began") if isinstance(view.get("began"), dict) else {}
+    began = {}
+    for c in chans:
+        try:
+            began[c] = sminos.channel_positions(c)
+        except sminos.PositionsUnread as e:
+            sminos.warn("%s: thread %s's membership keeps where it began before its end" % (e, thread_id[:8]))
+            began[c] = copy.deepcopy(kept[c]) if isinstance(kept.get(c), dict) else {}
+    raw["began"] = began
 
 
 def _holder(session, thread_id):
@@ -1790,6 +1836,8 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
                 return False
             if held == "lost" and entry.get("carry"):
                 return _undo(thread_id, entry, deadline)
+            if held == "held" and not entry.get("merged"):
+                _merge_absorbed(thread_id, entry, other, deadline)
         if entry.get("carry") and not entry.get("carried"):
             if not before(project, entry):
                 return False
@@ -1853,6 +1901,58 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
                 h.release()
         if not chained:
             return not (get(thread_id) or {}).get("pending")
+
+
+def _merge_absorbed(thread_id, entry, other, deadline):
+    """An absorption's merge (CH1's §3, row C9), a write of its own after
+    the absorbed record is reserved (nothing else writes a reserved record)
+    and before the events: the continuing record's set, then the absorbed
+    record's channels it lacks, up to CHANNEL_LIMIT, an addition past it
+    dropped and said in daemon.log; `began` kept for its own channels and
+    the absorbed record's taken for each channel brought; `answered`
+    united, one entry per request. Marked `merged` in the entry in that
+    same write, so a replay merges once. The statement is the
+    reconciliation's: the entry's `joined` leaves the log stating nothing.
+    An older finisher skips it (accepted: the composite's C3)."""
+    dropped = []
+
+    def merge(view, raw):
+        if (view.get("pending") or {}).get("id") != entry["id"]:
+            return False
+        theirs = get(other)
+        if theirs is not None and (theirs.get("pending") or {}).get("id") == entry["id"]:
+            own = held_set(view)
+            chans = list(own)
+            for c in held_set(theirs):
+                if c in chans or not sminos.is_channel_id(c):
+                    continue
+                if len(chans) >= CHANNEL_LIMIT:
+                    dropped.append(c)
+                    continue
+                chans.append(c)
+            mine = view.get("began") if isinstance(view.get("began"), dict) else {}
+            brought = theirs.get("began") if isinstance(theirs.get("began"), dict) else {}
+            began = {c: copy.deepcopy(mine.get(c) if c in own else brought.get(c)) for c in chans}
+            began = {c: p if isinstance(p, dict) else {} for c, p in began.items()}
+            answered = _answered_after(view.get("answered"), None)
+            for a in _answered_after(theirs.get("answered"), None):
+                if not any(b[:2] == a[:2] for b in answered):
+                    answered.append(a)
+            raw["channels"] = chans
+            for key, value in (("began", began), ("answered", answered)):
+                if value:
+                    raw[key] = value
+                else:
+                    raw.pop(key, None)
+        raw["pending"]["merged"] = True
+        return True
+
+    _change(thread_id, merge, deadline)
+    if dropped:
+        with contextlib.suppress(OSError):
+            sminos.daemon_log("absorb: thread %s takes %s's channels up to the limit of %d; %s dropped, past the "
+                              "limit"
+                              % (thread_id[:8], other[:8], CHANNEL_LIMIT, ", ".join(c[:8] for c in dropped)))
 
 
 def _project_seat(seat, deadline, holds=None):

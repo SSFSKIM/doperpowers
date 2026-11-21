@@ -1162,7 +1162,7 @@ class OlderWritesScope(Machine):
         self.reconcile()
         tid = threads.stamp(sid)
         self.write_own(sid, [{"kind": "retired", "by": "old", "reason": "retire", "pid": proc.pid}])   # an older CLI's
-        latest, joined, effect = sminos._memberships(sminos.log_read(self.p))   # the reconciliation's reading
+        latest, joined, effect, _ = sminos._memberships(sminos.log_read(self.p))   # the reconciliation's reading
         self.assertEqual(effect[sid]["reason"], "retire")
         # Reopened and joined again in the same project before the rule acts.
         fields = sminos.joined_fields("again", "user", self.root, session_kind="interactive", session=sid)

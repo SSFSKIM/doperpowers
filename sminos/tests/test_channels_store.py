@@ -663,9 +663,13 @@ class Cut(Store):
         self.reconcile(other)
         [s] = self.statements(sid)
         self.assertEqual(s["op"], entry["id"], "in the project the entry names")
-        self.assertEqual(self.statements(sid, other), [], "none in the project it moved to")
         self.assertEqual(threads.get(tid)["channels"], [DESK], "the record's set as written")
-        self.assertEqual(self.member(sid, other).channels, (), "the project it moved to states nothing yet (M3)")
+        # The project it moved to gets its statement from that project's reconciliation (M3, row C5), under an
+        # entry of its own.
+        [there] = self.statements(sid, other)
+        self.assertEqual((there["channels"], there["thread"]), ([DESK], tid))
+        self.assertNotEqual(there["op"], entry["id"])
+        self.assertEqual(self.member(sid, other).channels, (DESK,))
 
 
 # ------------------------------------------------------------ the keys no other writer writes

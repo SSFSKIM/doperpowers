@@ -5176,7 +5176,7 @@ def _reconcile(project, events, local, by_session, all_seats=None):
     is read from the cache generation's resolution (seat_project); a move or
     a join it decides is written only if the session's project, resolved
     afresh under the lock, still says so (here_now, retire_moved)."""
-    latest, joined, effect = log_memo(events, "memberships", _memberships)
+    latest, joined, effect, stated = log_memo(events, "memberships", _memberships)
     threads = threads_module()
     out, busy = [], set()
     human = threads.human_threads()
@@ -5239,7 +5239,75 @@ def _reconcile(project, events, local, by_session, all_seats=None):
         seat = ev.get("seat")
         if seat and "peer" not in ev and seat["status"] != "retired" and (successor := continued_in(sid)):
             out += hand_off(project, sid, successor)
+    # Last, after this pass's own appends: the log kept equal to the record (CH1's C5). Nothing is read for it
+    # on a machine whose threads hold no set, over a log that states none (the idle cost: the holder's ruling).
+    holders = threads.set_holders()
+    if stated or holders:
+        out += _keep_sets(project, out, busy, joined, effect, stated, holders)
     return out
+
+
+def _keep_sets(project, out, busy, joined, effect, stated, holders):
+    """The reconciliation's last step (CH1's §3, row C5): for each thread of
+    this machine that has not ended and has no open entry, whose current
+    session's membership in effect in this log is a `joined` of this
+    machine, what the log states (C2: the memo's fold, `stated`, with this
+    pass's appends `out` folded on) is compared with the record's set
+    (`holders`, the threads that hold one; a session the log states a set
+    for, whatever its record holds), and on a difference the set is stated
+    (sminos_channels.restate) with what was read here: this project, the
+    session, the writer of its `joined` in effect, the record's set. Nothing
+    is appended here. A session whose own events now go under another
+    writer than that `joined`'s (a change of reach whose new `joined` is
+    not written yet), or whose stream cannot be chosen, is left to a later
+    pass: a statement there would state nothing. The events the statements
+    appended."""
+    threads = threads_module()
+    mine = [e for e in out if e.get("kind") in MEMBERSHIP + ("channels",) and isinstance(e.get("session"), str)
+            and e["session"] and writer_session(str(e.get("writer") or "")) == e["session"]]
+    if mine:
+        fold = threads.Fold()
+        touched = {e["session"] for e in mine}
+        for sid in touched:
+            for have, held in ((fold.effect, effect), (fold.joined, joined), (fold.stated, stated)):
+                if sid in held:
+                    have[sid] = held[sid]
+        for e in mine:
+            if e["kind"] == "channels":
+                if isinstance(e.get("seq"), int) and isinstance((fold.joined.get(e["session"]) or {}).get("seq"),
+                                                                 int):
+                    fold.state(e["session"], e)
+            else:
+                fold.add(e["session"], e)
+        effect, joined, stated = dict(effect), dict(joined), dict(stated)
+        for sid in touched:
+            for have, held in ((effect, fold.effect), (joined, fold.joined), (stated, fold.stated)):
+                if sid in held:
+                    have[sid] = held[sid]
+                else:
+                    have.pop(sid, None)
+    stated_set = threads.stated_set
+    appended = []
+    for sid in sorted(set(holders) | {s for s, e in stated.items() if stated_set(e)}):
+        if sid in busy:
+            continue
+        t = holders.get(sid) or threads.current_record(sid)
+        if t is None or t.get("pending") or threads.record_ended(t):
+            continue
+        e = effect.get(sid)
+        if e is None or e["kind"] != "joined" or not is_self(str(e.get("machine") or ""), sid):
+            continue
+        seen = threads.held_set(t)
+        if stated_set({"channels": seen}) == stated_set(stated.get(sid)):
+            continue
+        writer = e["writer"]
+        try:
+            if own_stream(project, sid)[0] != writer:
+                continue
+        except audience_module().StreamUnknown:
+            continue
+        channels_module().restate(project, t["thread"], sid, writer, seen, appended=appended)
+    return appended
 
 
 def _reconcile_channel(project, events, by_session):
@@ -5250,7 +5318,7 @@ def _reconcile_channel(project, events, by_session):
     lock). A closed session's `joined` is left as it is until the session
     runs again; nothing else of _reconcile runs (no join, no end, no thread
     made or adopted, no hand-off)."""
-    latest, joined, _ = log_memo(events, "memberships", _memberships)
+    latest, joined, _, _ = log_memo(events, "memberships", _memberships)
     out = []
     for sid, e in joined.items():
         if latest[sid] != "joined" or not is_self(str(e.get("machine") or ""), sid):
@@ -5533,13 +5601,19 @@ def adopt(project, sid, seat, peer, last, events):
 
 def _memberships(events):
     """({session: the kind of its own membership event in effect}, {session:
-    its latest own joined}, {session: that event}) of a log as read, for
-    _reconcile: the reducer folded over it (sminos_threads.Fold)."""
+    its latest own joined}, {session: that event}, {session: its statement
+    in effect}) of a log as read, for _reconcile: the reducer folded over it
+    (sminos_threads.Fold), its statements by C2's rule (Fold.state)."""
     fold = threads_module().Fold()
     for e in events:
-        if e["kind"] in MEMBERSHIP and e.get("session") and writer_session(e["writer"]) == e["session"]:
-            fold.add(e["session"], e)
-    return {sid: e["kind"] for sid, e in fold.effect.items()}, fold.joined, fold.effect
+        kind = e["kind"]
+        if (kind in MEMBERSHIP or kind == "channels") and e.get("session") \
+                and writer_session(e["writer"]) == e["session"]:
+            if kind == "channels":
+                fold.state(e["session"], e)
+            else:
+                fold.add(e["session"], e)
+    return {sid: e["kind"] for sid, e in fold.effect.items()}, fold.joined, fold.effect, fold.stated
 
 
 def here_now(project, ev):
