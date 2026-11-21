@@ -1298,7 +1298,9 @@ the making of a record write `channels: []` themselves, not through
     SEAT_KEYS = (..., "began", "answered")
     CHANNEL_LIMIT = 128
 
-    def set_channels(thread_id, decide, lock_until=None) -> dict | None
+    def set_channels(thread_id, decide, lock_until=None, wake_until=None) -> dict | None
+        # (M3: `wake_until`, when given, bounds the wake lock's poll alone, so a reconciliation only tries it
+        # while it still waits its turn at the store lock up to `lock_until`)
         # The one way a thread's set, where its memberships began, its answered requests or a statement is
         # written. Takes the thread's wake lock as begin() does for a transition (sminos.wake_lock, a bounded
         # poll until `lock_until`, SWEEP_WAIT from now by default), and lets it go once the record is written;
@@ -1378,7 +1380,9 @@ In `S/sminos_channels.py`, the callers that build `decide`:
         # session is no longer the thread's current one, or the record ended or is gone; `unreadable`: the
         # channel's log or a writer file of it is there and could not be read); never `pending`,
         # since no request exists for a later pass to carry out
-    def restate(project, thread_id, session, writer, seen) -> bool
+    def restate(project, thread_id, session, writer, seen, appended=None) -> bool
+        # (M3: `appended`, this pass's own appends; restate finishes its own entry, so the statement shows in
+        # the same pass)
         # C5: `seen` the set the reconciliation read from the record. Only tries the wake lock. True when a
         # statement was owed and its entry begun; a failure to finish it is the next reconciliation's
 
@@ -2267,6 +2271,32 @@ while the milestones are built, one observation and its evidence each.
   is not this channel's registration raises `PositionsUnread`, since where a
   membership begins cannot then be known. `known_project` keeps its
   tolerance; the two share `_registered_as`.
+- 2026-11-21 — **M3 as built** (`54cacc3a..aa816f2d`). The reconciliation
+  is `_reconcile`'s last step, `_keep_sets`, over the `_memberships` memo,
+  which now also returns the statements in effect, with the pass's own
+  appends folded in. It runs only when a log states some set or a thread
+  here holds one: the holders are `sminos_threads.set_holders()`, derived
+  from `_live_index` and cached while that index is the same object, so a
+  machine with no channel compares nothing. The candidates are the holders
+  and the sessions whose log states a non-empty set; sets are compared as a
+  reader takes them (`stated_set`). The writer compared is the one of the
+  session's `joined` in effect, and the reconciliation passes a session
+  whose `own_stream` differs from it (a change of reach not yet snapshot),
+  since a statement there would state nothing, again at every pass.
+  `restate` takes its project, session and writer from what the
+  reconciliation read and never scans for them; this is what repairs M2's
+  accepted window (the project moved to gets its statement at its own
+  reconciliation). `set_channels` gains `wake_until` and `restate` gains
+  `appended` (§3 amended). A return writes `began` anew in its own record
+  write (`_began_anew`); a channel whose log is there and cannot be read
+  then keeps its position from before the end, with a warning, rather than
+  hold the return up, as an older copy's return leaves it. The absorption's
+  merge is a write of its own in `finish` (`_merge_absorbed`), marked
+  `merged` in the entry so that a replay merges once. A seat cannot `join`,
+  so the `join` cases are of threads their humans opened. Left to M4's
+  fresh reads: the `own_stream` read inside `restate`'s `decide` uses the
+  module's ordinary readers; a stale writer can only skip a statement or
+  write one that states nothing, which the next pass repairs.
 
 ## Outcomes & Retrospective
 
