@@ -142,8 +142,9 @@ back by a fill.
                    a share added or raised) only the owner's, in a terminal, confirmed there, or MAWS
     sminos remove   <seat|member>                         # retire --purge: end it, stop it, delete its record
     sminos list     [project] [--project P,..] [--machine M,..] [--state W,..] [--org] [--here] [--stopped] [--all] [--json]
-                   [words..]  # the caller's project (a session's own, else the working directory's;
-                   every project from none); any filter
+                   [words..] [--channel C]..  # the caller's project (a session's own, else the working directory's;
+                   every project from none), then each channel the caller is in (`# <name>`, its members
+                   from every project, stopped ones shown); --channel those of a channel; any filter
                    widens to every project known here, then narrows: --machine by prefix, words (all of
                    them) in the alias, short, project, repo, branch, in-charge, now line or title; --org
                    every project; --here this machine, plus every running session in no project.
@@ -154,7 +155,8 @@ back by a fill.
                    A row: alias [short], kind, state,
                    @machine, (project,) repo@branch, in charge (age), · active <age>. Inside a session
                    it says who you are and ends with how many of your subagents run (list --subagents
-                   for them); --here ends with the live sessions that are no member
+                   for them); --here ends with the live sessions that are no member; --org ends with each
+                   channel that has a member
     sminos list     --subagents [member] [--done N] [--depth N] [--stall MIN] [--all] [--json]
                    # your session's subagents (a member's on this machine: inspection only), in place of
                    ListAgents: how many run, wait on background or stall, at every depth, those as a
@@ -168,6 +170,16 @@ back by a fill.
                    --depth N the top N levels, a row saying what it folds; --stall MIN (10) the quiet
                    that makes an open turn stalled when only the disk speaks;
                    --json {self, scope, counts, agents, notes}, every agent whatever its state
+    sminos channel  create <name> [<thread>]              # a declared channel, the caller its first member (from
+                   a terminal, <thread>: one of this machine); a channel is no project, and nothing is said in one
+                   in this version
+    sminos channel  add <channel> [<thread>...]           # threads placed in it without acting (none named: the
+                   caller); a thread of another machine once its daemon reads the request
+    sminos channel  remove <channel> [<thread>...]        # out of it: nothing is retired
+    sminos channel  show <channel> [--json]               # its members, each in its own project; its requests of
+                   the last seven days and what became of each; its pool, the machines its members run on
+    sminos channel  env add|remove <channel> <machine>    # a machine of the org added to its pool by hand, or no
+                   longer (a member's)
     sminos find     <words..>                             # list --org <words>: every session they match
     sminos who      [<commit|PR>] [--session S]           # the session a commit (its Sminos-Session trailer)
                    or a PR (its body's last line, else its commits' trailers; a number or URL, through gh)
@@ -4259,7 +4271,8 @@ def member_json(m, project=None, private=True):
     terminal default where nothing says otherwise); `ownersProof`,
     `principal`, `inference` and `controller` too for one of this machine,
     from its record (null when it has none), unless the view is the org's
-    (`private` False: the listing's public fields alone)."""
+    (`private` False: the listing's public fields alone). `channels`, the
+    declared channels its log states, only for a row in one (CH1, §8)."""
     d = {"alias": m.alias, "session": m.session, "short": m.short, "name_source": m.name_source,
          "kind": m.kind or None, "machine": m.machine, "local": m.local, "state": m.state,
          "state_age": m.state_age, "active_age": m.active_age, "charge": m.charge,
@@ -4275,6 +4288,8 @@ def member_json(m, project=None, private=True):
                  controller=rec.get("controller"))
     rec = session_running(m.session) if m.local and m.session else None
     d["engine"] = engine_facts(rec) if rec else None
+    if m.channels:   # only on a row in a channel, as the wire sends no key for a thread in none (CH1, §8)
+        d["channels"] = list(m.channels)
     if project is not None:
         d = {"project": project.name, "project_id": project.id, "project_kind": project_kind(project), **d}
     return d
@@ -17782,13 +17797,14 @@ def list_scope(a):
     that has left this machine (has_left) before it narrows: a project named
     first (as before), or with --project; --machine, --state, --here, --org
     and words narrow the rows. Under --org or --project every argument is a
-    word."""
+    word. --channel is a row filter like the others: it widens too (cmd_list
+    keeps the rows in a channel it names)."""
     args = list(a.args)
     if a.org or a.projects:
         named, words = "", args
     else:
         named, words = (args[0], args[1:]) if args else ("", [])
-    if not (named or a.projects or a.machine or a.state or a.org or a.here or words):
+    if not (named or a.projects or a.machine or a.state or a.org or a.here or words or getattr(a, "channel", None)):
         return view_projects("")[0], [], False
     if named:
         return [find_project(named)], words, True
@@ -18154,6 +18170,7 @@ def cmd_list(a):
         cmd_subagents(a)
         return
     projects, words, picked = list_scope(a)
+    chosen = named_channels(a)
     sections, out, hidden, members_known = [], [], 0, set()
     folded = [word for word in HIDDEN if not (a.stopped and word == "stopped")]
     ended = a.all or "retired" in a.state
@@ -18161,6 +18178,8 @@ def cmd_list(a):
         every = project_rows(p) + (list(view_of(p).ended) if ended else [])
         members_known |= {m.session for m in every if m.session}
         rows = [m for m in every if row_matches(m, p, a, words)]
+        if chosen:   # a row filter: the rows in a channel named, as its roster holds them (none ended)
+            rows = [m for m in rows if not has_ended(m) and any(c.id in m.channels for c in chosen)]
         if a.json:
             out += [member_json(m, p, private=not a.org) for m in rows]
             continue
@@ -18172,13 +18191,13 @@ def cmd_list(a):
         if rows:
             sections.append((p, rows))
     loose = []
-    if a.here and not picked:   # a session in no project is in none of the projects named
+    if a.here and not picked and not chosen:   # a session in no project is in none of the projects named
         for p in known_projects():
             if p.id not in {q.id for q in projects}:
                 members_known |= {m.session for m in project_rows(p) if m.session}
         loose = [m for m in unprojected_rows(members_known) if row_matches(m, None, a, words)]
     others = []
-    if a.here and not picked and not words and not a.state and not a.machine:
+    if a.here and not picked and not words and not a.state and not a.machine and not chosen:
         others = other_live_sessions(members_known | {m.session for m in loose})
     notes = peer_notes() if (a.here or a.org or not projects) else []
     if a.json:
@@ -18194,7 +18213,14 @@ def cmd_list(a):
         for n in notes:
             print("note: " + n, file=sys.stderr)
         return
-    if not sections and not loose:
+    if chosen:
+        scope = {p.id for p in projects}
+        for c in chosen:
+            print("# %s" % c.name)
+            channels_module().section([(p, m) for p, m in channels_module().roster(c)
+                                       if p.id in scope and row_matches(m, p, a, words)])
+        sections, hidden = [], 0   # a channel's section folds none
+    elif not sections and not loose:
         print("(no members in %s)" % (", ".join(p.name for p in projects) if projects else "any project known here"))
     if len(sections) == 1:
         print(sections[0][0].name)
@@ -18213,14 +18239,51 @@ def cmd_list(a):
     if hidden:
         hint = "--all" if a.stopped else "--stopped shows stopped; --all shows all"
         print("+%d hidden (%s) — sminos list %s" % (hidden, ", ".join(folded), hint))
+    me = self_identity()
+    for c, rows in ([] if chosen else channel_sections(a, projects, words, me)):
+        print("# %s" % c.name)
+        channels_module().section(rows)
     for n in notes:
         print("note: " + n)
-    me = self_identity()
     if me and not a.find:
         print(self_line(me))
         line = subagent_summary_line(me["session"])
         if line:
             print(line)
+
+
+def named_channels(a):
+    """The channels `list --channel` names (sminos_channels.find_channel:
+    exit 4 for a name that is unknown or ambiguous), each once, in the
+    order named; [] without the flag."""
+    out = {}
+    for q in getattr(a, "channel", None) or []:
+        c = channels_module().find_channel(q)
+        out.setdefault(c.id, c)
+    return list(out.values())
+
+
+def channel_sections(a, projects, words, me):
+    """[(channel, rows)]: the channel sections a text list ends its table
+    with (§8), by name then id, each channel's roster rows with their
+    projects. A bare list from a thread: the channels of its set
+    (sminos_channels.channels_of), so a thread in no channel reads no
+    roster; --org (not find, a search whose rows are listed once): every
+    channel known here whose roster, narrowed by the other filters, is not
+    empty. Nothing for any other list."""
+    ch = channels_module()
+    if a.org and not a.find:
+        scope = {p.id for p in projects}
+        found = [(c, [(p, m) for p, m in ch.roster(c) if p.id in scope and row_matches(m, p, a, words)])
+                 for c in known_channels()]
+        return sorted(((c, rows) for c, rows in found if rows), key=lambda x: (x[0].name, x[0].id))
+    if me is None or a.args or a.projects or a.machine or a.state or a.org or a.here:
+        return []
+    ids = ch.channels_of(me["session"])
+    if not ids:
+        return []
+    held = [known_project(cid) or make_project(cid, cid, "", "", None) for cid in ids]
+    return [(c, ch.roster(c)) for c in sorted(held, key=lambda c: (c.name, c.id))]
 
 
 def cmd_find(a):
@@ -19429,6 +19492,15 @@ def build_parser():
         co.add_argument("channel")
         co.add_argument("threads", nargs="*")
         co.set_defaults(fn=cmd_channel)
+    cs = chsub.add_parser("show", add_help=False)
+    cs.add_argument("channel")
+    cs.add_argument("--json", action="store_true")
+    cs.set_defaults(fn=cmd_channel)
+    ce = chsub.add_parser("env", add_help=False)
+    ce.add_argument("env_op", choices=("add", "remove"))
+    ce.add_argument("channel")
+    ce.add_argument("machine")
+    ce.set_defaults(fn=cmd_channel)
 
     hb = sub.add_parser("hub", add_help=False, prefix_chars="\0")
     hb.add_argument("words", nargs="*")
@@ -19548,12 +19620,13 @@ def build_parser():
     ls.add_argument("--done", type=int, default=None)
     ls.add_argument("--depth", type=int, default=None)
     ls.add_argument("--stall", type=float, default=None)
+    ls.add_argument("--channel", action="append", default=[])
     ls.set_defaults(fn=cmd_list, find=False)
 
     fd = sub.add_parser("find", add_help=False)
     fd.add_argument("args", nargs="+")
     list_flags(fd)
-    fd.set_defaults(fn=cmd_find, find=True, subagents=None, done=None)
+    fd.set_defaults(fn=cmd_find, find=True, subagents=None, done=None, channel=[])
 
     wh = sub.add_parser("who", add_help=False)
     wh.add_argument("target", nargs="?", default="")
@@ -19676,7 +19749,7 @@ def main(argv=None):
             die("usage: sminos project init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]")
         if a.cmd == "channel":
             die("usage: sminos channel create <name> [<thread>] | add <channel> [<thread>...] | remove <channel> "
-                "[<thread>...]")
+                "[<thread>...] | show <channel> [--json] | env add|remove <channel> <machine>")
         die("unknown command: %s (try: sminos help)" % argv[0])
     stdin_body(a)
     migrate()

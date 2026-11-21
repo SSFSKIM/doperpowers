@@ -35,9 +35,9 @@ import type { On } from 'claude-code'
 /** The CLI's verbs (its parser's), which mark a sminos word that is no command word as a call. */
 export const VERBS = new Set([
   'spawn', 'seat', 'fill', 'wake', 'resume', 'send', 'say', 'chat', 'charge', 'join', 'derive', 'name-due', 'record',
-  'guide', 'project', 'daemon', 'hub', 'rpc-query', 'bridge', 'watch', 'steer', 'interrupt', 'stop', 'model', 'compact',
-  'command', 'read', 'decide', 'answer', 'reply', 'sync', 'status', 'retire', 'access', 'share', 'remove', 'list',
-  'find', 'who', 'projects', 'machines', 'chart', 'tui', 'attach', 'migrate', 'meta', 'help',
+  'guide', 'project', 'daemon', 'channel', 'hub', 'rpc-query', 'bridge', 'watch', 'steer', 'interrupt', 'stop', 'model',
+  'compact', 'command', 'read', 'decide', 'answer', 'reply', 'sync', 'status', 'retire', 'access', 'share', 'remove',
+  'list', 'find', 'who', 'projects', 'machines', 'chart', 'tui', 'attach', 'migrate', 'meta', 'help',
 ])
 
 /** A word as the lexer read it: its text with every expansion as NUL, and the first live backtick span in it. */

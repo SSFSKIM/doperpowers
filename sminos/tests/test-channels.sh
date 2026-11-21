@@ -17,7 +17,14 @@
 # adding and removing another by a request carried out before the command
 # returns, from a session and from a terminal, each refusal of §8 before
 # anything is written, and an emptied channel's name bringing it back under
-# its id; no session's turn started. The first channel is registered as the
+# its id; no session's turn started. The listing (M5): a member's bare
+# `list` ends with its channel's section, a session in no channel lists none,
+# `--channel` in text and `--json`, `channel show` with its request applied
+# and its pool's count, `channel env` refused before anything is written
+# from a terminal, a thread not in the channel and for a machine the org
+# does not list, then adding and removing a machine by hand, and `list
+# --org` ending with a section for a channel with a member and none once its
+# last member left. The first channel is registered as the
 # org's directory registers one (sminos_channels.register).
 # One machine cut over to its endpoint (daemon/identity.json); no endpoint
 # runs. Hermetic: HOME and SMINOS_HOME are temporary; `claude` is a stub;
@@ -223,6 +230,44 @@ assert_contains "$OUT" "helper#${S2:0:8}: in desk-two" "placed when the command 
 assert_equals "$(set_of "$S2")" "$TWO" "the other thread's record holds it"
 assert_equals "$(log_kinds "$TWO")" "channel-request" "the channel's log holds the request alone"
 assert_contains "$(kinds_of "$APP" "$S2")" "channels" "the answer is a statement in the thread's own project"
+echo "the roster, the listing and the pool:"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" list
+assert_rc 0 "$RC" "a member lists"
+assert_equals "$(grep -v '^sminos: warning' <<<"$OUT" | sed -n 1p)" "app" "its project's section as before"
+assert_contains "$(sed -n '/^# desk-two$/,$p' <<<"$OUT")" "helper [${S2:0:8}]" "then # desk-two, with its roster"
+assert_contains "$(sed -n '/^# desk-two$/,$p' <<<"$OUT")" "you: worker [${S1:0:8}]" "the section before the caller's line"
+run_in "$APPDIR" in_session "$S3" "$SMINOS" list
+assert_equals "$(grep -c '^#' <<<"$OUT" || true)" 0 "a session in no channel lists no section"
+run_in "$T" "$SMINOS" list --channel desk-two
+assert_rc 0 "$RC" "--channel from a terminal"
+assert_contains "$OUT" "worker [${S1:0:8}]" "prints the channel's rows"
+assert_contains "$OUT" "helper [${S2:0:8}]" "both of them"
+OUT="$("$SMINOS" list --channel desk-two --json 2>/dev/null)"
+assert_equals "$(python3 -c 'import json, sys; print(sorted({c for r in json.load(sys.stdin) for c in r["channels"]}))' <<<"$OUT")" "['$TWO']" "--json: the flat list, each row carrying channels"
+run_in "$T" "$SMINOS" channel show desk-two
+assert_rc 0 "$RC" "channel show"
+assert_contains "$OUT" "# desk-two  $TWO" "its heading"
+assert_contains "$OUT" "by worker#${S1:0:8}  applied" "the request for helper, applied"
+assert_contains "$OUT" "alpha  2 live, 0 stopped" "the pool's count"
+printf '{"projects": [], "machines": [{"name": "alpha"}, {"name": "beta"}], "at": "2026-11-21T00:00:00.000Z"}\n' \
+  > "$SMINOS_HOME/daemon/org.json"
+BEFORE="$(logs_sum)"
+run_in "$APPDIR" "$SMINOS" channel env add desk-two beta
+assert_rc 1 "$RC" "channel env from a terminal is refused"
+run_in "$APPDIR" in_session "$S3" "$SMINOS" channel env add desk-two beta
+assert_rc 1 "$RC" "and from a thread not in the channel"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel env add desk-two nowhere
+assert_rc 1 "$RC" "and for a machine the org does not list"
+assert_equals "$(logs_sum)" "$BEFORE" "no log file changed"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel env add desk-two beta
+assert_rc 0 "$RC" "a member adds a machine to the pool by hand"
+run_in "$T" "$SMINOS" channel show desk-two
+assert_contains "$OUT" "beta  0 live, 0 stopped, added by hand" "the pool it prints"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel env remove desk-two beta
+run_in "$T" "$SMINOS" channel show desk-two
+assert_equals "$(grep -c beta <<<"$OUT" || true)" 0 "and removes it"
+run_in "$T" "$SMINOS" list --org
+assert_contains "$OUT" "# desk-two" "list --org ends with a section for the channel"
 run_in "$APPDIR" "$SMINOS" channel add desk-two helper
 assert_rc 0 "$RC" "a terminal names the thread"
 assert_contains "$OUT" "helper#${S2:0:8}: already in desk-two" "which is in it already"
@@ -246,6 +291,9 @@ assert_contains "$OUT" "helper#${S2:0:8}: out of desk-two" "out when the command
 run_in "$APPDIR" in_session "$S1" "$SMINOS" channel remove desk-two
 assert_contains "$OUT" "worker#${S1:0:8}: out of desk-two" "and itself, with none named"
 assert_equals "$(set_of "$S1")" "" "its set is empty"
+run_in "$T" "$SMINOS" list --org
+assert_equals "$(grep -c '^# desk-two$' <<<"$OUT" || true)" 0 "its last member left: no section in list --org"
+assert_contains "$OUT" "# desk-three" "while a channel with a member keeps its own"
 run_in "$T" "$SMINOS" list app --json
 assert_contains "$OUT" "\"session\": \"$S1\"" "a removal retires no one"
 run_in "$APPDIR" in_session "$S1" "$SMINOS" channel create desk-two
@@ -274,7 +322,7 @@ run_in "$APPDIR" "$SMINOS" retire "worker#$SHORT"
 assert_rc 0 "$RC" "retire names it by alias#short"
 assert_contains "$(kinds_of "$APP" "$S1")" "retired" "its retirement is in its own project's log"
 assert_equals "$(channel_files)" 0 "nothing was ever written in the channel's log"
-assert_equals "$(log_kinds "$TWO")" "channel-request" "nor, with the thread in a channel, anything but requests in that one's"
+assert_equals "$(log_kinds "$TWO")" "channel-env channel-request" "nor, with the thread in a channel, anything but requests and the pool's events in that one's"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

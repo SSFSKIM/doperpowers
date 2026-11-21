@@ -584,9 +584,12 @@ run_channels() {
   if python3 -B "$SCRIPT_DIR/test_channels_requests.py"; then
     pass "requests on one machine: every row of the table, under the lock, the words, order and identity (test_channels_requests.py)"
   else fail "requests on one machine: every row of the table, under the lock, the words, order and identity (test_channels_requests.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_roster.py"; then
+    pass "the roster, the listing and the pool: list's sections, --channel, answers, channel show and env (test_channels_roster.py)"
+  else fail "the roster, the listing and the pool: list's sections, --channel, answers, channel show and env (test_channels_roster.py)"; fi
   echo
-  if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove (test-channels.sh)"; else
-    fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove (test-channels.sh)"; fi
+  if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; else
+    fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; fi
 }
 summary() {
   echo

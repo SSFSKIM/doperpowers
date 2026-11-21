@@ -31,8 +31,17 @@ project. What is here:
   uplink at an answer); who sent one (sender_verified) and what a word was
   asked for (reach_token, event_key).
 - The verbs `channel create`, `add` and `remove` (cmd_channel, place).
+- The roster (§5): the rows, each its thread's own row in its own
+  project's view, whose log states the channel (rosters, roster), read by
+  `list`, `channel show`, `channel env` and the pool and by nothing that
+  delivers, addresses or publishes (C1); what became of a request (answers,
+  answer_of: an index of the statements that answer one, never the fold);
+  the pool (pool: the roster's rows by machine, and the machines a member
+  added by hand, `channel-env`); `channel show` and `channel env` (show,
+  env).
 """
 import glob
+import json
 import os
 import sys
 import time
@@ -1012,13 +1021,19 @@ def _print_rows(rows):
 
 
 def cmd_channel(a):
-    """`sminos channel create|add|remove` (§8): refused before anything is
-    written where the kept welcome lists no `channels`."""
+    """`sminos channel create|add|remove|show|env` (§8): every verb that
+    writes refused before anything is written where the kept welcome lists
+    no `channels`; `show` is a read, and needs none."""
+    if a.channel_op == "show":
+        show(find_channel(a.channel), a.json)
+        return
     if not sminos.audience_module().advertised("channels"):
         sminos.die(CAPABILITY_REFUSAL, 1)
     session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if a.channel_op == "create":
         sys.exit(_create(a.name, a.thread, session))
+    if a.channel_op == "env":
+        sys.exit(env(find_channel(a.channel), a.env_op, a.machine, session))
     channel = find_channel(a.channel)
     if not a.threads and not session:
         sminos.die("from a terminal, sminos channel %s names the threads it places: sminos channel %s %s "
@@ -1098,3 +1113,322 @@ def _create(name, thread, session):
     if not done:
         print("%s: %s" % (t.label, line))
     return 1 if bad else 0
+
+
+# ------------------------------------------------------------ the roster, what became of a request, the pool (§5, §8)
+
+_SWEPT = {}   # "views": the views the last sweep read, with the projects; "value": what it made of them
+
+
+def _sweep():
+    """One sweep over view_of(p) for p in sminos.known_projects(): the
+    roster of every channel, and every thread's sessions as its rows list
+    them. Kept while every view it read is the one view_of answers (a view
+    is dropped by forget_caches, a lifecycle append and an import, and the
+    sweep with it), so a second read in one invocation reads no log again.
+    Never called from view_of, _reconcile, the plane or the uplink (C1)."""
+    projects = sminos.known_projects()
+    views = [(p, sminos.view_of(p)) for p in projects]
+    held = _SWEPT.get("views")
+    if held is not None and len(held) == len(views) and all(
+            p.id == q.id and v is w for (p, v), (q, w) in zip(held, views)):
+        return _SWEPT["value"]
+    rosters_, had, rows = {}, {}, {}
+    for p, v in views:
+        for m in v.members:
+            if m.thread:
+                had.setdefault(m.thread, set()).update((m.session,) + tuple(m.former) + tuple(m.thread_sessions))
+            if m.session:
+                rows.setdefault(m.session, (p, m))
+            if sminos.has_ended(m):
+                continue
+            for c in m.channels:
+                rosters_.setdefault(c, []).append((p, m))
+    value = {"rosters": rosters_, "had": had, "rows": rows}
+    _SWEPT["views"], _SWEPT["value"] = views, value
+    return value
+
+
+def rosters():
+    """{channel id: [(Project, Member), ...]} (§5): every member row of every
+    project known here whose `channels` (what its log states) holds the id
+    and that has not ended, with the project whose view it is in. A row is
+    the member's row in its own project's view, with every rule that builds
+    it: a thread this reader may not read is absent, a stopped one there."""
+    return _sweep()["rosters"]
+
+
+def roster(channel):
+    """rosters()'s rows for the channel (an id, or its Project), by alias,
+    then short id."""
+    cid = getattr(channel, "id", channel)
+    return sorted(rosters().get(cid, []), key=lambda pm: (pm[1].alias, pm[1].short))
+
+
+def _sessions_had(thread_id):
+    """The sessions the thread has had as this reader can tell from its rows:
+    each row's current session, those it continues, its thread's others."""
+    return _sweep()["had"].get(thread_id, set())
+
+
+def _answers_a_request(e):
+    """A statement (sminos_threads.is_statement) that carries a well-formed
+    answer: `answers` {channel: a channel's id, id: a string}, `result`
+    applied or refused."""
+    a = e.get("answers")
+    return e.get("kind") == "channels" and sminos.threads_module().is_statement(e) and isinstance(a, dict) \
+        and sminos.is_channel_id(a.get("channel")) and isinstance(a.get("id"), str) and a["id"] \
+        and e.get("result") in CARRIED
+
+
+def _answering(events):
+    """One log's ([answering statements], {session: the thread stamps of its own joined events}), in the
+    merged read's order: what answer_of reads of a log, kept beside it (sminos.log_memo)."""
+    said, stamps = [], {}
+    for e in events:
+        kind = e.get("kind")
+        if kind == "channels" and _answers_a_request(e):
+            said.append(e)
+        elif kind == "joined":
+            sid, stamp = e.get("session"), e.get("thread")
+            if isinstance(sid, str) and isinstance(stamp, str) and stamp \
+                    and sminos.writer_session(e["writer"]) == sid:
+                stamps.setdefault(sid, set()).add(stamp)
+    return said, stamps
+
+
+def _answer_index():
+    """{(channel id, request id): [(statement, its log's joined stamps), ...]} over every project's log
+    known here, each log in its merged order."""
+    out = {}
+    for p in sminos.known_projects():
+        _, events = sminos._store_whole(p, "log", shared=True)
+        said, stamps = sminos.log_memo(events, "channel-answers", _answering)
+        for e in said:
+            out.setdefault((e["answers"]["channel"], e["answers"]["id"]), []).append((e, stamps))
+    return out
+
+
+def answers():
+    """{(channel id, request id): [statement, ...]} (§5): every `channels`
+    event that carries a well-formed `answers`, in every project's log this
+    machine reads (sminos.known_projects), in the merged read's order,
+    whatever statement is in effect there now. Read from an index of its
+    own, never from the fold that reads membership."""
+    return {k: [e for e, _ in v] for k, v in _answer_index().items()}
+
+
+def answer_of(channel, request):
+    """The answer to a request of the channel's log (§5): the first statement
+    of answers() for its channel and id whose `thread` stamp is the
+    request's `thread` and whose writer's session is one that thread has
+    had, as this reader can tell: a session its rows list (its current one,
+    those it continues, its thread's others), or one whose own `joined` in
+    the log the statement lies in is stamped with that thread, a project the
+    thread has since left included. None for none: the stamp alone is a
+    field any writer can set."""
+    return _answer_in(_answer_index(), channel, request)
+
+
+def _answer_in(index, channel, request):
+    cid, tid = getattr(channel, "id", channel), request.get("thread")
+    had = None
+    for e, stamps in index.get((cid, request.get("id")), []):
+        if e.get("thread") != tid:
+            continue
+        session = sminos.writer_session(e["writer"])
+        if tid in stamps.get(session, ()):
+            return e
+        had = _sessions_had(tid) if had is None else had
+        if session in had:
+            return e
+    return None
+
+
+def _row_of(thread_id, session):
+    """(Project, Member) of a thread's row in any project's view here, by its
+    thread, else by the session; None for none."""
+    swept = _sweep()
+    for p, m in swept["rows"].values():
+        if thread_id and m.thread == thread_id:
+            return p, m
+    return swept["rows"].get(session)
+
+
+def _stamp(ts):
+    """A request's time as shown: its stamp to the second."""
+    return str(ts or "?")[:19]
+
+
+def _requester(writer):
+    """Who wrote a request, as `channel show` names it: a session's row's
+    `alias#short`, else its short and machine; the human writer as the person
+    at that machine."""
+    base = sminos.writer_base(str(writer or ""))
+    machine, _, tail = base.rpartition("/")
+    if tail == "human":
+        return "the person at %s" % (machine or "?")
+    row = _row_of("", tail)
+    return _label(row[1].alias, row[1].session) if row else "%s@%s" % (tail[:8], machine or "?")
+
+
+def requests_shown(channel, now=None):
+    """The channel's requests as `channel show` prints them (§8): those of
+    the ordered input (requests_of) that have not expired, oldest first,
+    each with what became of it: `duplicate` (an earlier request of another
+    writer used its id: §6's row 2), else `applied` or `refused` with its
+    reason from the statement that answers it (answer_of), else `pending`
+    with the machine its target's row was last seen on."""
+    _, reqs = requests_of(channel)
+    index, out = _answer_index(), []
+    for i, r in enumerate(reqs):
+        if expired(r, now):
+            continue
+        row = _row_of(r["thread"], r["session"])
+        state, reason, machine = "pending", None, None
+        if _duplicate(r, reqs[:i]):
+            state = "duplicate"
+        else:
+            answer = _answer_in(index, channel, r)
+            if answer is not None:
+                state = answer["result"]
+                reason = answer.get("reason") if state == "refused" else None
+            else:
+                local = sminos.threads_module().get(r["thread"])
+                machine = row[1].machine if row else sminos.host_name() if local is not None else None
+        target = _label(row[1].alias, r["session"]) if row else r["session"][:8]
+        out.append({"id": r["id"], "op": r["op"], "thread": r["thread"], "session": r["session"], "target": target,
+                    "by": _requester(r["writer"]), "ts": r.get("ts"), "state": state, "reason": reason,
+                    "machine": machine})
+    return out
+
+
+def _request_line(r):
+    if r["state"] == "applied":
+        what = "applied"
+    elif r["state"] == "refused":
+        what = "refused: %s" % WORDS.get(r["reason"], r["reason"] or "?")
+    elif r["state"] == "duplicate":
+        what = WORDS["duplicate"]
+    elif r["machine"]:
+        what = "pending on %s since %s" % (r["machine"], _stamp(r["ts"]))
+    else:
+        what = "pending since %s (the machine of its thread is not known here)" % _stamp(r["ts"])
+    return [_stamp(r["ts"]), r["op"], r["target"], "by " + r["by"], what]
+
+
+def is_env(e):
+    """Whether an event is a `channel-env` of §2's shape: `op` add or remove,
+    a `machine` and a `thread`, each a string that is not empty."""
+    return isinstance(e, dict) and e.get("kind") == "channel-env" and e.get("op") in ("add", "remove") \
+        and all(isinstance(e.get(k), str) and e[k] for k in ("machine", "thread", "writer"))
+
+
+def _by_hand(channel, rows):
+    """{machine, lower-cased: (its name, held)}: the last honoured `channel-env`
+    of each machine, by merge order, then this machine's queued appends. An
+    event is honoured when the roster as read holds a row of its `thread`
+    that lists the writer's session among the sessions it has had; an
+    association this reader cannot make is not honoured."""
+    _, events = sminos._store_whole(channel, "log", shared=True)
+    queued = sminos.queued_operators(channel)
+    held = {}
+    for e in list(events) + (sminos.said_order(queued) if queued else []):
+        if not is_env(e):
+            continue
+        session = sminos.writer_session(e["writer"])
+        if not any(m.thread == e["thread"] and session in (m.session,) + tuple(m.former) + tuple(m.thread_sessions)
+                   for _, m in rows):
+            continue
+        held[e["machine"].lower()] = (e["machine"], e["op"] == "add")
+    return held
+
+
+def pool(channel, rows=None):
+    """The channel's pool (§8): one entry a machine, by name: `live` its
+    roster rows there in a state of FILLED, `stopped` those stopped or gone,
+    and `by_hand` whether a `channel-env` holds it in. A machine is in the
+    pool when a row of the roster is there or a member added it by hand."""
+    rows = roster(channel) if rows is None else rows
+    counts = {}
+    for _, m in rows:
+        c = counts.setdefault(m.machine.lower(), [m.machine, 0, 0])
+        if m.state in sminos.FILLED:
+            c[1] += 1
+        elif m.state in ("stopped", "gone"):
+            c[2] += 1
+    hand = _by_hand(channel, rows)
+    for key, (name, on) in hand.items():
+        if on:
+            counts.setdefault(key, [name, 0, 0])
+    return [{"machine": name, "live": live, "stopped": stopped, "by_hand": hand.get(key, ("", False))[1]}
+            for key, (name, live, stopped) in sorted(counts.items())]
+
+
+def _pool_line(e):
+    return ["%s  %d live, %d stopped%s" % (e["machine"], e["live"], e["stopped"],
+                                            ", added by hand" if e["by_hand"] else "")]
+
+
+def section(rows):
+    """A channel's rows as `list` and `channel show` print them: one row each
+    with its project's column (sminos.row_cells), none folded; `(none)` for
+    none."""
+    if rows:
+        sminos.print_rows([sminos.row_cells(m, p) for p, m in rows])
+    else:
+        print("  (none)")
+
+
+def show(channel, as_json=False):
+    """`channel show <channel> [--json]` (§8): its heading, its members (the
+    roster, each row with its project), its requests of the last seven days
+    with what became of each, and its pool."""
+    rows = roster(channel)
+    shown = requests_shown(channel)
+    held = pool(channel, rows)
+    if as_json:
+        print(json.dumps({"id": channel.id, "name": channel.name,
+                          "members": [sminos.member_json(m, p) for p, m in rows],
+                          "requests": shown, "pool": held}, indent=2))
+        return
+    print("# %s  %s" % (channel.name, channel.id))
+    print("members")
+    section(rows)
+    for title, lines in (("requests", [_request_line(r) for r in shown]), ("pool", [_pool_line(e) for e in held])):
+        print(title)
+        if lines:
+            sminos.print_table_rows(lines)
+        else:
+            print("  (none)")
+
+
+def env(channel, op, machine, session):
+    """`channel env add|remove <channel> <machine>` (§8): a `channel-env`
+    under the calling thread's own stream in the channel's log (§2), refused
+    before anything is written from a terminal, from a thread the roster
+    does not hold under this session (no reader would honour its event),
+    and for a machine the org's directory does not list. The exit code."""
+    if not session:
+        sminos.die("channel env is a member's: run it from a session of a thread in %s: nothing was written"
+                   % channel.name, 1)
+    record = sminos.threads_module().current_record(session, fresh=True)
+    me = _local(record, session, "")
+    if me.refusal or not any(m.thread == me.thread and m.session == session for _, m in roster(channel)):
+        sminos.die("%s is not in %s: only a member changes its pool: nothing was written" % (me.label, channel.name),
+                   1)
+    listed = {str(m.get("name") or "").lower(): m["name"] for m in ((sminos.org_directory() or {}).get("machines")
+                                                                     or [])}
+    name = listed.get(machine.lower())
+    if not name:
+        sminos.die("no machine %s is listed in the org's directory: nothing was written" % machine, 1)
+    try:
+        writer, audience = sminos.own_stream(channel, session)
+        sminos.keep_stream(channel, writer, audience)
+        sminos.log_append(channel, writer, "channel-env", op=op, machine=name, thread=me.thread)
+    except (OSError, sminos.audience_module().StreamUnknown) as err:
+        sminos.die("the pool of %s was not changed: %s: nothing was written" % (channel.name, err), 1)
+    sminos.nudge_daemon()
+    print(("%s is in the pool of %s, added by hand" if op == "add" else
+           "%s is no longer in the pool of %s by hand") % (name, channel.name))
+    return 0
