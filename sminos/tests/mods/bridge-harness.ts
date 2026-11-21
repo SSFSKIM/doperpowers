@@ -33,10 +33,10 @@ export const MESSAGE = (frame?: string) => ({ isDelivery: true, ...(frame !== un
  * `next.origin` names the plugin that raised the dispatch, the engine when
  * none did. A `next` that names its origin already keeps it.
  */
-export const beneath = <T extends object>(next: T, plugins: readonly string[], options: { short?: boolean; origin?: string } = {}) => {
+export const beneath = <T extends object>(next: T, plugins: readonly string[], options: { short?: boolean; origin?: string; originTier?: string } = {}) => {
   const links = [...plugins, ...(options.short === true ? [] : ['engine'])]
   const trace = links.map((plugin, i) => ({ index: i + 1, plugin, tier: plugin === 'engine' ? 'core' : 'user', event: 'tool.call', outcome: 'returned', ms: 0, received: {}, returned: undefined }))
-  const origin = options.origin === undefined ? { plugin: 'engine', tier: 'core' } : { plugin: options.origin, tier: 'user' }
+  const origin = options.origin === undefined ? { plugin: 'engine', tier: 'core' } : { plugin: options.origin, tier: options.originTier ?? 'user' }
   return Object.assign(next, { trace }, 'origin' in next && options.origin === undefined ? {} : { origin })
 }
 /** devcloud's marker as its loaded module answers it (at version 0), and as an older devcloud stored it (version 1), which outlives its module. */

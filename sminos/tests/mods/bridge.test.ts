@@ -5622,7 +5622,7 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
   const CALL = { tool: 'Bash', tool_use_id: 'tu1', command: 'cat notes.txt' }
   const OUTPUT = 'the contents of notes.txt'
   type Harness = ReturnType<typeof harness>
-  type Beneath = { short?: boolean; origin?: string }
+  type Beneath = { short?: boolean; origin?: string; originTier?: string }
   /** A Bash call through the bridge's hook, these plugins' links settled beneath it. */
   const callBeneath = (h: Harness, plugins: string[], options: Beneath = {}) =>
     h.hook('tool.call', { tool: 'Bash' })(h.engine, CALL, beneath(async () => ({ text: OUTPUT }), plugins, options)) as Promise<Record<string, unknown>>
@@ -6130,13 +6130,9 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     ["the organization's in prepend, cua enabled in the user settings, nothing of it beneath", { tier: 'prepend', policy: MANAGED, cua: true }, ['doperpowers'], 'safe'],
     ["the organization's in prepend, devcloud its too and listed before sminos (its marker heard), no devcloud beneath", { tier: 'prepend', policy: MANAGED, marker: LIVE_MARKER }, ['doperpowers'], 'off'],
     ["the organization's in prepend, devcloud its too, devcloud beneath", { tier: 'prepend', policy: MANAGED, marker: LIVE_MARKER }, ['doperpowers', 'devcloud'], 'safe'],
-    ["the organization's in prepend, cua listed in the managed prependPlugins ahead of sminos, no cua beneath", { tier: 'prepend', policy: { prependPlugins: ['cua@cua', ...MANAGED.prependPlugins] } }, ['doperpowers'], 'off'],
-    ["the organization's in prepend, cua listed ahead of sminos, cua beneath", { tier: 'prepend', policy: { prependPlugins: ['cua@cua', ...MANAGED.prependPlugins] } }, ['doperpowers', 'cua'], 'safe'],
-    ["the organization's in prepend, only enabled there and cua listed, no cua beneath", { tier: 'prepend', policy: { prependPlugins: ['cua@cua'], enabledPlugins: { 'sminos@doperpowers': true } } }, ['doperpowers'], 'off'],
-    // Enabled and not listed ahead, cua loads beneath: after sminos in prepend, or in user without its marketplace declared there.
-    // A dispatch an organization's plugin raised runs none of a person's hooks, so its trace can lack cua's link.
-    ["the organization's in prepend, cua enabled by the managed settings and not listed, no cua beneath", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'cua@cua': true } } }, ['doperpowers'], 'safe'],
-    ["the organization's in prepend, cua listed after sminos, no cua beneath", { tier: 'prepend', policy: { prependPlugins: [...MANAGED.prependPlugins, 'cua@cua'] } }, ['doperpowers'], 'safe'],
+    ["the organization's in prepend, cua enabled by the managed settings, no cua beneath", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'cua@cua': true } } }, ['doperpowers'], 'off'],
+    ["the organization's in prepend, cua enabled by the managed settings, cua beneath", { tier: 'prepend', policy: { ...MANAGED, enabledPlugins: { 'cua@cua': true } } }, ['doperpowers', 'cua'], 'safe'],
+    ["the organization's in prepend, cua listed but disabled by the managed settings, no cua beneath", { tier: 'prepend', policy: { prependPlugins: ['cua@cua', ...MANAGED.prependPlugins], enabledPlugins: { 'cua@cua': false } } }, ['doperpowers'], 'safe'],
     // Seated anywhere else by the organization: inside every plugin a person installs, blind to a person's devcloud.
     ["the organization's in append, no guard enabled, nothing beneath", { tier: 'append', policy: { appendPlugins: ['sminos@doperpowers'] } }, [], 'off'],
     ["the organization's in append, a person's devcloud outside it", { tier: 'append', policy: { appendPlugins: ['sminos@doperpowers'] } }, ['doperpowers'], 'off'],
@@ -6167,6 +6163,22 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
       expect(h.logs.filter((l) => l === said)).toHaveLength(1)
     })
   }
+
+  test("seated in prepend by the organization, a dispatch an organization's mod raised decides nothing of cua: a person's hooks, a user-tier cua's among them, do not run on it", async () => {
+    const policy = { ...MANAGED, enabledPlugins: { 'cua@cua': true } }
+    const h = harness({ tier: 'prepend', policy, verdictPending: true })
+    await h.ready()
+    await rowBeneath(h, ['doperpowers'], { origin: 'doperpowers', originTier: 'prepend' })
+    await rowBeneath(h, [], { origin: 'to-human', originTier: 'prepend' })
+    expect(h.logs).not.toContain(MANAGED_OFF_LINE)
+    expect(h.ofType('tool')).toEqual([])
+    // One the engine raised runs every hook beneath: cua's link missing there is cua outside.
+    await rowBeneath(h, ['doperpowers'])
+    expect(h.toasts.filter((t) => t === MANAGED_OFF_LINE)).toHaveLength(1)
+    // A person's plugin's dispatch runs a user-tier cua too: beneath it, the bridge is on again.
+    await rowBeneath(h, ['doperpowers', 'cua'], { origin: 'other' })
+    expectOn(h)
+  })
 
   test("the managed off line names the managed settings' prependPlugins, not the user settings", () => {
     expect(MANAGED_OFF_LINE).toBe(
