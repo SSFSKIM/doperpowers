@@ -1478,7 +1478,8 @@ fold above, which keeps only the statement in effect:
         # every `channels` event that carries a well-formed `answers`, in every project's log this machine reads
         # (sminos.known_projects), in the merged read's order, whatever is in effect there now; kept beside each
         # merged log and for the cache generation
-    def answer_of(request) -> dict | None
+    def answer_of(channel, request) -> dict | None
+        # (M5: `channel` is passed, since a request event does not carry its channel's id)
         # the first of answers() for its channel and id whose `thread` stamp is the request's `thread` and whose
         # writer's session is one that thread has had, as this reader can tell: a session its row lists (its
         # current one, those it continues, its thread's others), or one whose own `joined` in the log the
@@ -2410,6 +2411,29 @@ while the milestones are built, one observation and its evidence each.
   with no member is left, never a request under an audience the target no
   longer has. This last fix came after the third review and had none of
   its own.
+- 2026-11-21 — **M5 as built** (`b4a9bdd7..f5644cc9`). Y1's
+  `answer_of` takes the channel, `answer_of(channel, request)`, since a
+  request event does not carry its channel's id (§5 amended; sent to the
+  holder for CH2). The roster is cached while every project view it read is
+  still the one `view_of` returns, so it is dropped exactly when a view is.
+  The sessions a thread has had are its member rows' (current, `former`,
+  `thread_sessions`) and any whose own `joined` in the statement's log is
+  stamped with that thread. A bare `list` is one with no scope filter
+  (`--stopped` and `--all` are still bare); `--channel` sections fold
+  nothing and print no `+N hidden` line; `--org`'s channel sections are
+  narrowed by the other filters, and a section emptied by them is left out;
+  `find` prints none. `channel show` needs no capability (it only reads);
+  it prints times to the second and a requester as `alias#short`,
+  `<short>@<machine>` or "the person at <machine>". `channel env`'s
+  "not in the channel" reads the roster, and the machine is matched
+  case-insensitively against the org's directory; the pool counts this
+  machine's queued `channel-env` appends. `member_json`, which the chart's
+  member JSON also uses, carries `channels` only on a row in a channel. The
+  M5 unit tests are `T/test_channels_roster.py`, in the `channels` part.
+  A13 for the listing: `list`, `list --org`, `list --json`, `list
+  --stopped`, `list --all` and `list --org --json`, from a terminal and
+  from a session, identical to the merge base's over one store with no
+  channel (ages normalised).
 
 ## Outcomes & Retrospective
 
