@@ -495,6 +495,40 @@ class Return(Transitions):
         self.assertEqual(int(sminos.reload_seat(seat_id)["turns"]), turns + 1, "the woken push counted")
         self.assertEqual(self.resumes(sid), [[]])
 
+    def test_a_lifecycle_change_waiting_for_the_seat_comes_after_the_returned_seats_task_is_recorded(self):
+        # frontier review round 2, scalpel-1#2: a verb waiting on the seat's lifecycle lock (a `sync`) as the return
+        # is made; the seat's lock is kept from the return through its task's record and push, and the waiter
+        # takes it after.
+        s = self.seat()
+        sid, seat_id = s["current"], s["seat_id"]
+        self.cli("retire", "w")
+        real, took = sminos.resume_session, threading.Event()
+
+        def waiter():
+            locks = sminos.lock_seat(s, blocking=True)
+            took.set()
+            time.sleep(1)
+            sminos.unlock(locks)
+
+        def returned(*a, **k):
+            got = real(*a, **k)
+            threading.Thread(target=waiter, daemon=True).start()
+            return got
+        real_deliver = sminos.deliver_verb
+
+        def deliver_after(*a, **k):
+            took.wait(2)   # the waiter's turn at the lock, if the return let it go
+            return real_deliver(*a, **k)
+        with mock.patch.object(sminos, "resume_session", returned), \
+                mock.patch.object(sminos, "deliver_verb", deliver_after):
+            code, out = self.cli("fill", "w", "the returned task", "--resume")
+        self.assertEqual(code, 0, out)
+        self.assertNotEqual(sminos.reload_seat(seat_id)["status"], "retired")
+        self.assertTrue(any(e.get("text") == "the returned task" for e in sminos.log_read(self.p)), "recorded")
+        self.assertTrue(wait_for(lambda: any("the returned task" in i["message"]["content"]
+                                             for i in self.inputs(sid))), "and pushed")
+        self.assertTrue(took.wait(5), "the waiter takes the lock after")
+
     def test_a_return_whose_launch_lost_its_banner_with_its_process_up_returns_and_delivers(self):
         s = self.seat()
         sid, seat_id = s["current"], s["seat_id"]

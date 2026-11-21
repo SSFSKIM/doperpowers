@@ -14148,12 +14148,14 @@ def cmd_fill(a):
         except ResumeRefused as e:
             unlock(locks)
             die(e.message, e.code)
-        unlock(locks)
         if not woke.live:
+            unlock(locks)
             die("seat %s/%s was not woken: %s; nothing was recorded" % (s["group"], s["alias"], wake_words(woke.why)),
                 EXIT_UNKNOWN if woke.why in ("gone", "lane", "ended", "transcript") else
                 EXIT_USAGE if woke.why == "cwd" else 1)
-        deliver_verb(reload_seat(s["seat_id"]) or s, s["current"], a.task, a.wait, "filled", woke=True)
+        # The seat's lifecycle lock kept from the return through its task's record and push (send_to_seat takes it
+        # over): no other verb's change of the seat comes between them.
+        deliver_verb(reload_seat(s["seat_id"]) or s, s["current"], a.task, a.wait, "filled", woke=True, locks=locks)
         return
     settings = a.settings if a.settings is not None else (s["settings"] or os.environ.get("DAEMON_CLAUDE_SETTINGS", ""))
     effort = a.effort if a.effort is not None else (s["effort"] or os.environ.get("DAEMON_CLAUDE_EFFORT", ""))
@@ -15031,9 +15033,11 @@ def cmd_resume(a):
     deliver_verb(s0, bound, a.msg, a.wait, "resumed", stop_turn=True)
 
 
-def deliver_verb(s, bound, msg, wait, verb, stop_turn=False, woke=False):
+def deliver_verb(s, bound, msg, wait, verb, stop_turn=False, woke=False, locks=None):
     """A verb's message to a seat (`resume`, `fill --resume`), recorded and
-    delivered as `send` records and delivers one (T2's M2)."""
+    delivered as `send` records and delivers one (T2's M2); `locks`, the
+    seat's lifecycle locks its caller holds already (a retired seat's
+    return), which the send takes over."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     frm = default_from("")
     sender = "human" if not sid else ((caller_seat() or {}).get("alias") or frm)
@@ -15041,7 +15045,7 @@ def deliver_verb(s, bound, msg, wait, verb, stop_turn=False, woke=False):
     try:
         send_to_seat(s, compose_frame(frm, msg_id, msg), msg_id, wait,
                      record=lambda seat: record_send(seat, sender, frm, msg, msg_id), session=bound, sender=frm,
-                     verb=verb, stop_turn=stop_turn, woke=woke)
+                     verb=verb, stop_turn=stop_turn, woke=woke, locks=locks)
     except ResumeRefused as e:   # the seat's own refusals ahead of the wake (resume_session), as `send` exits on them
         die(e.message, e.code)
 
@@ -15239,7 +15243,8 @@ UNRECORDED = "nothing was started: %s is in no project log here to record the me
              "for a message no log holds"
 
 
-def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", verb="", stop_turn=False, woke=False):
+def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", verb="", stop_turn=False, woke=False,
+                 locks=None):
     """Deliver a frame to one seat under its lifecycle lock. The lock covers
     target selection, the wake, the socket delivery, and the status write,
     so a concurrent fill/resume/retire cannot slip between them. A live seat
@@ -15253,7 +15258,9 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
     that sent it, named in what is printed; `stop_turn` (`sminos resume`): a
     live background turn is stopped and the seat woken again before the
     push; `woke`: the caller woke it just before (`fill --resume` of a
-    retired seat), so the push is a woken one's (no @all, its turn counted).
+    retired seat), so the push is a woken one's (no @all, its turn counted);
+    `locks`: the seat's lifecycle locks that caller holds already, taken
+    over here (let go on every path, as the ones taken here are).
 
     `record(seat)`, when given, appends the message to the seat's project log
     once the seat is known reachable and returns its SendDelivery (or None
@@ -15266,7 +15273,7 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
     revocation set cannot clear) is recorded and pushed nothing. `--wait`
     waits for the reply to this message (wait_reply)."""
     refuse_codex(s0)
-    locks, s = locked_fresh(s0, "send", session)
+    locks, s = locked_fresh(s0, "send", session, locks)
     ref = "%s/%s" % (s["group"], s["alias"])
     chosen = threads_module().stamp(s["current"])   # the thread its session is, as looked up: what a hold names
     try:
@@ -16217,12 +16224,13 @@ def unlink_seat_files(seat_id):
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
-def locked_fresh(s0, verb, session=""):
-    """Take the seat's lifecycle locks and re-load the record; (locks, seat).
-    Given `session`, the one a name bound (find_target), a seat that no
-    longer holds it is refused: an address names a session, and a refill
-    after the name was resolved must not put another session in its place."""
-    locks = lock_seat(s0)
+def locked_fresh(s0, verb, session="", locks=None):
+    """Take the seat's lifecycle locks (or use `locks`, those its caller
+    holds already) and re-load the record; (locks, seat). Given `session`,
+    the one a name bound (find_target), a seat that no longer holds it is
+    refused: an address names a session, and a refill after the name was
+    resolved must not put another session in its place."""
+    locks = lock_seat(s0) if locks is None else locks
     s = reload_seat(s0["seat_id"])
     if s is None:
         unlock(locks)
