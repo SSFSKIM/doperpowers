@@ -7480,7 +7480,7 @@ def push_words(project, session, e, gate, owed, thread=None):
     retry (the verdict taken with it), else the words gate's (WordsGate.words).
     `thread`: a channel's receipt is found by it beside its session."""
     if owed == HOLDER_RETRY:
-        return holder_module().words_of(project.id, session, e, thread)
+        return holder_module().words_of(project.id, session, e, **({} if thread is None else {"thread": thread}))
     return gate.words(e)
 
 
@@ -7764,10 +7764,17 @@ def _channel_choice(owing):
     return _store_whole(owing.channel, "log", shared=True)[1], record
 
 
-def _thread_of(owing):
-    """The thread a channel's receipt is found by beside its session (None in
-    a project's log: a receipt's key as it always was)."""
-    return owing.thread if owing is not None else None
+def _kw(owing):
+    """The `owing` argument a channel's pass passes on, and nothing for a
+    project's: a project's calls are made as they always were, argument for
+    argument."""
+    return {} if owing is None else {"owing": owing}
+
+
+def _th(owing):
+    """A receipt lookup's `thread`, beside its session: a channel's alone
+    (_kw's rule); without it a receipt's key is as it always was."""
+    return {} if owing is None else {"thread": owing.thread}
 
 
 def deliver_next(project, member, due=False, owing=None):
@@ -7854,7 +7861,6 @@ def deliver_next(project, member, due=False, owing=None):
     if not session:
         return result
     key = session if o is None else o.thread   # the delivery record's and its lock's
-    thread = _thread_of(o)
     channels = channels_module() if o is not None else None
     policy = sibling_module("sminos_policy")
     outcomes = sibling_module("sminos_outcomes")
@@ -7887,14 +7893,15 @@ def deliver_next(project, member, due=False, owing=None):
                         outside = not channels.appended_here(project, e)
                     if noted and noted[0] == e["seq"]:
                         outcome = noted[1]
-                    elif (owed := holder_owed(project, member, session, e, events, cursor, owing=o)) \
+                    elif (owed := holder_owed(project, member, session, e, events, cursor, **_kw(o))) \
                             not in (None, HOLDER_RETRY):
                         outcome = owed
                     else:
-                        held = gate.held(e, session, key) if gate is not None else None
+                        held = gate.held(e, session, **({} if o is None else {"key": key})) if gate is not None \
+                            else None
                         if held == "revoked":
                             result["outcomes"].append((e, outcomes.REFUSED_REVOKED))
-                            holder_module().settled(project.id, session, e, thread)
+                            holder_module().settled(project.id, session, e, **_th(o))
                             continue
                         if held is not None:
                             result["pending"] += len(queue) - i
@@ -7910,26 +7917,26 @@ def deliver_next(project, member, due=False, owing=None):
                             # @all, a broadcast) settles as for a stopped member; an addressed one stays owed.
                             outcome = "recorded" if e.get("wake") else hold_outcome(hold)
                         elif gate is not None and owed is None and gate.gated(e) or reach is not None \
-                                and reach.needs(e, session, push_words(project, session, e, gate, owed, thread)):
+                                and reach.needs(e, session, push_words(project, session, e, gate, owed, **_th(o))):
                             result["gated"].append(e)
                             result["pending"] += len(queue) - i
                             break
                         else:
                             outcome = holder_push(project, member, session, e, events, cursor,
                                                   words=gate.words(e) if gate is not None else None,
-                                                  retry=owed is not None, due=due, owing=o)
+                                                  retry=owed is not None, due=due, **_kw(o))
                             if o is not None and outcome == outcomes.REFUSED_REVOKED:
                                 # Its signer found revoked after a wake's launch (wake_member): marked, as the
                                 # check before a push marks it, and nothing handed over.
                                 result["outcomes"].append((e, outcome))
-                                holder_module().settled(project.id, session, e, thread)
+                                holder_module().settled(project.id, session, e, **_th(o))
                                 continue
                             if gate is not None:
                                 gate.said(e, outcome)
                             if hold_why(outcome):
                                 # A wake that left it held: one attempt a call, the rest held for the same thread.
                                 hold = threads_module().Hold(hold_why(outcome), getattr(outcome, "thread", None))
-                    outcome = held_decided(project, session, e, outcome, owing=o)
+                    outcome = held_decided(project, session, e, outcome, **_kw(o))
                     if hold_why(outcome):
                         # The same hold for the rest of the writer's queue, which this pass stops before: each
                         # addressed event of it decided held now, as the first is.
@@ -7938,10 +7945,10 @@ def deliver_next(project, member, due=False, owing=None):
                                 delivered_held(project, key, writer, later["seq"],
                                                getattr(outcome, "thread", None) if o is None else o.thread)
                     result["outcomes"].append((e, outcome))
-                    if not _conclude(project, member, session, e, outcome, outside, owing=o):
+                    if not _conclude(project, member, session, e, outcome, outside, **_kw(o)):
                         result["pending"] += len(queue) - i
                         break
-                    holder_module().settled(project.id, session, e, thread)
+                    holder_module().settled(project.id, session, e, **_th(o))
                     if outcome in PUSHED:
                         result["delivered"] += 1
         except PassLost:
@@ -8020,12 +8027,11 @@ def holder_owed(project, member, session, e, events, cursor, owing=None):
     the session's delivery lock (with `owing`, a channel's, the thread's: its
     receipt found by the thread beside the session)."""
     hd = holder_module()
-    thread = _thread_of(owing)
-    if not hd.exists(project.id, session, e, thread):
+    if not hd.exists(project.id, session, e, **_th(owing)):
         return None
     peer = peer_for_session(session)
     plan = hd.plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None, existing_only=True,
-                   prepare=False, thread=thread)
+                   prepare=False, **_th(owing))
     if plan is None:
         return None
     if plan.kind in ("push", "legacy"):
@@ -8037,7 +8043,7 @@ def holder_owed(project, member, session, e, events, cursor, owing=None):
         # to the process a wake starts, as for any event owed to a stopped thread (T1's limit: at most one copy
         # more), never a wait that keeps the thread from being woken.
         return HOLDER_RETRY
-    return holder_carry(plan, project, member, session, e, events, cursor, peer, owing)
+    return holder_carry(plan, project, member, session, e, events, cursor, peer, **_kw(owing))
 
 
 def holder_push(project, member, session, e, events, cursor, words=None, retry=False, due=False, owing=None):
@@ -8065,29 +8071,29 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
     locks = None
     if peer is None and not e.get("wake"):
         # A retry wakes too: a receipt whose process is gone is pushed to the one the wake starts (holder_owed).
-        got, locks = wake_member(project, member, session, e, words, due, owing)
+        got, locks = wake_member(project, member, session, e, words, due, **_kw(owing))
         if got and got != "woken":
             return got
     try:
         if locks is not None:
             peer = peer_for_session(session)   # under the locks the wake kept, let go below whatever comes
         if locks is not None and peer is None:
-            return woken_unpushed(session, owing=owing)   # its inbox went between the wake's look and this one
+            return woken_unpushed(session, **_kw(owing))   # its inbox went between the wake's look and this one
         if not retry and (peer is None or peer.get("pid") is None
                           or (member.seat is None and latest_membership(_own_events(home, session)) == "retired")):
-            outcome = push_event(project, member, session, e, events, cursor, words=words, owing=owing)
+            outcome = push_event(project, member, session, e, events, cursor, words=words, **_kw(owing))
         else:
             # A retry's process may have ended since holder_owed saw it: no pid,
             # and plan() leaves the receipt owed for a later launch.
             plan = holder_module().plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None,
-                                        words=words, thread=_thread_of(owing))
-            outcome = holder_carry(plan, project, member, session, e, events, cursor, peer, owing)
+                                        words=words, **_th(owing))
+            outcome = holder_carry(plan, project, member, session, e, events, cursor, peer, **_kw(owing))
         if locks is not None:
             outcome = {"sent": "woken", "sent?": "woken?"}.get(outcome, outcome)
             if outcome == "recorded":
                 # A push after a wake that handed nothing over (no process answered by then) settles nothing:
                 # `recorded` is an end's or a stale hold's alone.
-                outcome = woken_unpushed(session, outcome, owing)
+                outcome = woken_unpushed(session, outcome, **_kw(owing))
             t = threads_module().current_record(session, fresh=True)
             if t is not None and t["opened"] == "spawned" and (outcome in PUSHED or outcome == HOLDER_AWAITING):
                 seat = reload_seat(t["thread"])
@@ -8140,8 +8146,8 @@ def holder_carry(plan, project, member, session, e, events, cursor, peer, owing=
             daemon_log("delivery: what is owed to %s waits: %s" % (session, plan.why))
         return "held:%s" % plan.why
     if plan.kind == "legacy":
-        return push_event(project, member, session, e, events, cursor, words=plan.words, owing=owing)
-    text = frame_of(project, e, events, session, cursor, _thread_of(owing)) if plan.body == "full" \
+        return push_event(project, member, session, e, events, cursor, words=plan.words, **_kw(owing))
+    text = frame_of(project, e, events, session, cursor, **_th(owing)) if plan.body == "full" \
         else holder_wake(project, e)
     try:
         # The receipt's verdict rides along: the reach gate tells a peer's push from a person's words by it.
@@ -8512,7 +8518,6 @@ def deliver_verdict(project, member, event, verdict, owing=None):
     if not session or verdict not in WORDS_VERDICTS:
         return None
     key = session if o is None else o.thread
-    thread = _thread_of(o)
     policy = sibling_module("sminos_policy")
     outcomes = sibling_module("sminos_outcomes")
     with flocked(project_path(project, "delivered", reader_key(key) + ".lock")):
@@ -8526,13 +8531,13 @@ def deliver_verdict(project, member, event, verdict, owing=None):
         try:
             if noted and noted[0] == e["seq"]:
                 outcome = noted[1]
-            elif (owed := holder_owed(project, member, session, e, events, cursor, owing=o)) \
+            elif (owed := holder_owed(project, member, session, e, events, cursor, **_kw(o))) \
                     not in (None, HOLDER_RETRY):
                 outcome = owed
             else:
-                held = WordsGate(project).held(e, session, key)
+                held = WordsGate(project).held(e, session, **({} if o is None else {"key": key}))
                 if held == "revoked":
-                    holder_module().settled(project.id, session, e, thread)
+                    holder_module().settled(project.id, session, e, **_th(o))
                     return outcomes.REFUSED_REVOKED
                 if held is not None:
                     return None
@@ -8552,13 +8557,13 @@ def deliver_verdict(project, member, event, verdict, owing=None):
                     outcome = "recorded" if e.get("wake") else hold_outcome(hold)
                 else:
                     outcome = holder_push(project, member, session, e, events, cursor, words=verdict == "words",
-                                          retry=owed is not None, owing=o)
+                                          retry=owed is not None, **_kw(o))
                     if o is not None and outcome == outcomes.REFUSED_REVOKED:
-                        holder_module().settled(project.id, session, e, thread)
+                        holder_module().settled(project.id, session, e, **_th(o))
                         return outcome
-            outcome = held_decided(project, session, e, outcome, owing=o)
-            if _conclude(project, member, session, e, outcome, outside, owing=o):
-                holder_module().settled(project.id, session, e, thread)
+            outcome = held_decided(project, session, e, outcome, **_kw(o))
+            if _conclude(project, member, session, e, outcome, outside, **_kw(o)):
+                holder_module().settled(project.id, session, e, **_th(o))
         except PassLost:
             return None
         return outcome
@@ -8784,7 +8789,6 @@ def deliver_reach(project, member, event, verdict, reason=None, owing=None):
     if not session or verdict not in REACH_VERDICTS:
         return None
     key = session if o is None else o.thread
-    thread = _thread_of(o)
     policy = sibling_module("sminos_policy")
     outcomes = sibling_module("sminos_outcomes")
     with flocked(project_path(project, "delivered", reader_key(key) + ".lock")):
@@ -8798,14 +8802,14 @@ def deliver_reach(project, member, event, verdict, reason=None, owing=None):
         try:
             if noted and noted[0] == e["seq"]:
                 outcome = noted[1]
-            elif (owed := holder_owed(project, member, session, e, events, cursor, owing=o)) \
+            elif (owed := holder_owed(project, member, session, e, events, cursor, **_kw(o))) \
                     not in (None, HOLDER_RETRY):
                 outcome = owed
             else:
                 gate = WordsGate(project)
-                held = gate.held(e, session, key)
+                held = gate.held(e, session, **({} if o is None else {"key": key}))
                 if held == "revoked":
-                    holder_module().settled(project.id, session, e, thread)
+                    holder_module().settled(project.id, session, e, **_th(o))
                     return outcomes.REFUSED_REVOKED
                 if held is not None:
                     return None
@@ -8826,14 +8830,14 @@ def deliver_reach(project, member, event, verdict, reason=None, owing=None):
                 else:
                     with reach_permit(project, session, e):
                         outcome = holder_push(project, member, session, e, events, cursor, words=gate.words(e),
-                                              retry=owed is not None, owing=o)
+                                              retry=owed is not None, **_kw(o))
                     if o is not None and outcome == outcomes.REFUSED_REVOKED:
-                        holder_module().settled(project.id, session, e, thread)
+                        holder_module().settled(project.id, session, e, **_th(o))
                         return outcome
                     gate.said(e, outcome)
-            outcome = held_decided(project, session, e, outcome, owing=o)
-            if _conclude(project, member, session, e, outcome, outside, owing=o):
-                holder_module().settled(project.id, session, e, thread)
+            outcome = held_decided(project, session, e, outcome, **_kw(o))
+            if _conclude(project, member, session, e, outcome, outside, **_kw(o)):
+                holder_module().settled(project.id, session, e, **_th(o))
         except PassLost:
             return None
         return outcome
@@ -8885,7 +8889,7 @@ def push_event(project, member, session, e, events, cursor, words=None, owing=No
     elif member.seat is None and latest_membership(_own_events(project, session)) == "retired":
         return "recorded"
     verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
-    return push_member(member, frame_of(project, e, events, session, cursor, _thread_of(owing)), not e.get("wake"),
+    return push_member(member, frame_of(project, e, events, session, cursor, **_th(owing)), not e.get("wake"),
                        session=session, event=e, project=project.id, **verdict)
 
 
