@@ -9028,11 +9028,14 @@ def _resolve_tag(project, t):
       read only when the one before has no such member — so a project named
       after a machine is read before that machine's project;
     - `@alias#short`: in every project known here (org_scope);
-    - `@alias`: the sender's project; a name no alias there answers to is
+    - `@alias`: the sender's project, and for a sender in channels the
+      rosters of those channels (_with_shared, CH2's M1: one answer is its
+      destination, several are refused); a name no alias there answers to is
       read as a short or a session id, across every project known here. A
-      bare name never reaches another project's alias: the board spawns the
-      same seat names in every repository, so `@executor` would otherwise
-      wake another repository's executor. The refusal names those members.
+      bare name never reaches another project's alias but through a channel
+      the sender is in: the board spawns the same seat names in every
+      repository, so `@executor` would otherwise wake another repository's
+      executor. The refusal names those members.
     - From no project (a machine not enrolled), every project known here."""
     raw, name, short = t["raw"], t["name"], t["short"]
     if t["project"]:
@@ -9058,7 +9061,8 @@ def _resolve_tag(project, t):
     if short:
         found = one_per_session(match_members(name, short, org_scope()))
         return one_member(raw, found, True) if found else no_member(raw, name, short, org_scope())
-    found = match_members(name, "", [project], ids=False)
+    rows = channels_module().shared_rows(os.environ.get("CLAUDE_CODE_SESSION_ID", ""))
+    found = _with_shared(name, project, rows) if rows else match_members(name, "", [project], ids=False)
     if found:
         return one_member(raw, found, False)
     found = one_per_session(match_members(name, "", org_scope(), alias=False))
@@ -9067,6 +9071,24 @@ def _resolve_tag(project, t):
     no_member(raw, name, short, [project],
               [(p, m) for p, m in match_members(name, "", org_scope(), ids=False) if p.id != project.id],
               ids=org_scope())
+
+
+def _with_shared(name, project, rows):
+    """A bare alias's candidates for a sender in channels (CH2's M1): the
+    project's members, and the rows of the rosters of the channels it is in
+    (`rows`, sminos_channels.shared_rows) in a project a tag may write into
+    (org_scope), each thread once, matched as match_members matches an
+    alias (a current alias before one held before)."""
+    open_ = {p.id for p in org_scope()}
+    hits, seen = [], set()
+    for p, m in [(project, m) for m in members(project)] + [(p, m) for p, m in rows if p.id in open_]:
+        key = m.thread or m.session
+        if m.state == "retired" or has_ended(m) or key in seen:
+            continue
+        seen.add(key)
+        if (how := alias_reach(m, name)):
+            hits.append((p, m, how))
+    return current_first(hits, name)
 
 
 def resolve_tags(project, text, raws=None):
@@ -12382,7 +12404,10 @@ def find_target(q):
     no member stands for (vacant, retired), so a seat and a seat-less session
     sharing an alias are refused as ambiguous rather than the seat being
     taken. A qualifier that is both a project and a group falls back to the
-    group when the project has no match."""
+    group when the project has no match. A qualifier that names a channel
+    (and no exact seat group of a name no project has) is looked up in the
+    channel's roster, and the thread found answers as in its own project
+    (_through_channel, CH2's M1)."""
     scope = caller_scope()
 
     def exact(kind, res):
@@ -12427,11 +12452,10 @@ def find_target(q):
         hit = group_seat(proj, name)
         if hit:
             return hit
-    if proj and names_channel(proj) is not None:
-        # No thread is found through a channel in this version (CH1, §8): a verb's fact goes to the thread's own
-        # project, which a lookup through a channel's roster would not name.
-        die("'%s' names a thread through a channel, which is not available in this version of sminos yet: name it "
-            "by its own name (<alias>#<short> or <short>)" % q, EXIT_UNKNOWN)
+    if proj and (channel := names_channel(proj)) is not None:
+        # A thread named through a channel (CH2's M1, §1) is answered as that thread found in its own project, so
+        # every verb writes where it wrote; the roster's sweep read (and reconciled) every project's view.
+        return _through_channel(q, channel, name, short, scope)
     tiers = project_tiers(proj) if proj else []
     if proj and not short and not tiers:
         return group_seat(proj, name) or ("none",)
@@ -12493,6 +12517,27 @@ def find_target(q):
     # alias the session held before the seat took it — binds that session.
     # An id binds in full or by its short (id_reach reads both), the seat's own id (its thread's) alone not.
     bound = short or any(name in (x, x[:8]) for x in (m.session,) + m.former + m.thread_sessions if x) \
+        or alias_reach(m, name) == "former"
+    return ("seat", m.seat, m.session if bound else "") if m.seat else ("member", project, m)
+
+
+def _through_channel(q, channel, name, short, scope):
+    """find_target's answer for `<channel>/<name>` (CH2's M1): the thread
+    the channel's roster reaches (sminos_channels.reach_in), ("seat", seat,
+    session) for a seat of this machine, else ("member", its own project,
+    member); exit 4, saying how to name it, for a thread that was in the
+    channel and is not now."""
+    chans = channels_module()
+    where, project, m = chans.reach_in(channel, name, short)
+    if where == "out":
+        own = "%s#%s or %s" % (m.alias, m.short, m.short) if m is not None else "<alias>#<short> or <short>"
+        die("'%s' names a thread through %s, which it is not in now: name it by its own name (%s)"
+            % (q, channel.name, own), EXIT_UNKNOWN)
+    note_former(name, short, project, m, scope)
+    # A name that bound the session, not the seat (its short, an id that is not the thread's, an alias the session
+    # held before), binds that session, as the lookup below binds one.
+    thread = (chans.thread_of_row(project, m) or ("",))[0]
+    bound = short or chans.id_form(name) and not (thread and thread.startswith(name)) \
         or alias_reach(m, name) == "former"
     return ("seat", m.seat, m.session if bound else "") if m.seat else ("member", project, m)
 

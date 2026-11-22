@@ -10,8 +10,9 @@
 # `channel add`, and a `.smns` naming a channel's id files its directory in
 # the machine's project, saying why (A8's halves); a verb that writes a fact
 # about a thread (`charge`, `status`, `retire`) writes it to the thread's own
-# project however the thread is named, and one that names it through a
-# channel is refused (A11), again with the thread in a channel. The verbs
+# project however the thread is named (A11), through a channel it is in
+# included (CH2's M1), and one that names it through a channel it is not in
+# is refused, naming where the name answers. The verbs
 # `channel create`, `add` and `remove` (M4): refused without the capability,
 # every log unchanged; with it, a thread creating a channel with itself,
 # adding and removing another by a request carried out before the command
@@ -312,17 +313,32 @@ for name in "$SHORT" "$S1" "worker#$SHORT"; do
 done
 assert_equals "$(kinds_of "$APP" "$S1" | tr ' ' '\n' | grep -c '^in-charge$')" 3 "three in-charge lines in its project's log"
 assert_equals "$(kinds_of "$APP" "$S1" | tr ' ' '\n' | grep -c '^status$')" 3 "three status lines there"
-# `who --thread` (EN.G1) names its thread through find_target too, so it is refused as every verb is.
+# Named through a channel it is in (CH2's M1), a verb finds it in the channel's roster and writes where it writes
+# today, in its own project; `who --thread` (EN.G1) names its thread through find_target too. Through a channel it
+# is not in, no member answers, and the refusal names where the name does.
+TWO_BEFORE="$(find "$SMINOS_HOME/projects/$TWO" -type f -name '*.jsonl' -exec shasum {} + | LC_ALL=C sort)"
+for q in desk-two "$TWO" "desk-two#${TWO:0:8}"; do
+  run_in "$APPDIR" "$SMINOS" charge "$q/worker" "minding via $q"
+  assert_rc 0 "$RC" "charge names the thread through $q"
+  run_in "$APPDIR" "$SMINOS" status "$q/worker" "now via $q"
+  assert_rc 0 "$RC" "status names the thread through $q"
+  run_in "$APPDIR" "$SMINOS" who --thread "$q/worker"
+  assert_rc 0 "$RC" "who --thread names it through $q"
+done
+assert_equals "$(kinds_of "$APP" "$S1" | tr ' ' '\n' | grep -c '^in-charge$')" 6 "three more in-charge lines in its project's log"
+assert_equals "$(kinds_of "$APP" "$S1" | tr ' ' '\n' | grep -c '^status$')" 6 "three more status lines there"
 for verb in "who --thread desk-integration/worker" "charge desk-integration/worker x" "status desk-integration/worker x" \
     "retire desk-integration/worker"; do
   # shellcheck disable=SC2086
   run_in "$APPDIR" "$SMINOS" $verb
   assert_rc 4 "$RC" "$verb is refused, exit 4"
-  assert_contains "$OUT" "'desk-integration/worker' names a thread through a channel, which is not available in this version of sminos yet: name it by its own name (<alias>#<short> or <short>)" "saying how to name it ($verb)"
+  assert_contains "$OUT" "no member worker in channel desk-integration; elsewhere: app/worker#$SHORT" "naming where it answers ($verb)"
 done
-run_in "$APPDIR" "$SMINOS" retire "worker#$SHORT"
-assert_rc 0 "$RC" "retire names it by alias#short"
+run_in "$APPDIR" "$SMINOS" retire "desk-two/worker"
+assert_rc 0 "$RC" "retire names it through the channel"
 assert_contains "$(kinds_of "$APP" "$S1")" "retired" "its retirement is in its own project's log"
+assert_equals "$(find "$SMINOS_HOME/projects/$TWO" -type f -name '*.jsonl' -exec shasum {} + | LC_ALL=C sort)" \
+  "$TWO_BEFORE" "the channel's log files byte for byte as they were"
 assert_equals "$(channel_files)" 0 "nothing was ever written in the channel's log"
 assert_equals "$(log_kinds "$TWO")" "channel-env channel-request" "nor, with the thread in a channel, anything but requests and the pool's events in that one's"
 

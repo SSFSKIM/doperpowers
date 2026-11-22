@@ -609,6 +609,9 @@ run_channels() {
   if python3 -B "$SCRIPT_DIR/test_channels_roster.py"; then
     pass "the roster, the listing and the pool: list's sections, --channel, answers, channel show and env (test_channels_roster.py)"
   else fail "the roster, the listing and the pool: list's sections, --channel, answers, channel show and env (test_channels_roster.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_names.py"; then
+    pass "names through a channel: a verb's target, a bare alias through a shared channel, every row of the id rule (test_channels_names.py)"
+  else fail "names through a channel: a verb's target, a bare alias through a shared channel, every row of the id rule (test_channels_names.py)"; fi
   echo
   if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; else
     fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; fi

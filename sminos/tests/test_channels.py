@@ -958,7 +958,7 @@ class Doors(Machine):
         self.assertTrue(sminos.is_channel_id(other))
         for args, code, words in ((("say", "--in", other, "hi"), 1, "%s is a channel" % other),
                                   (("say", "@%s/worker hi" % other), 1, "%s is a channel" % other),
-                                  (("charge", "%s/worker" % other, "x"), 4, "names a thread through a channel")):
+                                  (("charge", "%s/worker" % other, "x"), 4, "no member worker in channel %s" % other)):
             rc, out, err = self.cli(*args, cwd=self.root)
             self.assertEqual(rc, code, (args, err))
             self.assertIn(words, err, args)

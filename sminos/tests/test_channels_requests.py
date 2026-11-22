@@ -1449,7 +1449,7 @@ class Frontier2(Requests):
 
     def test_c4_an_exact_seat_group_still_resolves_beside_a_channel_of_its_name(self):
         """`g/worker`, where `g` is a seat group and no project: a channel named `g` arriving does not make the
-        seat unreachable by that exact name; what is only the channel's is still refused."""
+        seat unreachable by that exact name; what is only the channel's is looked up in its roster."""
         tid, sid, _ = self.seat("worker")
         sminos.register_if_absent(sminos.make_project(channels.mint_channel_id(), "g", "", "", HUB))
         sminos.forget_caches()
@@ -1460,7 +1460,7 @@ class Frontier2(Requests):
         with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as out:
             sminos.find_target("g/nobody")
         self.assertEqual(out.exception.code, sminos.EXIT_UNKNOWN)
-        self.assertIn("names a thread through a channel", err.getvalue())
+        self.assertIn("no member nobody in channel g", err.getvalue(), "looked up in the channel's roster (CH2's M1)")
 
     def test_d4_an_exact_seat_group_resolves_beside_two_channels_of_its_name(self):
         """The holder's reading, D4: two channels named `g` and no project: the name is ambiguous among channels,
