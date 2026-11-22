@@ -213,7 +213,7 @@ def _expired(ctx, entry, bounded):
         left = action.reason == "departed" and getattr(answer, "left_desk", False)
         return _delete(ctx, entry, action.reason, left, bounded=bounded)
     if action.kind == "label":
-        entry.client.set_labels(vm["id"], action.labels, merge=True, drop=action.drop)
+        ctx.merge_labels(entry, action.labels, drop=action.drop)
         tell(ctx, bounded, f"{vm['name']}: {action.reason}")
     return False
 

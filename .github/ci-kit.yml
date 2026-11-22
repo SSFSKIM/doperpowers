@@ -67,6 +67,14 @@ gates:
     timeout: 20
     paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
+  # The other direction of the same pair: sminos/tests/test_on.py imports devcloud's `vm` parser from this tree
+  # (devcloud/driver/cli.py). A devcloud change alone runs that one file (about 15 s), not the 10-minute part it
+  # belongs to, which every sminos change runs.
+  - name: sminos-on-devcloud
+    run: python3 -B sminos/tests/test_on.py
+    timeout: 5
+    paths: ["devcloud/driver/**"]
+
   # The declared channels' suites (CH1; SMINOS_PART=channels, disjoint from the two above). Five minutes while CH1 is
   # built, the part growing at each milestone; CH1's last milestone sets it to about twice the whole part's run.
   - name: sminos-channels
@@ -197,7 +205,9 @@ gates:
       done
       DEVCLOUD_PART=unit bash devcloud/tests/run.sh
     timeout: 15
-    paths: ["devcloud/**", "devenv/**", ".github/ci-kit.yml", ".github/workflows/**"]
+    # sminos's scripts too: test_driver_owner.py runs this tree's sminos CLI for `who --thread`, so a change of its
+    # shape shows on the pull request that makes it.
+    paths: ["devcloud/**", "devenv/**", "sminos/skills/sminos/scripts/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: devcloud-image
     build_cache: gha

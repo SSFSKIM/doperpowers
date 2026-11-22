@@ -197,7 +197,17 @@ class DriverBase(unittest.TestCase):
         self.desk_output = None         # else `sminos machines`' whole stdout; None for neither: no sminos
         self.desk_timeouts = []
         self.out, self.err = io.StringIO(), io.StringIO()
+        self.threads = {}               # a name -> `sminos who --thread`'s answer (thread_answer), for `vm owner`
         self.ctx = self.make_ctx()
+
+    def thread(self, name):
+        """`sminos who --thread` as Context.thread answers it: a name in
+        self.threads, else sminos's refusal of a name nothing answers."""
+        if name not in self.threads:
+            from driver.errors import DriverError
+            raise DriverError(1, f"owner: sminos names no thread for {name} (sminos: no seat or member matching "
+                                 f"'{name}'): nothing was changed")
+        return dict(self.threads[name])
 
     def sminos_machines(self, timeout):
         """`sminos machines` as the CLI prints it (see test_driver_desk)."""
@@ -222,7 +232,7 @@ class DriverBase(unittest.TestCase):
                         tailnet=lambda: list(self.tailnet_nodes), sminos_machines=self.sminos_machines,
                         creator=lambda: ("@abcd1234", "abcd1234"), env={"PATH": os.environ["PATH"]},
                         key_pushed=lambda: True, host_file=lambda project: (None, "no devenv/host.toml here"),
-                        tailnet_api=self.tailnet_api)
+                        tailnet_api=self.tailnet_api, thread=self.thread)
         defaults.update(kw)
         return context.Context(**defaults)
 
@@ -248,6 +258,21 @@ class DriverBase(unittest.TestCase):
 
     def ops(self):
         return [c["op"] for c in self.state()["calls"]]
+
+
+SESSION = "e5f6a7b8-1c2d-4e3f-8a9b-0c1d2e3f4a5b"
+
+
+def thread_answer(**over):
+    """`sminos who --thread`'s answer (EN.G1's plan, §4) for a spawned
+    thread of this machine, live, its project named by an invented id."""
+    answer = {"thread": "9f8e7d6c-5b4a-4321-8fed-cba987654321", "session": SESSION, "short": SESSION[:8],
+              "alias": "builder", "opened": "spawned", "state": "idle", "ended": False, "local": True,
+              "machine": "testmac", "project": {"id": "p-7c1e9a", "name": "example"}}
+    answer.update(over)
+    if "session" in over and "short" not in over:
+        answer["short"] = over["session"][:8]
+    return answer
 
 
 def vm_labels(expires=None, lifetime="ttl", confirmed=False, **extra):

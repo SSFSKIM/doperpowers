@@ -76,6 +76,13 @@ class CliTest(DriverBase):
         self.assertEqual(self.remote.calls[-1]["user"], "root")
         self.assertEqual(self.remote.calls[-1]["command"], "")
 
+    def test_sminos_reads_no_vm_named_for_a_name_no_account_holds(self):
+        """sminos's reader (S/sminos_on.py, EN.G1's plan §7 row 24): the opening
+        `no VM named` of Context.find's refusal, read only to add a note."""
+        self.assertEqual(self.main("ssh", "dc-none-0001", "--", "sminos", "spawn", "w", "-"), 1)
+        self.assertTrue(self.err.getvalue().startswith("devcloud vm: no VM named dc-none-0001 in any usable account"),
+                        self.err.getvalue())
+
     def test_image_ls_and_build_reach_the_images(self):
         self.assertEqual(self.main("image", "ls"), 0)
         self.assertIn("ACCOUNT", self.out.getvalue())

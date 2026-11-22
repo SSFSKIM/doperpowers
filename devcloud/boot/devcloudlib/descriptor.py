@@ -59,7 +59,7 @@ class Descriptor:
     projects: tuple
     mirror_dir: str | None
     expires: int | None = None       # the lease end, Unix seconds; None: no lease (keep)
-    creator: str | None = None       # the sminos tag the lease warning goes to
+    creator: str | None = None       # the sminos tag of the thread that owns the host: its notices go to it
     inbound: str = "open"            # tailnet: the public port closes once the tailnet is up
     adopted: bool = False            # the lease end, and down, run release
     spot: bool = False               # a spot VM: the reclaim unit is enabled
@@ -69,7 +69,7 @@ class Descriptor:
     created: int | None = None
     hourly_price: float | None = None
     currency: str | None = None
-    creator_project: str | None = None
+    creator_project: str | None = None   # that thread's project, by name or id: where a notice goes on to
     ignored: tuple = ()              # the RETIRED keys it named, ignored
 
     @property

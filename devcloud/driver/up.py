@@ -9,6 +9,7 @@ provider's Ubuntu by the slow path."""
 
 import dataclasses
 import datetime
+import re
 
 from devcloudlib import status
 
@@ -19,6 +20,7 @@ from .profile import duration, format_duration
 BOOT_WAIT = 15 * 60
 SSH_WAIT = 5 * 60
 POLL = 10
+SHORT = re.compile(r"[0-9a-f]{8}")
 
 
 @dataclasses.dataclass
@@ -120,12 +122,41 @@ def describe(r):
             f"{'  spot' if r.spot else ''}  price {r.price}")
 
 
+def asked(ctx, opts):
+    """`--enroll` and `--expect-creator` (EN.G1's plan, §9), before the
+    reaper's run and any call to a provider, under --dry-run too: the
+    projects the host is made with (the MAWS project appended where
+    enrollment needs it), or a DriverError with nothing made."""
+    projects = list(opts.project or [])
+    expected = opts.expect_creator
+    if expected is not None and not SHORT.fullmatch(expected):
+        raise DriverError(USAGE, f"--expect-creator takes a session's short id (eight hex digits): {expected}")
+    if opts.enroll and not compose.provisions(ctx.profile, projects):
+        if not ctx.profile.maws_secret:
+            raise DriverError(REFUSED, "--enroll: the profile's [desk] names no provisioning (provisioning_secret_v2 "
+                                       "with delegation_id), so a host it makes cannot join the org: nothing was made")
+        # After those named, so the first project's host.toml still governs.
+        projects.append(compose.MAWS_PROJECT)
+        ctx.say("enroll    the MAWS project is added: its setup installs the endpoint this host enrolls with")
+    if expected is not None:
+        _, short = ctx.creator()
+        if short is None:
+            raise DriverError(FAILED, f"--expect-creator: the caller expects @{expected} as this host's creator, and "
+                                      "devcloud read no creating session here (sminos who --session gave it no "
+                                      "address it reads): nothing was made")
+        if short != expected:
+            raise DriverError(FAILED, f"--expect-creator: the caller expects @{expected} as this host's creator, and "
+                                      f"devcloud read @{short}: nothing was made")
+    return projects
+
+
 def run(ctx, opts):
     begun = ctx.clock()
     label = names.check_label(opts.label or "vm")
-    provisions = compose.provisions(ctx.profile, list(opts.project or []))
+    projects = asked(ctx, opts)
+    provisions = compose.provisions(ctx.profile, projects)
     # A project's file is checked before anything runs: a bad one is exit 2 with nothing done.
-    wanted = hostfile.governing(ctx, list(opts.project or []))
+    wanted = hostfile.governing(ctx, projects)
     if wanted is not None:
         ctx.say(f"host.toml of {wanted.project}, read from {wanted.source}")
     if not opts.dry_run:
@@ -153,7 +184,7 @@ def run(ctx, opts):
     if metadata_seed and not r.client.has("user_data"):
         raise DriverError(REFUSED, f"provider {r.client.name} has metadata_seed without user_data: nothing could "
                                    "start its first boot")
-    desc = compose.descriptor(name=name, profile=ctx.profile, projects=list(opts.project or []), expires=expires,
+    desc = compose.descriptor(name=name, profile=ctx.profile, projects=projects, expires=expires,
                               creator=tag, spot=r.spot, seed="gce-metadata" if metadata_seed else "file",
                               created=int(started), hourly_price=r.type.get("hourly_price"),
                               currency=r.type.get("currency"), creator_project=ctx.creator_project())
@@ -194,10 +225,16 @@ def run(ctx, opts):
         hostctl.start_boot(ctx, address, host.alias)
     else:
         address = None
-    booted = wait_boot(ctx, host, address, started + BOOT_WAIT)
+    leased = expires is not None
+    booted = wait_boot(ctx, host, address, started + BOOT_WAIT, leased)
     maws = next((s for s in booted.get("steps", []) if s["name"] == "maws"), None)
     if maws is not None and maws["state"] == "deferred":
         ctx.say(f"maws      deferred: {maws['detail']}")
+    if opts.enroll and (maws is None or maws["state"] not in ("ok", "deferred")):
+        # What --enroll asked for will not happen: the host retries only a deferred provisioning.
+        state = f"maws {maws['state']}: {maws['detail']}" if maws is not None else "no maws step"
+        raise DriverError(FAILED, f"--enroll: the boot of {name} skipped the provisioning it enrolls with ({state}), "
+                                  f"so it will not join the org; {kept(name, leased)}")
     elapsed = int(ctx.clock() - begun)
     ctx.say(f"{name}  ready in {elapsed // 60}m{elapsed % 60:02d}s")
     ctx.say(f"  provider  {r.client.name}  location {r.location}  type {r.type['type']}")
@@ -227,13 +264,24 @@ def recount(ctx, entry, r):
     newest = max(counted, key=lambda vm: (vm["created"], vm["id"]))
     if newest["id"] != entry.vm["id"] or newest["name"] != entry.vm["name"]:
         return
-    ctx.delete(entry)
-    raise DriverError(CAP, f"over the count cap ({len(counted)} unconfirmed alive after the create, cap {cap}: another "
-                           f"driver created one meanwhile); deleted {entry.vm['name']}: ask the person, then pass "
-                           "--confirmed")
+    over = (f"over the count cap ({len(counted)} unconfirmed alive after the create, cap {cap}: another driver "
+            "created one meanwhile)")
+    name = entry.vm["name"]
+    if not ctx.delete(entry):
+        # Its delete was refused (the ownership gate): it stays, and is never said deleted.
+        raise DriverError(CAP, f"{over}; {name} could not be deleted, so {kept(name, r.lifetime == 'ttl')}, over the "
+                               "cap: ask the person whether it stays")
+    raise DriverError(CAP, f"{over}; deleted {name}: ask the person, then pass --confirmed")
 
 
-def wait_boot(ctx, host, address, deadline):
+def kept(name, leased):
+    """What a failure after the create says of the VM it leaves: a lease
+    bounds it only where it has one (a VM made with --keep has none)."""
+    return f"the VM {name} is kept for inspection, " + (
+        "its lease bounds it" if leased else f"with no lease: devcloud vm down {name} removes it")
+
+
+def wait_boot(ctx, host, address, deadline, leased=True):
     """§3 step 8: over the public address until the tailnet attach step is
     ok, then over the tailnet; a failed step prints the status and exits 1."""
     attached = address is None
@@ -254,7 +302,7 @@ def wait_boot(ctx, host, address, deadline):
                 if failed:
                     ctx.warn(status.render(data).rstrip())
                     raise DriverError(FAILED, f"the boot failed at step {failed[0]['name']} ({failed[0]['detail']}); "
-                                              f"the VM {host.name} is kept for inspection, its lease bounds it")
+                                              f"{kept(host.name, leased)}")
                 return data
             if unit == "failed":
                 raise DriverError(FAILED, f"devcloud-boot.service failed on {host.name} with no step recorded as "
@@ -263,6 +311,6 @@ def wait_boot(ctx, host, address, deadline):
             where = ("" if answer is not None or address is not None else
                      f"; it never answered over the tailnet, so its first boot may have failed before the boot "
                      f"started: see {compose.FIRST_BOOT_LOG} on it, through the provider's serial console")
-            raise DriverError(FAILED, f"the boot of {host.name} did not finish within 15 minutes{where}; the VM is "
-                                      "kept for inspection, its lease bounds it")
+            raise DriverError(FAILED, f"the boot of {host.name} did not finish within 15 minutes{where}; "
+                                      f"{kept(host.name, leased)}")
         ctx.sleep(POLL)

@@ -28,8 +28,8 @@ record aside or deletes it. Any process may finish an entry, any number of
 times; nothing else changes a record while its entry is open.
 
 Which hosts a thread owns is devcloud's answer, never a copy kept here
-(contract X9; M5): owned_by() is the one function that runs devcloud, and
-owned_vms() asks it about a thread's sessions.
+(contract X9; M5): owned_by() is the one function that asks devcloud what a
+thread owns, and owned_vms() asks it about a thread's sessions.
 """
 import contextlib
 import copy
@@ -2319,7 +2319,7 @@ def shorts_of(sessions):
 
 def owned_by(shorts):
     """Which hosts name these short ids, by devcloud's own word (X9): the
-    one function that runs devcloud. `devcloud vm owned-by <short>...`, the
+    one function that asks devcloud what a thread owns. `devcloud vm owned-by <short>...`, the
     CLI found by find_devcloud, bounded by devcloud_timeout() (then
     stop_tree), with the directory of sminos's own interpreter first on its
     PATH (the driver needs a Python 3.11, and finds a provider's tool on
@@ -2525,23 +2525,24 @@ def unknown_words(entry):
 
 def owned_words(owned):
     """What an answer that holds a thread says (owned or unknown): the hosts
-    and the way on, and what could not be asked."""
+    it owns, the two ways on (down, or the handover to a thread that stays),
+    and what could not be asked (EN.G1's plan, Interfaces §6). A thread can
+    own a host it did not make, so the words say "owns", never "made"."""
     parts = []
     if owned.vms:
-        # Whose call taking a host down is, said where it is read (T1's M6, evaluated): "take each down first"
-        # had sessions asked only to retire delete the host themselves.
-        kinds = {is_adopted(v) for v in owned.vms}
-        made, act = (("made or adopted", "deleting or releasing") if len(kinds) == 2 else
-                     ("adopted", "releasing") if True in kinds else ("made", "deleting"))
-        parts.append("it %s hosts that still exist: %s; %s a host is its owner's call: once nothing on it is "
-                     "needed, %s, and then it can be retired" % (
-                         made, ", ".join(host_words(v) for v in owned.vms), act,
+        # Whose call a host's end is, said where it is read (T1's M6, evaluated): "take each down first" had
+        # sessions asked only to retire delete the host themselves.
+        names = [shlex.quote(str(v.get("name"))) for v in owned.vms]
+        parts.append("it owns hosts that still exist: %s; what becomes of a host is its owner's call: once nothing "
+                     "on it is needed, %s; or hand it to a thread of this machine that stays, %s; then it can be "
+                     "retired" % (
+                         ", ".join(host_words(v) for v in owned.vms),
                          "; ".join("`devcloud vm down %s` %s" % (
-                             shlex.quote(str(v.get("name"))),
-                             "releases it and leaves it running" if is_adopted(v) else "deletes it")
-                             for v in owned.vms)))
+                             name, "releases it and leaves it running" if is_adopted(v) else "deletes it")
+                             for name, v in zip(names, owned.vms)),
+                         ", ".join("`devcloud vm owner %s <thread>`" % name for name in names)))
     if owned.unknown:
-        parts.append("%sdevcloud could not tell whether it made a host that still exists: %s" % (
+        parts.append("%sdevcloud could not tell whether it owns a host that still exists: %s" % (
             "and " if parts else "", "; ".join(unknown_words(u) for u in owned.unknown)))
     return "; ".join(parts)
 

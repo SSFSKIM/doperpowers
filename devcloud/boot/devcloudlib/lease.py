@@ -1,6 +1,6 @@
 """The lease on a host (Design §4.1): the lifecycle lock, `devcloud lease set`,
-the lease service's run, the creator's warning, and the scan for unpushed
-work it names.
+the lease service's run, the warning to the thread that owns the host, and
+the scan for unpushed work it names.
 
 The descriptor's `DEVCLOUD_EXPIRES` is the lease's authority. The lifecycle
 lock, `/run/devcloud/lifecycle.lock`, serializes every lease write, the lease
@@ -304,7 +304,9 @@ def warning_text(name, expires, found):
 
 
 def warn_creator(user, d, call=proc.call, say=print, scan=None):
-    """The lease end and unpushed work, through the idle notice's delivery."""
+    """The lease end and unpushed work, through the idle notice's delivery:
+    to the thread that owns the host (the descriptor's tag), marked as this
+    host's notice, then on to that thread's project."""
     found = (scan or (lambda: unpushed(user)))()
     notices.deliver(user, d, warning_text(d.name, d.expires, found), call=call, say=say)
 

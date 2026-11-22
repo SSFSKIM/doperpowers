@@ -180,19 +180,70 @@ class DeliveryTest(IdleBase):
         return calls, said
 
     def test_live_creator_only(self):
-        calls, _ = self.deliver([0])
-        self.assertEqual(calls[0][0][-2:], ["say", "@abcd1234 idle notice"])
+        calls, said = self.deliver([0])
+        self.assertEqual(calls[0][0][-5:], ["say", "--notice", "devcloud", "--exit-held", "@abcd1234 idle notice"])
         self.assertEqual(calls[0][1]["user"], self.user)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 1, "exit 0 ends the delivery")
+        self.assertEqual(said, ["devcloud notice: sent: idle notice"])
 
     def test_ended_creator_falls_back_to_project_and_empty_project_to_durable_note(self):
         calls, _ = self.deliver([4, 4, 0])
-        self.assertEqual(calls[1][0][-4:], ["say", "--project", "example", "idle notice"])
-        self.assertEqual(calls[2][0][-4:], ["say", "--in", "example", "idle notice"])
+        self.assertEqual(calls[1][0][-6:], ["say", "--notice", "devcloud", "--project", "example", "idle notice"])
+        self.assertEqual(calls[2][0][-6:], ["say", "--notice", "devcloud", "--in", "example", "idle notice"])
+        self.assertEqual(len(calls), 3)
+
+    def test_a_held_owner_goes_on_as_any_other_failure_of_the_first_step(self):
+        calls, said = self.deliver([3, 4, 0])
+        self.assertEqual([c[0][5:-1] for c in calls], [["--exit-held"], ["--project", "example"],
+                                                       ["--in", "example"]])
+        self.assertEqual(said[0], "devcloud notice: recorded for the thread that owns this host, which is not woken "
+                                  "with it now; going on to its project")
+        calls, _ = self.deliver([3, 0])
+        self.assertEqual(len(calls), 2, "a live member heard it: no note")
+
+    def test_a_step_its_sminos_refuses_as_usage_runs_again_without_the_flags(self):
+        calls, said = self.deliver([2, 0])
+        self.assertEqual(calls[1][0][-2:], ["say", "@abcd1234 idle notice"], "today's call")
+        self.assertEqual(len(calls), 2, "the second exit decides")
+        self.assertIn("devcloud notice: this host's sminos does not know the notice flags; sent without them", said)
+        calls, _ = self.deliver([2, 4, 2, 4, 2, 0])
+        self.assertEqual([c[0][3:] for c in calls], [
+            ["--notice", "devcloud", "--exit-held", "@abcd1234 idle notice"], ["@abcd1234 idle notice"],
+            ["--notice", "devcloud", "--project", "example", "idle notice"], ["--project", "example", "idle notice"],
+            ["--notice", "devcloud", "--in", "example", "idle notice"], ["--in", "example", "idle notice"]])
+        calls, said = self.deliver([2, 2, 2, 1, 0])
+        self.assertEqual(calls[-1][0], ["wall", "devcloud: idle notice"], "a second refusal is a failure")
+
+    def test_a_general_failure_is_a_step_that_failed_and_never_a_reason_to_send_unmarked(self):
+        """sminos refuses `say --notice` with exit 1 under a writer its notice grammar does not mark (a host
+        whose own name is outside it): read here as a step that failed, so the delivery goes on marked and
+        ends in the journal and wall, and nothing is sent without the flags, which would be a person's words."""
+        calls, said = self.deliver([1, 1, 0])
+        self.assertEqual([c[0][3:5] for c in calls[:2]], [["--notice", "devcloud"], ["--notice", "devcloud"]])
+        self.assertEqual(calls[2][0], ["wall", "devcloud: idle notice"])
+        self.assertEqual(len(calls), 3, "no step run again without the flags")
+        self.assertNotIn("devcloud notice: this host's sminos does not know the notice flags; sent without them",
+                         said)
+        self.assertEqual(said[:2], ["devcloud notice: delivery failed (exit 1): refused"] * 2)
 
     def test_no_creator_starts_at_project(self):
         calls, _ = self.deliver([0], creator=None)
-        self.assertEqual(calls[0][0][-4:], ["say", "--project", "example", "idle notice"])
+        self.assertEqual(calls[0][0][-6:], ["say", "--notice", "devcloud", "--project", "example", "idle notice"])
+
+    def test_no_project_ends_in_journal_and_wall_after_the_first_step(self):
+        calls, said = self.deliver([3, 0], project=None)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][0], ["wall", "devcloud: idle notice"])
+        self.assertEqual(said[-1], "devcloud notice: idle notice")
+
+    def test_a_host_that_is_not_enrolled_runs_no_say(self):
+        from devcloudlib import notices
+        calls = []
+        d = dataclasses.replace(self.d, creator="@abcd1234", creator_project="example")
+        with mock.patch.object(notices.sminos_host, "cli", return_value=pathlib.Path("/opt/sminos.py")):
+            notices.deliver(self.user, d, "idle notice", call=lambda argv, **kw: calls.append(argv) or (0, "", ""),
+                            say=lambda text: None)
+        self.assertEqual(calls, [["wall", "devcloud: idle notice"]])
 
     def test_failed_delivery_ends_in_journal_and_wall(self):
         calls, said = self.deliver([4, 1, 0])

@@ -60,7 +60,7 @@ failures = []
 
 
 def cleanup():
-    for container in (HOST, FX, VM, SEATED, ADOPTED, SPOT):
+    for container in (HOST, FX, VM, SEATED, ADOPTED, SPOT, OWNED):
         subprocess.run(["docker", "rm", "-f", container], capture_output=True)
     subprocess.run(["docker", "rmi", "-f", SYSTEMD_IMAGE, PLANTED, BROKEN_DPKG], capture_output=True)
     subprocess.run(["docker", "network", "rm", NET], capture_output=True)
@@ -987,6 +987,7 @@ def sandbox_with_identity():
 ADOPTED = f"{TAG}-adopted"
 SEATED = f"{TAG}-seated"
 SPOT = f"{TAG}-spot"
+OWNED = f"{TAG}-owned"
 MARKETPLACE_COPY = "/var/lib/devcloud/marketplaces/doperpowers"
 
 
@@ -1081,6 +1082,38 @@ def release_through_the_lease_service():
     check(out(ADOPTED, f"cat {HOME}/notes.txt").strip() == "my own notes", "the person's file went")
     check(out(ADOPTED, f"id -u {USER}").strip() == UID, "the user went")
     docker("rm", "-f", ADOPTED)
+
+
+@case("a host takes a new owner from the program devcloud vm owner sends, as its own parser reads it (EN.G1's §5)", "systemd")
+def owner_program():
+    desc = descriptor("dc-own-3c4d", extra='DEVCLOUD_CREATOR="@abcd1234"\nDEVCLOUD_CREATOR_PROJECT=example\n')
+    desc.write_text(desc.read_text().replace("KIND=container", "KIND=vm").replace("ROLE=sandbox", "ROLE=persistent")
+                    .replace("TAILSCALE=host", "TAILSCALE=none"))
+    docker("create", "--name", OWNED, "--hostname", "dc-own-3c4d", "--network", NET, "--privileged",
+           "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw", "--tmpfs", "/run", "--tmpfs", "/run/lock",
+           SYSTEMD_IMAGE)
+    docker("cp", str(desc), f"{OWNED}:/etc/devcloud/boot.env")
+    docker("start", OWNED)
+    end = time.monotonic() + 300
+    while (state := sh(OWNED, "systemctl is-active devcloud-boot.service", check_rc=False).stdout.strip()) != "active":
+        check(state != "failed" and time.monotonic() < end, f"devcloud-boot.service is {state}: " + sh(
+            OWNED, "cat /var/lib/devcloud/status.json; journalctl -u devcloud-boot --no-pager -n 40",
+            check_rc=False).stdout[-2500:])
+        time.sleep(2)
+    # As the driver sends it: the program on standard input, as root (the stand-ins' plain-http config repository
+    # is what DEVCLOUD_ALLOW_HTTP admits, as the host's own CLI is told).
+    program = (REPO / "devcloud" / "driver" / "owner_host.py").read_text()
+    want = {"tag": "@e5f6a7b8", "project": "p-7c1e9a", "takes_project": True}
+    for mode in (["write", "@e5f6a7b8", "p-7c1e9a"], ["read"]):
+        done = docker("exec", "-i", OWNED, "env", "DEVCLOUD_ALLOW_HTTP=1", "python3", "-P", "-", *mode,
+                      input=program, check_rc=False)
+        check(done.returncode == 0, f"the owner program's {mode[0]} exited {done.returncode}: {done.stderr[-800:]}")
+        check(json.loads(done.stdout.strip().splitlines()[-1]) == want, f"its {mode[0]} answered {done.stdout!r}")
+    held = out(OWNED, "grep '^DEVCLOUD_CREATOR' /etc/devcloud/boot.env").splitlines()
+    check(held == ['DEVCLOUD_CREATOR="@e5f6a7b8"', 'DEVCLOUD_CREATOR_PROJECT="p-7c1e9a"'], f"the descriptor holds {held}")
+    tick = sh(OWNED, f"{STAND_INS} devcloud lease tick", check_rc=False)
+    check(tick.returncode == 0, f"devcloud lease tick exited {tick.returncode} after the handover: {tick.stderr[-800:]}")
+    docker("rm", "-f", OWNED)
 
 
 @case("plugins seated outside the guard: the bridge runs and the guard scrubs from the first session (the driver's §10)", "one-shot")

@@ -607,10 +607,7 @@ def paint(state, screen):
                 cur = min(state["chat_cursor"], len(messages) - 1)
                 top = max(0, min(cur - rows + 1, len(messages) - rows)) if cur >= rows else 0
                 for i, message in enumerate(messages[top:top + rows]):
-                    text = " ".join(str(message.get("text", "")).split())
-                    line = "%-15s %-19s %-14s %s" % (
-                        sminos.event_ref(message), str(message.get("ts", ""))[:19],
-                        str(message.get("from", ""))[:14], text)
+                    line = chat_row(message)
                     attr = st.get("sel", 0) if (state["panel_focus"] and top + i == cur) else 0
                     screen.put(r["panel_y"] + 1 + i, 1, chart.fit(line, w - 2, collapse=False), attr)
         else:
@@ -634,12 +631,25 @@ def paint(state, screen):
         paint_overlay(state, screen)
 
 
+def sender_of(message):
+    """Who a chat event is shown from: a machine's notice from its
+    `<program>@<machine>` (sminos.notice_sender, X8), else its `from`."""
+    return sminos.notice_sender(message) if sminos.notice_of(message) else str(message.get("from", ""))
+
+
+def chat_row(message):
+    """A chat event's line in the chat panel: its ref, time, sender and text on one line."""
+    text = " ".join(str(message.get("text", "")).split())
+    return "%-15s %-19s %-14s %s" % (sminos.event_ref(message), str(message.get("ts", ""))[:19],
+                                     sender_of(message)[:14], text)
+
+
 def overlay_lines(state, inner_w):
     ov = state["overlay"]
     if ov == "help":
         return HELP_LINES
     _, p = ov
-    head = "%s · %s → %s · %s" % (sminos.event_ref(p), p.get("from", ""), sminos.target_label(p), p.get("ts", ""))
+    head = "%s · %s → %s · %s" % (sminos.event_ref(p), sender_of(p), sminos.target_label(p), p.get("ts", ""))
     lines = [head]
     lines += wrap(p.get("text", ""), inner_w)
     return lines

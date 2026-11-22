@@ -34,6 +34,19 @@ back by a fill.
                    of this project (--cwd's); --brief is its in-charge line until its first derived one; --wait prints the reply.
                    --wait only watches, for DAEMON_TIMEOUT (default 18000 s): the seat works on after,
                    and `reply` reads its live transcript
+    sminos spawn    <alias> <task|-> --on <vm>|new [--cwd <path there>] [--role R] [--brief B] [--worktree W]
+                   [--stamp F=V]... [--model M] [--effort E] [--permission-mode M]
+                   [--vm-project owner/repo[@ref]]... [--vm-confirmed]   # the session opened on a devcloud VM
+                   (one that exists, adopted machines included, or `new`, which devcloud vm up makes, enrolled
+                   and kept, with this worktree's pushed branch or the --vm-project projects; --vm-confirmed is
+                   up's --confirmed, after the person's yes). Run from a Mac enrolled in the org, by a session
+                   whose project the enrollment carries and whose reach is this machine's default; the new
+                   session is told its spawner's address. --wait and --settings are refused with it
+    sminos spawn    <alias> - --asked-from <json> [--cwd C] …   # the form another machine's sminos calls over
+                   devcloud vm ssh for spawn --on: refused where this machine is not enrolled or is of another
+                   org, where an inferred directory is another repository's checkout, or where the directory is
+                   in a project this machine's enrollment does not carry; prints one outcome line. Refused
+                   inside a session
     sminos seat add <group> <alias> [--role R] [--brief B] [--session S]   # register a vacant seat for a
                    later fill, or, with --session, give a running session a seat (refused for a session
                    its human opened that is already a member: its own record keeps it)
@@ -64,6 +77,11 @@ back by a fill.
     sminos say      [--org] [--project P,..] [--machine M,..] [--here] [--state W,..] <text>   # list's filters:
                    every live session of that scope but you (`list` with the same flags shows them), each woken
                    as @all wakes; recorded in each project it reaches, copied into yours; no @tags beside it
+    sminos say      --notice <program> …                  # a machine's own program speaking (devcloud's hosts:
+                   devcloud), refused in a session, and (exit 1) on a machine whose name the mark does not
+                   take: each event marked, shown from <program>@<machine>, never delivered as a person's words
+    sminos say      --exit-held …                         # exit 3 when a tagged recipient's line says it is held
+                   and not woken; the message is recorded as without it
     sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
     sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
     sminos charge   [<member>] "<one line>"               # what the member is in charge of, until its next
@@ -132,8 +150,9 @@ back by a fill.
     sminos status   <member> <one line>                   # the member's own "now" line
     sminos retire   <member> [--purge] [--owner-unknown]  # end it (recorded first), then stop what can be
                    stopped; --purge deletes its record (a seat's, or a session its human opened). Refused for
-                   a session that made a devcloud host that still exists (naming it: devcloud vm down <name>),
-                   and when devcloud cannot tell; --owner-unknown retires it then, for a person at a terminal
+                   a session that owns a devcloud host that still exists (it names the host, with devcloud vm
+                   down and devcloud vm owner), and when devcloud cannot tell; --owner-unknown retires it then,
+                   for a person at a terminal
     sminos access   <member> private|listed|org-view|org-converse   # who may reach a session of this
                    machine: private, its owners' agents and its shares'; listed or org-wide, every member's
     sminos share    <member> <person> list|view|converse|approve|none   # a member's grade on it (<person> an
@@ -185,6 +204,10 @@ back by a fill.
                    or a PR (its body's last line, else its commits' trailers; a number or URL, through gh)
                    was made by, as it is now: alias, project, machine, state, the session it went on as,
                    how to reach or resume it. Alone, inside a session: the line its commits carry
+    sminos who      --thread <name>                       # for a program (devcloud vm owner): the thread a
+                   name is, as one line of JSON (thread, session, short, alias, opened, state, ended, local,
+                   machine, project {id, name}, not_carried: why a VM's notice could not reach that project
+                   from here, "" where it can); exit 4 when no thread, or several, answer to it
     sminos projects [--all]                               # every project known here: kind (hub, machine,
                    local), live and waiting sessions, their machines; --all: a retired machine's too
     sminos machines                                       # every machine enrolled in the org: its newest
@@ -312,6 +335,7 @@ PERMISSION_MODES = ("plan", "default", "acceptEdits", "auto", "dontAsk", "bypass
 PREAMBLE_PATH = os.path.join(SCRIPT_DIR, "..", "references", "spawn-preamble.md")
 
 EXIT_USAGE = 2
+EXIT_HELD = 3      # say --exit-held: a tagged recipient's line was a held one (EN.G1's plan, Interfaces §2)
 EXIT_UNKNOWN = 4
 
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
@@ -1179,6 +1203,32 @@ def has_left(p):
     if not _LEFT:
         _LEFT.append(frozenset(leaving_kept()["left"]))
     return p.id in _LEFT[0]
+
+
+def not_carried(project, org):
+    """Why this machine's enrollment in `org` does not carry the project
+    (EN.G1's plan, §7 row 9), "" when it does: the test
+    sminos_uplink.hub_projects makes of each project it opens. Its hub names
+    that org, the org's directory has not retired it, and it has not left
+    this machine."""
+    hub = project.hub if isinstance(project.hub, dict) else None
+    if hub is None or not isinstance(hub.get("org"), str) or not hub["org"]:
+        return NO_HUB
+    if hub["org"] != org:
+        return OTHER_ORG
+    if org_retired(project.id):
+        return RETIRED_HERE
+    if has_left(project):
+        return LEFT_HERE
+    return ""
+
+
+# Why a project is not carried, each a fixed word, never a name, a path or an id: `who --thread`'s and the outcome
+# line's `not_carried` carry one of NOT_CARRIED_WORDS, or "" (EN.G1's plan, §4 and §8).
+NO_HUB, OTHER_ORG = "it syncs through no hub", "its .smns names another org"
+RETIRED_HERE, LEFT_HERE = "the org's directory has retired it", "it has left this machine"
+NOT_ENROLLED = "this machine is not enrolled in the org"
+NOT_CARRIED_WORDS = (NO_HUB, OTHER_ORG, RETIRED_HERE, LEFT_HERE, NOT_ENROLLED)
 
 
 def machine_retired(name):
@@ -3063,10 +3113,53 @@ def owner_event(e):
     """Whether a log event is the owner's words: a `human` event written by
     the owner's own writer — `<machine>/human` (sminos run with no session)
     or the hub's `hub/<member>` (a send from the desk, which the hub stores
-    only as a `human`). A session's `say`, and anything else, is a peer's:
-    it reaches a session as a peer message, never as the human's words."""
+    only as a `human`) — that is no machine's notice (notice_of). A
+    session's `say`, and anything else, is a peer's: it reaches a session as
+    a peer message, never as the human's words."""
     writer = writer_base(str(e.get("writer") or ""))
-    return e.get("kind") == "human" and (writer.startswith("hub/") or writer.rsplit("/", 1)[-1] == "human")
+    return e.get("kind") == "human" and (writer.startswith("hub/") or writer.rsplit("/", 1)[-1] == "human") \
+        and not notice_of(e)
+
+
+# A machine's notice (contract X8 of docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md; EN.G1's
+# plan, Interfaces §1): a `human` event under a machine's human writer whose `notice` names the program that speaks
+# (`say --notice <program>`, run by that machine's own program with no session: devcloud's hosts pass `devcloud`). It
+# is nobody's words: delivered as a peer's frame from `<program>@<machine>`, never through the bridge or a
+# supervisor, whatever the endpoint's verdict. The field on any other kind or writer marks nothing.
+NOTICE_PROGRAM_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
+NOTICE_MACHINE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")   # MAWS's machine-name grammar
+NOT_MACHINES = ("hub", "legacy")   # writer prefixes that are no machine, in any case
+
+
+def notice_of(e):
+    """The program a machine's notice names, "" for any other event: a
+    `human` event whose plain writer is `<machine>/human` (an audience
+    stream of it included, never `hub/<member>`), whose machine is a
+    machine name (NOTICE_MACHINE_RE in full, never `hub` or `legacy` in
+    any case), and whose `notice` is a non-empty string. MAWS's predicate
+    is the same, so the two never read one event differently."""
+    notice = e.get("notice")
+    if e.get("kind") != "human" or not isinstance(notice, str) or not notice:
+        return ""
+    machine, _, last = writer_base(str(e.get("writer") or "")).rpartition("/")
+    if last != "human" or not NOTICE_MACHINE_RE.fullmatch(machine) or machine.lower() in NOT_MACHINES:
+        return ""
+    return notice
+
+
+def notice_sender(e):
+    """`<program>@<machine>` for a marked event: the program its `notice`
+    names when that is whole by NOTICE_PROGRAM_RE, else the word `notice`;
+    the machine as its plain writer names it."""
+    notice = notice_of(e)
+    program = notice if NOTICE_PROGRAM_RE.fullmatch(notice) else "notice"
+    return "%s@%s" % (program, writer_base(str(e.get("writer") or "")).rpartition("/")[0])
+
+
+def run_sender(e):
+    """The sender a push of `e` is enveloped under, as SendDelivery.runs
+    cuts its runs: notice_sender for a marked event, None for any other."""
+    return notice_sender(e) if notice_of(e) else None
 
 
 def writer_short(writer):
@@ -3846,8 +3939,9 @@ def frame_landed(project, session, e):
     drops a stream's suffix, and each stream numbers its own events): such a
     frame cannot be told from the other's, and claims no push. A frame after
     another in one push of several is not told from a quote either, and
-    claims none."""
-    if e.get("msg_id"):
+    claims none. A machine's notice is always a chat frame (frame_of), a
+    `msg_id` on it included."""
+    if e.get("msg_id") and not notice_of(e):
         framed = re.compile(r"\[sminos message from [^\n]* id=%s\](?:\n|$)" % re.escape(e["msg_id"]))
         return _transcript_holds(session, ("id=%s]" % e["msg_id"]).encode(),
                                  lambda text: framed.match(text) is not None)
@@ -4668,10 +4762,7 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
         _unreadable_said(sid)
         return None
     rec = records.read(sid)
-    settled = rec is not None and (records.basis(rec) == "launch" or records.strength(rec) == (2, True)
-                                   or (records.strength(rec) == (1, True) and not former
-                                       and str((peer or {}).get("kind") or "") != "bg"))
-    if not settled:
+    if not provenance_settled(rec, peer, former):
         try:
             prov = lineage_provenance(project, sid, peer, former, events) \
                 or evidence or records.default_provenance()
@@ -4690,6 +4781,21 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
     if rec is not None and records.is_final(rec) and project is not None:
         publish_owners(project, sid, events)
     return rec
+
+
+def provenance_settled(rec, peer, former=None):
+    """Whether nothing stronger is still looked for behind a session's
+    record, as ensure_record judges before it looks: it rests on a launch;
+    or it is final and rests on a lineage; or it is final, rests on the
+    session's own hook, and the session (`peer`, the engine's record of its
+    process) is no background job and is no hand-off's successor
+    (`former`). A background job's own hook record is not settled until a
+    lineage reaches it: the hand-off it continues may give it a narrower
+    reach. (`record_settled` is another function: an event's guard.)"""
+    records = records_module()
+    return rec is not None and (records.basis(rec) == "launch" or records.strength(rec) == (2, True)
+                                or (records.strength(rec) == (1, True) and not former
+                                    and str((peer or {}).get("kind") or "") != "bg"))
 
 
 def policy_rev_floor(sid):
@@ -7388,12 +7494,18 @@ def remote_line(member):
     wake = wake_of(member) if member.state in HELD_STATES else None
     if wake == "woken" and member.state == "stopped":
         return woken_line(member.machine)
-    if wake != "held":
+    if not remote_held(member):
         return None
     why = why_of(member)
     if why == "read-only":
         return "recorded: %s admits nothing from another machine, and refuses it there" % member.machine
     return held_line(why, member.machine) if why in HOLD_WORDS else held_line_151(member.machine)
+
+
+def remote_held(member):
+    """Whether remote_line's line for a member of another machine is a held
+    one: that machine published `held` for it, whatever its `why` (X3)."""
+    return member.state in HELD_STATES and wake_of(member) == "held"
 
 
 def held_line_151(machine=""):
@@ -7800,7 +7912,8 @@ def holder_wake(project, e):
     its bridge found retained): a pointer to it, the same receipt's marker
     put before it by push_live."""
     return "[sminos chat %s %s from %s → @you, again]\nIt is above in this conversation, delivered before: read it " \
-           "there." % (project.name, event_ref(e), frame_alias(str(e.get("via") or e.get("from") or "")))
+           "there." % (project.name, event_ref(e), frame_alias(notice_sender(e) if notice_of(e) else
+                                                        str(e.get("via") or e.get("from") or "")))
 
 
 # A person's words on a machine cut over to its endpoint (O12 M6). The
@@ -8004,10 +8117,12 @@ class ReachGate:
         """Whether the push of `e` is the gate's: a log event handed over as
         a peer frame on a machine whose endpoint decides reach. A person's
         words (`words` True, or with no verdict a writer push_live takes as
-        the owner's) are the words gate's."""
+        the owner's) are the words gate's. A machine's notice is asked about
+        as any `human` event of its writer is: only its route and its frame
+        differ (notice_of)."""
         if not self.capable or e is None:
             return False
-        return not (words if words is not None else owner_event(e))
+        return not (words if words is not None else owner_event(e) or bool(notice_of(e)))
 
     def needs(self, e, session, words=None):
         """Whether the push needs the endpoint's `deliver`: the gate's, and
@@ -8370,13 +8485,16 @@ def frame_of(project, e, events, session, cursor):
     whose target is `@you`, or a broadcast's scope (target_label: `@all`,
     `@all on mini`).
     Its unread count leaves out copies: each is a record of a message
-    another log carries, not one spoken here."""
-    if e.get("msg_id"):
+    another log carries, not one spoken here. A machine's notice is always
+    a chat frame, from its notice_sender, `<program>@<machine>`, whatever
+    else it carries (X8; a `msg_id` too)."""
+    if e.get("msg_id") and not notice_of(e):
         return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""),
                              sender_labels(project)(e))
     unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and "copy" not in x and
                  writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
-    return compose_chat_frame(project.name, event_ref(e), str(e.get("from") or ""),
+    sender = notice_sender(e) if notice_of(e) else str(e.get("from") or "")
+    return compose_chat_frame(project.name, event_ref(e), sender,
                               target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""),
                               sender_labels(project)(e))
 
@@ -9572,8 +9690,12 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
     (deliver_next); another machine's by that machine's daemon, which this
     machine's is asked to push it to at once. On a cut-over machine a
     person's words this pass leaves owed for the endpoint's verdict (O12 M6)
-    are said so, and the daemon nudged: its uplink asks."""
+    are said so, and the daemon nudged: its uplink asks. The recipients
+    whose line was a held one (`--exit-held`'s, Interfaces §2 of EN.G1's
+    plan): a thread of this machine held for a reason it is not woken
+    (HOLD_WORDS), or one another machine published `held` for."""
     by_session = {m.session: m for m in members(dest)}
+    held_for = []
     for r in recipients:
         member = by_session.get(r["session"])
         if member is not None and not member.local:
@@ -9581,6 +9703,8 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
             # once this machine's daemon has pushed it: ask for that now. A
             # stopped session its machine says it holds (X3) is said so.
             print("%s: %s" % (name(r), remote_line(member) or "recorded (on %s)" % member.machine))
+            if remote_held(member):
+                held_for.append(r)
             nudge_daemon()
             continue
         result = deliver_next(dest, member, due=True) if member else {"outcomes": []}
@@ -9591,6 +9715,8 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
             # This very event decided held, and still owed: why, as its writer's pass found it (T2's §5).
             why = hold_why(mine[0] if mine else first) or hold_now(member.session) or "starting"
             print("%s: %s" % (name(r), held_line(why, session=member.session)))
+            if why in HOLD_WORDS:
+                held_for.append(r)
             continue
         if mine:
             woken = {"woken": "sent (woken)", "woken?": "sent? (woken)"}   # §5: a live push's words, woken
@@ -9606,6 +9732,7 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
             continue
         held = next((o for ev, o in result["outcomes"] if ev["writer"] == writer), "")
         print("%s: pending%s" % (name(r), " behind an earlier undelivered message (%s)" % held if held else ""))
+    return held_for
 
 
 # A broadcast's scope (§5a of the org directory design): list's filters, put
@@ -9704,7 +9831,7 @@ def say_scoped(a, home, sender, writer, kind, sid):
         # Where each recipient's transcript ends before its event is appended (frame_landed reads what follows).
         note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)
         for split_writer, aud, rs, _text in splits:
-            fields = {"from": sender, "to": rs, "text": a.text, "wake": True, "scope": scope}
+            fields = {"from": sender, "to": rs, "text": a.text, "wake": True, "scope": scope, **notice_field(a)}
             if home is not None and home.id != dest.id:
                 fields["from_project"] = home.id  # the sender's own project, where a reply finds it
             try:
@@ -9735,13 +9862,35 @@ def channel_say_refusal(q):
             "today" % q)
 
 
+def notice_field(a):
+    """The field `say --notice` puts on every event the call appends (X8)."""
+    return {"notice": a.notice} if a.notice is not None else {}
+
+
 def cmd_say(a):
     """Record a message in a project's log, and deliver it to whom it tags;
     with a selector, to every live session of its scope (say_scoped).
-    Nothing is said into a channel yet: `--in <channel>`, a selector naming
-    one and a tag qualified by one (_resolve_tag) are refused before anything
-    is appended, from a session and from a terminal."""
+    `--notice <program>` marks every event it appends as that machine's
+    program's notice (X8), refused inside a session and, with exit 1, on a
+    machine whose name notice_of would not mark; `--exit-held` exits
+    EXIT_HELD when a tagged recipient's line was a held one (deliver_say),
+    and changes nothing else. Nothing is said into a channel yet: `--in
+    <channel>`, a selector naming one and a tag qualified by one (_resolve_tag)
+    are refused before anything is appended, from a session and from a
+    terminal."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if a.notice is not None and not NOTICE_PROGRAM_RE.fullmatch(a.notice):
+        die("--notice names the program that speaks, as a lower-case word of letters, digits and hyphens (32 at "
+            "most): %s" % a.notice)
+    if a.notice is not None and sid:
+        die("--notice marks a notice of a machine's own program, and a session is not one: drop it")
+    if a.notice is not None and not notice_of({"kind": "human", "writer": writer_id(), "notice": a.notice}):
+        # Recorded, it would be read as a person's words (owner_event). Exit 1, the general failure a host's
+        # delivery goes on from (devcloud/boot/devcloudlib/notices.py); never 2, which it answers by sending the
+        # same text again without the flags.
+        die("--notice: this machine's name, %s, is not one a machine's notice is read under (letters, digits, '.', "
+            "'_' and '-', 63 at most, opening with a letter or a digit, and neither hub nor legacy), so the notice "
+            "would be read as a person's words: nothing was recorded" % host_name(), 1)
     for q in ([a.in_] if a.in_ else []) + list(a.projects):
         if names_channel(q) is not None:
             die(channel_say_refusal(q), 1)
@@ -9787,7 +9936,7 @@ def cmd_say(a):
     recorded = []
     note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)   # before the appends (frame_landed)
     for split_writer, aud, rs, text in splits:
-        fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": text}
+        fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": text, **notice_field(a)}
         if wake:
             fields["wake"] = True
         if sid and home is not None and home.id != dest.id:
@@ -9804,8 +9953,11 @@ def cmd_say(a):
         recorded.append((e, rs))
     if recorded and sid and home is not None and home.id != dest.id:
         record_copy(home, [(dest, e) for e, _ in recorded])
+    held_for = []
     for e, rs in recorded:
-        deliver_say(dest, e, e["writer"], rs)
+        held_for += deliver_say(dest, e, e["writer"], rs)
+    if a.exit_held and held_for:
+        sys.exit(EXIT_HELD)
 
 
 def target_label(e):
@@ -9845,8 +9997,8 @@ def chat_line(e, label=""):
     refs = [copy] if isinstance(copy, str) else [r for r in copy if isinstance(r, str)] if isinstance(copy, list) else []
     if refs:
         target += " → %s" % ", ".join(project_label(r.partition(":")[0]) for r in refs)
-    out = ["%s %s %s%s → %s  %s" % (e["ts"][11:19], event_ref(e), frame_alias(str(e.get("from", ""))), label, target,
-                                    lines[0])]
+    sender = notice_sender(e) if notice_of(e) else str(e.get("from", ""))
+    out = ["%s %s %s%s → %s  %s" % (e["ts"][11:19], event_ref(e), frame_alias(sender), label, target, lines[0])]
     out += ["    " + line for line in lines[1:]]
     return "\n".join(out)
 
@@ -13289,9 +13441,10 @@ def run_claude_bg(args, cwd, settings):
         return "", NoLaunchDir(cwd)
     timeout = float(os.environ.get("SMINOS_LAUNCH_TIMEOUT") or 300)
     try:
+        # A byte that is not UTF-8 is replaced, never raised while decoding: the launcher's status is kept.
         p = subprocess.run(["claude"] + args, cwd=cwd, env=launch_env(settings),
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.STDOUT, text=True, timeout=timeout)
+                           stderr=subprocess.STDOUT, text=True, errors="replace", timeout=timeout)
         banner = LaunchOutput(ANSI_RE.sub("", p.stdout or ""), status=p.returncode)
         if p.returncode != 0:
             return "", banner
@@ -13315,6 +13468,19 @@ class LaunchOutput(str):
         out = super().__new__(cls, text)
         out.status, out.timeout = status, timeout
         return out
+
+    def unanswered(self):
+        """Why a launcher that was started gave no usable acknowledgement, so
+        that a job may run all the same: stopped at its bound, ended by a
+        signal, or an exit 0 with no job's banner. "" for one that refused
+        in its own words (an exit above 0) or could not be started."""
+        if self.timeout is not None:
+            return "it gave no answer within %d s, and was stopped" % self.timeout
+        if self.status is not None and self.status < 0:
+            return "it was ended by signal %d" % -self.status
+        if self.status == 0:
+            return "it exited 0 without naming a job"
+        return ""
 
 
 class NoLaunchDir(LaunchOutput):
@@ -14306,7 +14472,7 @@ def parse_stamps(items):
 
 
 def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
-                model, settings, effort, wait, locks, verb, stamp=None, permission_mode="auto"):
+                model, settings, effort, wait, locks, verb, stamp=None, permission_mode="auto", asked=None):
     """Launch a fresh background session for a seat and register it.
 
     seat_id None → a brand-new seat: a provisional record exists during the
@@ -14324,7 +14490,16 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     In the project's log: `retired` (replaced) for the session a re-fill
     displaces, then `joined` for the new one with its spawner as `by`, then,
     when the seat has a brief, the brief as its `in-charge` line. Every spawn
-    renders the preamble. Returns nothing (prints; may exit).
+    renders the preamble. Prints the banner and returns what it printed, as
+    {verb, group, alias, short, seat, session, status, cwd, project}; may exit.
+
+    `asked`, for a spawn another machine asked for (`--asked-from`, EN.G1's
+    plan §8): {"by": the spawner it names, or None}. The preamble and the
+    `joined` name that spawner (an address only: nothing of it is a grant),
+    the record is a terminal spawn's (spawn_provenance), and no banner is
+    printed, since the asking machine prints its own. Once the launcher has
+    returned a job, `asked["launched"]` is its short id; where it was
+    started and named none (LaunchOutput.unanswered), `asked["unanswered"]`.
 
     The new session's record (spawn_provenance) is fixed before it exists:
     left pending under a launch id its settings carry, claimed by its own
@@ -14346,22 +14521,38 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     if project is None:   # its repository is in a protected folder this process may not read (read_refused)
         die("spawn: the project of %s is not read from here: its repository is in a folder macOS asks the person "
             "about; run sminos spawn from inside that folder" % cwd, EXIT_USAGE)
-    by = caller_alias()
-    # A desk member is the human, whom the preamble calls "the operator".
-    preamble = render_preamble(project.name, alias, "" if desk_member() else by)
+    if asked is not None:
+        spawner = asked.get("by")
+        by = spawner["alias"] if spawner else ""
+        named = SPAWNER_WORDS % spawner if spawner else ""
+    else:
+        by = caller_alias()
+        # A desk member is the human, whom the preamble calls "the operator".
+        named = "" if desk_member() else by
+    preamble = render_preamble(project.name, alias, named)
     task_text = compose_task(task, brief or "", preamble)
     records = records_module()
     launch_id = records.new_launch()
     merged = launch_settings(settings, launch_id)
-    records.write_pending(launch_id, spawn_provenance(settings, merged))
+    records.write_pending(launch_id, spawn_provenance(settings, merged, terminal=asked is not None))
     short, banner = run_claude_bg(claude_args(alias, model, merged, effort, worktree,
                                               permission_mode) + [task_text], cwd, settings)
     if not short:
         records.drop_pending(launch_id)
         if isinstance(banner, NoLaunchDir):
             die(banner, EXIT_USAGE)
+        why = banner.unanswered() if asked is not None and isinstance(banner, LaunchOutput) else ""
+        if why:
+            # Started and named no job, it may have started one all the same: no refusal (sminos_on.Answering), so
+            # the asking machine says the outcome is not known and where to look.
+            asked["unanswered"] = True
+            die("spawn: the launcher (claude --bg) was started here and named no job (%s): a session may have "
+                "started all the same; no outcome is reported for it, so the machine that asked says it is not "
+                "known: sminos list here shows whether one runs" % why, 1)
         sys.stderr.write("sminos: %s failed — could not parse background id from:\n%s\n" % (verb, banner))
         sys.exit(1)
+    if asked is not None:
+        asked["launched"] = short   # from here a failure is no refusal (sminos_on.Answering)
     launch = {
         "current": "", "short": short, "name": alias, "alias": alias, "group": group,
         "role": role or "", "brief": brief or "",
@@ -14581,16 +14772,21 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     wt = ("  worktree=%s (branch worktree-%s)" % (runcwd, re.sub(r"[^a-zA-Z0-9._-]", "-", worktree))) if worktree else ""
     if verb == "spawned" and seat_id is not None:
         verb = "re-filled"
-    print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: sminos reply %s)" % (
-        verb, group, alias, short, rec_id, status, wt, short), flush=True)
+    if asked is None:
+        print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: sminos reply %s)" % (
+            verb, group, alias, short, rec_id, status, wt, short), flush=True)
     if wait:
         print_reply_block(rec_id)
     for failure in log_failed:
         warn("%s completed, but %s" % ("fill" if verb == "filled" else "spawn", failure))
+    return {"verb": verb, "group": group, "alias": alias, "short": short, "seat": rec_id, "session": uuid,
+            "status": status, "cwd": runcwd or cwd, "project": project}
 
 
-def spawn_provenance(settings, merged):
-    """A spawned session's provenance (sminos_records), fixed at its launch:
+def spawn_provenance(settings, merged, terminal=False):
+    """A spawned session's provenance (sminos_records), fixed at its launch
+    (`terminal`: the last case, whatever runs it; a spawn another machine
+    asked for, whose spawner's session is not this machine's):
     - for a desk member (a desk RPC's spawn, desk_member): owned by them,
       their principal, origin `maws` naming them the requester;
     - from inside a session: its record's owners, proofs, principal and
@@ -14606,8 +14802,8 @@ def spawn_provenance(settings, merged):
     spawner's slot, or the parent's inference, stands."""
     records = records_module()
     route = {"kind": "route", "settingsRef": merged} if settings else None
-    member = desk_member()
-    caller = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    member = "" if terminal else desk_member()
+    caller = "" if terminal else os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if member:
         return {**records.default_provenance("launch"), "origin": {"kind": "maws", "requester": member},
                 "owners": [member], "ownersProof": desk_proof(), "principal": member,
@@ -14625,9 +14821,39 @@ def spawn_provenance(settings, merged):
             "inference": route or records.slot()}
 
 
+# The spawner a spawn another machine asked for names (`--asked-from`'s `by`), as its preamble's {{BY}}.
+SPAWNER_WORDS = '%(alias)s (@%(short)s, in %(project_name)s on %(machine)s; sminos say "@%(short)s …" reaches it)'
+
+
 def cmd_spawn(a):
     """Start a session in the working directory's project (or --cwd's), as a
-    seat, recorded as joined by its spawner: a sibling, never a child."""
+    seat, recorded as joined by its spawner: a sibling, never a child. With
+    --on, on another machine (sminos_on.spawn_on); with --asked-from, the
+    spawn another machine's --on asked for, answered with one outcome line
+    (sminos_on, EN.G1's plan §8)."""
+    if a.on is not None:
+        sibling_module("sminos_on").spawn_on(a)
+        return
+    if a.vm_project or a.vm_confirmed:
+        die(sibling_module("sminos_on").VM_ONLY)
+    if a.asked_from is None:
+        spawn_here(a)
+        return
+    on = sibling_module("sminos_on")
+    req = on.read_request(a)
+    with on.Answering(req["nonce"], req) as answer:
+        if a.task == "":
+            die("spawn -: no text on standard input")
+        on.admit(req, answer)
+        cwd = cwd_or_die(on.expand_home(a.cwd), "spawn")
+        on.hold_to_origin(req, cwd, answer)
+        on.hold_to_org(req, cwd, answer)
+        a.cwd = cwd
+        answer.ok(spawn_here(a, asked=req))
+
+
+def spawn_here(a, asked=None):
+    """`spawn` on this machine (cmd_spawn); what spawn_fresh printed."""
     alias = a.alias
     if not valid_name(alias):
         die("bad alias: %s" % alias)
@@ -14678,9 +14904,9 @@ def cmd_spawn(a):
         brief = a.brief if a.brief is not None else existing["brief"]
     else:
         role, brief = a.role or "", a.brief or ""
-    spawn_fresh(existing["seat_id"] if existing else None, alias, group, role, brief,
-                a.task, cwd, a.worktree or "", a.model or "", settings, effort, a.wait, locks, "spawned",
-                stamp=parse_stamps(a.stamp), permission_mode=a.permission_mode)
+    return spawn_fresh(existing["seat_id"] if existing else None, alias, group, role, brief,
+                       a.task, cwd, a.worktree or "", a.model or "", settings, effort, a.wait, locks, "spawned",
+                       stamp=parse_stamps(a.stamp), permission_mode=a.permission_mode, asked=asked)
 
 
 def cmd_seat_add(a):
@@ -16387,9 +16613,9 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
     while True:
         try:
             if delivery:
-                # An @all reaches only the live: to a session this send woke it is settled by passing (payload).
-                control_module().push_live(peer, s["current"], delivery.payload(not woken), delivery.queue[-1],
-                                           delivery.project.id, carried=delivery.carried(not woken))
+                # An @all reaches only the live: to a session this send woke it is settled by passing (runs). A
+                # machine's notice still owed goes as a push of its own, ahead of this one (SendDelivery.push).
+                delivery.push(peer, s["current"], not woken)
             else:
                 send_frame(socket_path_of(bound_peer(peer, s["current"])), text, sender)
             break
@@ -16428,9 +16654,11 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender="", ver
                     return
                 woken = True
                 continue
-            if delivery:
-                delivery.settle()  # uncertain after a write: never pushed again
+            # Uncertain after a write: that run is never pushed again, and a later one stays owed.
+            ahead = delivery.uncertain() if delivery else ""
             unlock(locks)
+            if ahead:
+                die(uncertain_ahead(ref, ahead, e, msg_id), 1)
             die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s). Not "
                 "waking it and not re-sending id=%s; check the seat with sminos reply/attach before retrying." % (
                     ref, e, msg_id), 1)
@@ -16552,6 +16780,7 @@ class SendDelivery:
         unknown = next((e for e in self.queue if e not in self.stale and held_unreadable(record, e)), None)
         self.cursor = cursor_load(project, session)
         self.skipped = []
+        self.pushing, self.run = None, []
         self.held = "the endpoint decides its delivery" if words_held(event) else (
             self.checked() if sibling_module("sminos_rl10").cut_over() else None)
         if self.held is None and unknown is not None:
@@ -16585,14 +16814,65 @@ class SendDelivery:
         reach gate checks: no stale one."""
         return [e for e in self.queue if (live or not e.get("wake")) and e not in self.stale]
 
-    def payload(self, live):
-        """The text of the one push. Ordinary delivery's policy applies: an
-        @all (`wake`) reaches only the live, so to a stopped member it is
-        settled by passing and left out of the resume; a stale hold is
-        pushed to no one."""
+    def runs(self, live):
+        """The queue as the pushes it is handed over in: [(the text, the
+        event that routes it, the events it carries)], in the writer's order.
+        One run, the whole payload under the queue's last event, as today,
+        unless the queue holds a marked event: then a new run begins wherever
+        two neighbours differ in their notice sender, an unmarked event's
+        being none, so that no envelope names a sender for another's event
+        (a notice beside a person's line, or two programs' notices). Ordinary
+        delivery's policy applies: an @all (`wake`) reaches only the live, so
+        to a stopped member it is settled by passing and left out of the
+        resume (`skipped`, as `carried` leaves it out); a stale hold is pushed
+        to no one. A machine's notice is so never carried inside a payload
+        another event routes (X8): on a machine not cut over an operator's
+        verb goes by the bridge as the owner's words (EN.G1's plan, §1)."""
         self.skipped = [e for e in self.queue if e.get("wake") and not live]
-        return "\n\n".join(frame_of(self.project, e, self.events, self.session, self.cursor)
-                             for e in self.queue if e not in self.skipped and e not in self.stale)
+        out = []
+        for e in self.queue:
+            if e in self.skipped or e in self.stale:
+                continue
+            if out and run_sender(out[-1][-1]) == run_sender(e):
+                out[-1].append(e)
+            else:
+                out.append([e])
+        return [("\n\n".join(frame_of(self.project, e, self.events, self.session, self.cursor) for e in run),
+                 run[-1], run) for run in out]
+
+    def push(self, peer, session, live):
+        """The runs pushed in order to the session's process
+        (control.push_live), each settled as it lands (landed), so the
+        record's settled prefix never passes an event that was not handed
+        over. What push_live raises for a run is raised, that run and every
+        later one still queued; `pushing` names the run's last event, `run`
+        the events it carries."""
+        for text, route, carried in self.runs(live):
+            self.pushing, self.run = route, carried
+            control_module().push_live(peer, session, text, route, self.project.id, carried=carried)
+            self.landed(route)
+        self.pushing, self.run = None, []
+
+    def uncertain(self):
+        """A run whose frame was written and whose close-out failed: settled,
+        never pushed again, and the delivery released, what follows it left
+        owed for the daemon. "" when it was the last run (the verb's own, as
+        on every path with no notice owed ahead of it); else the run's refs,
+        for the sender's sentence."""
+        run = self.run
+        self.landed(self.pushing)
+        rest = bool(self.queue)
+        self.release()
+        return ", ".join(event_ref(e) for e in run) if rest else ""
+
+    def landed(self, last):
+        """A run handed over, `last` its last event: it and everything queued
+        before it (a skipped broadcast, a stale hold) settled, in order, and
+        out of the queue."""
+        at = self.queue.index(last) + 1
+        for e in self.queue[:at]:
+            delivered_settle(self.project, self.session, self.writer, e["seq"])
+        self.queue = self.queue[at:]
 
     def settle(self):
         for e in self.queue:
@@ -16621,6 +16901,16 @@ class SendDelivery:
         self.release()
         print("recorded %s for %s; %s" % (event_ref(self.event), alias, self.held), flush=True)
         nudge_daemon()
+
+
+def uncertain_ahead(ref, refs, err, msg_id):
+    """What a sender is told when a run pushed ahead of its own message
+    (SendDelivery.runs: a machine's notice, or what its writer owed before
+    one) was written and its close-out failed: that run is not pushed again,
+    and the message itself was never pushed and stays queued."""
+    return ("delivery to %s is UNCERTAIN for %s, pushed ahead of this message: its frame was written but the "
+            "close-out failed (%s), and it is not pushed again. This message (id=%s) was not pushed: it stays "
+            "queued, and the daemon delivers it" % (ref, refs, err, msg_id))
 
 
 class WaitingSend:
@@ -16789,8 +17079,7 @@ def send_to_member(project, m, sender, via, text, msg_id):
         print("sent to %s (%s)" % (m.alias, mine[0] if mine else "owed behind an earlier message"))
         return
     try:
-        control_module().push_live(peer, m.session, delivery.payload(True), delivery.queue[-1], project.id,
-                                   carried=delivery.carried(True))
+        delivery.push(peer, m.session, True)
     except ReachHeld:
         delivery.held = "the endpoint decides its delivery"
         delivery.recorded_owed(m.alias)
@@ -16800,7 +17089,9 @@ def send_to_member(project, m, sender, via, text, msg_id):
         return
     except SendFailed as e:
         if e.phase == "after":
-            delivery.settle()
+            ahead = delivery.uncertain()   # that run never pushed again; a later one stays owed
+            if ahead:
+                die(uncertain_ahead(m.alias, ahead, e, msg_id), 1)
             die("delivery to %s is UNCERTAIN — the frame was written but the close-out failed (%s); "
                 "do not blindly re-send" % (m.alias, e), 1)
         delivery.fail()
@@ -17142,7 +17433,8 @@ def locked_fresh(s0, verb, session="", locks=None):
 def cmd_retire(a):
     """End one member's thread and stop what sminos can stop. Nothing it
     spawned goes with it: a spawner is provenance, not a host. A thread that
-    made a host devcloud still has is not ended, nor one whose answer is
+    owns a host devcloud still has (one it made, or one handed to it with
+    `devcloud vm owner`) is not ended, nor one whose answer is
     unknown unless a person at a terminal passes it (`--owner-unknown`,
     refused inside a session; owner_guard). The end is recorded before
     anything is stopped (T1's M4): a session that retires itself may be
@@ -17210,8 +17502,9 @@ def owner_guard(how, records, label):
     """The question every end on purpose asks before it writes anything
     (T1's M5): devcloud's answer about every session the thread has had
     (`records`: its record, and a seat that follows it; sminos_threads.
-    owner_sessions). Owned: refused, exit 1, naming each host and
-    `devcloud vm down <name>` as the way on; unknown: refused naming what
+    owner_sessions). Owned: refused, exit 1, naming each host, and
+    `devcloud vm down <name>` and `devcloud vm owner <name> <thread>` as
+    the ways on (owned_words); unknown: refused naming what
     could not be asked, unless the verb was given `--owner-unknown` and the
     person confirms it at the controlling terminal (exit 1 where there is
     none). Returns the short ids asked, which the end rechecks under the
@@ -18915,29 +19208,43 @@ ADDRESS_ALIAS_RE = re.compile(r"[^\s#()][^\n#()]{0,63}")   # one short line, no 
 def session_address(session, fallback_cwd=""):
     """The `Sminos-Session: <alias>#<short> (<project> on <machine>)` line of a
     session of this machine — `<short>` alone for a session with no name fit
-    for it — or "" when it has none: in no project, an internal fork, or no
-    member (its log holds no membership and it is no member on sight,
-    joinable). The alias is the one its own `say` signs with (guide_text's)."""
-    if os.environ.get("SMNS_INTERNAL") or not UUID_RE.fullmatch(session or ""):
+    for it — or "" when it has none (address_of)."""
+    named = address_of(session, fallback_cwd)
+    if named is None:
         return ""
-    project = session_project(session, launch_cwd(session, fallback=fallback_cwd))
-    if project is None:
-        return ""
-    seen = _on_sight(project, session)
-    if seen is None:
-        return ""
-    seat, peer = seen
-    own = _own_events(project, session)
-    if latest_membership(own) != "joined" and not joinable(seat, peer, member_mark(peer)):
-        return ""
-    alias = seat["alias"] if seat else held_alias(*own_alias(own, session), peer, session,
-                                                  shadowing(project, session))[0]
+    alias, project = named
     # A name that is no name — a `claude --bg "<prompt>"` job joins under its
     # prompt, the harness's first name for it — would make the line a
     # paragraph the model rewrites: the short goes alone.
-    who = "%s#%s" % (alias, session[:8]) if ADDRESS_ALIAS_RE.fullmatch(alias or "") and alias != session[:8] \
+    who = "%s#%s" % (alias, session[:8]) if ADDRESS_ALIAS_RE.fullmatch(alias) and alias != session[:8] \
         else session[:8]
     return "%s: %s (%s on %s)" % (ADDRESS_KEY, who, project.name, host_name())
+
+
+def address_of(session, fallback_cwd=""):
+    """Who a session's address line is for, as sminos holds it: (its alias,
+    the one its own `say` signs with (guide_text's), "" for none, and its
+    project), or None when it has no address: in no project, an internal
+    fork, or no member (its log holds no membership and it is no member on
+    sight, joinable). The alias is as recorded, never filtered for the
+    line's display (session_address); a caller that needs these takes them
+    here, never back out of the formatted line, whose project name and
+    alias may hold spaces and parentheses."""
+    if os.environ.get("SMNS_INTERNAL") or not UUID_RE.fullmatch(session or ""):
+        return None
+    project = session_project(session, launch_cwd(session, fallback=fallback_cwd))
+    if project is None:
+        return None
+    seen = _on_sight(project, session)
+    if seen is None:
+        return None
+    seat, peer = seen
+    own = _own_events(project, session)
+    if latest_membership(own) != "joined" and not joinable(seat, peer, member_mark(peer)):
+        return None
+    alias = seat["alias"] if seat else held_alias(*own_alias(own, session), peer, session,
+                                                  shadowing(project, session))[0]
+    return alias or "", project
 
 
 def parse_addresses(text, last_paragraph=False):
@@ -19122,7 +19429,13 @@ def cmd_who(a):
     """`who [<commit|PR>]`: the session a commit or pull request names in its
     Sminos-Session line, as it is now and how to reach it. Without a target,
     the line this session's commits carry (`--session` names another of this
-    machine's: the address mod's call), nothing when it has none."""
+    machine's: the address mod's call), nothing when it has none. With
+    `--thread`, the thread a name is, for a program (who_thread)."""
+    if a.thread is not None:
+        if a.target or a.session or not a.thread:
+            die("usage: sminos who --thread <name>  (alone: it names a thread, not a commit or a session)")
+        who_thread(a.thread)
+        return
     if not a.target:
         sid = a.session or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
         if not sid:
@@ -19137,6 +19450,55 @@ def cmd_who(a):
     print("%s:" % what)
     for addr in found:
         print("\n".join(who_lines(addr)))
+
+
+def who_thread(name):
+    """`who --thread <name>` (EN.G1's plan, Interfaces §4): one line of JSON
+    for the one seat or member `find_target` resolves the name to (one
+    leading `@` dropped), else a thread its human opened that has ended,
+    named by a full id (ended_target); exit 4 for none or several. The
+    facts devcloud's `vm owner` decides on (and `not_carried`, which it
+    warns from), and nothing of a record's journal or its former sessions
+    (X1)."""
+    q = name[1:] if name.startswith("@") else name
+    target = find_target(q)
+    ended = False
+    if target[0] == "none" and (hit := ended_target(q)) is not None:
+        target, ended = hit, True
+    if target[0] == "none":
+        die("no seat or member matching '%s'" % name, EXIT_UNKNOWN)
+    threads = threads_module()
+    if target[0] == "seat":
+        s = target[1]
+        project = seat_project(s)
+        row = next((m for m in (project_rows(project) if project is not None else [])
+                    if m.seat and m.seat["seat_id"] == s["seat_id"]), None)
+        # The record that represents the seat's thread, as its retire's guard reads it (seat_owner_guard): its
+        # session's canonical one (a thread its human opened that an older copy seated), else the seat's own; none
+        # for a seat a session of no thread holds (lane B, one the MAWS app launched), which nothing guards.
+        cur = s["current"]
+        rec = threads.thread_of(cur) if cur else None
+        rec = rec if rec is not None and rec["current"] == cur else threads.get(s["seat_id"])
+        state_word = row.state if row is not None else state(s)
+        answer = {"thread": rec["thread"] if rec else "", "session": cur, "alias": s["alias"],
+                  "opened": rec["opened"] if rec else "", "state": state_word,
+                  "ended": state_word == "retired" or threads.record_ended(rec), "local": True,
+                  "machine": host_name()}
+    else:
+        project, m = target[1], target[2]
+        rec = threads.get(m.thread) if m.local and m.thread else None
+        answer = {"thread": m.thread, "session": m.session, "alias": m.alias, "opened": m.opened,
+                  "state": m.state, "ended": ended or bool(m.end) or threads.record_ended(rec), "local": m.local,
+                  "machine": m.machine}
+    out = {"thread": answer["thread"], "session": answer["session"], "short": answer["session"][:8]}
+    out.update((k, answer[k]) for k in ("alias", "opened", "state", "ended", "local", "machine"))
+    out["project"] = {"id": project.id, "name": project.name} if project is not None else None
+    # Why a VM's notice could not reach the thread's project from here (the uplink's own test), "" where it can or
+    # no project was read: devcloud's `vm owner` warns from it.
+    enrolled = enrollment()
+    out["not_carried"] = "" if project is None else not_carried(project, enrolled["org"]) if enrolled is not None \
+        else NOT_ENROLLED
+    print(json.dumps(out))
 
 
 def cmd_attach(a):
@@ -19362,6 +19724,11 @@ def build_parser():
     # desk's spawn RPC passes the machine's ceiling, or a stricter mode).
     sp.add_argument("--permission-mode", default="auto", choices=PERMISSION_MODES)
     sp.add_argument("--no-wait", action="store_true", help="accepted and ignored (no-wait is the default)")
+    # On another machine (EN.G1's plan, §7 and §8): the Mac side, and the VM side it calls.
+    sp.add_argument("--on", default=None, metavar="VM|new")
+    sp.add_argument("--vm-project", action="append", default=None, metavar="owner/repo[@ref]")
+    sp.add_argument("--vm-confirmed", action="store_true")
+    sp.add_argument("--asked-from", default=None, metavar="JSON")
     route_flags(sp)
     sp.set_defaults(fn=cmd_spawn)
 
@@ -19412,6 +19779,8 @@ def build_parser():
     say = sub.add_parser("say", add_help=False)
     say.add_argument("text")
     say.add_argument("--in", dest="in_", default="")
+    say.add_argument("--notice", default=None)
+    say.add_argument("--exit-held", action="store_true")
     scope_flags(say)
     say.set_defaults(fn=cmd_say, args=[])
 
@@ -19633,6 +20002,7 @@ def build_parser():
     wh = sub.add_parser("who", add_help=False)
     wh.add_argument("target", nargs="?", default="")
     wh.add_argument("--session", default="")
+    wh.add_argument("--thread", default=None)   # None: not given; "" is a name refused as usage
     wh.set_defaults(fn=cmd_who)
 
     pjs = sub.add_parser("projects", add_help=False)
@@ -19694,7 +20064,14 @@ def stdin_body(a):
     if sys.stdin is None or sys.stdin.isatty():
         die("%s -: the text is read from standard input; pipe it, or give it as a heredoc:\n"
             "  sminos %s ... - <<'EOF'\n  <text>\n  EOF" % (a.cmd, a.cmd))
-    text = sys.stdin.buffer.read().decode("utf-8", "replace")
+    raw = sys.stdin.buffer.read()
+    if a.cmd == "spawn" and getattr(a, "asked_from", None) is not None:
+        # The task another machine's --on sends is the one its own spawn read (EN.G1's plan, §8): taken as sent,
+        # decoded as it was encoded there (an argument's undecodable bytes included); none is refused under the
+        # request's outcome line (cmd_spawn).
+        setattr(a, field, raw.decode("utf-8", "surrogateescape"))
+        return
+    text = raw.decode("utf-8", "replace")
     text = text[:-2] if text.endswith("\r\n") else text[:-1] if text.endswith("\n") else text
     if not text.strip():
         die("%s -: no text on standard input" % a.cmd)
@@ -19739,9 +20116,10 @@ def main(argv=None):
         # running daemon, run beside it: neither migrates or takes a lock.
         cmd_daemon(a)
         return
-    if a.cmd == "who" and not a.target:
+    if a.cmd == "who" and not a.target and a.thread is None:
         # The address mod's, before a session's model requests: it reads and
-        # never migrates, and never waits on the registry's lock.
+        # never migrates, and never waits on the registry's lock. `--thread`
+        # resolves a name through find_target, which reconciles: not here.
         cmd_who(a)
         return
     if not getattr(a, "fn", None):
@@ -19753,6 +20131,12 @@ def main(argv=None):
             die("usage: sminos channel create <name> [<thread>] | add <channel> [<thread>...] | remove <channel> "
                 "[<thread>...] | show <channel> [--json] | env add|remove <channel> <machine>")
         die("unknown command: %s (try: sminos help)" % argv[0])
+    if a.cmd == "spawn" and a.asked_from is not None and a.on is None and os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        # The transport's flag: the record it gives the new session is a terminal spawn's (spawn_provenance), so
+        # a session passing it would give its child this machine's default reach, not its own. Refused before
+        # anything, the task's read included, as `say --notice` is; over `devcloud vm ssh` no session runs it.
+        die("spawn: --asked-from is the form another machine's sminos calls over devcloud vm ssh, and a session is "
+            "not one: drop it (sminos spawn --on <vm> opens a session on another machine)")
     stdin_body(a)
     migrate()
     HINTS["on"] = a.cmd in READING_VERBS

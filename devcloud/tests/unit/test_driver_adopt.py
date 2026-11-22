@@ -8,15 +8,18 @@ import argparse
 import base64
 import json
 import pathlib
+import subprocess
+import sys
 import tempfile
 
 import _path  # noqa: F401
 from devcloudlib import descriptor
-from driver import adopt, adopt_host, compose, ops, reaper
+from driver import adopt, adopt_host, compose, ops, owner, reaper
 from driver.errors import DriverError
 from driver.ssh import Result
 
-from driver_fixtures import KEY, NOW, DriverBase, FakeRemote, status_json, ts_device
+import _path as paths
+from driver_fixtures import KEY, NOW, SESSION, DriverBase, FakeRemote, status_json, thread_answer, ts_device
 
 ADDRESS = "203.0.113.50"
 NAME = "dc-adp-7f3a"
@@ -634,6 +637,126 @@ class ReleaseRemovesTheNodeTest(AdoptBase):
         with self.assertRaises(DriverError):
             ops.down(self.ctx, NAME, force=False)
         self.assertEqual(self.tailnet_api.calls, [])
+
+
+class RecordLockTest(AdoptBase):
+    """Every write of a record after its first reads it again under this
+    Mac's lock for the host (adopt.update), so a writer that read it before
+    a call to the host writes back nothing another changed meanwhile, and a
+    record removed meanwhile is not written again (EN.G1's plan, §5)."""
+
+    def setUp(self):
+        super().setUp()
+        self.threads["builder"] = thread_answer()
+        self.held = {"tag": "@abcd1234", "project": None, "takes_project": True}
+        self.during = {}            # a needle -> what runs while the host answers that command
+        real = self.remote.answer
+
+        def answer(command, input):
+            for needle, then in list(self.during.items()):
+                if needle in command:
+                    del self.during[needle]
+                    then()
+            if "python3 -P - write" in command:
+                words = command.split()
+                self.held.update(tag=words[4], project=words[5])
+            if "python3 -P - " in command:
+                return Result(0, json.dumps(self.held) + "\n", "", False)
+            return real(command, input)
+        self.remote.answer = answer
+
+    def booted(self, **over):
+        self.write_record("booted", ready=NOW - 60, lifetime="keep", expires=None, **over)
+        self.remote.m.update(tailnet=True)
+
+    def test_a_handover_while_a_lease_is_on_the_host_and_a_lease_while_a_handover_is_keep_both(self):
+        for first in ("lease", "owner"):
+            with self.subTest(first=first):
+                self.booted()
+                if first == "lease":
+                    self.during["devcloud lease set"] = lambda: owner.run(self.ctx, NAME, "builder")
+                    self.assertEqual(ops.lease(self.ctx, NAME, "3h"), 0)
+                else:
+                    self.during["python3 -P - write"] = lambda: ops.lease(self.ctx, NAME, "3h")
+                    self.assertEqual(owner.run(self.ctx, NAME, "builder"), 0)
+                record = self.record()
+                self.assertEqual((record["creator"], record["expires"], record["lifetime"]),
+                                 (SESSION[:8], NOW + 3 * 3600, "ttl"), "the new owner and the new lease")
+
+    def test_a_resumed_adoption_that_read_its_record_before_a_handover_keeps_the_new_owner(self):
+        self.write_record("booted")
+        self.remote.m.update(keys_saved=True, authorized=True, descriptor={"name": NAME, "adopted": True})
+        self.during["systemctl start --no-block devcloud-boot.service"] = lambda: adopt.update(
+            self.ctx, NAME, creator=SESSION[:8])
+        self.assertEqual(self.adopt(), 0)
+        self.assertEqual((self.record()["creator"], self.record()["ready"]), (SESSION[:8], NOW))
+
+    def test_a_record_removed_while_a_lease_is_on_the_host_is_not_written_again(self):
+        self.booted()
+        self.during["devcloud lease set"] = lambda: adopt.path(self.ctx, NAME).unlink()
+        with self.assertRaises(DriverError) as caught:
+            ops.lease(self.ctx, NAME, "3h")
+        self.assertEqual(str(caught.exception), f"{NAME}'s adoption record was removed while this ran (the machine "
+                                                "was released): nothing more was written")
+        self.assertIsNone(self.record())
+
+    def test_save_is_the_first_write_only(self):
+        self.write_record("booted", creator=SESSION[:8])
+        before = (self.state_dir / "adopted" / f"{NAME}.json").read_text()
+        stale = adopt.Record(**dict(json.loads(before), phase="preparing", creator="abcd1234"))
+        with self.assertRaises(DriverError) as caught:
+            adopt.save(self.ctx, stale)
+        self.assertIn("is there already", str(caught.exception))
+        self.assertEqual((self.state_dir / "adopted" / f"{NAME}.json").read_text(), before)
+
+    def test_a_resume_from_preparing_never_writes_back_the_copy_it_read_before_its_checks(self):
+        """While a resume checks the machine, another adoption of the name
+        moves it on and a handover lands, or the record goes: the resume
+        reads the record again under the lock before it replays anything,
+        and refuses; a handover alone is taken up."""
+        def advanced():
+            adopt.update(self.ctx, NAME, phase="booted")
+            adopt.update(self.ctx, NAME, creator=SESSION[:8])
+
+        def removed():
+            adopt.path(self.ctx, NAME).unlink()
+        for what, meanwhile, words in (
+                ("advanced", advanced, f"{NAME}'s adoption moved on to phase booted while this run checked the machine"),
+                ("removed", removed, f"{NAME}'s adoption record was removed while this ran")):
+            with self.subTest(what=what):
+                self.write_record("preparing")
+                self.remote.m.update(keys_saved=True, setup=0)
+                self.during["python3 - preflight"] = meanwhile
+                code, message = self.refused()
+                self.assertEqual(code, 1)
+                self.assertIn(words, message)
+                self.assertEqual(self.remote.m["setup"], 0, "nothing replayed")
+                if what == "advanced":
+                    self.assertEqual((self.record()["phase"], self.record()["creator"]), ("booted", SESSION[:8]))
+                else:
+                    self.assertIsNone(self.record())
+        self.write_record("preparing")
+        self.during["python3 - preflight"] = lambda: adopt.update(self.ctx, NAME, creator=SESSION[:8])
+        self.assertEqual(self.adopt(), 0)
+        self.assertEqual((self.record()["phase"], self.record()["creator"]), ("booted", SESSION[:8]))
+
+    def test_two_processes_writing_one_record_leave_no_temporary_file_of_the_others(self):
+        self.write_record("booted")
+        script = (
+            "import argparse, pathlib, sys\n"
+            "sys.path[:0] = [sys.argv[1], sys.argv[1] + '/boot']\n"
+            "from driver import adopt, context\n"
+            "state = pathlib.Path(sys.argv[2])\n"
+            "ctx = context.Context(context.Paths(profile=state, state=state, seed=state / 'seed'), env={})\n"
+            "for i in range(150):\n"
+            "    assert adopt.update(ctx, sys.argv[3], ready=int(sys.argv[4]) + i) is not None\n")
+        procs = [subprocess.Popen([sys.executable, "-c", script, str(paths.DEVCLOUD), str(self.state_dir), NAME, str(n)],
+                                  stderr=subprocess.PIPE) for n in (1000, 5000)]
+        for proc in procs:
+            _, err = proc.communicate(timeout=120)
+            self.assertEqual(proc.returncode, 0, err.decode())
+        self.assertEqual(sorted(p.name for p in (self.state_dir / "adopted").iterdir()), [f"{NAME}.json"])
+        self.assertIn(self.record()["ready"], (1149, 5149))
 
 
 class ReaperTest(AdoptBase):

@@ -563,6 +563,22 @@ run_suites_c() {
   if python3 -B "$SCRIPT_DIR/test_stdin_bodies.py"; then
     pass "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"
   else fail "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"; fi
+  # EN.G1 (docs/doperpowers/plans/2026-11-21-sminos-environments-en-g1.md): its five suite files, here and nowhere else.
+  if python3 -B "$SCRIPT_DIR/test_notice.py"; then
+    pass "a machine's notice: the marker, its route and frame, a direct send's runs, say --exit-held (test_notice.py)"
+  else fail "a machine's notice: the marker, its route and frame, a direct send's runs, say --exit-held (test_notice.py)"; fi
+  if "$SCRIPT_DIR/test-notice-machines.sh"; then
+    pass "a machine's notice between two machines: the thread's current session, the frame, going on (test-notice-machines.sh)"
+  else fail "a machine's notice between two machines: the thread's current session, the frame, going on (test-notice-machines.sh)"; fi
+  if python3 -B "$SCRIPT_DIR/test_who_thread.py"; then
+    pass "who --thread: the thread a name is, one JSON line for devcloud vm owner (test_who_thread.py)"
+  else fail "who --thread: the thread a name is, one JSON line for devcloud vm owner (test_who_thread.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_on.py"; then
+    pass "spawn --on, the Mac side: its refusals, vm up's call, origin's branch, the reach rule, the outcome line (test_on.py)"
+  else fail "spawn --on, the Mac side: its refusals, vm up's call, origin's branch, the reach rule, the outcome line (test_on.py)"; fi
+  if "$SCRIPT_DIR/test-on.sh"; then
+    pass "spawn --on between two machines: the VM side for real, its refusals, the wait, what is not known (test-on.sh)"
+  else fail "spawn --on between two machines: the VM side for real, its refusals, the wait, what is not known (test-on.sh)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 # The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a
@@ -839,6 +855,7 @@ assert_contains "$(field "$R_UUID" task)" "    sminos say - <<'EOF'" "preamble t
 assert_contains "$(field "$R_UUID" task)" 'keep it for what every member must act on' "and what @all is for"
 assert_contains "$(field "$R_UUID" task)" 'only the tags that open a message' "member preamble teaches that only leading tags address"
 assert_contains "$(field "$R_UUID" task)" '@<project>/<alias>' "preamble names another project's member"
+assert_contains "$(field "$R_UUID" task)" "with no reply line: nobody answers it, and its content" "preamble teaches a machine's notice as it arrives: a chat frame from <program>@<machine>, no reply line (X8)"
 assert_contains "$(field "$R_UUID" task)" 'mcp__to-human__message where you have it (final: true when it ends your' "preamble sends the human a message through the tool, not a say"
 assert_contains "$(field "$R_UUID" task)" 'else in a <message>…</message> ending your reply' "and a <message> only where the tool is missing"
 assert_not_contains "$(field "$R_UUID" task)" "sminos charge" "preamble does not teach writing the in-charge line: it is derived"

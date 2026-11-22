@@ -1,13 +1,22 @@
 """`ls`, `ssh`, `lease` and `down` (M3's decisions) against the stand-in
-provider and stand-in hosts."""
+provider and stand-in hosts; and every merge of a server's labels made under
+this Mac's lock for the host (EN.G1's plan, §5), so a lease and a handover
+side by side each keep the other's write."""
+import ast
+import io
 import json
+import pathlib
+import threading
+import time
+from unittest import mock
 
 import _path  # noqa: F401
-from driver import ops
+import _path as paths
+from driver import images, ops, owner, reaper
 from driver.errors import DriverError
 from driver.ssh import Result
 
-from driver_fixtures import NOW, READY, DriverBase, status_json, vm_labels
+from driver_fixtures import NOW, READY, SESSION, DriverBase, status_json, thread_answer, vm_labels
 
 HOUR = 3600
 
@@ -37,6 +46,8 @@ class LsTest(OpsBase):
         self.assertRegex(out, r"dc-b-0002 .*ended 10m ago\s+held")
         self.assertRegex(out, r"dc-k-0003\s+fake/main\s+keep\s+-")
         self.assertRegex(out, r"dc-gone-0009\s+tailnet only")
+        header = out.splitlines()[1].split()
+        self.assertEqual(header[-2:], ["OWNER", "IDLE"], "the thread that owns it, which may not have made it")
         self.assertNotIn("macbook", out)
         self.assertNotIn("dc-bake-0004", out)
 
@@ -338,3 +349,104 @@ class DownTest(OpsBase):
         code, _ = self.fails(lambda: ops.down(self.ctx, "dc-a-0001", force=False))
         self.assertEqual(code, 1)
         self.assertIn("dc-a-0001", self.servers())
+
+
+class LabelLockTest(OpsBase):
+    """A merge of labels is a read and a whole replacement: a `vm lease` and
+    a `vm owner` of one host, side by side on this Mac, each wait for the
+    other's merge, so neither writes back what it read before the other."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_server("dc-a-0001", vm_labels(expires=NOW + HOUR, **{"devcloud-creator": "abcd1234"}))
+        self.remote.on("devcloud lease set", out=f"{NOW + 2 * HOUR}\n")
+        self.threads["builder"] = thread_answer()
+        held = {"tag": "@abcd1234", "project": "example", "takes_project": True}
+
+        def write(target, command):
+            words = command.split()
+            held.update(tag=words[4].strip("'"), project=words[5].strip("'"))
+            return Result(0, json.dumps(held) + "\n", "", False)
+        self.remote.on("python3 -P - write", fn=write)
+        self.remote.on("python3 -P - read", fn=lambda target, command: Result(0, json.dumps(held) + "\n", "", False))
+        self.gate = self.tmp / "gate"
+
+    def ctx_waiting(self):
+        """A second command's context, which says when it asks for the host's lock."""
+        ctx = self.make_ctx(out=io.StringIO(), err=io.StringIO())
+        asked = threading.Event()
+        real = ctx.host_lock
+
+        def host_lock(name):
+            asked.set()
+            return real(name)
+        ctx.host_lock = host_lock
+        return ctx, asked
+
+    def side_by_side(self, first, second):
+        """`first` held at the provider's `get` inside its merge, `second` run
+        until it asks for the lock; then the gate opened. Each returns 0."""
+        self.behave(gate={"get": str(self.gate)})
+        results, threads = {}, []
+        try:
+            one = threading.Thread(target=lambda: results.update(first=first(self.ctx)))
+            threads.append(one)
+            one.start()
+            deadline = time.monotonic() + 30
+            while not pathlib.Path(str(self.gate) + ".waiting").exists():
+                self.assertLess(time.monotonic(), deadline, "the first never reached its merge")
+                time.sleep(0.02)
+            gets = self.ops().count("get")
+            ctx, asked = self.ctx_waiting()
+            two = threading.Thread(target=lambda: results.update(second=second(ctx)))
+            threads.append(two)
+            two.start()
+            self.assertTrue(asked.wait(30), "the second never reached its merge")
+            time.sleep(0.3)
+            self.assertNotIn("second", results, "the second waits for the first's merge")
+            self.assertEqual(self.ops().count("get"), gets, "the second's merge has not reached the provider")
+        finally:
+            self.gate.write_text("")
+            for each in threads:
+                each.join(30)
+        self.assertEqual(results, {"first": 0, "second": 0})
+        labels = self.servers()["dc-a-0001"]["labels"]
+        self.assertEqual((labels["devcloud-expires"], labels["devcloud-creator"]),
+                         (str(NOW + 2 * HOUR), SESSION[:8]), "the new lease and the new owner")
+
+    def test_a_handover_waits_for_a_lease_held_inside_its_merge(self):
+        self.side_by_side(lambda ctx: ops.lease(ctx, "dc-a-0001", "2h"),
+                          lambda ctx: owner.run(ctx, "dc-a-0001", "builder"))
+
+    def test_a_lease_waits_for_a_handover_held_inside_its_merge(self):
+        self.side_by_side(lambda ctx: owner.run(ctx, "dc-a-0001", "builder"),
+                          lambda ctx: ops.lease(ctx, "dc-a-0001", "2h"))
+
+    def test_the_reaper_and_the_image_builder_merge_under_the_lock(self):
+        taken = []
+        real = self.ctx.host_lock
+
+        def host_lock(name):
+            taken.append(name)
+            return real(name)
+        self.ctx.host_lock = host_lock
+        self.add_server("dc-bake-0002", {"devcloud": "builder"}, created=NOW - 60)
+        builder = next(e for e in self.ctx.fleet(kinds=None) if e.vm["name"] == "dc-bake-0002")
+        images._discard(self.ctx, builder, "setup")
+        self.assertIn("dc-bake-0002", taken)
+        entry = next(e for e in self.ctx.fleet() if e.vm["name"] == "dc-a-0001")
+        action = reaper.Action("label", "held", {"devcloud-held": "1"}, ())
+        with mock.patch.object(reaper, "decide", return_value=action):
+            reaper._expired(self.ctx, entry, bounded=False)
+        self.assertEqual(taken.count("dc-a-0001"), 1)
+        self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-held"], "1")
+
+    def test_no_merge_of_labels_is_left_outside_merge_labels(self):
+        """Every call of set_labels with merge=True is Context.merge_labels's own."""
+        found = []
+        for path in sorted((paths.DEVCLOUD / "driver").glob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "set_labels" and any(
+                        k.arg == "merge" for k in node.keywords):
+                    found.append((path.name, node.lineno))
+        self.assertEqual([name for name, _ in found], ["context.py"], found)
