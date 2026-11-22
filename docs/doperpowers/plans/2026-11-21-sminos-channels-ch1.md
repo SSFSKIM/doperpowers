@@ -1558,10 +1558,10 @@ the request's `thread`.
 | 5 | a request among `earlier` for the same thread is not expired, passes rows 2 and 3, and is not in T's `answered` | pending `earlier` |
 | 6 | T has an open entry | pending `entry` |
 | 7 | T holds no session; or its session is a member of no project now | pending `vacant`; pending `between` |
-| 8 | the request is from elsewhere (`policy.outside_origin`) and the kept welcome lists no `channels` | pending `no-channels` |
-| 9 | the request is from elsewhere and the machine admits nothing from outside (`policy.read_only`) | refused `read-only` |
-| 10 | its writer is this machine's own, this machine holds a record of the requester, and it shares the thread's owners: a session's writer by `same_owner_local` with a thread or seat record here that has had that session; the human writer for a request this machine appended itself (`appended_here`) whose target's record, read now, names the machine's owners (`machine_owns`) | honoured |
-| 11 | `sender_verified` is False; is None | refused `not-reachable`; pending `unverifiable` |
+| 8 | the request is from elsewhere (not `appended_here`: neither a queued append of this machine, a former name's included, nor receipted here) and the kept welcome lists no `channels` | pending `no-channels` |
+| 9 | the request is from elsewhere (not `appended_here`) and the machine admits nothing from outside (`policy.read_only`) | refused `read-only` |
+| 10 | the request is `appended_here` and its writer shares the thread's owners: a session's writer by `same_owner_local`, the human writer by the target's record, read now, naming the machine's owners (`machine_owns`) | honoured |
+| 11 | the request is not `appended_here` and `sender_verified` (its signer read against the revocation set) is False; is None | refused `not-reachable`; pending `unverifiable` |
 | 12 | no word for this event | pending `endpoint` |
 | 13 | a word, either one, and T's current session or its `reach_token` is not what `asked` holds | pending `moved`: the word is dropped and the request asked about again |
 | 14 | the word is `refuse` | refused `not-reachable` |
