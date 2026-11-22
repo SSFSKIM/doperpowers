@@ -6816,19 +6816,7 @@ def _projection(events):
                 r["latest"], r["joined"] = fold.effect[sid], fold.joined.get(sid)
                 r["stated"] = None   # a membership event in effect ends the statement (Fold.add)
                 if kind == "joined":
-                    stamp = e["thread"] if isinstance(e.get("thread"), str) else ""
-                    mark, eps = stamp or str(e.get("seat") or ""), r["episodes"]
-                    if not eps or (stamp and eps[-1][1] and stamp != eps[-1][1]) or (
-                            before is not None and before["kind"] == "retired"
-                            and before.get("reason") in ("continued", "replaced")):
-                        eps.append([str(e.get("ts") or ""), mark, e, str(e.get("by") or "")])
-                    else:
-                        ep = eps[-1]
-                        if stamp or (mark and not ep[1]):
-                            ep[1] = mark
-                        ep[2] = e
-                        if not ep[3] and e.get("by"):
-                            ep[3] = str(e["by"])
+                    episode_step(r["episodes"], e, before)
                     r["to"] = ""
                     if not r["by"] and e.get("by"):
                         r["by"] = str(e["by"])
@@ -6852,6 +6840,29 @@ def _projection(events):
             r["statuses"] = r["status"]   # read per episode (_member)
         r["status"] = latest_across_writers(r["status"])
     return info
+
+
+def episode_step(eps, e, before):
+    """A session's own `joined`, in effect, folded into its episodes `eps`
+    (_projection's `episodes`, X2, Interfaces §4; `before`, its membership
+    in effect before it): a new episode `[start ts, mark, latest joined,
+    first by]` at a `joined` stamped otherwise than the episode before, or
+    after its own retirement `continued` or `replaced`; else it is that
+    episode's, whose mark it sets when stamped (or, unstamped, naming a seat
+    where the episode has no mark). Every reader that splits a session into
+    episodes folds them by this step (_projection; sminos_channels._stated)."""
+    stamp = e["thread"] if isinstance(e.get("thread"), str) else ""
+    mark = stamp or str(e.get("seat") or "")
+    if not eps or (stamp and eps[-1][1] and stamp != eps[-1][1]) or (
+            before is not None and before["kind"] == "retired" and before.get("reason") in ("continued", "replaced")):
+        eps.append([str(e.get("ts") or ""), mark, e, str(e.get("by") or "")])
+        return
+    ep = eps[-1]
+    if stamp or (mark and not ep[1]):
+        ep[1] = mark
+    ep[2] = e
+    if not ep[3] and e.get("by"):
+        ep[3] = str(e["by"])
 
 
 def episode_mark(r, e):
@@ -9077,24 +9088,21 @@ def _with_shared(name, project, rows):
     """A bare alias's candidates for a sender in channels (CH2's M1): the
     project's members, and the rows of the rosters of the channels it is in
     (`rows`, sminos_channels.shared_rows) in a project a tag may write into
-    (org_scope), matched as match_members matches an alias (a current alias
-    before one held before), each thread once: two rows of one thread
-    (sminos_channels.row_thread; a refill or a move whose halves are read
-    in two logs) are its roster's row, where the thread is now."""
+    (org_scope), each thread once before any name is matched: two rows of
+    one thread (sminos_channels.row_thread; a refill or a move whose halves
+    are read in two logs) are its roster's row, where the thread is now, and
+    only that row's names reach it. Then matched as match_members matches an
+    alias (a current alias before one held before)."""
     chans = channels_module()
     open_ = {p.id for p in org_scope()}
-    canonical = {}
-    for p, m in rows:
-        if p.id in open_:
-            canonical.setdefault(chans.row_thread(p, m) or m.session, (p, m))
-    best = {}
-    for p, m in [(project, m) for m in members(project)] + list(canonical.values()):
-        if m.state == "retired" or has_ended(m) or not (how := alias_reach(m, name)):
-            continue
+    pairs, seen = [], set()
+    for p, m in [(p, m) for p, m in rows if p.id in open_] + [(project, m) for m in members(project)]:
         key = chans.row_thread(p, m) or m.session
-        if key not in best or best[key][2] == "former" and how == "alias":   # a current alias before one held
-            best[key] = canonical.get(key, (p, m)) + (how,)
-    return current_first(list(best.values()), name)
+        if key not in seen:
+            seen.add(key)
+            pairs.append((p, m))
+    return current_first([(p, m, how) for p, m in pairs
+                          if m.state != "retired" and not has_ended(m) and (how := alias_reach(m, name))], name)
 
 
 def resolve_tags(project, text, raws=None):

@@ -505,14 +505,16 @@ class Review1(Names):
         kind, seat, bound = sminos.find_target("desk/cafebabe#%s" % ssid[:8])
         self.assertEqual((kind, bound), ("seat", ssid), "alias#short binds the session")
 
-    def test_5_thread_of_row_reads_nothing_again(self):
-        self.far("faraway")
+    def test_5_thread_of_row_answers_what_its_own_sweep_read_and_reads_nothing_again(self):
+        """Round 2: a row keeps what the sweep that produced it read, however many sweeps came after."""
+        tid, sid, _ = self.far("faraway")
         (p, m), = channels.roster(self.chan(DESK))
         sminos.forget_caches()
         channels.rosters()   # another sweep: the row above is not its own
         with mock.patch.object(channels, "_sweep", side_effect=AssertionError("swept again")), \
                 mock.patch.object(sminos, "view_of", side_effect=AssertionError("a view read again")):
-            self.assertIsNone(channels.thread_of_row(p, m))
+            self.assertEqual(channels.thread_of_row(p, m), (tid, sid))
+            self.assertIsNone(channels.thread_of_row(p, sminos.Member(*m)), "a row no sweep produced: none")
 
     def test_minor_1_a_thread_outside_the_channel_named_by_nine_is_named_where_it_is(self):
         tid, sid, _ = self.far("stranger", chans=(LOBBY,))
@@ -530,6 +532,69 @@ class Review1(Names):
         self.assertEqual(code, sminos.EXIT_UNKNOWN)
         self.assertIn("ambiguous abcdef01-2345 in channel desk matches: one#%s, two#%s" % (s1[:8], s2[:8]), err)
         self.assertEqual(self.reach(t2), ("in", APP, s2), "the whole id tells them apart")
+
+
+class Review2(Names):
+    def test_1_a_refill_whose_rows_differ_in_alias_matches_only_where_the_thread_is_now(self):
+        """The stale row (the sender's project) held `oldname` before it was renamed `worker`; the successor (app)
+        is `helper` and never held either: neither old name reaches it, nothing crashes, and `@helper` does."""
+        _, sid = self.named(None, alias="sender")
+        self.placed(threads.thread_of(sid)["thread"], sid, DESK)
+        tid, old, new = (str(uuidlib.uuid4()) for _ in range(3))
+        self.joined(self.p, "beta/" + old, old, "oldname", tid)
+        sminos.log_append(self.p, "beta/" + old, "renamed", session=old, alias="worker", name_source="user",
+                          thread=tid)
+        self.stated(self.p, "beta/" + old, old, tid, [DESK])
+        self.joined(self.app, "beta/" + new, new, "helper", tid)
+        self.stated(self.app, "beta/" + new, new, tid, [DESK])
+        for name in ("oldname", "worker"):
+            code, out = self.as_session(sid, "say", "@%s hello" % name)
+            self.assertEqual(code, sminos.EXIT_UNKNOWN, (name, out))
+            self.assertIn("no member @%s" % name, out)
+        code, out = self.as_session(sid, "say", "@helper hello")
+        self.assertEqual(code, 0, out)
+        sminos.forget_caches()
+        e, = [e for e in sminos.log_read(self.app) if e["kind"] == "say"]
+        self.assertEqual([r["session"] for r in e["to"]], [new])
+
+    def test_2_a_row_whose_stamp_and_statement_disagree_is_offered_as_no_recipient(self):
+        """One valid statement of the channel, then a current one under another thread's id: by the thread's id the
+        row is neither in nor out, and nothing is offered."""
+        sid, tid, other = (str(uuidlib.uuid4()) for _ in range(3))
+        w = "beta/" + sid
+        self.joined(self.app, w, sid, "torn", tid)
+        self.stated(self.app, w, sid, tid, [DESK])
+        self.stated(self.app, w, sid, other, [DESK])
+        self.assertIn(tid, channels.once_in(self.chan(DESK)))
+        (p, m), = channels.roster(self.chan(DESK))
+        self.assertIsNone(channels.thread_of_row(p, m))
+        code, err = refused(channels.reach_in, self.chan(DESK), tid)
+        self.assertEqual(code, sminos.EXIT_UNKNOWN)
+        self.assertIn("%s: not reached through desk (its row's membership names two threads" % tid, err)
+        code, out = self.cli("charge", "desk/%s" % tid, "x")
+        self.assertEqual(code, sminos.EXIT_UNKNOWN, out)
+        self.assertNotIn("name it by its own name", out, "no direct recipient offered")
+
+    def test_4_the_projection_and_the_channels_fold_split_episodes_by_one_step(self):
+        sid, t1, t2 = (str(uuidlib.uuid4()) for _ in range(3))
+        w = "beta/" + sid
+        self.joined(self.app, w, sid, "a", t1)
+        self.retired(self.app, w, sid, "replaced", thread=t1)
+        self.joined(self.app, w, sid, "b")
+        self.joined(self.app, w, sid, "c", t2)
+        events = sminos.view_of(self.app).events
+        real, calls = sminos.episode_step, []
+
+        def counted(*a, **k):
+            calls.append(a[1]["session"])
+            return real(*a, **k)
+        with mock.patch.object(sminos, "episode_step", counted):
+            info = sminos._projection(events)
+            n = len(calls)
+            folded = channels._stated(events)
+        self.assertEqual(n, 3, "the projection folds each joined by the step")
+        self.assertEqual(len(calls), 6, "and so does the channels' fold")
+        self.assertEqual([mark for mark, _ in folded["episodes"][sid]], [ep[1] for ep in info[sid]["episodes"]])
 
 
 if __name__ == "__main__":

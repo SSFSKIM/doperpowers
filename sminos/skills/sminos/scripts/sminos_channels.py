@@ -1344,6 +1344,14 @@ def _create(name, thread, session):
 _SWEPT = {}   # "views": the views the last sweep read, with the projects; "value": what it made of them
 
 
+class _SweptRow(sminos.Member):
+    """A row as the sweep that produced it gives it: the view's Member, with
+    what that sweep read of the row's view kept on the row itself
+    (`swept`: its `joined`'s stamp, its statement's thread), so whom a row
+    is addressed as (thread_of_row) is answered from the reading that found
+    it, however many sweeps came after."""
+
+
 def _sweep():
     """One sweep over view_of(p) for p in sminos.known_projects(): the
     roster of every channel, every thread's sessions as its rows list them,
@@ -1389,6 +1397,8 @@ def _sweep():
         if _thread_read(got) in current and current[_thread_read(got)] != (p.id, m.session):
             continue
         if m.session:
+            m = _SweptRow(*m)
+            m.swept = got
             rows.setdefault(m.session, (p, m))
             read[(p.id, m.session)] = (m,) + got
         if sminos.has_ended(m):
@@ -1496,12 +1506,10 @@ def id_form(name):
     return _ID_FORM.fullmatch(name) is not None
 
 
-def _kept_read(project, member):
-    """What the sweep that produced a row read of it, (stamp, statement's thread); None for a row the last sweep
-    did not produce (never a read made after the row was found)."""
-    value = _SWEPT.get("value")
-    got = value["read"].get((project.id, member.session)) if value is not None else None
-    return got[1:] if got is not None and got[0] is member else None
+def _kept_read(member):
+    """What the sweep that produced a row read of it, (stamp, statement's thread), kept on the row (_SweptRow);
+    None for a row no sweep produced (never a read made after the row was found)."""
+    return getattr(member, "swept", None)
 
 
 def row_thread(project, member):
@@ -1511,7 +1519,7 @@ def row_thread(project, member):
     read from what its sweep kept; any other (a project's member list) from
     its project's view. For telling two rows of one thread apart, never for
     addressing one (thread_of_row)."""
-    got = _kept_read(project, member)
+    got = _kept_read(member)
     return _thread_read(got if got is not None else _row_read(sminos.view_of(project).info.get(member.session)))
 
 
@@ -1541,9 +1549,9 @@ def thread_of_row(project, member):
     it beside its rows): the thread its `joined` in effect is stamped with,
     else, where an older copy left it unstamped, the `thread` of its
     statement in effect. None where both are there and disagree, where
-    neither is, and for a row the last sweep did not produce: nothing is
-    read again here."""
-    got = _kept_read(project, member)
+    neither is, and for a row no sweep produced: nothing is read again
+    here."""
+    got = _kept_read(member)
     if got is None:
         return None
     stamp, said = got
@@ -1556,14 +1564,15 @@ def thread_of_row(project, member):
 def _stated(events):
     """One log's statements that took effect and its sessions' episodes,
     folded in the merged read's order by the reducer's own rules
-    (sminos_threads.Fold; _projection's episode rule): {"said": [(session,
-    thread, channels, the stamp of the session's `joined` in effect then)],
-    "episodes": {session: [[mark, {the threads of the statements that took
-    effect in it}], ...]}}. A statement takes effect under the `joined` in
-    effect, which is its session's last episode's, so it is that episode's
-    whatever the clocks say. Kept beside the log (log_memo)."""
+    (sminos_threads.Fold; the projection's episode step,
+    sminos.episode_step): {"said": [(session, thread, channels, the stamp of
+    the session's `joined` in effect then)], "episodes": {session:
+    [(mark, {the threads of the statements that took effect in it}),
+    ...]}}. A statement takes effect under the `joined` in effect, which is
+    its session's last episode's, so it is that episode's whatever the
+    clocks say. Kept beside the log (log_memo)."""
     threads = sminos.threads_module()
-    fold, said, episodes = threads.Fold(), [], {}
+    fold, said, eps, within = threads.Fold(), [], {}, {}
     for e in events:
         sid, kind = e.get("session"), e.get("kind")
         if kind not in ("joined", "retired", "channels") or not isinstance(sid, str) or not sid \
@@ -1574,20 +1583,14 @@ def _stated(events):
             if fold.stated.get(sid) is e:
                 stamp = (fold.joined.get(sid) or {}).get("thread")
                 said.append((sid, e["thread"], threads.stated_set(e), stamp if isinstance(stamp, str) else ""))
-                if episodes.get(sid):
-                    episodes[sid][-1][1].add(e["thread"])
+                if eps.get(sid):
+                    within.setdefault((sid, len(eps[sid]) - 1), set()).add(e["thread"])
             continue
         before = fold.effect.get(sid)
-        if fold.add(sid, e) is None or kind != "joined":
-            continue
-        stamp = e["thread"] if isinstance(e.get("thread"), str) else ""
-        mark, eps = stamp or str(e.get("seat") or ""), episodes.setdefault(sid, [])
-        if not eps or (stamp and eps[-1][0] and stamp != eps[-1][0]) or (
-                before is not None and before["kind"] == "retired" and before.get("reason") in ("continued", "replaced")):
-            eps.append([mark, set()])
-        elif stamp or (mark and not eps[-1][0]):
-            eps[-1][0] = mark
-    return {"said": said, "episodes": episodes}
+        if fold.add(sid, e) is not None and kind == "joined":
+            sminos.episode_step(eps.setdefault(sid, []), e, before)
+    return {"said": said, "episodes": {sid: [(ep[1], within.get((sid, i), set())) for i, ep in enumerate(got)]
+                                       for sid, got in eps.items()}}
 
 
 def _stated_views():
@@ -1665,16 +1668,27 @@ def _no_member(channel, name, short, label, rows, at, elsewhere=None):
         elsewhere, True, at) if elsewhere else ""), sminos.EXIT_UNKNOWN)
 
 
-def _as_thread(thread, addressed, once):
+def _torn(member):
+    """Whether a row's stamp and its statement in effect name two threads (thread_of_row answers None)."""
+    got = _kept_read(member)
+    return got is not None and bool(got[0]) and bool(got[1]) and got[0] != got[1]
+
+
+def _as_thread(channel, label, thread, addressed, once):
     """§1's answer for a name that came to one thread: its roster row ("in"), else, once in the channel, its
-    row now ("out", None, None where it has none); None for a thread never in it."""
+    row now ("out", None, None where it has none); None for a thread never in it. A row now whose stamp and
+    statement name two threads is no one thread to send to, in the channel or out of it: exit 4, no recipient
+    offered."""
     rows = [(p, m) for p, m, t in addressed if t[0] == thread]
     if rows:
         return ("in",) + rows[0]
-    if thread in once:
-        now = _current_rows(thread)
-        return ("out",) + (now[0] if now else (None, None))
-    return None
+    if thread not in once:
+        return None
+    now = _current_rows(thread)
+    if now and _torn(now[0][1]):
+        sminos.die("%s: not reached through %s (its row's membership names two threads: its stamp and its statement "
+                   "disagree), and nothing is sent to it" % (label, channel.name), sminos.EXIT_UNKNOWN)
+    return ("out",) + (now[0] if now else (None, None))
 
 
 def _reach_by_id(channel, name, label, rows, at):
@@ -1695,7 +1709,7 @@ def _reach_by_id(channel, name, label, rows, at):
         sminos.die("ambiguous %s in channel %s matches: %s" % (
             label, channel.name, _labels([r for t in named for r in _current_rows(t)])), sminos.EXIT_UNKNOWN)
     if named:
-        return _as_thread(named[0], addressed, once) + ("thread",)
+        return _as_thread(channel, label, named[0], addressed, once) + ("thread",)
     known = [t for t in _threads_known() if t.startswith(name)]
     if known:   # a thread never in the channel: no old reply
         _no_member(channel, name, "", label, rows, at, [r for t in known for r in _current_rows(t)])
@@ -1718,7 +1732,7 @@ def _reach_by_id(channel, name, label, rows, at):
     if not had:
         return None
     thread = had.pop()
-    got = _as_thread(thread, addressed, once)
+    got = _as_thread(channel, label, thread, addressed, once)
     if got is None:
         _no_member(channel, name, "", label, rows, at, _current_rows(thread))
     return got + ("session",)
