@@ -2671,12 +2671,19 @@ while the milestones are built, one observation and its evidence each.
   `lstat` says it is gone. A11: a word that could not commit, or was taken
   without an outcome, waits `WORDS_EVERY` (`request_retry`), whatever
   other reply makes a pass due.
-- 2026-11-22 — **M8 as built** (`1be3f7fb..b2ed53c7`). B1: before it
-  undoes an older copy's `joined` in a channel, `_reconcile_channel` voids
-  an open entry that owes the channel anything but a `retired`
-  (`sminos_threads.void_owed_to_channel`, with a `daemon.log` line), the
-  whole entry, whatever its operation, since all of it was addressed to
-  the channel. B2: `keep_org` completes an older copy's registration of a
+- 2026-11-22 — **M8 as built** (`1be3f7fb..b2ed53c7`). B1: an entry an older copy addressed
+  to a channel is finished by the ordinary finisher (`sminos_threads._finish`,
+  under the finisher lock, before any effect is replayed, on every path that
+  finishes an entry) with what it owes the channel voided: no event appended
+  to the channel's log, no hand-off reach carried and no settlement under
+  it, with a `daemon.log` line; every local step (an absorption's hold,
+  merge and deletion, a lost claim undone, the stop, the seat, a queued
+  `next`) runs as for any entry. A purge so finished keeps its record as an
+  end's, since with its retirement voided the ended record is what keeps
+  the session from being adopted again. (Its review's first two rounds
+  found the first form of this, voiding or undoing the whole entry, losing
+  local work: a committed absorption, a refill's `next` into a real
+  project, a purge's stop.) B2: `keep_org` completes an older copy's registration of a
   channel the org lists, with no root, the enrollment's hub and the
   directory's name (`register_listed_channel`). B3: a resume's roster finds
   no member in a channel's log, and still follows a `retired moved` out of
