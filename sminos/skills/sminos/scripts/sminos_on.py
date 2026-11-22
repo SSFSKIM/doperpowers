@@ -161,8 +161,12 @@ def read_request(a):
             sminos.die("spawn: --asked-from with --wait: the machine that asked watches nothing here")
     # The protocol's fields alone: what this side marks on the request (`launched`, `unanswered`) is its own,
     # never a key the wire carried.
+    # The spawner's full session id, which an older Mac does not send: kept only whole and begun by its short, so the
+    # VM side can keep it as an address hint (sminos.record_spawner_hint).
+    session = by.get("session") if by is not None else None
+    whole_id = isinstance(session, str) and sminos.UUID_RE.fullmatch(session) and session[:8] == by["short"]
     return {"v": d["v"], "nonce": d["nonce"], "org": d["org"], "origin": d["origin"],
-            "by": None if by is None else {k: by[k] for k in BY_KEYS}}
+            "by": None if by is None else {**{k: by[k] for k in BY_KEYS}, **({"session": session} if whole_id else {})}}
 
 
 class Answering:
@@ -483,7 +487,7 @@ def route_back(c, enrolled):
     reach(c)
     return {"alias": alias or c.session[:8], "short": c.session[:8],
             "project": project.id, "project_name": project.name,
-            "machine": sminos.host_name()}
+            "machine": sminos.host_name(), "session": c.session}
 
 
 def reach(c):

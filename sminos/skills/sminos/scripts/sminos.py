@@ -8381,6 +8381,10 @@ def no_member(raw, name, short, scope, elsewhere=(), at="@", ids=()):
         die(hint, EXIT_UNKNOWN)
     names = sorted({p.name for p in scope})
     where = "project %s" % names[0] if len(names) == 1 else "any project known here"
+    if ids and {p.id for p in ids} - {p.id for p in scope}:
+        # A bare name was also read as a session's id across `ids` (every project known here): the words say so,
+        # rather than naming the one project its alias was looked up in.
+        where += ", nor a session of that id in any project known here"
     if elsewhere:
         die("no member %s in %s; elsewhere: %s\n%s" % (raw, where, candidate_labels(elsewhere, True, at),
                                                         BARE_NAME % ("@short" if at else "a session's short")),
@@ -8393,6 +8397,80 @@ def one_member(raw, found, qualify):
     if len(found) > 1:
         die("ambiguous %s matches: %s" % (raw, candidate_labels(found, qualify, "@")), EXIT_UNKNOWN)
     return found[0]
+
+
+# The spawner a spawn another machine asked for names, kept on this machine (`--asked-from`'s `by` with its full
+# session id): a machine enrolled moments ago holds no row of it until its first download of the project's log reaches
+# the spawner's writer, which on a large log can take most of an hour, so the new thread's `@<short>` reaches it by
+# this meanwhile. Only a tag a session of this machine writes takes it (`_resolve_tag`), only where no row answers the
+# name, and a row, once there, always wins: the entry is dropped when one answers, and HINT_TTL after it was kept.
+SPAWNER_HINTS = "spawner-hints.json"   # in daemon/: {session: {session, alias, project, machine, at}}
+HINT_TTL = 24 * 3600
+
+
+def spawner_hints_path():
+    return os.path.join(root(), "daemon", SPAWNER_HINTS)
+
+
+def spawner_hints(now=None):
+    """The hints kept and not past HINT_TTL, {session: entry}; {} when there are none."""
+    try:
+        d = json_at(spawner_hints_path())
+    except (OSError, ValueError):
+        return {}
+    now = time.time() if now is None else now
+    return {k: v for k, v in d.items() if isinstance(v, dict) and isinstance(v.get("at"), (int, float))
+            and now - v["at"] <= HINT_TTL} if isinstance(d, dict) else {}
+
+
+def _change_hints(change):
+    """`change` applied to the kept hints under their lock, the expired left out."""
+    path = spawner_hints_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with flocked(path + ".lock"):
+        kept = spawner_hints()
+        changed = change(dict(kept))
+        if changed != kept or os.path.exists(path):
+            write_json(path, changed, mode=0o600)
+
+
+def record_spawner_hint(by):
+    """Kept when `by` names the spawner's full session id, which its short begins (an older Mac sends none)."""
+    session = by.get("session") if isinstance(by, dict) else None
+    if not (isinstance(session, str) and UUID_RE.fullmatch(session) and session[:8] == by.get("short")):
+        return
+    entry = {"session": session, "alias": str(by.get("alias") or ""), "project": str(by.get("project") or ""),
+             "machine": str(by.get("machine") or ""), "at": time.time()}
+    _change_hints(lambda d: {**d, session: entry})
+
+
+def drop_spawner_hint(session):
+    _change_hints(lambda d: {k: v for k, v in d.items() if k != session})
+
+
+def hinted_spawner(name):
+    """(project, member) the one kept hint `name` names (its session's short or the whole id), for a tag a session of
+    this machine writes; None otherwise, or when its project is not one an org-wide name is looked up in here."""
+    if not os.environ.get("CLAUDE_CODE_SESSION_ID") or not os.path.exists(spawner_hints_path()):
+        return None
+    hits = [v for k, v in spawner_hints().items() if name in (k, k[:8])]
+    if len(hits) != 1:
+        return None
+    h = hits[0]
+    p = next((p for p in org_scope() if p.id == h["project"]), None)
+    if p is None:
+        return None
+    return p, Member(session=h["session"], short=h["session"][:8], alias=h["alias"] or h["session"][:8],
+                     name_source="hint", machine=h["machine"], local=False, state="", state_age=None, charge="",
+                     charge_source="", status="", by="", worktree="", seat=None)
+
+
+def settled_by_row(name, found):
+    """A row now answers `name`: a hint of the session it named is dropped (a row, once there, always wins)."""
+    if found and os.path.exists(spawner_hints_path()):
+        named = [k for k in spawner_hints() if name in (k, k[:8])]
+        for k in named:
+            drop_spawner_hint(k)
 
 
 def resolve_tag(project, t):
@@ -8437,7 +8515,8 @@ def _resolve_tag(project, t):
     if project is None:
         scope = org_scope()
         found = one_per_session(match_members(name, short, scope))
-        return one_member(raw, found, True) if found else no_member(raw, name, short, scope)
+        settled_by_row(name, found)
+        return one_member(raw, found, True) if found else hinted_spawner(name) or no_member(raw, name, short, scope)
     if short:
         found = one_per_session(match_members(name, short, org_scope()))
         return one_member(raw, found, True) if found else no_member(raw, name, short, org_scope())
@@ -8445,8 +8524,12 @@ def _resolve_tag(project, t):
     if found:
         return one_member(raw, found, False)
     found = one_per_session(match_members(name, "", org_scope(), alias=False))
+    settled_by_row(name, found)
     if found:
         return one_member(raw, found, True)
+    hinted = hinted_spawner(name)
+    if hinted:
+        return hinted
     no_member(raw, name, short, [project],
               [(p, m) for p, m in match_members(name, "", org_scope(), ids=False) if p.id != project.id],
               ids=org_scope())
@@ -14316,6 +14399,9 @@ def cmd_spawn(a):
         on.hold_to_origin(req, cwd, answer)
         on.hold_to_org(req, cwd, answer)
         a.cwd = cwd
+        # Before the launch: the child's first `say` may come at once, and this machine may hold no row of its
+        # spawner for a long while yet (record_spawner_hint).
+        record_spawner_hint(req["by"])
         answer.ok(spawn_here(a, asked=req))
 
 

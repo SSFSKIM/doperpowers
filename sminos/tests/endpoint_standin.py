@@ -16,7 +16,7 @@ As a subprocess (the shell suites):
 
     python3 endpoint_standin.py serve <directory> [<config JSON>]
     python3 endpoint_standin.py ctl <directory> <op> [<JSON>]
-    python3 endpoint_standin.py hand <source directory> <dest directory>
+    python3 endpoint_standin.py hand <source directory> <dest directory> [<page>]
     python3 endpoint_standin.py relay <directory> <directory>...
 
 `serve` also listens on <directory>/ctl.sock, and writes it last, so its
@@ -825,7 +825,7 @@ class Served:
         self.call("send", {"frames": [{"t": "events", "project": project, "events": list(wrapped)}]})
 
 
-def hand(source, dest, cursor_path):
+def hand(source, dest, cursor_path, page=None):
     """One pass of the relay between two machines' endpoints, for the
     two-machine compositions (#153 M3d): what `source` accepted reaches the
     live connection of `dest` as arrivals, one `events` frame per project
@@ -835,7 +835,16 @@ def hand(source, dest, cursor_path):
     only what is new; a new connection or a new hello starts again from
     its `have`, as the hub sends what a hello lacks). `source` and `dest`
     are Endpoints, or Served for a stand-in `serve` runs. How many events
-    were handed."""
+    were handed.
+
+    With `page` (a count), the hub's first download as it runs on the
+    fleet rather than all at once: the backlog is what `source` holds at
+    the first pass after the hello, sent in its order (writer by writer,
+    lexically, each in seq order, as `accepted` gives it) at most `page`
+    events a pass; whatever `source` takes after that first pass is live
+    and waits behind the whole backlog, a writer the backlog has already
+    reached included. Once the backlog is handed, a pass hands as one
+    without `page` does."""
     opened = dest.opened()
     cursor = read_json(cursor_path) or {}
     if cursor.get("conn") != opened["conn"]:
@@ -843,9 +852,23 @@ def hand(source, dest, cursor_path):
     handed = 0
     for project, hello in sorted(opened["projects"].items()):
         held = cursor["projects"].get(project)
-        if held is None or held.get("at") != hello["at"]:
+        fresh = held is None or held.get("at") != hello["at"]
+        if fresh:
             held = {"at": hello["at"], "after": dict(hello["have"])}
         wrapped = source.accepted(project, held["after"])
+        if page is not None and fresh:
+            # The backlog's end, writer by writer: what the source holds now.
+            held["backlog"] = {}
+            for w in wrapped:
+                e = w["event"]
+                held["backlog"][e["writer"]] = max(held["backlog"].get(e["writer"], 0), e["seq"])
+        backlog = held.get("backlog")
+        if backlog:
+            rest = [w for w in wrapped if w["event"]["seq"] <= backlog.get(w["event"]["writer"], 0)]
+            if rest:
+                wrapped = rest[:page] if page is not None else rest
+            else:
+                held.pop("backlog")
         if wrapped:
             try:
                 dest.events(project, wrapped)
@@ -861,12 +884,12 @@ def hand(source, dest, cursor_path):
     return handed
 
 
-def hand_served(source_dir, dest_dir):
+def hand_served(source_dir, dest_dir, page=None):
     """`hand` between two stand-ins `serve` runs, the cursor kept in dest's
     directory under source's path."""
     import hashlib
     tag = hashlib.sha256(os.path.abspath(source_dir).encode()).hexdigest()[:12]
-    return hand(Served(source_dir), Served(dest_dir), os.path.join(dest_dir, "handed-%s.json" % tag))
+    return hand(Served(source_dir), Served(dest_dir), os.path.join(dest_dir, "handed-%s.json" % tag), page)
 
 
 def relay_main(directories):
@@ -887,10 +910,10 @@ if __name__ == "__main__":
         serve_main(sys.argv[2], json.loads(sys.argv[3]) if len(sys.argv) > 3 else {})
     elif len(sys.argv) >= 4 and sys.argv[1] == "ctl":
         ctl_main(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]) if len(sys.argv) > 4 else {})
-    elif len(sys.argv) == 4 and sys.argv[1] == "hand":
-        print(hand_served(sys.argv[2], sys.argv[3]))
+    elif len(sys.argv) in (4, 5) and sys.argv[1] == "hand":
+        print(hand_served(sys.argv[2], sys.argv[3], int(sys.argv[4]) if len(sys.argv) == 5 else None))
     elif len(sys.argv) >= 4 and sys.argv[1] == "relay":
         relay_main(sys.argv[2:])
     else:
         sys.exit("usage: endpoint_standin.py serve <directory> [<config JSON>] | ctl <directory> <op> [<JSON>]"
-                 " | hand <source directory> <dest directory> | relay <directory> <directory>...")
+                 " | hand <source directory> <dest directory> [<page>] | relay <directory> <directory>...")

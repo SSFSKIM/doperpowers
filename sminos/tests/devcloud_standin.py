@@ -16,6 +16,9 @@ test's own), and with none when there is no such file:
   exit         the exit code (0)
   gate         a path: no answer until it exists
   hang         never answer
+  (Each wait, a gate's, a hold's and a hang, ends by itself after
+  WAIT_BOUND, the stand-in exiting 75 and saying so: a test killed while it
+  waits, its gate never opened, leaves no stand-in behind.)
   ignore_term  SIGTERM ignored
   child        start a child of its own (`sleep`) in a session of its own
 
@@ -72,20 +75,29 @@ with open(os.path.join(home, "devcloud-standin.calls"), "a") as f:
 
 
 HOST_ENV = ("HOME", "SMINOS_HOME", "DAEMON_HOST", "PATH")
+WAIT_BOUND = float(os.environ.get("DEVCLOUD_STANDIN_WAIT_BOUND") or 120)   # seconds a wait lasts at most (above)
+
+
+def waiting(until, what):
+    """Sleeps until `until()` holds; past WAIT_BOUND, exits 75 saying what it waited for."""
+    end = time.monotonic() + WAIT_BOUND
+    while not until():
+        if time.monotonic() > end:
+            sys.stderr.write("devcloud stand-in: %s did not come within %d s: ended\n" % (what, WAIT_BOUND))
+            sys.exit(75)
+        time.sleep(0.05)
 
 
 def held(d):
     if d.get("said"):
         open(d["said"], "w").close()
-    while d.get("hold") and not os.path.exists(d["hold"]):
-        time.sleep(0.05)
+    waiting(lambda: not d.get("hold") or os.path.exists(d["hold"]), "the hold's release (%s)" % d.get("hold"))
 
 
 def up(argv):
     u = cfg.get("up") or {}
     name = u.get("name", "dc-x-0001")
-    while u.get("gate") and not os.path.exists(u["gate"]):
-        time.sleep(0.05)
+    waiting(lambda: not u.get("gate") or os.path.exists(u["gate"]), "the gate (%s)" % u.get("gate"))
     # As devcloud's parser reads it: `--expect-creator=<short>`, or the flag and its value as two words.
     given = [w.split("=", 1)[1] for w in argv if w.startswith("--expect-creator=")] + \
         [argv[i + 1] for i, w in enumerate(argv[:-1]) if w == "--expect-creator"]
@@ -157,10 +169,8 @@ if sys.argv[1:3] == ["vm", "ssh"]:
 if sys.argv[1:3] != ["vm", "owned-by"] or len(sys.argv) < 4:
     sys.stderr.write("devcloud stand-in: only vm owned-by <short>..., vm up and vm ssh\n")
     sys.exit(2)
-while cfg.get("gate") and not os.path.exists(cfg["gate"]):
-    time.sleep(0.05)
-while cfg.get("hang"):
-    time.sleep(1)
+waiting(lambda: not cfg.get("gate") or os.path.exists(cfg["gate"]), "the gate (%s)" % cfg.get("gate"))
+waiting(lambda: not cfg.get("hang"), "an answer (hang)")
 if "stdout" in cfg:
     sys.stdout.write(cfg["stdout"])
 else:

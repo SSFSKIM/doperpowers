@@ -396,7 +396,7 @@ class RouteBack(On):
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(vm_side(sent["args"]).asked_from)["by"],
                          {"alias": alias, "short": self.sid[:8], "project": pid, "project_name": "Build Tools (Core)",
-                          "machine": "testhost"})
+                          "machine": "testhost", "session": self.sid})
         # An alias the address line does not show (parentheses): the line names the short alone, as it did, and
         # the request still names the alias sminos holds.
         self.sid, proc = self.session(root=d, name="Build (Core)")
@@ -523,7 +523,7 @@ class New(On):
                                    "by": {"alias": request["by"]["alias"], "short": self.sid[:8],
                                           "project": sminos.resolve_project(self.work).id,
                                           "project_name": sminos.resolve_project(self.work).name,
-                                          "machine": "testhost"}})
+                                          "machine": "testhost", "session": self.sid}})
         self.assertEqual(there.cwd, "~/Developer/GitHub/repo")
         self.assertTrue(all(w.startswith(("--asked-from=", "--cwd=", "--permission-mode=")) for w in ssh[9:12]),
                         "each value one word, the request's too: %r" % ssh[9:12])
@@ -994,6 +994,18 @@ class Bound(On):
             got = on.run_devcloud(c, ["vm", "owned-by", "abcd1234"], timeout=0.3, keep_err=True)
         return got, took[0]
 
+    def test_a_stand_in_whose_hold_is_never_released_ends_by_itself(self):
+        """A test killed while the stand-in waits on its hold leaves no stand-in behind (the orphans of EN.G1's M3)."""
+        self.cfg["ssh_hosts"]["vm1"] = {"stdout": "", "exit": 0, "hold": os.path.join(self.home, "never")}
+        self.save()
+        began = time.monotonic()
+        done = subprocess.run([sys.executable, "-B", os.environ["SMINOS_DEVCLOUD"], "vm", "ssh", "vm1", "--", "true"],
+                              capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL,
+                              env={**os.environ, "DEVCLOUD_STANDIN_WAIT_BOUND": "0.5"})
+        self.assertEqual(done.returncode, 75, done.stderr)
+        self.assertIn("did not come within", done.stderr)
+        self.assertLess(time.monotonic() - began, 20)
+
     def test_the_bound_holds_while_a_descendant_keeps_devcloud_s_output_open(self):
         got, took = self.bounded(hang=True)
         self.assertTrue(got[3], "the bound passed")
@@ -1179,6 +1191,95 @@ class Outcome(On):
                 self.assertFalse(os.path.exists(ran), "nothing was launched")
 
 
+class SpawnerHint(On):
+    """`say "@<short>"` from a session of this machine reaches a spawner the hint names while no row answers the
+    short (a fresh VM still downloading its project's log), and never once a row does; nothing else reads a hint."""
+
+    SPAWNER = "abcd1234-5678-4abc-8def-0123456789ab"
+
+    def setUp(self):
+        super().setUp()
+        self.team = os.path.join(self.home, "team")
+        os.makedirs(self.team)
+        self.pid = str(uuidlib.uuid4())
+        with open(os.path.join(self.team, ".smns"), "w") as f:
+            json.dump({"project": self.pid, "name": "team", "remote": "", "hub": {"org": "org-1"}}, f)
+        self.child, _ = self.session(root=self.team)
+        self.recorded(self.child)
+        self.by = {"alias": "boss", "short": self.SPAWNER[:8], "project": self.pid, "project_name": "team",
+                   "machine": "mac", "session": self.SPAWNER}
+
+    def say(self, text, session=True):
+        self.sid = self.child
+        return self.sminos_argv("say", text, session=session, cwd=self.team)
+
+    def recorded_to(self, text):
+        log = os.path.join(sminos.find_project(self.pid).home, "log")
+        for name in sorted(os.listdir(log)) if os.path.isdir(log) else []:
+            if name.endswith(".jsonl"):
+                with open(os.path.join(log, name)) as f:
+                    for line in f:
+                        e = json.loads(line)
+                        if text in str(e.get("text")):
+                            return e.get("to")
+        return None
+
+    def remote_row(self, alias):
+        """The spawner's own `joined`, as the download brings it: a row of another machine."""
+        p = sminos.find_project(self.pid)
+        path = sminos.writer_path(p, "mac/" + self.SPAWNER)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(json.dumps({"ts": "2026-11-22T00:00:00.000Z", "writer": "mac/" + self.SPAWNER, "seq": 1,
+                                "kind": "joined", "session": self.SPAWNER, "alias": alias, "name_source": "user",
+                                "machine": "mac", "cwd": "/Users/x/team", "worktree": "", "role": ""}) + "\n")
+        sminos.forget_caches()
+
+    def test_without_a_hint_the_tag_is_refused_as_before(self):
+        code, out, err = self.say("@abcd1234 up")
+        self.assertEqual(code, 4, out + err)
+        self.assertIsNone(self.recorded_to("up"))
+        # The words say what was searched: the caller's project by alias, and every project known here by id.
+        self.assertIn("no member @abcd1234 in project team, nor a session of that id in any project known here", err)
+
+    def test_a_tag_no_row_answers_reaches_the_hinted_spawner(self):
+        sminos.record_spawner_hint(self.by)
+        code, out, err = self.say("@abcd1234 up, and here")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.recorded_to("up, and here"), [{"session": self.SPAWNER, "alias": "boss"}])
+
+    def test_a_tag_written_with_no_session_takes_no_hint(self):
+        sminos.record_spawner_hint(self.by)
+        code, out, err = self.say("@abcd1234 from a host program", session=False)
+        self.assertEqual(code, 4, out + err)
+
+    def test_who_thread_answers_from_rows_alone(self):
+        sminos.record_spawner_hint(self.by)
+        self.sid = self.child
+        code, out, err = self.sminos_argv("who", "--thread=abcd1234", cwd=self.team)
+        self.assertEqual(code, 4, out + err)
+
+    def test_a_row_wins_and_the_hint_is_dropped(self):
+        sminos.record_spawner_hint(self.by)
+        self.remote_row("boss-row")
+        code, out, err = self.say("@abcd1234 once the row is here")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.recorded_to("once the row is here"), [{"session": self.SPAWNER, "alias": "boss-row"}])
+        self.assertEqual(sminos.spawner_hints(), {}, "a row answered the short: the hint is gone")
+
+    def test_an_entry_older_than_its_bound_is_not_used_and_is_dropped(self):
+        sminos.record_spawner_hint(self.by)
+        with mock.patch.object(sminos.time, "time", return_value=time.time() + sminos.HINT_TTL + 1):
+            code, out, err = self.say("@abcd1234 too late")
+            self.assertEqual(code, 4, out + err)
+            self.assertEqual(sminos.spawner_hints(), {})
+
+    def test_a_hint_for_a_project_not_known_here_is_not_used(self):
+        sminos.record_spawner_hint({**self.by, "project": str(uuidlib.uuid4())})
+        code, out, err = self.say("@abcd1234 nowhere")
+        self.assertEqual(code, 4, out + err)
+
+
 class VmSide(On):
     """The VM side's own line, for each way it ends, read by the Mac's check."""
 
@@ -1235,6 +1336,30 @@ class VmSide(On):
         self.assertNotIn("seat spawned:", "\n".join(lines))
         self.assertNotIn("not_carried", d, "a project this enrollment carries: no key")
         self.assertIn('boss (@abcd1234, in repo on mac; sminos say "@abcd1234 …" reaches it)', launched["task"])
+
+    def test_a_request_naming_its_spawner_s_session_keeps_the_spawner_as_an_address_hint(self):
+        """A fresh VM holds no row of the spawner until its first download of the project's log reaches the
+        spawner's writer: the request's full session id is kept so the child's `@<short>` reaches it meanwhile."""
+        spawner = "abcd1234-5678-4abc-8def-0123456789ab"
+        by = {"alias": "boss", "short": "abcd1234", "project": "p", "project_name": "repo", "machine": "mac",
+              "session": spawner}
+        code, lines, err, _ = self.asked(by=by)
+        self.assertEqual((code, on.judge(lines, NONCE, "w", code)[0]), (0, "ok"), err)
+        kept = sminos.spawner_hints()
+        self.assertEqual({k: v for k, v in kept[spawner].items() if k != "at"},
+                         {"session": spawner, "alias": "boss", "project": "p", "machine": "mac"})
+
+    def test_a_request_from_an_older_mac_keeps_no_hint(self):
+        code, lines, err, _ = self.asked()
+        self.assertEqual(on.judge(lines, NONCE, "w", code)[0], "ok", err)
+        self.assertEqual(sminos.spawner_hints(), {})
+
+    def test_a_session_its_short_does_not_begin_keeps_no_hint(self):
+        by = {"alias": "boss", "short": "abcd1234", "project": "p", "project_name": "repo", "machine": "mac",
+              "session": "ffff1234-5678-4abc-8def-0123456789ab"}
+        code, lines, err, _ = self.asked(by=by)
+        self.assertEqual(on.judge(lines, NONCE, "w", code)[0], "ok", err)
+        self.assertEqual(sminos.spawner_hints(), {})
 
     def test_each_refusal_ends_with_a_whole_line_of_its_why(self):
         self.unenroll()
