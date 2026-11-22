@@ -424,8 +424,8 @@ run_suites_a() {
     fail "the verbs, what a sender is told on any machine, and the direct send (test_wake_verbs.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_wake_senders.py"; then pass "one, two and five senders over the three ways against the wake, its holds, its grace and its transitions (test_wake_senders.py)"; else
     fail "one, two and five senders over the three ways against the wake, its holds, its grace and its transitions (test_wake_senders.py)"; fi
-  if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10 and 1.51.0 beside this code, each held to its version (test-older-cli.sh)"; else
-    fail "sminos 1.27.10 and 1.51.0 beside this code, each held to its version (test-older-cli.sh)"; fi
+  if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10, 1.51.0 and 1.52.0 beside this code, each held to its version, over a store with channels too (test-older-cli.sh)"; else
+    fail "sminos 1.27.10, 1.51.0 and 1.52.0 beside this code, each held to its version, over a store with channels too (test-older-cli.sh)"; fi
   if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else
     fail "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager.py"; then pass "the session manager's command: windows, pending, subscriptions (test_manager.py)"; else

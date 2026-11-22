@@ -2437,6 +2437,23 @@ def register_if_absent(project):
         write_json(path, info)
 
 
+def register_listed_channel(project):
+    """register_if_absent for a channel the org's directory lists, which
+    also completes a registration an older copy made of its id from a
+    `.smns` that named no hub (rooted at that folder, with no hub: a log
+    this machine never opens, not_carried's NO_HUB): rewritten as the
+    directory registers a channel, no root and the enrollment's hub (the
+    frontier review's B2). One that names a hub is kept as it is."""
+    path = os.path.join(project.home, "project.json")
+    os.makedirs(os.path.join(project.home, "log"), mode=0o700, exist_ok=True)
+    with flocked(path + ".lock"):
+        held = registration(project.id)
+        if held and hub_wellformed(held.get("hub")):
+            return
+        write_json(path, {"project": project.id, "name": project.name, "remote": "",
+                          "root": "", "hub": project.hub})
+
+
 _REGISTRATION_FILES = {}  # project.json → ((st_ino, st_size, st_mtime_ns), its JSON), for known_projects
 
 
@@ -2667,7 +2684,10 @@ def tag_project(p):
     tier project_tiers consults for it; `@<name>/alias#short` reads them in
     turn until one holds the member), else by its id — a `local-*` or
     git-mirrored project named as a hub or machine project is, or one whose
-    name several logs share."""
+    name several logs share, or one of a channel id's form, which every door
+    reads as a channel (the frontier review's B4)."""
+    if is_channel_id(p.name):
+        return p.id
     tiers, clash = _name_tiers(p.name)
     return p.name if not clash and any(t.id == p.id for t in tiers) else p.id
 
@@ -5604,11 +5624,25 @@ def _reconcile_channel(project, events, by_session):
     holds the session (retire_moved, its project read again under the
     lock). A closed session's `joined` is left as it is until the session
     runs again; nothing else of _reconcile runs (no join, no end, no thread
-    made or adopted, no hand-off)."""
+    made or adopted, no hand-off). Before that, an entry an older copy
+    left on a thread of such a session owing the channel an event no copy
+    of this code appends there is voided (void_owed_to_channel), whatever
+    holds the session: it can never be finished, and it would keep the
+    thread out of its own project."""
     latest, joined, _, _ = log_memo(events, "memberships", _memberships)
-    out = []
+    threads, out = threads_module(), []
     for sid, e in joined.items():
-        if latest[sid] != "joined" or not is_self(str(e.get("machine") or ""), sid):
+        if not is_self(str(e.get("machine") or ""), sid):
+            continue
+        t = threads.thread_of(sid)
+        if t is not None and (t.get("pending") or {}).get("project") == project.id:
+            try:
+                threads.void_owed_to_channel(t["thread"], project, lock_until=time.time() + 1)
+            except (OSError, LockBusy) as err:
+                warn("an entry of %s owing %s was not voided yet: %s" % (sid[:8], project.name,
+                                                                         err or "its lock is busy"))
+                continue
+        if latest[sid] != "joined":
             continue
         seat = by_session.get(sid)
         if seat is not None and seat["current"] == sid:
@@ -12176,6 +12210,8 @@ def project_init(a):
     name = a.name or (given.name if given else safe_name(os.path.basename(owning_repo(top) or top)) or "project")
     if "/" in name or "\n" in name or not name.strip():
         die("a project name is one line without '/': %r" % name)
+    if is_channel_id(name):   # read as a channel at every door, so no tag could name the project by it (B4)
+        die("a project name cannot have a channel id's form: %r" % name)
     data = {"project": stated.project.id if stated else pinned.id if pinned else str(uuidlib.uuid4()),
             "name": name, "remote": a.remote or ""}
     if hub:
@@ -19084,7 +19120,9 @@ def _roster_peer(pid, sid, all_seats):
     """(project, member, ended, projection) a peer is now: followed into the
     session it continues in (a hand-off) and into the project it moved to;
     `ended` when its membership there is retired. None when no project known
-    here holds it."""
+    here holds it: a channel's log, whose legacy `joined` an older copy
+    wrote, holds no member, though its `retired` `moved` is followed (the
+    frontier review's B3)."""
     for _ in range(4):   # a move chain, bounded
         p = known_project(pid)
         if p is None:
@@ -19100,7 +19138,7 @@ def _roster_peer(pid, sid, all_seats):
         if latest.get("kind") == "retired" and moved_to and moved_to != p.id:
             pid = moved_to
             continue
-        if r is None:
+        if r is None or is_channel_id(p.id):
             return None
         m = _member(sid, r, seats_by_session(p, all_seats).get(sid), None, False, True, info)
         return p, m, latest.get("kind") == "retired", info

@@ -29,14 +29,33 @@
 #   from another machine its daemon's pass delivers, waking it, while that
 #   failure's backoff would still hold it, and a sender's own call wakes it.
 #
-# - 1.52.0, T2's release (CH1's M2 pins it; its own expectations are M8's):
-#   the cut below alone.
+# - 1.52.0, T2's release (CH1's M2 pins it): the cut below, and CH1's M8 cases.
 # - Every copy from 1.51.0 on, CH1's M2: a membership change this code began
 #   and was cut after its record's write (the record holds the set, where its
 #   membership began and the request it answered; the entry owes the
 #   statement) is finished by the copy's reading verb, with no step of its
 #   own: the statement appended once, the record's keys as written. 1.27.10,
 #   which has no journal, finishes nothing, and this code's next verb does.
+#
+# - Every copy, CH1's M8, over a store this code gave channels (through its own functions, the machine not
+#   being enrolled: the channel registered as the org's directory registers it, the thread placed in it by a
+#   request of this machine's person, its statement answering it, and a channel-env of its own): its `list`,
+#   `list --json`, tagged `say`, `send` and `daemon tick` exit and print what they do over the same store
+#   without channels (normalised: ids, paths, times), launch as they did, and leave the record's set, positions
+#   and answer as written; its tick reconciles the channel as a project with no member, and its `projects`
+#   lists it as one, where this code's lists none. A `joined` the copy writes for the session (1.27's, once its
+#   human reopens it) is followed at this code's next reconciliation by a statement of the same set; so is a
+#   return's, after an end over which the channel's log gained an event: 1.51's and 1.52's return leaves where
+#   the membership began as it was before the end (accepted), 1.27 returns nothing and this code's writes it
+#   anew. Accepted and asserted as it is: 1.51's and 1.52's `list --json` of a spawned thread in a channel shows
+#   its seat's `began` and `answered` and hides its `channels`. Then the copy's `join <channel id>` by hand from
+#   the running session: this code's next reconciliation, while the session runs or once it runs again (closed
+#   in between, it is listed in neither), leaves it a member of its one project with its set as it was and a
+#   `retired` `moved` in the channel's log; and an uplink run on that store (older_channel_wire.py, the store
+#   enrolled then) is clean by channel_wire.py, baselined on the store as the older copy left it: the older
+#   `joined` uploaded in its place, this code's `retired` after it, and nothing else of this code's. 1.52.0 has
+#   no every-copy case (it wakes the thread its human opened, as this code does): over channels it is held to
+#   what it does without them.
 #
 #   test-older-cli.sh [--older <path to an older sminos launcher>]
 #
@@ -534,6 +553,201 @@ print(" ".join(row.channels), "|", " ".join(ch.channels_of(sid)), "|", sorted(ch
   closed
 }
 
+# ---- a store with channels, per copy (CH1's M8) ----------------------------------------
+HUB_JSON='{"url": "http://127.0.0.1:9", "org": "org-1"}'   # the org's hub, as its directory registers a log
+REQUEST=00000000000000000000000000000001   # a request this machine's person wrote for keeper, answered
+with_channels() { # what this code's verbs write, through its own functions (the machine is not enrolled, so
+  # `channel create` is refused here): the channel registered as the org's directory registers a log, the thread
+  # placed in it by a request of this machine's person (its statement answering it), and a channel-env of its own
+  here_py 'import json, sminos, sminos_channels as ch, sminos_threads as threads
+cid, sid, tid, pid, rid, hub = sys.argv[2:8]
+sminos.register_if_absent(sminos.make_project(cid, "desk-integration", "", "", json.loads(hub)))
+sminos.forget_caches()
+c, p = sminos.known_project(cid), sminos.known_project(pid)
+req = sminos.log_append(c, "%s/human" % sminos.machine_name_now(), "channel-request", op="add", session=sid, thread=tid, id=rid)
+answer = {"channel": cid, "id": rid, "ts": req["ts"], "result": "applied", "reason": None}
+entry = threads.set_channels(tid, lambda rec: {"project": p, "session": sid, "channels": [cid], "answer": answer})
+assert entry is not None and sminos.finish_thread(tid, project=p), entry
+writer, aud = sminos.own_stream(c, sid)
+sminos.log_append(c, writer, "channel-env", op="add", machine="beta", thread=tid)' \
+    "$CHANNEL" "$SID" "$THREAD" "$PROJECT" "$REQUEST" "$HUB_JSON"
+}
+normal() { # text — a verb's output with what differs between two cases of one shape put as names
+  py 'import re, sys
+text, subs = sys.stdin.read(), sys.argv[1:]
+for value, name in zip(subs[::2], subs[1::2]):
+    if value:
+        text = text.replace(value, name)
+text = re.sub(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z?", "<ts>", text)
+text = re.sub(r"\b\d+(\.\d+)?[smhd]\b", "<age>", text)
+sys.stdout.write(text)' "$SID" "<sid>" "${SID:0:8}" "<short>" "$THREAD" "<thread>" "${THREAD:0:8}" "<tshort>" \
+    "$PROJECT" "<project>" "${PROJECT:0:8}" "<pshort>" "$REPO" "<repo>" "$(dirname "$HOME")" "<case>" <<<"$1"
+}
+older_over() { # the older copy's verbs over the case's store: VERBS, each one's exit and output, normalised,
+  # its tick's line for the channel, the channel's own, apart in TICK_CHANNEL; with KEYS set, the thread record's
+  # keys asserted as they were after each verb
+  VERBS="" TICK_CHANNEL=""
+  local label out
+  for label in list list-json say send tick; do
+    case "$label" in
+      list) older list ;;
+      list-json) older list --json ;;
+      say) older say "@keeper hello from the older say" ;;
+      send) older send keeper "a send from the older copy" ;;
+      tick) older daemon tick ;;
+    esac
+    out="$(normal "$OUT")"
+    if [ "$label" = tick ]; then
+      TICK_CHANNEL="$(grep '^desk-integration: ' <<<"$out" || true)"
+      out="$(grep -v '^desk-integration: ' <<<"$out" || true)"
+    fi
+    VERBS="$VERBS== $label $RC
+$out
+"
+    [ -z "${KEYS:-}" ] || assert_equals "$(record_keys)" "$KEYS" "after its $label the record's set, positions and answer are as written"
+  done
+  VERBS="$VERBS== launches $(launches) $(older_launches)"
+}
+stated() { # this code's view of the session's row: the set its log states there, "<none>" for no row
+  here_py 'import sminos
+p, sid = sminos.resolve_project(sys.argv[2]), sys.argv[3]
+row = next((m for m in sminos.view_of(p).members if m.session == sid), None)
+print(" ".join(row.channels) if row is not None else "<none>")' "$REPO" "$SID"
+}
+channel_store() { # label — the copy's verbs over a store with channels, against the same store without them
+  fresh "$1-plain"
+  stopped_thread auto
+  KEYS="" older_over
+  local plain="$VERBS"
+  fresh "$1-chan"
+  echo " the same verbs over a store with the thread in a channel (its statement), a request and a channel-env:"
+  stopped_thread auto
+  with_channels
+  KEYS="$(record_keys)"
+  assert_equals "$KEYS" '[["'"$CHANNEL"'"], {"'"$CHANNEL"'": {"alpha/human": 1}}, [["'"$CHANNEL"'", "'"$REQUEST"'"]], null]' \
+    "the record holds the set, where its membership began and the request it answered"
+  older_over
+  assert_equals "$VERBS" "$plain" "each verb exits and prints as it did without channels, and launches as it did"
+  assert_equals "$TICK_CHANNEL" "desk-integration: reconciled 0 · published 0 · delivered 0" \
+    "its tick reconciles the channel as a project with no member"
+  KEYS=""
+  older projects
+  assert_equals "$(grep -cE '^desk-integration +hub +0 +0 +-$' <<<"$OUT")" 1 "it lists the channel as a project with no member"
+  run "$SMINOS" projects
+  assert_not_contains "$OUT" "desk-integration" "this code lists it as none"
+  echo " the session reopened by its human, the older copy first:"
+  opened
+  older list
+  assert_equals "$RC" 0 "its list runs"
+  local before
+  before="$(statements | wc -l | tr -d ' ')"
+  run "$SMINOS" daemon tick
+  case "$(version_of "$OLDER")" in
+    1.27.*)
+      assert_equals "$(own_events | tail -2)" "$(printf 'joined - unstamped\njoined - stamped')" \
+        "1.27 joined it unstamped, and this code stamped it again"
+      assert_equals "$(statements | wc -l | tr -d ' ')" "$((before + 1))" \
+        "this code's next reconciliation states the set after that joined" ;;
+    *) assert_equals "$(statements | wc -l | tr -d ' ')" "$before" "it joined nothing again: nothing is stated again" ;;
+  esac
+  assert_equals "$(stated)" "$CHANNEL" "the log states the record's set"
+  assert_equals "$(record_keys)" '[["'"$CHANNEL"'"], {"'"$CHANNEL"'": {"alpha/human": 1}}, [["'"$CHANNEL"'", "'"$REQUEST"'"]], null]' \
+    "and the record's keys are as written"
+  closed
+}
+channel_seat() { # label — accepted (the constraints' list) and asserted as it is: 1.51 and 1.52's list --json of a
+  # spawned thread in a channel hides `channels`, which they know (SEAT_KEYS), and shows `began` and `answered`
+  fresh "$1-chan-seat"
+  run "$SMINOS" spawn seata "for the seat task"
+  assert_equals "$RC" 0 "this code spawns seata"
+  local seat
+  seat="$(printf '%s' "$OUT" | sed -n 's/.*\[[0-9a-f]* \/ \([0-9a-f-]*\)\].*/\1/p')"
+  SID="$seat" THREAD="$seat" with_channels
+  assert_equals "$( (cd "$REPO" && STUB_WHO=older "$OLDER" list --json 2>/dev/null) | py 'import json, sys
+row = next(r for r in json.load(sys.stdin) if r["session"] == sys.argv[1])
+print(" ".join(k for k in ("channels", "began", "answered") if k in (row["seat"] or {})))' "$seat")" "began answered" \
+    "its list --json shows the seat's began and answered, and hides its channels"
+}
+channel_return() { # label — the thread ended in the channel, its log gaining an event meanwhile, then returned
+  fresh "$1-chan-return"
+  echo " an end, an event in the channel's log, and a return:"
+  opened
+  run "$SMINOS" list
+  THREAD="$(row thread)"
+  with_channels
+  closed
+  run "$SMINOS" retire keeper
+  assert_equals "$RC" 0 "this code ends the thread"
+  here_py 'import sminos
+sminos.log_append(sminos.known_project(sys.argv[2]), "beta/human", "channel-env", op="add", machine="beta", thread="x")' \
+    "$CHANNEL"
+  opened
+  older list
+  assert_equals "$RC" 0 "its list runs"
+  local old='{"'"$CHANNEL"'": {"alpha/human": 1}}' kind
+  case "$(version_of "$OLDER")" in
+    1.27.*)
+      assert_equals "$(own_events | tail -1)" "retired retire stamped" "1.27, with no journal, returns nothing"
+      run "$SMINOS" daemon tick
+      kind="this code's return writes where the membership began anew, the event the log gained meanwhile included"
+      assert_contains "$(record_keys)" '"beta/human": 1' "$kind" ;;
+    *)
+      assert_equals "$(own_events | tail -1)" "joined - stamped" "it returned the thread"
+      assert_contains "$(record_keys)" "$old" "accepted: its return leaves where the membership began as it was before the end"
+      run "$SMINOS" daemon tick ;;
+  esac
+  assert_equals "$(statements | wc -l | tr -d ' ')" 2 "this code's next reconciliation states the set after the return's joined"
+  assert_equals "$(stated)" "$CHANNEL" "the log states the record's set"
+  closed
+}
+channel_join() { # label live|closed — the copy's `join <channel id>` by hand from the running session; this code's
+  # next reconciliation runs while it runs, or once it runs again; then the wire check over the store
+  fresh "$1-chan-join-$2"
+  echo " its join of the running session into the channel's id, this code reconciling it $2:"
+  opened
+  run "$SMINOS" list
+  THREAD="$(row thread)"
+  with_channels
+  local keys
+  keys="$(record_keys)"
+  run env STUB_WHO=older CLAUDE_CODE_SESSION_ID="$SID" "$OLDER" join "$CHANNEL"
+  assert_equals "$RC" 0 "the older copy joins it into the channel"
+  SMINOS_SCRIPTS="$SCRIPTS" python3 -B "$SCRIPT_DIR/older_channel_wire.py" baseline "$T/baseline-$1-$2" "$CHANNEL"
+  channel_kinds() { # the events under the session's own writer in the channel's log
+    cat "$SMINOS_HOME/projects/$CHANNEL/log/"*.jsonl | py 'import json, sys
+print(" ".join(e["kind"] + ("-" + e["reason"] if e.get("reason") else "") for e in map(json.loads, sys.stdin)
+               if e["writer"].endswith("/" + sys.argv[1])))' "$SID"
+  }
+  assert_equals "$(channel_kinds)" "channel-env joined" "its joined is in the channel's log"
+  if [ "$2" = closed ]; then
+    closed
+    run "$SMINOS" daemon tick
+    assert_equals "$(channel_kinds)" "channel-env joined" "closed, the session's joined in the channel is left as it is"
+    assert_equals "$(row state)" "<no row>" "and it is listed in neither: not in its project"
+    assert_equals "$(here_py 'import sminos
+print(len(sminos.view_of(sminos.known_project(sys.argv[2])).members))' "$CHANNEL")" 0 "nor in the channel"
+    opened
+  fi
+  run "$SMINOS" daemon tick
+  assert_equals "$(channel_kinds)" "channel-env joined retired-moved" "this code undoes the joined: retired moved"
+  assert_equals "$(own_events | tail -1)" "joined - stamped" "the session is a member of its one project again"
+  assert_equals "$(row state)" idle "listed live there"
+  assert_equals "$(record_keys)" "$keys" "its set, positions and answer as they were"
+  assert_equals "$(stated)" "$CHANNEL" "and its log states the set"
+  OUT="$(MAWS_USER_DATA="$(dirname "$HOME")/m" SMINOS_SCRIPTS="$SCRIPTS" python3 -B "$SCRIPT_DIR/older_channel_wire.py" \
+    check "$T/baseline-$1-$2" alpha "$CHANNEL" 2>&1)" || true
+  assert_equals "$OUT" "$(printf '%s channel-env joined retired\nhuman channel-request\nbreaches 0' "$SID")" \
+    "an uplink run on it: the older joined goes up in its place, this code's retired after it, nothing else of this code's"
+  closed
+}
+channels_case() { # label — CH1's M8, per copy
+  channel_store "$1"
+  case "$(version_of "$OLDER")" in 1.51.*|1.52.*) channel_seat "$1" ;; esac
+  channel_return "$1"
+  channel_join "$1" live
+  channel_join "$1" closed
+}
+
 # ---- run each copy with its version's expectations -----------------------------------
 run_copy() { # label launcher
   OLDER="$2"
@@ -543,10 +757,11 @@ run_copy() { # label launcher
   case "$v" in
     1.27.*) case_1_27 "$1" ;;
     1.51.*) case_1_51 "$1" ;;
-    1.52.*) ;;   # T2's release, which wakes what every_copy holds it must not: its expectations are M8's
+    1.52.*) ;;   # T2's release, which wakes what every_copy holds it must not: channels_case holds it to itself
     *) echo " no expectations of its own for $v: every copy's alone"; every_copy "$1-every" ;;
   esac
   cut_finished "$1"
+  channels_case "$1"
 }
 run_copy pinned-1.27 "$COPY_1_27"
 run_copy pinned-1.51 "$COPY_1_51"

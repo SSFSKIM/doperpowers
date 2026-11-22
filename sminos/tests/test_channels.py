@@ -200,6 +200,29 @@ class Kinds(Machine):
         self.assertNotIn(DESK, {x.id for x in sminos.org_scope()})
         self.assertEqual(sminos.project_label(DESK), "desk-integration")
 
+    def test_an_older_copys_hubless_registration_of_a_channel_the_org_lists_is_completed(self):
+        """The frontier review's B2: an older copy registered a `.smns` that
+        named a channel's id and no hub, rooted at its folder; the org's
+        directory lists the channel, and adoption completes the
+        registration as the directory registers a channel (no root, the
+        enrollment's hub), so its log is opened. One that names a hub
+        already is kept as it is."""
+        root = os.path.join(self.home, "legacy")
+        os.makedirs(root)
+        sminos.register_if_absent(sminos.make_project(DESK, "desk-integration", "", root, None))
+        sminos.register_if_absent(sminos.make_project(ROOM1, "room", "", root, HUB))
+        sminos.forget_caches()
+        self.assertNotIn(DESK, uplink.hub_projects(CRED), "as the older copy left it: no hub, never opened")
+        frame = {"projects": [{"id": DESK, "name": "desk-integration", "kind": "hub", "retired": False},
+                              {"id": ROOM1, "name": "room", "kind": "hub", "retired": False}],
+                 "machines": [{"name": MACHINE, "online": False}]}
+        self.assertTrue(uplink.keep_org(frame, CRED))
+        sminos.forget_caches()
+        c = sminos.known_project(DESK)
+        self.assertEqual((c.root, c.hub), ("", HUB))
+        self.assertIn(DESK, uplink.hub_projects(CRED), "its log is opened")
+        self.assertEqual(sminos.known_project(ROOM1).root, root, "a registration naming a hub is kept as it is")
+
     def test_register_takes_a_channel_id_alone(self):
         c = self.channel(DESK, "desk-integration")
         self.assertEqual((c.id, c.name, c.root, c.hub), (DESK, "desk-integration", "", HUB))
@@ -224,6 +247,23 @@ class Kinds(Machine):
 
 
 class Names(Machine):
+    def test_a_project_named_like_a_channels_id_is_tagged_by_its_id_and_init_refuses_such_a_name(self):
+        """The frontier review's B4: a name of a channel's id's form is read
+        as a channel at every door, so a tag naming the project by it would be
+        refused. One that exists is tagged by its id; `project init` refuses
+        such a name, nothing written."""
+        p = self.project(PROJ, DESK)
+        self.assertEqual(sminos.tag_project(p), PROJ)
+        self.assertEqual(sminos.tag_project(self.project(TWIN1, "app")), "app", "any other name as today")
+        repo = os.path.join(self.home, "repo")
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        rc, out, err = self.cli("project", "init", "--name", ROOM1, cwd=repo)
+        self.assertEqual(rc, 2, out + err)
+        self.assertIn("a project name cannot have a channel id's form: %r" % ROOM1, err)
+        self.assertFalse(os.path.exists(os.path.join(repo, ".smns")))
+        rc, out, err = self.cli("project", "init", "--name", "app2", cwd=repo)
+        self.assertEqual(rc, 0, out + err)
+
     def test_a_hub_project_and_a_machine_project_of_one_name_as_today(self):
         uplink.register_own(CRED)
         own = sminos.machine_project_id(ORG, MACHINE)
@@ -500,6 +540,86 @@ class ChannelReconcile(Machine):
             self.assertIn(("joined", None), self.kinds(PROJ, sid), lane)
             proc.kill()
             proc.wait()
+
+    def test_an_entry_an_older_copy_left_owing_a_channel_is_voided_before_its_join_is_undone(self):
+        """The frontier review's B1: an older copy that took the channel for
+        the session's project left a journal entry owing its `joined` (an
+        interrupted return) or its `renamed` (an interrupted release) there,
+        which this code's lifecycle never appends. The cleanup voids it, says
+        so in daemon.log, and then undoes the join: the thread is a member of
+        its own project again, and the channel's log gains nothing but the
+        `retired` that undoes a live `joined`."""
+        threads = sminos.threads_module()
+        for n, op in ((3, "return"), (4, "release")):
+            sid = "6c00000%d-0000-4000-8000-0000000000d%d" % (n, n)
+            records.establish(sid, records.default_provenance())
+            self.live(sid, self.root)
+            self.tick()
+            tid = threads.thread_of(sid)["thread"]
+            self.assertEqual(threads.get(tid)["opened"], "human", op)
+            # The older copy's `join desk-integration`: the override, the move out of the project, the joined.
+            sminos.write_override(sid, DESK)
+            sminos.log_append_batch(self.p, "%s/%s" % (MACHINE, sid), [{
+                "kind": "retired", "session": sid, "by": "join", "reason": "moved", "project": DESK, "thread": tid}])
+            self.older_join(sid)
+            if op == "return":
+                # It then ended the thread there and began its return, cut after the record's write.
+                sminos.log_append(self.c, "%s/%s" % (MACHINE, sid), "retired", session=sid, by="", reason="ended",
+                                  thread=tid)
+                owed = {"kind": "joined", "session": sid, "alias": "worker", "name_source": "user",
+                        "machine": MACHINE, "cwd": self.root, "worktree": "", "role": "", "seat": "", "by": "",
+                        "thread": tid}
+            else:
+                # A /clear's release, begun where it read the session a member, cut the same way.
+                owed = {"kind": "renamed", "session": sid, "alias": sid[:8], "name_source": "derived"}
+
+            def cut(view, raw, owed=owed, op=op):
+                raw["pending"] = {"id": "e%031d" % n, "op": op, "at": sminos.now(), "project": DESK,
+                                  "events": [owed]}
+                if op == "release":
+                    raw["released"] = {"alias": "worker", "at": sminos.now()}
+                return True
+            self.assertTrue(threads._change(tid, cut))
+            for _ in range(2):
+                self.tick()
+            self.assertIsNone(threads.get(tid).get("pending"), "%s: the entry owing the channel is voided" % op)
+            with open(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")) as f:
+                said = f.read()
+            self.assertIn("void: thread %s's %s entry owed %s to channel desk-integration" % (tid[:8], op,
+                          "joined" if op == "return" else "renamed"), said, op)
+            want = [("joined", None), ("retired", "ended")] if op == "return" else \
+                [("joined", None), ("retired", "moved")]
+            self.assertEqual(self.kinds(DESK, sid), want, "%s: nothing of this code's but the undo" % op)
+            self.assertEqual(sminos.threads_module().in_effect(sminos.own_events_of(self.p, sid))["kind"], "joined",
+                             "%s: a member of its own project again" % op)
+            self.assertIn(sid, [m.session for m in sminos.view_of(self.p).members], op)
+
+    def test_a_resumes_roster_gives_no_tag_through_a_channel(self):
+        """The frontier review's B3: a message an older copy sent to a peer
+        it read as a member of the channel names the channel as the peer's
+        project. The roster a resume reads gives no tag into the channel:
+        the peer is in no project known here while its legacy `joined`
+        stands, and in its own project once this code's `retired` `moved`
+        names it."""
+        sid, peer = "6c000010-0000-4000-8000-0000000000e1", "6c000011-0000-4000-8000-0000000000e2"
+        self.live(sid, self.root)
+        self.tick()
+        self.older_join(peer)
+        sminos.log_append_batch(self.p, "%s/%s" % (MACHINE, sid), [{
+            "kind": "say", "text": "@worker hello", "copy": "c-1",
+            "to": [{"session": peer, "project": DESK, "alias": "worker"}]}])
+        sminos.forget_caches()
+        said = sminos.roster_text(sid, self.root)
+        self.assertNotIn("@desk-integration/", said)
+        self.assertIn("worker [6c000011], in no project known here", said)
+        sminos.log_append_batch(self.c, "%s/%s" % (MACHINE, peer), [{
+            "kind": "retired", "session": peer, "by": "", "reason": "moved", "project": PROJ}])
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, peer), "joined", session=peer, alias="worker",
+                          name_source="user", machine=MACHINE, cwd=self.root, worktree="", role="", seat="", by="")
+        sminos.forget_caches()
+        said = sminos.roster_text(sid, self.root)
+        self.assertNotIn("@desk-integration/", said)
+        self.assertIn("@worker#6c000011  worker [6c000011], app on %s" % MACHINE, said, "the sender is a worker too")
 
     def test_an_import_into_a_channel_delivers_nothing(self):
         calls = []

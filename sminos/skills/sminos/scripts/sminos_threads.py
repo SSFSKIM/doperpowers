@@ -1960,6 +1960,42 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
             return not (get(thread_id) or {}).get("pending")
 
 
+def void_owed_to_channel(thread_id, channel, lock_until=None):
+    """An open entry whose events go to a channel's log and owe one this
+    code's lifecycle never appends there (anything but a `retired`): an
+    older copy's, begun while it took the channel for the session's
+    project (an interrupted return owing its `joined`, a release its
+    `renamed`, a hand-off). No finisher of this code can carry it, and while
+    it stands the thread is held out of its own project (an ordinary
+    `joined` waits for the record's entry). Cleared in one write, nothing of
+    it carried (its events, its settlement, its carry, its queued `next`),
+    under the record's finisher lock and then its store lock, only while it
+    is still the entry read there; said in daemon.log before the write
+    lands, so a cut says it again (the frontier review's B1). The entry
+    voided, or None (no such entry; LockBusy past `lock_until`)."""
+    voided = []
+
+    def void(view, raw):
+        entry = view.get("pending") or {}
+        events = [e for e in entry.get("events") or [] if isinstance(e, dict)]
+        if entry.get("op") == RESERVED or entry.get("project") != channel.id \
+                or not any(e.get("kind") != "retired" for e in events):
+            return False
+        with contextlib.suppress(OSError):
+            sminos.daemon_log("void: thread %s's %s entry owed %s to channel %s, whose log takes no such event "
+                              "of this code's; cleared, nothing of it carried" % (
+                                  thread_id[:8], entry.get("op"),
+                                  ", ".join(str(e.get("kind")) for e in events if e.get("kind") != "retired"),
+                                  channel.name))
+        raw.pop("pending", None)
+        voided.append(entry)
+        return True
+
+    with _finish_lock(thread_id, lock_until):
+        _change(thread_id, void, lock_until)
+    return voided[0] if voided else None
+
+
 def _merge_absorbed(thread_id, entry, other, deadline):
     """An absorption's merge (CH1's §3, row C9), a write of its own after
     the absorbed record is reserved (nothing else writes a reserved record)

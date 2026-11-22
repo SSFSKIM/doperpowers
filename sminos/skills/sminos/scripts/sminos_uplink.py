@@ -448,7 +448,9 @@ def keep_org(frame, cred):
     """The hub's `org` frame kept at daemon/org.json (its projects and
     machines, and when it came), and every project it names that is not
     retired and not known here registered as a followed one: the five fields
-    project_path writes, root "", the hub the enrollment's. The registry's
+    project_path writes, root "", the hub the enrollment's (a channel's,
+    one an older copy registered with no hub too: register_listed_channel).
+    The registry's
     `locations` and `complete` (§D, §E.3) are kept in the same atomic write,
     under those keys as the frame carries them: a frame with `locations`
     replaces the held ones whole, one without keeps them, and `complete` is
@@ -478,7 +480,8 @@ def keep_org(frame, cred):
     hub = {"url": cred["hub"], "org": cred["org"]}
     for p in projects:
         if not p["retired"]:
-            sminos.register_if_absent(sminos.make_project(p["id"], p["name"], "", "", hub))
+            register = sminos.register_listed_channel if sminos.is_channel_id(p["id"]) else sminos.register_if_absent
+            register(sminos.make_project(p["id"], p["name"], "", "", hub))
     sminos.forget_caches()
     return True
 
