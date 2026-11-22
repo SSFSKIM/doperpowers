@@ -933,6 +933,11 @@ leaves.
   is staged by registering the channel under the fixture's own id and name
   and placing S1 by `sminos_channels.change`, which writes nothing into the
   channel's log (the hello's `have` is `{}`), then removing it.
+- MAWS's case 15 (its master `27e7208a1`, taken in by the frontier's fix
+  wave): the statements answering its two requests stay unwritten, since
+  both targets are private and the fixture sends no `audience` frame for
+  its policy revision; the targets' records hold the answers, which the
+  replay checks.
 - **If a line of the replay then differs from what sminos sends,** in a
   field and not in a missing stage, no amendment is written: the exact line
   as the fixture has it and as sminos sent it goes to the holder, who takes
@@ -1586,8 +1591,10 @@ other.
 The pass's three callers: the command, for each request it wrote for a
 thread of its own machine (handed in as `also`, no words); the daemon's
 tick, for every channel known here, after the channel's reconciliation;
-the uplink, at each ask pass and at each answer (M7), which asks about
-what the pass left pending `endpoint`.
+the uplink's ask pass (M7), which asks about what the pass left pending
+`endpoint` and uses each word it has kept. An answer is recorded by
+`on_reach` under its event's key and binding and carries nothing itself
+(the frontier review's A7): the next ask pass consumes it, once.
 
 The words a command and `channel show` print:
 
@@ -2634,6 +2641,15 @@ while the milestones are built, one observation and its evidence each.
   two requests stay unwritten (both targets private, and the fixture sends
   no `audience` frame for its policy revision); the records hold the
   answers, which the replay checks.
+- 2026-11-22 — **"This machine's own" for rows 8, 9 and 11 too** (the
+  holder's ruling). For a channel request one predicate, A2's
+  `appended_here` (a queued append of this machine, or a receipt), decides
+  "this machine's own" for rows 8 to 11: a request under this machine's
+  name with neither is an outside event, so `outside_origin` is true for it
+  (read-only refuses it) and `sender_verified` reads its signer (a revoked
+  signer is caught). Scoped to requests: a message's path stays as on
+  main, where a word is shown marked unverified and an act has no such
+  mark.
 
 ## Outcomes & Retrospective
 
