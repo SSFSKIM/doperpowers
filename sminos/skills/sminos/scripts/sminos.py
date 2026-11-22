@@ -8747,19 +8747,22 @@ def _leading_run(text):
         pos = end
 
 
-# A tag whose qualifier is a channel's shortened name, unquoted (`@desk#5c2a9e10/worker`): TAG_RE reads no `#` in a
-# qualifier, so it opens no tag, and its words would be recorded untagged.
-SHORTENED_QUALIFIER_RE = re.compile(r'@([\w.-]+#[0-9a-f]{1,8})/[\w.-]+(?:#[0-9a-f]{1,8})?[,:;]*(?=\s|$)')
+# The unquoted word where a message's leading tags stop, when it opens with `@` (`@desk#5c2a9e10/worker`, whose `#`
+# TAG_RE reads in no qualifier, so it opens no tag): its qualifier is decided by the name resolver, whole.
+STOPPED_TAG_RE = re.compile(r'@(\S+)')
 
 
 def shortened_channel_qualifier(text):
-    """The `name#short` of a channel that the tag where the message's leading
-    run of tags stops (_leading_run) is qualified by, unquoted, else "": a
-    say refuses it as it refuses a channel-qualified tag, before anything
-    is recorded (the frontier's second review, C7). Any other text there is
-    the message's, as before."""
-    m = SHORTENED_QUALIFIER_RE.match(text, _leading_run(text)[1])
-    return m.group(1) if m and names_channel(m.group(1)) is not None else ""
+    """The qualifier of the unquoted `@<qualifier>/<alias>` where the
+    message's leading run of tags stops (_leading_run), when the name
+    resolver reads it whole as a channel's (names_channel: `name#short`,
+    `name#<whole id>`, an id), else "": cmd_say refuses it as a
+    channel-qualified tag, before anything is recorded or a selector read
+    (the frontier's second review, C7; the holder's reading, D3). Any other
+    text there is the message's, as before."""
+    m = STOPPED_TAG_RE.match(text, _leading_run(text)[1])
+    q, sep, _ = m.group(1).rstrip(",:;").rpartition("/") if m else ("", "", "")
+    return q if sep and q and names_channel(q) is not None else ""
 
 
 def project_seats(project):
@@ -12418,12 +12421,13 @@ def find_target(q):
                 return hit
     proj, _, rest = q.rpartition("/")
     name, _, short = rest.partition("#")
-    if proj and names_channel(proj) is not None:
-        # An exact seat group of that name resolves as before (the frontier's second review, C4): the refusal is for
-        # what is otherwise only the channel's.
-        hit = group_seat(proj, name) if not short else None
+    if proj and not short and not any(not is_channel_id(p.id) for p in sum(_name_tiers(proj), [])):
+        # An exact seat group of a name no project has resolves as before, whatever channels answer to that name, or
+        # how many (the frontier's second review, C4; the holder's reading, D4): a project of it keeps its precedence.
+        hit = group_seat(proj, name)
         if hit:
             return hit
+    if proj and names_channel(proj) is not None:
         # No thread is found through a channel in this version (CH1, §8): a verb's fact goes to the thread's own
         # project, which a lookup through a channel's roster would not name.
         die("'%s' names a thread through a channel, which is not available in this version of sminos yet: name it "

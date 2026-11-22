@@ -952,7 +952,8 @@ def _last_reads(thread_id, change):
     - `moved`: the session is now another record's current one (the stores
       as they are);
     - `record-unreadable`: the session's record is there and cannot be
-      read, so its lane is not known (a missing one is absence: lane A); the
+      read, or its stat is refused other than as not found, so its lane is
+      not known (a missing one, FileNotFoundError alone, is lane A); the
       write waits, as for a writer file that cannot be read (the frontier's
       second review, C5);
     - `lane-b`: the session is lane B now (its session record's controller,
@@ -973,7 +974,7 @@ def _last_reads(thread_id, change):
         return "moved"
     records = sminos.records_module()
     rec = records.read(session)
-    if rec is None and os.path.lexists(records.record_path(session)):
+    if rec is None and not sminos.channels_module()._gone(records.record_path(session)):
         return "record-unreadable"   # missing is absence (lane A); there and unreadable is not known to be lane A
     if records.lane_of(rec) == "B":
         return "lane-b"
@@ -1916,10 +1917,12 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
                 _merge_absorbed(thread_id, entry, other, deadline)
         if entry.get("carry") and not entry.get("carried"):
             # A channel's carries its reach alone, the predecessor's publication read (read-only) in the channel's
-            # log, as a project's entry reads it in its own (None for a channel not registered here).
+            # log, as a project's entry reads it in its own; one whose registration cannot be read, by its id's
+            # path, registering nothing (the holder's reading, D1): no carry is called complete unread.
             log = project
             if channel and (project is None or project.id != entry["project"]):
-                log = sminos.known_project(str(entry["project"]))
+                cid = str(entry["project"])
+                log = sminos.known_project(cid) or sminos.make_project(cid, cid, "", "")
             if not before(log, entry):
                 return False
             # Carried once: a replay does not carry again what a later deliberate change undid (a `join --cwd`

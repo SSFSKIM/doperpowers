@@ -1462,6 +1462,39 @@ class Frontier2(Requests):
         self.assertEqual(out.exception.code, sminos.EXIT_UNKNOWN)
         self.assertIn("names a thread through a channel", err.getvalue())
 
+    def test_d4_an_exact_seat_group_resolves_beside_two_channels_of_its_name(self):
+        """The holder's reading, D4: two channels named `g` and no project: the name is ambiguous among channels,
+        and the exact seat group `g` still resolves first; what is only the channels' is refused for its ambiguity."""
+        tid, sid, _ = self.seat("worker")
+        for _ in range(2):
+            sminos.register_if_absent(sminos.make_project(channels.mint_channel_id(), "g", "", "", HUB))
+        sminos.forget_caches()
+        kind, res, _ = sminos.find_target("g/worker")
+        self.assertEqual((kind, res["seat_id"]), ("seat", tid))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as out:
+            sminos.find_target("g/nobody")
+        self.assertEqual(out.exception.code, sminos.EXIT_UNKNOWN)
+
+    def test_d2_a_record_whose_stat_is_refused_is_not_absent(self):
+        """The holder's reading, D2: only FileNotFoundError is a missing record (as _gone is for request input); a
+        stat refused another way (a permission) defers the write as an unreadable record does."""
+        tid, sid, _ = self.human()
+        e = self.request(DESK, "add", sid, tid)
+        path = os.path.abspath(records.record_path(sid))
+        refused = []
+
+        def denied(real):
+            def call(p, *a, **k):
+                if refused and not isinstance(p, int) and os.path.abspath(os.fspath(p)) == path:
+                    raise PermissionError(13, "Permission denied", p)
+                return real(p, *a, **k)
+            return call
+        with mock.patch("os.stat", denied(os.stat)), mock.patch("os.lstat", denied(os.lstat)), \
+                mock.patch("builtins.open", denied(open)), self.during_positions(lambda: refused.append(1)):
+            self.assertEqual(self.carry(DESK, also=[e])[e["id"]], O("pending", "record-unreadable"))
+        self.assert_unwritten(tid, sid)
+        self.assertEqual(self.carry(DESK), {e["id"]: O("applied")})
+
     def test_c5_a_record_that_cannot_be_read_at_the_last_read_defers_the_write(self):
         """The last lane read: a session record that is missing is absence (lane A, as ever); one that is there and
         cannot be read writes nothing, a request pending for it and a thread's own change failed, as an unreadable

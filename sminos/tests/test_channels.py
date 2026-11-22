@@ -719,6 +719,49 @@ class ChannelReconcile(Machine):
         self.assertEqual([e["kind"] for e in self.log_events(DESK) if e.get("session") == job], [],
                          "nothing published in the channel's log")
 
+    def test_a_legacy_absorption_owed_an_unregistered_channel_reads_its_log_by_its_id(self):
+        """The holder's reading, D1: the channel's registration cannot be read (known_project None) and the
+        predecessor's record is gone. The carry reads the channel's log by its id's path, registering nothing, and
+        finds the predecessor's publication there: never called complete with no evidence read."""
+        sessions = {}
+
+        def prepare(a, job):
+            threads = sminos.threads_module()
+            sminos.write_override(a, DESK)
+            sminos.log_append_batch(self.p, "%s/%s" % (MACHINE, a), [{
+                "kind": "retired", "session": a, "by": "join", "reason": "moved", "project": DESK,
+                "thread": threads.thread_of(a)["thread"]}])
+            stream = "%s/%s~%s" % (MACHINE, a, sminos.audience_digest(["member-1"]))
+            sminos.keep_stream(self.c, stream, ["member-1"])
+            sminos.log_append(self.c, stream, "joined", session=a, alias="worker", name_source="user",
+                              machine=MACHINE, cwd=self.root, worktree="", role="", seat="", by="join",
+                              origin={"kind": "terminal"})
+            os.unlink(records.record_path(a))
+            self.procs[-2].kill()
+            self.procs[-2].wait()
+            with open(os.path.join(self.c.home, "project.json"), "w") as f:
+                f.write("not a registration")
+            sminos.forget_caches()
+            self.assertIsNone(sminos.known_project(DESK))
+            sessions.update(a=a, job=job)
+        threads = sminos.threads_module()
+        a, job = "6c000023-0000-4000-8000-0000000000f3", "6c000033-0000-4000-8000-0000000000f3"
+        tid = self.thread_for(a)
+        self.older_join(a)
+        other = self.thread_for(job)
+        self.older_entry(tid, {"op": "absorb", "other": other, "carry": [a, job], "events": [
+            {"kind": "retired", "session": a, "by": "", "reason": "continued", "to": job, "thread": tid},
+            {"kind": "joined", "session": job, "alias": "worker", "thread": tid}]}, current=job)
+        prepare(a, job)
+        with contextlib.redirect_stderr(io.StringIO()):
+            sminos.finish_thread(tid)   # an explicit finisher: no reconciliation reads an unregistered channel
+        rec = records.read(job)
+        self.assertEqual(rec.get("access"), "private", "the predecessor's reach, from the channel's log by its path")
+        self.assertIn(a, rec.get("former") or [])
+        self.assertIsNone(threads.get(tid).get("pending"))
+        with open(os.path.join(self.c.home, "project.json")) as f:
+            self.assertEqual(f.read(), "not a registration", "nothing registered")
+
     def test_a_legacy_absorption_cut_after_its_deletion_keeps_its_claim(self):
         """M8's review, round 2: cut after the provisional record's deletion, the claim is committed: kept, not
         rolled back, the continuing record the job's one owner and the entry cleared."""
@@ -862,6 +905,21 @@ class Doors(Machine):
         self.assertEqual(rc, 1, err)
         self.assertIn("desk-integration is a channel", err)
         self.assertEqual(self.log_events(PROJ), [], "no member was looked up: nothing reconciled, nothing recorded")
+
+    def test_a_channel_qualifier_by_its_whole_id_unquoted_is_refused_too(self):
+        """The holder's reading, D3: the qualifier is decided by the name resolver, whole: `log_label`'s
+        `<name>#<whole id>` spelling (what it prints when eight digits name no one log) is refused as the short one."""
+        sid = "6c00000c-0000-4000-8000-0000000000cc"
+        self.live(sid, self.root)
+        q = "desk-integration#%s" % DESK
+        for argv in (("say", "@%s/worker hello" % q), ("say", "--here", "@%s/worker hello" % q)):
+            rc, out, err = self.cli(*argv, cwd=self.root)
+            self.assertEqual(rc, 1, (argv, err))
+            self.assertIn("%s is a channel" % q, err, argv)
+        rc, out, err = self.cli("say", "@nobody#1234abcd/worker: not a log, just words", cwd=self.root)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([e.get("text") for e in self.log_events(PROJ) if e["kind"] in ("human", "say")],
+                         ["@nobody#1234abcd/worker: not a log, just words"], "only the words, recorded as before")
 
     def test_a_shortened_channel_qualifier_unquoted_is_refused_before_anything_is_recorded(self):
         """`@desk-integration#5c2a9e10/worker`, unquoted: the tag parser reads no `#` in a qualifier, so it opens no
