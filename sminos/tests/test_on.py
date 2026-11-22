@@ -798,7 +798,7 @@ class New(On):
             return 0, [self.spawned(machine="dc-x-0001")], "", False, True
         before = sminos.resolve_project(self.work)
         with mock.patch.object(on, "run_devcloud", side_effect=run), \
-                mock.patch.dict(os.environ, {"SMINOS_ON_ENROLL_POLL": "0"}):
+                mock.patch.dict(os.environ, {"SMINOS_ON_ENROLL_POLL": "0.01"}):
             code, out, err = self.spawn("--on", "new")
         self.assertEqual(code, 0, err)
         self.assertEqual([(r["by"]["project"], r["by"]["project_name"]) for r in sent],
@@ -943,12 +943,38 @@ class New(On):
                     return 1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled"})], "", False, \
                         True
                 with mock.patch.object(on, "run_devcloud", side_effect=run), \
-                        mock.patch.dict(os.environ, {"SMINOS_ON_ENROLL_POLL": "0"}):
+                        mock.patch.dict(os.environ, {"SMINOS_ON_ENROLL_POLL": "0.01"}):
                     code, out, err = self.spawn("--on", "new")
                 self.assertEqual(code, 1, err)
                 self.assertIn(words, err)
                 self.assertIn(". The VM dc-x-0001 is kept and", err)
                 self.assertEqual([r["org"] for r in sent], ["org-1"], "no second try")
+
+    def test_each_try_is_given_what_the_one_read_of_the_clock_left(self):
+        """A clock that moves at every read: the wait's end and the try's budget are one read, so no try is started
+        with nothing left (the transport would take that as a call cut short, which may have spawned), and the wait
+        ends at row 27a."""
+        clock, given = [1000.0], []
+
+        def monotonic():
+            clock[0] += 0.4
+            return clock[0]
+
+        def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
+            if args[:2] == ["vm", "up"]:
+                c.ready.append("dc-x-0001")
+                return 0, ["dc-x-0001  ready in 0m01s"], "", False, True
+            given.append(timeout)
+            return 1, self.NOT_READ[1], "", False, True
+        # A sleep may end a little early: the clock never lands on the wait's end exactly.
+        fake = mock.Mock(monotonic=monotonic, sleep=lambda s: clock.__setitem__(0, clock[0] + 0.9 * s))
+        env = {"SMINOS_ON_ENROLL_WAIT": "60", "SMINOS_ON_ENROLL_POLL": "1"}
+        with mock.patch.object(on, "run_devcloud", side_effect=run), mock.patch.object(on, "time", fake), \
+                mock.patch.dict(os.environ, env):
+            code, out, err = self.spawn("--on", "new")
+        self.assertEqual(code, on.EXIT_LATER, err)
+        self.assertGreater(len(given), 20)
+        self.assertTrue(all(t > 0 for t in given), "a try given %r" % min(given))
 
     def test_the_wait_s_end_is_read_before_the_route_back(self):
         """A route back read after the wait has ended would refuse in its own words; the wait's end is what is
@@ -1429,6 +1455,39 @@ class VmSide(On):
         self.shadowed(code, lines, err, launched, alias=self.SPAWNER[:8])
         self.assertIn("names the session asked for itself (its alias abcd1234)", err)
         self.assertIn("spawn it under another alias", err)
+
+    def test_a_spawner_whose_project_this_machine_registers_for_another_org_is_refused_at_once(self):
+        """The tag reaches the spawner's session in the project the request names, but this machine's registration
+        of that project names another org's hub: the reply would be written to a log the uplink never sends."""
+        stale = os.path.join(self.home, "stale")
+        os.makedirs(stale)
+        pid = str(uuidlib.uuid4())
+        with open(os.path.join(stale, ".smns"), "w") as f:
+            json.dump({"project": pid, "name": "stale", "remote": "", "hub": {"org": "org-2"}}, f)
+        q = self.project_of(stale)
+        self.remote_joined(self.SPAWNER, project=q)
+        code, lines, err, launched = self.asked(by=self.by(project=pid, project_name="stale"))
+        self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1, "why": "other"}), err)
+        self.assertIn("spawn: the spawner's short, @abcd1234, reaches boss in project stale, whose registration on "
+                      "this machine its enrollment does not carry (its .smns names another org)", err)
+        self.assertEqual(launched, {})
+        self.assertEqual(sminos.seats(), [])
+
+    def test_a_warning_before_an_ambiguous_answer_is_still_someone_else(self):
+        """The resolver's own last word decides, not whatever a read printed before it."""
+        self.remote_joined(self.SPAWNER)
+        for sid in ("eeee0000-5678-4abc-8def-0123456789ab", "eeee1111-5678-4abc-8def-0123456789ab"):
+            self.remote_joined(sid, alias=self.SPAWNER[:8])
+        real = sminos.match_members
+
+        def noisy(*a, **kw):
+            sminos.warn("a reconcile's aside")
+            return real(*a, **kw)
+        with mock.patch.object(sminos, "match_members", side_effect=noisy):
+            code, lines, err, launched = self.asked(by=self.by())
+        self.assertIn("a reconcile's aside", err)
+        self.shadowed(code, lines, err, launched)
+        self.assertIn("names more than one member (ambiguous @abcd1234 matches:", err)
 
     def test_the_spawner_s_row_in_another_project_is_not_its_row_in_the_one_asked(self):
         """The request names the spawner's project now; this machine holds only its row of the project it was in

@@ -352,17 +352,35 @@ def hold_to_spawner(req, cwd, alias, answer):
         with contextlib.redirect_stderr(said):
             p, m = sminos._resolve_tag(project, sminos.leading_tags("@" + short)[0])
     except SystemExit:
-        words = said.getvalue().strip()
-        words = words[len("sminos: "):] if words.startswith("sminos: ") else words
+        # The resolver's own answer is its die, the last thing it writes; what a read printed before it (a warning,
+        # a note) is passed on as it was.
+        diagnostics, words = said_last(said.getvalue())
+        sys.stderr.write(diagnostics)
         if words.startswith("ambiguous"):
             shadowed("more than one member (%s)" % words)
         answer.refuse("spawner-unknown", "spawn: this machine has not read the spawner, %s (@%s), from the project's "
                                          "log yet (a machine enrolled moments ago downloads it first), so the "
                                          "session's first message to it would reach no one: nothing was spawned"
                       % (by["alias"], short))
-    if m.session == by["session"] and p.id == by["project"]:
-        return
-    shadowed("%s (@%s, in %s)" % (m.alias, m.short, p.name))
+    sys.stderr.write(said.getvalue())
+    if not (m.session == by["session"] and p.id == by["project"]):
+        shadowed("%s (@%s, in %s)" % (m.alias, m.short, p.name))
+    why = sminos.not_carried(p, req["org"])
+    if why:
+        # Where the tag reaches is a project whose registration here this enrollment does not carry (a stale
+        # checkout's .smns naming another org, say): the reply would be written to a log the uplink never sends.
+        answer.refuse("other", "spawn: the spawner's short, @%s, reaches %s in project %s, whose registration on this "
+                               "machine its enrollment does not carry (%s), so the session's first message to its "
+                               "spawner would be written to a log that never leaves this machine: nothing was "
+                               "spawned" % (short, m.alias, p.name, why))
+
+
+def said_last(text):
+    """(what came before, the last message) of what sminos wrote on standard error: each message opens
+    `sminos: ` at a line's start, and die's is the last; its words without the prefix."""
+    at = text.rfind("\nsminos: ") + 1   # 0 where it is the only one
+    last = text[at:]
+    return text[:at], (last[len("sminos: "):] if last.startswith("sminos: ") else last).strip()
 
 
 # ------------------------------------------------------------------ the Mac side
@@ -814,9 +832,9 @@ def remote(c, vm, request, directory, enrolled):
     wait = seconds("SMINOS_ON_ENROLL_WAIT", ENROLL_WAIT)
     deadline, waited_on = None, []
 
-    def wait_over():
-        """The wait's end, by its last refusal (rows 27a and 27), once it has come."""
-        if deadline is None or deadline - time.monotonic() > 0:
+    def wait_over(left):
+        """The wait's end, by its last refusal (rows 27a and 27), once `left` (one read of the clock) is none."""
+        if left > 0:
             return
         if waited_on[-1] == "spawner-unknown":
             c.refuse("spawn --on: %s had not read this session from the project's log within %d minutes (it is "
@@ -825,7 +843,8 @@ def remote(c, vm, request, directory, enrolled):
         c.refuse("spawn --on new: %s did not enroll within %d minutes: nothing was spawned. Once sminos "
                  "machines lists it, sminos spawn --on %s spawns there" % (vm, round(wait / 60), vm))
     while True:
-        wait_over()   # before the route back is read again: past the wait's end, the wait's end is what is said
+        if deadline is not None:
+            wait_over(deadline - time.monotonic())   # past the wait's end, before the route back: the end is said
         if c.session:
             sminos.forget_caches()   # what the session's project and this machine's enrollment are read from, now
             now = sminos.enrollment()
@@ -847,8 +866,9 @@ def remote(c, vm, request, directory, enrolled):
         if deadline is not None:
             # The wait bounds every try it starts: none at or past its end, and each given only what is left,
             # read last before the try (the reach rule's read takes time too).
-            wait_over()
-            given = min(bound, deadline - time.monotonic())
+            left = deadline - time.monotonic()   # one read: what decides is what the try is given
+            wait_over(left)
+            given = min(bound, left)
         c.reaching = vm
         code, lines, err, timed_out, ended = run_devcloud(c, args, stdin=a.task, timeout=given, keep_err=True,
                                                           vm=vm, nonce=request["nonce"])

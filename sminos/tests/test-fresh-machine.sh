@@ -217,6 +217,15 @@ R2=fb000002-0000-4000-8000-0000000000b2
 ORDER=()
 [ "${FRESH_MACHINE_ORDER:-}" = reverse ] && ORDER=("mac/$R2,mac/$R1,mac/$SA,mac/$F")
 page() { hand "$EPM" "$EPV" 2 ${ORDER[@]+"${ORDER[@]}"}; }   # one page of mac's backlog to vm
+# The events of mac's writers in vm's log of team, read again at each call.
+mac_events() { cat "$T/vm/s/projects/$PP/log/mac."*.jsonl 2>/dev/null | wc -l | tr -d ' '; }
+# One page, returning once vm has imported what it carried (the stand-in returns once it wrote to the socket).
+page_imported() {
+  local before handed
+  before="$(mac_events)"
+  handed="$(python3 "$SCRIPT_DIR/endpoint_standin.py" hand "$EPM" "$EPV" 2 ${ORDER[@]+"${ORDER[@]}"})"
+  until_true test "$(mac_events)" -ge $((before + handed))
+}
 live_session filler "$F" "$P"
 live_session spa "$SA" "$P"
 run_in "$P" "$SMINOS" list
@@ -274,7 +283,7 @@ assert_equals "$(seats_on_vm)" "0" "and no seat was written"
 # is all that has come (the filler's lexically, the thread's in reverse).
 refused_meanwhile=0
 for _ in $(seq 1 100); do
-  page
+  page_imported || fail "vm imported the page just handed"
   binds "$PP" "${SA:0:8}" "$SA" && break
   asked_here
   [ "$RC" = 1 ] && grep -Fq '"why":"spawner-unknown"' <<<"$OUTS" && refused_meanwhile=1
