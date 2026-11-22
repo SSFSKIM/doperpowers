@@ -1022,19 +1022,21 @@ class Link:
         not revoked since), and the writer's next owed event asked at the next
         tick. An answer to no ask held here — one that expired and was asked
         again, one a revocation dropped — is no answer; one naming no verdict
-        is a failed attempt, as silence is. Where the endpoint decides reach
-        (P5 O18 D8) a `peer` verdict delivers nothing yet: the push it calls
-        for asks `reach?` about the same event first (ask_peer), and the
-        admission of the words never stands for it."""
+        consumes nothing: its ask stays held, as if no reply had come, and its
+        deadline counts it a failed attempt, as silence is (expire_asks), at
+        WORDS_WAIT's pace, never at the reply's speed. Where the endpoint
+        decides reach (P5 O18 D8) a `peer` verdict delivers nothing yet: the
+        push it calls for asks `reach?` about the same event first
+        (ask_peer), and the admission of the words never stands for it."""
+        pre = self.asks.get(frame.get("id")) if isinstance(frame.get("id"), str) else None
+        if pre is not None and pre.get("t", "words?") == "words?" and frame.get("verdict") not in sminos.WORDS_VERDICTS:
+            log("the endpoint's answer on %s in %s names no verdict (%r): no answer, counted at its deadline"
+                % (sminos.event_ref(pre["event"]), pre["project"].name, frame.get("verdict")))
+            return
         held = self.held_ask(frame, "words?")
         if held is None:
             return
         verdict = frame.get("verdict")
-        if verdict not in sminos.WORDS_VERDICTS:
-            log("the endpoint's answer on %s in %s names no verdict (%r): a failed attempt"
-                % (sminos.event_ref(held["event"]), held["project"].name, verdict))
-            sminos.words_unanswered(held["project"], held["member"], held["event"], "the endpoint named no verdict")
-            return
         if verdict == "peer" and self.reach:
             self.ask_peer(held)
             return
