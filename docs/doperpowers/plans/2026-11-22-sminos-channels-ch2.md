@@ -73,7 +73,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) The third read of the plan, over what the revision rewrote (fourteen P1, two P2), the holder's rulings on it, and this last revision before the build: no absorbed id is kept, no delivery over an open journal entry, a seat made again over a purged seat's session is that thread, the three paths the consumer thread still had are bounded or deferred, and what a verdict is good for is said (Decision Log, "The third read").
 - [x] (2026-11-22) The fourth read, narrow, of what the third revision changed (six P1, four P2: "ready with the listed edits, no further design round"); all ten written in, and the header re-pinned to the branch with the composite's amendment merged (`f2c737f2`) (Decision Log, "The fourth read").
 - [x] (2026-11-22) M1 — Names through a channel. `de0ed736`, fixes `6e2b7b90`, `78b07c42`; reviewed clean at the third review. Gates GREEN on `78b07c42`; sminos-idle 32,191; sminos-channels 1m37s.
-- [ ] M2 — What a channel owes a thread: the debt and its transitions.
+- [ ] M2 — What a channel owes a thread: the debt and its transitions. (Built `a604658a`; gates GREEN; sminos-idle 32,189; sminos-channels 1m55s; in review.)
 - [ ] M3 — Pushing and waking from a channel's log.
 - [ ] M4 — Saying into a channel: the doors, the reply, the read.
 - [ ] M5 — The scene on a real engine.
@@ -3592,6 +3592,30 @@ them today.
   - `sminos help` is not changed in M1 (M4 rewrites it).
   - `channel add` finds its target through `find_target`, so it now takes a
     name through a channel too.
+- 2026-11-22 — **M2 as built** (`a604658a`). Decisions the executor made
+  where the plan is silent, kept by the controller:
+  - `delivered_load`'s parsing is one function, `sminos.delivered_entries`,
+    which the channel's strict reader (`delivered`) shares; a project's
+    behaviour is unchanged (`delivered_load` still reads a missing and an
+    unparsable record as empty). A whole record is a JSON object of writer
+    entries, each an object whose `settled` and `attempts` are
+    non-negative integers and whose `pending` is an integer or null.
+  - `owed` leaves out copies and `legacy/` writers, as `_owed` does for a
+    project, and reads through an index by thread kept beside the log
+    (`addressed_threads`).
+  - `owing` and `still_owed` read the session's record once, the lane and
+    the reach token from that one read.
+  - `daemon owed` for a channel (`channel_owed`, beside the project path
+    moved unchanged into `member_owed`) lists a debt under the thread
+    record's alias, a held thread's as waiting, a person's words on a
+    cut-over machine as `words`, and an unreadable delivery record among
+    the files it could not inspect.
+  - The checker, with `deliveries=False`, allows under a channel's
+    `delivered/` only `<thread id>.json` (a JSON object of writer entries)
+    and `<thread id>.lock`; before, anything there was allowed.
+  - Row D14 is staged as the queue's release leaves a message (appended
+    after the add, with the time it was said), and an older copy's return
+    (row D10) by a return step that writes no positions.
 
 
 ## Outcomes & Retrospective
