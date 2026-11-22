@@ -2368,18 +2368,6 @@ def still_owed(o, e=None, reach=False):
     return e is None or _past(e, _boundary(t, o.channel.id))
 
 
-def lies_past(o, e):
-    """Whether the event lies past the thread's boundary for the channel as
-    its own file has it now (the thread still in the channel): what a
-    deliverer asks under the thread's delivery lock before it accepts what
-    an earlier pass left for the event (an admitted receipt), which an
-    Owing taken before a removal and an add would settle below the
-    boundary since written. A hand-off changes no boundary."""
-    threads = sminos.threads_module()
-    t = threads.get(o.thread)
-    return t is not None and o.channel.id in threads.held_set(t) and _past(e, _boundary(t, o.channel.id))
-
-
 def owed_here(channel):
     """What `daemon owed` counts for a channel: (Debt, its owed events, or
     None where its delivery record cannot be read) for each thread of this
