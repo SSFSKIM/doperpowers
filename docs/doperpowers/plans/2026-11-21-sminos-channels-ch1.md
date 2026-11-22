@@ -52,7 +52,7 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) M4 — Requests on one machine, and the verbs that write them. `04cc6146..9ffbe8c5`, three reviews (the bound), then round 3's last finding fixed; `sminos-idle` 32,232 calls a second.
 - [x] (2026-11-21) M5 — The roster, the listing and the pool. `b4a9bdd7..10b8740a`, clean at its third review; `sminos-idle` 32,772 calls a second.
 - [x] (2026-11-21) M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture. `442c9784..e9fd15e0`, three reviews (the bound), then round 3's last finding (a test-harness race) fixed; the replay 112 lines `ok`, no amendment; `sminos-idle` 32,100 calls a second.
-- [ ] M7 — Requests across machines: the endpoint's word, and what a requester is told.
+- [x] (2026-11-21) M7 — Requests across machines: the endpoint's word, and what a requester is told. `cdc800c4..ede64e18`, clean at its second review; the acceptance scene's seven steps met; `sminos-idle` 32,781 calls a second.
 - [ ] The review of M1 to M7 as one range, by the composite's holder, and its fixes.
 - [ ] M8 — Older copies, what is written beside the code, the version, and the acceptance.
 - [ ] The branch reviewed at its end (Decision Log, "Verification"), and its fixes.
@@ -2539,6 +2539,17 @@ while the milestones are built, one observation and its evidence each.
   signature, so a request is signed and presented under the channel's id
   on every path; a refusal's reason is `not-reachable` or `unverified`,
   and sminos reads any refusal as refused whatever its word.
+- 2026-11-21 — **M7's review, round 1, as fixed** (`8331c9e4`, `ede64e18`).
+  A request's ask waits for its thread's member frame under the project the
+  thread is in now (`Link.member_under`): when the frame on the lane names
+  the old project or none, both projects' rows are read again and
+  republished, and otherwise the ask waits for the next pass. A request is
+  presented under the channel's id on every path (the append, the upload,
+  the import, the `reach?`), pinned on the frames and on the receiving
+  log. A refusal is recorded `refused not-reachable` whatever its reason
+  word and is not asked again. The scene asserts every read's exit, the
+  order of B's sections and §8's whole sentence, and one checker helper
+  (`checked_clean`) serves both of its cases.
 
 ## Outcomes & Retrospective
 
