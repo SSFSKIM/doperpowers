@@ -1837,6 +1837,15 @@ while the milestones are built, one observation and its evidence each.
 - (M4) `same_owner_local`, `outside_origin` and `own_writers_here` read
   identity and enrollment from per-invocation caches, so the second
   evaluation re-reads them from `identity.json` itself (`_Facts`).
+- (Before the frontier) MAWS's fixture case 15 (its master `41d340fc3`,
+  blob `d4c63d36`) cannot be replayed without changing how sminos reads the
+  wire, so it is not taken in: its `request:R` is `{writer, seq, kind:
+  channel-request, from, text, attest, sig}`, where §2's request is `{op,
+  session, thread, id}` (`is_request` reads R as no request, so no `reach?`
+  is asked about it), and it expects two `reach?` about one event (for S2
+  and S1) where sminos asks once a request, for the one target it names.
+  For the case to replay MAWS needs two §2-shaped requests, each naming one
+  thread and its session. Sent to the holder as a contract finding.
 
 ## Decision Log
 
@@ -2550,6 +2559,17 @@ while the milestones are built, one observation and its evidence each.
   word and is not asked again. The scene asserts every read's exit, the
   order of B's sections and §8's whole sentence, and one checker helper
   (`checked_clean`) serves both of its cases.
+- 2026-11-21 — **Before the frontier** (`46f7bcd9..a3bc63da`). `origin/main`
+  merged at `b7413f10` (EN.G1, sminos 1.53.0, devcloud 0.18.0): both
+  changes kept where they meet, `known_logs` filtered by EN.G1's
+  `not_carried`, `cmd_say` running EN.G1's notice checks before the
+  channel refusal; the `sminos-channels` gate sits after
+  `sminos-on-devcloud` in `.github/ci-kit.yml`. `sminos who --thread`,
+  new with EN.G1, refuses a target qualified by a channel (M1's verb loop
+  in `T/test-channels.sh`). A request's ask marks the pass due only while
+  the target's frame waits for lane capacity (`members_unsent`). After the
+  merge `sminos-idle` reads 32,789 calls a second at 3.83 ticks (limit
+  33,570; file calls 2,778, limit 2,970).
 
 ## Outcomes & Retrospective
 
