@@ -75,7 +75,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M1 — Names through a channel. `de0ed736`, fixes `6e2b7b90`, `78b07c42`; reviewed clean at the third review. Gates GREEN on `78b07c42`; sminos-idle 32,191; sminos-channels 1m37s.
 - [x] (2026-11-22) M2 — What a channel owes a thread: the debt and its transitions. `a604658a`, fix `00e1b6b5`; two reviews at the high rung, the second's two findings (a corrupt record's shapes no writer emits) logged in TECH-DEBT. Gates GREEN on `00e1b6b5`; sminos-idle 32,766; sminos-channels 1m51s.
 - [x] (2026-11-22) M3 — Pushing and waking from a channel's log. `af78de21`, `11482879`, fixes `b544d7f4`, `0c969840`, `dddf22b4`; three reviews at the high rung (the bound), the third's four fixes (`dddf22b4`) made after it and named to M6's review of M2 to M6. Gates GREEN on `dddf22b4`; sminos-idle 32,724; sminos-channels 2m08s.
-- [ ] M4 — Saying into a channel: the doors, the reply, the read. (Built `d5c345bc`; gates GREEN; sminos-idle 32,117; sminos-channels 2m22s; in review.)
+- [x] (2026-11-22) M4 — Saying into a channel: the doors, the reply, the read. `d5c345bc`, fixes `934afd76`, `b9fc61a4`; reviewed clean at the third review (one Minor on a draft sentence's wording left for open point 4). Gates GREEN on `b9fc61a4`; sminos-idle 32,663; sminos-channels 2m06s.
 - [ ] M5 — The scene on a real engine.
 - [ ] M6 — Across machines: asking, and carrying out off the consumer thread.
 - [ ] M7 — Held to MAWS's fixture, and what a channel costs.
@@ -3733,6 +3733,12 @@ them today.
     the text on every route; a channel's copy is attempted after its
     delivery; one chat body (`sminos.chat_read`) serves a project and a
     channel.
+  - *(Its second review.)* The mixed-tag refusal names no project for a
+    bare alias it has not resolved: "one message, one log: the tags name
+    <logs>; @<alias> resolves outside <channel>" (a draft, open point 4;
+    its last review notes it overclaims for a tag no member answers
+    anywhere). `@alias#short` and an id-form tag still get their project
+    named, from a read that does not reconcile.
 
 
 ## Outcomes & Retrospective
