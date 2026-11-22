@@ -274,10 +274,12 @@ wake lock, the delivery lock and held. Added here:
   holder's ruling). The uplink asks the endpoint about a channel's
   messages and keeps each answer in a file; a deliverer in another process
   (the daemon's channel pass) carries it out (§4). On the consumer thread
-  a channel's message causes reads, the queuing of frames and the creation
-  of that file, and nothing else: no delivery lock, no store lock, no
-  wake, no `project_path` over a home whose registration it would have to
-  read or write. Three paths are named because the mechanism alone left
+  a channel's message causes reads, the queuing of frames, the creation of
+  that file, and the two appends those reads already make under no lock (a
+  line in the daemon's log; the receipts' mark that a young process may
+  yet activate them), and nothing else: no delivery lock, no store lock,
+  no wake, no `project_path` over a home whose registration it would have
+  to read or write. Three paths are named because the mechanism alone left
   them: the receipts' lock inside the choice of what to ask is only tried,
   and a busy one defers the ask; an ask that goes unanswered writes
   nothing there; and a message's upload reads its sender's frame as the
