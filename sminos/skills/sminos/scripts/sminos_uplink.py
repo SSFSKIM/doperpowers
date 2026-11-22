@@ -2224,8 +2224,8 @@ class Link:
         it left pending `endpoint` asked `reach? {id, project: the channel,
         session: the thread's current session, event: the request, its
         verified left out}`, the thread's member frame first under its own
-        project (members_before: asked with the channel it would find no
-        row there). One ask out at a time for a request, held under the
+        project (member_under: asked with the channel, members_before
+        would find no row there). One ask out at a time for a request, held under the
         event it asks about (sminos_channels.event_key) with the session and
         reach it was put for (ask_of). Not through queue_asks' hold filter:
         a stopped thread is asked about and placed while it stays stopped.
@@ -2260,14 +2260,39 @@ class Link:
                 if self.session_lane.queued() >= UPLOAD_AHEAD:
                     self.words_due = True   # asked once the lane has room
                     return
-                if not self.members_before(asked["project"], {asked["session"]}):
-                    self.words_due = True   # asked once its member frame is queued
-                    return
+                if not self.member_under(asked["project"], asked["session"]):
+                    self.words_due = True   # asked once its frame under its own project is queued
+                    continue
                 ask = os.urandom(12).hex()
                 self.hold_asks([(ask, {"key": key, "project": channel, "event": r, "t": "reach?",
                                        "request": {"session": asked["session"], "reach": asked["reach"]}},
                                  {"t": "reach?", "id": ask, "project": pid, "session": asked["session"],
                                   "event": {k: v for k, v in r.items() if k != "verified"}})])
+
+    def member_under(self, project, session):
+        """Whether the session's member frame on the lane is its frame under
+        `project`, its own project now, as a request's ask needs it first
+        (CH1's M7): members_before, and when the frame it leaves names
+        another project or none (the plane read the session before it
+        moved), that project's rows and those of the project the frame
+        named read again and the members published; False while the frame
+        is not there, the ask left to the next pass."""
+        if not self.members_before(project, {session}):
+            return False
+
+        def under():
+            return session not in self.members_unsent \
+                and (self.members_sent.get(session) or {}).get("project") == project.id
+        if under():
+            return True
+        sent = (self.members_sent.get(session) or {}).get("project")
+        sminos.forget_caches()   # the engine's records and the logs as they are now (Plane.tick)
+        for p in ([self.member_known[sent]] if sent in self.member_known and sent != project.id else []) + [project]:
+            self.plane.refresh(p)
+            self.member_known.setdefault(p.id, p)
+        self.unlisted.discard((project.id, session))
+        self.publish_members(time.monotonic())
+        return under()
 
     def words_pass(self, known):
         """ask_words, timed into WORDS_TIMES's file when it names one."""

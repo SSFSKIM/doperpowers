@@ -66,6 +66,7 @@ CRED = {"org": ORG, "hub": URL, "machine": MACHINE, "key": None}
 DESK = "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c"     # a channel a record of this machine names
 LOBBY = "0123abcd-4567-8abc-a123-456789abcdef"    # a channel no record names, where an older copy joined a session
 APP = "7d2b9c40-1f3e-4a6b-8c5d-9e0f1a2b3c4d"
+ELSEWHERE = "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7"
 S1 = "6c000001-0000-4000-8000-0000000000c1"
 S2 = "6c000002-0000-4000-8000-0000000000c2"
 W = "%s/%s" % (MACHINE, S2)
@@ -724,6 +725,47 @@ class Asks(Requests, T1.Sessions):
         self.assertNotEqual(asks[0]["id"], asks[1]["id"], "under a new id")
         self.answer(link, asks[1], "deliver")
         self.assertEqual(self.held(tid), [DESK])
+
+    def test_an_overdue_answer_that_arrives_while_its_ask_is_still_held_is_none(self):
+        tid, sid, _ = self.human()
+        self.remote(DESK, "add", sid, tid)
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        overdue = link.asks[ask["id"]]["deadline"] + 1
+        with mock.patch.object(uplink.time, "monotonic", return_value=overdue):
+            self.answer(link, ask, "deliver")   # no expire_asks has run: the ask is still held as it lands
+        self.assertNotIn(ask["id"], link.asks)
+        self.assertEqual((self.held(tid), self.answered(tid)), ([], []), "an answer past its wait is none")
+        self.ask_pass(link)
+        asks = self.asks(link)
+        self.assertEqual(len(asks), 2, "asked again")
+        self.answer(link, asks[1], "deliver")
+        self.assertEqual(self.held(tid), [DESK])
+
+    def test_the_ask_follows_a_frame_under_the_threads_own_project_when_the_plane_lags_its_move(self):
+        tid, sid, _ = self.human()
+        link = self.link()
+        self.assertTrue(link.members_before(self.p, {sid}))   # its frame on the lane, under the project it was in
+        self.assertEqual(link.members_sent[sid]["project"], self.p.id)
+        root = self.repo("elsewhere")
+        with open(os.path.join(root, ".smns"), "w") as f:
+            json.dump({"project": ELSEWHERE, "name": "elsewhere", "hub": {"org": ORG}}, f)
+        other = self.project_of(root)
+        self.assertNotEqual(other.id, self.p.id)
+        self.write_own(sid, [{"kind": "retired", "reason": "moved", "project": other.id, "thread": tid}])
+        self.write_own(sid, [self.old_joined(sid, alias="mover", thread=tid)], p=other)
+        self.assertEqual(sminos.last_project(sid).id, other.id, "it moved; the plane has not read that")
+        e = self.remote(DESK, "add", sid, tid)
+        self.ask_pass(link)
+        print({k: list(v) for k, v in link.plane.member_rows.items()}, self.p.id, other.id, link.members_sent.get(sid, {}).get("project"), link.members_unsent, [m.session for m in sminos.view_of(other).members])
+        [ask] = self.asks(link)
+        at = link.session_lane.sent.index(ask)
+        frames = [f for f in link.session_lane.sent[:at] if f.get("t") == "member" and f.get("session") == sid]
+        self.assertEqual(frames[-1].get("project"), other.id, "its own project's frame, not the one it left")
+        self.answer(link, ask, "deliver")
+        self.assertEqual(self.held(tid), [DESK])
+        self.assertEqual(self.answers(sid, other), [(DESK, e["id"], "applied", None, (DESK,))])
 
     def test_an_answer_that_names_no_verdict_is_none(self):
         tid, sid, _ = self.human()

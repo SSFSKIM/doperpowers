@@ -2531,6 +2531,14 @@ while the milestones are built, one observation and its evidence each.
   live outside a test, so the case is the fixture's (the scene's step 2
   amended). `ask_of(channel, …)` beside `answer_of(channel, …)` is
   accepted, and the holder carries both to Y1.
+- 2026-11-21 — **The endpoint's `reach?` for a request, as MAWS reads it**
+  (its master `5346ff6d3`; Outcomes). It finds the recipient by `session`
+  alone, which is why the target's current own-project frame goes first
+  (M7's review, round 1) and why the ask stays owed while the endpoint
+  holds no record of it; `project` is the event's scope for its
+  signature, so a request is signed and presented under the channel's id
+  on every path; a refusal's reason is `not-reachable` or `unverified`,
+  and sminos reads any refusal as refused whatever its word.
 
 ## Outcomes & Retrospective
 
@@ -2541,4 +2549,15 @@ Pending — written at finish. Recorded ahead of it:
   fleet check of M8 and CH2 reads it, and until MAWS answers, the built
   behaviour is pending `endpoint`. The holder has put the exchange to
   MAWS's architect, with a request for a fixture case (one `deliver`, one
-  `refuse`) that the replay would then take.
+  `refuse`) that the replay would then take. MAWS's answer from its master
+  `5346ff6d3` (`decideReach`), with no change to the endpoint: the
+  recipient is found by `session` alone, and one whose record the endpoint
+  does not hold yet gets no answer (the ask stays owed); the sender needs
+  no member row under `project`, which is the event's own scope (for this
+  machine's writer the signature ledger is looked up under it, the owners
+  from the asker's member under its own project; for another machine's
+  event `verifyEvent({org, project})`, so a request is signed over the
+  channel's id); the verdict is `deliver` on a shared owner or a reach of
+  `list` or wider, else `refuse` with `not-reachable` (`unverified` for an
+  unverified sender to a private recipient). MAWS adds the exchange as the
+  fixture's last case.
