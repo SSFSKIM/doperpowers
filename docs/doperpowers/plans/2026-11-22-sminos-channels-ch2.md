@@ -3719,6 +3719,20 @@ them today.
   - B11 is held by `test_channels_say.py`'s `SameAsBase`, which builds the
     merge base `61b27ebe` from git and compares `say` and `chat` over a
     store with no channel (frames and log, but for ids, times and paths).
+  - *(Decided on its second review.)* §2's "nothing appended to any log"
+    for a refusal is read as nothing the say itself writes: no message, no
+    copy, and nothing the refusal's own path causes, which reads by
+    `sminos.logged_members` and reconciles nothing. A refused name that
+    reaches `reach_in` still reads the roster, whose sweep reads each
+    project's view and so reconciles as every view does (CH1's roster,
+    `list`, `channel show`); the lifecycle facts that writes are true either
+    way, and making the roster's read not reconcile would change CH1's
+    roster for every reader. An old reply to a thread whose project is
+    retired or has left the machine is refused in `CANNOT_REACH`'s words by
+    the `org_scope` check `@<short>` makes; a torn row's tag is cut from
+    the text on every route; a channel's copy is attempted after its
+    delivery; one chat body (`sminos.chat_read`) serves a project and a
+    channel.
 
 
 ## Outcomes & Retrospective
