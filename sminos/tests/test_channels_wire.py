@@ -29,6 +29,7 @@ import io
 import json
 import fcntl
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -153,6 +154,39 @@ class Checker(unittest.TestCase):
         for f in breaches:
             got = wire.published([f], [DESK, LOBBY], self.before, welcomed={1})
             self.assertEqual(len(got), 1, (f, got))
+
+    def test_what_is_said_in_a_channel_is_allowed_with_the_spoken_kinds(self):
+        """CH2's M4: a message in a channel's log, a member's and an outsider's, a person's and a notice."""
+        to = [{"session": S1, "alias": "w", "thread": S2}]
+        spoken = [ev(W, 5, "say", to=to, text="x", thread=S1), ev(W, 6, "say", to="*", text="y", thread=S1),
+                  ev(W, 7, "say", to=to, text="z", thread=S1, from_project=APP),
+                  ev("%s/human" % MACHINE, 2, "human", to=to, text="h"),
+                  ev("%s/human" % MACHINE, 3, "human", to="*", text="n", notice="devcloud")]
+        self.assertEqual(wire.published([self.events(DESK, *spoken)], [DESK], {}, allowed=wire.ALLOWED_SPOKEN), [])
+        self.assertEqual(len(wire.published([self.events(DESK, *spoken)], [DESK], {})), len(spoken),
+                         "each a breach under CH1's kinds")
+
+    def test_each_breach_of_a_spoken_event_on_the_wire_and_on_disk(self):
+        to = [{"session": S1, "alias": "w", "thread": S2}]
+        human = "%s/human" % MACHINE
+        breaches = {
+            "copy": ev(W, 5, "say", to=to, text="x", copy="%s:%s:1" % (APP, W)),
+            "from_project": ev(human, 2, "human", to=to, text="h", from_project=APP),
+            "a lead's from_project": ev(human, 3, "channel-lead", thread=S2, session=S1, from_project=APP),
+            "no thread": ev(W, 6, "say", to=[{"session": S1, "alias": "w"}], text="x"),
+            "a thread of no string": ev(human, 4, "human", to=[{"session": S1, "alias": "w", "thread": 7}], text="x"),
+        }
+        for why, e in breaches.items():
+            got = wire.published([self.events(DESK, e)], [DESK], {}, allowed=wire.ALLOWED_SPOKEN)
+            self.assertEqual(len(got), 1, (why, got))
+            home = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, home)
+            log = os.path.join(home, "projects", DESK, "log")
+            os.makedirs(log)
+            with open(os.path.join(log, "w.jsonl"), "w") as f:
+                f.write(json.dumps(e) + "\n")
+            got = wire.written(home, [DESK], MACHINE, {}, allowed=wire.ALLOWED_SPOKEN, deliveries=False)
+            self.assertEqual(len(got), 1, (why, got))
 
     def test_the_older_copy_suites_upload_order_is_first_receipt(self):
         """older_channel_wire.first_received (test-older-cli.sh's wire check) reads the order the stand-in first

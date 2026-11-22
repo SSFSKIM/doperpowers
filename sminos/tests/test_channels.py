@@ -330,10 +330,12 @@ class Names(Machine):
         self.assertIsNone(sminos.find_project(DESK, required=False))
         self.assertEqual(sminos.names_channel("desk-integration").id, DESK)
         self.assertIsNone(sminos.names_channel("nothing"))
-        for verb in (("chat", "desk-integration"), ("list", "desk-integration"), ("list", "--project", DESK)):
-            rc, out, err = self.cli(*verb)
-            self.assertEqual(rc, 4, verb)
-            self.assertIn("is a channel, not a project: sminos channel show", err, verb)
+        rc, out, err = self.cli("list", "--project", DESK)
+        self.assertEqual(rc, 4)
+        self.assertIn("is a channel, not a project: sminos channel show", err)
+        for verb in (("chat", "desk-integration"), ("list", "desk-integration")):
+            rc, out, err = self.cli(*verb)   # a read of the channel's own (CH2's M4), before a project is asked for
+            self.assertEqual(rc, 0, (verb, err))
 
 
 class Smns(Machine):
@@ -493,7 +495,8 @@ class LegacyRoot(Machine):
         with mock.patch.object(sminos, "caller_project", lambda caller=None: sminos.known_project(DESK)):
             code, said = exits(sminos.main, ["say", "hello"])
         self.assertEqual(code, 1)
-        self.assertIn("is a channel, and speaking in a channel is not available", said)
+        self.assertIn("app is a channel, and no directory's project: say --in app to speak in it", said,
+                      "a channel is spoken in only by naming it (CH2's M4)")
         self.assertEqual(self.log_events(DESK), [])
 
 
@@ -902,9 +905,11 @@ class Doors(Machine):
         sid = "6c000008-0000-4000-8000-0000000000c8"
         self.live(sid, self.root)
         rc, out, err = self.cli("say", "@worker @desk-integration/worker hello", cwd=self.root)
-        self.assertEqual(rc, 1, err)
-        self.assertIn("desk-integration is a channel", err)
-        self.assertEqual(self.log_events(PROJ), [], "no member was looked up: nothing reconciled, nothing recorded")
+        self.assertEqual(rc, 4, err)
+        self.assertIn("one message, one log: the tags name app, desk-integration", err,
+                      "a bare name resolves to its thread's own project, beside the channel (CH2's M4)")
+        self.assertEqual([e for e in self.log_events(PROJ) + self.log_events(DESK) if e["kind"] in ("human", "say")],
+                         [], "nothing recorded")
 
     def test_a_channel_qualifier_by_its_whole_id_unquoted_is_refused_too(self):
         """The holder's reading, D3: the qualifier is decided by the name resolver, whole: `log_label`'s
@@ -915,7 +920,7 @@ class Doors(Machine):
         for argv in (("say", "@%s/worker hello" % q), ("say", "--here", "@%s/worker hello" % q)):
             rc, out, err = self.cli(*argv, cwd=self.root)
             self.assertEqual(rc, 1, (argv, err))
-            self.assertIn("%s is a channel" % q, err, argv)
+            self.assertIn("@%s/worker opens no tag (a tag's qualifier takes no #)" % q, err, argv)
         rc, out, err = self.cli("say", "@nobody#1234abcd/worker: not a log, just words", cwd=self.root)
         self.assertEqual(rc, 0, err)
         self.assertEqual([e.get("text") for e in self.log_events(PROJ) if e["kind"] in ("human", "say")],
@@ -930,7 +935,7 @@ class Doors(Machine):
         for text in ("@%s/worker hello" % q, "@worker @%s/worker hello" % q, "@%s/worker: hello" % q):
             rc, out, err = self.cli("say", text, cwd=self.root)
             self.assertEqual(rc, 1, (text, err))
-            self.assertIn("%s is a channel" % q, err, text)
+            self.assertIn("@%s/worker opens no tag (a tag's qualifier takes no #)" % q, err, text)
         self.assertEqual(self.log_events(PROJ), [], "nothing recorded")
 
     def test_a_shortened_channel_qualifier_is_refused_under_a_selector_too(self):
@@ -950,14 +955,15 @@ class Doors(Machine):
         for argv in (("say", "--here", "@%s/worker hello" % q), ("say", "--project", "app", "@%s/worker hi" % q)):
             rc, out, err = self.cli(*argv, cwd=self.root)
             self.assertEqual(rc, 1, (argv, err))
-            self.assertIn("%s is a channel" % q, err, argv)
+            self.assertIn("@%s/worker opens no tag (a tag's qualifier takes no #)" % q, err, argv)
         self.assertEqual(sizes(), before, "nothing appended")
 
     def test_an_unregistered_channel_id_is_a_channel_at_every_door(self):
         other = "9e000001-0000-8000-8000-0000000000e1"
         self.assertTrue(sminos.is_channel_id(other))
-        for args, code, words in ((("say", "--in", other, "hi"), 1, "%s is a channel" % other),
-                                  (("say", "@%s/worker hi" % other), 1, "%s is a channel" % other),
+        unknown = "no channel '%s' is known on this machine" % other   # spoken in only once registered (CH2's M4)
+        for args, code, words in ((("say", "--in", other, "hi"), 4, unknown),
+                                  (("say", "@%s/worker hi" % other), 4, unknown),
                                   (("charge", "%s/worker" % other, "x"), 4, "no member worker in channel %s" % other)):
             rc, out, err = self.cli(*args, cwd=self.root)
             self.assertEqual(rc, code, (args, err))
@@ -1061,12 +1067,13 @@ class Round2(Machine):
         self.assertEqual(err.strip(), "sminos: ambiguous name 'desk': %s — name one as listed, or by its id"
                          % ", ".join(sorted(labels)))
         rc, out, err = self.cli("say", "--in", "desk#" + DESK, "hi", cwd=root)
-        self.assertEqual(rc, 1, err)
-        self.assertIn("is a channel, and speaking in a channel is not available", err)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([e["kind"] for e in self.log_events(DESK)], ["human"],
+                         "the channel's, by the whole id: said into it (CH2's M4)")
         rc, out, err = self.cli("say", "--in", "desk#" + PROJ[:8], "hi", cwd=root)
         self.assertEqual(rc, 0, err)
         self.assertEqual([e["kind"] for e in self.log_events(PROJ)], ["human"])
-        self.assertEqual((self.log_events(DESK), self.log_events(third.id)), ([], []))
+        self.assertEqual((len(self.log_events(DESK)), self.log_events(third.id)), (1, []))
         rc, out, err = self.cli("say", "--in", "desk#" + DESK[:8], "hi", cwd=root)
         self.assertEqual(rc, 0, err)
         self.assertEqual([e["kind"] for e in self.log_events(third.id)], ["human"], "the exact name is the third's")

@@ -29,6 +29,11 @@ Each returns one line per breach. A breach on the wire:
   id that is no channel's, or that carries the key on a connection whose
   welcome did not list `channels` (`welcomed`: the numbers of those whose
   did).
+From CH2's M4 on, under a channel's id on the wire or on disk, besides a
+kind outside `allowed` (CH2 passes ALLOWED_SPOKEN): an event that carries
+`copy`; a `human` or a `channel-lead` that carries `from_project` (a `say`
+may: its sender is no member); and a `say` or a `human` whose `to` is a
+list with an entry that carries no `thread`.
 And on disk, for this machine's writers (`machine`: its name, or its names
 now and former): an event in a channel's log at a position the baseline
 does not hold with that event, of a kind outside `allowed`, and the
@@ -49,6 +54,7 @@ import os
 import re
 
 ALLOWED = ("channel-request", "channel-env", "retired", "void")
+ALLOWED_SPOKEN = ALLOWED + ("say", "human", "channel-lead")   # what CH2's suites pass as `allowed` (its §8)
 CHANNEL_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 LIMIT = 128
 HOST_STORE = "host"
@@ -108,6 +114,14 @@ def _event_breach(cid, e, before, allowed, where):
     if kind == "retired" and not _undoes_older_joined(cid, e, before):
         return "%s: a retired under channel %s at %s:%s that undoes no older joined of %s" % (
             where, cid, e.get("writer"), e.get("seq"), e.get("session"))
+    at = "under channel %s at %s:%s" % (cid, e.get("writer"), e.get("seq"))
+    if "copy" in e:
+        return "%s: a %r that carries copy %s" % (where, kind, at)
+    if kind in ("human", "channel-lead") and "from_project" in e:
+        return "%s: a %r that carries from_project %s" % (where, kind, at)
+    if kind in ("say", "human") and isinstance(e.get("to"), list) \
+            and any(not (isinstance(r, dict) and isinstance(r.get("thread"), str) and r["thread"]) for r in e["to"]):
+        return "%s: a %r whose to has an entry that names no thread %s" % (where, kind, at)
     return None
 
 

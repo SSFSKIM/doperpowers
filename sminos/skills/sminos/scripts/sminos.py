@@ -73,7 +73,11 @@ back by a fill.
                    # no project by its name; a codex thread (its id, or codex:<id|exact name>, through
                    # codex's queue); --wait needs a seat or a thread of this machine.
     sminos say      [--in <project>] <text>                # untagged: recorded; @alias / @"a b" / @alias#short /
-                   @short / @project/alias: delivered; @all: every live member
+                   @short / @project/alias / @channel/alias: delivered; @all: every live member
+    sminos say      --in <channel> <text>                 # said in a channel: its members' tags (@alias, @short,
+                   @alias#short), @all its live members, untagged a record nobody is prompted for; the same as
+                   @channel/alias without --in. A thread that is not in the channel may say into it too: its
+                   replies come to it directly, in its own project
     sminos say      [--org] [--project P,..] [--machine M,..] [--here] [--state W,..] <text>   # list's filters:
                    every live session of that scope but you (`list` with the same flags shows them), each woken
                    as @all wakes; recorded in each project it reaches, copied into yours; no @tags beside it
@@ -82,7 +86,8 @@ back by a fill.
                    take: each event marked, shown from <program>@<machine>, never delivered as a person's words
     sminos say      --exit-held …                         # exit 3 when a tagged recipient's line says it is held
                    and not woken; the message is recorded as without it
-    sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
+    sminos chat     [<project>|<channel>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing
+                   the cursor (in a channel, the thread's)
     sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
     sminos charge   [<member>] "<one line>"               # what the member is in charge of, until its next
                    derived line: the line is derived in the background (derive), so sessions are not taught this
@@ -163,7 +168,8 @@ back by a fill.
     sminos list     [project] [--project P,..] [--machine M,..] [--state W,..] [--org] [--here] [--stopped] [--all] [--json]
                    [words..] [--channel C]..  # the caller's project (a session's own, else the working directory's;
                    every project from none), then each channel the caller is in (`# <name>`, its members
-                   from every project, stopped ones shown); --channel those of a channel; any filter
+                   from every project, stopped ones shown); --channel those of a channel (`list <channel>`
+                   alike, its other words row filters); any filter
                    widens to every project known here, then narrows: --machine by prefix, words (all of
                    them) in the alias, short, project, repo, branch, in-charge, now line or title; --org
                    every project; --here this machine, plus every running session in no project.
@@ -190,8 +196,8 @@ back by a fill.
                    that makes an open turn stalled when only the disk speaks;
                    --json {self, scope, counts, agents, notes}, every agent whatever its state
     sminos channel  create <name> [<thread>]              # a declared channel, the caller its first member (from
-                   a terminal, <thread>: one of this machine); a channel is no project, and nothing is said in one
-                   in this version
+                   a terminal, <thread>: one of this machine); a channel is no project: it is spoken in by naming
+                   it (say --in <channel>, @channel/alias), never by standing in a directory
     sminos channel  add <channel> [<thread>...]           # threads placed in it without acting (none named: the
                    caller); a thread of another machine once its daemon reads the request
     sminos channel  remove <channel> [<thread>...]        # out of it: nothing is retired
@@ -236,9 +242,11 @@ display names and can collide; `alias#short` (the session's first eight hex
 digits) tells two apart. A seat-less session never takes, from its harness
 name, an alias a seat or another current member of its project holds (a
 `--bg` copy inherits its source's name): it keeps the alias it has, else its
-short. A bare name resolves only in the caller's project (a
-seat's own, for a seat); `@short` and `alias#short` reach a session in any
-project known here, `project/alias` (a stray: `machine/alias`) one in another;
+short. A bare name resolves in the caller's project (a
+seat's own, for a seat) and in the channels the caller is in, a thread
+found there reached in its own project; `@short` and `alias#short` reach a
+session in any project known here, `project/alias` (a stray: `machine/alias`)
+one in another, `channel/alias` a member of a channel;
 on a machine not enrolled, from a directory that is no project, a bare name
 resolves across every project known here. A seat also answers to
 `group/alias`. Scripts may pass a full seat id or session id. A session a
@@ -2692,6 +2700,16 @@ def tag_project(p):
     return p.name if not clash and any(t.id == p.id for t in tiers) else p.id
 
 
+def registered_channel(q):
+    """The channel registered here that `q` names (names_channel), else None:
+    a read that branches to a channel before it asks for a project (`chat
+    <channel>`, `list <channel>`; CH2's M4). An id of a channel's form that
+    is registered nowhere here is left to find_project, which refuses it as
+    a channel."""
+    channel = names_channel(q)
+    return known_project(channel.id) if channel is not None else None
+
+
 def find_project(q, required=True):
     """A project known locally, by id or by name (project_tiers' first);
     with required=False, None when none is, a channel's name or id among
@@ -4087,7 +4105,9 @@ def frame_landed(project, session, e):
     its text together, and never when another chat event of the log shows
     the same reference and a text that frame would show as well (event_ref
     drops a stream's suffix, and each stream numbers its own events): such a
-    frame cannot be told from the other's, and claims no push. A frame after
+    frame cannot be told from the other's, and claims no push; nor where a
+    log of the same name, a channel and a project (CH2's M4), holds such an
+    event, since a frame's header names its log by its name. A frame after
     another in one push of several is not told from a quote either, and
     claims none. A machine's notice is always a chat frame (frame_of), a
     `msg_id` on it included."""
@@ -4099,6 +4119,11 @@ def frame_landed(project, session, e):
     if any(x.get("kind") in CHAT_KINDS and (x.get("writer"), x.get("seq")) != (e["writer"], e["seq"])
            and event_ref(x) == ref and sender_text(str(x.get("text") or "")).startswith(body)
            for x in log_read(project) if x.get("writer") is not None and x.get("seq") is not None):
+        return False
+    namesakes = [p for p in known_logs() if p.name == project.name and p.id != project.id
+                 and (is_channel_id(p.id) or is_channel_id(project.id))]
+    if any(x.get("kind") in CHAT_KINDS and event_ref(x) == ref and sender_text(str(x.get("text") or "")).startswith(body)
+           for p in namesakes for x in log_read(p) if x.get("writer") is not None and x.get("seq") is not None):
         return False
     head = re.compile(r"\[sminos chat %s %s from [^\n]*\]\n" % (re.escape(project.name), re.escape(ref)))
 
@@ -9173,16 +9198,19 @@ STOPPED_TAG_RE = re.compile(r'@(\S+)')
 
 
 def shortened_channel_qualifier(text):
-    """The qualifier of the unquoted `@<qualifier>/<alias>` where the
-    message's leading run of tags stops (_leading_run), when the name
-    resolver reads it whole as a channel's (names_channel: `name#short`,
-    `name#<whole id>`, an id), else "": cmd_say refuses it as a
-    channel-qualified tag, before anything is recorded or a selector read
-    (the frontier's second review, C7; the holder's reading, D3). Any other
-    text there is the message's, as before."""
+    """(the word, its qualifier) of the unquoted `@<qualifier>/<alias>`
+    where the message's leading run of tags stops (_leading_run), when the
+    name resolver reads the qualifier whole as a channel's (names_channel:
+    `name#short`, `name#<whole id>`, an id), else None: it opens no tag (a
+    tag's qualifier takes no `#`: TAG_RE, which the audience split reads
+    too), and cmd_say refuses it before anything is recorded or a selector
+    read (the frontier's second review, C7; the holder's reading, D3), naming
+    the two forms that work (CH2's M4). Any other text there is the
+    message's, as before."""
     m = STOPPED_TAG_RE.match(text, _leading_run(text)[1])
-    q, sep, _ = m.group(1).rstrip(",:;").rpartition("/") if m else ("", "", "")
-    return q if sep and q and names_channel(q) is not None else ""
+    word = m.group(1).rstrip(",:;") if m else ""
+    q, sep, _ = word.rpartition("/")
+    return ("@" + word, q) if sep and q and names_channel(q) is not None else None
 
 
 def project_seats(project):
@@ -9456,11 +9484,12 @@ def _resolve_tag(project, t):
       the sender is in: the board spawns the same seat names in every
       repository, so `@executor` would otherwise wake another repository's
       executor. The refusal names those members.
-    - From no project (a machine not enrolled), every project known here."""
+    - From no project (a machine not enrolled), every project known here.
+
+    A qualifier that names a channel is sminos_channels.speak's, which
+    cmd_say enters before any tag reaches here; project_tiers refuses one."""
     raw, name, short = t["raw"], t["name"], t["short"]
     if t["project"]:
-        if names_channel(t["project"]) is not None:
-            die(channel_say_refusal(t["project"]), 1)   # nothing is said into a channel yet (CH1, §8)
         tiers = project_tiers(t["project"])
         if not tiers:
             die("no project '%s' is known on this machine" % t["project"], EXIT_UNKNOWN)
@@ -9538,9 +9567,6 @@ def resolve_tags(project, text, raws=None):
         live = [m for m in members(project) if m.state in FILLED]
         return project, [{"session": m.session, "alias": m.alias} for m in live], text, True
 
-    for t in tags:
-        if t["project"] and names_channel(t["project"]) is not None:
-            die(channel_say_refusal(t["project"]), 1)   # before any member is looked up, which reconciles (CH1, §8)
     destinations, recipients, held = {}, [], []
     run = audience_module().leading_run(text)[0]
     for i, t in enumerate(tags):
@@ -10329,7 +10355,7 @@ def record_copy(home, delivered):
     return c
 
 
-def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
+def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"], rows=None):
     """Deliver a recorded say (`e`, in `dest`'s log) to its recipients, a
     line each, the recipient as `name` gives it: one of this machine's now
     (deliver_next); another machine's by that machine's daemon, which this
@@ -10338,11 +10364,24 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
     are said so, and the daemon nudged: its uplink asks. The recipients
     whose line was a held one (`--exit-held`'s, Interfaces §2 of EN.G1's
     plan): a thread of this machine held for a reason it is not woken
-    (HOLD_WORDS), or one another machine published `held` for."""
-    by_session = {m.session: m for m in members(dest)}
+    (HOLD_WORDS), or one another machine published `held` for.
+
+    In a channel's log (CH2's M4) a recipient is the thread its entry names
+    (`thread`), its row the roster's (`rows`: {thread: (Project, Member)});
+    one of this machine is delivered through sminos_channels.owing and
+    deliver_next given it, the daemon's own operation, and what is read to
+    word its line (a held mark, a settlement another deliverer made) is the
+    thread's delivery record. One whose record here does not hold the
+    channel is told so, and nothing is delivered to it."""
+    chans = channels_module() if is_channel_id(dest.id) else None
+    by_session = {m.session: m for m in members(dest)} if chans is None else {}
     held_for = []
     for r in recipients:
-        member = by_session.get(r["session"])
+        o = None
+        if chans is None:
+            member = by_session.get(r["session"])
+        else:
+            member = (rows or {}).get(r.get("thread"), (None, None))[1]
         if member is not None and not member.local:
             # Owed to it in the log; its own machine's daemon delivers it,
             # once this machine's daemon has pushed it: ask for that now. A
@@ -10352,14 +10391,27 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
                 held_for.append(r)
             nudge_daemon()
             continue
-        result = deliver_next(dest, member, due=True) if member else {"outcomes": []}
-        mine = [o for ev, o in result["outcomes"] if ev["writer"] == writer and ev["seq"] == e["seq"]]
-        first = next((o for ev, o in result["outcomes"] if ev["writer"] == writer), "")
-        if member and e["seq"] in _delivery(delivered_load(dest, member.session), writer).get("held", {}) \
+        if chans is not None:
+            o, why = chans.owing_for(dest, r.get("thread"))
+            if why:
+                print("%s: %s" % (name(r), why))
+                continue
+            member = o.member if o is not None else None
+        try:
+            result = deliver_next(dest, member, due=True, owing=o) if member else {"outcomes": []}
+        except DeliveryUnreadable:
+            result = {"outcomes": []}   # the thread's delivery record cannot be read: the daemon's pass defers too
+        session = o.session if o is not None else member.session if member else ""
+
+        def record():
+            return (chans.delivered(dest, o.thread) or {}) if o is not None else delivered_load(dest, session)
+        mine = [o_ for ev, o_ in result["outcomes"] if ev["writer"] == writer and ev["seq"] == e["seq"]]
+        first = next((o_ for ev, o_ in result["outcomes"] if ev["writer"] == writer), "")
+        if member and e["seq"] in _delivery(record(), writer).get("held", {}) \
                 and (not mine or mine[0].startswith("held:")):
             # This very event decided held, and still owed: why, as its writer's pass found it (T2's §5).
-            why = hold_why(mine[0] if mine else first) or hold_now(member.session) or "starting"
-            print("%s: %s" % (name(r), held_line(why, session=member.session)))
+            why = hold_why(mine[0] if mine else first) or hold_now(session) or "starting"
+            print("%s: %s" % (name(r), held_line(why, session=session)))
             if why in HOLD_WORDS:
                 held_for.append(r)
             continue
@@ -10367,15 +10419,16 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
             woken = {"woken": "sent (woken)", "woken?": "sent? (woken)"}   # §5: a live push's words, woken
             print("%s: %s" % (name(r), woken.get(mine[0], mine[0])))
             continue
-        if member and settled_already(dest, member.session, writer, e["seq"]):
-            pushed, said = settled_words(dest, member.session, e, name(r))
+        if member and (settled_already(dest, session, writer, e["seq"]) if o is None
+                       else e["seq"] <= _delivery(record(), writer)["settled"]):
+            pushed, said = settled_words(dest, session, e, name(r))
             print("%s: %s" % (name(r), "sent (%s)" % said if pushed else said))
             continue
         if any(ev["writer"] == writer for ev in result.get("gated", ())):
             print("%s: %s" % (name(r), WORDS_RECORDED))
             nudge_daemon()
             continue
-        held = next((o for ev, o in result["outcomes"] if ev["writer"] == writer), "")
+        held = next((o_ for ev, o_ in result["outcomes"] if ev["writer"] == writer), "")
         print("%s: pending%s" % (name(r), " behind an earlier undelivered message (%s)" % held if held else ""))
     return held_for
 
@@ -10499,14 +10552,6 @@ def say_scoped(a, home, sender, writer, kind, sid):
         sys.exit(1)
 
 
-def channel_say_refusal(q):
-    """What a say that names a channel is told (CH1, §8): speaking in one
-    comes in a later version, and the plain tag works today."""
-    return ("%s is a channel, and speaking in a channel is not available in this version of sminos yet: nothing was "
-            "recorded. Tag the thread itself (@<alias>#<short> or @<short>), which reaches it in its own project as "
-            "today" % q)
-
-
 def notice_field(a):
     """The field `say --notice` puts on every event the call appends (X8)."""
     return {"notice": a.notice} if a.notice is not None else {}
@@ -10519,10 +10564,11 @@ def cmd_say(a):
     program's notice (X8), refused inside a session and, with exit 1, on a
     machine whose name notice_of would not mark; `--exit-held` exits
     EXIT_HELD when a tagged recipient's line was a held one (deliver_say),
-    and changes nothing else. Nothing is said into a channel yet: `--in
-    <channel>`, a selector naming one and a tag qualified by one (_resolve_tag)
-    are refused before anything is appended, from a session and from a
-    terminal."""
+    and changes nothing else. A say that names a channel (`--in <channel>`,
+    or a tag qualified by one) is said into the channel's log
+    (sminos_channels.speak, CH2's M4), entered before a selector is read; a
+    selector that names a channel, and the unquoted `@<name#short>/<alias>`
+    that opens no tag, are refused before anything is appended."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if a.notice is not None and not NOTICE_PROGRAM_RE.fullmatch(a.notice):
         die("--notice names the program that speaks, as a lower-case word of letters, digits and hyphens (32 at "
@@ -10536,13 +10582,21 @@ def cmd_say(a):
         die("--notice: this machine's name, %s, is not one a machine's notice is read under (letters, digits, '.', "
             "'_' and '-', 63 at most, opening with a letter or a digit, and neither hub nor legacy), so the notice "
             "would be read as a person's words: nothing was recorded" % host_name(), 1)
-    for q in ([a.in_] if a.in_ else []) + list(a.projects):
+    chans = channels_module()
+    spoken = names_channel(a.in_) if a.in_ else None
+    for q in a.projects:
         if names_channel(q) is not None:
-            die(channel_say_refusal(q), 1)
+            die(chans.SELECTOR_NAMES_CHANNEL % (q, q), 1)
     if (q := shortened_channel_qualifier(a.text)):
-        die(channel_say_refusal(q), 1)   # however the say is addressed, a selector's included (C7)
+        die(chans.OPENS_NO_TAG % (q[0], q[1]), 1)   # however the say is addressed, a selector's included (C7)
+    tags = leading_tags(a.text)
+    if spoken is None:
+        spoken = next((c for t in tags if t["project"] for c in [names_channel(t["project"])] if c is not None), None)
+    if spoken is not None:
+        chans.speak(spoken, a, sid, tags)
+        return
     scoped = selector_given(a)
-    if scoped and leading_tags(a.text):
+    if scoped and tags:
         die("a selector picks the recipients itself: drop the opening @tags, or the selector — tags name "
             "sessions, a selector names a scope, and one message takes one")
     if sid:
@@ -10565,7 +10619,21 @@ def cmd_say(a):
     if dest is None:
         die("say outside a project: run it in a project's directory, or name one with --in <project>")
     if is_channel_id(dest.id):
-        die(channel_say_refusal(dest.name), 1)   # however it was reached: an older copy's rooted registration
+        # However it was reached (an older copy's rooted registration a caller stands in): a channel is spoken in
+        # only by naming it.
+        die(chans.NO_DIRECTORYS % (dest.name, dest.name), 1)
+    say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws)
+
+
+def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, said=None):
+    """A tagged or untagged say's appends and deliveries, its destination
+    and recipients resolved: one event per audience its recipients give
+    (streams_for), a copy in the sender's own project where the message
+    went to another (record_copy), and each recipient's line (deliver_say).
+    `said` (a sminos_channels.Said) is given for a channel's log, and only
+    then: the fields its events add (the sender's `thread`, an outsider's
+    `from_project`), whether a copy is kept, the line said after the
+    `recorded` lines, and the roster's rows deliver_say reads."""
     if sid:
         if wake:
             recipients = [r for r in recipients if r["session"] != sid]
@@ -10580,13 +10648,16 @@ def cmd_say(a):
         die(str(err), EXIT_UNKNOWN)
     except au.StreamUnknown as err:
         die("say could not be recorded: %s" % err, 1)
+    copied = said.copied if said is not None else bool(sid and home is not None and home.id != dest.id)
     recorded = []
     note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)   # before the appends (frame_landed)
     for split_writer, aud, rs, text in splits:
         fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": text, **notice_field(a)}
         if wake:
             fields["wake"] = True
-        if sid and home is not None and home.id != dest.id:
+        if said is not None:
+            fields.update(said.fields)
+        elif copied:
             fields["from_project"] = home.id  # the sender's own project, where a reply finds it
         try:
             keep_stream(dest, split_writer, aud)
@@ -10598,11 +10669,13 @@ def cmd_say(a):
             continue
         print("recorded %s in %s" % (event_ref(e), dest.name))
         recorded.append((e, rs))
-    if recorded and sid and home is not None and home.id != dest.id:
+    if said is not None and said.after:
+        print(said.after)
+    if recorded and copied:
         record_copy(home, [(dest, e) for e, _ in recorded])
     held_for = []
     for e, rs in recorded:
-        held_for += deliver_say(dest, e, e["writer"], rs)
+        held_for += deliver_say(dest, e, e["writer"], rs, rows=said.rows if said is not None else None)
     if a.exit_held and held_for:
         sys.exit(EXIT_HELD)
 
@@ -10666,12 +10739,17 @@ def cmd_chat(a):
     """Read a project's chat. With no flags: what is above the reader's
     cursor (at most 30, then +N earlier), advancing it; -n tails and --since
     reads from a time, neither moving it. --host reads what the members sent
-    their human instead (chat_host)."""
+    their human instead (chat_host). A channel registered here is read by a
+    read of its own (sminos_channels.chat, CH2's M4), before any project is
+    asked for."""
     if a.n is not None and a.n < 1:
         die("chat -n must be positive")
     if a.host and a.kind:
         die("chat --host reads the host kinds (%s); it takes no --kind" % ", ".join(HOST_KINDS))
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if a.project and (channel := registered_channel(a.project)) is not None:
+        channels_module().chat(channel, a, sid)
+        return
     project = find_project(a.project) if a.project else caller_project(caller_seat() if sid else None)
     if project is None:
         die("chat outside a project: run it in a project's directory, or name one: sminos chat <project>")
@@ -18773,12 +18851,17 @@ def list_scope(a):
     first (as before), or with --project; --machine, --state, --here, --org
     and words narrow the rows. Under --org or --project every argument is a
     word. --channel is a row filter like the others: it widens too (cmd_list
-    keeps the rows in a channel it names)."""
+    keeps the rows in a channel it names); a first argument that names a
+    channel registered here is --channel of it (CH2's M4), the rest still
+    row filters."""
     args = list(a.args)
     if a.org or a.projects:
         named, words = "", args
     else:
         named, words = (args[0], args[1:]) if args else ("", [])
+    if named and hasattr(a, "channel") and (channel := registered_channel(named)) is not None:
+        a.channel = list(a.channel or []) + [channel.id]
+        named = ""
     if not (named or a.projects or a.machine or a.state or a.org or a.here or words or getattr(a, "channel", None)):
         return view_projects("")[0], [], False
     if named:

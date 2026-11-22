@@ -190,8 +190,9 @@ for machine in sys.argv[3:]:
     welcomed = {w["conn"] for w in state["welcomes"] if "channels" in w["welcome"]["capabilities"]}
     # A fresh store on every machine: the baseline is empty, so nothing this code wrote under a channel, its
     # creation included, is excused (only a store an older copy wrote into has one: test_channels_wire.py).
-    out += ["%s: %s" % (name, b) for b in channel_wire.published(frames, ids, {}, welcomed=welcomed)]
-    out += ["%s: %s" % (name, b) for b in channel_wire.written(home, ids, name, {})]   # delivery records too
+    spoken = channel_wire.ALLOWED_SPOKEN   # what is said into a channel (CH2's M4) is allowed, in its shape
+    out += ["%s: %s" % (name, b) for b in channel_wire.published(frames, ids, {}, spoken, welcomed=welcomed)]
+    out += ["%s: %s" % (name, b) for b in channel_wire.written(home, ids, name, {}, spoken)]   # delivery records too
 print("\n".join(out) or "clean")
 PY
 }
@@ -290,6 +291,10 @@ section_rows() { # the rows of OUT's `# desk-integration` section
 logs_sum() { # every log file of this machine, and what it holds
   (find "$SMINOS_HOME/projects" -path '*/log/*' -type f | sort | while read -r f; do printf '%s ' "$f"; shasum < "$f"; done) |
     shasum | cut -c1-40
+}
+logs_but() { # channel-id — logs_sum over every log but that channel's
+  (find "$SMINOS_HOME/projects" -path '*/log/*' -type f -not -path "*/projects/$1/*" | sort |
+    while read -r f; do printf '%s ' "$f"; shasum < "$f"; done) | shasum | cut -c1-40
 }
 
 scene() {
@@ -394,21 +399,22 @@ scene() {
   assert_rc 0 "$RC" "sminos list --org on gamma"
   assert_equals "$(grep '^#' <<<"$OUT" | tail -1)" "# desk-integration" "ends with the section"
 
-  echo " 4. nothing is said into it:"
+  echo " 4. said into it (CH2's M4), and what still opens no tag:"
   on sa alpha
-  local before refused
+  local before refused others
   before="$(logs_sum)"
-  refused="sminos: desk-integration is a channel, and speaking in a channel is not available in this version of sminos yet: nothing was recorded. Tag the thread itself (@<alias>#<short> or @<short>), which reaches it in its own project as today"
-  scene_cmd "alpha, as A" "$T/sa/app" "$SA" say --in desk-integration "x"
-  assert_rc 1 "$RC" "say --in, from A: refused"
-  assert_equals "$OUT" "$refused" "in §8's sentence, whole, naming the tag that works today"
-  scene_cmd "alpha, as A" "$T/sa/app" "$SA" say "@desk-integration/birch x"
-  assert_rc 1 "$RC" "a tag qualified by the channel: refused"
-  assert_equals "$OUT" "$refused" "in §8's sentence, whole"
-  scene_cmd "alpha, a terminal" "$T/sa/app" - say --in desk-integration "x"
-  assert_rc 1 "$RC" "say --in from a terminal: refused"
-  assert_equals "$OUT" "$refused" "in §8's sentence, whole"
+  refused="opens no tag (a tag's qualifier takes no #): nothing was recorded"
+  scene_cmd "alpha, as A" "$T/sa/app" "$SA" say "@desk-integration#${desk:0:8}/birch x"
+  assert_rc 1 "$RC" "the unquoted name#short qualifier: refused"
+  assert_contains "$OUT" "$refused" "it opens no tag"
   assert_equals "$(logs_sum)" "$before" "no file of any log has changed"
+  others="$(logs_but "$desk")"
+  scene_cmd "alpha, as A" "$T/sa/app" "$SA" say --in desk-integration "a note"
+  assert_rc 0 "$RC" "say --in, untagged, from A: recorded"
+  assert_contains "$OUT" "in desk-integration" "in the channel's log"
+  scene_cmd "alpha, a terminal" "$T/sa/app" - say --in desk-integration "a person's note"
+  assert_rc 0 "$RC" "say --in from a terminal: recorded"
+  assert_equals "$(logs_but "$desk")" "$others" "of every log, the channel's alone changed"
   scene_cmd "alpha, as A" "$T/sa/app" "$SA" join desk-integration
   assert_rc 1 "$RC" "join: refused"
   assert_contains "$OUT" "sminos channel add" "naming sminos channel add"
