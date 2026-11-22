@@ -875,6 +875,26 @@ class Doors(Machine):
             self.assertIn("%s is a channel" % q, err, text)
         self.assertEqual(self.log_events(PROJ), [], "nothing recorded")
 
+    def test_a_shortened_channel_qualifier_is_refused_under_a_selector_too(self):
+        """A selector names its recipients itself, and a text opening with the unquoted shortened channel tag would
+        be broadcast as words: refused before the selector is read, nothing appended anywhere."""
+        sid = "6c00000b-0000-4000-8000-0000000000cb"
+        self.live(sid, self.root)
+        sminos.forget_caches()
+        self.assertTrue(sminos.members(self.p), "the selector has recipients")
+        logs = os.path.join(os.environ["SMINOS_HOME"], "projects")
+
+        def sizes():
+            return sorted((os.path.join(d, f), os.path.getsize(os.path.join(d, f))) for d, _, fs in os.walk(logs)
+                          for f in fs if f.endswith(".jsonl") and os.sep + "log" in d)
+        before = sizes()
+        q = "desk-integration#%s" % DESK[:8]
+        for argv in (("say", "--here", "@%s/worker hello" % q), ("say", "--project", "app", "@%s/worker hi" % q)):
+            rc, out, err = self.cli(*argv, cwd=self.root)
+            self.assertEqual(rc, 1, (argv, err))
+            self.assertIn("%s is a channel" % q, err, argv)
+        self.assertEqual(sizes(), before, "nothing appended")
+
     def test_an_unregistered_channel_id_is_a_channel_at_every_door(self):
         other = "9e000001-0000-8000-8000-0000000000e1"
         self.assertTrue(sminos.is_channel_id(other))

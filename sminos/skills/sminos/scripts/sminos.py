@@ -9077,8 +9077,6 @@ def resolve_tags(project, text, raws=None):
     split's text (sminos_audience.stream_for); left empty for `@all`, which
     names no session."""
     tags = leading_tags(text)
-    if (q := shortened_channel_qualifier(text)):
-        die(channel_say_refusal(q), 1)   # nothing is said into a channel yet (CH1, §8), however it is tagged
     if not tags:
         return project, [], text, False
     if any(is_all(t) for t in tags):
@@ -10011,6 +10009,8 @@ def cmd_say(a):
     for q in ([a.in_] if a.in_ else []) + list(a.projects):
         if names_channel(q) is not None:
             die(channel_say_refusal(q), 1)
+    if (q := shortened_channel_qualifier(a.text)):
+        die(channel_say_refusal(q), 1)   # however the say is addressed, a selector's included (C7)
     scoped = selector_given(a)
     if scoped and leading_tags(a.text):
         die("a selector picks the recipients itself: drop the opening @tags, or the selector — tags name "

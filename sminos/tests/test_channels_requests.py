@@ -1425,8 +1425,14 @@ class Frontier2(Requests):
             with self.subTest(argv):
                 code, out = self.verb(*argv, session=session)
                 self.assertEqual(code, 1, out)
-                self.assertIn("this machine's enrollment does not carry its log (%s)" % sminos.OTHER_ORG, out)
+                self.assertIn("this machine's enrollment does not carry its log (its registration on this machine "
+                              "names another org)", out)
                 self.assertIn("nothing was written", out)
+        # A terminal's create names its first member, whose lookup reconciles: the registration is checked first.
+        with mock.patch.object(channels, "_target", side_effect=AssertionError("the first member was looked up")):
+            code, out = self.verb("channel", "create", "old", sid)
+        self.assertEqual(code, 1, out)
+        self.assertIn("cannot bring back old: this machine's enrollment does not carry its log", out)
         self.assertEqual(files(), before, "nothing written in its log")
         self.assertEqual(self.held(tid), [])
         self.assertEqual(self.statements(sid), [])
@@ -1504,6 +1510,25 @@ class Frontier2(Requests):
         self.assertEqual(self.carry(DESK, also=[e])[e["id"]], O("ignored", "not-here"), "set aside")
         self.assertEqual((self.held(tid), self.answered(tid)), ([], []))
         self.assertEqual(self.statements(sid), [])
+
+    def test_c6_a_set_aside_human_record_owns_its_current_session_before_an_older_copys_seat(self):
+        """T1's precedence (test_threads: an ended human-opened record answers before an older copy's seat for its
+        current session): a request naming the seat over that session names a session that is the archived
+        record's, not the seat's, and is not carried out."""
+        tid, sid, _ = self.human()
+        self.raw(tid, lambda r: r.update(ended={"at": sminos.now(), "reason": "ended", "by": "", "pid": None}))
+        self.assertTrue(threads._change(tid, lambda view, raw: "aside"))
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})   # the older CLI's seat, no thread keys
+        sminos.forget_caches()
+        self.assertEqual(threads.thread_of(sid)["thread"], tid, "T1: the archived record's")
+        seat = threads.get(seat_id)
+        self.assertIsNotNone(seat)
+        self.assertEqual(threads.current_record(sid, fresh=True)["thread"], seat_id, "the live lookup gives the seat")
+        e = self.request(DESK, "add", sid, seat_id)
+        self.assertEqual(self.carry(DESK, also=[e])[e["id"]], O("ignored", "not-here"))
+        self.assertEqual((self.held(seat_id), self.answered(seat_id)), ([], []))
 
 
 if __name__ == "__main__":

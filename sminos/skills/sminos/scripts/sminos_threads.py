@@ -973,7 +973,7 @@ def _last_reads(thread_id, change):
         return "moved"
     records = sminos.records_module()
     rec = records.read(session)
-    if rec is None and records.unreadable(session):
+    if rec is None and os.path.lexists(records.record_path(session)):
         return "record-unreadable"   # missing is absence (lane A); there and unreadable is not known to be lane A
     if records.lane_of(rec) == "B":
         return "lane-b"

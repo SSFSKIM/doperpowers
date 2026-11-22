@@ -544,24 +544,20 @@ class _Facts:
     record asked for twice in it reads once."""
 
     def __init__(self):
-        self._current, self._ended = {}, {}
+        self._owner = {}
 
-    def current_record(self, session):
-        """The record whose current session `session` is, from the stores as they are."""
-        if session not in self._current:
-            self._current[session] = sminos.threads_module().current_record(session, fresh=True)
-        return self._current[session]
-
-    def ended_owner(self, session):
-        """The record, ended or set aside, whose current session `session` still
-        is (thread_of's order; a reservation is none), from the stores as they
-        are: for §6's row 3 when no live record holds it (C6)."""
-        if session not in self._ended:
+    def owner(self, session):
+        """The record whose current session `session` is, by thread_of's
+        order over every record, those set aside included (an archived
+        human-opened record before an older copy's seat for the same
+        session: T1; a newer record that ended still holds it: C6), from the
+        stores as they are; None for none, or a reservation's."""
+        if session not in self._owner:
             threads = sminos.threads_module()
             t = threads.thread_of(session)
-            self._ended[session] = t if t is not None and t["current"] == session and not threads.reservation(t) \
+            self._owner[session] = t if t is not None and t["current"] == session and not threads.reservation(t) \
                 else None
-        return self._ended[session]
+        return self._owner[session]
 
     def outside_origin(self, channel, e):
         """Rows 8 and 9: a request this machine did not append itself
@@ -663,19 +659,18 @@ def _names_here(record, request, facts):
     """§6's row 3, the other way round: the request names `record`'s thread
     as this machine holds it. The record is there and has not ended, has had
     the request's session, that session is no other record's current one
-    now (read from the stores as they are; for a session the record only
-    had, an ended or set-aside record's included: the newer record it went
-    on as still holds it once that ends, the frontier's second review, C6),
-    and the thread's session is not lane B."""
+    now by thread_of's order, ended and set-aside records included (read
+    from the stores as they are: an archived human-opened record owns its
+    current session before an older copy's seat, and a newer record that
+    ended still holds the session it had; the frontier's second review,
+    C6), and the thread's session is not lane B."""
     threads = sminos.threads_module()
     if record is None or record["thread"] != request["thread"] or threads.record_ended(record):
         return False
     session = request["session"]
     if session != record["current"] and session not in record["sessions"]:
         return False
-    other = facts.current_record(session)
-    if other is None and session != record["current"]:
-        other = facts.ended_owner(session)
+    other = facts.owner(session)
     if other is not None and other["thread"] != record["thread"]:
         return False
     return not facts.lane_b(record["current"])
@@ -1223,8 +1218,11 @@ def _refuse_uncarried(channel, doing):
     enrolled = sminos.enrollment()
     why = sminos.not_carried(channel, enrolled["org"]) if enrolled is not None else sminos.NOT_ENROLLED
     if why and why != sminos.LEFT_HERE:
+        # not_carried's reason, told of a channel: it has a registration on this machine, never a .smns.
+        said = {sminos.NO_HUB: "its registration on this machine names no hub",
+                sminos.OTHER_ORG: "its registration on this machine names another org"}.get(why, why)
         sminos.die("cannot %s %s: this machine's enrollment does not carry its log (%s): nothing was written"
-                   % (doing, channel.name, why), 1)
+                   % (doing, channel.name, said), 1)
 
 
 def _print_rows(rows):
@@ -1276,6 +1274,9 @@ def _create(name, thread, session):
     if not session and not thread:
         sminos.die("from a terminal, channel create names the thread of this machine that is its first member: "
                    "sminos channel create %s <thread>: nothing was written" % name, 1)
+    named = [p for p in sminos.known_logs() if p.name == name]
+    if len(named) == 1 and sminos.is_channel_id(named[0].id) and _memberless(named[0]):
+        _refuse_uncarried(named[0], "bring back")   # before the first member is looked up, which reconciles
     first = _target(thread) if thread else _caller(session)
     if first.refusal:
         sminos.die("%s: refused: %s: nothing was written" % (first.label, first.refusal), 1)
@@ -1284,7 +1285,6 @@ def _create(name, thread, session):
                    "machine: nothing was written" % (name, first.label, first.machine), 1)
     if len(first.channels) >= sminos.threads_module().CHANNEL_LIMIT:
         sminos.die(LIMIT_REFUSAL % first.label, 1)
-    named = [p for p in sminos.known_logs() if p.name == name]
     back, cid = None, None
     if named:
         if len(named) == 1 and sminos.is_channel_id(named[0].id) and _memberless(named[0]):
@@ -1300,7 +1300,6 @@ def _create(name, thread, session):
         cid = mint_channel_id()
         candidate = sminos.make_project(cid, name, "", "", {"url": enrolled["url"], "org": enrolled["org"]})
     else:
-        _refuse_uncarried(back, "bring back")
         candidate = back
     me = sminos.threads_module().current_record(session, fresh=True) if session else None
     choices = None
@@ -1830,3 +1829,4 @@ def env(channel, op, machine, session):
     print(("%s is in the pool of %s, added by hand" if op == "add" else
            "%s is no longer in the pool of %s by hand") % (name, channel.name))
     return 0
+
