@@ -2,27 +2,27 @@
 
 > **Composite:** `docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md`,
 > child **CH2** (Speaking in a channel, and what sessions are taught).
-> **Parent pin:** branch `sminos-channels-ch2` at `bc528d6d` (`main` with CH1
-> merged, the fold of CH1's landing as corrected against the code, the
-> owner's ruling of 2026-11-22 on who may write into a channel, and sminos
-> 1.54.1), that file's blob `8173f99212ffbb255569eaec2c23b141aab8b073`. The
-> design the composite is itself a child of,
+> **Parent pin:** branch `sminos-channels-ch2` at `f2c737f2` (`main` at
+> `61b27ebe`: CH1 merged, the fold of CH1's landing as corrected against
+> the code, the owner's ruling of 2026-11-22 on who may write into a
+> channel, sminos 1.54.1, and the composite as the holder amended it on
+> this plan's reads), that file's blob
+> `940a5a0b1c63237f91cdb1e5824b2e0ca0cf5f15`. The design the composite is
+> itself a child of,
 > `docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md`
 > ("the parent" below), is read as that same commit holds it, blob
-> `eb2f3aef4134089fb625e1e2fe2b76da5f52449d`. The child's section in the
+> `b264d3fa845bc399a90f3f9d390a52e8c8bf3ec9`. The child's section in the
 > composite is its spec; C1, C2 and C5 there are its design, binding where
 > marked; Y1, Y2 and Y3 its contracts with CH1, which it consumes as built.
-> The holder's rulings of 2026-11-22 on this plan's reviews (two, then a
-> third) amend C5, C2, C1, C3 and Risks in the composite; until that
-> revision lands, where this document and the composite's text differ on
-> those points the Decision Log here says which ruling stands behind it. This document carries the
-> constraints and the milestones and nothing of the design. Read before M1:
-> the composite whole, above all its Decision Log's last three entries
-> ("CH1 landed", with "What CH2 inherits"; "The fold of CH1's landing, read
-> against the code"; and "The owner's ruling: a thread that is no member may
-> write into a channel"); the parent's Purpose (the rulings under "What it
-> must not become"), Terms, D1, D3 (The timeline, The lead, Listing), D5, D6,
-> D7, X1, X2, X4, X6, X8 and acceptance lines 2 and 8; CH1's plan
+> This document carries the constraints and the milestones and nothing of
+> the design. Read before M1: the composite whole, above all its Decision
+> Log's last four entries ("CH1 landed", with "What CH2 inherits"; "The
+> fold of CH1's landing, read against the code"; "The owner's ruling: a
+> thread that is no member may write into a channel"; and "CH2's plan, its
+> reads, and the holder's rulings on them"); the parent's Purpose (the
+> rulings under "What it must not become"), Terms, D1, D3 (The timeline,
+> The lead, Listing), D5, D6, D7, X1, X2, X4, X6, X8 and acceptance lines 2
+> and 8; CH1's plan
 > `docs/doperpowers/plans/2026-11-21-sminos-channels-ch1.md`, its Interfaces
 > §1 to §9 and its Outcomes; T1's plan
 > `docs/doperpowers/plans/2026-11-17-sminos-threads-t1.md`, its Interfaces §4
@@ -71,6 +71,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) This plan written against the code at `1a3c1ac5` (sminos 1.54.0), with MAWS's master read at `fcc992514` (`07fabf12`).
 - [x] (2026-11-22) The plan's two reviews (a design read, eleven findings; a buildability read, fourteen), the holder's rulings on them, and this revision against the code at `bc528d6d` (sminos 1.54.1): a channel's message is owed to a thread by its thread id, nothing a channel's message causes on the uplink's consumer thread pushes or launches, and eleven milestones where there were nine (Decision Log, "The plan's two reviews").
 - [x] (2026-11-22) The third read of the plan, over what the revision rewrote (fourteen P1, two P2), the holder's rulings on it, and this last revision before the build: no absorbed id is kept, no delivery over an open journal entry, a seat made again over a purged seat's session is that thread, the three paths the consumer thread still had are bounded or deferred, and what a verdict is good for is said (Decision Log, "The third read").
+- [x] (2026-11-22) The fourth read, narrow, of what the third revision changed (six P1, four P2: "ready with the listed edits, no further design round"); all ten written in, and the header re-pinned to the branch with the composite's amendment merged (`f2c737f2`) (Decision Log, "The fourth read").
 - [ ] M1 — Names through a channel.
 - [ ] M2 — What a channel owes a thread: the debt and its transitions.
 - [ ] M3 — Pushing and waking from a channel's log.
@@ -237,14 +238,20 @@ wake lock, the delivery lock and held. Added here:
 - **What a channel owes is decided under the thread's delivery lock, on the
   record as it is then, and a pass that lost its session does nothing.**
   Which session the thread holds, whether its record holds an open entry,
-  whether the thread is in the channel, where its membership began, that
-  its session's record reads and is lane A, and that the thread's own
-  project is still the one the pass captured, are read again from their
-  files, last before a push, a wake or a question to the endpoint (§3,
-  the last check), and for a wake once more after the launch returns and
-  before the text is handed over. A deliverer that finds any of them
-  changed, or a record it cannot read, pushes nothing and settles nothing:
-  the debt is still the thread's, and a later pass delivers it. An event
+  that the session's current record, read afresh, is this thread's and
+  holds none either, whether the thread is in the channel, where its
+  membership began, that its session's record is not one that is there
+  and unreadable and is not lane B (one that is not there at all is lane
+  A, as every reader takes it), and that the thread's own project is
+  still the one the pass captured (by literal paths, a tie deciding for
+  neither), are read again from their files, last before a push, a wake
+  or a question to the endpoint (§3, the last check), and for a wake once
+  more after the launch returns and before the text is handed over, there
+  with the two refusals the operation makes itself (a revoked signer; a
+  read-only machine, for an event from outside it). A deliverer that
+  finds any of them changed, or a record it cannot read, pushes nothing
+  and settles nothing: the debt is still the thread's, and a later pass
+  delivers it. An event
   is settled without a push only where the operation settles one today on
   its own evidence (a revoked signer, the read-only refusal, the
   endpoint's refusal, an event for the live alone that finds its thread
@@ -425,8 +432,13 @@ wake lock, the delivery lock and held. Added here:
   org, a machine's owners, the sender's owners) is not seen again inside
   that window, as it is not for a project's verdict across its launch
   today; a channel's ask the endpoint never answers is asked again each
-  interval and never given up; and a machine on 1.54 delivers nothing
-  from a channel until it updates.
+  interval and never given up, and holds back that writer's later
+  messages to that thread and nothing else; a home whose path holds a
+  bracket is misread by the base's scan of memberships
+  (`member_project_now`'s glob), which a channel's upload still asks, so
+  its senders' frames may not go first there (a TECH-DEBT row written in
+  M3; delivery's own last check does not use that scan); and a machine on
+  1.54 delivers nothing from a channel until it updates.
 
 ## Plan of Work
 
@@ -538,8 +550,8 @@ today), `T/test_channels.py` and `T/test_channels_requests.py` (their
 cases that pin `find_target`'s refusal), `T/run-sminos-tests.sh`
 (`run_channels`).
 
-**Interfaces:** exposes §1 (`reach_in`, `shared_rows`, `claimants`,
-`once_in`). Consumes Y1 (`roster`, `channels_of`, `find_channel`,
+**Interfaces:** exposes §1 (`reach_in`, `shared_rows`, `thread_of_row`,
+`claimants`, `once_in`). Consumes Y1 (`roster`, `channels_of`, `find_channel`,
 `names_channel`, `ambiguous_name`).
 
 **Seams:** none earlier. It leaves one for M4: tags qualified by a channel
@@ -582,6 +594,12 @@ resolves.
   own session. An episode an older copy left unstamped is counted with
   the thread of the statement that took effect in it, and where it has
   none the session's history is unknown: the id then names no one thread.
+- Which thread a row is addressed as (`thread_of_row`) is read from the
+  roster's own sweep: `_sweep` keeps, beside the rows it gives, what it
+  read of each row's view (the row's `joined` stamp and its statement in
+  effect, from that view's `info`), so the thread and the session a `to`
+  entry carries come from one reading, and no second lookup is made after
+  a row is found.
 - Whether a thread was ever in the channel (`once_in`) is read from
   statements that took effect, by the fold's own rule (under the writer of
   the session's `joined` in effect then, after it), and whose `thread`
@@ -625,7 +643,8 @@ daemon owed` lists, for a channel, the messages that name a member thread
 of this machine past its boundary and not settled, under that thread, and
 nothing for a thread that is not in the channel, whatever session ids the
 messages carry; for a thread whose delivery record is there and cannot be
-read it says that it cannot tell. Reading it changes no file. Nothing is
+read it says that it cannot tell, and a thread whose own record cannot be
+read is attributed no debt. Reading it changes no file. Nothing is
 pushed yet and the doors are shut: the suites put messages into the log
 themselves, and settle by calling the record's own writers.
 
@@ -680,6 +699,12 @@ record.
 - `daemon owed` (`owed_in`) counts a channel's debt through `owed_here`,
   under the thread's alias as its record has it, and counts a thread that
   is stopped and held as waiting, not as a debt, as it does for a project.
+  It is built on `set_holders`, which gives only records that read: a
+  thread whose own file cannot be read has no membership, no alias and no
+  debt to attribute, and is not named by this diagnostic.
+- A session's record is read one way wherever eligibility is decided
+  (§3): one that is not there is the default CH1's last check reads (lane
+  A), one that is there and cannot be read defers, and lane B defers.
 - The suites stage a message with `log_append` under a writer in the
   channel's log, its `to` entries carrying `thread`, and one from another
   machine as an imported event (a writer file under another machine's
@@ -707,10 +732,15 @@ mail that names it (row D7: owed to no one; the thread that goes on is
 owed what names its own id, as before); two messages across an end, one
 held before it and one gained while ended, under each kind of return (a
 return of this code's: neither owed; one over a channel log that could not
-be read, and an older copy's: both owed); a thread whose record is there
-and cannot be read, and one whose delivery record is (nothing owed is
-claimed, nothing settled, `daemon owed` says which it could not inspect),
-beside one whose delivery record is absent (owed from the boundary); and
+be read, and an older copy's: both owed); a thread whose own record is
+there and cannot be read (no debt is attributed to it, and nothing is
+settled); one whose delivery record is there and cannot be read (nothing
+owed is claimed, nothing settled, and `daemon owed` lists that record
+among what it could not inspect), beside one whose delivery record is
+absent (owed from the boundary); a thread whose session has no record at
+all (`owing` answers, lane A, with the token an absent record gives)
+beside one whose session's record is there and cannot be read (`owing`
+answers none); and
 `daemon owed` run cold over a store in which a thread's record holds an
 open entry: the debt is listed, and no file under the home has changed.
 
@@ -732,10 +762,12 @@ settles nothing. The doors are still shut.
 `holder_push`, `push_event`, `wake_member`, `held_owed`, `held_decided`,
 `frame_of`, `_conclude`, `_write_receipts`, `ReachGate.needs`,
 `WordsGate.held`), `S/sminos_control.py` (`_routes`: whom a channel's
-frame's reply line names), `S/sminos_holder_deliveries.py` (a receipt's
-key and `sweep`), `S/sminos_channels.py` (`deliver`, `normalize`),
-`S/sminos_daemon.py` (`channel_pass`), `S/sminos_outcomes.py` (`record`),
-`T/test_channels_delivery.py` (new).
+frame's reply line names), `S/sminos_holder_deliveries.py` (`key_hash`
+and every lookup made through it, a receipt's key, `sweep`),
+`S/sminos_channels.py` (`deliver`, `own_row`, `normalize`), `S/sminos_daemon.py`
+(`channel_pass`), `S/sminos_outcomes.py` (`record`),
+`T/test_channels_delivery.py` (new), `docs/doperpowers/TECH-DEBT.md` (the
+row on a home whose path holds a bracket).
 
 **Interfaces:** exposes §3's second half (the delivery operation with
 `owing`). Consumes M2's `owing`, `owed`, `first_owed`, `delivered`,
@@ -760,11 +792,17 @@ key and `sweep`), `S/sminos_channels.py` (`deliver`, `normalize`),
   A failed attempt leaves `pending` in the delivery record, and
   `_next_check` then refuses to settle or to fail any other event of that
   writer; a removal and an add can put that event below the boundary,
-  where `owed` no longer selects it. Crossed by: one writer's first
+  where `owed` no longer selects it. The mark is cleared only on that
+  evidence: its seq at or below the boundary as read then for its writer.
+  An event that is merely missing from the selection (its writer's file
+  could not be read) clears nothing. Crossed by: one writer's first
   message fails once; the thread is removed and added again; the writer's
   second message arrives; two ticks: the second is pushed once and
   settled, and the first never. The same across a return that writes the
-  boundary anew.
+  boundary anew. And: one writer's message has failed once and its file
+  then cannot be read, a second writer's message is pushed by a pass, and
+  the file is restored: the first writer's mark and its count are as they
+  were, and its message is attempted again.
 - *The helpers that read "the member's log"* (the ruling's ninth point).
   `held_owed`, `held_decided`, `push_event`, `holder_push` and
   `wake_member` read a session's membership, and `canonical_end` an end,
@@ -779,25 +817,50 @@ key and `sweep`), `S/sminos_channels.py` (`deliver`, `normalize`),
 - *The thread's own project, and its lane, at the last check.* The project
   `owing` captured may stop being the thread's (a `join` elsewhere), and a
   session may turn lane B, with the thread, the session and the channel
-  all unchanged. Crossed by, each with an event already selected and the
-  pass held at a barrier before its last check: the thread `join`s another
-  project; its session's record turns lane B; its session's record becomes
-  unreadable. In each nothing is pushed and nothing settled (never
-  `recorded`), and after the move the next pass, which captures the new
-  project, pushes one frame.
-- *An open entry* (the holder's ruling on the third read). Crossed by: an
-  absorption cut immediately after its `begin` (the continuing record's
-  `current` already the job's, its entry open), the channel's delivery run
-  by itself (`sminos_channels.deliver`: a tick's reconciliation would
-  finish the entry before it), then the lost claim's undo: nothing was
-  pushed to the provisional process, nothing settled, and the pass left
-  the entry as the cut left it.
+  all unchanged. The check is CH1's last guard's own reads (§3): the
+  session's own events in the captured project by literal paths, and
+  whether that project is where the session is now, a tie deciding for
+  neither. Crossed by, each with an event already selected and the pass
+  held at a barrier before its last check: the thread `join`s another
+  project; the destination's `joined` bears the very millisecond of the
+  source's (CH1's tie); its session's record turns lane B; its session's
+  record becomes unreadable. In each nothing is pushed and nothing settled
+  (never `recorded`), and after the move the next pass, which captures the
+  new project, pushes one frame. And two that must not defer: a session
+  that has no record at all is lane A and is pushed to; and under a home
+  whose path holds a bracket a member is pushed to as under any other.
+- *An open entry* (the holder's ruling on the third read), from both
+  sides. Crossed by: an absorption cut immediately after its `begin` (the
+  continuing record's `current` already the job's, its entry open), the
+  channel's delivery run by itself (`sminos_channels.deliver`: a tick's
+  reconciliation would finish the entry before it), then the lost claim's
+  undo: nothing was pushed to the provisional process, nothing settled,
+  and the pass left the entry as the cut left it. And from the old side: a
+  pass that selected an event for the provisional thread before the
+  `begin`, held before its last check and let go after the `begin` and
+  before the provisional record is reserved, pushes nothing: that record's
+  own file still names the session and holds no entry, and the session's
+  current record, read afresh, is the continuing thread's.
 - *A wake's launch and the last check.* A launch can take minutes, and
-  what was checked before it can have changed. Crossed by: the test
-  engine's launch stalled at its barrier, the thread removed (in a second
-  case, its session's reach changed; in a third, the event's signer
-  revoked) and the barrier lifted: the process runs, no text is handed to
-  it, the event is still owed, and no second launch is made for it.
+  what was checked before it can have changed. A removal is not among
+  what can: `set_channels` needs the wake lock, which the wake holds
+  through its push. Crossed by, each with the test engine's launch stalled
+  at its barrier and the barrier then lifted: the session's reach changed
+  (the process runs, no text is handed to it, the event is still owed, and
+  no second launch is made for it); the machine turned read-only, for an
+  event from outside it (no text; the event is refused as the same check
+  refuses it before a push); the event's signer revoked (no text; the
+  event goes the way a revoked signer's goes before a push); and a removal
+  attempted meanwhile, which is busy and lands only after the push: the
+  frame is handed over, since the thread was a member under the hold. A
+  removal made before the wake's hold is taken starts no process, and the
+  event is then not owed.
+- *A receipt and the thread it was for.* An event that names two threads
+  can meet one session twice: the session one of them held runs again as
+  the other. Crossed by: an event addressed to both, a receipt for the
+  first still held under that session, never admitted, and in a second
+  case admitted; the second thread, now holding the session, is pushed
+  its own frame once and is settled on no admission but its own.
 - *Delivery and a writer that is no member.* An event in a channel's log
   may come from a thread with no membership statement there (C5). Delivery
   never looks its sender up: it reads the event's `to` for whom it is
@@ -825,20 +888,39 @@ key and `sweep`), `S/sminos_channels.py` (`deliver`, `normalize`),
 - Under the thread's lock the operation does three things before it
   chooses: the last check; the delivery record read strictly, where one
   that cannot be read stops the pass; then the record made consistent with
-  the selection (`normalize`: a writer's `pending` that names an event
-  `owed` does not select is cleared, with the attempt count and the pushed
-  note that ride with it, in one write; the settled prefix is never moved
-  by it, and nothing else of the record changes). Transitions themselves
-  still write nothing.
+  the boundary (`normalize`: a writer's `pending` whose seq is at or below
+  the boundary, read afresh for that writer, is cleared, with the attempt
+  count and the pushed note that ride with it, in one write; the settled
+  prefix is never moved by it, and nothing else of the record changes).
+  Transitions themselves still write nothing. The record's own writers,
+  given a channel's log, read it strictly too, and write nothing over a
+  record that cannot be read.
 - The last check is made again in `holder_push` before anything is handed
   over, in `wake_member` once the wake's hold is taken and before a
   process is started, and once more after a wake's launch returns and
-  before its text is handed over, there with the session's reach and the
-  event's signer's revocation read again as well. A pass that fails it
-  stops for that thread: nothing pushed, nothing woken, nothing settled,
-  no attempt counted. After a launch that leaves the debt owed to a
-  session that now runs: the next pass pushes to it, or the endpoint is
-  asked again, and nothing launches twice.
+  before its text is handed over, there with the session's reach, the
+  event's signer's revocation and, for an event from outside this
+  machine, the machine's read-only policy read again as well. A pass that
+  fails it stops for that thread: nothing pushed, nothing woken, nothing
+  settled, no attempt counted. A refusal the operation makes on its own
+  evidence (a revoked signer; a read-only machine) is made after the
+  launch as it is made before a push, and hands nothing over. After a
+  launch that leaves the debt owed to a session that now runs: the next
+  pass pushes to it, or the endpoint is asked again, and nothing launches
+  twice.
+- The last check's reads are CH1's last guard's (`set_channels`' check
+  under its lock): that the session's current record, read afresh
+  (`current_record(…, fresh=True)`), is this thread's and holds no open
+  entry, beside the captured thread's own file; the session's record by
+  the one rule of M2; and the captured project by `own_events_now` and
+  `_current_here`, which read registrations and logs by literal paths and
+  let a tie decide for neither. `member_project_now` is not used for it:
+  it takes the later of two equal timestamps by the scan's order, and its
+  glob reads a bracket in the home's path as a pattern. That second fault
+  is the base's, and a channel's upload still meets it
+  (`Link.senders_before`): a TECH-DEBT row is written here, with what
+  would promote it (a home under such a path whose channel uploads go
+  without their senders' frames), and nothing of it is fixed.
 - Inside the operation, for a channel, `push_event` finding the session
   retired in the captured project (a `moved` among the reasons) is that
   same stop, never `recorded`.
@@ -848,12 +930,18 @@ key and `sweep`), `S/sminos_channels.py` (`deliver`, `normalize`),
   asked, and `wake_member`'s own comparison of the mark with the thread it
   wakes reads the thread's record, where the two are one.
 - A receipt (`sminos_holder_deliveries`: an event handed to a `gate`
-  process and settled at its admission) keeps its session, the process it
-  was handed to, and for a channel's event also the thread whose record it
-  is settled in; `sweep` reads that record to drop a settled receipt,
-  never the record a session's id would name there. Reason: a seat's
-  thread id is a session's id, so a session's id read as a record's key
-  under a channel can be another thread's record.
+  process and settled at its admission) is found, for a channel's event,
+  by its thread beside its session: `key_hash` takes the thread, and so
+  does every lookup made through it (`exists`, `plan`, `words_of`,
+  `handed`, `admitted`, `settled`). `sweep` reads that thread's record to
+  drop a settled receipt, never the record a session's id would name
+  there. The admitting side needs nothing of it: it finds a receipt by the
+  id its marker carries, whose first part is the key's hash
+  (`_held_receipt`), and checks the session alone. Reasons: an event that
+  names two threads would otherwise share one receipt between them when
+  one session serves both in turn, and a seat's thread id is a session's
+  id, so a session's id read as a record's key under a channel can be
+  another thread's record.
 - What a frame says of a sender outside the channel is one clause after the
   sender's alias, where `sender_labels` puts its own (§3), composed in
   `frame_of` for an event of a channel's log that carries `from_project`.
@@ -875,7 +963,8 @@ machine whose endpoint decides reach, an event that needs its word is left
 owed and listed `gated`, as a project's is, and M6 asks), `deliver_owed`
 (the project's pass), `settle_ended`, `sminos_threads.py`,
 `carry_hand_off`, `HubLog.deliver`, `Plane.refresh`, `reply_line`,
-`_next_check`, `delivered_load`.
+`_next_check`, `delivered_load`, `member_project_now` and its glob, a
+project's receipts (their key is as it was).
 
 **Proves:** B4 as pushes, on one machine: rows D2, D3, D6 to D10 and D15
 of §3 through a real push or wake; B7's first half for delivery (no host
@@ -886,9 +975,9 @@ stopped member; a held message is pushed once when the thread is reopened
 and once when it is woken; a lane A refill's new occupant is pushed what
 names the thread; an event marked held and since passed by a new boundary
 is never pushed, and its mark is gone once that writer's next event is
-settled; the last check, with
-the membership changed after the pass chose the event (removed; removed
-and added; ended), pushes and wakes nothing and settles nothing; a message
+settled; the last check, for a live recipient, with the membership
+changed after the pass chose the event (removed; removed and added;
+ended), pushes nothing and settles nothing; a message
 under this machine's own name with no receipt is an outside event (refused
 `refused-read-only` on a read-only machine, never the same-owner
 shortcut); a thread in the channel with a private record; a receipt for a
@@ -977,8 +1066,10 @@ fourth step of CH1's scene), `T/channel_wire.py` (§8).
   the machine (a channel that has left this machine is not refused: the
   write brings its log back, M6); who writes and how (§2); the
   recipients, each with its thread and its session taken together from
-  one reading of its row (§2: a row whose stamp and statement name two
-  threads is not addressed, and the sender is told); and that every tag
+  one reading of its row, the `info` of the view the roster's own sweep
+  read it from and never a lookup made after the row was found (§2: a row
+  whose stamp and statement name two threads is not addressed, and the
+  sender is told); and that every tag
   is in that one channel. §2's table says what takes each of CH1's refusals' place.
 - The unquoted `@<name#short>/<alias>` opens no tag (a tag's qualifier
   takes no `#`: `TAG_RE`, which the audience split also reads), so it
@@ -1144,7 +1235,8 @@ open until what it wrote has gone up. Nothing but the events, their
 `on_reach`, `queue_asks`, the asks held, `expire_asks`, `senders_before`
 for a frame that carries a message, `may_leave`), `S/sminos_channels.py`
 (`asks_due`, `keep_word`, `carry_words`, `unsent`), `S/sminos.py`
-(`deliver_verdict` and `deliver_reach` taking a kept word),
+(`deliver_verdict` and `deliver_reach` taking a kept word; `holder_due`,
+which `holder_owed` and a channel's `reach_due` both ask),
 `S/sminos_holder_deliveries.py` (`plan`'s lock, tried),
 `S/sminos_daemon.py` (`channel_pass`), `T/endpoint_standin.py` (§8),
 `T/channel_wire.py` (`published`), `T/test_channels_wire.py`,
@@ -1179,11 +1271,17 @@ for a frame that carries a message, `may_leave`), `S/sminos_channels.py`
     channel's messages left unanswered past their deadlines with the
     thread's delivery lock held: each is dropped, no delivery record is
     written, and each is asked again at the ordinary interval;
+  - *a recipient the plane has no row for*: a message owed to a thread
+    whose session joined since the plane last read its project, with that
+    project's finisher lock held: the thread is passed by before `owing`
+    is asked, no view is read and no ask goes, and it is asked about after
+    the plane's next ordinary read;
   - *an upload whose sender the plane has no row for*: a message appended
     by a session that joined since the plane last read its project, with
     that project's reconciliation held up by a lock: the frame is not
     sent, no view is read for it, and it goes up after the plane's next
-    ordinary read.
+    ordinary read. A sender that has retired since it wrote waits for
+    nothing: its message goes up with no frame, row or no row.
 - *Who holds the thread's lock when a word is carried out.* `deliver_reach`
   and `deliver_verdict` take the thread's delivery lock themselves, on a
   file descriptor of their own, so a caller that held it would wait on
@@ -1208,7 +1306,20 @@ for a frame that carries a message, `may_leave`), `S/sminos_channels.py`
   session's access changed meanwhile, the barrier lifted: no text is
   handed over on that word; the message, owed to a session that now runs,
   is asked about again and delivered on the new answer with no second
-  launch.
+  launch. And apart from it, the same with the machine turned read-only
+  meanwhile, for a message from another machine: no text is handed over,
+  and the message is refused `refused-read-only` there, as it is before a
+  push.
+- *The ask and the push, over a receipt* (M3's receipts). A stopped
+  thread's event whose receipt was handed to a process that is gone and
+  never admitted is, for the push, a retry that wakes the thread
+  (`holder_owed`), and for the ask, as `reach_due` reads a receipt today,
+  nothing to ask about: where the endpoint decides reach the push then
+  waits for a word no one asks for. Both read one classification
+  (`holder_due`). Crossed by: `T/test_wake_delivery.py`'s `Awaiting`
+  fixture staged in a channel on a machine whose endpoint decides reach:
+  one `reach?` goes, the answer is kept, the thread is woken once, and the
+  event is settled.
 - *Where an ask is checked.* Membership and the boundary are read where
   the selection is made, again where the ask is queued (`queue_asks`, the
   last step before the frame goes, which today rechecks the hold alone),
@@ -1264,6 +1375,21 @@ for a frame that carries a message, `may_leave`), `S/sminos_channels.py`
   tried (`plan` gains a deadline, absent for every caller of today's), and
   an event whose inquiry found the lock busy is left for the next pass.
   `exists`, which reads a receipt's file under no lock, is asked as it is.
+- Whether an event a receipt is held for is next pushed is one function,
+  `holder_due`, reads only: the plan says `push` or `legacy`, or it says
+  `awaiting` while no process runs and the session is the current one of a
+  lane A thread. `holder_owed` answers `HOLDER_RETRY` by it, for every
+  log, as it does today by the same two tests; `reach_due` chooses by it
+  where it is given `owing`. A project's `reach_due` keeps its own test
+  (`push` or `legacy`), so a project's ask is today's call for call; the
+  same fault there is the base's and gets a TECH-DEBT row here, with what
+  would promote it (a report of a stopped session, on a machine whose
+  endpoint decides reach, whose message with a receipt left by an earlier
+  process is never delivered).
+- The row a channel's choice reads for a thread is the plane's, and a
+  thread the plane holds no row for is passed by before `owing` is asked:
+  `owing` takes its row from its caller and never looks one up (§3), so
+  nothing on the consumer thread reaches a view through it.
 - The frame's `session` is the thread's current session, whatever session
   the event's entry names: the endpoint finds its recipient by the frame's
   `session` alone, as for a request (`ask_of`).
@@ -1278,7 +1404,12 @@ for a frame that carries a message, `may_leave`), `S/sminos_channels.py`
   project's counts one in the session's delivery record,
   `words_unanswered`), and `expire_asks` reads no `member` from an ask
   that holds none. So a channel's message the endpoint never answers is
-  never given up (Constraints, accepted).
+  never given up (Constraints, accepted). What it holds back is the later
+  messages of the same writer to the same thread, which wait behind it
+  (`first_owed`); no other writer's, and no other thread's.
+- A frame of a channel's upload waits for the plane only for a sender
+  that is a member of a project now. One that fresh membership says has
+  retired owes no frame, as in CH1, and its message goes up without one.
 - A frame of a channel's upload that carries a message reads each
   sender's member frame as the plane last read it (`member_on_lane`), and
   while the plane holds no row for a sender the frame is undrawn for a
@@ -1334,7 +1465,9 @@ back; a `peer` word on a person's message followed by a `reach?` about the
 same event; a held recipient asked about nothing; a thread whose record
 holds an open entry asked about nothing; a word older than `WORD_KEPT`
 carried out by no one and its message asked about again; two words for
-one event (the uplink restarted between) pushed once; a notice tagged to a
+one event (the uplink restarted between) pushed once; an unanswered head
+of one writer holding back that writer's next message to the same thread
+and no other writer's; a notice tagged to a
 member on a cut-over machine, recorded in M4, delivered here on the
 endpoint's word as a peer's frame from `<program>@<machine>`; and the
 checker over every stand-in, with this child's rules.
@@ -1778,7 +1911,7 @@ B1 to B11 number its items in the order the section lists them.
 | B1 `say --in` and `@<channel>/<alias>`: delivered framed as from the channel, a stopped member woken, the reply by the frame's line in the channel's log; a say with neither lands where it does today; `--in` with a tag that resolves elsewhere refused | M4: `test_channels_say.py`, `test-channels.sh`; M3: `test_channels_delivery.py` (the frame, the wake); M6: `test-channels-machines.sh` (another machine); M7: the replay (cases 16, 17); M5 (a real engine) |
 | B2 `@all` reaches the live members, an untagged post prompts no one; a thread that is no member is refused no form: its message in the channel's log with `from_project` and a copy in its project, delivered, framed as from outside, answered in the sender's project; the sender told in one line; nothing of the channel's pushed to it | M4: `test_channels_say.py` (`Member`, `Outsider`), `test-channels.sh`; M3: `test_channels_delivery.py` (the frame, the reply line's two forms); M2: `test_channels_debt.py` (nothing owed to a thread that is no member); M6: `test-channels-machines.sh` (a machine that holds no member); M7: the replay (case 17) |
 | B3 a bare `@alias` through a shared channel; two answers refused with `alias#short`; a name a project and a channel both answer refused | M1: `test_channels_names.py`, `test-channels.sh` |
-| B4 what a channel owes follows membership | M2: `test_channels_debt.py` (§3's rows, as a debt; `daemon owed` run cold); M3: `test_channels_delivery.py` (as pushes; the hand-off's two interleavings; an attempt the boundary has passed; an open entry; a move to another project and a change of lane; a launch that outlives a removal); M6: `test_channels_wire.py` (a late word; a word across a launch; two carriers of one word), `test-channels-machines.sh` (what the machine held at the boundary; a late import after a session's reuse); M11: `test-older-cli.sh` (a message that reached the machine while it ran 1.54; a return an older copy made) |
+| B4 what a channel owes follows membership | M2: `test_channels_debt.py` (§3's rows, as a debt; `daemon owed` run cold); M3: `test_channels_delivery.py` (as pushes; the hand-off's two interleavings; an attempt the boundary has passed, and one whose writer's file could not be read; an open entry, from both sides; a move to another project, a tie, a change of lane, a session with no record; a launch crossed by a change of reach, of the machine's policy and of the signer; two threads one event names over one session's receipt); M6: `test_channels_wire.py` (a late word; a word across a launch; two carriers of one word; a stopped thread's receipt asked about and woken for), `test-channels-machines.sh` (what the machine held at the boundary; a late import after a session's reuse); M11: `test-older-cli.sh` (a message that reached the machine while it ran 1.54; a return an older copy made) |
 | B5 a reply after its sender left is delivered to that thread in its own project, the replier told, and reaches no other member; a notice written into a channel by a machine that holds no member | M1: `test_channels_names.py` (the rule); M4: `test_channels_say.py` (the reply line run); M6: `test-channels-machines.sh` (the removal relayed first; the notice from a third machine in the pool) |
 | B6 the lead | M8: `test_channels_lead.py`, `test-channels-machines.sh` |
 | B7 no word to a human under a channel's id; a stopped thread's questions closed for its project alone | M9: `test_channels_say.py`; M3 and M8 (after each push); the checker in every suite that runs an uplink |
@@ -2007,14 +2140,16 @@ what becomes of it:
 | A peer message's reply line still models a double-quoted body… | answered by M10: taught, and measured; a channel's frame's line changed or not as E4 decides; a project's frame's line the owner's |
 | An addressed event that names a session its thread has left is not pushed; A held event does not follow a continuation | kept for a project's log, saying that in a channel the debt is the thread's (§3) and what a project would need to take the same shape |
 
-New rows, this child's own: a message that names a thread absorbed
-moments later reaches no one (written in M2); a receipt handed to a
+New rows, this child's own: a message that names a thread absorbed moments
+later reaches no one (written in M2); a home whose path holds a bracket,
+read as a pattern by the membership scan (written in M3); in a project, a
+stopped session's receipt left by an earlier process is never asked about
+where the endpoint decides reach (written in M6); a receipt handed to a
 session, across a hand-off; a kept word's sixty seconds and one launch,
-and what only the endpoint knows inside them; a channel's ask the
-endpoint never answers, never given up; a queued person's message past a
-boundary taken while it waited; a seat made again over a purged seat's
-session is that thread.
-
+and what only the endpoint knows inside them; a channel's ask the endpoint
+never answers, never given up; a queued person's message past a boundary
+taken while it waited; a seat made again over a purged seat's session is
+that thread.
 ## Interfaces and Dependencies
 
 CH1's names (its plan's Interfaces §1 to §9) are consumed as built and not
@@ -2040,8 +2175,10 @@ In `S/sminos_channels.py`:
     def thread_of_row(project, member) -> (thread id, session) | None
         # whom a roster's row is addressed as, both from one read of that one row: the thread its `joined`
         # is stamped with, or, where an older copy left it unstamped, the `thread` of the statement in
-        # effect for it; and the session the row holds. None where the stamp and the statement in effect
-        # are both there and disagree: the row is not addressed, and the sender is told (§2)
+        # effect for it; and the session the row holds. Read from the `info` of the view the roster's own
+        # sweep (_sweep) took the row from, which the sweep keeps beside its rows from M1 on, never from a
+        # lookup made after the row was found. None where the stamp and the statement in effect are both
+        # there and disagree: the row is not addressed, and the sender is told (§2)
     def claimants(session_id) -> {thread id} | None
         # the threads that have had a session, as this reader's logs say: the marks of the session's episodes
         # (_projection's `episodes`: its stretches under one thread) in every project's view known here, an
@@ -2203,17 +2340,20 @@ In `S/sminos_channels.py`:
         boundary: dict
         project: Project      # the thread's own project: where its membership is read
         member: Member        # its row there: what the delivery operation takes as `member`
-        reach: tuple          # reach_token(session) as read then
+        reach: tuple | None   # reach_token(session) as read then: None for a session with no record
 
     def debt(channel, record) -> Debt | None
         # From the record given and nothing else: no view, no reconciliation, no lock, no write. None when
         # the record has ended, holds no session, or does not hold the channel. An open entry hides no debt.
-    def owing(channel, record, member=None) -> Owing | None
-        # debt(), then what a push needs. Reads only. None where debt() is None, and also while the record
-        # holds an open journal entry (its `pending`, whatever the operation), while its session's record is
-        # there and cannot be read, while that session is lane B, and while it has no row in a project now.
-        # `member`: the thread's row in its own project when the caller holds it (a roster's row; in the
-        # uplink the plane's, which reads no view); else it is read from that project's view.
+    def owing(channel, record, row) -> Owing | None
+        # debt(), then what a push needs. Reads only, and looks no row up: `row` is the thread's own project
+        # and its Member there, given by the caller (own_row for a deliverer; the plane's for the uplink; a
+        # roster's for a sender), and None for it is None. None where debt() is None, and also while the
+        # record holds an open journal entry (its `pending`, whatever the operation), and while its
+        # session's record defers by the rule below (there and unreadable; lane B).
+    def own_row(record) -> (Project, Member) | None
+        # the thread's row in its own project, read from that project's view. For a deliverer in a process
+        # of its own (the daemon's pass, a sender's call): never called on the uplink's consumer thread.
     def delivered(channel, thread) -> dict | None
         # the thread's delivery record under the channel, read strictly: {} when no file is there; None when
         # one is there and cannot be read or is no whole record. sminos.delivered_load, which answers {} to
@@ -2226,20 +2366,28 @@ In `S/sminos_channels.py`:
         # None when the delivery record cannot be read: nothing is claimed.
     def first_owed(d, writer, events) -> event | None       # owed's first of that writer
     def still_owed(o, e=None, reach=False) -> bool
-        # the last check, on files as they are (a deliverer makes it holding the thread's delivery lock):
-        # the thread's record reads, has not ended, holds no open entry, holds the channel, and its current
-        # session is o.session; that session's record reads and is lane A; the project the session is a
-        # member of now (sminos.member_project_now) is o.project; with `reach`, the session's reach_token is
-        # still o.reach; and, given `e`, it is past the boundary as it is now. False settles nothing.
-    def normalize(o, events) -> None
+        # the last check, on files as they are (a deliverer makes it holding the thread's delivery lock),
+        # by the reads of CH1's last guard (sminos_threads' check under set_channels' lock):
+        #   o.thread's own file reads, has not ended, holds no open entry, holds the channel, and names
+        #     o.session as current;
+        #   the session's current record read afresh (current_record(o.session, fresh=True)) is that
+        #     thread's, and holds no open entry;
+        #   the session's record does not defer, by the rule below;
+        #   the session's own events in o.project (sminos.own_events_now) leave it a member there, and
+        #     o.project is where it is now (sminos._current_here: literal paths, a tie for neither);
+        #   with `reach`, the session's reach_token is still o.reach;
+        #   and, given `e`, it is past the boundary as it is now.
+        # False settles nothing.
+    def normalize(o) -> None
         # under the thread's delivery lock, after still_owed: a writer's `pending` in the delivery record
-        # that names an event owed() does not select is cleared, with the attempt count and the pushed note
-        # that ride with it, in one write. The settled prefix, the revoked seqs and the held marks are as
-        # they were.
+        # whose seq is at or below the boundary read afresh for that writer (began_of) is cleared, with the
+        # attempt count and the pushed note that ride with it, in one write. Nothing else is evidence: a
+        # `pending` whose event the selection merely does not hold (a writer file that could not be read)
+        # stays. The settled prefix, the revoked seqs and the held marks are as they were.
     def deliver(channel) -> (int, [alias])
         # the channel's delivery pass (the daemon's channel pass, last): for each thread of this machine
-        # that holds the channel (sminos_threads.set_holders) and that the log names, owing(), and
-        # sminos.deliver_next(channel, o.member, owing=o) when owed(o, …) is not empty
+        # that holds the channel (sminos_threads.set_holders) and that the log names, owing() with
+        # own_row(), and sminos.deliver_next(channel, o.member, owing=o) when owed(o, …) is not empty
     def owed_here(channel) -> [(Debt, [event] | None)]
         # what `daemon owed` counts for a channel, from debt(), delivered() and the log alone: no Member, no
         # view, no lock, no write. None for a thread whose delivery record cannot be read.
@@ -2247,7 +2395,18 @@ In `S/sminos_channels.py`:
 Nothing is added to a thread's record, and `S/sminos_threads.py` is not
 changed: no key, nothing in `_merge_absorbed`, `JOURNALED` or `SEAT_KEYS`.
 
-In `S/sminos.py`, an argument each, whose absence is today's behaviour:
+**A session's record, read one way,** at `owing` and at `still_owed`
+alike, as CH1's last guard reads it. A record that is not there (its path
+gone: `FileNotFoundError` and nothing else) is the default every reader
+already takes for it, lane A, and does not defer; its reach token is what
+`reach_token` answers for it, None, which is equal to itself and to no
+record's token, so a record written since counts as a change of reach. A
+record that is there and cannot be read defers (`owing` None, the last
+check False): it is not known to be lane A, and it gives no token. Lane B
+defers.
+
+In `S/sminos.py`, an argument each, whose absence is today's behaviour,
+and one function (`holder_due`):
 
     def deliver_next(project, member, due=False, owing=None)
     def deliver_verdict(project, member, event, verdict, owing=None, word=None)
@@ -2255,14 +2414,22 @@ In `S/sminos.py`, an argument each, whose absence is today's behaviour:
     def words_due(project, members, owing=None)      # owing: {session: Owing}, for a channel's choice
     def reach_due(project, members, owing=None)
     def holder_push(project, member, session, e, events, cursor, words=None, retry=False, due=False, owing=None)
+    def holder_due(session, plan, peer) -> bool
+        # whether an event whose held receipt `plan` describes (plan(existing_only=True, prepare=False)) is
+        # next pushed: it says push or legacy, or it says awaiting while no process runs and the session is
+        # the current one of a lane A thread (handed to a process that is gone, never admitted: the push
+        # goes to the process a wake starts). Reads only. holder_owed's HOLDER_RETRY is this, for every log;
+        # reach_due chooses by it where it is given `owing`, and by its own test (push or legacy) otherwise.
 
 and in `S/sminos_holder_deliveries.py`:
 
+    def key_hash(project_id, session, writer, seq, thread=None)
+        # thread: for a channel's event, part of what a receipt is found by. Absent, the hash is today's.
+    def exists(project_id, session, e, thread=None)       # likewise admitted, words_of, handed, settled
     def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only=False, prepare=True,
              thread=None, lock_until=None)
-        # thread: for a channel's event, the thread whose record it is settled in, kept in the receipt's key
-        # beside its session. lock_until: the receipts' lock is tried until then (sminos.LockBusy); absent,
-        # it is waited for as today.
+        # thread: as key_hash's, and kept in the receipt's key beside its session. lock_until: the
+        # receipts' lock is tried until then (sminos.LockBusy); absent, it is waited for as today.
 
 With `owing` (the log is a channel's), and only then, the operation is the
 same and reads three things where it reads one for a project:
@@ -2276,7 +2443,10 @@ same and reads three things where it reads one for a project:
   used. Every read of the delivery record is `delivered(o.channel,
   o.thread)`, and every write of it and of its marks (`delivered_settle`,
   `delivered_fail`, `delivered_pushed`, `delivered_held`,
-  `delivered_revoke`) is under the thread's id. A mark there is that
+  `delivered_revoke`) is under the thread's id; given a channel's log
+  those writers load the record through `delivered` too, and over one
+  that cannot be read they write nothing and their caller defers. A mark
+  there is that
   thread's: `stale_hold` and `held_unreadable` are not asked,
   `wake_member`'s comparison of a mark with the thread it wakes reads this
   record, and a mark is read only for an event the selection chose (one
@@ -2285,29 +2455,37 @@ same and reads three things where it reads one for a project:
   by another deliverer meanwhile are of this record too, so a sender that
   races the daemon is told what happened (`pending`, `--exit-held`).
 - **The session, for the process.** Every read of a hold, a peer, a
-  receipt, a reach and a permit, and every push and wake, is of
-  `o.session`. A receipt's lookup is by that session, as today; its key
-  also carries `o.thread`, and `sweep` drops a channel's receipt on that
-  thread's record (`delivered`), never on
+  reach and a permit, and every push and wake, is of `o.session`. A
+  receipt is found by that session and `o.thread` together, in every
+  lookup (`exists`, `plan`, `words_of`, `handed`, `admitted`, `settled`),
+  so two threads an event names never share one, whatever session served
+  them. `sweep` drops a channel's receipt on the record of the thread its
+  key names (`delivered`), never on
   `delivered_load(<channel>, <session>)`, and keeps one whose record
-  cannot be read.
+  cannot be read. The admitting side is unchanged: it finds a receipt by
+  the id its marker carries and checks the session.
 - **The thread's own project, for membership.** `held_owed`, `push_event`,
   `holder_push` and `wake_member` read whether the session is still a
   member, and `canonical_end` its end, from `o.project`, never from the
   channel's log.
 - **Under the lock, in this order:** `still_owed(o)`; the strict read of
-  the delivery record, where None stops the pass; `normalize(o, events)`;
+  the delivery record, where None stops the pass; `normalize(o)`;
   then the choice. `holder_push` makes the last check again for its event
   before anything is handed over, and `wake_member` again once the wake's
   hold is taken and before a process is started. After a wake's launch
   returns and before its text is handed over it is made once more, with
-  `reach=True` and the event's signer's revocation read again. Where it
-  fails the pass stops for that thread: nothing pushed, nothing woken (or
-  nothing handed over, after a launch), nothing settled, no attempt
-  counted; and `push_event` finding the session retired in `o.project` (a
-  `moved` among the reasons) is that same stop, never `recorded`. After a
-  launch the debt is owed to a session that now runs: the next pass pushes
-  it, or asks the endpoint about it again, and nothing is launched twice.
+  `reach=True`, and the two refusals the operation makes on its own
+  evidence are read again with it: the event's signer's revocation, and,
+  for an event from outside this machine, the machine's read-only policy.
+  Where the last check fails the pass stops for that thread: nothing
+  pushed, nothing woken (or nothing handed over, after a launch), nothing
+  settled, no attempt counted; and `push_event` finding the session
+  retired in `o.project` (a `moved` among the reasons) is that same stop,
+  never `recorded`. Where one of the two refusals is found after a launch,
+  nothing is handed over and the event is refused as that check refuses
+  it before a push. After a launch that leaves the debt owed, it is owed
+  to a session that now runs: the next pass pushes it, or asks the
+  endpoint about it again, and nothing is launched twice.
 - **A kept word** (§4), given as `word` to `deliver_verdict` or
   `deliver_reach`: under the lock, after the last check (made there with
   `reach=True`), the word's file is read again and removed, and the
@@ -2377,7 +2555,7 @@ transition itself, and of M3 where a push shows it.
 | D9 | T ends | T1's; the keys untouched | no debt while it is ended: nothing delivered, nothing settled, nothing written |
 | D10 | T returns | `began` anew for every channel; kept from before the end over a channel whose log cannot be read, and by a return an older copy makes | anew: what was held before the end and what arrived while ended lie at or below the boundary (a `pending` kept for one of them is cleared as in D5); kept: both lie past it and unsettled, and both are pushed once (the holder's ruling) |
 | D11 | a session T had runs again as a thread with another id, T′ | a new record, in no channel | nothing: no debt is by session. T′ is owed what names T′, from its own boundary, once it enters |
-| D12 | T's session turns lane B, its record or its session's cannot be read, or its record holds an open entry | — | `owing` is None: nothing is done this pass and nothing settled. `daemon owed` still lists what `debt` gives, and says so where it cannot read |
+| D12 | T's session turns lane B, its session's record is there and cannot be read, or T's record holds an open entry | — | `owing` is None: nothing is done this pass and nothing settled. `daemon owed` still lists what `debt` gives. A session with no record at all is lane A and is delivered to. A thread whose own file cannot be read is not among `set_holders`: no pass, and no debt attributed |
 | D13 | a message naming T reaches the machine late, when a thread with another id, T′, holds the session its entry names and is in C | none | owed to T, if T is in C and the event is past T's boundary; never to T′ |
 | D14 | a person's message waited in this machine's queue across T's removal and add | none | it has no position until it is released, and is then past the new boundary: owed (Constraints, accepted) |
 | D15 | a seat over the session S, in C, is purged; a seat is made again over S and added to C | the first seat's record is gone; the second's id is S, the first's; `began[C]`: the positions at its add | the same thread, and the delivery record under C that the first left: owed what names the id past the new boundary and is not settled there. A message the machine held before the add is not owed; one it imports after it is, whenever it was written |
@@ -2387,8 +2565,9 @@ lock under C: the last check, the record made consistent, the choice, the
 push and the settlement are made under it, by whichever pass holds it,
 and a pass for a session the thread no longer holds does nothing there. A
 removal is under another lock (the wake lock, then the record's); a
-wake's hold is that same wake lock, kept through its push, so for a woken
-thread no removal lands between the last check and the frame's handoff.
+wake's hold is that same wake lock, kept through its launch and its push,
+so for a woken thread no removal lands between the last check and the
+frame's handoff: one attempted then is busy, and lands after.
 For a live push that window is the base's and is accepted (Constraints).
 
 A project's log is untouched by all of it: `hand_off` still settles what
@@ -2423,16 +2602,18 @@ process carries out.
 In `S/sminos_channels.py`:
 
     WORD_KEPT = 60        # seconds within which a kept word may begin to be carried out
-    def asks_due(channel, kept=()) -> [(Owing, event, "words?" | "reach?")]
-        # the uplink's choice, reads only and no lock waited for: for each thread of this machine in the
-        # channel (set_holders), owing() with the plane's row; unless this machine holds its session
-        # (hold_for), the first owed event of each writer (first_owed), less one whose key is in `kept` and
-        # less what words_due and reach_due leave out for a project (an outside event on a read-only
-        # machine, one noted pushed, a recipient whose record cannot be read); "words?" where words_route
-        # says ask, else "reach?" where ReachGate.needs. Built on words_due and reach_due given the Owings,
-        # not beside them. An event a receipt is held for (holder exists, which takes no lock) is planned
-        # with the receipts' lock only tried (plan(…, lock_until=now)), and left out of this pass when the
-        # lock is busy.
+    def asks_due(channel, rows, kept=()) -> [(Owing, event, "words?" | "reach?")]
+        # the uplink's choice, reads only and no lock waited for. `rows`: {session: (Project, Member)} as
+        # the plane holds them. For each thread of this machine in the channel (set_holders): one whose
+        # session `rows` does not hold is passed by, before owing() is asked; else owing() with that row;
+        # unless this machine holds its session (hold_for), the first owed event of each writer
+        # (first_owed), less one whose key is in `kept` and less what words_due and reach_due leave out for
+        # a project (an outside event on a read-only machine, one noted pushed, a recipient whose record
+        # cannot be read); "words?" where words_route says ask, else "reach?" where ReachGate.needs. Built
+        # on words_due and reach_due given the Owings, not beside them. An event a receipt is held for
+        # (holder exists, which takes no lock) is planned with the receipts' lock only tried
+        # (plan(…, lock_until=now)): left out of this pass when the lock is busy, and asked about when
+        # holder_due says it is next pushed (§3).
     def keep_word(channel_id, thread, ask, word) -> None
         # the uplink's one write: projects/<channel id>/words/<thread>.<ask>.json, created whole and never
         # rewritten, its path built from the two ids alone (no registration read, no lock):
@@ -2440,8 +2621,8 @@ In `S/sminos_channels.py`:
         #  "writer", "seq", "hash", "at"}
     def carry_words(channel) -> int
         # the daemon's channel pass, before deliver. It takes no delivery lock. For each thread with kept
-        # words, oldest first: one older than WORD_KEPT, or whose thread has no owing() now, is removed
-        # where it lies; each other is handed to sminos.deliver_reach or deliver_verdict with the Owing and
+        # words, oldest first: one older than WORD_KEPT, or whose thread has no owing() now (with
+        # own_row()), is removed where it lies; each other is handed to sminos.deliver_reach or deliver_verdict with the Owing and
         # the word (owing=o, word=<its path and what was read>), which takes the thread's lock once and
         # there reads the word again, checks it and removes it (§3). How many were carried out.
     def unsent(channel) -> bool
@@ -2464,6 +2645,9 @@ In `S/sminos_uplink.py`:
   log, once for the event. It reads no `member`, calls no
   `words_unanswered`, takes no lock and writes no record; the next pass
   that finds the event still owed asks again, at the ordinary interval.
+  While it goes unanswered it holds back the later events of its writer
+  to that thread (`first_owed`), and nothing of any other writer or
+  thread.
 - Before an ask goes, `Link.member_on_lane(<the thread's own project>,
   <its session>)` holds for the recipient, and for the sender too when it
   is a session of this machine that is a member of a project now; else the
@@ -2481,8 +2665,10 @@ In `S/sminos_uplink.py`:
   sender that is a member of a project now is looked for in the plane's
   rows as they are (`member_on_lane`), and while the plane holds none for
   a sender the frame is undrawn and waits for the plane's next ordinary
-  read: no view is read and no reconciliation run for it. A frame of
-  CH1's kinds alone keeps today's path (`member_under`).
+  read: no view is read and no reconciliation run for it. A sender that
+  is a member of no project now (it retired since it wrote) owes no frame
+  and is waited for by nothing, as in CH1. A frame of CH1's kinds alone
+  keeps today's path (`member_under`).
 - `Link.may_leave` reads `unsent` beside `outstanding`: a followed channel
   does not leave, and one that left comes back, while either holds.
 
@@ -2607,7 +2793,8 @@ a `human` in a channel's log from this child on:
 | `Link.on_words`, `Link.on_reach` | keep a channel's word in a file and carry out nothing (M6) |
 | `Link.upload`, `senders_before` | uploads it under the channel's id, senders' frames first; for a frame that carries a message a sender's frame is looked for in the plane's rows alone, and the frame waits where there is none (M6); a frame of CH1's kinds alone keeps CH1's path |
 | `Link.expire_asks` | drops a channel's ask that passed its deadline and writes nothing (M6) |
-| `sminos_holder_deliveries.sweep` | drops a channel's receipt on the record of the thread its key names (M3) |
+| `sminos_holder_deliveries` (`key_hash`, `exists`, `plan`, `words_of`, `handed`, `admitted`, `settled`, `sweep`) | a channel's receipt is found by its session and its thread together, and swept on that thread's record (M3); the admitting side as it is |
+| `holder_owed`, `reach_due` | one classification of a held receipt's next step (`holder_due`), so a channel's ask goes where the push would retry (M6) |
 | `Link.deliveries`, the outbox | nothing: no outcome is kept for a channel |
 | `HubLog.show_notices` | tells the sending session of this machine when the hub withheld its message, as for a project (keyed by session; no change) |
 | `Link.may_leave` | does not let a followed channel go, and brings one back, while this machine's messages there have not gone up (`unsent`, M6) |
@@ -2732,6 +2919,11 @@ no policy cache: its relay signs every upload alike and gates none on a
 (M7). A test that needs a word late, or never, takes the ask's id from
 the frames the stand-in kept and sends the answer itself, or none, as
 `T/test_channels_wire.py`'s `Asks` stages one after a hand-off.
+
+**A receipt left by a process that is gone** is `T/test_wake_delivery.py`'s
+`Awaiting` fixture (a receipt written by hand, pushed and never admitted),
+which M3 keys by the thread too and M6 stages in a channel on a machine
+whose endpoint decides reach.
 
 **A lock held elsewhere** is the lock's file taken with `flock` outside
 the code under test and kept until the test lets it go: by a child
@@ -2864,6 +3056,33 @@ them today.
   list scoped by channel, a seat's projection of the key (`_of_seat`
   copies a fixed list) and a third stale-mark rule in the wake. The third
   read's findings 6, 9, 10 and 11 were each one of those.
+- Observation: CH1 had already written the last check this child needs.
+  `set_channels`' check under its lock reads, in order: that the
+  session's current record, read afresh, is the thread's
+  (`current_record(…, fresh=True)`); the session's record, where missing
+  is absence (lane A) and there-and-unreadable is not; the reach token;
+  the session's own events by this machine's names as its file has them
+  now (`own_events_now`); and whether the project is where the session is
+  now (`_current_here`: registrations and logs by literal paths, two
+  memberships of one millisecond deciding for neither). The third
+  revision named `member_project_now` for the last of these, which takes
+  the later of two equal timestamps by its scan's order and globs the
+  home's path, so a bracket in it is read as a pattern.
+- Observation: the ask and the push read a held receipt by two rules.
+  Evidence: `holder_owed` turns a plan of `awaiting`, with no process
+  running and the session the current one of a lane A thread, into a
+  retry that wakes; `reach_due` asks only about a plan of `push` or
+  `legacy`. Where the endpoint decides reach the retry then waits for a
+  word no one asks for, in a project as in a channel.
+- Observation: a receipt is found by an id that carries its key's hash,
+  and the admitting side never computes that hash (`_held_receipt` takes
+  the path from the id and checks the session), so what a receipt is
+  found by can gain the thread without the bridge knowing a thread.
+- Observation: a removal cannot land under a wake. `set_channels` takes
+  the wake lock, which `wake_member` keeps through the launch and the
+  push; so what can change across a launch is the reach, the machine's
+  policy and a signer's revocation, and a removal is busy until the push
+  is done.
 - Observation: `main` moved under the plan. sminos 1.54.1 holds a
   message's ask on a reply that names no verdict, for a project too, so
   the TECH-DEBT row on it is gone and this child has nothing to decide
@@ -3165,7 +3384,8 @@ them today.
       under none), so a deadline on it (`lock_until`, as `flocked` already
       takes one) is the whole change, and `exists` reads under no lock
       already.
-    - *The project a thread is in now* is `member_project_now`, which
+    - *(Replaced by the fourth read: decision 46 below.)* *The project a
+      thread is in now* is `member_project_now`, which
       reads every project's registration and the session's own events
       there under no lock. It answers the destination of a move whose
       source's retirement is not written yet, which is the "between two"
@@ -3190,7 +3410,8 @@ them today.
     35. The last check reads the session's record, its lane and
         `member_project_now`, and after a wake's launch the session's
         reach and the signer's revocation as well; a failure there hands
-        nothing over and launches nothing again.
+        nothing over and launches nothing again. *(Amended by the fourth
+        read: 44 and 46 below.)*
     36. A kept word is checked and removed under the thread's lock by the
         entry point that carries it out; `carry_words` takes no lock.
     37. A channel's ask that goes unanswered is dropped and asked again at
@@ -3208,7 +3429,8 @@ them today.
         none, whatever else the frame carries; a frame of CH1's kinds
         alone keeps CH1's path.
     40. A channel's receipt keeps `thread` in its key beside its session;
-        its lookup stays by session.
+        its lookup stays by session. *(Replaced by the fourth read: 47
+        below.)*
     41. A row is addressed from one reading of it (`thread_of_row`), and
         one whose stamp and statement name two threads is given no entry
         and the sender a line; a session whose history holds an episode
@@ -3247,6 +3469,86 @@ them today.
       reads of a transition. The delivery record of a channel can also
       hold a `pending` from before the boundary, which this child clears
       (decision 34): the one write a transition leaves for delivery.
+
+- 2026-11-22 — **The fourth read, and the edits before the build.** One
+  narrow read of what the third revision changed (`db270e65`): ten
+  findings, six P1 and four P2, with the verdict "ready with the listed
+  edits, not as written; no further design round". The holder took all
+  ten as stated, with notes; each was read against the code (unchanged
+  under `sminos/` between `bc528d6d` and the pin) and written in as
+  stated. The header is re-pinned to the branch with the composite's
+  amendment merged (`f2c737f2`). Nothing reads this document again before
+  the build: what it leaves goes to the executor as amendments here.
+  - *Every finding, and what became of it,* in the read's order.
+
+    | Finding | Became |
+    |---|---|
+    | 1 the post-launch check omits the machine's read-only policy | after a launch the two refusals the operation makes itself are read again, a revoked signer and, for an outside event, a read-only machine; found there, nothing is handed over and the event is refused as before a push (§3); M3 and M6 cross the barrier with a machine-policy change apart from a change of reach |
+    | 2 a stopped recipient with a receipt can wait forever without an ask | `holder_due`, one reads-only classification: `holder_owed` answers by it and a channel's `reach_due` chooses by it (§3, §4); M6 stages the `Awaiting` fixture in a channel with endpoint reach on: one ask, one wake, a settlement |
+    | 3 the old side of an in-progress absorption can still pass the check | the last check requires that the session's current record, read afresh, is `o.thread`'s and holds no open entry, beside the captured thread's own file (§3); M3 lets go a pass selected for the provisional record before `begin` and before the reservation |
+    | 4 the fresh project lookup can pick a tie or find no project | the last check reads the captured project by `own_events_now` and `_current_here`, not `member_project_now` (§3); M3 crosses the same-millisecond tie and a home whose path holds a bracket; the glob's reading of a bracket is the base's, a TECH-DEBT row written in M3 |
+    | 5 receipt lookup can use another thread's admission | a channel's receipt is found by its session and its thread together: `key_hash` and every lookup through it, and `sweep` (§3); the admitting side finds a receipt by its id and needs no thread; M3 serves two addressees of one event from one session in turn |
+    | 6 normalization treats a read failure as proof | `normalize` clears a `pending` only at or below the boundary read afresh for its writer (§3); M3 makes one writer's file unreadable beside a readable one and restores it |
+    | 7 a missing session record has two rules | one rule at `owing` and `still_owed`: not there is lane A, with the token `reach_token` gives for it (None, equal to itself alone); there and unreadable defers (§3); M2 and M3 cover a genuine absence |
+    | 8 the launch/removal proof needs a forbidden interleaving | the seam now says a removal is busy under the wake's hold and lands after the push, and that one made before the hold leaves nothing owed; the invalidations after a launch are reach, the machine's policy and the signer (M3) |
+    | 9 the unreadable-thread diagnostic cannot be built from `set_holders` | narrowed: no debt is attributed to a thread whose own file cannot be read, and an unreadable delivery record is what `daemon owed` diagnoses (M2, §3 row D12) |
+    | 10 an absent plane row must not invoke `owing`'s fallback | `owing` takes its row from its caller and looks none up; `asks_due` passes by a thread the plane has no row for; a deliverer reads the row with `own_row` (§3, §4); M6 covers an absent recipient row under a held finisher lock, and a retired sender that owes no frame |
+    | the verdict: the row a `to` entry is taken from | `thread_of_row` reads what the roster's own sweep read of the row's view, kept beside the rows from M1 on (§1) |
+    | the verdict: the strict loader for the writers too | given a channel's log, the delivery record's writers load through `delivered` and write nothing over a record that cannot be read (§3) |
+    | the verdict: what decision 37 holds back | the later messages of the same writer to the same thread, and nothing of another writer or thread (§4, Constraints) |
+
+  - *Decided by this plan in this revision,* beside the lists above
+    (whose 34, 35, 37, 40 and 41 these amend).
+    44. After a wake's launch the operation's own two refusals are read
+        again and made as before a push; any other change leaves the debt
+        owed (amends 35).
+    45. One classification of a held receipt's next step, `holder_due`,
+        for the push in every log and for a channel's ask. A project's
+        ask keeps its test, so its calls are today's: the same fault
+        there is the base's and is a TECH-DEBT row written in M6.
+    46. The last check's reads are CH1's last guard's: the session's
+        current record read afresh, the session's record by one rule,
+        and the captured project by `own_events_now` and `_current_here`
+        (replaces 35's `member_project_now`).
+    47. A channel's receipt is found by its session and its thread
+        together, in every lookup; a project's key is as it was
+        (replaces 40).
+    48. `normalize` needs the boundary alone and reads no selection
+        (amends 34).
+    49. A session with no record is lane A and its reach token is None;
+        a record written since is a change of reach.
+    50. `owing` looks no row up. A deliverer reads it (`own_row`), the
+        uplink takes the plane's, and a thread the plane has none for is
+        asked about nothing until it has.
+    51. `daemon owed` names no thread whose own file cannot be read; it
+        is built on `set_holders`, which gives only records that read.
+    52. `_sweep` keeps what it read of each row's view beside the rows,
+        and a `to` entry's thread and session come from it (amends 41).
+    53. The delivery record's writers read strictly where the log is a
+        channel's.
+  - *Open point, added.*
+    17. Whether a project's ask should take `holder_due` too (decision
+        45). Recommended and built: not here; it is one condition to
+        drop, and it changes what a project's uplink sends.
+  - *Where the composite as amended (`940a5a0b`) and this plan differ.*
+    Its C1, C2, C3, C5, Y3 and CH2's section were read against this
+    document; no sentence there is contradicted, and four are now
+    narrower than what is built:
+    - Its Decision Log's "the session for the process (the hold, the
+      receipt, the reach, the push and the wake)": a channel's receipt is
+      found by the session and the thread together (decision 47).
+    - Its list of what is read again after a wake's launch (the session,
+      the membership, the lane, the reach token, the signer's
+      revocation): the machine's read-only policy, for an outside event,
+      is read again too (decision 44).
+    - C5's "while a thread's record holds an open journal entry nothing is
+      delivered to it or asked about it": nor while the session's current
+      record, read afresh, is another thread's, which is the moment
+      between an absorption's `begin` and the reservation of the record
+      it absorbs (decision 46).
+    - Y3's "what it adds is the settlement": it also clears, in that
+      delivery record, a failed attempt's mark that the boundary has
+      passed, as the composite's own Decision Log says.
 
 ## Outcomes & Retrospective
 
