@@ -1899,8 +1899,8 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
                 return _undo(thread_id, entry, deadline)
             if held == "held" and not entry.get("merged"):
                 _merge_absorbed(thread_id, entry, other, deadline)
-        if entry.get("carry") and not entry.get("carried") and not channel:
-            if not before(project, entry):
+        if entry.get("carry") and not entry.get("carried"):
+            if not before(None if channel else project, entry):   # a channel's: its reach alone
                 return False
             # Carried once: a replay does not carry again what a later deliberate change undid (a `join --cwd`
             # that removed the job's override after the copy, while an event was still owed).
@@ -1983,7 +1983,8 @@ def _say_voided(thread_id, entry):
     reconciliation's, never a replay's), so _finish voids what the entry
     addresses to the channel, whoever finishes it, under the finisher lock
     and before any of it (the frontier review's B1, M8's review): no event
-    appended there, no hand-off's reach carried under it, no settlement of
+    appended there, no hand-off's cursor or override carried under it (its
+    reach and provenance are: `before` given no project), no settlement of
     what is held for the session under it. Every local step is finished as
     for any entry, so the record ends as an ordinary finish leaves it: an
     absorption's hold, merge and deletion (a claim cut before its hold

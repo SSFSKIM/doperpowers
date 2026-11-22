@@ -1105,6 +1105,40 @@ class SeatPurge(Machine):
                          "the session was no member: the purge owed no event")
 
 
+class ChannelPurgeRetried(SeatPurge):
+    def test_a_purge_over_a_channel_purges_kept_end_keeps_the_session_from_being_adopted_again(self):
+        """M8's review, round 3: an older copy's purge of a seat whose session it had moved into a channel (only
+        `retired` `moved` in its real project) owed its `retired` to the channel's log; finished, it keeps the
+        seat's end. Its stop slow or failed, a second purge deletes the seat only behind an ordinary retirement,
+        which holds against the process still running, so the session is not joined again."""
+        sid, seat_id = self.seat()
+        sminos.log_append_batch(self.p, sminos.writer_id(sid), [{
+            "kind": "retired", "session": sid, "by": "join", "reason": "moved", "project": CHANNEL,
+            "thread": seat_id}])
+        sminos.forget_caches()
+        with self.failing_appends():
+            code, out = self.cli("retire", "--purge", "g/w")
+        self.assertNotEqual(code, 0, out)
+
+        def addressed(view, raw):
+            raw["pending"]["project"] = CHANNEL
+            return True
+        self.assertTrue(threads._change(seat_id, addressed))
+        sminos.forget_caches()
+        with mock.patch.object(sminos, "purge_stop"):   # a stop that is slow or fails: the process runs on
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertTrue(sminos.finish_thread(seat_id))
+            self.assertTrue(threads.record_ended(threads.get(seat_id)), "the channel purge's end kept")
+            code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 0, out)
+        last = threads.in_effect(self.own(sid))
+        self.assertEqual((last["kind"], last["reason"], str(last.get("pid"))), ("retired", "retire",
+                                                                                str(self.procs[-1].pid)), out)
+        self.reconcile()
+        self.assertFalse(self.is_member(sid), "not joined again")
+        self.assertIsNone(threads.thread_of(sid), "nor adopted as a new thread")
+
+
 class SeatPurgeRetried(SeatPurge):
     def test_a_remove_cut_after_its_stamped_event_and_retried_through_the_verb_ends_once(self):
         sid, seat_id = self.seat()

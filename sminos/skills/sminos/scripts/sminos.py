@@ -6635,11 +6635,17 @@ def carry_hand_offs(project, entry):
     process that died after its record's write did not; whether all of it
     is durable (the cursor and the override written, and the provenance
     carried), without which nothing of the entry is appended. An entry whose
-    `carry` does not read carries nothing durable: it stays open."""
+    `carry` does not read carries nothing durable: it stays open. `project`
+    None: an entry owed to a channel, whose provenance alone is carried."""
     pair = entry.get("carry")
     if not (isinstance(pair, list) and len(pair) == 2 and all(UUID_RE.fullmatch(str(x)) for x in pair)):
         return False
     old, new = pair
+    if project is None:
+        # An entry an older copy owed a channel (sminos_threads._finish): the reach and provenance alone, from the
+        # pair, read from the records; the cursor and the override are the channel's, and stay behind.
+        ensure_record(None, new, former=[old])
+        return carried(None, old, new)
     return carry_hand_off(project, old, new) and carried(project, old, new)
 
 
@@ -18001,8 +18007,13 @@ def end_seat(s, purge, asked=None):
                         s["group"], s["alias"]), EXIT_UNKNOWN)
             if purge:
                 # Ended already (the rule, another retire): that end's record purged, journaled.
-                member = latest_membership(_own_events(project, cur)) == "joined"
-                thread_transition(project, s["seat_id"], "end", [retired] if member else [], required=True,
+                own = _own_events(project, cur)
+                member = latest_membership(own) == "joined"
+                # A session no member here whose process runs on and whose last event does not hold against it (a
+                # channel purge's kept end: its `retired` voided, its stop slow or failed) is retired all the same:
+                # the ordinary retirement holds against that process once the record is gone (retirement_holds).
+                owed = member or (proc is not None and not retirement_holds(own, proc))
+                thread_transition(project, s["seat_id"], "end", [retired] if owed else [], required=True,
                                   began=began, guard=lambda t: t["current"] == cur and threads.record_ended(t)
                                   and threads.asked_all(t, asked), settle=cur, last="purge")
                 if not began and reload_seat(s["seat_id"]) is not None:

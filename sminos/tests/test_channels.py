@@ -619,7 +619,7 @@ class ChannelReconcile(Machine):
         sminos.forget_caches()
         return threads.get(tid)["pending"]
 
-    def absorption(self, n, cut):
+    def absorption(self, n, cut, prepare=None):
         """An absorption an older copy began in the channel's log: `a`'s thread taking `job`, whose own provisional
         record it absorbs, cut with the job current on the continuing record and the provisional one `cut` as
         "present", "reserved" (its mark on it), "deleted" (the claim committed) or "lost" (no longer absorbable)."""
@@ -640,6 +640,8 @@ class ChannelReconcile(Machine):
                                                               "pid": None}) or True}.get(cut)
         if change:
             self.assertTrue(threads._change(other, change))
+        if prepare:
+            prepare(a, job)
         sminos.forget_caches()
         self.assertEqual(threads.get(tid)["current"], job, "cut: the job current on the continuing record")
         for _ in range(2):
@@ -659,6 +661,31 @@ class ChannelReconcile(Machine):
             self.assertEqual((t["current"], t.get("pending")), (job, None), cut)
             self.assertIsNone(threads.get(other), "%s: the provisional record absorbed" % cut)
             self.assertEqual(threads.thread_of(job)["thread"], tid, cut)
+
+    def test_a_legacy_absorption_carries_its_predecessors_reach(self):
+        """M8's review, round 3: the hand-off's carry is the session's provenance and reach as well as the channel's
+        cursor and override. Cut before it, the private predecessor's process gone and the job not yet inheriting,
+        the finish carries the reach from the journal's pair before it clears the entry: the job ends private, as
+        its predecessor, not with its own broader reach."""
+        sessions = {}
+
+        def prepare(a, job):
+            # The older copy's `join desk-integration` moved `a` out of its project before the hand-off.
+            sminos.write_override(a, DESK)
+            sminos.log_append_batch(self.p, "%s/%s" % (MACHINE, a), [{
+                "kind": "retired", "session": a, "by": "join", "reason": "moved", "project": DESK,
+                "thread": sminos.threads_module().thread_of(a)["thread"]}])
+            records.establish(a, records.default_provenance("launch"))
+            records.set_policy(a, lambda access, shares: ("private", shares))
+            self.procs[-2].kill()   # the predecessor's process gone
+            self.procs[-2].wait()
+            self.assertNotEqual(records.read(job).get("access"), "private", "the job's own, not yet inherited")
+            sessions.update(a=a)
+        a, job, tid, other = self.absorption(9, "present", prepare)
+        rec = records.read(job)
+        self.assertEqual(rec.get("access"), "private", "the predecessor's reach")
+        self.assertIn(sessions["a"], rec.get("former") or [])
+        self.assertEqual(sminos.threads_module().get(tid).get("pending"), None)
 
     def test_a_legacy_absorption_cut_after_its_deletion_keeps_its_claim(self):
         """M8's review, round 2: cut after the provisional record's deletion, the claim is committed: kept, not
