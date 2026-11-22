@@ -1555,7 +1555,7 @@ the request's `thread`.
 | 7 | T holds no session; or its session is a member of no project now | pending `vacant`; pending `between` |
 | 8 | the request is from elsewhere (`policy.outside_origin`) and the kept welcome lists no `channels` | pending `no-channels` |
 | 9 | the request is from elsewhere and the machine admits nothing from outside (`policy.read_only`) | refused `read-only` |
-| 10 | its writer is this machine's own and shares the thread's owners: a session's writer by `same_owner_local`, the human writer by `owners_meet("", session)` | honoured |
+| 10 | its writer is this machine's own, this machine holds a record of the requester, and it shares the thread's owners: a session's writer by `same_owner_local` with a thread or seat record here that has had that session; the human writer for a request this machine appended itself (`appended_here`) whose target's record, read now, names the machine's owners (`machine_owns`) | honoured |
 | 11 | `sender_verified` is False; is None | refused `not-reachable`; pending `unverifiable` |
 | 12 | no word for this event | pending `endpoint` |
 | 13 | a word, either one, and T's current session or its `reach_token` is not what `asked` holds | pending `moved`: the word is dropped and the request asked about again |
@@ -1571,9 +1571,17 @@ lock `decide` runs the whole table again, on reads that are fresh in fact
 (§3), with `earlier` taken as read only if the input's signature is the
 one it was read under: what it then answers is what is written, and an
 answer that is no longer `applied` or `refused` writes nothing and is the
-outcome. That is the last read before the record's write; what is
-imported after it is a later arrival. Requests for different channels are
-not ordered against each other.
+outcome. Then, once the positions, the ledger and the entry are made,
+`set_channels` reads last, in one place (`_last_reads`), that the session
+is no other record's current one, is not lane B, has the reach a word was
+given for, and is a member of the statement's project; a change in any of
+them writes nothing and is the outcome a moment earlier would have given
+(a request `ignored not-here` for lane B or another record's session,
+`pending moved` for its reach, `pending between`; a thread's own change
+`failed moved`, `failed lane-b` or `failed between`). Those are the last
+reads before the record's write; what is imported after them is a later
+arrival. Requests for different channels are not ordered against each
+other.
 
 The pass's three callers: the command, for each request it wrote for a
 thread of its own machine (handed in as `also`, no words); the daemon's
@@ -1598,6 +1606,7 @@ The words a command and `channel show` print:
 | `endpoint` | its machine's endpoint has not said whether you may message it |
 | `moved` | its session, its reach or the channel's log changed while its machine decided: tried again |
 | `failed` (a thread's own change) | nothing was recorded (`<the pending word for why>`): run the command again |
+| `failed lane-b` | nothing was recorded (this session is lane B now, and no thread): run the command again |
 
 On another machine a requester reads none of the pending words: it reads
 `pending on <machine> since <time>`, which covers a machine that is off, one
@@ -1710,7 +1719,9 @@ has a transcript, else `gone`, so a spawned seat on the test engine reads
 under the word "stopped", is every row in a hidden state; `requests`, one line each for
 the log's requests that have not expired, oldest first: its time, its verb,
 its target, its requester, and `applied`, `refused: <words>`, `refused: not
-reachable (the hub withheld it)` (from M7), `not carried out: another
+reachable (the hub withheld it)` (from M7), `refused: not sent (its endpoint
+refused the audience it went under: its target's reach changed before it
+was signed)` (state `withheld`, reason `audience`), `not carried out: another
 request in this channel used its id first`, or `pending on <machine> since
 <time>`; `pool`, one line a machine: its name, `<n> live, <m> stopped`
 counted from the roster's rows there (`live`: a state of `FILLED`;
@@ -1845,7 +1856,9 @@ while the milestones are built, one observation and its evidence each.
   is asked about it), and it expects two `reach?` about one event (for S2
   and S1) where sminos asks once a request, for the one target it names.
   For the case to replay MAWS needs two §2-shaped requests, each naming one
-  thread and its session. Sent to the holder as a contract finding.
+  thread and its session. Sent to the holder as a contract finding; MAWS
+  reworked the case so (its master `27e7208a1`), and the reworked case
+  replays (Decision Log, "The frontier's fix wave as built").
 
 ## Decision Log
 
@@ -2570,6 +2583,57 @@ while the milestones are built, one observation and its evidence each.
   the target's frame waits for lane capacity (`members_unsent`). After the
   merge `sminos-idle` reads 32,789 calls a second at 3.83 ticks (limit
   33,570; file calls 2,778, limit 2,970).
+- 2026-11-22 — **"This machine's own" rests on a record this machine holds**
+  (the frontier review's A2, the holder's ruling; §6 row 10 revised). The
+  shortcut of row 10 is held to a requester this machine has a record of:
+  a session's writer needs a thread or seat record here that has had that
+  session (`thread_of`); the human writer needs a request this machine
+  appended itself, and its target's record read now (never the endpoint's
+  last resolved owners, A3) naming the machine's owners. The test of
+  "appended here": the request is one of this machine's queued appends (no
+  `seq` yet), or `sminos.receipted(channel, request)` holds, a `{seq, hash}`
+  line in `projects/<id>/receipts/<writer>.jsonl` written under the writer
+  file's lock before the event and outside `log/`, so nothing imported ever
+  has one (`channel-request` joins `RECEIPTED_KINDS`). Every other request
+  under this machine's name takes the endpoint's word. *Lost: the writer's
+  machine name,* which a retired machine's reused name or a rebuilt home
+  also carries. Left to the holder: rows 8, 9 and 11 still read the name as
+  provenance (`outside_origin`, and `sender_verified` answering for an own
+  name before it reads the signer).
+- 2026-11-22 — **One last read before the record's write** (the frontier
+  review's A4 with scalpel-1#6, the holder's ruling; §6 and §8 revised).
+  After the positions, the ledger and the entry are made, `_last_reads`
+  checks in one helper the session's being no other record's current one,
+  its lane, the reach a word was given for (`reach_token`), and its
+  project membership; any change writes nothing and gives the outcome the
+  same change would have given a moment earlier, never a commit on the old
+  answer. No lock is added: a move after these reads is the
+  reconciliation's (the M2 ruling). A thread's own change gains `failed
+  lane-b`.
+- 2026-11-22 — **The frontier's fix wave as built** (`ffc6569a..0323f37b`).
+  A1: a channel's upload sends first, under its own project, each
+  sender's member frame never sent (`Link.senders_before`), and waits while
+  one cannot be queued. A5: a seat branch of `_target` takes the thread's
+  canonical record (`current_record(session, fresh=True)`). A6: `may_leave`
+  is false for a channel that holds a request this machine wrote and that
+  is outstanding (`sminos_channels.outstanding`: not answered, withheld,
+  refused `audience` or expired). A7 and A11: `on_reach` takes no lock; it
+  keeps the word under its key and binding (`request_words`) for the pass
+  that carries requests, which uses it once and drops it, so a request it
+  cannot commit is asked again at the ordinary interval. A8: a log writer
+  file or a queue of the channel that is there and cannot be read raises
+  `PositionsUnread`, and nothing of that channel is carried (`pending
+  unreadable`); an unreadable queue had raised `PermissionError` before,
+  not read as empty. A9: a request's `id` is 32 lower-case hex digits
+  (`REQUEST_ID_RE`, a full match), anything else no request. A10: a request
+  whose upload the endpoint refused for its audience reads `withheld`,
+  reason `audience` (`sminos_hublog.refused_audience_of`; §8 amended).
+  MAWS's reworked case 15 (its master `27e7208a1`, blob `78282c78`) is
+  taken in, with the scenes `add-machine` and `machine-event`: the replay
+  plays 121 lines `ok`, no amendment. In it the statements answering the
+  two requests stay unwritten (both targets private, and the fixture sends
+  no `audience` frame for its policy revision); the records hold the
+  answers, which the replay checks.
 
 ## Outcomes & Retrospective
 
