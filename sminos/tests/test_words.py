@@ -1105,6 +1105,24 @@ class Words(WordsRig):
             wait_for(lambda: self.bridge)
             self.assertEqual(self.bridged(), [("hub/mem-1", 1)])
 
+    def test_an_answer_naming_no_verdict_is_counted_at_the_deadline_as_silence(self):
+        """A reply naming no verdict consumes nothing: the ask stays held, its
+        failed attempt counted at WORDS_WAIT as silence's, never at the
+        reply's speed (before 1.54.1: sixty asks in under 3 s, then given up)."""
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        ep = self.endpoint(verdict="maybe")
+        with mock.patch.object(uplink, "WORDS_WAIT", 1.5):
+            self.uplink()
+            ep.wait(lambda f: f["t"] == "words?")
+            time.sleep(1.0)
+            self.assertEqual(len(self.asks(ep)), 1, "held still: not asked again before its deadline")
+            self.assertIsNone((self.record(self.hp, S1).get("hub/mem-1") or {}).get("attempts"), "nothing counted yet")
+            ep.wait_until(lambda: len(self.asks(ep)) >= 2)
+            w = wait_for(lambda: self.record(self.hp, S1).get("hub/mem-1"))
+            self.assertEqual((w["settled"], w["pending"], w["attempts"]), (0, 1, 1), "one attempt, at the deadline")
+        self.assertIn("gave no verdict on hub/mem-1:1", daemon_log(), "counted with silence's reason")
+
     def test_one_writer_is_asked_in_order(self):
         self.session(self.hp, S1, inbox=True)
         self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A, text="first")

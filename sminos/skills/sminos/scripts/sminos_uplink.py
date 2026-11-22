@@ -1022,19 +1022,21 @@ class Link:
         not revoked since), and the writer's next owed event asked at the next
         tick. An answer to no ask held here — one that expired and was asked
         again, one a revocation dropped — is no answer; one naming no verdict
-        is a failed attempt, as silence is. Where the endpoint decides reach
-        (P5 O18 D8) a `peer` verdict delivers nothing yet: the push it calls
-        for asks `reach?` about the same event first (ask_peer), and the
-        admission of the words never stands for it."""
+        consumes nothing: its ask stays held, as if no reply had come, and its
+        deadline counts it a failed attempt, as silence is (expire_asks), at
+        WORDS_WAIT's pace, never at the reply's speed. Where the endpoint
+        decides reach (P5 O18 D8) a `peer` verdict delivers nothing yet: the
+        push it calls for asks `reach?` about the same event first
+        (ask_peer), and the admission of the words never stands for it."""
+        pre = self.asks.get(frame.get("id")) if isinstance(frame.get("id"), str) else None
+        if pre is not None and pre.get("t", "words?") == "words?" and frame.get("verdict") not in sminos.WORDS_VERDICTS:
+            log("the endpoint's answer on %s in %s names no verdict (%r): no answer, counted at its deadline"
+                % (sminos.event_ref(pre["event"]), pre["project"].name, frame.get("verdict")))
+            return
         held = self.held_ask(frame, "words?")
         if held is None:
             return
         verdict = frame.get("verdict")
-        if verdict not in sminos.WORDS_VERDICTS:
-            log("the endpoint's answer on %s in %s names no verdict (%r): a failed attempt"
-                % (sminos.event_ref(held["event"]), held["project"].name, verdict))
-            sminos.words_unanswered(held["project"], held["member"], held["event"], "the endpoint named no verdict")
-            return
         if verdict == "peer" and self.reach:
             self.ask_peer(held)
             return
@@ -1078,15 +1080,14 @@ class Link:
         once (sminos.deliver_reach: still the writer's first owed, the same
         body): `deliver` the push it was asked for, under a permit for that
         push alone; `refuse` settled `refused-reach` here, with no outcome
-        back. An answer to no ask held here, or one naming neither, is no
-        answer: the event stays owed, asked again under a new id, no attempt
-        counted. One on a channel's request that names neither consumes
-        nothing: its ask stays held, and is asked again at its deadline, the
-        ordinary timer, never at the reply's speed (the frontier's second
-        review, C8, A11's rule)."""
+        back. An answer to no ask held here is no answer: the event stays
+        owed, asked again under a new id, no attempt counted. One naming
+        neither, a message's or a channel's request's, consumes nothing: its
+        ask stays held, as if no reply had come, and is asked again at its
+        deadline, the ordinary timer, never at the reply's speed (the
+        frontier's second review, C8, A11's rule)."""
         pre = self.asks.get(frame.get("id")) if isinstance(frame.get("id"), str) else None
-        if pre is not None and "request" in pre and pre.get("t") == "reach?" \
-                and frame.get("verdict") not in sminos.REACH_VERDICTS:
+        if pre is not None and pre.get("t") == "reach?" and frame.get("verdict") not in sminos.REACH_VERDICTS:
             log("the endpoint's answer on the reach of %s in %s names no verdict (%r): no answer, asked again at its "
                 "deadline" % (sminos.event_ref(pre["event"]), pre["project"].name, frame.get("verdict")))
             return
@@ -1095,10 +1096,6 @@ class Link:
             return
         self.reach_silent.discard(held["key"])
         verdict = frame.get("verdict")
-        if verdict not in sminos.REACH_VERDICTS:
-            log("the endpoint's answer on the reach of %s in %s names no verdict (%r): it stays owed, asked again"
-                % (sminos.event_ref(held["event"]), held["project"].name, verdict))
-            return
         if "request" in held:
             self.request_answered(held, verdict)
             return
