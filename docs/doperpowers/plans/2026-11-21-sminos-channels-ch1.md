@@ -54,8 +54,8 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture. `442c9784..e9fd15e0`, three reviews (the bound), then round 3's last finding (a test-harness race) fixed; the replay 112 lines `ok`, no amendment; `sminos-idle` 32,100 calls a second.
 - [x] (2026-11-21) M7 — Requests across machines: the endpoint's word, and what a requester is told. `cdc800c4..ede64e18`, clean at its second review; the acceptance scene's seven steps met; `sminos-idle` 32,781 calls a second.
 - [x] (2026-11-22) The review of M1 to M7 as one range, by the composite's holder (`b7413f10..ffc6569a`, 19 confirmed), and its fixes: A1 to A11 and MAWS's reworked case 15 (`ffc6569a..4411a917`), three task reviews, the last round's three fixes after the bound; the replay 121 lines `ok`; `sminos-idle` 32,126 calls a second. The holder reads the range a second time after M8.
-- [ ] M8 — Older copies, what is written beside the code, the version, and the acceptance.
-- [ ] The branch reviewed at its end (Decision Log, "Verification"), and its fixes.
+- [x] (2026-11-22) M8 — Older copies, what is written beside the code, the version, and the acceptance. `1be3f7fb..f6c205ad` (main merged twice, then `bef6f74e`), three reviews (the bound), then round 3's two findings fixed (Decision Log, "M8 as built"); sminos 1.54.0; the scene 47/0; the check on a real engine three steps passed; `sminos-idle` 32,737 calls a second.
+- [ ] The branch reviewed at its end (Decision Log, "Verification"), and its fixes: the holder's second panel over the whole range, after the pull request opens.
 
 ## Words this document adds
 
@@ -2680,10 +2680,18 @@ while the milestones are built, one observation and its evidence each.
   merge and deletion, a lost claim undone, the stop, the seat, a queued
   `next`) runs as for any entry. A purge so finished keeps its record as an
   end's, since with its retirement voided the ended record is what keeps
-  the session from being adopted again. (Its review's first two rounds
+  the session from being adopted again. The hand-off's carry of such an
+  entry is its reach and provenance alone, read from the records by the
+  journal's pair; the entry stays open until they are carried, and the
+  channel's cursor and override stay behind. A later purge of a seat whose
+  channel purge kept its end retires the session in its own project first
+  while its process still runs, so deleting the seat never leaves that
+  process to be joined again. (Its review's first two rounds
   found the first form of this, voiding or undoing the whole entry, losing
   local work: a committed absorption, a refill's `next` into a real
-  project, a purge's stop.) B2: `keep_org` completes an older copy's registration of a
+  project, a purge's stop; the third, after which these last two sentences
+  were built with no review of their own, a private predecessor's reach not
+  carried and a retried purge deleting the kept end.) B2: `keep_org` completes an older copy's registration of a
   channel the org lists, with no root, the enrollment's hub and the
   directory's name (`register_listed_channel`). B3: a resume's roster finds
   no member in a channel's log, and still follows a `retired moved` out of
@@ -2706,7 +2714,67 @@ while the milestones are built, one observation and its evidence each.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish. Recorded ahead of it:
+**What CH1 delivers.** A declared channel exists and holds members, with
+nothing said in it yet: `sminos channel create | add | remove | show | env`,
+a thread placed without acting on its own machine when the command returns
+and on another machine when that machine's daemon reads the request, the
+roster in `sminos list` beside the member's project, the channel's log
+opened at the hub as a holder by every machine with a member, and every
+form of message into a channel refused in §8's sentence. A session in no
+channel sends and prints what it did before (A13: the listing compared with
+the merge base's at M5, the wire frames of a thread in no channel with the
+old fixture's at M6, every gate at every milestone). sminos 1.54.0.
+
+**How it was proved.** Every acceptance item by the proof map, on the final
+head: the gates GREEN (11/11) with `sminos-idle` at 32,737 calls a
+second under its 33,570 limit (each milestone between 32,024 and 32,781);
+the acceptance scene's seven steps, 47 checks, none failed (run alone at
+`b2ed53c7`, and inside the `sminos-channels` gate on every head since); MAWS's fixture
+(its master `27e7208a1`, case 15 the request exchange) replayed, 121 lines
+`ok`, no amendment; the older-copy suite over 1.27.10, 1.51.0 and 1.52.0, 303 checks;
+and the check on a real engine, three steps passed under a scratch home.
+Its step 3 shows the record's positions for the channel unchanged across a
+hand-off only as empty before and after, since the channel's log held
+nothing then: a non-empty boundary carried across a real hand-off is left
+to CH2's full pass on a real engine, which the composite's Risks already
+give it.
+
+**Not proved here.** The real endpoint's answer to a channel-request's
+`reach?` (recorded below, before this section was written): the replay
+holds sminos to MAWS's fixture of it, and the fleet check reads the real
+one.
+
+**What the build taught.**
+
+- Per-milestone review missed what lives where milestones meet. Four of
+  seven milestones reached the three-review bound, and still the holder's
+  panel over M1 to M7 as one range confirmed nineteen findings (four P1),
+  most of them where M4's judgment of a request on one machine met M7's
+  wire: the order of a request's upload and its sender's member frame,
+  "this machine's own" decided by a name, owners read stale, the last read
+  before the write. A child of this size wants the range read whole before
+  its last milestone, as this plan had it, and again after it, as the
+  holder takes it.
+- Recovering an older copy's work is suppression, not undoing. B1's first
+  form voided or rolled back an entry an older copy had addressed to a
+  channel, and each of M8's three reviews found local work it lost (an
+  ownership transfer, a refill, a purge's stop, a private session's reach).
+  What held was the ordinary finisher with only the channel-addressed
+  effects withheld: the journal already knows how to finish every local
+  step, and a second path that re-derives them misses some.
+- The idle gate shaped the design more than any contract did. A machine with
+  no channel paying nothing per tick (the holder's ruling at M1) left about
+  2.5% of headroom and moved code into `Link.channels` and `known_kinds`;
+  every later milestone was built against that budget.
+- The older-copy suite's cost grew threefold (24 s to 74 s) for the
+  without-channels comparison store, which is what makes its assertions
+  exact; it runs in `sminos-suites-a`, well inside that part's timeout.
+- Main moved five times during the build (the suites split, EN.G1, two
+  smaller sminos and devcloud changes); each merge was taken at a milestone
+  boundary, and only EN.G1's touched code CH1 had changed (`hub_projects`,
+  `cmd_say`, the gate list), resolved so both hold.
+
+**Recorded ahead of this section:**
 
 - Not proved here: the real endpoint's answer to a channel-request's
   `reach?` (project the channel, session a member of another project); the
