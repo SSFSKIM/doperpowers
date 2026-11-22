@@ -615,6 +615,9 @@ run_channels() {
   if python3 -B "$SCRIPT_DIR/test_channels_debt.py"; then
     pass "what a channel owes a thread: by its id, past its boundary, across every transition; daemon owed (test_channels_debt.py)"
   else fail "what a channel owes a thread: by its id, past its boundary, across every transition; daemon owed (test_channels_debt.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_delivery.py"; then
+    pass "a channel's message pushed, woken for and held, by the thread: the last check, the boundary, receipts, the frame (test_channels_delivery.py)"
+  else fail "a channel's message pushed, woken for and held, by the thread: the last check, the boundary, receipts, the frame (test_channels_delivery.py)"; fi
   echo
   if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; else
     fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; fi

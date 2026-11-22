@@ -915,6 +915,41 @@ def _fell_due(reads):
     return held is not None and held[1] is not None and time.time() >= held[1]
 
 
+def channel_held_reads(channel, events, thread, session):
+    """held_reads for a thread in a channel (CH2's M3): the channel's merged
+    log (compared by identity), the thread's delivery record there, and the
+    rest as a project's."""
+    return (events, _stat_key(os.path.join(channel.home, "delivered", thread + ".json")),
+            _stat_key(sminos.holder_module().home(create=False)), _stat_key(rl10.revoked_path()),
+            _stat_key(sminos.sibling_module("sminos_policy").policy_path()), hold_inputs(session))
+
+
+def held_pass_skips(key, reads):
+    """Whether a held thread's pass is skipped on the memory of one that ran
+    (_HELD_PASSES, `key` its log's id and its thread): what that pass read
+    is read the same now (`reads`, None for a session not held) and no
+    failed wake fell due since. A memory that does not hold is forgotten.
+    The channels' pass asks it (sminos_channels.deliver), as deliver_owed
+    asks the same of a project's member."""
+    memory = _HELD_PASSES.get(key)
+    if memory is not None and reads is not None and _same_reads(memory, reads) and not _fell_due(reads):
+        return True
+    _HELD_PASSES.pop(key, None)
+    return False
+
+
+def held_pass_keep(key, before, after):
+    """Remember a pass that found everything held: what it read before it
+    ran, with the delivery record as it left it (`after`)."""
+    _HELD_PASSES[key] = before[:1] + after[1:2] + before[2:]
+
+
+def held_pass_forget(log_id, present):
+    """Forget the memories of a log's threads that are no longer passed."""
+    for key in [k for k in _HELD_PASSES if k[0] == log_id and k not in present]:
+        del _HELD_PASSES[key]
+
+
 def all_held(result, owed):
     """Whether a delivery pass found every writer of `owed` held at its head
     and settled nothing."""
@@ -1365,14 +1400,17 @@ def channel_pass(channels, all_seats):
     and publishes nothing; then its requests are carried out
     (sminos_channels.carry_due), a request a command left or one imported
     from another machine, only trying each thread's wake lock (a wake in
-    flight is the next pass's). `channels`: those known here
-    (sminos.known_kinds' channels), a loop over nothing on a machine that
-    knows none. A channel whose pass fails is said in daemon.log when the
-    failure is a new one."""
+    flight is the next pass's); then what its log owes this machine's
+    threads is delivered (sminos_channels.deliver, CH2's M3), last, so a
+    request honoured in the tick has set its boundary first. `channels`:
+    those known here (sminos.known_kinds' channels), a loop over nothing on
+    a machine that knows none. A channel whose pass fails is said in
+    daemon.log when the failure is a new one."""
     for c in sorted(channels, key=lambda c: (c.name, c.id)):
         try:
             sminos.view_of(c, all_seats, titles=False)
             sminos.channels_module().carry_due(c, wake_until=time.time())
+            sminos.channels_module().deliver(c)
         except MachineClaimed:
             raise
         except (Exception, SystemExit) as e:  # noqa: BLE001 — one channel's failure is not the daemon's

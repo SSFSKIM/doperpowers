@@ -166,10 +166,11 @@ class Outbox:
 
 def record(project, e, session, push, member):
     """Delivery's record of an outside-origin event settled for `session`,
-    for a hub project (nothing for another): whether it is kept. One that
-    cannot be written is said in daemon.log and returns False — the caller
-    does not settle the event."""
-    if not project.hub:
+    for a hub project (nothing for another, and nothing for a channel: a
+    `delivery` under a channel's id is a publication, CH2's §4): whether it
+    is kept. One that cannot be written is said in daemon.log and returns
+    False — the caller does not settle the event."""
+    if not project.hub or sminos.is_channel_id(project.id):
         return True
     outcome, reason = of_push(push, member)
     try:

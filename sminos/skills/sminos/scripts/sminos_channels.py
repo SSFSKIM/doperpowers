@@ -2383,3 +2383,110 @@ def owed_here(channel):
         d = debt(channel, t)
         out.append((d, owed(d, events)))
     return out
+
+
+# ------------------------------------------------------------ pushing and waking from a channel's log (CH2's M3)
+#
+# The delivery operation (sminos.deliver_next, deliver_verdict, deliver_reach) takes a channel's log with an Owing,
+# and only so: the thread's delivery lock and record, the thread's selection (owed), the session for every process,
+# the thread's own project for membership. What is here chooses whom to give it to, and keeps the record
+# consistent with the boundary.
+
+
+def own_row(record):
+    """(the thread's own project, its row there), from that project's view
+    (sminos.view_of), or None: the project the thread's current session is
+    in (sminos.last_project), never a channel. For a deliverer in a process
+    of its own (the daemon's pass, a sender's call): never called on the
+    uplink's consumer thread, since a view reconciles."""
+    session = (record or {}).get("current")
+    if not session:
+        return None
+    project = sminos.last_project(session)
+    if project is None or sminos.is_channel_id(project.id):
+        return None
+    member = next((m for m in sminos.view_of(project, titles=False).members if m.session == session), None)
+    return (project, member) if member is not None else None
+
+
+def normalize(o):
+    """The thread's delivery record made consistent with its boundary, under
+    its delivery lock and after still_owed: a writer's `pending` whose seq is
+    at or below the boundary read afresh for that writer (the thread's own
+    file) is cleared, with the attempt count and the pushed note that ride
+    with it, in one write. That is the only evidence: a `pending` whose event
+    the selection merely does not hold (a writer file that could not be read)
+    stays. The settled prefix, the revoked seqs and the held marks are as
+    they were. Without it a failed attempt on an event a removal and an add
+    (or a return) put below the boundary would stop its writer for good
+    (sminos._next_check). Nothing over a record that cannot be read."""
+    record = delivered(o.channel, o.thread)
+    t = sminos.threads_module().get(o.thread)
+    if not record or t is None:
+        return
+    boundary = _boundary(t, o.channel.id)
+    cleared = {}
+    for w, entry in record.items():
+        if entry["pending"] is not None and not _past({"writer": w, "seq": entry["pending"]}, boundary):
+            cleared[w] = {k: v for k, v in entry.items() if k != "pushed"}
+            cleared[w].update(pending=None, attempts=0)
+    if cleared:
+        record.update(cleared)
+        sminos._delivered_write(o.channel, o.thread, record)
+
+
+def deliver(channel):
+    """The channel's delivery pass, (events delivered, the aliases reached):
+    the daemon's channel pass, last, after the view and carry_due (a request
+    honoured in the tick has set its boundary first). For each thread of this
+    machine that holds the channel (sminos_threads.set_holders) and that the
+    log names (addressed_threads, the log's own index: a thread nothing names
+    is passed by with no lock and no record read), owing() with own_row(),
+    and sminos.deliver_next(channel, o.member, owing=o) when owed() is not
+    empty. A thread whose record holds an open entry is passed by before its
+    row is read (a view reconciles, and would finish the entry: what finishes
+    entries is the daemon's reconciliation of projects, never this pass). A
+    thread whose whole backlog was held for a fact is passed by on the memory
+    of a full pass while nothing it read has changed (the daemon's
+    _HELD_PASSES, the projects' memory, keyed by the channel and the thread).
+    A machine that holds no member of the channel reads nothing of its log."""
+    threads = sminos.threads_module()
+    holders = [t for t in threads.set_holders().values() if channel.id in threads.held_set(t)]
+    if not holders:
+        return 0, []
+    daemon = sminos.daemon_module()
+    events = sminos._store_whole(channel, "log", shared=True)[1]   # read, never changed: its index is kept with it
+    index = addressed_threads(events)
+    total, reached, present = 0, [], set()
+    for t in sorted(holders, key=lambda t: t["thread"]):
+        if t["thread"] not in index:
+            continue
+        key = (channel.id, t["thread"])
+        present.add(key)
+        session = t["current"]
+        held = sminos.hold_for(session)
+        reads = daemon.channel_held_reads(channel, events, t["thread"], session) if held else None
+        if daemon.held_pass_skips(key, reads):
+            continue
+        d = debt(channel, t)
+        if d is None or t.get("pending"):
+            continue
+        chosen = owed(d, events)
+        if not chosen:
+            continue
+        o = owing(channel, t, own_row(t))
+        if o is None:
+            continue
+        try:
+            result = sminos.deliver_next(channel, o.member, owing=o)
+        except sminos.DeliveryUnreadable as e:
+            sminos.daemon_log("delivery: %s" % e)
+            continue
+        if held and daemon.all_held(result, chosen):
+            # The delivery record as the pass left it: its own write is the hold it decided.
+            daemon.held_pass_keep(key, reads, daemon.channel_held_reads(channel, events, t["thread"], session))
+        if result["delivered"]:
+            total += result["delivered"]
+            reached.append(o.member.alias)
+    daemon.held_pass_forget(channel.id, present)
+    return total, reached
