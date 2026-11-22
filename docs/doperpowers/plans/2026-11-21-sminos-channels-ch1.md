@@ -1210,7 +1210,7 @@ configuration.
 
 1. In `<scratch>/a` a session A, in `<scratch>/b` a session B, each one
    turn, both left open. A runs `sminos channel create probe` and `sminos
-   channel add probe @<B's short>`. Expect: B's transcript unchanged, and
+   channel add probe <B's short>` (`find_target` takes no leading `@`). Expect: B's transcript unchanged, and
    `sminos list` from both showing `# probe` with both.
 2. `/clear` in B. Expect: `sminos list --channel probe` shows the thread B
    left, `stopped`, and not the new session; `sminos list` from the new
@@ -2671,6 +2671,31 @@ while the milestones are built, one observation and its evidence each.
   `lstat` says it is gone. A11: a word that could not commit, or was taken
   without an outcome, waits `WORDS_EVERY` (`request_retry`), whatever
   other reply makes a pass due.
+- 2026-11-22 — **M8 as built** (`1be3f7fb..b2ed53c7`). B1: before it
+  undoes an older copy's `joined` in a channel, `_reconcile_channel` voids
+  an open entry that owes the channel anything but a `retired`
+  (`sminos_threads.void_owed_to_channel`, with a `daemon.log` line), the
+  whole entry, whatever its operation, since all of it was addressed to
+  the channel. B2: `keep_org` completes an older copy's registration of a
+  channel the org lists, with no root, the enrollment's hub and the
+  directory's name (`register_listed_channel`). B3: a resume's roster finds
+  no member in a channel's log, and still follows a `retired moved` out of
+  it. B4: `tag_project` tags a project whose name is shaped like a channel
+  id by its id, and `project init` refuses such a name. The older-copy
+  suite checks "what each copy did without channels" by running the same
+  verbs over a second store without channels and comparing the normalised
+  outputs (1.52.0 is held to its own behaviour the same way); its wire
+  check enrols the store only after the older copy's verbs. sminos is
+  1.54.0, above main's 1.53.1; the `sminos-channels` timeout is 4 minutes
+  (about twice the part's 1m40s, in whole minutes). The merges of main
+  (`067e6d44`, `dd6b36f7`) were resolved by hand at the version (1.54.0
+  kept) and at the end of `TECH-DEBT.md` (main's two EN.G1 rows end their
+  section; "sminos channels" follows); the rest merged clean. The check on
+  a real engine passed its three steps (Concrete Steps' step 1 amended:
+  `find_target` takes the bare short); in step 3 the positions for `probe`
+  were `{}` before and after the hand-off, since the channel's log held
+  nothing then, so that step shows them unchanged without showing a
+  non-empty boundary carried.
 
 ## Outcomes & Retrospective
 
