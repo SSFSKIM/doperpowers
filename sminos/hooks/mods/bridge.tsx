@@ -1213,24 +1213,33 @@ const STOPPED_DROPS = new Set(['the prompt was removed from the queue before it 
  * in that project) is a repeat, and dropped. Every project numbers a writer's
  * events on its own, so the mark is `<project>/<writer>`; a key naming no
  * project (a CLI older than the project in the key) is held to the writer's
- * bare mark, which is all such a CLI ever raised.
+ * bare mark, which is all such a CLI ever raised. A channel's log numbers a
+ * writer's events once for every thread it names, and the session may serve
+ * one thread, then another: its key names the thread too, and its mark is
+ * `<channel>#<thread>/<writer>` (deliveryMark).
  */
 async function deliver($: EngineInterface, key: unknown, text: unknown): Promise<Answer> {
-  const { project, writer, seq } = (typeof key === 'object' && key !== null ? key : {}) as { project?: unknown; writer?: unknown; seq?: unknown }
+  const { project, thread, writer, seq } = (typeof key === 'object' && key !== null ? key : {}) as { project?: unknown; thread?: unknown; writer?: unknown; seq?: unknown }
   if (
     typeof writer !== 'string' ||
     writer === '' ||
     !Number.isInteger(seq) ||
     typeof text !== 'string' ||
-    (project !== undefined && (typeof project !== 'string' || project === ''))
+    (project !== undefined && (typeof project !== 'string' || project === '')) ||
+    (thread !== undefined && (typeof thread !== 'string' || thread === '' || project === undefined))
   ) {
-    return { ok: false, error: 'deliver needs key {project?, writer, seq} and text' }
+    return { ok: false, error: 'deliver needs key {project?, thread?, writer, seq} and text' }
   }
   if (SESSION_WRITER.test(writer)) {
     return { ok: false, error: "a session's event is a peer's, not the human's words: it goes to the session's inbox" }
   }
-  const delivery: DeliveryKey = { ...(project !== undefined && { project: project as string }), writer, seq: seq as number }
-  const mark = project === undefined ? writer : `${project}/${writer}`
+  const delivery: DeliveryKey = {
+    ...(project !== undefined && { project: project as string }),
+    ...(thread !== undefined && { thread: thread as string }),
+    writer,
+    seq: seq as number,
+  }
+  const mark = deliveryMark(delivery)
   const before = state.delivered.get(mark)
   if (delivery.seq <= (before ?? 0)) {
     emit({ type: 'delivered', key: delivery, outcome: 'duplicate' })
@@ -1272,9 +1281,17 @@ async function deliver($: EngineInterface, key: unknown, text: unknown): Promise
   return { ok: true, result: { submitted: true } }
 }
 
+/** The mark a delivery key raises: the writer's, within its project, and within its thread in a channel's log. */
+function deliveryMark(delivery: DeliveryKey): string {
+  if (delivery.project === undefined) {
+    return delivery.writer
+  }
+  return delivery.thread === undefined ? `${delivery.project}/${delivery.writer}` : `${delivery.project}#${delivery.thread}/${delivery.writer}`
+}
+
 /** A delivery that could not enter: `refused`, after its `submitted`, with the engine's reason. */
 function refuseDelivery($: EngineInterface, delivery: DeliveryKey, reason: string) {
-  const mark = delivery.project === undefined ? delivery.writer : `${delivery.project}/${delivery.writer}`
+  const mark = deliveryMark(delivery)
   $.ui.log(`bridge: the delivery ${mark}:${delivery.seq} did not enter: ${reason}`, { to: 'debug' })
   emit({ type: 'delivered', key: delivery, outcome: 'refused', reason })
 }

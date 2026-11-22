@@ -510,6 +510,12 @@ def key_hash(project_id, session, writer, seq, thread=None):
     return hashlib.sha256(json.dumps(key).encode()).hexdigest()[:24]
 
 
+def _thread(thread):
+    """key_hash's `thread`, passed for a channel's event alone: a project's
+    receipt is found by the call it always was."""
+    return {} if thread is None else {"thread": thread}
+
+
 def _receipt_path(keyhash, create=True):
     return os.path.join(home(create), keyhash + ".json")
 
@@ -537,7 +543,7 @@ def exists(project_id, session, e, thread=None):
     none; one that cannot be read is held (fail closed: plan() holds it).
     Reads nothing when there is no file, as for every event of a process
     that never took a receipt."""
-    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"], thread), create=False)
+    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"], **_thread(thread)), create=False)
     if not os.path.exists(path):
         return False
     try:
@@ -551,7 +557,7 @@ def admitted(project_id, session, e, thread=None):
     """Whether the event's receipt was admitted: the text reached the model,
     which settles it `sent` whatever becomes of its session since. False for
     none, another body's, or one that cannot be read."""
-    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"], thread), create=False)
+    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"], **_thread(thread)), create=False)
     try:
         r = _read(path) if os.path.exists(path) else None
     except Unreadable:
@@ -564,7 +570,7 @@ def words_of(project_id, session, e, thread=None):
     True a person's words, False a peer's, None none taken); None when no
     receipt is held for it or it cannot be read. What a retry pushes under,
     and so whether the reach gate decides it (P5 O18 D8)."""
-    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"], thread), create=False)
+    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"], **_thread(thread)), create=False)
     try:
         r = _read(path) if os.path.exists(path) else None
     except Unreadable:
@@ -579,7 +585,7 @@ def handed(project_id, session, e, thread=None):
     before it reached the session: nothing handed off); None when it is
     there and cannot be read — not known, so nothing may be decided of it
     (revoke_owed defers the event, its receipt kept)."""
-    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"], thread), create=False)
+    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"], **_thread(thread)), create=False)
     if not os.path.exists(path):
         return False
     try:
@@ -605,7 +611,7 @@ def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only
     handoff would be made, for the caller to check its policy first.
     `thread`: a channel's event's thread, part of what the receipt is found
     by (key_hash) and kept in its key beside its session."""
-    keyhash = key_hash(project_id, session, e["writer"], e["seq"], thread)
+    keyhash = key_hash(project_id, session, e["writer"], e["seq"], **_thread(thread))
     path = _receipt_path(keyhash)
     with _receipts_lock():
         try:
@@ -691,7 +697,7 @@ def pushed(receipt_id, attempt):
 def settled(project_id, session, e, thread=None):
     """The event's delivery settled (the cursor moved past it): its receipt,
     if one is held, is removed."""
-    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"], thread), create=False)
+    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"], **_thread(thread)), create=False)
     if not os.path.exists(path):
         return
     with _receipts_lock():

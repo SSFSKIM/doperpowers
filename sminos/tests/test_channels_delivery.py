@@ -54,7 +54,7 @@ import test_threads_ended as T1_ended  # noqa: E402
 from test_threads import SCRIPTS, Killed, records, sminos, threads  # noqa: E402
 from test_wake import wait_for  # noqa: E402
 from test_wake_delivery import Deliveries  # noqa: E402
-from test_channels_life import DESK, LOBBY, Life  # noqa: E402
+from test_channels_life import DESK, Life  # noqa: E402
 import sminos_channels as channels  # noqa: E402
 import sminos_policy  # noqa: E402
 
@@ -338,6 +338,23 @@ class Framed(Channel):
 # ------------------------------------------------------------ the thread for the debt, the session for the process
 
 
+    def test_a_channels_unread_count_leaves_out_the_threads_own_messages_and_no_others(self):
+        tid, sid, received = self.live()
+        chan = self.chan(DESK)
+        other = str(uuidlib.uuid4())
+        before = [
+            {"writer": sminos.writer_id(sid), "seq": 1, "kind": "say", "thread": other, "text": "as another thread"},
+            {"writer": "%s/%s" % (FAR, str(uuidlib.uuid4())), "seq": 1, "kind": "say", "thread": tid,
+             "text": "the thread's own, from its earlier session"},
+        ]
+        e = {"writer": W1, "seq": 9, "kind": "say", "from": "sender", "thread": SENDER_THREAD, "text": "now",
+             "to": [{"session": sid, "alias": "a", "thread": tid}]}
+        frame = sminos.frame_of(chan, e, before + [e], sid, {}, thread=tid)
+        self.assertIn("| unread 1]", frame, "what this session said as another thread is unread to this one")
+        p_frame = sminos.frame_of(self.p, e, before + [e], sid, {})
+        self.assertIn("| unread 1]", p_frame, "a project's count by the session, as before")
+
+
 class HandOff(Channel):
     def handed(self, old, oproc):
         """The thread handed off to a job with an inbox: (the job, its inbox's file)."""
@@ -403,6 +420,26 @@ class HandOff(Channel):
         self.assertEqual(self.settled(tid, W1), e["seq"])
 
 
+    def test_a_hand_off_that_lands_after_the_last_check_and_before_the_push_settles_nothing(self):
+        tid, old, oproc, received = self.live_member()
+        e = self.message((old, tid), text="handed meanwhile")
+        real, got = sminos.push_member, {}
+
+        def push_member(m, frame, *a, **k):
+            # The push's own read of the peer comes after every check: the hand-off lands just before it.
+            if "handed meanwhile" in frame and not got:
+                got["job"], got["jreceived"] = self.handed(old, oproc)
+            return real(m, frame, *a, **k)
+        with mock.patch.object(sminos, "push_member", push_member):
+            self.deliver()
+        self.assertEqual(self.got(received, "handed meanwhile"), [], "the old inbox gets nothing")
+        self.assertEqual(self.settled(tid, W1), 0, "never `recorded`: the session that continues it is owed it")
+        self.assertEqual(self.record_of(tid).get(W1, {}).get("attempts", 0), 0, "no attempt counted")
+        self.deliver()
+        self.assertEqual(len(self.got(got["jreceived"], "handed meanwhile")), 1, "the next pass: one frame")
+        self.assertEqual(self.settled(tid, W1), e["seq"])
+
+
 class Boundary(Channel):
     def test_an_attempt_the_boundary_has_passed_is_cleared_and_the_writers_next_message_goes(self):
         tid, sid, received = self.live()
@@ -454,6 +491,27 @@ class Boundary(Channel):
         self.assertEqual(len(self.got(received, "after the add")), 1)
         self.assertNotIn("held", self.record_of(tid)[W1], "its mark gone once the writer's next event settled")
         self.assertEqual(self.settled(tid, W1), nxt["seq"])
+
+
+    def test_a_pass_whose_owing_predates_a_removal_and_an_add_settles_nothing_the_new_boundary_passed(self):
+        for case in ("held, for the live alone", "read-only"):
+            with self.subTest(case=case):
+                if case == "read-only":
+                    tid, sid, received = self.live(name="ro")
+                    self.message((sid, tid), text="case " + case)
+                else:
+                    tid, sid = self.stopped(mode="plan")
+                    self.message((sid, tid), text="case " + case, wake=True)
+                sminos.forget_caches()
+                t = threads.get(tid)
+                o = channels.owing(self.chan(DESK), t, channels.own_row(t))
+                self.assertIsNotNone(o)
+                self.assertEqual(channels.change(tid, DESK, "remove", sid).state, "applied")
+                self.add(tid, sid, DESK)
+                self.assertEqual(self.owed_to(tid), [], "at or below the new boundary: owed nothing")
+                with mock.patch.object(sminos_policy, "read_only", return_value=case == "read-only"):
+                    sminos.deliver_next(self.chan(DESK), o.member, owing=o)
+                self.assertEqual(self.settled(tid, W1), 0, "nothing settled on the old choice")
 
 
 
@@ -574,7 +632,7 @@ class Bracket(Channel):
         o = channels.owing(self.chan(DESK), threads.get(tid), (self.p, row))
         self.assertIsNotNone(o)
         self.assertTrue(channels.still_owed(o, e))
-        sminos.deliver_next(self.chan(DESK), row, owing=o)
+        self.assertEqual(self.deliver(), (1, [row.alias]), "the channel's own pass finds its row, as anywhere")
         self.assertEqual(len(self.got(received, "bracketed")), 1)
         self.assertEqual(self.settled(tid, W1), e["seq"])
 
@@ -653,6 +711,23 @@ class OpenEntry(Channel, T1.LateHandOff):
         self.deliver()
         self.assertEqual(len(self.got(jreceived, "over an open entry")), 1, "then delivered, once")
         self.assertEqual(self.settled(tid, W1), e["seq"])
+
+    def test_a_pass_for_another_member_of_the_project_leaves_an_absorptions_open_entry_as_it_was(self):
+        stid, ssid, sproc, sreceived = self.live_member(name="second")
+        old, job, tid, theirs = self.late()
+        self.add(tid, old, DESK)
+        jreceived = self.inbox(job, self.proc_of(job), "j")
+        self.message((job, tid), text="over the open entry")
+        e = self.message((ssid, stid), text="to the other member")
+        with self.kill_after_begin(), self.assertRaises(Killed):
+            self.reconcile()
+        entry = threads.get(tid)["pending"]
+        self.deliver()
+        self.assertEqual(threads.get(tid).get("pending"), entry,
+                         "the other member's row read without a reconciliation: the entry as the cut left it")
+        self.assertEqual(len(self.got(sreceived, "to the other member")), 1)
+        self.assertEqual(self.settled(stid, W1), e["seq"])
+        self.assertEqual(self.got(jreceived, "over the open entry"), [])
 
     def test_d7_after_an_absorption_what_names_the_thread_is_pushed_and_what_named_the_absorbed_one_is_not(self):
         old, job, tid, theirs = self.late()
@@ -784,6 +859,27 @@ class Launch(Channel):
         self.assertIsNone(self.owed_to(tid), "not owed: no longer in the channel")
 
 
+    def test_a_wake_whose_hold_is_busy_while_the_session_reads_live_launches_nothing(self):
+        tid, sid = self.stopped()
+        e = self.message((sid, tid), text="no hold, no launch")
+        real_hold, real_live, busy, live = sminos.launch_hold, sminos.live_now, [True], [True]
+
+        def launch_hold(thread_id):
+            # The wake's hold busy once (another's transition), the session reading live at that moment.
+            return (None, "sweep") if busy and busy.pop() else real_hold(thread_id)
+
+        def live_now(session):
+            return live.pop() if live else real_live(session)
+        with mock.patch.object(sminos, "launch_hold", launch_hold), mock.patch.object(sminos, "live_now", live_now):
+            self.deliver()
+        self.assertEqual(self.resumes(sid), [], "nothing launched without the wake's own hold")
+        self.assertEqual(self.settled(tid, W1), 0, "nothing settled")
+        self.assertEqual(self.owed_to(tid), [(W1, e["seq"])], "still owed")
+        self.deliver()
+        self.assertEqual(len(self.resumes(sid)), 1)
+        self.assertEqual(len(self.woken_got(sid, "no hold, no launch")), 1, "the next pass wakes it")
+
+
 # ------------------------------------------------------------ a receipt and the thread it was for
 
 
@@ -849,6 +945,24 @@ class Receipts(Channel):
         self.assertNotEqual(hd.key_hash("p", "s", "w", 1, "t"), hd.key_hash("p", "s", "w", 1))
 
 
+    def test_a_projects_receipt_lookups_call_key_hash_as_they_always_did(self):
+        hd = sminos.holder_module()
+        real, calls = hd.key_hash, []
+
+        def key_hash(*a, **k):
+            calls.append((a, k))
+            return real(*a, **k)
+        e = {"writer": W1, "seq": 1}
+        with mock.patch.object(hd, "key_hash", key_hash):
+            hd.exists("p", "s", e)
+            hd.admitted("p", "s", e)
+            hd.words_of("p", "s", e)
+            hd.handed("p", "s", e)
+            hd.settled("p", "s", e)
+            hd.plan("p", "s", e, "h", None, existing_only=True, prepare=False)
+        self.assertEqual(calls, [(("p", "s", W1, 1), {})] * 6, "no thread argument at all for a project")
+
+
 # ------------------------------------------------------------ what this machine appended
 
 
@@ -884,6 +998,33 @@ class Appended(Channel):
         p_e = sminos.log_append(self.p, own, "say", **{"from": "me", "to": [{"session": sid, "alias": "a"}],
                                                        "text": "in a project"})
         self.assertIsNone(sminos.receipt_of(self.p, own, p_e["seq"]), "a project's say keeps none, as before")
+
+
+    def test_a_receipt_file_is_read_once_while_unchanged_and_keeps_its_last_valid_line_per_seq(self):
+        own = "%s/%s" % (sminos.host_name(), str(uuidlib.uuid4()))
+        chan = self.chan(DESK)
+        path = sminos.receipt_path(chan, own)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        lines = [{"seq": i, "hash": "h%d" % i} for i in range(1, 2001)]
+        lines += [{"seq": 5, "hash": "again"}, {"seq": 6, "hash": 7}]
+        with open(path, "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in lines) + "{torn\n")
+        real_open, opened = open, []
+
+        def counting(file, *a, **k):
+            if file == path:
+                opened.append(file)
+            return real_open(file, *a, **k)
+        with mock.patch("builtins.open", counting):
+            got = [sminos.receipt_of(chan, own, seq) for seq in range(1, 2001)]
+        self.assertEqual(len(opened), 1, "read once while the file is unchanged")
+        self.assertEqual(got[4], "again", "a seq written twice is its last line's")
+        self.assertEqual(got[5], "h6", "a line with no hash names none")
+        self.assertEqual(got[1999], "h2000")
+        with open(path, "a") as f:
+            f.write(json.dumps({"seq": 2001, "hash": "late"}) + "\n")
+        self.assertEqual(sminos.receipt_of(chan, own, 2001), "late", "read again once it changed")
+        self.assertIsNone(sminos.receipt_of(chan, own, 2002))
 
 
 # ------------------------------------------------------------ the transitions, as pushes
@@ -947,6 +1088,19 @@ class Several(Channel):
         self.assertEqual(len(self.got(received, "to the two")), 1)
         self.assertEqual(len(self.woken_got(ssid, "to the two")), 1)
         self.assertEqual((self.settled(tid, W1), self.settled(stid, W1)), (e["seq"], e["seq"]))
+
+
+    def test_a_channel_no_thread_here_holds_forgets_its_remembered_passes_without_reading_its_log(self):
+        daemon = sminos.daemon_module()
+        chan = self.chan(DESK)
+        for key in ((DESK, "t"), ("other", "t")):
+            daemon._HELD_PASSES[key] = ("kept",)
+            self.addCleanup(daemon._HELD_PASSES.pop, key, None)
+        sminos.forget_caches()
+        with mock.patch.object(sminos, "_store_whole", side_effect=AssertionError("the log read")):
+            self.assertEqual(channels.deliver(chan), (0, []))
+        self.assertNotIn((DESK, "t"), daemon._HELD_PASSES, "the channel's memories forgotten")
+        self.assertIn(("other", "t"), daemon._HELD_PASSES, "another log's kept")
 
 
 # ------------------------------------------------------------ the operation's entry points and the endpoint's word
@@ -1027,6 +1181,35 @@ class Words(Channel):
         self.assertEqual(self.received(received), [])
         self.assertEqual(sminos.deliver_reach(self.chan(DESK), o.member, a, "deliver", owing=o), "sent")
         self.assertEqual(self.settled(tid, W1), a["seq"])
+
+
+    def test_a_refusal_on_an_owing_that_predates_a_removal_and_an_add_settles_nothing(self):
+        tid, sid, received = self.live()
+        a = self.message((sid, tid), text="refused late")
+        o = self.owing_of(tid)
+        self.assertEqual(channels.change(tid, DESK, "remove", sid).state, "applied")
+        self.add(tid, sid, DESK)
+        self.cut_over(reach=True)
+        self.assertIsNone(sminos.deliver_reach(self.chan(DESK), o.member, a, "refuse", "late", owing=o))
+        self.assertEqual(self.settled(tid, W1), 0, "the refusal decided nothing on an event the thread is not owed")
+
+    def test_a_persons_words_reach_the_bridge_keyed_by_the_thread_they_are_owed_to(self):
+        tid, sid, received = self.live()
+        e = self.message((sid, tid), writer="%s/human" % FAR, kind="human", text="words for the thread")
+        o = self.owing_of(tid)
+        self.cut_over()
+        control = sminos.control_module()
+        keys = []
+
+        def post_command(path, body, *a):
+            keys.append(body["key"])
+            return 200, {"ok": True, "result": {"submitted": True}}
+        with mock.patch.object(control, "post_command", post_command):
+            self.assertEqual(sminos.deliver_verdict(self.chan(DESK), o.member, e, "words", owing=o), "sent")
+            control.deliver(sid, "p", {"writer": "m/human", "seq": 3}, "text")
+        self.assertEqual(keys, [{"project": DESK, "thread": tid, "writer": e["writer"], "seq": e["seq"]},
+                                {"project": "p", "writer": "m/human", "seq": 3}],
+                         "the bridge's mark is the thread's in a channel; a project's key as it was")
 
 
 # ------------------------------------------------------------ a return that writes the boundary anew

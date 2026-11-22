@@ -2394,19 +2394,43 @@ def owed_here(channel):
 
 
 def own_row(record):
-    """(the thread's own project, its row there), from that project's view
-    (sminos.view_of), or None: the project the thread's current session is
-    in (sminos.last_project), never a channel. For a deliverer in a process
-    of its own (the daemon's pass, a sender's call): never called on the
-    uplink's consumer thread, since a view reconciles."""
+    """(the thread's own project, its row there), or None: the project the
+    thread's current session is a member of now (_project_now), never a
+    channel, and its row read without a reconciliation (sminos.member_row):
+    what finishes a thread's open entry is the daemon's tick of its
+    project, never a channel's pass for another thread."""
     session = (record or {}).get("current")
-    if not session:
+    project = _project_now(session) if session else None
+    if project is None:
         return None
-    project = sminos.last_project(session)
-    if project is None or sminos.is_channel_id(project.id):
-        return None
-    member = next((m for m in sminos.view_of(project, titles=False).members if m.session == session), None)
+    member = sminos.member_row(project, session)
     return (project, member) if member is not None else None
+
+
+def _project_now(session):
+    """The project the session is a member of now, by its own membership
+    events of this machine in every project's files, read under their
+    literal paths (sminos.registration_paths, as the last check's
+    _current_here reads them: a home whose path holds a glob's bracket is
+    read as any other): the project of the newest one in effect when it is
+    a `joined`; for a `retired` `moved`, its destination when the session's
+    `joined` there is in effect (a dual membership of one tick); else
+    None. A channel is no session's project."""
+    threads = sminos.threads_module()
+    identity = sminos.machine_identity_now()
+    best, at = None, ""
+    for path in sminos.registration_paths():
+        pid = os.path.basename(os.path.dirname(path))
+        p = None if sminos.is_channel_id(pid) else sminos.known_project(pid)
+        last = threads.in_effect(sminos._own_events(p, session, identity=identity)) if p is not None else None
+        if last is not None and str(last.get("ts") or "") >= at:
+            best, at = (p, last), str(last.get("ts") or "")
+    if best is None or best[1]["kind"] == "joined":
+        return best and best[0]
+    dest = str(best[1].get("project") or "") if best[1].get("reason") == "moved" else ""
+    p = sminos.known_project(dest) if dest and not sminos.is_channel_id(dest) else None
+    last = threads.in_effect(sminos._own_events(p, session, identity=identity)) if p is not None else None
+    return p if last is not None and last["kind"] == "joined" else None
 
 
 def normalize(o):
@@ -2443,18 +2467,20 @@ def deliver(channel):
     log names (addressed_threads, the log's own index: a thread nothing names
     is passed by with no lock and no record read), owing() with own_row(),
     and sminos.deliver_next(channel, o.member, owing=o) when owed() is not
-    empty. A thread whose record holds an open entry is passed by before its
-    row is read (a view reconciles, and would finish the entry: what finishes
-    entries is the daemon's reconciliation of projects, never this pass). A
+    empty. A thread whose record holds an open entry is passed by (what
+    finishes entries is the daemon's reconciliation of projects, never this
+    pass; own_row reads no view, so no other thread's pass finishes one). A
     thread whose whole backlog was held for a fact is passed by on the memory
     of a full pass while nothing it read has changed (the daemon's
     _HELD_PASSES, the projects' memory, keyed by the channel and the thread).
-    A machine that holds no member of the channel reads nothing of its log."""
+    A machine that holds no member of the channel reads nothing of its log,
+    and forgets what it remembered of the channel's passes."""
     threads = sminos.threads_module()
     holders = [t for t in threads.set_holders().values() if channel.id in threads.held_set(t)]
-    if not holders:
-        return 0, []
     daemon = sminos.daemon_module()
+    if not holders:
+        daemon.held_pass_forget(channel.id, set())   # what a pass remembered holds the merged log it read
+        return 0, []
     events = sminos._store_whole(channel, "log", shared=True)[1]   # read, never changed: its index is kept with it
     index = addressed_threads(events)
     total, reached, present = 0, [], set()
