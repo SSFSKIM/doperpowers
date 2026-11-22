@@ -789,8 +789,10 @@ class Link:
         self.transitions_failing = ""   # complete_transitions' failure as last said
         self.unlisted = set()     # RL10: (project id, session) a writer named and its rows did not, since that listing
         self.asks = {}            # RL10: a `words?` or `reach?` id → what it asked (ask_words), until answered or due
-        self.asked = {}           # RL10: (project id, session, writer) → the id of its one ask out, of either kind
+        self.asked = {}           # RL10: (project id, session, writer) → the id of its one ask out, of either kind;
+        #                           a channel's request's under its event_key (CH1's M7: ask_requests)
         self.reach_silent = set()  # RL10: the asked keys whose `reach?` went unanswered, said once in daemon.log
+        self.requests_failing = {}  # CH1: channel id → the failure of its requests' pass as last said (ask_requests)
         self.words_due = True     # RL10: the words pass runs at the next tick (and every WORDS_EVERY)
         self.next_words = 0.0     # RL10: when it runs again unasked (monotonic)
         self.restating = False    # RL10: this connection's welcome began a restatement not closed by `restated` yet
@@ -1079,10 +1081,30 @@ class Link:
             log("the endpoint's answer on the reach of %s in %s names no verdict (%r): it stays owed, asked again"
                 % (sminos.event_ref(held["event"]), held["project"].name, verdict))
             return
+        if "request" in held:
+            self.request_answered(held, verdict)
+            return
         reason = frame.get("reason")
         reason = reason if isinstance(reason, str) and re.fullmatch(r"[a-z][a-z-]{0,39}", reason) else None
         sminos.deliver_reach(held["project"], held["member"], held["event"], verdict, reason)
         self.next_upload = 0.0   # its outcome goes up on the next pass
+
+    def request_answered(self, held, verdict):
+        """The endpoint's word on a channel's request (CH1's M7, §6), whichever
+        it is, handed to the channel's pass (sminos_channels.carry_due) under
+        the event it was asked about and the binding it was asked for (the
+        session and its reach_token): it answers that event and no other
+        request, whatever id another carries, and a binding that no longer
+        holds under the record's lock records nothing (pending `moved`), the
+        request asked about again at the next pass, as every request the
+        pass leaves pending `endpoint` is (held_ask marked it due). One past
+        its REACH_WAIT is none. Only tries each thread's wake lock, as the
+        daemon's pass does."""
+        if time.monotonic() > held["deadline"]:
+            return
+        sminos.channels_module().carry_due(held["project"], words={held["key"]: (verdict, held["request"])},
+                                           wake_until=time.time())
+        self.next_upload = 0.0   # its statement goes up on the next pass
 
     def on_audience(self, frame, _stream):
         """The endpoint's word on one session's audience (P5 O18 D7): its
@@ -2188,9 +2210,64 @@ class Link:
                     size += n
             if batch:
                 self.queue_asks(batch)
+            if self.channels:
+                self.ask_requests()
         except BaseException:
             self.words_due = True   # the next tick tries again
             raise
+
+    def ask_requests(self):
+        """The ask pass's requests (CH1's M7, §6), behind its message asks:
+        where the welcome listed both `reach` and `channels`, each open
+        channel's pass (sminos_channels.carry_due, which carries out what
+        needs no word, only trying each thread's wake lock), and each request
+        it left pending `endpoint` asked `reach? {id, project: the channel,
+        session: the thread's current session, event: the request, its
+        verified left out}`, the thread's member frame first under its own
+        project (members_before: asked with the channel it would find no
+        row there). One ask out at a time for a request, held under the
+        event it asks about (sminos_channels.event_key) with the session and
+        reach it was put for (ask_of). Not through queue_asks' hold filter:
+        a stopped thread is asked about and placed while it stays stopped.
+        Called only while a channel is open on this stream (Link.channels),
+        so a machine that holds none pays nothing for it."""
+        if not (self.reach and self.serves_channels):
+            return
+        chans = sminos.channels_module()
+        for pid in sorted(self.channels):
+            hl = self.logs.get(pid)
+            if hl is None:
+                continue
+            channel = hl.project
+            try:
+                carried = chans.carry_due(channel, wake_until=time.time())
+            except (Exception, SystemExit) as e:  # noqa: BLE001 — one channel's failure is not the pass's
+                failed = repr(e)
+                if self.requests_failing.get(pid) != failed:
+                    log("the requests of channel %s could not be carried out: %s" % (channel.name, failed))
+                self.requests_failing[pid] = failed
+                continue
+            self.requests_failing.pop(pid, None)
+            for r, outcome in carried:
+                if (outcome.state, outcome.why) != ("pending", "endpoint"):
+                    continue
+                key = chans.event_key(channel, r)
+                if key in self.asked:
+                    continue
+                asked = chans.ask_of(channel, r)
+                if asked is None:
+                    continue
+                if self.session_lane.queued() >= UPLOAD_AHEAD:
+                    self.words_due = True   # asked once the lane has room
+                    return
+                if not self.members_before(asked["project"], {asked["session"]}):
+                    self.words_due = True   # asked once its member frame is queued
+                    return
+                ask = os.urandom(12).hex()
+                self.hold_asks([(ask, {"key": key, "project": channel, "event": r, "t": "reach?",
+                                       "request": {"session": asked["session"], "reach": asked["reach"]}},
+                                 {"t": "reach?", "id": ask, "project": pid, "session": asked["session"],
+                                  "event": {k: v for k, v in r.items() if k != "verified"}})])
 
     def words_pass(self, known):
         """ask_words, timed into WORDS_TIMES's file when it names one."""
@@ -2224,8 +2301,13 @@ class Link:
                 and bool(sminos.held_unreadable(sminos.delivered_load(project, sid), e))
         batch = [(ask, held, frame) for ask, held, frame in batch
                  if not held_now[frame["session"]] and not deferred(held, frame["session"])]
-        if not batch:
-            return
+        if batch:
+            self.hold_asks(batch)
+
+    def hold_asks(self, batch):
+        """[(id, what it asks, frame)] sent, each ask held from now until its
+        answer or its deadline (WORDS_WAIT for a `words?`, REACH_WAIT for a
+        `reach?`), one out under its key."""
         self.session_lane.send([frame for _, _, frame in batch])
         now = time.monotonic()
         for ask, held, _ in batch:

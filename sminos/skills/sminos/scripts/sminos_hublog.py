@@ -388,6 +388,25 @@ def desk():
     return {"sminos": version if isinstance(version, str) else "unknown", "rpcs": list(rpc.RL10_RPC_NAMES), "reads": []}
 
 
+def _withheld_in(d):
+    raw = d.get("withheld")
+    return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
+        if isinstance(raw, dict) else {}
+
+
+def withheld_of(project):
+    """{writer: {seq}}: the positions of this machine's writers the hub
+    withheld in the project's log, as its uplink keeps them (uplink.json,
+    HubLog.withheld): what the CLI reads to say a request was withheld
+    (`channel show`, CH1's M7). A read that takes no lock and changes
+    nothing; {} for a file missing or that holds no JSON object."""
+    try:
+        d = sminos.json_at(os.path.join(project.home, STATE_FILE))
+    except (OSError, ValueError):
+        return {}
+    return _withheld_in(d) if isinstance(d, dict) else {}
+
+
 class HubLog:
     """One hub project's log plane: what this machine says of it up the
     stream, and how it takes what the hub sends of it."""
@@ -485,9 +504,7 @@ class HubLog:
         withheld while an event of this machine's held them (withhold_own),
         kept for good: the file keeps the event, the hub a tombstone, and
         the archive copies the tombstone."""
-        raw = self.state().get("withheld")
-        return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
-            if isinstance(raw, dict) else {}
+        return _withheld_in(self.state())
 
     def writers(self, own=False, live=None):
         """{writer: (last seq, path)} of the writer files the log holds (each

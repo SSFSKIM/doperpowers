@@ -87,9 +87,12 @@ over, as the endpoint refuses a stream it does not sign. `refuse_upload` (ctl
 `refuse` {project, writer, seq, reason?}) sends `refused {project, refusal:
 {reason, writer, seq}}`, `not-reachable` by default, with no message.
 
-The hub's reach judgement (P5 O18 D5), in-process: `withhold`, a callable
-(project, event in its upload form) → truthy, withholds the upload it holds
-for at a position not yet held, as the hub withholds an event out of reach:
+The hub's reach judgement (P5 O18 D5): `withhold`, a callable (project,
+event in its upload form) → truthy in-process, or an object of fields (with
+`project` for the log) that an upload's form carries with those values, as
+`set` gives one (CH1's M7: a request the hub withholds), withholds the
+upload it holds for at a position not yet held, as the hub withholds an
+event out of reach:
 the position is added to `withheld` (so the next `have` lists it and counts
 it), the body kept aside, and `refused {reason: not-reachable, writer, seq}`
 sent with no message; the writer goes on. A resend there is refused
@@ -642,7 +645,7 @@ class Endpoint:
                     reason = "not-reachable" if self.withheld_bodies[(project, writer, seq)] == form else "conflict"
                 elif seq in held.get(writer, {}) and held[writer][seq] != form:
                     reason = "conflict"
-                elif seq not in held.get(writer, {}) and self.withhold is not None and self.withhold(project, form):
+                elif seq not in held.get(writer, {}) and self.withholds(project, form):
                     self.withheld_bodies[(project, writer, seq)] = form
                     self.withheld.setdefault(project, {}).setdefault(writer, []).append(seq)
                     reason = "not-reachable"
@@ -655,6 +658,18 @@ class Endpoint:
                             "refusal": {"reason": reason, "writer": writer, "seq": seq,
                                         **({"message": message} if message else {})}})
         return out
+
+    def withholds(self, project, form):
+        """Whether the hub withholds this upload (`withhold`): a callable's
+        answer, or, for one given as JSON (`set`, the shell suites), an
+        object every one of whose fields the upload form carries with that
+        value (`project` names the log)."""
+        w = self.withhold
+        if callable(w):
+            return bool(w(project, form))
+        if not isinstance(w, dict) or not w:
+            return False
+        return all((project if k == "project" else form.get(k)) == v for k, v in w.items())
 
     def refuse_upload(self, project, writer, seq, reason="not-reachable"):
         """The hub's refusal of an upload as the endpoint passes it down, with

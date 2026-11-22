@@ -736,6 +736,34 @@ def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_unt
     return Outcome("pending", why)
 
 
+def ask_of(channel, request):
+    """What the endpoint is asked about a request a pass left pending
+    `endpoint` (§6, M7), read now: {"key": its event_key, "thread",
+    "session": the thread's current session, "project": the thread's own
+    project, "reach": reach_token(session)}, the session and reach being
+    what the word is bound to (judge's row 13). None when §6's row 3 or 7
+    holds (it names no thread here; the thread holds no session, or its
+    session is a member of no project), when the session's record cannot be
+    read (no reach to bind a word to), and for a request that has no
+    position in the log yet (one of this machine's queued appends: it is
+    asked about once it is there, behind its upload)."""
+    if request.get("seq") is None:
+        return None
+    facts = _Facts()
+    record = sminos.threads_module().get(request["thread"])
+    if not _names_here(record, request, facts) or not record["current"]:
+        return None
+    session = record["current"]
+    project = sminos.last_project(session)
+    if not _member_of(project, session):
+        return None
+    reach = reach_token(session)
+    if reach is None:
+        return None
+    return {"key": event_key(channel, request), "thread": record["thread"], "session": session,
+            "project": project, "reach": reach}
+
+
 def carry_due(channel, words=None, also=(), lock_until=None, wake_until=None):
     """The pass (§6): every request of the ordered input that is not expired
     and names a thread of this machine that has not ended, in order, then
@@ -1369,10 +1397,14 @@ def requests_shown(channel, now=None):
     the ordered input (requests_of) that have not expired, oldest first,
     each with what became of it: `duplicate` (an earlier request of another
     writer used its id: §6's row 2), else `applied` or `refused` with its
-    reason from the statement that answers it (answer_of), else `pending`
-    with the machine its target's row was last seen on."""
+    reason from the statement that answers it (answer_of), else `withheld`
+    (`not-reachable`) for one of this machine's writers at a position the
+    hub withheld (sminos_hublog.withheld_of: its uplink's own record, read
+    with no lock; M7), else `pending` with the machine its target's row
+    was last seen on."""
     _, reqs = requests_of(channel)
     index, out = _answer_index(), []
+    withheld = sminos.sibling_module("sminos_hublog").withheld_of(channel)
     for i, r in enumerate(reqs):
         if expired(r, now):
             continue
@@ -1387,6 +1419,8 @@ def requests_shown(channel, now=None):
             if answer is not None:
                 state = answer["result"]
                 reason = answer.get("reason") if state == "refused" else None
+            elif r.get("seq") in withheld.get(r["writer"], ()):
+                state, reason = "withheld", "not-reachable"   # the hub withheld it: its target never read it
             else:
                 local = sminos.threads_module().get(r["thread"])
                 machine = row[1].machine if row else sminos.host_name() if local is not None else None
@@ -1402,6 +1436,8 @@ def _request_line(r):
         what = "applied"
     elif r["state"] == "refused":
         what = "refused: %s" % WORDS.get(r["reason"], r["reason"] or "?")
+    elif r["state"] == "withheld":
+        what = "refused: not reachable (the hub withheld it)"
     elif r["state"] == "duplicate":
         what = WORDS["duplicate"]
     elif r["machine"]:

@@ -55,6 +55,9 @@ import sminos_daemon as daemon  # noqa: E402
 import sminos_rl10 as rl10  # noqa: E402
 import sminos_threads as threads  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
+import sminos_hublog as hublog  # noqa: E402
+import test_threads as T1  # noqa: E402 — its fixtures by module
+from test_channels_requests import OTHER, SIGNER, Requests  # noqa: E402
 
 LIMIT = threads.CHANNEL_LIMIT
 
@@ -547,6 +550,346 @@ class WireWithChannels(unittest.TestCase):
         self.assertFalse([f for f in ep.frames("session") if f["message"].get("project") in ids
                           and f["message"].get("kind") != "end"], "no machine frame, no presence, either way")
         self.assertFalse([f for f in ep.frames("member") if f.get("channels") == []], "never an empty list")
+
+
+# ------------------------------------------------------------- M7: requests across machines, the endpoint's word
+
+
+class Asks(Requests, T1.Sessions):
+    """The ask pass's requests and the answer's path (M7), a Link's own over
+    a real store: one `reach?` per request the pass left pending `endpoint`,
+    after its thread's member frame, under the event it asks about; the
+    answer handed to carry_due under that key and binding, used once."""
+
+    def setUp(self):
+        os.environ.pop("MAWS_USER_DATA", None)
+        super().setUp()
+
+    def link(self, reach=True, serves=True, open_desk=True):
+        link = uplink.Link(dict(CRED, machine=sminos.host_name()), {}, transport=mock.Mock(number=1))
+        self.addCleanup(link.close)
+        link.generation = 1
+        link.log_lane = link.session_lane = Lane()
+        link.reach, link.serves_channels = reach, serves
+        if open_desk:
+            link.logs[DESK] = hublog.HubLog(self.chan(DESK), link.cred)
+            link.opened.add(DESK)
+            link.channels.add(DESK)
+        return link
+
+    def ask_pass(self, link):
+        sminos.forget_caches()
+        link.ask_words({})
+
+    def asks(self, link):
+        return [f for f in link.session_lane.sent if f.get("t") == "reach?"]
+
+    def answer(self, link, ask, verdict):
+        sminos.forget_caches()
+        link.on_reach({"t": "reach", "id": ask["id"], "verdict": verdict}, None)
+
+    def test_one_ask_per_request_due_and_none_for_one_that_needs_no_word(self):
+        tid, sid, _ = self.human()
+        tid2, sid2, _ = self.human()
+        own = self.request(DESK, "add", sid, tid)                    # this machine's person: honoured, no word
+        e = self.remote(DESK, "add", sid2, tid2)                     # another machine's session: the endpoint's word
+        self.remote(DESK, "add", sid2, tid2, ts="2026-11-01T00:00:00.000Z")   # expired: never asked
+        self.remote(DESK, "add", sid, "f" * 32)                      # names no thread here: never asked
+        link = self.link()
+        self.ask_pass(link)
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.assertEqual(self.held(tid), [DESK], "the pass carried out what needed no word")
+        self.assertEqual(ask["project"], DESK)
+        self.assertEqual(ask["session"], sid2, "the thread's current session")
+        self.assertEqual(ask["event"], {k: v for k, v in e.items() if k != "verified"}, "the request, as stored")
+        self.assertNotEqual(own["id"], e["id"])
+        at = link.session_lane.sent.index(ask)
+        members = [f for f in link.session_lane.sent[:at] if f.get("t") == "member" and f.get("session") == sid2]
+        self.assertEqual([f["project"] for f in members], [self.p.id], "its member frame first, under its project")
+        held = link.asks[ask["id"]]
+        self.assertEqual(held["key"], channels.event_key(self.chan(DESK), e))
+        self.assertEqual(held["request"], self.asked(sid2), "the session and reach it was put for")
+        self.assertEqual(self.held(tid2), [], "nothing for it until the word")
+
+    def test_the_word_answers_the_event_asked_about_once(self):
+        tid, sid, _ = self.human()
+        first = self.remote(DESK, "add", sid, tid, rid="same-id")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.assertEqual(link.asks[ask["id"]]["key"], channels.event_key(self.chan(DESK), first))
+        # A second writer's request under the same id, imported while the first one's question is outstanding.
+        second = self.request(DESK, "remove", sid, tid, writer="third/" + OTHER, rid="same-id",
+                              verified={"signer": SIGNER})
+        self.answer(link, ask, "deliver")
+        self.assertEqual(self.held(tid), [DESK], "the first one's add, and not the second one's remove")
+        self.assertEqual(self.answers(sid), [(DESK, "same-id", "applied", None, (DESK,))])
+        self.answer(link, ask, "deliver")   # again: no ask is held under its id now
+        self.ask_pass(link)
+        self.assertEqual(len(self.asks(link)), 1, "the second is a duplicate: never asked about")
+        self.assertEqual(len(self.answers(sid)), 1, "used once")
+        later = self.remote(DESK, "remove", sid, tid)
+        self.answer(link, ask, "deliver")
+        self.assertEqual(self.held(tid), [DESK], "an old answer carries no later request")
+        self.ask_pass(link)
+        asks = self.asks(link)
+        self.assertEqual([a["event"]["id"] for a in asks], ["same-id", later["id"]])
+        self.answer(link, asks[-1], "deliver")
+        self.assertEqual(self.held(tid), [])
+        self.assertEqual(second["id"], "same-id")
+
+    def test_two_requests_for_one_thread_and_channel_are_asked_one_at_a_time_in_order(self):
+        tid, sid, _ = self.human()
+        add = self.remote(DESK, "add", sid, tid)
+        remove = self.remote(DESK, "remove", sid, tid)
+        link = self.link()
+        self.ask_pass(link)
+        self.assertEqual([a["event"]["id"] for a in self.asks(link)], [add["id"]], "the later one waits behind it")
+        self.answer(link, self.asks(link)[0], "deliver")
+        self.assertEqual(self.held(tid), [DESK])
+        self.ask_pass(link)
+        self.assertEqual([a["event"]["id"] for a in self.asks(link)], [add["id"], remove["id"]])
+        self.answer(link, self.asks(link)[1], "deliver")
+        self.assertEqual(self.held(tid), [])
+        self.assertEqual([a[:3] for a in self.answers(sid)], [(DESK, add["id"], "applied"),
+                                                              (DESK, remove["id"], "applied")])
+
+    def test_a_word_after_a_hand_off_or_a_change_of_reach_is_not_recorded_and_the_request_asked_again(self):
+        for word in ("deliver", "refuse"):
+            with self.subTest(word, after="hand-off"):
+                old, oproc, tid = T1.Sessions.member(self, name="handy-" + word)   # not Store.member
+                e = self.remote(DESK, "add", old, tid)
+                link = self.link()
+                self.ask_pass(link)
+                [ask] = self.asks(link)
+                self.assertEqual(ask["session"], old)
+                job, _ = self.job(old, name="job-" + word)
+                self.reconcile()
+                self.end(oproc)
+                self.reconcile()
+                self.assertEqual(threads.get(tid)["current"], job, "handed off")
+                self.answer(link, ask, word)
+                self.assertEqual((self.held(tid), self.answered(tid)), ([], []), "neither recorded")
+                self.ask_pass(link)
+                asks = self.asks(link)
+                self.assertEqual([a["session"] for a in asks], [old, job], "asked again, for the job's session")
+                self.answer(link, asks[-1], word)
+                self.assertEqual(self.answered(tid), [(DESK, e["id"])])
+                self.assertEqual(self.held(tid), [DESK] if word == "deliver" else [])
+            with self.subTest(word, after="a change of reach"):
+                tid2, sid2, _ = self.human()
+                e2 = self.remote(DESK, "add", sid2, tid2)
+                link = self.link()
+                self.ask_pass(link)
+                [ask] = self.asks(link)
+                self.bump(sid2)
+                self.answer(link, ask, word)
+                self.assertEqual((self.held(tid2), self.answered(tid2)), ([], []), "neither recorded")
+                self.ask_pass(link)
+                asks = self.asks(link)
+                self.assertEqual(len(asks), 2, "asked again")
+                self.assertEqual(link.asks[asks[-1]["id"]]["request"], self.asked(sid2), "for the reach it has now")
+                self.answer(link, asks[-1], word)
+                self.assertEqual(self.answered(tid2), [(DESK, e2["id"])])
+
+    def test_a_stopped_thread_is_asked_about_and_placed_while_it_stays_stopped(self):
+        for kind in ("spawned", "human"):
+            with self.subTest(kind):
+                tid, sid, proc = self.spawned() if kind == "spawned" else self.human()
+                self.end(proc)
+                self.reconcile()
+                self.remote(DESK, "add", sid, tid)
+                link = self.link()
+                with mock.patch.object(sminos, "hold_now", return_value=True):   # the message asks' filter drops it
+                    self.ask_pass(link)
+                    [ask] = self.asks(link)
+                    self.answer(link, ask, "deliver")
+                self.assertEqual(self.held(tid), [DESK])
+                self.assertFalse(sminos.running_now(sid), "placed while it stays stopped")
+
+    def test_no_answer_within_reach_wait_is_none_and_the_request_is_asked_again_with_nothing_counted(self):
+        tid, sid, _ = self.human()
+        self.remote(DESK, "add", sid, tid)
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        with mock.patch.object(sminos, "words_unanswered", side_effect=AssertionError("an attempt counted")):
+            link.expire_asks(time.monotonic() + uplink.REACH_WAIT + 1)
+        self.answer(link, ask, "deliver")
+        self.assertEqual(self.held(tid), [], "an answer past its wait is none")
+        self.ask_pass(link)
+        asks = self.asks(link)
+        self.assertEqual(len(asks), 2)
+        self.assertNotEqual(asks[0]["id"], asks[1]["id"], "under a new id")
+        self.answer(link, asks[1], "deliver")
+        self.assertEqual(self.held(tid), [DESK])
+
+    def test_an_answer_that_names_no_verdict_is_none(self):
+        tid, sid, _ = self.human()
+        self.remote(DESK, "add", sid, tid)
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.answer(link, ask, "maybe")
+        self.assertEqual((self.held(tid), self.answered(tid)), ([], []))
+        self.ask_pass(link)
+        self.assertEqual(len(self.asks(link)), 2, "asked again")
+
+    def test_the_pass_needs_reach_and_channels_and_reads_nothing_without_an_open_channel(self):
+        tid, sid, _ = self.human()
+        self.remote(DESK, "add", sid, tid)
+        for why, link in (("no reach", self.link(reach=False)), ("no channels", self.link(serves=False)),
+                          ("no channel open", self.link(open_desk=False))):
+            with self.subTest(why):
+                with mock.patch.object(channels, "carry_due", side_effect=AssertionError("carried")):
+                    self.ask_pass(link)
+                self.assertEqual(self.asks(link), [])
+
+    def test_an_import_of_a_channels_log_marks_the_ask_pass_due_and_nudges_the_daemon(self):
+        link = self.link()
+        link.words_due = False
+        before = daemon.nudged_at()
+        time.sleep(0.01)
+        link.imported[DESK] = link.logs[DESK]
+        link.deliver_imports()
+        self.assertTrue(link.words_due)
+        self.assertNotEqual(daemon.nudged_at(), before)
+
+    def test_the_hub_withheld_it_is_read_at_the_requester(self):
+        tid, sid, _ = self.human()
+        e = self.request(DESK, "add", sid, "a" * 32)   # for a thread of another machine, as a verb writes it
+        c = self.chan(DESK)
+        self.assertEqual([r["state"] for r in channels.requests_shown(c)], ["pending"])
+        sminos.write_json(os.path.join(c.home, sminos.UPLINK_STATE), {"withheld": {e["writer"]: [e["seq"]]}})
+        before = os.stat(os.path.join(c.home, sminos.UPLINK_STATE))
+        self.assertEqual(hublog.withheld_of(c), {e["writer"]: {e["seq"]}})
+        [shown] = channels.requests_shown(c)
+        self.assertEqual((shown["state"], shown["reason"]), ("withheld", "not-reachable"))
+        self.assertEqual(channels._request_line(shown)[-1], "refused: not reachable (the hub withheld it)")
+        after = os.stat(os.path.join(c.home, sminos.UPLINK_STATE))
+        self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns), "read, unchanged")
+
+
+class WireAsks(unittest.TestCase):
+    """A real uplink against a stand-in that serves `reach` and `channels`:
+    a request another machine's session wrote for a thread here, imported
+    as the endpoint relays it, is asked about and carried out on the
+    endpoint's word, with no turn of any session: a verified sender it
+    delivers for is applied, one it refuses refused; an unverified sender
+    it would deliver words for is refused by sminos, never asked; with no
+    answer it stays pending and is asked again; a request that arrives
+    expired is never asked about; an endpoint without `channels`, or
+    without `reach`, is asked nothing and leaves it pending. The checker
+    passes over the frames and the store."""
+
+    setUp = Wire.setUp
+    stop_all = Wire.stop_all
+    live = Wire.live
+    uplink = Wire.uplink
+    hellos = Wire.hellos
+
+    def endpoint(self, capabilities=("channels", "reach"), verdicts=None):
+        verdicts = verdicts if verdicts is not None else {}
+        ep = endpoint_standin.Endpoint(os.path.join(os.environ["MAWS_USER_DATA"], "mawsd", "endpoint"),
+                                       org=self.org, capabilities=list(capabilities),
+                                       reach_verdict=lambda f: verdicts.get(f["event"].get("thread")))
+        ep.start()
+        self.addCleanup(ep.stop)
+        return ep
+
+    def thread(self, sid, name):
+        self.live(sid, name)
+        sminos.view_of(self.app)
+        return threads.thread_of(sid)["thread"]
+
+    def request(self, seq, sid, tid, signer=None, ts=None, op="add"):
+        e = {"ts": ts or sminos.now(ms=True), "writer": "other/" + OTHER, "seq": seq, "kind": "channel-request",
+             "op": op, "session": sid, "thread": tid, "id": os.urandom(16).hex()}
+        return e, endpoint_standin.Endpoint.arriving(e, signer or {"kind": "machine", "ref": "ref-other",
+                                                                   "name": "other", "keyId": "k-other"})
+
+    def statements(self, ep, tid):
+        return [e for e in ep.logs.get(APP, {}).get("%s/%s" % (MACHINE, self.sid_of(tid)), {}).values()
+                if e.get("kind") == "channels"]
+
+    def sid_of(self, tid):
+        return threads.get(tid)["current"]
+
+    def asked(self, ep, tid):
+        return [f for f in ep.frames("reach?") if f["event"].get("thread") == tid]
+
+    def test_the_endpoints_word_on_the_path(self):
+        sids = ["6c00000%d-0000-4000-8000-0000000000c%d" % (n, n) for n in range(3, 8)]
+        tids = [self.thread(sid, "t%d" % n) for n, sid in enumerate(sids)]
+        deliver, refuse, unverified, silent, late = tids
+        verdicts = {deliver: "deliver", refuse: "refuse", unverified: "deliver"}
+        ids = [DESK, LOBBY]
+        before = wire.baseline(os.environ["SMINOS_HOME"], ids)
+        ep = self.endpoint(verdicts=verdicts)
+        with mock.patch.object(uplink, "REACH_WAIT", 1.0):
+            self.uplink()
+            ep.wait_until(lambda: self.hellos(ep, 1).get(DESK) is True)
+            ep.wait_until(lambda: ep.restatement_applied(1))
+            reqs = {}
+            for n, tid in enumerate(tids, 1):
+                old = tid == late
+                e, wrapped = self.request(n, self.sid_of(tid), tid,
+                                          signer={"kind": "legacy"} if tid == unverified else None,
+                                          ts="2026-11-01T00:00:00.000Z" if old else None)
+                reqs[tid] = e
+                ep.events(DESK, [wrapped])
+            ep.wait_until(lambda: len(self.statements(ep, deliver)) == 1 and len(self.statements(ep, refuse)) == 1
+                          and len(self.statements(ep, unverified)) == 1)
+            ep.wait_until(lambda: len(self.asked(ep, silent)) >= 2, timeout=15)
+        [s] = self.statements(ep, deliver)
+        self.assertEqual((s["channels"], s["answers"], s["result"]), ([DESK], {"channel": DESK, "id": reqs[deliver]["id"]},
+                                                                    "applied"))
+        [s] = self.statements(ep, refuse)
+        self.assertEqual((s["channels"], s["result"], s["reason"]), ([], "refused", "not-reachable"))
+        [s] = self.statements(ep, unverified)
+        self.assertEqual((s["channels"], s["result"], s["reason"]), ([], "refused", "not-reachable"),
+                         "refused by sminos though the endpoint would deliver its words")
+        self.assertEqual(self.asked(ep, unverified), [], "never asked about")
+        [a] = self.asked(ep, deliver)
+        self.assertEqual((a["project"], a["session"], a["event"]), (DESK, self.sid_of(deliver), reqs[deliver]))
+        member = next(n for n, (_, f) in enumerate(ep.received) if f.get("t") == "member"
+                      and f.get("session") == a["session"])
+        ask_at = next(n for n, (_, f) in enumerate(ep.received) if f.get("t") == "reach?" and f["id"] == a["id"])
+        self.assertLess(member, ask_at, "its member frame first")
+        silent_asks = self.asked(ep, silent)
+        self.assertNotEqual(silent_asks[0]["id"], silent_asks[1]["id"], "no answer: asked again, under a new id")
+        self.assertEqual(self.statements(ep, silent), [], "pending: nothing written")
+        self.assertEqual(threads.get(silent).get("channels"), [])
+        self.assertEqual(self.asked(ep, late), [], "an expired request is never asked about")
+        self.assertEqual((threads.get(late).get("channels"), self.statements(ep, late)), ([], []))
+        self.assertEqual(threads.get(deliver)["channels"], [DESK])
+        ep.wait_until(lambda: self.hellos(ep, 1).get(DESK) is False)   # a thread here is in it: held
+        time.sleep(0.5)
+        self.assertEqual(wire.published(ep.received, ids, before, welcomed={1}), [])
+        self.assertEqual(wire.written(os.environ["SMINOS_HOME"], ids, MACHINE, before), [])
+
+    def asked_nothing(self, caps, why):
+        tid = self.thread(S1, "worker")
+        ep = self.endpoint(capabilities=caps, verdicts={tid: "deliver"})
+        self.uplink()
+        ep.wait_until(lambda: ep.restatement_applied(1))
+        e, wrapped = self.request(1, S1, tid)
+        ep.events(DESK, [wrapped])
+        desk = sminos.known_project(DESK)
+        ep.wait_until(lambda: any(r["id"] == e["id"] for r in channels.requests_of(desk)[1]))
+        time.sleep(1.0)   # the ask pass the import marked due
+        self.assertEqual(ep.frames("reach?"), [])
+        sminos.forget_caches()
+        self.assertEqual([(r["id"], o) for r, o in channels.carry_due(desk)], [(e["id"], channels.Outcome("pending",
+                                                                                                         why))])
+        self.assertEqual(threads.get(tid)["channels"], [])
+
+    def test_an_endpoint_without_channels_is_asked_nothing_and_the_request_waits(self):
+        self.asked_nothing(("reach",), "no-channels")
+
+    def test_an_endpoint_without_reach_is_asked_nothing_and_the_request_waits(self):
+        self.asked_nothing(("channels",), "endpoint")
 
 
 def on(ep, conn, pred):

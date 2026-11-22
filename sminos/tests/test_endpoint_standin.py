@@ -563,5 +563,23 @@ def tearDownModule():
     shutil.rmtree(BASE, ignore_errors=True)
 
 
+class WithholdAsJSON(unittest.TestCase):
+    """`withhold` given as an object, as `set` gives one to a stand-in
+    `serve` runs (CH1's M7): an upload whose form carries every field with
+    that value, `project` naming the log, is withheld `not-reachable` and
+    never kept; any other is taken."""
+
+    def test_an_upload_the_object_names_is_withheld(self):
+        ep = endpoint_standin.Endpoint(os.path.join(BASE, "withhold"), withhold={"project": P,
+                                                                               "kind": "channel-request"})
+        request = {**ev(WA, 1), "kind": "channel-request"}
+        self.assertEqual([f["refusal"]["reason"] for f in ep.take(P, [request])], ["not-reachable"])
+        self.assertEqual(ep.withheld, {P: {WA: [1]}})
+        self.assertNotIn(WA, ep.logs.get(P, {}), "never kept, so never relayed")
+        self.assertEqual(ep.take(P, [ev(WA, 2)]), [], "another kind is taken")
+        self.assertEqual(ep.take(Q, [{**request, "seq": 1}]), [], "another log is taken")
+        self.assertEqual(sorted(ep.logs[P][WA]), [2])
+
+
 if __name__ == "__main__":
     unittest.main()
