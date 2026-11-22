@@ -72,7 +72,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) The plan's two reviews (a design read, eleven findings; a buildability read, fourteen), the holder's rulings on them, and this revision against the code at `bc528d6d` (sminos 1.54.1): a channel's message is owed to a thread by its thread id, nothing a channel's message causes on the uplink's consumer thread pushes or launches, and eleven milestones where there were nine (Decision Log, "The plan's two reviews").
 - [x] (2026-11-22) The third read of the plan, over what the revision rewrote (fourteen P1, two P2), the holder's rulings on it, and this last revision before the build: no absorbed id is kept, no delivery over an open journal entry, a seat made again over a purged seat's session is that thread, the three paths the consumer thread still had are bounded or deferred, and what a verdict is good for is said (Decision Log, "The third read").
 - [x] (2026-11-22) The fourth read, narrow, of what the third revision changed (six P1, four P2: "ready with the listed edits, no further design round"); all ten written in, and the header re-pinned to the branch with the composite's amendment merged (`f2c737f2`) (Decision Log, "The fourth read").
-- [ ] M1 — Names through a channel.
+- [ ] M1 — Names through a channel. (Built `de0ed736`; gates GREEN; sminos-idle 32,266; sminos-channels 1m49s; in review.)
 - [ ] M2 — What a channel owes a thread: the debt and its transitions.
 - [ ] M3 — Pushing and waking from a channel's log.
 - [ ] M4 — Saying into a channel: the doors, the reply, the read.
@@ -3549,6 +3549,35 @@ them today.
     - Y3's "what it adds is the settlement": it also clears, in that
       delivery record, a failed attempt's mark that the boundary has
       passed, as the composite's own Decision Log says.
+- 2026-11-22 — **M1 as built** (`de0ed736`). Decisions the executor made
+  where the plan is silent, kept by the controller:
+  - A name in id form (a whole id, or its first eight characters or more,
+    matched as a prefix) that matches no thread and no session known here
+    is read as an alias; a known thread's or session's id is never read as
+    one.
+  - `reach_in` gains a keyword `at=""`, how its `; elsewhere:` list names a
+    row: empty for a verb, `"@"` for a tag (M4 passes it). A thread once in
+    the channel with no row now is `("out", None, None)`, and its caller
+    words it; the verb's refusal fills the thread's own `alias#short` where
+    it has a row, and keeps the literal placeholders where it has none.
+  - Three refusals §2 does not give are the executor's drafts (open point
+    4): an alias or a thread prefix two rows of the channel answer, a
+    session whose thread cannot be told here (`claimants` None), and a list
+    of labels none of which can be reached.
+  - The bare alias reaches only channel rows of projects a tag may write
+    into (`org_scope`); the sender's own project and a verb's target are not
+    filtered by it. Two answers are refused as `alias#short`, with no
+    project.
+  - `thread_of_row` checks that what the last sweep kept is the same row,
+    reads once more if not, and answers None otherwise. `claimants` gives a
+    statement to the episode its time falls in (the first episode for one
+    before any), and an episode a seat stamped counts as that seat's
+    thread. `once_in` and `claimants` leave out sessions the log hides from
+    this reader.
+  - `sminos help` is not changed in M1 (M4 rewrites it).
+  - `channel add` finds its target through `find_target`, so it now takes a
+    name through a channel too.
+
 
 ## Outcomes & Retrospective
 
