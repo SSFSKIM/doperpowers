@@ -2232,20 +2232,37 @@ def owing(channel, record, row):
     return Owing(d.channel, d.thread, d.session, d.boundary, project, member, token)
 
 
+def _count(x):
+    return type(x) is int and x >= 0
+
+
+def _seq_pair(x, second):
+    return isinstance(x, list) and len(x) == 2 and type(x[0]) is int and second(x[1])
+
+
+def whole_entry(v):
+    """Whether a writer's entry is one its writers write (sminos._entry, in
+    the form _delivered_write puts on disk): `settled` and `attempts`
+    counts, `pending` a seq or null, all three always there; and, when
+    there, `revoked` a list of seqs, `held` a list of [seq, thread] pairs,
+    `pushed` [seq, one of PUSHED]. Anything else is no entry whose settled
+    prefix and marks can be known: the projects' loader passes such a mark
+    by, which here would drop a revocation or a hold."""
+    if not (isinstance(v, dict) and _count(v.get("settled")) and _count(v.get("attempts")) and "pending" in v
+            and (v["pending"] is None or type(v["pending"]) is int)):
+        return False
+    if "revoked" in v and not (isinstance(v["revoked"], list) and all(type(s) is int for s in v["revoked"])):
+        return False
+    if "held" in v and not (isinstance(v["held"], list)
+                            and all(_seq_pair(x, lambda t: isinstance(t, str) and t) for x in v["held"])):
+        return False
+    return "pushed" not in v or _seq_pair(v["pushed"], lambda o: o in sminos.PUSHED)
+
+
 def _whole(d):
     """Whether a delivery record's JSON is a whole one: an object of writer
-    entries, each an object whose counts are what its writers write."""
-    if not isinstance(d, dict):
-        return False
-    for v in d.values():
-        if not isinstance(v, dict):
-            return False
-        for k in ("settled", "attempts"):
-            if v.get(k) is not None and not (type(v[k]) is int and v[k] >= 0):
-                return False
-        if v.get("pending") is not None and type(v["pending"]) is not int:
-            return False
-    return True
+    entries, each whole (whole_entry); {} is an empty record."""
+    return isinstance(d, dict) and all(whole_entry(v) for v in d.values())
 
 
 def delivered(channel, thread):
@@ -2254,10 +2271,11 @@ def delivered(channel, thread):
     whole record (_whole): neither empty nor settled, so nothing owed is
     claimed for that thread. sminos.delivered_load, which answers {} to
     both, is left for projects."""
+    path = os.path.join(channel.home, "delivered", thread + ".json")
     try:
-        d = sminos.json_at(os.path.join(channel.home, "delivered", thread + ".json"))
+        d = sminos.json_at(path)
     except FileNotFoundError:
-        return {}
+        return {} if _gone(path) else None   # a link to nothing is there, and cannot be read
     except (OSError, ValueError):
         return None
     return sminos.delivered_entries(d) if _whole(d) else None
@@ -2295,7 +2313,9 @@ def owed(d, events, record=None):
     for their writer, and are neither settled nor revoked in the thread's
     delivery record (`record`, or delivered() read here). An event the
     thread itself wrote (its own `thread`) is none. None when the delivery
-    record cannot be read: nothing is claimed."""
+    record cannot be read: nothing is claimed. Given the shared merged log
+    (sminos._store_whole's, as a deliverer reads it), the index by thread is
+    built once for every thread asked about."""
     if record is None:
         record = delivered(d.channel, d.thread)
         if record is None:
@@ -2357,7 +2377,7 @@ def owed_here(channel):
     holders = [t for t in sminos.threads_module().set_holders().values() if debt(channel, t) is not None]
     if not holders:
         return []
-    events = sminos.log_read(channel)
+    _, events = sminos._store_whole(channel, "log", shared=True)   # read, never changed: its index is kept with it
     out = []
     for t in sorted(holders, key=lambda t: t["thread"]):
         d = debt(channel, t)

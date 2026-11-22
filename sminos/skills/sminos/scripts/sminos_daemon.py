@@ -3073,8 +3073,9 @@ def channel_owed(channel, out, failed):
         if owed is None:
             path = os.path.join(channel.home, "delivered", d.thread + ".json")
             try:
-                inspected(path)
-                failed.append(Uninspectable(path, "not a delivery record"))
+                # Absent to an open, though the strict reader found a file there: a link to no file.
+                failed.append(Uninspectable(path, "not a delivery record" if inspected(path) is not None
+                                            else "unreadable: it links to no file"))
             except Uninspectable as e:
                 failed.append(e)
             continue

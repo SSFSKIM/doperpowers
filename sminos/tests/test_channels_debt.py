@@ -6,9 +6,12 @@ docs/doperpowers/plans/2026-11-22-sminos-channels-ch2.md, the milestone's
 - The selection (sminos_channels.owed over debt()): the events of a
   channel's log whose `to` names the thread by its id, past where its
   membership began, not settled in its delivery record. Staged through each
-  transition itself: an add, a removal, a removal and an add, a hand-off, an
-  absorption, a refill, an end and each kind of return, a session that runs
-  again as another thread, a seat made again over a purged seat's session.
+  transition itself: an add (its own, and a request carried out), a
+  removal, a removal and an add, a reopening while a member, a hand-off,
+  an absorption, a refill (and a repoint to a lane B session), an end and
+  each kind of return, a session that runs again as another thread, a
+  person's message released from this machine's queue after an add, a seat
+  made again over a purged seat's session.
 - Who an entry names: the thread, never a session; an entry with no
   `thread` names no one; the thread's own message is not owed to it.
 - What reads it and what it reads: owing() with a session's record there,
@@ -46,6 +49,7 @@ import test_threads as T1  # noqa: E402 — its fixtures by module: their own te
 import test_threads_ended as T1_ended  # noqa: E402
 from test_threads import SCRIPTS, Killed, records, sminos, threads  # noqa: E402
 from test_channels_life import DESK, LOBBY, Life  # noqa: E402
+import test_channels_requests as CH1_requests  # noqa: E402 — by module: its own tests are not run again here
 import sminos_channels as channels  # noqa: E402
 
 FAR = "beta"                                         # another machine's name
@@ -186,21 +190,6 @@ class Selection(Debts, T1.Sessions):
         after = self.message(DESK, (sid, tid))
         self.assertEqual(self.owed_to(tid), [late, after], "whenever it was written")
 
-    def test_d14_a_persons_message_given_its_position_after_the_add_is_owed(self):
-        """A message that waited in this machine's queue across a removal and an add has no position until it
-        is released, and the release appends it then, with the ts it was said at (sminos.release_queued)."""
-        sid, _, tid = self.member()
-        self.add(tid, sid, DESK)
-        said = sminos.now(ms=True)
-        self.assertEqual(channels.change(tid, DESK, "remove", sid).state, "applied")
-        self.add(tid, sid, DESK)
-        e, = sminos._append(self.chan(DESK), "%s/human" % sminos.host_name(),
-                            [{"kind": "human", "ts": said, "from": "human", "text": "queued",
-                              "to": [{"session": sid, "alias": "a", "thread": tid}]}], released=True)
-        sminos.forget_caches()
-        self.assertEqual(e["ts"], said)
-        self.assertEqual(self.owed_to(tid), [(e["writer"], e["seq"])])
-
     def test_a_thread_in_no_channel_is_owed_nothing_whatever_names_it(self):
         sid, _, tid = self.member()
         self.add(tid, sid, LOBBY)
@@ -209,6 +198,43 @@ class Selection(Debts, T1.Sessions):
         self.assertEqual([d.thread for d, _ in channels.owed_here(self.chan(DESK))], [])
         code, lines = self.owed_cli()
         self.assertEqual(self.desk_lines(lines), [], lines)
+
+
+class Requested(Debts, CH1_requests.Verbs):
+    """On a machine cut over to its endpoint: an add by a request carried out, and a person's message that
+    waited in this machine's queue."""
+
+    def test_d1_an_add_by_a_request_carried_out_begins_where_the_log_stood_then(self):
+        tid, sid, _ = self.human()
+        before = self.message(DESK, (sid, tid))
+        e = self.request(DESK, "add", sid, tid)
+        between = self.message(DESK, (sid, tid))           # after the request, before it is carried out
+        self.assertIsNone(self.owed_to(tid), "not in the channel until it is carried out")
+        self.assertEqual(self.carry(DESK), {e["id"]: channels.Outcome("applied")})
+        d = self.debt_of(tid)
+        self.assertEqual((d.boundary[W1], d.boundary[e["writer"]]), (2, e["seq"]), "the log's positions then")
+        after = self.message(DESK, (sid, tid))
+        self.assertEqual(self.owed_to(tid), [after])
+        self.assertNotIn(before, self.owed_to(tid))
+        self.assertNotIn(between, self.owed_to(tid))
+
+    def test_d14_a_persons_message_queued_across_a_removal_and_an_add_is_owed_once_released(self):
+        tid, sid, _ = self.human()
+        self.add(tid, sid, DESK)
+        self.head_wait()
+        e = sminos.log_append(self.chan(DESK), sminos.writer_id(), "human", **{
+            "from": "human", "text": "queued", "to": [{"session": sid, "alias": "a", "thread": tid}]})
+        self.assertIsNone(e["seq"], "it waits in the queue for its writer's head: no position")
+        sminos.forget_caches()
+        self.assertEqual(self.owed_to(tid), [], "nothing in the log names it yet")
+        self.assertEqual(channels.change(tid, DESK, "remove", sid).state, "applied")
+        self.add(tid, sid, DESK)
+        self.release()
+        [released] = [x for x in sminos.log_read(self.chan(DESK)) if x["kind"] == "human"]
+        self.assertEqual(released["ts"], e["ts"], "appended with the time it was said")
+        self.assertGreater(released["seq"], self.debt_of(tid).boundary.get(released["writer"], 0))
+        self.assertEqual(self.owed_to(tid), [(released["writer"], released["seq"])],
+                         "its position is past the new boundary")
 
 
 class HandOff(Debts, T1.Sessions):
@@ -234,17 +260,20 @@ class HandOff(Debts, T1.Sessions):
         old, oproc, tid = self.member()
         self.add(tid, old, DESK)
         a = self.message(DESK, (old, tid))
+        row = (self.p, self.row(old))   # read now: a view reconciles, and would finish the entry cut below
         job, _ = self.job(old)
         self.end(oproc)
         with self.kill_after_begin(), self.assertRaises(Killed):
             self.reconcile()
         t = threads.get(tid)
-        self.assertIsNotNone(t.get("pending"), "the entry is open")
+        entry = t.get("pending")
+        self.assertIsNotNone(entry, "the entry is open")
         self.assertEqual(self.owed_to(tid), [a], "an open entry hides no debt")
-        self.assertIsNone(channels.owing(self.chan(DESK), t, (self.p, self.row(t["current"]) or self.row(old))))
+        self.assertIsNone(channels.owing(self.chan(DESK), t, row))
         code, lines = self.owed_cli()
         [line] = self.desk_lines(lines)
         self.assertIn("deliveries 1", line)
+        self.assertEqual(threads.get(tid).get("pending"), entry, "the diagnostic left the entry as the cut did")
 
 
 class Absorption(Debts, T1.LateHandOff):
@@ -287,12 +316,21 @@ class Absorption(Debts, T1.LateHandOff):
         old, job, tid, theirs = self.late()
         self.add(tid, old, DESK)
         mine = self.message(DESK, (job, tid))
+        # The thread's row, read from another machine's copy of the log: a view here reconciles, and would
+        # carry out the absorption the cut below is to leave open.
+        with self.elsewhere() as there:
+            row = (self.p, next(m for m in sminos.view_of(there).members if m.session == old))
         with self.kill_after_begin(), self.assertRaises(Killed):
             self.reconcile()
         t = threads.get(tid)
-        self.assertEqual(t["pending"]["op"], "absorb")
+        entry = t["pending"]
+        self.assertEqual(entry["op"], "absorb")
         self.assertEqual(self.owed_to(tid), [mine])
-        self.assertIsNone(channels.owing(self.chan(DESK), t, (self.p, self.row(job) or self.row(old))))
+        self.assertIsNone(channels.owing(self.chan(DESK), t, row))
+        code, lines = self.owed_cli()
+        [line] = self.desk_lines(lines)
+        self.assertIn("deliveries 1", line)
+        self.assertEqual(threads.get(tid)["pending"], entry, "the diagnostic left the entry as the cut did")
 
 
 class Refill(Debts, T1.Sessions):
@@ -307,6 +345,30 @@ class Refill(Debts, T1.Sessions):
         self.assertEqual((d.thread, d.session), (seat_id, new))
         b = self.message(DESK, (new, seat_id))
         self.assertEqual(self.owed_to(seat_id), [a, b])
+
+
+    def test_d8_a_seat_repointed_to_a_lane_b_session_holds_no_membership_and_is_owed_nothing(self):
+        old, seat_id = self.seated()
+        self.add(seat_id, old, DESK)
+        a = self.message(DESK, (old, seat_id))
+        self.message(DESK, (old, seat_id))
+        self.settle(seat_id, *a)
+        held = self.bytes_of(self.record_path(seat_id))
+        self.assertEqual(len(channels.owed_here(self.chan(DESK))), 1)
+        new, _ = self.session(kind="bg")
+        records.establish(new, T1.OWNED)
+        records.set_controller(new, "B")
+        code, out = self.cli("seat", "add", "g", "worker", "--session", new)
+        self.assertEqual(code, 0, out)
+        sminos.forget_caches()
+        self.assertEqual(sminos.load_seat(sminos.meta_path(seat_id))["current"], new, "repointed by the verb")
+        self.assertNotIn("channels", sminos.load_seat(sminos.meta_path(seat_id)), "the seat's keys dropped (CH1)")
+        self.assertIsNone(self.debt_of(seat_id), "row D4: no membership, no debt")
+        self.message(DESK, (new, seat_id))
+        self.assertEqual(channels.owed_here(self.chan(DESK)), [])
+        code, lines = self.owed_cli()
+        self.assertEqual(self.desk_lines(lines), [], lines)
+        self.assertEqual(self.bytes_of(self.record_path(seat_id)), held, "its record under the channel as it was")
 
 
 class AgainAsAnother(Debts, T1.Sessions):
@@ -388,7 +450,23 @@ class Reads(Debts, T1.Sessions):
         a = self.message(DESK, (sid, tid), (sid2, tid2))
         self.assertEqual(channels.delivered(self.chan(DESK), tid), {}, "absent: an empty record")
         self.assertEqual(self.owed_to(tid2), [a], "owed from the boundary")
-        for bad in (b"{torn", b"[]", b'{"w": 3}', b'{"w": {"settled": "x"}}', b'{"w": {"attempts": []}}'):
+        whole = '"settled": 0, "pending": null, "attempts": 0'
+        for bad in (b"{torn", b"[]", b'{"w": 3}', b'{"w": {"settled": "x"}}', b'{"w": {"attempts": []}}',
+                    # an entry whose settled prefix cannot be known: no prefix, or one that is no count
+                    b'{"w": {}}', b'{"w": {"settled": null, "pending": null, "attempts": 0}}',
+                    b'{"w": {"pending": null, "attempts": 0}}', b'{"w": {"settled": true, "pending": null, "attempts": 0}}',
+                    b'{"w": {"settled": -1, "pending": null, "attempts": 0}}',
+                    # what every writer writes beside it, missing or mistyped
+                    b'{"w": {"settled": 0, "attempts": 0}}', b'{"w": {"settled": 0, "pending": null}}',
+                    b'{"w": {"settled": 0, "pending": "2", "attempts": 0}}',
+                    # a mark out of shape, which the projects' loader would pass by and so drop
+                    ('{"w": {%s, "revoked": "3"}}' % whole).encode(),
+                    ('{"w": {%s, "revoked": [3, "4"]}}' % whole).encode(),
+                    ('{"w": {%s, "held": [[3]]}}' % whole).encode(),
+                    ('{"w": {%s, "held": [[3, 7]]}}' % whole).encode(),
+                    ('{"w": {%s, "held": {"3": "t"}}}' % whole).encode(),
+                    ('{"w": {"settled": 0, "pending": 3, "attempts": 1, "pushed": [3]}}').encode(),
+                    ('{"w": {"settled": 0, "pending": 3, "attempts": 1, "pushed": [3, "nowhere"]}}').encode()):
             with self.subTest(bad=bad):
                 os.makedirs(os.path.dirname(self.record_path(tid)), exist_ok=True)
                 with open(self.record_path(tid), "wb") as f:
@@ -400,7 +478,24 @@ class Reads(Debts, T1.Sessions):
         self.assertIn("%s: cannot be inspected" % self.record_path(tid), "\n".join(lines))
         [line] = self.desk_lines(lines)
         self.assertIn("deliveries 1", line, "the other thread's debt is still counted")
-        self.assertEqual(self.bytes_of(self.record_path(tid)), b'{"w": {"attempts": []}}', "nothing written")
+        self.assertEqual(self.bytes_of(self.record_path(tid)), bad, "nothing written")
+        with open(self.record_path(tid), "w") as f:
+            f.write("{}")
+        self.assertEqual(channels.delivered(self.chan(DESK), tid), {}, "an empty object is an empty record")
+        self.assertEqual(self.owed_to(tid), [a])
+
+    def test_a_record_that_is_a_link_to_nothing_is_there_and_cannot_be_read(self):
+        sid, _, tid = self.member()
+        self.add(tid, sid, DESK)
+        self.message(DESK, (sid, tid))
+        os.makedirs(os.path.dirname(self.record_path(tid)), exist_ok=True)
+        os.symlink(os.path.join(self.home, "nowhere.json"), self.record_path(tid))
+        self.assertIsNone(channels.delivered(self.chan(DESK), tid), "not absent: a file is there")
+        self.assertIsNone(self.owed_to(tid))
+        code, lines = self.owed_cli()
+        self.assertEqual(code, 1)
+        self.assertIn("%s: cannot be inspected" % self.record_path(tid), "\n".join(lines))
+        self.assertEqual(self.desk_lines(lines), [], lines)
 
     def test_a_whole_record_reads_as_the_projects_loader_reads_it(self):
         sid, _, tid = self.member()
@@ -409,8 +504,28 @@ class Reads(Debts, T1.Sessions):
         self.settle(tid, *a)
         b = self.message(DESK, (sid, tid))
         sminos.delivered_fail(self.chan(DESK), tid, *b)
-        self.assertEqual(channels.delivered(self.chan(DESK), tid), sminos.delivered_load(self.chan(DESK), tid))
-        self.assertEqual(channels.delivered(self.chan(DESK), tid)[W1]["pending"], b[1])
+        c = self.message(DESK, (sid, tid))
+        sminos.delivered_held(self.chan(DESK), tid, *c, thread=tid)
+        sminos.delivered_pushed(self.chan(DESK), tid, *b, sminos.PUSHED[0])
+        got = channels.delivered(self.chan(DESK), tid)
+        self.assertEqual(got, sminos.delivered_load(self.chan(DESK), tid))
+        self.assertEqual((got[W1]["pending"], got[W1]["held"], got[W1]["pushed"]),
+                         (b[1], {c[1]: tid}, [b[1], sminos.PUSHED[0]]), "every mark its writers write reads")
+
+    def test_the_index_by_thread_is_built_once_for_a_log_however_many_threads_hold_the_channel(self):
+        members = [self.member(name="m%d" % i, charge="") for i in range(4)]
+        for sid, _, tid in members:
+            self.add(tid, sid, DESK)
+        self.message(DESK, *[(sid, tid) for sid, _, tid in members])
+        sminos.forget_caches()
+        with mock.patch.object(channels, "_addressed", side_effect=channels._addressed) as built:
+            got = channels.owed_here(self.chan(DESK))
+            self.assertEqual(len(got), 4)
+            self.assertTrue(all(len(evs) == 1 for _, evs in got))
+            self.assertEqual(built.call_count, 1, "one build for the log, not one a thread")
+            sminos.forget_caches()
+            channels.owed_here(self.chan(DESK))
+            self.assertEqual(built.call_count, 1, "kept beside the log while no file of it moved")
 
 
 class OwedLines(Debts, T1.Sessions):
@@ -482,6 +597,29 @@ class Returns(Debts, T1_ended.Ending):
         self.assertIsNone(self.debt_of(tid), "D9: no debt while it is ended")
         gained = self.message(DESK, (sid, tid))
         return sid, tid, [held, gained]
+
+    def test_d3_a_thread_reopened_while_still_a_member_is_owed_what_was_held_and_its_boundary_stays(self):
+        sid = self.closed()
+        tid = threads.stamp(sid)
+        self.add(tid, sid, DESK)
+        began = threads.get(tid)["began"]
+        held = self.message(DESK, (sid, tid))
+        sminos.forget_caches()
+        self.assertTrue(sminos.hold_for(sid), "stopped, and held")
+        code, lines = self.owed_cli()
+        [line] = self.desk_lines(lines)
+        self.assertIn("waiting 1", line, "while held it waits")
+        self.live(sid=sid, name="alpha")
+        self.reconcile()
+        sminos.forget_caches()
+        self.assertFalse(sminos.hold_for(sid), "reopened")
+        self.assertEqual(threads.get(tid)["began"], began, "a reopening is no return: where it began stays")
+        self.assertEqual(self.owed_to(tid), [held])
+        code, lines = self.owed_cli()
+        [line] = self.desk_lines(lines)
+        self.assertIn("deliveries 1", line, "now owed")
+        self.settle(tid, *held)
+        self.assertEqual(self.owed_to(tid), [], "and settled once by the record's writer")
 
     def test_d10_a_return_of_this_code_owes_neither_what_was_held_nor_what_came_while_ended(self):
         sid, tid, _ = self.ended_with_mail()

@@ -200,10 +200,13 @@ class Checker(unittest.TestCase):
     def test_a_channels_delivery_records_under_deliveries_false(self):
         """CH2's M2: allowed with deliveries=False is a thread's record, by its id, and its lock; a file named
         by anything else (a person's, `human.json`), or one that is no record, is a breach either way."""
+        self.assertEqual(wire.PUSHED, sminos.PUSHED, "the checker's copy of what a pushed note may say")
         home = tempfile.mkdtemp(dir=BASE)
         d = os.path.join(home, "projects", DESK, "delivered")
         os.makedirs(d)
-        for name, body in ((S1 + ".json", {"%s/x" % MACHINE: {"settled": 2, "pending": None, "attempts": 0}}),
+        for name, body in ((S1 + ".json", {"%s/x" % MACHINE: {"settled": 2, "pending": 3, "attempts": 1,
+                                                               "pushed": [3, "sent"], "revoked": [5],
+                                                               "held": [[4, S1]]}}),
                            (S2 + ".json", {}), (S1 + ".lock", None)):
             with open(os.path.join(d, name), "w") as f:
                 if body is not None:
@@ -211,7 +214,11 @@ class Checker(unittest.TestCase):
         self.assertEqual(wire.written(home, [DESK], MACHINE, deliveries=False), [])
         self.assertEqual(len(wire.written(home, [DESK], MACHINE)), 1, "CH1's rule, the default: any record")
         for name, body in (("human.json", "{}"), ("x.tmp", ""), (S2 + ".json", "[]"), (S2 + ".json", '{"w": 3}'),
-                           (S2 + ".json", "{torn")):
+                           (S2 + ".json", "{torn"), (S2 + ".json", '{"w": {"settled": "x"}}'),
+                           (S2 + ".json", '{"w": {}}'), (S2 + ".json", '{"w": {"settled": null, "pending": null, '
+                                                                   '"attempts": 0}}'),
+                           (S2 + ".json", '{"w": {"settled": 1, "pending": null, "attempts": 0, "revoked": "2"}}'),
+                           (S2 + ".json", '{"w": {"settled": 1, "pending": null, "attempts": 0, "held": [[2]]}}')):
             with self.subTest(name=name, body=body):
                 with open(os.path.join(d, name), "w") as f:
                     f.write(body)

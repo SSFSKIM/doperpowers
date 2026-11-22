@@ -39,7 +39,9 @@ breach. CH2 passes the kinds it adds, and `deliveries=False`, under which a
 channel's `delivered/` holds a thread's delivery record and its lock and
 nothing else (CH2's M2: one record a thread, by its id): a file there named
 by anything but an id (`human.json`, a person's), or a record that is no
-JSON object of writer entries, is a breach.
+JSON object of writer entries each in the shape the delivery record's
+writers write (`settled`, `pending`, `attempts`; and `revoked`, `held`,
+`pushed` when there), is a breach.
 """
 import glob
 import json
@@ -50,6 +52,7 @@ ALLOWED = ("channel-request", "channel-env", "retired", "void")
 CHANNEL_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 LIMIT = 128
 HOST_STORE = "host"
+PUSHED = ("sent", "woken", "sent?", "woken?")   # sminos.PUSHED: what a `pushed` note may say
 THREAD_FILE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(json|lock)")
 
 
@@ -187,6 +190,24 @@ def written(sminos_home, channel_ids, machine, before={}, allowed=ALLOWED, deliv
     return out
 
 
+def _count(x):
+    return type(x) is int and x >= 0
+
+
+def _pair(x, second):
+    return isinstance(x, list) and len(x) == 2 and type(x[0]) is int and second(x[1])
+
+
+def _writer_entry(v):
+    """A writer's entry as the delivery record's writers put it on disk."""
+    return (isinstance(v, dict) and _count(v.get("settled")) and _count(v.get("attempts")) and "pending" in v
+            and (v["pending"] is None or type(v["pending"]) is int)
+            and ("revoked" not in v or isinstance(v["revoked"], list) and all(type(x) is int for x in v["revoked"]))
+            and ("held" not in v or isinstance(v["held"], list)
+                 and all(_pair(x, lambda t: isinstance(t, str) and t) for x in v["held"]))
+            and ("pushed" not in v or _pair(v["pushed"], lambda o: o in PUSHED)))
+
+
 def _delivery_breaches(cid, d):
     """A channel's `delivered/` as CH2 writes it: `<thread id>.json`, a JSON
     object of writer entries, and `<thread id>.lock`, and nothing else."""
@@ -203,6 +224,6 @@ def _delivery_breaches(cid, d):
                 rec = json.load(f)
         except (OSError, ValueError):
             rec = None
-        if not (isinstance(rec, dict) and all(isinstance(v, dict) for v in rec.values())):
+        if not (isinstance(rec, dict) and all(_writer_entry(v) for v in rec.values())):
             out.append("channel %s's delivery record %s is no record of writer entries" % (cid, os.path.basename(p)))
     return out
