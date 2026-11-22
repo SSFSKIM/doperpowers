@@ -74,7 +74,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) The fourth read, narrow, of what the third revision changed (six P1, four P2: "ready with the listed edits, no further design round"); all ten written in, and the header re-pinned to the branch with the composite's amendment merged (`f2c737f2`) (Decision Log, "The fourth read").
 - [x] (2026-11-22) M1 — Names through a channel. `de0ed736`, fixes `6e2b7b90`, `78b07c42`; reviewed clean at the third review. Gates GREEN on `78b07c42`; sminos-idle 32,191; sminos-channels 1m37s.
 - [x] (2026-11-22) M2 — What a channel owes a thread: the debt and its transitions. `a604658a`, fix `00e1b6b5`; two reviews at the high rung, the second's two findings (a corrupt record's shapes no writer emits) logged in TECH-DEBT. Gates GREEN on `00e1b6b5`; sminos-idle 32,766; sminos-channels 1m51s.
-- [ ] M3 — Pushing and waking from a channel's log.
+- [ ] M3 — Pushing and waking from a channel's log. (Built `af78de21`, `11482879`; gates GREEN; sminos-idle 32,254; sminos-channels 2m08s; in review.)
 - [ ] M4 — Saying into a channel: the doors, the reply, the read.
 - [ ] M5 — The scene on a real engine.
 - [ ] M6 — Across machines: asking, and carrying out off the consumer thread.
@@ -3624,6 +3624,42 @@ them today.
     D6 (the journal still open through the diagnostic), D8 (a seat
     repointed to a lane B session) and D14 (the real queue and its release)
     are staged through the transition itself.
+- 2026-11-22 — **M3 as built** (`af78de21`, `11482879`). Decisions the
+  executor made where the plan is silent, kept by the controller:
+  - The last check fails as an exception, `PassLost`, raised from
+    `holder_push`, `wake_member`, `push_event` and `woken_unpushed` and
+    caught by the three entry points: no outcome string leaves the record
+    alone (a `held:` writes a mark, `recorded` settles), and an exception
+    crosses the wake's unlock cleanly. In a channel every `recorded` those
+    helpers would return for a lost session (a stale mark, a vacated or
+    retired seat, the session now another thread's or ended, an open entry
+    after the launch, a wake's `gone`, `lane` or `ended`) is that stop.
+  - After a launch the reach, the revocation and the read-only policy are
+    read first, then T2's re-read of the member. A revoked signer found
+    there is the wake's outcome, treated as the check before a push treats
+    one; a read-only machine settles as before a push; a revocation set
+    that cannot be read, or a mark that could not be kept, is the stop.
+  - A project's pass gets exactly today's arguments: the channel's keywords
+    are added only for a channel (`_kw`, `_th`). What is new on a project's
+    path is pure predicates (`is_channel_id`, `_thread_of`) and one
+    indirection (`_verdict_choice`).
+  - The record's writers read strictly by the log's id (`is_channel_id`),
+    not by a new argument. `normalize` builds the cleared entry by hand,
+    copying the settled prefix, `revoked` and `held`, and drops `pushed`
+    with `pending`.
+  - `own_row` reads `last_project` and that project's view (`titles=False`;
+    the tick's cached views in the daemon); the pass passes by a thread
+    whose record holds an open entry before calling it, since a view
+    reconciles. `words_due` and `reach_due`, given `owing`, ignore
+    `members`. `deliver` catches `DeliveryUnreadable` for a thread and logs
+    it; the channel's held-pass memory is daemon functions beside
+    `deliver_owed`.
+  - The bracket case could not be built as stated: the membership scan's
+    unescaped glob sits behind `last_project` and CH1's `change` and
+    `_registered_at` too, so under a home whose path holds a bracket no
+    thread can be placed in a channel at all. The test stages the record
+    by hand and proves the last check and the push there; the TECH-DEBT row
+    says channels do not work under such a home and gives the one-line fix.
 
 
 ## Outcomes & Retrospective
