@@ -73,7 +73,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) The third read of the plan, over what the revision rewrote (fourteen P1, two P2), the holder's rulings on it, and this last revision before the build: no absorbed id is kept, no delivery over an open journal entry, a seat made again over a purged seat's session is that thread, the three paths the consumer thread still had are bounded or deferred, and what a verdict is good for is said (Decision Log, "The third read").
 - [x] (2026-11-22) The fourth read, narrow, of what the third revision changed (six P1, four P2: "ready with the listed edits, no further design round"); all ten written in, and the header re-pinned to the branch with the composite's amendment merged (`f2c737f2`) (Decision Log, "The fourth read").
 - [x] (2026-11-22) M1 — Names through a channel. `de0ed736`, fixes `6e2b7b90`, `78b07c42`; reviewed clean at the third review. Gates GREEN on `78b07c42`; sminos-idle 32,191; sminos-channels 1m37s.
-- [ ] M2 — What a channel owes a thread: the debt and its transitions. (Built `a604658a`; gates GREEN; sminos-idle 32,189; sminos-channels 1m55s; in review.)
+- [x] (2026-11-22) M2 — What a channel owes a thread: the debt and its transitions. `a604658a`, fix `00e1b6b5`; two reviews at the high rung, the second's two findings (a corrupt record's shapes no writer emits) logged in TECH-DEBT. Gates GREEN on `00e1b6b5`; sminos-idle 32,766; sminos-channels 1m51s.
 - [ ] M3 — Pushing and waking from a channel's log.
 - [ ] M4 — Saying into a channel: the doors, the reply, the read.
 - [ ] M5 — The scene on a real engine.
@@ -3613,9 +3613,17 @@ them today.
   - The checker, with `deliveries=False`, allows under a channel's
     `delivered/` only `<thread id>.json` (a JSON object of writer entries)
     and `<thread id>.lock`; before, anything there was allowed.
-  - Row D14 is staged as the queue's release leaves a message (appended
-    after the add, with the time it was said), and an older copy's return
-    (row D10) by a return step that writes no positions.
+  - *(As amended by its first review, `00e1b6b5`.)* A channel's delivery
+    record is whole only when every writer entry has the shape the writers
+    write (`whole_entry`): `settled`, `attempts` and `pending` present and
+    typed, `revoked`, `held` and `pushed` typed where present; a top-level
+    `{}` is an empty record. A record file that is a link to nothing is
+    there and unreadable, not absent. `owed_here` reads the shared copy of
+    the log, so the index by thread is built once a log. Rows D1 (a
+    request carried out), D3 (a stopped thread reopened while a member),
+    D6 (the journal still open through the diagnostic), D8 (a seat
+    repointed to a lane B session) and D14 (the real queue and its release)
+    are staged through the transition itself.
 
 
 ## Outcomes & Retrospective
