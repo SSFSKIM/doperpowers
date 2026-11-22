@@ -544,18 +544,24 @@ class _Facts:
     record asked for twice in it reads once."""
 
     def __init__(self):
-        self._owner = {}
+        self._current, self._ended = {}, {}
 
-    def owner(self, session):
-        """The record whose current session `session` is, ended ones and those
-        set aside included (thread_of's order; a reservation is none), from the
-        stores as they are: whose session it is for §6's row 3."""
-        if session not in self._owner:
+    def current_record(self, session):
+        """The record whose current session `session` is, from the stores as they are."""
+        if session not in self._current:
+            self._current[session] = sminos.threads_module().current_record(session, fresh=True)
+        return self._current[session]
+
+    def ended_owner(self, session):
+        """The record, ended or set aside, whose current session `session` still
+        is (thread_of's order; a reservation is none), from the stores as they
+        are: for §6's row 3 when no live record holds it (C6)."""
+        if session not in self._ended:
             threads = sminos.threads_module()
             t = threads.thread_of(session)
-            self._owner[session] = t if t is not None and t["current"] == session and not threads.reservation(t) \
+            self._ended[session] = t if t is not None and t["current"] == session and not threads.reservation(t) \
                 else None
-        return self._owner[session]
+        return self._ended[session]
 
     def outside_origin(self, channel, e):
         """Rows 8 and 9: a request this machine did not append itself
@@ -657,16 +663,19 @@ def _names_here(record, request, facts):
     """§6's row 3, the other way round: the request names `record`'s thread
     as this machine holds it. The record is there and has not ended, has had
     the request's session, that session is no other record's current one
-    now, an ended record's included (read from the stores as they are: a
-    newer record that ended still holds it, the frontier's second review,
-    C6), and the thread's session is not lane B."""
+    now (read from the stores as they are; for a session the record only
+    had, an ended or set-aside record's included: the newer record it went
+    on as still holds it once that ends, the frontier's second review, C6),
+    and the thread's session is not lane B."""
     threads = sminos.threads_module()
     if record is None or record["thread"] != request["thread"] or threads.record_ended(record):
         return False
     session = request["session"]
     if session != record["current"] and session not in record["sessions"]:
         return False
-    other = facts.owner(session)
+    other = facts.current_record(session)
+    if other is None and session != record["current"]:
+        other = facts.ended_owner(session)
     if other is not None and other["thread"] != record["thread"]:
         return False
     return not facts.lane_b(record["current"])
