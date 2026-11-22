@@ -48,7 +48,9 @@ as sminos's reconnect does):
   `reach?` (P5 O18 D3) likewise with `reach {id, verdict, reason?}` from
   `reach_verdicts` by id, else `reach_verdict` (a callable in-process:
   (frame) → verdict or None; a verdict is `deliver`, `refuse` — sent with
-  reason `not-reachable` — or (`refuse`, reason)), silent when neither
+  reason `not-reachable` — or (`refuse`, reason), MAWS's reasons being
+  `not-reachable` and `unverified`, the latter for an unverified sender to
+  a private recipient (its `decideReach` at 5346ff6d3)), silent when neither
   names one, as an endpoint that holds no record of the session is;
   `restated` (the end of sminos's restatement after a welcome) is kept.
   `handler`, in-process, is called with each frame first and may return

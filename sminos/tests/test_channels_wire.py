@@ -585,9 +585,9 @@ class Asks(Requests, T1.Sessions):
     def asks(self, link):
         return [f for f in link.session_lane.sent if f.get("t") == "reach?"]
 
-    def answer(self, link, ask, verdict):
+    def answer(self, link, ask, verdict, **more):
         sminos.forget_caches()
-        link.on_reach({"t": "reach", "id": ask["id"], "verdict": verdict}, None)
+        link.on_reach({"t": "reach", "id": ask["id"], "verdict": verdict, **more}, None)
 
     def test_one_ask_per_request_due_and_none_for_one_that_needs_no_word(self):
         tid, sid, _ = self.human()
@@ -744,7 +744,7 @@ class Asks(Requests, T1.Sessions):
         self.assertEqual(self.held(tid), [DESK])
 
     def test_the_ask_follows_a_frame_under_the_threads_own_project_when_the_plane_lags_its_move(self):
-        tid, sid, _ = self.human()
+        tid, sid, proc = self.human()
         link = self.link()
         self.assertTrue(link.members_before(self.p, {sid}))   # its frame on the lane, under the project it was in
         self.assertEqual(link.members_sent[sid]["project"], self.p.id)
@@ -753,12 +753,13 @@ class Asks(Requests, T1.Sessions):
             json.dump({"project": ELSEWHERE, "name": "elsewhere", "hub": {"org": ORG}}, f)
         other = self.project_of(root)
         self.assertNotEqual(other.id, self.p.id)
-        self.write_own(sid, [{"kind": "retired", "reason": "moved", "project": other.id, "thread": tid}])
-        self.write_own(sid, [self.old_joined(sid, alias="mover", thread=tid)], p=other)
+        self.peer_set(proc, cwd=root)   # the session went on in the other project's directory
+        self.reconcile(other)
+        self.reconcile()
         self.assertEqual(sminos.last_project(sid).id, other.id, "it moved; the plane has not read that")
+        self.assertIn(sid, link.plane.member_rows[self.p.id])
         e = self.remote(DESK, "add", sid, tid)
         self.ask_pass(link)
-        print({k: list(v) for k, v in link.plane.member_rows.items()}, self.p.id, other.id, link.members_sent.get(sid, {}).get("project"), link.members_unsent, [m.session for m in sminos.view_of(other).members])
         [ask] = self.asks(link)
         at = link.session_lane.sent.index(ask)
         frames = [f for f in link.session_lane.sent[:at] if f.get("t") == "member" and f.get("session") == sid]
@@ -766,6 +767,20 @@ class Asks(Requests, T1.Sessions):
         self.answer(link, ask, "deliver")
         self.assertEqual(self.held(tid), [DESK])
         self.assertEqual(self.answers(sid, other), [(DESK, e["id"], "applied", None, (DESK,))])
+
+    def test_a_refusal_is_a_refusal_whatever_its_reason_word(self):
+        for reason in ("not-reachable", "unverified", "a-word-not-known-here", None, 7):
+            with self.subTest(reason):
+                tid, sid, _ = self.human()
+                e = self.remote(DESK, "add", sid, tid)
+                link = self.link()
+                self.ask_pass(link)
+                [ask] = self.asks(link)
+                self.answer(link, ask, "refuse", **({} if reason is None else {"reason": reason}))
+                self.assertEqual(self.answers(sid), [(DESK, e["id"], "refused", "not-reachable", ())],
+                                 "refused, its reason the one sminos records")
+                self.ask_pass(link)
+                self.assertEqual(len(self.asks(link)), 1, "answered: never asked again")
 
     def test_an_answer_that_names_no_verdict_is_none(self):
         tid, sid, _ = self.human()
@@ -865,7 +880,7 @@ class WireAsks(unittest.TestCase):
         sids = ["6c00000%d-0000-4000-8000-0000000000c%d" % (n, n) for n in range(3, 8)]
         tids = [self.thread(sid, "t%d" % n) for n, sid in enumerate(sids)]
         deliver, refuse, unverified, silent, late = tids
-        verdicts = {deliver: "deliver", refuse: "refuse", unverified: "deliver"}
+        verdicts = {deliver: "deliver", refuse: ("refuse", "unverified"), unverified: "deliver"}
         ids = [DESK, LOBBY]
         before = wire.baseline(os.environ["SMINOS_HOME"], ids)
         ep = self.endpoint(verdicts=verdicts)

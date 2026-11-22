@@ -177,6 +177,31 @@ print(eval(sys.argv[1]))' "$4" <<<"$out"
 shown_is() { [ "$(shown "$1" "$2" "$3" "$4")" = "$5" ]; }   # dir session channel expression expected
 on_beta() { (on b beta; "$@"); }
 held_is() { [ "$(held_set "$1")" = "$2" ]; }   # session JSON
+checked_clean() { # "channel-id ..." "ep-dir home name" ... — the checker over each machine's stand-in and store
+  python3 -B - "$SCRIPT_DIR" "$@" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import channel_wire, endpoint_standin
+ids, out = sys.argv[2].split(), []
+for machine in sys.argv[3:]:
+    ep, home, name = machine.split()
+    state = json.loads(endpoint_standin.ctl_call(ep, "state", {}))
+    frames = [(r["conn"], r["frame"]) for r in state["received"]]
+    welcomed = {w["conn"] for w in state["welcomes"] if "channels" in w["welcome"]["capabilities"]}
+    # A fresh store on every machine: the baseline is empty, so nothing this code wrote under a channel, its
+    # creation included, is excused (only a store an older copy wrote into has one: test_channels_wire.py).
+    out += ["%s: %s" % (name, b) for b in channel_wire.published(frames, ids, {}, welcomed=welcomed)]
+    out += ["%s: %s" % (name, b) for b in channel_wire.written(home, ids, name, {})]   # delivery records too
+print("\n".join(out) or "clean")
+PY
+}
+imported() { # channel-id request-id → whether this machine's copy of the channel's log holds the request
+  python3 - "$SMINOS_HOME/projects/$1/log" "$2" <<'PY'
+import glob, json, os, sys
+print("yes" if any(e.get("id") == sys.argv[2] for p in glob.glob(os.path.join(sys.argv[1], "*.jsonl"))
+                   for e in map(json.loads, open(p))) else "no")
+PY
+}
 no_launch() { # dir... — no session's turn was started on those machines (the engine stub's calls)
   local n=0 m
   for m in "$@"; do n=$((n + $( (cat "$T/$m/stub/calls" 2>/dev/null || true) | grep -c -e resume -e '--bg' || true))); done
@@ -335,20 +360,28 @@ scene() {
   echo " 2. after a pass, the roster, the request and the pool:"
   scene_pass shown_is "$T/sa/app" "$SA" desk-integration "members()" "${SA:0:8} ${SS:0:8} ${SB:0:8}" || true
   scene_cmd "alpha, as A" "$T/sa/app" "$SA" channel show desk-integration
+  assert_rc 0 "$RC" "channel show"
   assert_equals "$(sed -n '/^members/,/^requests/p' <<<"$OUT" | grep -c -e "alder \\[${SA:0:8}\\].*  app" -e "sable \\[${SS:0:8}\\].*  app" -e "birch \\[${SB:0:8}\\].*  web" || true)" 3 \
     "A, S and B under members, each with its own project"
   assert_contains "$(grep "birch" <<<"$(sed -n '/^requests/,/^pool/p' <<<"$OUT")")" "applied" "the request for B as applied"
-  assert_contains "$OUT" "alpha  1 live, 1 stopped" "the pool: alpha with one live and one stopped"
+  assert_contains "$(grep "sable \\[${SS:0:8}\\]" <<<"$OUT")" "seat         gone" \
+    "S, a spawned seat with no conversation here, reads gone in the roster (its project's view's word)"
+  assert_contains "$OUT" "alpha  1 live, 1 stopped" "the pool: alpha with one live and one stopped (S counted stopped)"
   assert_contains "$OUT" "beta  0 live, 1 stopped" "and beta with one stopped"
   scene_cmd "alpha, as A" "$T/sa/app" "$SA" list
+  assert_rc 0 "$RC" "sminos list as A"
+  assert_equals "$(head -1 <<<"$OUT")" "app" "its project's section first"
   assert_equals "$(section_rows | grep -c -e alder -e sable -e birch || true)" 3 \
     "sminos list as A: its project, then # desk-integration with the three rows"
-  assert_equals "$(head -1 <<<"$OUT" | grep -c '^#' || true)" 0 "its project first"
   on sb beta
   relay_until shown_is "$T/sb/web" "$SB" desk-integration "members()" "${SA:0:8} ${SS:0:8} ${SB:0:8}" || true
   scene_cmd "beta, as B" "$T/sb/web" "$SB" list
-  assert_equals "$(section_rows | grep -c -e alder -e sable -e birch || true)" 3 \
-    "sminos list as B: its project, then # desk-integration with the three rows"
+  assert_rc 0 "$RC" "sminos list as B"
+  assert_equals "$(head -2 <<<"$OUT")" "(no members in web)
++1 hidden (stopped, retired, gone) — sminos list --stopped shows stopped; --all shows all" \
+    "its project first, as list prints it today: its rows are hidden"
+  assert_equals "$(sed -n 3p <<<"$OUT")" "# desk-integration" "then the channel's section"
+  assert_equals "$(section_rows | grep -c -e alder -e sable -e birch || true)" 3 "with the three rows"
   no_launch sa sb sc && pass "B and S placed with no launch" || fail "B and S placed with no launch"
 
   echo " 3. who holds it:"
@@ -358,22 +391,23 @@ scene() {
   gamma_sees() { (cd "$T/sc" && "$SMINOS" list --org 2>/dev/null) | sed -n '/^# desk-integration/,$p' | grep -c -e alder -e sable -e birch | grep -q 3; }
   relay_until gamma_sees || true
   scene_cmd "gamma" "$T/sc" - list --org
-  assert_equals "$(grep '^#' <<<"$OUT" | tail -1)" "# desk-integration" "sminos list --org on gamma ends with the section"
+  assert_rc 0 "$RC" "sminos list --org on gamma"
+  assert_equals "$(grep '^#' <<<"$OUT" | tail -1)" "# desk-integration" "ends with the section"
 
   echo " 4. nothing is said into it:"
   on sa alpha
   local before refused
   before="$(logs_sum)"
-  refused="is a channel, and speaking in a channel is not available in this version of sminos yet: nothing was recorded"
+  refused="sminos: desk-integration is a channel, and speaking in a channel is not available in this version of sminos yet: nothing was recorded. Tag the thread itself (@<alias>#<short> or @<short>), which reaches it in its own project as today"
   scene_cmd "alpha, as A" "$T/sa/app" "$SA" say --in desk-integration "x"
   assert_rc 1 "$RC" "say --in, from A: refused"
-  assert_contains "$OUT" "desk-integration $refused" "in §8's sentence"
+  assert_equals "$OUT" "$refused" "in §8's sentence, whole, naming the tag that works today"
   scene_cmd "alpha, as A" "$T/sa/app" "$SA" say "@desk-integration/birch x"
   assert_rc 1 "$RC" "a tag qualified by the channel: refused"
-  assert_contains "$OUT" "$refused" "in §8's sentence"
+  assert_equals "$OUT" "$refused" "in §8's sentence, whole"
   scene_cmd "alpha, a terminal" "$T/sa/app" - say --in desk-integration "x"
   assert_rc 1 "$RC" "say --in from a terminal: refused"
-  assert_contains "$OUT" "$refused" "in §8's sentence"
+  assert_equals "$OUT" "$refused" "in §8's sentence, whole"
   assert_equals "$(logs_sum)" "$before" "no file of any log has changed"
   scene_cmd "alpha, as A" "$T/sa/app" "$SA" join desk-integration
   assert_rc 1 "$RC" "join: refused"
@@ -385,9 +419,11 @@ scene() {
   b_out() { shown_is "$T/sa/app" "$SA" desk-integration "members()" "${SA:0:8} ${SS:0:8}" && knows "$EPB" "$desk" false; }
   scene_pass b_out || true
   scene_cmd "alpha, as A" "$T/sa/app" "$SA" channel show desk-integration
+  assert_rc 0 "$RC" "channel show"
   assert_equals "$(sed -n '/^members/,/^requests/p' <<<"$OUT" | grep -c "birch" || true)" 0 "B is out of the roster"
   on sb beta
   scene_cmd "beta" "$T/sb/web" - list --stopped
+  assert_rc 0 "$RC" "sminos list --stopped on beta"
   assert_contains "$(grep birch <<<"$OUT")" "stopped" "sminos list --stopped on beta still shows B stopped in its project"
   assert_equals "$(known "$EPB" "$desk") $(known "$EPA" "$desk")" "false true" \
     "beta's known no longer lists the channel while alpha's does"
@@ -403,28 +439,16 @@ scene() {
   assert_equals "$(known "$EPA" "$desk") $(known "$EPB" "$desk") $(known "$EPC" "$desk")" "false false false" \
     "no stand-in lists the channel in known"
   on sc gamma
-  gamma_none() { ! (cd "$T/sc" && "$SMINOS" list --org 2>/dev/null) | grep -q '^# desk-integration'; }
+  gamma_none() { local out; out="$(cd "$T/sc" && "$SMINOS" list --org 2>/dev/null)" && ! grep -q '^# desk-integration' <<<"$out"; }
   relay_until gamma_none || true
   scene_cmd "gamma" "$T/sc" - list --org
-  assert_equals "$(grep -c '^# desk-integration' <<<"$OUT" || true)" 0 "sminos list --org on gamma shows no section for it"
+  assert_rc 0 "$RC" "sminos list --org on gamma"
+  assert_contains "$OUT" "alder [${SA:0:8}]" "which lists the org's threads"
+  assert_equals "$(grep -c '^# desk-integration' <<<"$OUT" || true)" 0 "and shows no section for the channel"
 
   echo " 7. nothing published or written under it:"
   local checked
-  checked="$(python3 -B - "$SCRIPT_DIR" "$desk" "$EPA" "$EPB" "$EPC" "$T/sa/s" "$T/sb/s" "$T/sc/s" <<'PY'
-import json, sys
-sys.path.insert(0, sys.argv[1])
-import channel_wire, endpoint_standin
-ids, eps, homes = [sys.argv[2]], sys.argv[3:6], sys.argv[6:9]
-out = []
-for ep, home, name in zip(eps, homes, ("alpha", "beta", "gamma")):
-    state = json.loads(endpoint_standin.ctl_call(ep, "state", {}))
-    frames = [(r["conn"], r["frame"]) for r in state["received"]]
-    welcomed = {w["conn"] for w in state["welcomes"] if "channels" in w["welcome"]["capabilities"]}
-    out += ["%s: %s" % (name, b) for b in channel_wire.published(frames, ids, {}, welcomed=welcomed)]
-    out += ["%s: %s" % (name, b) for b in channel_wire.written(home, ids, name, {})]   # delivery records too
-print("\n".join(out) or "clean")
-PY
-)"
+  checked="$(checked_clean "$desk" "$EPA $T/sa/s alpha" "$EPB $T/sb/s beta" "$EPC $T/sc/s gamma")"
   assert_equals "$checked" clean "the checker passes over the three stand-ins and the three stores, no delivery record under the channel"
   no_launch sa sb sc && pass "and no launch was recorded" || fail "and no launch was recorded"
 }
@@ -567,7 +591,8 @@ sees() { (cd "$T/a/app" && "$SMINOS" list --org 2>/dev/null) | grep -q -e "${1:0
 relay_until sees "$SB" || true
 relay_until sees "$SG" || true
 assert_equals "$(sees "$SB" && sees "$SG" && echo yes)" yes "alpha reads beta's and gamma's threads, relayed"
-set_ep "$EPB" '{"reach_verdict": "refuse"}'
+# The endpoint refuses with a reason word (MAWS: not-reachable, or unverified); a refusal is a refusal whatever it is.
+set_ep "$EPB" '{"reach_verdict": ["refuse", "unverified"]}'
 run_in "$T/a/app" in_session "$SA" "$SMINOS" channel add desk-requests "helper#${SB:0:8}"
 assert_rc 0 "$RC" "a thread on alpha asks for beta's thread"
 assert_contains "$OUT" "helper#${SB:0:8}: asked; pending on beta: its machine carries it out when its daemon reads the request" \
@@ -598,6 +623,12 @@ assert_equals "$(shown "$T/a/app" "$SA" desk-requests "members()")" "${SA:0:8} $
 on b beta
 relay_until shown_is "$T/b/web" "$SB" desk-requests "members()" "${SA:0:8} ${SB:0:8}" || true
 assert_equals "$(shown "$T/b/web" "$SB" desk-requests "members()")" "${SA:0:8} ${SB:0:8}" "and so does the roster on beta"
+# A request is uploaded, imported and asked about under the channel's id, the log it is in, and nothing else.
+assert_equals "$(rl10_q "$EPA" "sorted({f['project'] for c, f in F if f.get('t') == 'events' for e in f.get('events', []) if e.get('kind') == 'channel-request'})")" \
+  "[\"$REQ\"]" "alpha uploads its requests under the channel's id alone"
+assert_equals "$(rl10_q "$EPB" "sorted({f['project'] for c, f in F if f.get('t') == 'reach?'})")" "[\"$REQ\"]" \
+  "beta asks about them under the channel's id alone"
+assert_equals "$(on_beta imported "$REQ" "$R2")" yes "and holds them in the channel's log"
 on a alpha
 set_ep "$EPB" '{"reach_verdict": null}'
 run_in "$T/a/app" in_session "$SA" "$SMINOS" channel remove desk-requests "helper#${SB:0:8}"
@@ -640,27 +671,13 @@ assert_equals "$(shown "$T/a/app" "$SA" desk-requests "state('$R4')")" "[('withh
   "and so in JSON"
 set_ep "$EPA" '{"withhold": null}'
 rl10_relay $EPS || true
-assert_equals "$(asked_of "$EPB" "$R4")" 0 "it never reached beta"
+assert_equals "$(asked_of "$EPB" "$R4")" 0 "beta asked nothing about it"
+assert_equals "$(on_beta imported "$REQ" "$R4")" no "and its copy of the channel's log does not hold it: it never reached beta"
+assert_equals "$(on_beta imported "$REQ" "$R3")" yes "(the request before it there did)"
 no_launch a b c && pass "no turn of any session was started" || fail "no turn of any session was started"
 
 echo "nothing is published or written under the channel:"
-# A fresh store on every machine: the baseline is empty, so nothing this code wrote under the channel,
-# its creation included, is excused (only a store an older copy wrote into has one: test_channels_wire.py).
-CHECKED="$(python3 -B - "$SCRIPT_DIR" "$DESK $REQ" "$EPA" "$EPB" "$EPC" "$T/a/s" "$T/b/s" "$T/c/s" <<'PY'
-import json, sys
-sys.path.insert(0, sys.argv[1])
-import channel_wire, endpoint_standin
-ids, eps, homes = sys.argv[2].split(), sys.argv[3:6], sys.argv[6:9]
-out = []
-for ep, home, name in zip(eps, homes, ("alpha", "beta", "gamma")):
-    state = json.loads(endpoint_standin.ctl_call(ep, "state", {}))
-    frames = [(r["conn"], r["frame"]) for r in state["received"]]
-    welcomed = {w["conn"] for w in state["welcomes"] if "channels" in w["welcome"]["capabilities"]}
-    out += ["%s: %s" % (name, b) for b in channel_wire.published(frames, ids, {}, welcomed=welcomed)]
-    out += ["%s: %s" % (name, b) for b in channel_wire.written(home, ids, name, {})]
-print("\n".join(out) or "clean")
-PY
-)"
+CHECKED="$(checked_clean "$DESK $REQ" "$EPA $T/a/s alpha" "$EPB $T/b/s beta" "$EPC $T/c/s gamma")"
 assert_equals "$CHECKED" clean "the checker passes over the three stand-ins and the three stores"
 launched=0
 for m in a b c; do
