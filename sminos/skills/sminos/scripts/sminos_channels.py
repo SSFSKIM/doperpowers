@@ -1816,6 +1816,8 @@ CANNOT_REACH = ("%s was in %s and cannot be reached now (it has ended, or this m
                 "recorded")
 LEFT_WITH_IN = ("%s is not in %s now (it left the channel, or its thread ended): nothing was recorded. " + DROP_IN)
 ONE_LOG = "one message, one log: the tags name %s"
+RESOLVES_OUTSIDE = "; %s resolves outside %s"   # an unqualified tag beside a channel's, no log claimed for it
+RESOLVE_OUTSIDE = "; %s resolve outside %s"
 HOST_IS_PROJECTS = ("%s is a channel, and what a session sends its human is in its own project's log: sminos chat "
                     "--host <project>")
 NOT_IN_HERE = "recorded (it is not in %s on its machine now: not delivered)"
@@ -1840,20 +1842,20 @@ def _log_name(q):
     return tiers[0].name if tiers else q
 
 
-def _bare_logs(own, t):
-    """How the refusal of a mix names the logs an unqualified tag is read
-    in, with no member looked up through a view (a refusal reconciles
-    nothing and appends nothing): `@alias#short` and a name in id form, the
+def _bare_logs(t):
+    """The logs the refusal of a mix names for an unqualified tag, found
+    with no member looked up through a view (a refusal reconciles nothing
+    and appends nothing): for `@alias#short` and a name in id form, the
     projects a short tag reaches (org_scope) whose log holds a member it
-    answers to (sminos.logged_members); else, and for a bare alias, the
-    sender's own project (`own`); else the tag itself."""
+    answers to (sminos.logged_members). Empty for a bare alias, and where
+    none answers: where a bare alias goes is the resolver's to say (the
+    sender's project, or a channel-mate's through the rosters it reads),
+    so the refusal claims no log for it and names the tag."""
     name, short = t["name"], t["short"]
-    if short or id_form(name):
-        hits = {p.name for p in sminos.org_scope() for m in sminos.logged_members(p)
-                if m.state != "retired" and (sminos.alias_reach(m, name, short) if short else sminos.id_reach(m, name))}
-        if hits:
-            return hits
-    return {own.name} if own is not None else {t["raw"]}
+    if not (short or id_form(name)):
+        return set()
+    return {p.name for p in sminos.org_scope() for m in sminos.logged_members(p)
+            if m.state != "retired" and (sminos.alias_reach(m, name, short) if short else sminos.id_reach(m, name))}
 
 
 def _entry_of(channel, p, m):
@@ -1918,10 +1920,15 @@ def speak(channel, a, session, tags):
         else:
             others.append(t)
     if others:
-        own = home if session else sminos.caller_project(None)
-        names = {channel.name}.union(*({_log_name(t["project"])} if t["project"] else _bare_logs(own, t)
-                                       for t in others))
-        sminos.die(ONE_LOG % ", ".join(sorted(names)), sminos.EXIT_UNKNOWN)
+        names, loose = {channel.name}, []
+        for t in others:
+            got = {_log_name(t["project"])} if t["project"] else _bare_logs(t)
+            names |= got
+            loose += [] if got else [t["raw"]]
+        said = ONE_LOG % ", ".join(sorted(names))
+        if loose:
+            said += (RESOLVES_OUTSIDE if len(loose) == 1 else RESOLVE_OUTSIDE) % (", ".join(loose), channel.name)
+        sminos.die(said, sminos.EXIT_UNKNOWN)
     recipients, raws, rows, wake = [], [], {}, False
     if any(sminos.is_all(t) for t in tags):
         wake = True
@@ -1961,6 +1968,14 @@ def speak(channel, a, session, tags):
         if outs and (recipients or len(outs) > 1):
             sminos.die(ONE_LOG % ", ".join(sorted({channel.name} | {p.name for p, _ in outs.values()})),
                        sminos.EXIT_UNKNOWN)
+        if tags and not recipients and not outs:
+            sminos.die(NONE_ADDRESSED % channel.name, sminos.EXIT_UNKNOWN)
+        if skipped:
+            # A row given no entry has no tag in the text either, on either route (in the channel, or directly to a
+            # thread that left it): a stream splitter rebuilds the text only for several audiences, and one
+            # audience's event would name the row it skipped.
+            kept = [x for places in held for x in places] + [place for _, got in outs.values() for _, _, place in got]
+            a.text = au.split_text(a.text, [raw for _, raw in sorted(kept)])
         if outs:
             # Sent to the thread directly, in its own project, by a project's say (C5: a reply to a member that left).
             [(dest, got)] = outs.values()
@@ -1975,12 +1990,6 @@ def speak(channel, a, session, tags):
                 draws[at].append(place)
             sminos.say_into(a, dest, home, session, sender, writer, kind, direct, False, draws)
             return
-        if tags and not recipients:
-            sminos.die(NONE_ADDRESSED % channel.name, sminos.EXIT_UNKNOWN)
-        if skipped:
-            # A row given no entry has no tag in the text either: a stream splitter rebuilds the text only for
-            # several audiences, and one audience's event would name the row it skipped.
-            a.text = au.split_text(a.text, [raw for _, raw in sorted(x for places in held for x in places)])
         raws = held
     fields = {"thread": thread} if kind == "say" and thread else {}
     if outsider:

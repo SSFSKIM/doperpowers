@@ -906,8 +906,8 @@ class Doors(Machine):
         self.live(sid, self.root)
         rc, out, err = self.cli("say", "@worker @desk-integration/worker hello", cwd=self.root)
         self.assertEqual(rc, 4, err)
-        self.assertIn("one message, one log: the tags name app, desk-integration", err,
-                      "a bare name is read in the sender's own project, beside the channel (CH2's M4)")
+        self.assertIn("one message, one log: the tags name desk-integration; @worker resolves outside "
+                      "desk-integration", err, "a bare name, beside the channel, named as the tag it is (CH2's M4)")
         self.assertEqual(self.log_events(PROJ) + self.log_events(DESK), [],
                          "the refusal names the bare tag's log with no member looked up: nothing reconciled, nothing "
                          "recorded")

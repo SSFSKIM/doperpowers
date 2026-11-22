@@ -545,9 +545,10 @@ class Lines(Say):
 
     def test_a_torn_rows_tag_is_left_out_of_the_text_its_recipients_read(self):
         """A torn row is given no entry, and its tag no place in the text: the text goes to a stream splitter
-        that rebuilds it only for several audiences, so what one audience reads would name the row it skips."""
+        that rebuilds it only for several audiences, so what one audience reads would name the row it skips. On
+        every route: beside a thread that has left, the message goes to it directly, and names it alone."""
         rtid, rsid, received = self.live("reader")
-        stid, ssid, _ = self.live("writer")
+        stid, ssid, sreceived = self.live("writer")
         torn_sid = str(uuidlib.uuid4())
         w = "beta/" + torn_sid
         sminos.log_append(self.app, w, "joined", session=torn_sid, alias="hidden", name_source="user",
@@ -563,6 +564,15 @@ class Lines(Say):
         self.assertEqual(e["to"], [{"session": rsid, "alias": "reader", "thread": rtid}])
         self.assertEqual(e["text"], "@reader the plan", "the skipped row's tag is not in the event's text")
         [frame] = self.got(received, "the plan")
+        self.assertNotIn("hidden", frame)
+        self.assertNotIn(torn_sid[:8], frame)
+        self.removed(stid, ssid)
+        code, out = self.as_session(rsid, "say", "@desk/hidden#%s @%s/%s the old reply" % (torn_sid[:8], DESK, stid[:8]))
+        self.assertEqual(code, 0, out)
+        self.assertIn("sent to it directly, in %s" % self.p.name, out)
+        [(pid, d)] = [(pid, d) for pid, d in self.project_says() if d["text"].endswith("the old reply")]
+        self.assertEqual(d["text"], "@%s/%s the old reply" % (DESK, stid[:8]), "the direct message names it alone")
+        [frame] = self.got(sreceived, "the old reply")
         self.assertNotIn("hidden", frame)
         self.assertNotIn(torn_sid[:8], frame)
 
@@ -604,6 +614,8 @@ class Refused(Say):
                      before)
         self.refused(*say("@desk/reader @faraway#%s hello" % osid[:8]), "one message, one log: the tags name app, "
                      "desk", 4, before)
+        self.refused(*say("@faraway @desk/reader hello"), "one message, one log: the tags name desk; @faraway "
+                     "resolves outside desk", 4, before)   # a bare alias, unresolved: no project claimed for it
         self.refused(*say("--in", "desk", "@faraway hello"),
                      "no member faraway in channel desk; elsewhere: @app/faraway#%s. Drop --in to reach it in its own "
                      "project" % osid[:8], 4, before)
