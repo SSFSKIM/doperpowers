@@ -68,7 +68,13 @@
     "words:b1": "<the arriving words of b1, as the endpoint sent them down: the event with its sig>",
     "words:b2": "<the arriving words of b2, likewise>",
     "words:b3": "<the arriving words of b3, likewise>",
-    "channel:C": "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c"
+    "channel:C": "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c",
+    "email:B": "b@example.com",
+    "session:S6": "66666666-6666-4666-8666-666666666666",
+    "ref:b-mini": "<the ref of b-mini, B's machine, which the add-machine scene enrolls: each side's run binds its own>",
+    "kid:b-mini": "<the key id of b-mini's machine key, likewise>",
+    "request:R1": "<b-mini's channel-request naming S2, in the channel's log as the endpoint sent it down: the event with its sig and attest>",
+    "request:R2": "<b-mini's channel-request naming S1, likewise>"
   },
   "cases": [
     {
@@ -358,6 +364,23 @@
         { "scene": "holds", "log": "{{channel:C}}", "held": true, "within": 2000, "note": "the endpoint counts a member of the channel's log, which puts it in the machine's record as known" },
         { "up": { "t": "member", "session": "{{session:S1}}", "alias": "main", "project": "{{project:P}}", "lane": "A", "state": "idle", "title": "the main session", "cwd": "{{checkout}}", "launch": "{{launch:L1b}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" }, "principal": "@machine", "inference": { "kind": "slot", "configDir": "{{configDir}}" }, "controller": { "lane": "A", "since": "2026-10-27T18:01:00Z" }, "access": "listed", "shares": [], "policyRev": 0 }, "vary": ["controller.since"], "note": "a member in no declared channel carries no channels key: this is case 11's frame" },
         { "scene": "holds", "log": "{{channel:C}}", "held": false, "within": 2000 }
+      ]
+    },
+    {
+      "name": "a reach? about a channel request: asked under the channel's id, the target's member frame under its own project; its sender judged again from the event signed over the channel, a session's owner reached and another member's private session not",
+      "steps": [
+        { "scene": "add-machine", "name": "b-mini", "owners": ["{{member:B}}"], "note": "B's machine joins the org: the head advances" },
+        { "down": { "t": "revoked", "version": 6, "devices": ["{{device:b1}}"], "members": [], "keys": ["{{kid:b1}}", "{{kid:b1-step}}"] }, "vary": ["version", "keys"] },
+        { "scene": "machine-event", "machine": "b-mini", "session": "{{session:S6}}", "seq": 1, "project": "{{channel:C}}", "owners": ["{{member:B}}"], "body": { "kind": "channel-request", "op": "add", "session": "{{session:S2}}", "thread": "5a1e0c22-0f4b-4d27-9b6e-1c3a5e7f9a02", "id": "7f3a9c2e5b1d4e8fa6c0d2b4e6f8a1c3" }, "binding": "request:R1", "note": "a session of b-mini, in its own project, writes a request into the channel's log: signed over the channel's id, attested to B; it names its target by the session it reads and its thread, never a to" },
+        { "down": { "t": "events", "project": "{{channel:C}}", "events": [{ "event": "{{request:R1}}", "signer": { "kind": "machine", "ref": "{{ref:b-mini}}", "name": "b-mini", "keyId": "{{kid:b-mini}}" }, "owners": [{ "id": "{{member:B}}", "email": "{{email:B}}" }] }] }, "note": "sminos stores it in the channel's log, marked verified" },
+        { "up": { "t": "member", "session": "{{session:S2}}", "alias": "bob", "project": "{{project:P}}", "lane": "A", "state": "idle", "cwd": "{{checkout}}", "launch": "{{launch:L2}}", "owners": ["{{member:B}}"], "ownersProof": [], "origin": { "kind": "maws", "requester": "{{member:B}}" }, "principal": "{{member:B}}", "inference": { "kind": "slot", "configDir": "{{configDir}}" }, "controller": { "lane": "A", "since": "2026-10-27T18:01:00Z" }, "access": "private", "shares": [], "policyRev": 1 }, "vary": ["controller.since"], "note": "S2, B's, made private: only a verified sender reaches it" },
+        { "up": { "t": "reach?", "id": "r-ch-1", "project": "{{channel:C}}", "session": "{{session:S2}}", "event": "{{request:R1}}" }, "vary": ["id"], "note": "sminos asks once per request, about the one session it names: S2, a member of P (no member frame is ever sent under a channel id): project is the channel's, the log the event is in and its signing scope; the event as stored, without sminos's verified" },
+        { "down": { "t": "reach", "id": "r-ch-1", "verdict": "deliver" }, "note": "the sender, b-mini's session attested to B, shares its owner B with S2: a person's own sessions are never restricted among themselves" },
+        { "scene": "machine-event", "machine": "b-mini", "session": "{{session:S6}}", "seq": 2, "project": "{{channel:C}}", "owners": ["{{member:B}}"], "body": { "kind": "channel-request", "op": "add", "session": "{{session:S1}}", "thread": "5a1e0c11-0f4b-4d27-9b6e-1c3a5e7f9a01", "id": "2b8d4f6a1c3e4a5b9d7f0e2c4a6b8d1f" }, "binding": "request:R2", "note": "a second request, naming S1" },
+        { "down": { "t": "events", "project": "{{channel:C}}", "events": [{ "event": "{{request:R2}}", "signer": { "kind": "machine", "ref": "{{ref:b-mini}}", "name": "b-mini", "keyId": "{{kid:b-mini}}" }, "owners": [{ "id": "{{member:B}}", "email": "{{email:B}}" }] }] } },
+        { "up": { "t": "member", "session": "{{session:S1}}", "alias": "main", "project": "{{project:P}}", "lane": "A", "state": "idle", "title": "the main session", "cwd": "{{checkout}}", "launch": "{{launch:L1b}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" }, "principal": "@machine", "inference": { "kind": "slot", "configDir": "{{configDir}}" }, "controller": { "lane": "A", "since": "2026-10-27T18:01:00Z" }, "access": "private", "shares": [], "policyRev": 1 }, "vary": ["controller.since"], "note": "S1, the machine's, made private and shared with no one" },
+        { "up": { "t": "reach?", "id": "r-ch-2", "project": "{{channel:C}}", "session": "{{session:S1}}", "event": "{{request:R2}}" }, "vary": ["id"] },
+        { "down": { "t": "reach", "id": "r-ch-2", "verdict": "refuse", "reason": "not-reachable" }, "note": "B, verified, neither owns S1 nor holds list on it" }
       ]
     }
   ]

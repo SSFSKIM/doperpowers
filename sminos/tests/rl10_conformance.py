@@ -15,12 +15,18 @@ as written, its bindings this run's; an `up` line is a line sminos must send
 on that connection: the first not matched before that equals it, bindings
 substituted and each `vary` path compared for presence. What sminos does with
 a down line is checked where it shows (a file, a delivery, a spent position).
-`scene` and `quiet` are the endpoint's, and passed by. A `words?` the
-conversation does not stage is answered `refuse` at once, so a session's
-later owed events are asked as the conversation stages them. The
-conversation stages no `reach?` (P5 O18 D3): its endpoint advertises
-`reach`, and each one sminos asks before a peer push is answered `deliver`
-at once, the push the conversation expects then made.
+`scene` and `quiet` are the endpoint's, and passed by, but for the two
+scenes that bind what later lines name (SCENES: `add-machine`, another
+machine of the org, its ref and key id; `machine-event`, an event of one of
+its sessions as the endpoint sends it down, signed and attested). A thread
+id is minted here, so the fixture's literal at a `vary`'d `thread` stands
+for the one sminos sent, and a later line naming it names that. A `words?`
+the conversation does not stage is answered `refuse` at once, so a session's
+later owed events are asked as the conversation stages them. The only
+`reach?` lines the conversation stages are case 14's, about a channel's
+requests, which are left for their steps; every other one sminos asks
+before a peer push (P5 O18 D3: its endpoint advertises `reach`) is
+answered `deliver` at once, the push the conversation expects then made.
 
 One kind of line is not sminos's to send as written, named in a table below
 with its reason: PROBES, lines the endpoint's suite plays as a sminos would
@@ -32,7 +38,10 @@ whole conversation: it never sends such a line. Every other line is
 sminos's as written: the fixture carries the threads' lines (T1) and the
 declared channel's (CH1's M6, its case 13, staged by registering the
 channel under the fixture's id and name and placing S1 by its own change),
-and nothing is amended here.
+and a channel's requests across machines (CH1's M7, case 14, the
+fifteenth, which CH1's review calls case 15, staged by narrowing S2 and
+then S1 to private before the request naming each arrives), and nothing is
+amended here.
 
 Prints one `ok` or `FAIL` line per line of the conversation it plays, for
 run-sminos-tests.sh to count, and exits 1 when one fails.
@@ -632,12 +641,46 @@ def stage_channel(op):
     return stage
 
 
+def stage_private(name):
+    """Case 14: S2, then S1, made private with no share by a terminal's
+    narrowing (`sminos access`), before the request naming it arrives: its
+    member frame then carries the reach the endpoint judges the request by."""
+    def stage():
+        alias = {"S1": "main", "S2": "bob"}[name]
+        r = subprocess.run([CLI, "access", alias, "private"], capture_output=True, text=True, cwd=P_.root)
+        if r.returncode:
+            raise RuntimeError("sminos access %s private: %s" % (alias, r.stderr.strip()))
+    return stage
+
+
 STAGE = {(0, 3): stage_open_main, (2, 0): stage_read_only(True), (2, 2): stage_read_only(False),
          (4, 13): stage_whole_second, (6, 6): stage_operator_words, (6, 8): stage_unrelayed,
          (8, 0): stage_host, (8, 2): stage_raise, (9, 5): stage_relaunch,
          (11, 3): stage_restart, (12, 0): stage_ask("req-3"), (12, 2): stage_ask("req-4"),
          (12, 4): stage_answer("req-3"), (12, 6): stage_answer("req-4"),
-         (13, 0): stage_channel("add"), (13, 4): stage_channel("remove")}
+         (13, 0): stage_channel("add"), (13, 4): stage_channel("remove"),
+         (14, 3): stage_private("S2"), (14, 8): stage_private("S1")}
+
+
+# The endpoint's scenes that bind what later lines name: another machine of
+# the org (its ref and key id) and an event of one of its sessions, signed
+# over a log and attested, as the endpoint sends it down (the binding the
+# scene names). Every other scene is the endpoint's alone, and passed by.
+def scene_add_machine(step):
+    B["ref:" + step["name"]] = codes.b64url(os.urandom(16))
+    B["kid:" + step["name"]] = codes.b64url(os.urandom(16))
+
+
+def scene_machine_event(step):
+    at = iso()
+    B[step["binding"]] = {"ts": at, "created": at, "writer": "%s/%s" % (step["machine"], step["session"]),
+                          "seq": step["seq"], **step["body"],
+                          "attest": {"owners": step["owners"], "ownersProof": [], "origin": {"kind": "terminal"},
+                                     "stateVersion": 6},
+                          "sig": {"kid": B["kid:" + step["machine"]], "value": "AQ"}}
+
+
+SCENES = {"add-machine": scene_add_machine, "machine-event": scene_machine_event}
 
 
 # ------------------------------------------------------------- what sminos did with a down line
@@ -739,12 +782,32 @@ def check_send_entered():
         "answered %r, S1 took %r" % (got, mod.delivered)
 
 
+def check_request(name, binding, placed):
+    """Case 14: what the endpoint's word did, in the target's record (its
+    statement waits for the private session's audience): the request
+    answered there, and the thread in the channel exactly when it was
+    `deliver`."""
+    def check():
+        import sminos_threads as threads
+
+        def answered():
+            t = threads.current_record(B["session:" + name], fresh=True)
+            ids = [a[1] for a in (t or {}).get("answered") or [] if isinstance(a, list) and a[0] == B["channel:C"]]
+            return t if B[binding]["id"] in ids else None
+        t = wait_for(answered, timeout=10)
+        return t is not None and (B["channel:C"] in threads.held_set(t)) is placed, \
+            "%s's record answered %s, %s the channel: %r" % (
+                name, binding, "in" if placed else "not in", t and (t.get("channels"), t.get("answered")))
+    return check
+
+
 CHECK = {(0, 2): check_no_identity, (0, 5): check_identity, (0, 6): check_revoked(3), (0, 7): check_org,
          (2, 1): check_policy(True), (2, 3): check_policy(False), (5, 1): check_present,
          (6, 1): check_delivered("S1", "run the tests"), (6, 7): check_delivered("S1", "asked while RL1 is down"),
          (7, 13): check_delivered("S2", "from b1"), (11, 39): check_delivered("S2", "from b2"),
          (11, 7): check_revoked(3), (11, 29): check_revoked(4),
-         (11, 32): check_revoked(5, ["b1"]), (9, 13): check_send_entered}
+         (11, 32): check_revoked(5, ["b1"]), (9, 13): check_send_entered, (14, 1): check_revoked(6, ["b1"]),
+         (14, 6): check_request("S2", "request:R1", True), (14, 11): check_request("S1", "request:R2", False)}
 
 
 def late_checks(P):
@@ -871,7 +934,15 @@ def planned_asks():
     return out
 
 
+def planned_reaches():
+    """(project, session) of every reach? the conversation stages (case 14's,
+    about a channel's requests): left for its step, never answered here."""
+    return {(subst(s["up"].get("project")), subst(s["up"].get("session")))
+            for case in CASES for s in case["steps"] if isinstance(s.get("up"), dict) and s["up"].get("t") == "reach?"}
+
+
 PLANNED = set()
+PLANNED_REACH = set()
 ANSWERED = set()
 
 
@@ -880,7 +951,8 @@ def answer_unstaged(conn):
     event settles, and the session's next owed event is asked. Each reach?,
     which it never stages, answered `deliver`."""
     for i, f in enumerate(conn.frames):
-        if f.get("t") == "reach?" and (conn.number, i) not in ANSWERED:
+        if f.get("t") == "reach?" and (conn.number, i) not in ANSWERED \
+                and (f.get("project"), f.get("session")) not in PLANNED_REACH:
             ANSWERED.add((conn.number, i))
             try:
                 conn.write({"t": "reach", "id": f["id"], "verdict": "deliver"})
@@ -924,6 +996,13 @@ def up(ci, si, step, opts):
     MATCHED.add((conn.number, i))
     if "id" in vary and isinstance(step["up"].get("id"), str):
         IDS[step["up"]["id"]] = conn.frames[i]["id"]
+    for p in vary:
+        # A thread's id is minted here: the fixture's literal at a `vary`'d
+        # `thread` stands for the one sminos sent, which a later line names.
+        if p.rsplit(".", 1)[-1] == "thread":
+            literal = path_get(step["up"], p)
+            if isinstance(literal, str) and "{{" not in literal:
+                IDS[literal] = path_get(conn.frames[i], p)
     STEPS[(ci, si)] = (conn.number, i)
     return True, ""
 
@@ -981,10 +1060,18 @@ def replay():
     stage_device_words()
     late_checks(P_)
     PLANNED.update(planned_asks())
+    PLANNED_REACH.update(planned_reaches())
     EP.rl10(B["wrongToken"])
     halt = threading.Event()
     box = {}
     uplink.WORDS_WAIT = 600.0   # the replay's own pace answers an ask, not a timer
+    # The uplink runs in this process; a daemon runs it as a child whose standard error is daemon.log (its
+    # supervisor's), so what sminos warns or notes from here on goes there as it would, not into the replay's
+    # lines: case 14's private targets, with no audience at their policyRev, have their answers' statements
+    # waiting, which sminos says in a warning.
+    for name, word in (("warn", "warning"), ("note", "note")):
+        mock.patch.object(sminos, name,
+                          lambda msg, word=word: sminos.daemon_log("sminos: %s: %s" % (word, msg))).start()
     threading.Thread(target=lambda: box.update(kept=uplink.run_rl10(halt.is_set, halt)), daemon=True).start()
     try:
         for ci, case in enumerate(CASES):
@@ -993,6 +1080,8 @@ def replay():
                     say("FAIL", "the replay took more than %d s: stopped at %d.%d" % (DEADLINE, ci, si))
                     return
                 if "scene" in step or "quiet" in step:
+                    if step.get("scene") in SCENES:
+                        SCENES[step["scene"]](subst(step))
                     continue
                 if (ci, si) in STAGE:
                     STAGE[(ci, si)]()
