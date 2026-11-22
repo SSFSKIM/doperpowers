@@ -9,7 +9,9 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import signal
+import stat
 import subprocess
 
 from devcloudlib import redact
@@ -35,6 +37,39 @@ def sha256_file(path):
 def pass_paths(profile_dir, account):
     providers = pathlib.Path(profile_dir) / "providers"
     return providers / ".pass" / account, providers / f"{account}.pass.json"
+
+
+_STAGED = re.compile(r"\.[^/]+\.new")   # conformance.test's staged copy
+
+
+def never_passed(profile_dir, account, configured):
+    """Whether a profile provider has confirmably never passed under this
+    profile: neither its passing copy nor its pass record is there (only a
+    pass puts a version into use, and nothing in the driver removes one), and
+    no pass artifact names an account outside `configured` (the names of the
+    profile's accounts), which may be this one's former name. Anything that
+    cannot be looked at, links not followed, is taken as a pass."""
+    if account.shipped:
+        return False
+    providers = pathlib.Path(profile_dir) / "providers"
+    try:
+        copies = {n for n in _entries(providers / ".pass") if not _STAGED.fullmatch(n)}
+        records = {n.removesuffix(".pass.json") for n in _entries(providers) if n.endswith(".pass.json")}
+    except OSError:
+        return False
+    names = copies | records
+    return account.name not in names and names <= set(configured)
+
+
+def _entries(directory):
+    """The names in a real directory (not a link to one); none when there is
+    no such entry; OSError for anything else."""
+    try:
+        if not stat.S_ISDIR(os.lstat(directory).st_mode):
+            raise NotADirectoryError(str(directory))
+    except FileNotFoundError:
+        return set()
+    return set(os.listdir(directory))
 
 
 def not_registered(account):
