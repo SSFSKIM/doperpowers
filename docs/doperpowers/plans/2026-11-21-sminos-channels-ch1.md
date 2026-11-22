@@ -55,7 +55,8 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) M7 — Requests across machines: the endpoint's word, and what a requester is told. `cdc800c4..ede64e18`, clean at its second review; the acceptance scene's seven steps met; `sminos-idle` 32,781 calls a second.
 - [x] (2026-11-22) The review of M1 to M7 as one range, by the composite's holder (`b7413f10..ffc6569a`, 19 confirmed), and its fixes: A1 to A11 and MAWS's reworked case 15 (`ffc6569a..4411a917`), three task reviews, the last round's three fixes after the bound; the replay 121 lines `ok`; `sminos-idle` 32,126 calls a second. The holder reads the range a second time after M8.
 - [x] (2026-11-22) M8 — Older copies, what is written beside the code, the version, and the acceptance. `1be3f7fb..f6c205ad` (main merged twice, then `bef6f74e`), three reviews (the bound), then round 3's two findings fixed (Decision Log, "M8 as built"); sminos 1.54.0; the scene 47/0; the check on a real engine three steps passed; `sminos-idle` 32,737 calls a second.
-- [ ] The branch reviewed at its end (Decision Log, "Verification"), and its fixes: the holder's second panel over the whole range, after the pull request opens.
+- [x] (2026-11-22) The holder's second panel over the whole range (`bef6f74e..317c7e6a`, 23 confirmed), and its fix wave C1 to C9 (`317c7e6a..ad2796e6`), one task review, its fixes after it; L4 to L16 logged; the replay 121 lines `ok`; `sminos-idle` 32,348 calls a second.
+- [ ] The holder's high-rung reading of the fix wave (`317c7e6a..` the head), and the merge.
 
 ## Words this document adds
 
@@ -2711,6 +2712,37 @@ while the milestones are built, one observation and its evidence each.
   were `{}` before and after the hand-off, since the channel's log held
   nothing then, so that step shows them unchanged without showing a
   non-empty boundary carried.
+- 2026-11-22 — **The second whole-range review and its fix wave**
+  (`317c7e6a..ad2796e6`). The holder's second panel over `bef6f74e..317c7e6a`
+  confirmed 23 (2 P1); its triage ruled nine fixed (C1 to C9), thirteen
+  logged (L4 to L16, rows in TECH-DEBT's "sminos channels"), one dismissed.
+  C1 took the triage's alternative shape: the uplink's request pass reads
+  its target's member frame as the plane last read it
+  (`Link.member_on_lane`) and reads no view, and its finish call finishes
+  only the entry it committed (`finish_thread(..., only=)`); the older hang
+  of every plane refresh stays a TECH-DEBT row, which now names its
+  remaining callers on the consumer's thread (CH1 added one: `member_under`
+  at a channel's upload). A legacy channel hand-off's carry reads the
+  predecessor's publication in the channel's log, read-only (C2); `add`,
+  `env` and `create`'s revival refuse, before anything is resolved or
+  written, a channel this enrollment does not carry ("its registration on
+  this machine names another org", or no hub), a channel that left this
+  machine excepted, since placing a member is what brings it back, and
+  `remove` never refused (C3); a session record that exists and cannot be
+  read at the last read defers the write as `record-unreadable` (C5); a
+  shortened channel qualifier left unquoted is refused in `cmd_say` before
+  any selector or tag is read (C7); a request's malformed reach reply keeps
+  the ask held to its deadline (C8, requests' asks only: main's own loop on
+  a message's malformed reply is a TECH-DEBT row, measured at 2,827 asks in
+  3 seconds on `bef6f74e`); C4 and C9 as ruled. Row 3 (C6) resolves the
+  addressed session's owner in `thread_of`'s order over every record,
+  set-aside ones included: the wave first narrowed it to sessions the
+  target only had, for a seat "answering for its own current session", and
+  its one task review showed that reason false, since by T1 an archived
+  human-opened record owns its current session before an older copy's
+  seat; the narrowing was reverted. The review's fixes (`ad2796e6`) had no
+  review of their own; the holder's high-rung reading of `317c7e6a..` is
+  theirs.
 
 ## Outcomes & Retrospective
 
