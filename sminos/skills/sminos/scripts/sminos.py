@@ -5626,9 +5626,9 @@ def _reconcile_channel(project, events, by_session):
     runs again; nothing else of _reconcile runs (no join, no end, no thread
     made or adopted, no hand-off). Before that, an entry an older copy
     left on a thread of such a session owing the channel's log anything is
-    finished as every finisher does it (sminos_threads.finish, which voids
-    it, replaying none of it), whatever holds the session: it would keep
-    the thread out of its own project."""
+    finished as every finisher does it (sminos_threads.finish: what it
+    owes the channel voided, its local steps finished), whatever holds the
+    session: it would keep the thread out of its own project."""
     latest, joined, _, _ = log_memo(events, "memberships", _memberships)
     threads, out = threads_module(), []
     for sid, e in joined.items():

@@ -1875,16 +1875,21 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
             else:
                 _change(thread_id, lambda view, raw: _release(view, raw, entry), deadline)
             return not (get(thread_id) or {}).get("pending")
-        if sminos.is_channel_id(str(entry.get("project") or "")):
-            return _void_into_channel(thread_id, entry, deadline)   # before any effect is replayed
-        if project is None or project.id != entry.get("project"):
-            project = sminos.known_project(str(entry.get("project") or ""))
-        if project is None:
-            return False
-        home = home or project.id
+        # An entry an older copy addressed to a channel (_say_voided): its channel's effects are voided, before
+        # any of them, under this lock; every local step is finished as for any entry.
+        channel = sminos.is_channel_id(str(entry.get("project") or ""))
+        if channel:
+            _say_voided(thread_id, entry)
+            home = home or str(entry["project"])
+        else:
+            if project is None or project.id != entry.get("project"):
+                project = sminos.known_project(str(entry.get("project") or ""))
+            if project is None:
+                return False
+            home = home or project.id
         # The events `appended` returns are the caller's project's alone: a queued entry may owe another's (a
         # refill that moved its seat), which the caller would otherwise take for its own log's.
-        sink = appended if project.id == home else []
+        sink = appended if not channel and project.id == home else []
         session, other = t["current"], entry.get("other") if entry.get("op") == "absorb" else None
         if other:
             held = _hold(thread_id, entry, session, deadline)
@@ -1894,22 +1899,24 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
                 return _undo(thread_id, entry, deadline)
             if held == "held" and not entry.get("merged"):
                 _merge_absorbed(thread_id, entry, other, deadline)
-        if entry.get("carry") and not entry.get("carried"):
+        if entry.get("carry") and not entry.get("carried") and not channel:
             if not before(project, entry):
                 return False
             # Carried once: a replay does not carry again what a later deliberate change undid (a `join --cwd`
             # that removed the job's override after the copy, while an event was still owed).
             _change(thread_id, lambda view, raw: _mark_carried(view, raw, entry), deadline)
         returning = entry.get("op") == "return"
-        if returning and entry.get("settle") and not settle(project, entry["settle"], deadline, entry.get("until")):
+        if returning and entry.get("settle") and not channel and \
+                not settle(project, entry["settle"], deadline, entry.get("until")):
             return False   # what reached it while it was ended is settled before it is a member again
         # Each event's append takes its writer's locks under the finisher's deadline too: LockBusy past it, the
         # entry left open for the replay, so a finisher bounded by a deadline never waits on another's append.
         bounded = functools.partial(append, lock_until=deadline)
-        for event in entry.get("events") or []:
+        for event in [] if channel else entry.get("events") or []:
             if not _owe(project, entry, event, sink, bounded):
                 return False
-        if not returning and entry.get("settle") and not settle(project, entry["settle"], deadline, None):
+        if not returning and entry.get("settle") and not channel and \
+                not settle(project, entry["settle"], deadline, None):
             return False   # what is held for it is settled before the record is set aside or deleted (§6, 3)
         if entry.get("last") == "purge" and entry.get("settle"):
             stop(t, entry)   # tried once a finish: a stop that fails does not keep the purge open
@@ -1940,6 +1947,10 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
                 chained.append(nxt)
                 return True
             last = entry.get("last")
+            if last == "purge" and channel:
+                # Its `retired` voided, the ended record is the one statement left that the session ended (what
+                # join on sight and choose read before adopting it again): kept, as an end's, never deleted.
+                last = "aside"
             if last == "purge" and entry.get("settle") and view["current"] != entry["settle"]:
                 # Another occupant since (an older copy's refill merged its `current` past the entry): the purge
                 # was of the session it settled, and deletes no record that now holds another.
@@ -1962,53 +1973,36 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
             return not (get(thread_id) or {}).get("pending")
 
 
-def _void_into_channel(thread_id, entry, deadline):
+def _say_voided(thread_id, entry):
     """An entry whose events go to a channel's log: an older copy's, begun
     while it took the channel for the session's project (a return owing
     its `joined`, a release its `renamed`, a hand-off its `retired`
     `continued` and `joined`, an end its `retired`). No copy of this code
     writes a thread's fact into a channel's log (the one write it makes
     there, the undo of an older copy's `joined`, is the channel's
-    reconciliation's, never a replay's), so nothing of it is replayed: no
-    event, no carry, no settlement, no merge, no stop, no seat brought in
-    line, no queued `next`. Under the finisher lock (finish), before any of
-    those, whoever finishes it (the frontier review's B1, M8's review).
-    What stays is the record's own: an absorption is rolled back (`was`,
-    `unset`: the provisional record keeps its session, one owner) and its
-    reservation released; any other entry is cleared, an end's record set
-    aside or deleted as its `last` says. Said in daemon.log before the
-    write, as intent: a cut says it again; a notice that cannot be written
-    is said on stderr. True when the record has no open entry left."""
+    reconciliation's, never a replay's), so _finish voids what the entry
+    addresses to the channel, whoever finishes it, under the finisher lock
+    and before any of it (the frontier review's B1, M8's review): no event
+    appended there, no hand-off's reach carried under it, no settlement of
+    what is held for the session under it. Every local step is finished as
+    for any entry, so the record ends as an ordinary finish leaves it: an
+    absorption's hold, merge and deletion (a claim cut before its hold
+    held is undone as any lost one is), a stop, a seat brought in line, a
+    queued `next` begun and finished in its own project, an end's record
+    set aside as its `last` says. A purge's record is kept as an end's,
+    not deleted: its `retired` voided, the ended record is the one
+    statement left that the session ended, which join on sight and choose
+    read before adopting it again. Said in daemon.log as intent, before
+    the first write: a cut says it again; a notice that cannot be written
+    is said on stderr."""
     events = [e for e in entry.get("events") or [] if isinstance(e, dict)]
-    line = "voiding: thread %s's %s entry, which owes %s to channel %s: none of it is replayed" % (
-        thread_id[:8], entry.get("op"), ", ".join(str(e.get("kind")) for e in events) or "no event",
-        sminos.project_label(str(entry.get("project") or "")))
-    if entry.get("op") == "absorb" and entry.get("other"):
-        line += "; the absorption of %s is rolled back" % str(entry["other"])[:8]
-    elif (entry.get("next") or {}).get("op"):
-        line += "; its queued %s is dropped" % entry["next"]["op"]
+    line = "voiding: thread %s's %s entry, which owes %s to channel %s: none of that is replayed; its local " \
+        "steps are finished" % (thread_id[:8], entry.get("op"), ", ".join(str(e.get("kind")) for e in events)
+                                or "no event", sminos.project_label(str(entry.get("project") or "")))
     try:
         sminos.daemon_log(line)
     except OSError as e:
         sminos.warn("%s (not written to daemon.log: %s)" % (line, e))
-    if entry.get("op") == "absorb" and entry.get("other"):
-        _undo(thread_id, entry, deadline)
-        _change(entry["other"], lambda view, raw: _release(view, raw, entry), deadline)
-        return not (get(thread_id) or {}).get("pending")
-
-    def clear(view, raw):
-        if (view.get("pending") or {}).get("id") != entry["id"]:
-            return False
-        raw.pop("pending", None)
-        last = entry.get("last")
-        if last == "purge" and (not entry.get("settle") or view["current"] == entry["settle"]):
-            return "delete"
-        if last == "aside" and view["opened"] == "human":
-            return "aside"
-        return True
-
-    _change(thread_id, clear, deadline, bump=True)
-    return not (get(thread_id) or {}).get("pending")
 
 
 def _merge_absorbed(thread_id, entry, other, deadline):
