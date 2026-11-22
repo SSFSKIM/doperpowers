@@ -3241,15 +3241,16 @@ def spent_seqs(project, writer):
 
 
 @contextmanager
-def writer_locks(path, held=False):
+def writer_locks(path, held=False, lock_until=None):
     """A writer file's locks as _append takes them: its directory's
     `.sync.lock` shared, then the file's own lock. `held`: the caller holds
     them already (append_host, which decides a host event's route under the
-    log's)."""
+    log's). `lock_until`: LockBusy for a lock not had by then."""
     if held:
         yield
         return
-    with flocked(os.path.join(os.path.dirname(path), ".sync.lock"), exclusive=False), flocked(path + ".lock"):
+    with flocked(os.path.join(os.path.dirname(path), ".sync.lock"), exclusive=False, lock_until=lock_until), \
+            flocked(path + ".lock", lock_until=lock_until):
         yield
 
 
@@ -3393,14 +3394,16 @@ def queued_read(project, writer):
     return [e for e in queued_events(queued_path(project, writer)) if e["writer"] == writer]
 
 
-def queued_operators(project):
+def queued_operators(project, paths=None):
     """{writer: path} of the project's queues of this machine's operator
     writers (the plain one and its streams), under its name now or a former
-    one (a welcome that renamed the machine while an append waited)."""
+    one (a welcome that renamed the machine while an append waited).
+    `paths`: the queue files as the caller listed them, read instead of a
+    listing of its own."""
     me, former = machine_identity()
     names = {me, *former}
     out = {}
-    for path in glob.glob(os.path.join(glob.escape(project.home), QUEUED, "*.jsonl")):
+    for path in glob.glob(os.path.join(glob.escape(project.home), QUEUED, "*.jsonl")) if paths is None else paths:
         got = queued_events(path)
         if got and operator_writer(got[0]["writer"]) and writer_base(got[0]["writer"]).rpartition("/")[0] in names:
             out[got[0]["writer"]] = path
@@ -3506,7 +3509,8 @@ def waits_line(project, writer):
             "delivered, once the uplink has seen it" % (project.name, writer))
 
 
-def _append(project, writer, events, skip_src=False, guard=None, store="log", held=False, released=False):
+def _append(project, writer, events, skip_src=False, guard=None, store="log", held=False, released=False,
+            lock_until=None):
     """Append events to the writer's file under `.sync.lock` shared (git never
     rewrites log/ while an appender writes) and the file's own lock (seq is the
     last line's plus one, past any position the uplink spent, which it spends
@@ -3516,12 +3520,13 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
     another of the project's stores (HOST_STORE), by the same rule in its own
     directory, its seqs its own; `held`, its locks are the caller's
     (writer_locks). An own writer's `human` events in the log get their
-    append receipts under the same lock, first (_write_receipts). Returns
-    the events as written."""
+    append receipts under the same lock, first (_write_receipts).
+    `lock_until`: LockBusy, nothing appended, for a lock not had by then.
+    Returns the events as written."""
     if any(e["kind"] in LIFECYCLE for e in events):
         _VIEWS.pop(project.id, None)
     path = store_path(project, store, writer)
-    with writer_locks(path, held):
+    with writer_locks(path, held, lock_until):
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "r+b") as f:
             if guard is not None:
@@ -3776,15 +3781,16 @@ def _merge(streams):
     return list(heapq.merge(*streams.values(), key=lambda e: (e["ts"], e["writer"])))
 
 
-def _store_whole(project, store, shared=False):
+def _store_whole(project, store, shared=False, paths=None):
     """(the store's files' (path, key), every event of it as _store_read
     returns them, each a copy of its own): merged again only once a file
     moved. A machine's history is tens of thousands of events that do not
     change, and the daemon's tick merged every project's every 5 s.
     `shared`: the merged list itself, no copy, for a reader that changes
     nothing in it (view_of's View); what is derived from it is kept with it
-    (log_memo) until a file moves."""
-    files = tuple((path, *_log_file_held(path)) for path in _store_paths(project, store))
+    (log_memo) until a file moves. `paths`: the store's files as the
+    caller listed them, read instead of a listing of its own."""
+    files = tuple((path, *_log_file_held(path)) for path in (_store_paths(project, store) if paths is None else paths))
     sig = tuple((path, key) for path, key, _ in files)
     held = _MERGED.get((project.home, store))
     if held is None or held[0] != sig:
@@ -4551,11 +4557,11 @@ def streams_for(project, session, recipients, text=None, raws=None):
     return audience_module().stream_for(project, session, recipients, text, raws)
 
 
-def keep_stream(project, writer, audience):
+def keep_stream(project, writer, audience, lock_until=None):
     """A stream writer's audience, kept before its first event (the
     uplink's voids claim it); nothing for a plain writer."""
     if audience is not None:
-        audience_module().keep_stream(project, writer, audience)
+        audience_module().keep_stream(project, writer, audience, lock_until)
 
 
 def published_redacted(event, audience):
@@ -4935,7 +4941,7 @@ def _fresh_publication(event):
     return True
 
 
-def lifecycle(log_project, session, kind, guard=None, required=True, **fields):
+def lifecycle(log_project, session, kind, guard=None, required=True, lock_until=None, **fields):
     """Append one lifecycle event for a session on this machine to the
     session's own file: a session's lifecycle has one writer, so its order is
     its seq. A failure raises LogWriteFailed — the event is part of the verb —
@@ -4947,7 +4953,9 @@ def lifecycle(log_project, session, kind, guard=None, required=True, **fields):
     retirement's, is one of `fields`.) No `joined` goes into a project told
     rather than read (Guessed), whoever asks; and nothing but a `retired`
     into a channel's log (CH1: a thread's facts go to its own project; the
-    one retirement undoes a `joined` an older copy wrote there)."""
+    one retirement undoes a `joined` an older copy wrote there).
+    `lock_until`: a finisher's deadline (sminos_threads.finish), LockBusy
+    for a lock of the append not had by then, nothing appended."""
     if log_project is None or not session or (kind == "joined" and guessed(log_project)) \
             or (kind != "retired" and is_channel_id(log_project.id)):
         return []
@@ -4989,8 +4997,8 @@ def lifecycle(log_project, session, kind, guard=None, required=True, **fields):
     elif kind == "retired" and isinstance(event.get("to"), str):
         published_redacted(event, aud)   # a successor named to no one its audience does not hold
     try:
-        keep_stream(log_project, writer, aud)
-        out = _append(log_project, writer, [event], guard=guard)
+        keep_stream(log_project, writer, aud, lock_until)
+        out = _append(log_project, writer, [event], guard=guard, lock_until=lock_until)
     except OSError as e:
         msg = "recording %s of %s in %s's log failed: %s" % (kind, session[:8], log_project.name, e)
         if required:

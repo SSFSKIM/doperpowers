@@ -1269,27 +1269,28 @@ class Link:
             log("events for project %r, which is no hub project of org %s known here: ignored"
                 % (frame.get("project"), self.cred["org"]))
             return
-        appended, rejections = hl.take(frame.get("events"))
+        stored = [] if self.channels else None
+        appended, rejections = hl.take(frame.get("events"), kept=stored)
         if appended:
             self.imported[hl.project.id] = hl
-            if self.channels:
-                self.hear_answers(frame.get("events"))
+            if stored:
+                self.hear_answers(hl.project, stored)
         if rejections and hl.project.id in self.opened:
             self.report(hl, rejections)
 
-    def hear_answers(self, events):
-        """The answers to channels' requests among an import's events kept
-        (sminos_channels.answers_in) in ANSWERS_HEARD, across the uplink
-        process's connections, each for a request's lifetime: what the
-        leaving rule reads of a thread of another machine
+    def hear_answers(self, project, stored):
+        """The answers to channels' requests among the events an import of
+        `project`'s log stored (sminos_channels.answers_in: never one held
+        back, each by answer_of's rule of its writer) kept in ANSWERS_HEARD,
+        across the uplink process's connections, each for a request's
+        lifetime: what the leaving rule reads of a thread of another machine
         (sminos_channels.outstanding), never every project's log. Run only
         while a channel is open on this stream (a channel with an outstanding
         request of this machine's stays open), so a machine with none pays
         nothing; an uplink started since an answer came does not hear it,
         and its request keeps the channel open until its lifetime is out."""
         now = time.monotonic()
-        heard = sminos.channels_module().answers_in(
-            [raw.get("event") for raw in events if isinstance(raw, dict)] if isinstance(events, list) else [])
+        heard = sminos.channels_module().answers_in(project, stored)
         ttl = sminos.channels_module().request_ttl()
         for k in [k for k, v in ANSWERS_HEARD.items() if now - v[1] > ttl]:
             del ANSWERS_HEARD[k]
@@ -2133,13 +2134,19 @@ class Link:
         its frame there, current and on the lane (member_under, as a
         request's target's is for its ask), goes first, and while it is not
         (not queued yet, or its row or record cannot make one yet) nothing
-        of the channel's goes. A sender in no project now owes no frame. A
-        project's log is members_before's alone."""
+        of the channel's goes. A sender that is a member of no project now
+        owes no frame: one in none, and one whose own events in the project
+        last_project names leave it no member there (a `retire` since it
+        wrote: last_project names where it retired from, and no frame
+        under it ever comes). A project's log is members_before's alone."""
         if log.id not in self.channels:
             return self.members_before(log, sessions)
+        threads = sminos.threads_module()
         for sid in sorted(s for s in sessions if s):
             own = sminos.last_project(sid)
-            if own is not None and not self.member_under(own, sid):
+            if own is None or not threads.member(sminos.own_events_of(own, sid)):
+                continue
+            if not self.member_under(own, sid):
                 return False
         return True
 
@@ -2285,8 +2292,9 @@ class Link:
         chans = sminos.channels_module()
         for key in [k for k in self.request_words if k[0] not in self.channels]:
             del self.request_words[key]   # a word for a channel no longer open here: asked again once it is
-        for key in [k for k in self.request_retry if k[0] not in self.channels]:
-            del self.request_retry[key]
+        begun = time.monotonic()
+        for key in [k for k, until in self.request_retry.items() if k[0] not in self.channels or until <= begun]:
+            del self.request_retry[key]   # its channel closed, or its interval over (nothing it holds back now)
         for pid in sorted(self.channels):
             hl = self.logs.get(pid)
             if hl is None:
@@ -2306,11 +2314,17 @@ class Link:
                 if self.requests_failing.get(pid) != failed:
                     log("the requests of channel %s could not be carried out: %s" % (channel.name, failed))
                 self.requests_failing[pid] = failed
-                continue
-            self.requests_failing.pop(pid, None)
+                carried = []
+            else:
+                self.requests_failing.pop(pid, None)
             if any(o.state in chans.CARRIED for _, o in carried):
                 self.next_upload = 0.0   # its statement goes up on the next pass
             at = time.monotonic()
+            # A word whose request the pass could not evaluate (its input unreadable, the pass failed: no outcome
+            # for it) could not commit either: asked again at the ordinary interval, as one whose outcome says so.
+            evaluated = {chans.event_key(channel, r) for r, _ in carried}
+            for key in words.keys() - evaluated:
+                self.request_retry[key] = at + WORDS_EVERY
             for r, outcome in carried:
                 key = chans.event_key(channel, r)
                 if key in words and outcome.state not in chans.CARRIED and outcome.why != "moved":

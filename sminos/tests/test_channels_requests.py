@@ -1345,6 +1345,27 @@ class Frontier(Requests):
         sminos._MERGED.clear()
         self.assertEqual(self.carry(DESK), {first["id"]: O("applied"), later["id"]: O("applied")}, "in order")
 
+    def test_a8_the_input_read_is_the_one_the_strict_listing_listed(self):
+        """The strict listing is the read's own input, never a check beside it: a listing the readers would take
+        between them that fails as glob fails (as nothing at all) cannot make a log or a queue read as empty."""
+        tid, sid, _, other = self.two()
+        first = self.request(DESK, "add", sid, tid, writer=sminos.writer_id(other))
+        ident = rl10.cutover()
+        sminos.mark_enrolled(ident["name"], ident["enrolled"])
+        sminos.forget_caches()
+        later = self.request(DESK, "remove", sid, tid)   # queued for its writer's head
+        self.assertIsNone(later["seq"])
+        home, real = self.chan(DESK).home, glob.glob
+
+        def failing(pattern, *a, **k):
+            if os.fspath(pattern).startswith(glob.escape(home)):
+                return []   # glob's answer to a directory it could not list
+            return real(pattern, *a, **k)
+        sminos._MERGED.clear()
+        with mock.patch("glob.glob", failing):
+            _, reqs = channels.requests_of(self.chan(DESK))
+        self.assertEqual([r["id"] for r in reqs], [first["id"], later["id"]])
+
 
 if __name__ == "__main__":
     unittest.main()

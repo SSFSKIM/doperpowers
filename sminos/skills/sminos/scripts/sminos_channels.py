@@ -40,7 +40,6 @@ project. What is here:
   added by hand, `channel-env`); `channel show` and `channel env` (show,
   env).
 """
-import glob
 import json
 import os
 import re
@@ -421,9 +420,14 @@ def _logged_requests(events):
 def input_signature(channel):
     """The signature of the files the ordered input of a carrying out is
     read from (requests_of): the channel log's writer files and its queued
-    appends, each as a stat gives it, read by stats alone (no file parsed,
-    no lock, nothing written): what decide() compares under the record's
-    lock, so the input is read and merged only outside it."""
+    appends as _input_files lists them, each as a stat gives it, read by
+    stats alone (no file parsed, no lock, nothing written): what decide()
+    compares under the record's lock, so the input is read and merged only
+    outside it."""
+    return _signature(*_input_files(channel))
+
+
+def _signature(logs, queues, unlisted):
     def keys(paths):
         out = []
         for path in paths:
@@ -433,8 +437,28 @@ def input_signature(channel):
             except OSError:
                 out.append((path, None))
         return tuple(out)
-    return (keys(sminos._store_paths(channel, "log")),
-            keys(sorted(glob.glob(os.path.join(glob.escape(channel.home), sminos.QUEUED, "*.jsonl")))))
+    return keys(logs), keys(queues), tuple(unlisted)
+
+
+def _input_files(channel):
+    """([the log's writer files], [its queues], [the directories of them
+    that are there and cannot be listed]): the ordered input's files, each
+    directory listed once (os.listdir), strictly: a listing that fails is
+    no empty directory (glob, which the store's readers list through, takes
+    it for one), and only one that does not exist holds nothing, as where a
+    membership begins reads it (sminos.channel_positions). requests_of
+    reads the files this lists, never a listing of its own beside it."""
+    out, unlisted = [], []
+    for where in (os.path.join(channel.home, "log"), os.path.join(channel.home, sminos.QUEUED)):
+        try:
+            names = os.listdir(where)
+        except FileNotFoundError:
+            names = []
+        except OSError:
+            names = []
+            unlisted.append(where)
+        out.append(sorted(os.path.join(where, n) for n in names if n.endswith(".jsonl") and not n.startswith(".")))
+    return out[0], out[1], unlisted
 
 
 def requests_of(channel, whole=True):
@@ -444,19 +468,23 @@ def requests_of(channel, whole=True):
     writer's head), in the queue's order, each with `seq` None, read without
     changing the queue; one whose writer and id the log holds already (a
     release cut short) once. The signature (input_signature) is taken
-    before the read, so a file that moves during it moves it too.
+    before the read, so a file that moves during it moves it too; both are
+    of the files one strict listing gave (_input_files).
 
-    A writer file of the log, or a queue, that is there and cannot be read
-    raises sminos.PositionsUnread, as an unreadable channel log does where a
-    membership begins (Y3): an input missing a file has no order, and a
-    request after one it cannot see must not be carried past it. `whole`
-    False reads what it can instead (`channel show`, which only reads)."""
-    sig = input_signature(channel)
-    unread = _unlistable(channel) if whole else []
-    files, events = sminos._store_whole(channel, "log", shared=True)
+    A directory of the input (its log, its queues) that is there and cannot
+    be listed, a writer file of the log, or a queue, that is there and
+    cannot be read raises sminos.PositionsUnread, as an unreadable channel
+    log does where a membership begins (Y3): an input missing a file has no
+    order, and a request after one it cannot see must not be carried past
+    it. `whole` False reads what it can instead (`channel show`, which only
+    reads)."""
+    logs, queue_files, unlisted = _input_files(channel)
+    sig = _signature(logs, queue_files, unlisted)
+    unread = list(unlisted) if whole else []
+    files, events = sminos._store_whole(channel, "log", shared=True, paths=logs)
     unread += [path for path, key in files if key is None and os.path.lexists(path)]
     try:
-        queues = sminos.queued_operators(channel)
+        queues = sminos.queued_operators(channel, paths=queue_files)
         queued = sminos.said_order(queues) if queues else []
     except OSError as e:
         unread.append(getattr(e, "filename", None) or "its queue")
@@ -468,23 +496,6 @@ def requests_of(channel, whole=True):
     held = {(e["writer"], e["id"]) for e in logged}
     queued = [{**e, "seq": None} for e in queued if is_request(e) and (e["writer"], e["id"]) not in held]
     return sig, [dict(e) for e in logged] + queued
-
-
-def _unlistable(channel):
-    """The directories of the channel's input (its log, its queues) that are
-    there and cannot be listed: a listing that fails is no empty directory
-    (glob, which the readers list through, takes it for one), so the input
-    is not whole. Only a directory that does not exist holds nothing, as
-    where a membership begins reads it (sminos.channel_positions)."""
-    out = []
-    for where in (os.path.join(channel.home, "log"), os.path.join(channel.home, sminos.QUEUED)):
-        try:
-            os.listdir(where)
-        except FileNotFoundError:
-            continue
-        except OSError:
-            out.append(where)
-    return out
 
 
 def _queued_under_former_name(request):
@@ -1540,7 +1551,7 @@ def outstanding(channel, heard=None, now=None):
     for a thread of this machine its record (`answered`, or the record
     ended); for one of another machine `heard`, {(channel id, request id):
     thread} of the answering statements this machine's uplink imported
-    (sminos_uplink.Link.answers_heard), so until one is heard such a
+    (sminos_uplink.Link.hear_answers), so until one is heard such a
     request is outstanding until its lifetime is out. What keeps the
     channel's log open here while no thread of this machine is in it
     (sminos_uplink's leaving rule), so the ask pass can carry it; a file
@@ -1566,18 +1577,21 @@ def outstanding(channel, heard=None, now=None):
     return False
 
 
-def answers_in(events):
-    """{(channel id, request id): thread} of the statements among `events`
-    that answer a request (a `channels` event with a well-formed `answers`
-    and a `thread`): what the uplink keeps of what it imports, for
-    outstanding."""
-    out = {}
-    for e in events:
-        a = e.get("answers") if isinstance(e, dict) and e.get("kind") == "channels" else None
-        if isinstance(a, dict) and sminos.is_channel_id(a.get("channel")) and isinstance(a.get("id"), str) \
-                and isinstance(e.get("thread"), str) and e.get("result") in CARRIED:
-            out[(a["channel"], a["id"])] = e["thread"]
-    return out
+def answers_in(project, events):
+    """{(channel id, request id): thread} of the statements among `events`,
+    stored in `project`'s log just now, that answer a request
+    (_answers_a_request) by answer_of's rule of their writer: its session's
+    own `joined` in that log is stamped with the statement's thread (the
+    log's merged read, kept beside it: _answering). What the uplink keeps
+    of what it imports, for outstanding; the rows' sessions are not read
+    (the roster is every project's)."""
+    said = [e for e in events if _answers_a_request(e) and isinstance(e.get("thread"), str)]
+    if not said:
+        return {}
+    _, merged = sminos._store_whole(project, "log", shared=True)
+    stamps = sminos.log_memo(merged, "channel-answers", _answering)[1]
+    return {(e["answers"]["channel"], e["answers"]["id"]): e["thread"] for e in said
+            if e["thread"] in stamps.get(sminos.writer_session(e["writer"]), ())}
 
 
 def _settled_own(channel):

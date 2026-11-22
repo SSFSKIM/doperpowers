@@ -1322,11 +1322,12 @@ class HubLog:
             return True
         return same_uncoded(held, e, self.is_own(e["writer"]))
 
-    def take(self, events):
+    def take(self, events, kept=None):
         """An `events` frame from the endpoint: each event, wrapped and
         verified by the endpoint (`unwrapped`), checked by its shape and
         appended with its `verified` key, or refused. Returns (how many were
-        appended, the `rejected` frames)."""
+        appended, the `rejected` frames). `kept`, a list, gains each event
+        appended, as stored: never one held back on a gap."""
         if not isinstance(events, list):
             log("an events frame for %s without a list of events: ignored" % self.project.name)
             return 0, []
@@ -1346,6 +1347,8 @@ class HubLog:
                                           self.same)
                 if outcome == "appended":
                     appended += 1
+                    if kept is not None:
+                        kept.append(e)
                 elif outcome == "gap":
                     log("held back %s in %s: its seq is not one past the writer's last (the hub sends what is "
                         "missing at the next hello)" % (position(e), self.project.name))

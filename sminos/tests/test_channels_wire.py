@@ -1032,11 +1032,11 @@ class Asks(Requests, T1.Sessions):
         link.logs[pid] = hublog.HubLog(sminos.known_project(pid), link.cred)
         link.opened.add(pid)
         them = "6e000001-0000-4000-8000-0000000000e1"
-        statement = {"ts": sminos.now(ms=True), "writer": "other/" + them, "seq": 1, "kind": "channels",
+        joined = self.joined_there(them, 1, "a" * 32)
+        statement = {"ts": sminos.now(ms=True), "writer": "other/" + them, "seq": 2, "kind": "channels",
                      "session": them, "thread": "a" * 32, "op": "add", "channels": [DESK],
                      "answers": {"channel": DESK, "id": e["id"]}, "result": "applied"}
-        link.on_events({"t": "events", "project": pid, "events": [endpoint_standin.Endpoint.arriving(
-            statement, {"kind": "machine", "ref": "ref-other", "name": "other", "keyId": "k-other"})]}, None)
+        self.imported(link, pid, joined, statement)
         self.assertTrue(os.path.exists(sminos.writer_path(sminos.known_project(pid), "other/" + them)), "imported")
         sminos.forget_caches()
         with every, roster:
@@ -1106,6 +1106,138 @@ class Asks(Requests, T1.Sessions):
                 self.assertEqual((shown["state"], shown["reason"]), ("withheld", "audience"))
                 self.assertEqual(channels._request_line(shown)[-1], "refused: " + channels.WORDS["audience"])
                 self.assertTrue(self.link().may_leave(c), "nothing comes of it: nothing outstanding")
+
+    # -- the fix wave's review, round 2
+
+    def test_a1_a_sender_retired_since_its_request_owes_no_frame_and_its_batch_goes_whole(self):
+        """`retire` between the request and its upload: last_project still names the project the sender retired
+        from, but its own events there leave it no member, so no frame is owed and nothing waits for one; a frame
+        that carries its request beside another sender's event goes, the other's frame first."""
+        tid, sid, _ = self.human()
+        _, sender, _ = self.human()
+        _, other, _ = self.human()
+        link = self.link()
+        hl = link.logs[DESK]
+        hl.on_have({"t": "have", "project": DESK, "have": {}})
+        e = self.request(DESK, "add", sid, tid, writer=sminos.writer_id(sender))
+        f = self.request(DESK, "remove", sid, tid, writer=sminos.writer_id(other))
+        code, out = self.cli("retire", sender)
+        self.assertEqual(code, 0, out)
+        sminos.forget_caches()
+        self.assertEqual(getattr(sminos.last_project(sender), "id", None), self.p.id, "it names the project still")
+        link.upload(hl)
+        [(frame, members)] = self.uploaded(link)
+        self.assertEqual(sorted((x["writer"], x["seq"]) for x in frame["events"]),
+                         sorted([(e["writer"], e["seq"]), (f["writer"], f["seq"])]), "one batch, both writers")
+        self.assertEqual([m["project"] for m in members if m.get("session") == other], [self.p.id])
+
+    def hub_project(self, pid, name):
+        sminos.register_if_absent(sminos.make_project(pid, name, "", "", {"url": URL, "org": ORG}))
+        sminos.forget_caches()
+        return sminos.known_project(pid)
+
+    def joined_there(self, session, seq, thread):
+        """Another machine's session's `joined`, stamped with `thread`, as it arrives."""
+        return {"ts": sminos.now(ms=True), "writer": "other/" + session, "seq": seq, "kind": "joined",
+                "session": session, "thread": thread, "alias": "faraway", "name_source": "user", "machine": "other",
+                "cwd": "/d", "worktree": "", "role": "", "seat": "", "by": ""}
+
+    def imported(self, link, pid, *events):
+        """`events` of another machine's, arriving in `pid`'s log."""
+        machine = {"kind": "machine", "ref": "ref-other", "name": "other", "keyId": "k-other"}
+        link.on_events({"t": "events", "project": pid,
+                        "events": [endpoint_standin.Endpoint.arriving(e, machine) for e in events]}, None)
+        sminos.forget_caches()
+
+    def test_a6_an_answer_is_heard_only_once_stored_and_only_from_a_session_its_thread_had(self):
+        """What the leaving rule hears of an import is its stored events alone (a statement held back on a seq gap
+        is no answer yet), each by answer_of's rule of its writer: a statement whose writer's own `joined` in that
+        log is stamped with its thread; the stamp alone is a field any writer can set."""
+        tid, sid, _ = self.human()
+        link = self.link()
+        c = self.chan(DESK)
+        e = self.request(DESK, "add", sid, "a" * 32)   # a thread of another machine
+        pid = "9a9a9a9a-0000-4000-8000-00000000009b"
+        p = self.hub_project(pid, "theirs")
+        link.logs[pid] = hublog.HubLog(p, link.cred)
+        link.opened.add(pid)
+        them, stranger = "6e000001-0000-4000-8000-0000000000e2", "6e000001-0000-4000-8000-0000000000e3"
+        joined = self.joined_there
+
+        def statement(session, seq):
+            return {"ts": sminos.now(ms=True), "writer": "other/" + session, "seq": seq, "kind": "channels",
+                    "session": session, "thread": "a" * 32, "op": "s%d" % seq, "channels": [DESK],
+                    "answers": {"channel": DESK, "id": e["id"]}, "result": "applied"}
+        stored = os.path.join(p.home, "log", "other.%s.jsonl" % them)
+        self.imported(link, pid, joined(them, 1, "a" * 32), statement(them, 3))   # seq 2 not here: held back
+        with open(stored) as fh:
+            self.assertEqual([json.loads(x)["seq"] for x in fh if x.strip()], [1], "the statement was held back")
+        self.assertFalse(link.may_leave(c), "a held-back statement is not heard")
+        self.imported(link, pid, joined(stranger, 1, "b" * 32), statement(stranger, 2))
+        self.assertFalse(link.may_leave(c), "its writer's session never joined as the thread")
+        self.imported(link, pid, statement(them, 2))
+        self.assertTrue(link.may_leave(c), "stored, from a session the thread had: heard")
+
+    def test_a7_the_pass_waits_on_no_writer_lock_and_the_statement_is_left_to_the_replay(self):
+        """The finisher's append takes the writer file's locks bounded too: a statement whose writer another
+        process holds is left in the record's open entry, and the next frame is dispatched."""
+        ta, sa, _ = self.human()
+        tb, sb, _ = self.human()
+        self.remote(DESK, "add", sa, ta)
+        self.remote(LOBBY, "add", sb, tb)
+        link = self.link()
+        link.logs[LOBBY] = hublog.HubLog(self.chan(LOBBY), link.cred)
+        link.opened.add(LOBBY)
+        link.channels.add(LOBBY)
+        self.ask_pass(link)
+        asks = {a["session"]: a for a in self.asks(link)}
+        self.assertEqual(set(asks), {sa, sb})
+        path = sminos.writer_path(self.p, sminos.own_stream(self.p, sa)[0]) + ".lock"
+        with open(path, "a+") as held, mock.patch.object(sminos, "warn"):
+            fcntl.flock(held, fcntl.LOCK_EX)   # A's writer file, appended to by another process
+            at = time.monotonic()
+            self.answer(link, asks[sa], "deliver")
+            took = time.monotonic() - at
+            self.answer(link, asks[sb], "deliver")   # the next frame, dispatched
+            fcntl.flock(held, fcntl.LOCK_UN)
+        self.assertLess(took, 1.0, "the pass waited on A's writer lock")
+        self.assertEqual(self.held(ta), [DESK], "recorded")
+        self.assertTrue(threads.get(ta).get("pending"), "its statement owed by the open entry")
+        self.assertEqual(self.statements(sa), [], "not appended while its writer was held")
+        self.assertEqual(self.held(tb), [LOBBY])
+        sminos.forget_caches()
+        self.assertTrue(sminos.finish_thread(ta), "the replay appends it")
+        self.assertEqual([s["channels"] for s in self.statements(sa)], [[DESK]])
+
+    def test_a11_a_word_whose_request_could_not_be_read_waits_for_the_ordinary_interval(self):
+        """A pass that cannot read the channel's input evaluates no request and returns no outcome: each word it
+        took is still one that could not commit, so another request's reply does not retry it early."""
+        ta, sa, _ = self.human()
+        tb, sb, _ = self.human()
+        self.remote(DESK, "add", sa, ta)
+        self.remote(DESK, "add", sb, tb)
+        link = self.link()
+        self.ask_pass(link)
+        asks = {a["session"]: a for a in self.asks(link)}
+        self.assertEqual(set(asks), {sa, sb})
+        where = os.path.join(self.chan(DESK).home, "log")
+        real = os.listdir
+
+        def listing(p=".", *a, **k):
+            if os.path.abspath(os.fspath(p)) == os.path.abspath(where):
+                raise PermissionError(13, "Permission denied", p)
+            return real(p, *a, **k)
+        with mock.patch("os.listdir", listing), mock.patch.object(channels.sminos, "daemon_log"):
+            sminos._MERGED.clear()
+            self.answer(link, asks[sa], "deliver")   # its pass reads nothing of the channel
+        self.assertEqual(self.held(ta), [])
+        self.answer(link, asks[sb], "deliver")   # B's reply makes a pass due
+        self.assertEqual(self.held(tb), [DESK])
+        self.assertEqual([a["session"] for a in self.asks(link)[2:]], [], "A is not asked again before its interval")
+        self.ordinary_pass(link)
+        self.assertEqual([a["session"] for a in self.asks(link)[2:]], [sa], "asked again at the ordinary interval")
+        self.answer(link, self.asks(link)[-1], "deliver")
+        self.assertEqual(self.held(ta), [DESK])
 
 
 class WireAsks(unittest.TestCase):

@@ -34,6 +34,7 @@ thread owns, and owned_vms() asks it about a thread's sessions.
 import contextlib
 import copy
 import fcntl
+import functools
 import json
 import os
 import re
@@ -1900,8 +1901,11 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
         returning = entry.get("op") == "return"
         if returning and entry.get("settle") and not settle(project, entry["settle"], deadline, entry.get("until")):
             return False   # what reached it while it was ended is settled before it is a member again
+        # Each event's append takes its writer's locks under the finisher's deadline too: LockBusy past it, the
+        # entry left open for the replay, so a finisher bounded by a deadline never waits on another's append.
+        bounded = functools.partial(append, lock_until=deadline)
         for event in entry.get("events") or []:
-            if not _owe(project, entry, event, sink, append):
+            if not _owe(project, entry, event, sink, bounded):
                 return False
         if not returning and entry.get("settle") and not settle(project, entry["settle"], deadline, None):
             return False   # what is held for it is settled before the record is set aside or deleted (§6, 3)
