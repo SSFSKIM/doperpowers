@@ -47,6 +47,12 @@ project. What is here:
   addressed as (thread_of_row), the threads a session has been
   (claimants), those ever in a channel (once_in), and the rows a bare
   `@alias` is also looked up in (shared_rows, sminos._resolve_tag).
+- What a channel owes a thread (CH2's M2, Interfaces §3's first half): the
+  one selection (owed, over a Debt read from the thread's record alone:
+  debt), by the thread's id and past where its membership began; what a
+  push needs beside it (owing, an Owing); the thread's delivery record read
+  strictly (delivered); the last check (still_owed); and what `daemon owed`
+  counts for a channel (owed_here). Nothing here pushes.
 """
 import json
 import os
@@ -209,7 +215,12 @@ def began_of(thread_id, channel_id):
     t = threads.get(thread_id)
     if t is None or channel_id not in threads.held_set(t):
         return None
-    began = t.get("began") if isinstance(t.get("began"), dict) else {}
+    return _boundary(t, channel_id)
+
+
+def _boundary(record, channel_id):
+    """The record's positions for the channel, {writer: seq}, {} for none."""
+    began = record.get("began") if isinstance(record.get("began"), dict) else {}
     held = began.get(channel_id)
     return dict(held) if isinstance(held, dict) else {}
 
@@ -654,7 +665,11 @@ def reach_token(session):
     record's owners with its access, shares and policyRev
     (sminos_audience.policy_of), as one value; None while the record cannot
     be read. Read from the record's file as it is."""
-    rec = sminos.records_module().read(session) if session else None
+    return _token(sminos.records_module().read(session) if session else None)
+
+
+def _token(rec):
+    """reach_token of a session's record as read (None for none)."""
     if rec is None:
         return None
     access, shares, rev = sminos.audience_module().policy_of(rec)
@@ -2144,3 +2159,207 @@ def env(channel, op, machine, session):
            "%s is no longer in the pool of %s by hand") % (name, channel.name))
     return 0
 
+
+
+# ------------------------------------------------------------ what a channel owes a thread (CH2's M2; its §3)
+#
+# In a channel a message is owed to a thread, by its thread id (the `thread` of an entry of its `to`), and never
+# by a session: one delivery record and one delivery lock a thread there, `delivered/<thread id>.json` and
+# `.lock`, whatever session the thread holds. The selection applies where the membership began itself, so
+# nothing is written into a delivery record when a membership begins, ends, returns or changes session, and a
+# thread whose record does not hold the channel is owed nothing from it. Nothing here pushes: the delivery
+# operation (M3) takes its choice from owed().
+
+
+class Debt(NamedTuple):
+    """What the selection needs, read from the thread's record alone."""
+    channel: object       # the channel's Project
+    thread: str           # the thread the debt is owed to: the key of its delivery record and of its lock
+    session: str          # the session its record names as current when this was read
+    boundary: dict        # where its membership began (began_of), as read then
+
+
+class Owing(NamedTuple):
+    """A Debt's four fields, and what a push needs beside them."""
+    channel: object
+    thread: str
+    session: str          # where a push or a wake goes
+    boundary: dict
+    project: object       # the thread's own project: where its membership is read
+    member: object        # its row there: what the delivery operation takes as `member`
+    reach: object         # reach_token(session) as read then: None for a session with no record
+
+
+def debt(channel, record):
+    """The thread's Debt in the channel, from the record given and nothing
+    else: no view, no reconciliation, no lock, no write. None when the
+    record has ended, holds no session, or does not hold the channel. An
+    open entry hides no debt (owing() is where it stops a delivery)."""
+    threads = sminos.threads_module()
+    if record is None or threads.record_ended(record) or not record.get("current") \
+            or channel.id not in threads.held_set(record):
+        return None
+    return Debt(channel, record["thread"], record["current"], _boundary(record, channel.id))
+
+
+def _session_read(session):
+    """(defers, reach token) of the session's record, read one way wherever
+    eligibility is decided (owing, still_owed), as CH1's last guard reads it
+    (sminos_threads._last_reads): one that is not there (FileNotFoundError
+    alone) is lane A and does not defer, its token None; one that is there
+    and cannot be read defers, as lane B does."""
+    records = sminos.records_module()
+    rec = records.read(session)
+    if rec is None:
+        return not _gone(records.record_path(session)), None
+    return records.lane_of(rec) == "B", _token(rec)
+
+
+def owing(channel, record, row):
+    """debt(), then what a push needs: an Owing, or None. Reads only, and
+    looks no row up: `row` is (the thread's own project, its Member there),
+    given by the caller, and None for it is None. None also while the
+    record holds an open journal entry (`pending`, whatever its operation:
+    its current session is not settled yet) and while the session's record
+    defers (_session_read)."""
+    d = debt(channel, record)
+    if d is None or row is None or record.get("pending"):
+        return None
+    defers, token = _session_read(d.session)
+    if defers:
+        return None
+    project, member = row
+    return Owing(d.channel, d.thread, d.session, d.boundary, project, member, token)
+
+
+def _whole(d):
+    """Whether a delivery record's JSON is a whole one: an object of writer
+    entries, each an object whose counts are what its writers write."""
+    if not isinstance(d, dict):
+        return False
+    for v in d.values():
+        if not isinstance(v, dict):
+            return False
+        for k in ("settled", "attempts"):
+            if v.get(k) is not None and not (type(v[k]) is int and v[k] >= 0):
+                return False
+        if v.get("pending") is not None and type(v["pending"]) is not int:
+            return False
+    return True
+
+
+def delivered(channel, thread):
+    """The thread's delivery record under the channel, read strictly: {} when
+    no file is there; None when one is there and cannot be read or is no
+    whole record (_whole): neither empty nor settled, so nothing owed is
+    claimed for that thread. sminos.delivered_load, which answers {} to
+    both, is left for projects."""
+    try:
+        d = sminos.json_at(os.path.join(channel.home, "delivered", thread + ".json"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return None
+    return sminos.delivered_entries(d) if _whole(d) else None
+
+
+def _names_a_thread(e):
+    to = e.get("to")
+    if not isinstance(to, list) or "copy" in e or e["writer"].startswith("legacy/"):
+        return ()
+    return tuple(dict.fromkeys(r["thread"] for r in to
+                               if isinstance(r, dict) and isinstance(r.get("thread"), str) and r["thread"]))
+
+
+def _addressed(events):
+    out = {}
+    for e in events:
+        for t in _names_a_thread(e):
+            out.setdefault(t, []).append(e)
+    return out
+
+
+def addressed_threads(events):
+    """{thread id: the events whose `to` names it, in the log's order}: the
+    part of a channel's log owed() reads for each thread, read once for all
+    of them and once for a log that has not moved (sminos.log_memo; read it,
+    never change it). An entry with no `thread`, or one that is no string,
+    names no one; a copy is owed to no one."""
+    return sminos.log_memo(events, "thread-addressees", _addressed)
+
+
+def owed(d, events, record=None):
+    """THE selection, and the only one, of a Debt or an Owing: the events of
+    the channel's log (`events`, its merged list), in the log's order, each
+    once, an entry of whose `to` names d.thread, that lie past d.boundary
+    for their writer, and are neither settled nor revoked in the thread's
+    delivery record (`record`, or delivered() read here). An event the
+    thread itself wrote (its own `thread`) is none. None when the delivery
+    record cannot be read: nothing is claimed."""
+    if record is None:
+        record = delivered(d.channel, d.thread)
+        if record is None:
+            return None
+    out = []
+    for e in addressed_threads(events).get(d.thread, ()):
+        if e.get("thread") == d.thread or not _past(e, d.boundary):
+            continue
+        w = sminos._delivery(record, e["writer"])
+        if e["seq"] > w["settled"] and e["seq"] not in w.get("revoked", ()):
+            out.append(e)
+    return out
+
+
+def _past(e, boundary):
+    held = boundary.get(e["writer"])
+    return e["seq"] > (held if type(held) is int else 0)
+
+
+def first_owed(d, writer, events):
+    """owed()'s first event of `writer`, or None."""
+    return next((e for e in owed(d, events) or () if e["writer"] == writer), None)
+
+
+def still_owed(o, e=None, reach=False):
+    """The last check, on files as they are (a deliverer makes it holding the
+    thread's delivery lock), by the reads of CH1's last guard
+    (sminos_threads._last_reads): o.thread's own file reads, has not ended,
+    holds no open entry, holds the channel and names o.session as current;
+    the session's current record read afresh is that thread's and holds no
+    open entry; the session's record does not defer (_session_read); its
+    own events in o.project leave it a member there, and o.project is where
+    it is now (sminos._current_here: literal paths, a tie for neither);
+    with `reach`, its reach token is still o.reach; and, given `e`, the
+    event lies past the boundary as it is now. False settles nothing."""
+    threads = sminos.threads_module()
+    t = threads.get(o.thread)
+    if t is None or threads.record_ended(t) or t.get("pending") or o.channel.id not in threads.held_set(t) \
+            or t["current"] != o.session:
+        return False
+    now = threads.current_record(o.session, fresh=True)
+    if now is None or now["thread"] != o.thread or now.get("pending"):
+        return False
+    defers, token = _session_read(o.session)
+    if defers or (reach and token != o.reach):
+        return False
+    own = sminos.own_events_now(o.project, o.session)
+    if not threads.member(own) or not sminos._current_here(o.session, o.project, threads.in_effect(own)):
+        return False
+    return e is None or _past(e, _boundary(t, o.channel.id))
+
+
+def owed_here(channel):
+    """What `daemon owed` counts for a channel: (Debt, its owed events, or
+    None where its delivery record cannot be read) for each thread of this
+    machine that holds the channel (sminos_threads.set_holders: records that
+    read alone), from debt(), delivered() and the log: no Member, no view,
+    no lock, no write."""
+    holders = [t for t in sminos.threads_module().set_holders().values() if debt(channel, t) is not None]
+    if not holders:
+        return []
+    events = sminos.log_read(channel)
+    out = []
+    for t in sorted(holders, key=lambda t: t["thread"]):
+        d = debt(channel, t)
+        out.append((d, owed(d, events)))
+    return out

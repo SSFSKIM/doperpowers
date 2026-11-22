@@ -612,6 +612,9 @@ run_channels() {
   if python3 -B "$SCRIPT_DIR/test_channels_names.py"; then
     pass "names through a channel: a verb's target, a bare alias through a shared channel, every row of the id rule (test_channels_names.py)"
   else fail "names through a channel: a verb's target, a bare alias through a shared channel, every row of the id rule (test_channels_names.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_debt.py"; then
+    pass "what a channel owes a thread: by its id, past its boundary, across every transition; daemon owed (test_channels_debt.py)"
+  else fail "what a channel owes a thread: by its id, past its boundary, across every transition; daemon owed (test_channels_debt.py)"; fi
   echo
   if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; else
     fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; fi

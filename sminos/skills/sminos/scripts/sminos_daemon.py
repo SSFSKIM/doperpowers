@@ -3024,18 +3024,11 @@ def store_files(project, store):
     return sorted(glob.glob(os.path.join(glob.escape(project.home), store, "*.jsonl")))
 
 
-def owed_in(project, upstream, kept, failed):
-    """({kind: [(at, ref)]}, [(at, ref)] owed to closed sessions) of one
-    project; `upstream`, whether it is a project of this machine's upstream.
-    A file it cannot inspect goes to `failed`, and what it holds is not
-    counted."""
+def member_owed(project, out, failed):
+    """What a project's log owes its members joined from here, by each
+    session's delivery record, into `out`'s `deliveries` and `words`; what
+    waits for a closed or held session, returned."""
     outcomes = sminos.sibling_module("sminos_outcomes")
-    out = {k: [] for k in OWED_KINDS}
-    for path in store_files(project, "log") + store_files(project, sminos.HOST_STORE):
-        try:
-            readable(path)
-        except Uninspectable as e:
-            failed.append(e)
     events = sminos.log_read(project)
     info = sminos._projection(events)
     to = sminos.addressees(events)
@@ -3063,6 +3056,58 @@ def owed_in(project, upstream, kept, failed):
                 out["words"].append(item)
             else:
                 out["deliveries"].append(item)
+    return gone
+
+
+def channel_owed(channel, out, failed):
+    """What a channel's log owes this machine's threads in it (CH2's M2:
+    sminos_channels.owed_here, by each thread's own delivery record, never by
+    a session), into `out`, under the thread's alias as its record has it;
+    what waits for a thread this machine holds (stopped, not woken), as a
+    project's held member's does, returned. A delivery record that cannot be
+    read goes to `failed`; a thread whose own record cannot be read is not
+    among the holders, and is named nowhere."""
+    channels = sminos.channels_module()
+    cut, gone = rl10.cut_over(), []
+    for d, owed in channels.owed_here(channel):
+        if owed is None:
+            path = os.path.join(channel.home, "delivered", d.thread + ".json")
+            try:
+                inspected(path)
+                failed.append(Uninspectable(path, "not a delivery record"))
+            except Uninspectable as e:
+                failed.append(e)
+            continue
+        record = sminos.threads_module().get(d.thread) or {}
+        alias = str(record.get("alias") or d.thread[:8])
+        held = bool(owed) and sminos.hold_for(d.session)
+        for e in owed:
+            item = (sminos._ts_epoch(e.get("ts")), "%s → %s" % (sminos.event_ref(e), alias))
+            if held:
+                gone.append(item)
+            elif cut and sminos.words_route(channel, e) == "ask":
+                out["words"].append(item)
+            else:
+                out["deliveries"].append(item)
+    return gone
+
+
+def owed_in(project, upstream, kept, failed):
+    """({kind: [(at, ref)]}, [(at, ref)] owed to closed sessions) of one
+    project; `upstream`, whether it is a project of this machine's upstream.
+    A file it cannot inspect goes to `failed`, and what it holds is not
+    counted."""
+    outcomes = sminos.sibling_module("sminos_outcomes")
+    out = {k: [] for k in OWED_KINDS}
+    for path in store_files(project, "log") + store_files(project, sminos.HOST_STORE):
+        try:
+            readable(path)
+        except Uninspectable as e:
+            failed.append(e)
+    if sminos.is_channel_id(project.id):
+        gone = channel_owed(project, out, failed)
+    else:
+        gone = member_owed(project, out, failed)
     # With or without an upstream (the kinds above).
     for path in store_files(project, sminos.QUEUED):
         try:

@@ -3925,6 +3925,13 @@ def delivered_load(project, session_uuid):
         d = json_at(os.path.join(project.home, "delivered", reader_key(session_uuid) + ".json"))
     except (OSError, ValueError):
         return {}
+    return delivered_entries(d)
+
+
+def delivered_entries(d):
+    """A delivery record's JSON in the form delivered_load gives: what is no
+    writer's entry, and every mark out of shape, passed by. A channel's
+    strict reader (sminos_channels.delivered) reads through it too."""
     out = {}
     for w, v in (d.items() if isinstance(d, dict) else ()):
         if isinstance(v, dict):

@@ -35,7 +35,11 @@ does not hold with that event, of a kind outside `allowed`, and the
 `retired` rule above; anything in a channel's host store; and (in CH1, its
 default) a delivery record under a channel's log. An event the baseline
 holds is uploaded in its writer's order as any own event is, and is no
-breach. CH2 passes the kinds it adds, and `deliveries=False`.
+breach. CH2 passes the kinds it adds, and `deliveries=False`, under which a
+channel's `delivered/` holds a thread's delivery record and its lock and
+nothing else (CH2's M2: one record a thread, by its id): a file there named
+by anything but an id (`human.json`, a person's), or a record that is no
+JSON object of writer entries, is a breach.
 """
 import glob
 import json
@@ -46,6 +50,7 @@ ALLOWED = ("channel-request", "channel-env", "retired", "void")
 CHANNEL_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 LIMIT = 128
 HOST_STORE = "host"
+THREAD_FILE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(json|lock)")
 
 
 def is_channel(value):
@@ -177,4 +182,27 @@ def written(sminos_home, channel_ids, machine, before={}, allowed=ALLOWED, deliv
             if held:
                 out.append("channel %s holds delivery records: %s" % (cid, ", ".join(sorted(map(os.path.basename,
                                                                                                held)))))
+        else:
+            out.extend(_delivery_breaches(cid, os.path.join(home, "delivered")))
+    return out
+
+
+def _delivery_breaches(cid, d):
+    """A channel's `delivered/` as CH2 writes it: `<thread id>.json`, a JSON
+    object of writer entries, and `<thread id>.lock`, and nothing else."""
+    out = []
+    for p in sorted(glob.glob(os.path.join(glob.escape(d), "*"))):
+        m = THREAD_FILE.fullmatch(os.path.basename(p))
+        if m is None:
+            out.append("channel %s's delivered/ holds %s, which is no thread's record" % (cid, os.path.basename(p)))
+            continue
+        if m.group(2) == "lock":
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            rec = None
+        if not (isinstance(rec, dict) and all(isinstance(v, dict) for v in rec.values())):
+            out.append("channel %s's delivery record %s is no record of writer entries" % (cid, os.path.basename(p)))
     return out
