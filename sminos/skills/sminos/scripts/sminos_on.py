@@ -162,7 +162,7 @@ def read_request(a):
     # The protocol's fields alone: what this side marks on the request (`launched`, `unanswered`) is its own,
     # never a key the wire carried.
     # The spawner's full session id, which an older Mac does not send: kept only whole and begun by its short, so the
-    # VM side can keep it as an address hint (sminos.record_spawner_hint).
+    # VM side can keep it on the seat it launches as the spawner's address (sminos.spawner_address).
     session = by.get("session") if by is not None else None
     whole_id = isinstance(session, str) and sminos.UUID_RE.fullmatch(session) and session[:8] == by["short"]
     return {"v": d["v"], "nonce": d["nonce"], "org": d["org"], "origin": d["origin"],
@@ -442,7 +442,7 @@ def checked_and_run(c):
     directory, origin = where(c, cwd, projects)
     vm = make_vm(c, projects) if c.new else a.on
     request = {"v": 1, "nonce": secrets.token_hex(8), "org": enrolled["org"], "origin": origin, "by": by}
-    remote(c, vm, request, directory)
+    remote(c, vm, request, directory, enrolled)
 
 
 def usage(c):
@@ -745,22 +745,25 @@ def carried(a, directory):
     return out
 
 
-def remote(c, vm, request, directory):
-    """(i): the VM side, each run preceded by the reach rule read afresh,
-    tried again only on its own `not-enrolled`, for `new` only; then the
-    line (rows 25 to 33)."""
+def remote(c, vm, request, directory, enrolled):
+    """(i): the VM side, each run preceded by the reach rule read afresh
+    and the spawner's address with it (route_back: a spawner that changed
+    project while the VM was made or enrolled is sent as it is now, under
+    the request's nonce), tried again only on its own `not-enrolled`, for
+    `new` only; then the line (rows 25 to 33)."""
     a = c.a
-    # The positionals after `--`, so that an alias the Mac's parser took after its own (`-alias`) is one there.
-    # The session variable cleared there for this call alone: where a client sends it and a host accepts it, the
-    # VM's sminos would refuse the transport's call as a session's (§8 step 0).
-    args = (["vm", "ssh", vm, "--", "env", "-u", "CLAUDE_CODE_SESSION_ID", "sminos", "spawn",
-             "--asked-from=%s" % json.dumps(request, separators=(",", ":"), ensure_ascii=False)]
-            + carried(a, directory) + ["--", a.alias, "-"])
     bound = seconds("SMINOS_ON_TIMEOUT", REMOTE_TIMEOUT)
     wait = seconds("SMINOS_ON_ENROLL_WAIT", ENROLL_WAIT)
     deadline = None
     while True:
-        reach(c)
+        if c.session:
+            request = {**request, "by": route_back(c, enrolled)}   # the reach rule read with it
+        # The positionals after `--`, so that an alias the Mac's parser took after its own (`-alias`) is one there.
+        # The session variable cleared there for this call alone: where a client sends it and a host accepts it,
+        # the VM's sminos would refuse the transport's call as a session's (§8 step 0).
+        args = (["vm", "ssh", vm, "--", "env", "-u", "CLAUDE_CODE_SESSION_ID", "sminos", "spawn",
+                 "--asked-from=%s" % json.dumps(request, separators=(",", ":"), ensure_ascii=False)]
+                + carried(a, directory) + ["--", a.alias, "-"])
         given = bound
         if deadline is not None:
             # The wait bounds every try it starts: none at or past its end, and each given only what is left,

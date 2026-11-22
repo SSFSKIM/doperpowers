@@ -9,11 +9,13 @@
 # what is written after the hello waits behind the whole backlog; until the
 # writer of a session arrives, nothing here holds a row of it.
 #
-# - The spawner reached meanwhile: a session `spawn --asked-from` opened here
-#   reaches its spawner by `@<short>` through the address hint the request
-#   carried, with no row of the spawner on this machine at all (the relay
-#   from mac held back), and mac delivers it to the spawner's session; once
-#   the row arrives after the spawner's thread changed session, the row wins.
+# - The spawner reached meanwhile: a seat `spawn --asked-from` opened here,
+#   its record carrying the spawner's address as that launch writes it,
+#   reaches its spawner by `@<short>` with no row of the spawner on this
+#   machine at all (the relay from mac held back for the whole case), and
+#   mac delivers it to the spawner's session; with the address absent the
+#   tag is refused (exit 4); once the row arrives after the spawner's thread
+#   changed session, the row wins.
 # - The thread reached once read: before the backlog reaches a stopped
 #   thread that changed session, `@<short>` of its first session is refused
 #   as it always was (exit 4); a page at a time, and what mac writes after
@@ -239,22 +241,27 @@ vm_opened() { python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPV" opened | grep
 if until_true vm_opened; then pass "vm's uplink opened team (its hello)"; else fail "vm's uplink opened team (its hello)"; fi
 
 # ---- the spawner, with no row of it here --------------------------------------------------------
-echo "the spawner reached by its hint:"
+echo "the spawner reached by its address:"
 rl10_as vm vm
 C=5d000001-0000-4000-8000-0000000000d1
+transcript "$C" "$VHOME/team"
+run_in "$VHOME/team" "$SMINOS" seat add team child --session "$C"
+assert_rc 0 "$RC" "the child is a seat of vm"
 live_session child "$C" "$VHOME/team" bg
 run_in "$VHOME/team" "$SMINOS" list
 binds "$PP" "${SA:0:8}" "$SA" && fail "vm holds no row of the spawner (nothing relayed from mac)" \
   || pass "vm holds no row of the spawner (nothing relayed from mac)"
-run_in "$VHOME/team" env CLAUDE_CODE_SESSION_ID="$C" "$SMINOS" say "@${SA:0:8} up on vm, no hint"
-assert_rc 4 "$RC" "with no hint, the tag is refused as before"
+run_in "$VHOME/team" env CLAUDE_CODE_SESSION_ID="$C" "$SMINOS" say "@${SA:0:8} up on vm, no address"
+assert_rc 4 "$RC" "with the address absent, the tag is refused as before"
 assert_contains "$OUT" "no member @${SA:0:8} in project team, nor a session of that id in any project known here" \
   "in words that say what was searched"
+# The seat's record as spawn --asked-from's launch writes it: the request's spawner, with its org.
 py 'import sys
 sys.path.insert(0, sys.argv[1])
 import sminos
-sminos.record_spawner_hint({"alias": "spa", "short": sys.argv[2][:8], "project": sys.argv[3], "project_name": "team",
-                            "machine": "mac", "session": sys.argv[2]})' "$SCRIPTS" "$SA" "$PP"
+[seat] = [s for s in sminos.seats() if s["current"] == sys.argv[2]]
+sminos.meta_set(seat["seat_id"], {sminos.SPAWNER_ADDRESS: {"session": sys.argv[3], "alias": "spa", "project": sys.argv[4],
+                                                           "machine": "mac", "org": "org-1"}})' "$SCRIPTS" "$C" "$SA" "$PP"
 run_in "$VHOME/team" env CLAUDE_CODE_SESSION_ID="$C" "$SMINOS" say "@${SA:0:8} up on vm"
 assert_rc 0 "$RC" "the child's tag is accepted"
 assert_equals "$(field_of "$(events_with "$PP" "up on vm\"")" to)" "[{\"session\": \"$SA\", \"alias\": \"spa\"}]" \
@@ -317,11 +324,12 @@ binds "$PP" "${SA:0:8}" "$SA2" && pass "vm has read the spawner's hand-off" || f
 run_in "$VHOME/team" env CLAUDE_CODE_SESSION_ID="$C" "$SMINOS" say "@${SA:0:8} after the change"
 assert_rc 0 "$RC" "accepted"
 assert_equals "$(field_of "$(events_with "$PP" "after the change")" to)" "[{\"session\": \"$SA2\", \"alias\": \"spa2\"}]" \
-  "recorded for the session the spawner's thread holds now, not the one the hint names"
+  "recorded for the session the spawner's thread holds now, not the one the address names"
 assert_equals "$(py 'import sys
 sys.path.insert(0, sys.argv[1])
 import sminos
-print(sorted(sminos.spawner_hints()))' "$SCRIPTS")" "[]" "a row answered the short: the hint is gone"
+print([s[sminos.SPAWNER_ADDRESS]["session"] for s in sminos.seats() if s["current"] == sys.argv[2]])' "$SCRIPTS" "$C")" \
+  "['$SA']" "though the child's seat still carries the spawner's address"
 rl10_as mac mac
 until_true accepted_holds "$EPV" "after the change" || true
 until_true eval 'hand "$EPV" "$EPM"; got spa2 "after the change"' || true
