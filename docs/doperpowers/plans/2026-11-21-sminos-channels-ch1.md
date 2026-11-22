@@ -1528,7 +1528,7 @@ In `S/sminos_channels.py`:
         # decide that runs judge() again on the record it is given and on fresh reads, and writes that second
         # answer or nothing. An input whose signature moved since `earlier` was read is read again, three
         # times in the call, then pending `moved`
-    def ask_of(request) -> dict | None
+    def ask_of(channel, request) -> dict | None
         # what the endpoint is asked about a request left pending `endpoint`, read now: {"key": its event_key,
         # "thread", "session": the thread's current session, "project": the thread's own project, "reach":
         # reach_token(session)}; None when row 3 or 7 holds, or the record cannot be read
@@ -2499,6 +2499,22 @@ while the milestones are built, one observation and its evidence each.
   `restatement_applied(n)`, set only when that connection's own `restated`
   is applied. The last fix came after the third review and had none of
   its own.
+- 2026-11-21 — **M7 as built** (`cdc800c4..ede81a01`). `ask_of` takes the
+  channel, since `event_key` needs it (§6 amended, as `answer_of` in M5);
+  it answers none for a queued request with no position yet and for a
+  session record it cannot read. The request pass runs at the end of
+  `ask_words`, only while a channel is open, and sends through `hold_asks`,
+  past the message asks' hold filter. An answer past `REACH_WAIT` is
+  dropped even when it arrives before `expire_asks` runs. A channel whose
+  pass fails is logged once and does not stop the others. The stand-in's
+  `withhold` takes a JSON object of fields; it relays no tombstone for a
+  position it withheld, so the suite puts a withheld request last for its
+  writer. The expired case runs a daemon with `SMINOS_CHANNEL_REQUEST_TTL=3`.
+  The scene runs on three fresh homes, so `--scene` runs alone; a pass is:
+  rebuild the directory, relay, tick each machine, relay until the step
+  holds; it names B as `birch#<short>`, since a bare alias resolves only in
+  the caller's own project. All seven steps of the acceptance scene are met
+  (36 checks).
 
 ## Outcomes & Retrospective
 
