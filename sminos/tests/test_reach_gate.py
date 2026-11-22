@@ -378,12 +378,18 @@ class Owed(Rig):
             tw.wait_for(lambda: self.inbox(RECIP), timeout=WAIT)
         self.assertIn("hello at last", self.inbox(RECIP)[0])
 
-    def test_a_malformed_answer_is_no_answer(self):
+    def test_a_malformed_answer_is_no_answer_and_asked_again_at_the_deadline_only(self):
+        """A reply naming no verdict leaves the ask held as if none had come:
+        asked again on the ordinary timer (REACH_WAIT), never at the reply's
+        speed (on main before 1.54.1: thousands of `reach?` a second)."""
         self.live(RECIP, "rover", owners=ANOTHER)
         self.peer_say(1, "again")
         ep = self.endpoint(reach_verdict="maybe")
-        with mock.patch.object(uplink, "WORDS_EVERY", 0.2):
+        with mock.patch.object(uplink, "WORDS_EVERY", 0.2), mock.patch.object(uplink, "REACH_WAIT", 1.5):
             self.uplink()
+            ep.wait_until(lambda: len(self.reach_asks(ep)) >= 1, timeout=WAIT)
+            time.sleep(1.0)
+            self.assertEqual(len(self.reach_asks(ep)), 1, "held still: not asked again before its deadline")
             ep.wait_until(lambda: len(self.reach_asks(ep)) >= 2, timeout=WAIT)
         self.assertEqual((self.inbox(RECIP), self.settled(self.hp, RECIP, OTHER)), ([], 0))
         self.assertIsNone(self.record(self.hp, RECIP).get(OTHER, {}).get("attempts"))
