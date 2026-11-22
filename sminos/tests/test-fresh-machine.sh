@@ -24,6 +24,11 @@
 # running its daemon (rl10-machines.sh); between them only endpoint_standin's
 # `hand`, one way at a time, with its `page` for the backlog. Hermetic: HOME
 # and SMINOS_HOME are temporary, one pair per machine.
+#
+# FRESH_MACHINE_ORDER=reverse hands the backlog's writers in reverse lexical
+# order instead (the thread's second session before its first, the spawner
+# before the filler): the hub may come to send recently active writers
+# first, and nothing here may depend on the lexical order.
 # run-sminos-tests.sh runs this file beside its own cases.
 set -euo pipefail
 
@@ -145,6 +150,20 @@ events_with() { # project-id text — the events of this machine's log of the pr
   cat "$SMINOS_HOME/projects/$1/log/"*.jsonl 2>/dev/null | grep -F -- "$2" || true
 }
 has_event() { [ -n "$(events_with "$1" "$2")" ]; }   # project-id text — read again at each call
+# Whether this machine's latest copy of mac's word on a session says its machine wakes it (`wake: woken`). In this
+# harness mac publishes a stopped thread's state as held, then as woken, more than once in its first seconds.
+mac_says_woken() { # project-id session
+  py 'import json, sys
+last = None
+try:
+    for line in open(sys.argv[1]):
+        e = json.loads(line) if line.strip() else {}
+        if e.get("kind") == "state":
+            last = e
+except OSError:
+    pass
+sys.exit(0 if last and last.get("wake") == "woken" else 1)' "$SMINOS_HOME/projects/$1/log/mac.$2.jsonl"
+}
 field_of() { py 'import json, sys; print(json.dumps(json.loads(sys.argv[1]).get(sys.argv[2])))' "$1" "$2"; }
 # Whether this machine's projection of the project binds `name` to the session (a former session's short included).
 binds() { # project-id name session
@@ -204,6 +223,9 @@ SA=5c000001-0000-4000-8000-0000000000c1
 SA2=5c000002-0000-4000-8000-0000000000c2
 R1=fa000001-0000-4000-8000-0000000000a1
 R2=fb000002-0000-4000-8000-0000000000b2
+ORDER=()
+[ "${FRESH_MACHINE_ORDER:-}" = reverse ] && ORDER=("mac/$R2,mac/$R1,mac/$SA,mac/$F")
+page() { hand "$EPM" "$EPV" 2 ${ORDER[@]+"${ORDER[@]}"}; }   # one page of mac's backlog to vm
 live_session filler "$F" "$P"
 live_session spa "$SA" "$P"
 run_in "$P" "$SMINOS" list
@@ -263,7 +285,7 @@ on_vm "$SMINOS" who --thread="${R1:0:8}"
 assert_rc 4 "$RC" "before the backlog reaches the thread: who --thread of its first session answers nothing"
 on_vm "$SMINOS" say "@${R1:0:8} devcloud on vm: too early"
 assert_rc 4 "$RC" "and a tag of it is refused, as it always was"
-hand "$EPM" "$EPV" 2
+page
 rl10_as mac mac
 run_in "$P" env CLAUDE_CODE_SESSION_ID="$F" "$SMINOS" say "live after the hello"
 until_true accepted_holds "$EPM" "live after the hello" || true
@@ -272,17 +294,18 @@ passes=1
 until binds "$PP" "${R1:0:8}" "$R2"; do
   [ "$passes" -ge 400 ] && break
   [ -z "$(events_with "$PP" "live after the hello")" ] || { fail "the live event came before the backlog's end"; break; }
-  hand "$EPM" "$EPV" 2
+  page
   passes=$((passes + 1))
   sleep 0.1
 done
 binds "$PP" "${R1:0:8}" "$R2" && pass "at the backlog's end the first session's short binds R2 ($passes passes)" \
   || fail "at the backlog's end the first session's short binds R2 ($passes passes)"
 assert_equals "$(events_with "$PP" "live after the hello")" "" "what mac wrote after the hello waits behind the backlog"
-until_true eval 'hand "$EPM" "$EPV" 2; has_event "$PP" "live after the hello"' || true
+until_true eval 'page; has_event "$PP" "live after the hello"' || true
 has_event "$PP" "live after the hello" && pass "then it comes" || fail "then it comes"
 
 echo "the notice reaches the thread's current session:"
+until_true eval 'hand "$EPM" "$EPV"; mac_says_woken "$PP" "$R2"' || true
 on_vm "$SMINOS" say --notice devcloud --exit-held "@${R1:0:8} devcloud on vm: idle 3d (fresh)"
 assert_rc 0 "$RC" "the host's notice to the first session's short is accepted"
 assert_equals "$(field_of "$(events_with "$PP" "idle 3d (fresh)")" to)" "[{\"session\": \"$R2\", \"alias\": \"keeper\"}]" \
@@ -317,5 +340,5 @@ until_true eval 'hand "$EPV" "$EPM"; got spa2 "after the change"' || true
 got spa2 "after the change" && pass "mac delivered it to that session" || fail "mac delivered it to that session"
 
 echo
-if [ "$FAILURES" -eq 0 ]; then echo "test-fresh-machine: all $PASSES assertions passed"; else
+if [ "$FAILURES" -eq 0 ]; then echo "test-fresh-machine${ORDER[0]:+ (writers in reverse order)}: all $PASSES assertions passed"; else
   echo "test-fresh-machine: $FAILURES of $((PASSES + FAILURES)) assertions FAILED"; exit 1; fi

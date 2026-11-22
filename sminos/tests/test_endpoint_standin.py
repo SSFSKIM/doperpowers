@@ -220,6 +220,14 @@ class Hand(unittest.TestCase):
         self.assertEqual(self.c.events(P)[-1], (WA, 3))
         self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor, page=1), 0)
 
+    def test_a_chosen_order_hands_the_named_writers_first(self):
+        wz = "zeta/" + "f" * 8 + "-0000-4000-8000-000000000000"
+        self.a.take(P, [ev(WA, 1), ev(WA, 2), ev(wz, 1), ev(wz, 2)])
+        self.hello({})
+        for _ in range(4):
+            endpoint_standin.hand(self.a, self.b, self.cursor, page=1, order=[wz])
+        self.assertEqual(self.c.events(P), [(wz, 1), (wz, 2), (WA, 1), (WA, 2)])
+
     def test_an_unpaged_pass_after_paged_ones_hands_the_backlog_s_rest_and_what_waited_behind_it(self):
         wz = "zeta/" + "f" * 8 + "-0000-4000-8000-000000000000"
         self.a.take(P, [ev(WA, 1), ev(WA, 2), ev(wz, 1)])

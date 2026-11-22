@@ -8451,8 +8451,10 @@ def drop_spawner_hint(session):
 def hinted_spawner(name):
     """(project, member) the one kept hint `name` names (its session's short or the whole id), for a tag a session of
     this machine writes; None otherwise. A hint is taken only for a project an org-wide name is looked up in, and only
-    while the project's log has said nothing of that session: once any event of it is here (its `joined`, or a
-    `retired` that ends it before the session it continues in has come), the log answers, and the entry is dropped."""
+    while nothing here says otherwise of that session: once any event of it is in any of those projects' logs (its
+    `joined`, or a `retired` that ends it before the session it continues in has come; projects download
+    independently), or the org's directory retires its machine, the log or the directory answers, and the entry is
+    dropped."""
     if not os.environ.get("CLAUDE_CODE_SESSION_ID") or not os.path.exists(spawner_hints_path()):
         return None
     scope = {p.id: p for p in org_scope()}
@@ -8461,7 +8463,7 @@ def hinted_spawner(name):
         return None
     h = hits[0]
     p = scope[h["project"]]
-    if log_knows_session(p, h["session"]):
+    if machine_retired(h["machine"]) or any(log_knows_session(q, h["session"]) for q in scope.values()):
         drop_spawner_hint(h["session"])
         return None
     return p, Member(session=h["session"], short=h["session"][:8], alias=h["alias"] or h["session"][:8],

@@ -1267,8 +1267,8 @@ class SpawnerHint(On):
         self.assertEqual(self.recorded_to("once the row is here"), [{"session": self.SPAWNER, "alias": "boss-row"}])
         self.assertEqual(sminos.spawner_hints(), {}, "a row answered the short: the hint is gone")
 
-    def remote_event(self, kind, seq, **fields):
-        p = sminos.find_project(self.pid)
+    def remote_event(self, kind, seq, project=None, **fields):
+        p = project or sminos.find_project(self.pid)
         path = sminos.writer_path(p, "mac/" + self.SPAWNER)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a") as f:
@@ -1294,14 +1294,43 @@ class SpawnerHint(On):
                 self.assertIsNone(self.recorded_to("to a session that has gone (%s)" % reason))
                 self.assertEqual(sminos.spawner_hints(), {})
 
-    def test_a_qualified_tag_takes_no_hint_from_a_sender_with_no_project(self):
+    def test_a_session_another_project_has_ended_is_not_revived_by_its_hint(self):
+        """Projects download independently: the spawner moved to another project and handed off there, and that
+        project's log came first. The hinted project still holds nothing of it; the hint is still not taken."""
+        elsewhere = os.path.join(self.home, "elsewhere")
+        os.makedirs(elsewhere)
+        with open(os.path.join(elsewhere, ".smns"), "w") as f:
+            json.dump({"project": str(uuidlib.uuid4()), "name": "elsewhere", "remote": "", "hub": {"org": "org-1"}}, f)
+        q = self.project_of(elsewhere)
         sminos.record_spawner_hint(self.by)
-        nowhere = os.path.join(self.home, "nowhere")
-        os.makedirs(nowhere)
-        self.sid = self.child
-        code, out, err = self.sminos_argv("say", "@abcd1234#ffff qualified", cwd=nowhere)
+        self.remote_event("joined", 1, project=q, alias="boss", name_source="user", machine="mac", cwd="/x/elsewhere",
+                          worktree="", role="")
+        self.remote_event("retired", 2, project=q, reason="continued", by="boss")
+        code, out, err = self.say("@abcd1234 moved on")
         self.assertNotEqual(code, 0, out + err)
-        self.assertIsNone(self.recorded_to("qualified"))
+        self.assertIsNone(self.recorded_to("moved on"))
+        self.assertEqual(sminos.spawner_hints(), {})
+
+    def test_a_session_of_a_machine_the_directory_retires_is_not_revived_by_its_hint(self):
+        sminos.record_spawner_hint(self.by)
+        with open(os.path.join(os.environ["SMINOS_HOME"], "daemon", "org.json"), "w") as f:
+            json.dump({"projects": [], "machines": [{"name": "mac", "retired": True}], "at": ""}, f)
+        sminos.forget_caches()
+        code, out, err = self.say("@abcd1234 to a deleted machine")
+        self.assertEqual(code, 4, out + err)
+        self.assertIsNone(self.recorded_to("to a deleted machine"))
+        self.assertEqual(sminos.spawner_hints(), {})
+
+    def test_a_sender_with_no_project_takes_a_hint_for_a_bare_short_but_not_for_a_qualified_tag(self):
+        sminos.record_spawner_hint(self.by)
+        self.sid = self.child
+        with mock.patch.object(sminos, "caller_project", return_value=None):
+            code, out, err = self.sminos_argv("say", "@abcd1234#ffff qualified", cwd=self.team)
+            self.assertEqual(code, 4, out + err)
+            self.assertIsNone(self.recorded_to("qualified"))
+            code, out, err = self.sminos_argv("say", "@abcd1234 bare", cwd=self.team)
+            self.assertEqual(code, 0, out + err)
+            self.assertEqual(self.recorded_to("bare"), [{"session": self.SPAWNER, "alias": "boss"}])
 
     def test_a_hint_out_of_scope_does_not_hide_one_in_scope(self):
         sminos.record_spawner_hint(self.by)

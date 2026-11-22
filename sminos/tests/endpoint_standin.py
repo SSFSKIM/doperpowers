@@ -825,7 +825,7 @@ class Served:
         self.call("send", {"frames": [{"t": "events", "project": project, "events": list(wrapped)}]})
 
 
-def hand(source, dest, cursor_path, page=None):
+def hand(source, dest, cursor_path, page=None, order=None):
     """One pass of the relay between two machines' endpoints, for the
     two-machine compositions (#153 M3d): what `source` accepted reaches the
     live connection of `dest` as arrivals, one `events` frame per project
@@ -844,7 +844,13 @@ def hand(source, dest, cursor_path, page=None):
     events a pass; whatever `source` takes after that first pass is live
     and waits behind the whole backlog, a writer the backlog has already
     reached included. Once the backlog is handed, or at a pass without
-    `page`, a pass hands all that is left, the backlog's rest first."""
+    `page`, a pass hands all that is left, the backlog's rest first.
+
+    `order` (writer names) hands the backlog's writers in an order the test
+    chooses instead: those named first, as named, then the rest lexically,
+    each writer's events in seq order (the hub may come to send recently
+    active writers first; a reader that depends on the lexical order shows
+    under another)."""
     opened = dest.opened()
     cursor = read_json(cursor_path) or {}
     if cursor.get("conn") != opened["conn"]:
@@ -864,12 +870,17 @@ def hand(source, dest, cursor_path, page=None):
                 held["backlog"][e["writer"]] = max(held["backlog"].get(e["writer"], 0), e["seq"])
         backlog = held.get("backlog")
         if backlog:
-            rest = [w for w in wrapped if w["event"]["seq"] <= backlog.get(w["event"]["writer"], 0)]
+            rest, live = [], []
+            for w in wrapped:
+                (rest if w["event"]["seq"] <= backlog.get(w["event"]["writer"], 0) else live).append(w)
+            if order:
+                rank = {name: i for i, name in enumerate(order)}
+                rest.sort(key=lambda w: rank.get(w["event"]["writer"], len(rank)))   # stable: seq order kept
             if rest and page is not None:
                 wrapped = rest[:page]
             else:
                 # Done, or an unpaged pass: the backlog's rest first, then what came behind it.
-                wrapped = rest + [w for w in wrapped if w not in rest]
+                wrapped = rest + live
                 held.pop("backlog")
         if wrapped:
             try:
@@ -886,12 +897,13 @@ def hand(source, dest, cursor_path, page=None):
     return handed
 
 
-def hand_served(source_dir, dest_dir, page=None):
+def hand_served(source_dir, dest_dir, page=None, order=None):
     """`hand` between two stand-ins `serve` runs, the cursor kept in dest's
     directory under source's path."""
     import hashlib
     tag = hashlib.sha256(os.path.abspath(source_dir).encode()).hexdigest()[:12]
-    return hand(Served(source_dir), Served(dest_dir), os.path.join(dest_dir, "handed-%s.json" % tag), page)
+    return hand(Served(source_dir), Served(dest_dir), os.path.join(dest_dir, "handed-%s.json" % tag), page,
+                order)
 
 
 def relay_main(directories):
@@ -912,10 +924,11 @@ if __name__ == "__main__":
         serve_main(sys.argv[2], json.loads(sys.argv[3]) if len(sys.argv) > 3 else {})
     elif len(sys.argv) >= 4 and sys.argv[1] == "ctl":
         ctl_main(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]) if len(sys.argv) > 4 else {})
-    elif len(sys.argv) in (4, 5) and sys.argv[1] == "hand":
-        print(hand_served(sys.argv[2], sys.argv[3], int(sys.argv[4]) if len(sys.argv) == 5 else None))
+    elif len(sys.argv) in (4, 5, 6) and sys.argv[1] == "hand":
+        print(hand_served(sys.argv[2], sys.argv[3], int(sys.argv[4]) if len(sys.argv) >= 5 else None,
+                          sys.argv[5].split(",") if len(sys.argv) == 6 else None))
     elif len(sys.argv) >= 4 and sys.argv[1] == "relay":
         relay_main(sys.argv[2:])
     else:
         sys.exit("usage: endpoint_standin.py serve <directory> [<config JSON>] | ctl <directory> <op> [<JSON>]"
-                 " | hand <source directory> <dest directory> [<page>] | relay <directory> <directory>...")
+                 " | hand <source directory> <dest directory> [<page> [<writer>,...]] | relay <directory> <directory>...")
