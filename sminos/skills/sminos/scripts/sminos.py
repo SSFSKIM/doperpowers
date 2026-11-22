@@ -8381,6 +8381,10 @@ def no_member(raw, name, short, scope, elsewhere=(), at="@", ids=()):
         die(hint, EXIT_UNKNOWN)
     names = sorted({p.name for p in scope})
     where = "project %s" % names[0] if len(names) == 1 else "any project known here"
+    if ids and {p.id for p in ids} - {p.id for p in scope}:
+        # A bare name was also read as a session's id across `ids` (every project known here): the words say so,
+        # rather than naming the one project its alias was looked up in.
+        where += ", nor a session of that id in any project known here"
     if elsewhere:
         die("no member %s in %s; elsewhere: %s\n%s" % (raw, where, candidate_labels(elsewhere, True, at),
                                                         BARE_NAME % ("@short" if at else "a session's short")),
@@ -14315,6 +14319,7 @@ def cmd_spawn(a):
         cwd = cwd_or_die(on.expand_home(a.cwd), "spawn")
         on.hold_to_origin(req, cwd, answer)
         on.hold_to_org(req, cwd, answer)
+        on.hold_to_spawner(req, cwd, a.alias, answer)
         a.cwd = cwd
         answer.ok(spawn_here(a, asked=req))
 
