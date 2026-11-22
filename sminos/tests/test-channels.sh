@@ -312,7 +312,9 @@ for name in "$SHORT" "$S1" "worker#$SHORT"; do
 done
 assert_equals "$(kinds_of "$APP" "$S1" | tr ' ' '\n' | grep -c '^in-charge$')" 3 "three in-charge lines in its project's log"
 assert_equals "$(kinds_of "$APP" "$S1" | tr ' ' '\n' | grep -c '^status$')" 3 "three status lines there"
-for verb in "charge desk-integration/worker x" "status desk-integration/worker x" "retire desk-integration/worker"; do
+# `who --thread` (EN.G1) names its thread through find_target too, so it is refused as every verb is.
+for verb in "who --thread desk-integration/worker" "charge desk-integration/worker x" "status desk-integration/worker x" \
+    "retire desk-integration/worker"; do
   # shellcheck disable=SC2086
   run_in "$APPDIR" "$SMINOS" $verb
   assert_rc 4 "$RC" "$verb is refused, exit 4"
