@@ -1267,6 +1267,50 @@ class SpawnerHint(On):
         self.assertEqual(self.recorded_to("once the row is here"), [{"session": self.SPAWNER, "alias": "boss-row"}])
         self.assertEqual(sminos.spawner_hints(), {}, "a row answered the short: the hint is gone")
 
+    def remote_event(self, kind, seq, **fields):
+        p = sminos.find_project(self.pid)
+        path = sminos.writer_path(p, "mac/" + self.SPAWNER)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps({"ts": "2026-11-22T00:00:%02d.000Z" % seq, "writer": "mac/" + self.SPAWNER, "seq": seq,
+                                "kind": kind, "session": self.SPAWNER, **fields}) + "\n")
+        sminos.forget_caches()
+
+    def test_a_session_the_log_has_ended_is_not_revived_by_its_hint(self):
+        """The spawner's writer has come with its `joined` and a `retired` (a hand-off whose next session has not
+        come yet, or a retire): the log answers, so the tag is refused as it is without a hint."""
+        sminos.record_spawner_hint(self.by)
+        for reason in ("continued", "retire"):
+            with self.subTest(reason=reason):
+                sminos.record_spawner_hint(self.by)
+                p = sminos.find_project(self.pid)
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(sminos.writer_path(p, "mac/" + self.SPAWNER))
+                self.remote_event("joined", 1, alias="boss", name_source="user", machine="mac", cwd="/x/team",
+                                  worktree="", role="")
+                self.remote_event("retired", 2, reason=reason, by="boss")
+                code, out, err = self.say("@abcd1234 to a session that has gone (%s)" % reason)
+                self.assertEqual(code, 4, out + err)
+                self.assertIsNone(self.recorded_to("to a session that has gone (%s)" % reason))
+                self.assertEqual(sminos.spawner_hints(), {})
+
+    def test_a_qualified_tag_takes_no_hint_from_a_sender_with_no_project(self):
+        sminos.record_spawner_hint(self.by)
+        nowhere = os.path.join(self.home, "nowhere")
+        os.makedirs(nowhere)
+        self.sid = self.child
+        code, out, err = self.sminos_argv("say", "@abcd1234#ffff qualified", cwd=nowhere)
+        self.assertNotEqual(code, 0, out + err)
+        self.assertIsNone(self.recorded_to("qualified"))
+
+    def test_a_hint_out_of_scope_does_not_hide_one_in_scope(self):
+        sminos.record_spawner_hint(self.by)
+        sminos.record_spawner_hint({**self.by, "session": "abcd1234-0000-4000-8000-000000000000",
+                                    "project": str(uuidlib.uuid4())})
+        code, out, err = self.say("@abcd1234 in scope")
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(self.recorded_to("in scope"), [{"session": self.SPAWNER, "alias": "boss"}])
+
     def test_an_entry_older_than_its_bound_is_not_used_and_is_dropped(self):
         sminos.record_spawner_hint(self.by)
         with mock.patch.object(sminos.time, "time", return_value=time.time() + sminos.HINT_TTL + 1):
@@ -1301,6 +1345,7 @@ class VmSide(On):
 
         def start(args, cwd_, settings):
             launched["task"] = args[-1]
+            launched["hints"] = sminos.spawner_hints()   # what the child could read at its first turn
             if launch is not None:
                 return launch
             sid, launched["proc"] = self.session(root=cwd_, kind="bg", sid=JOB)
@@ -1343,8 +1388,9 @@ class VmSide(On):
         spawner = "abcd1234-5678-4abc-8def-0123456789ab"
         by = {"alias": "boss", "short": "abcd1234", "project": "p", "project_name": "repo", "machine": "mac",
               "session": spawner}
-        code, lines, err, _ = self.asked(by=by)
+        code, lines, err, launched = self.asked(by=by)
         self.assertEqual((code, on.judge(lines, NONCE, "w", code)[0]), (0, "ok"), err)
+        self.assertIn(spawner, launched["hints"], "kept before the launch: the child's first say may come at once")
         kept = sminos.spawner_hints()
         self.assertEqual({k: v for k, v in kept[spawner].items() if k != "at"},
                          {"session": spawner, "alias": "boss", "project": "p", "machine": "mac"})

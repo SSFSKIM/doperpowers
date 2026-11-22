@@ -843,8 +843,8 @@ def hand(source, dest, cursor_path, page=None):
     lexically, each in seq order, as `accepted` gives it) at most `page`
     events a pass; whatever `source` takes after that first pass is live
     and waits behind the whole backlog, a writer the backlog has already
-    reached included. Once the backlog is handed, a pass hands as one
-    without `page` does."""
+    reached included. Once the backlog is handed, or at a pass without
+    `page`, a pass hands all that is left, the backlog's rest first."""
     opened = dest.opened()
     cursor = read_json(cursor_path) or {}
     if cursor.get("conn") != opened["conn"]:
@@ -865,9 +865,11 @@ def hand(source, dest, cursor_path, page=None):
         backlog = held.get("backlog")
         if backlog:
             rest = [w for w in wrapped if w["event"]["seq"] <= backlog.get(w["event"]["writer"], 0)]
-            if rest:
-                wrapped = rest[:page] if page is not None else rest
+            if rest and page is not None:
+                wrapped = rest[:page]
             else:
+                # Done, or an unpaged pass: the backlog's rest first, then what came behind it.
+                wrapped = rest + [w for w in wrapped if w not in rest]
                 held.pop("backlog")
         if wrapped:
             try:

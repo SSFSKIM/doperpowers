@@ -784,9 +784,10 @@ In `S/sminos.py`, each a condition that exists today inside another function, mo
      "org": "<the org the asking machine is enrolled in>",
      "origin": "<the remote key of the repository the directory was inferred for>" | null,
      "by": {"alias": "<alias>", "short": "<8 hex>", "project": "<project id>",
-            "project_name": "<project name>", "machine": "<machine>"} | null}
+            "project_name": "<project name>", "machine": "<machine>",
+            "session": "<the spawner's session id>"} | null}
 
-`by` is null when no session ran the Mac side; `origin` is null when the Mac side was given `--cwd`. The request is built from these fields alone, so a key beyond them (a state the VM side keeps of its own, `unanswered` or `launched`) cannot ride in on the wire and change how a refusal before the launch is printed (the holder's ruling H2 of 2026-11-21 after the single-reviewer pass). A value that is not this object whole (`v` 1, the nonce, `org` a non-empty string, `origin` null or a string, `by` null or its five strings, the short eight hex digits) exits 2 with `spawn: --asked-from is not a request this version reads` and prints no outcome line. `--asked-from` with `--wait` is a usage error.
+`by` is null when no session ran the Mac side; `session` was added on 2026-11-22 after the live check (an older Mac sends none, and an older VM reads past it), so the VM side can address the spawner before its row arrives (Decision Log, "The live check, and what it changed"); `origin` is null when the Mac side was given `--cwd`. The request is built from these fields alone, so a key beyond them (a state the VM side keeps of its own, `unanswered` or `launched`) cannot ride in on the wire and change how a refusal before the launch is printed (the holder's ruling H2 of 2026-11-21 after the single-reviewer pass). A value that is not this object whole (`v` 1, the nonce, `org` a non-empty string, `origin` null or a string, `by` null or its five strings, the short eight hex digits, and `session`, when present, kept only as a whole session id the short begins) exits 2 with `spawn: --asked-from is not a request this version reads` and prints no outcome line. `--asked-from` with `--wait` is a usage error.
 
 Under it `cmd_spawn` does what it does without it, and:
 

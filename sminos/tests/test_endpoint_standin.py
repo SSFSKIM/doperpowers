@@ -220,6 +220,16 @@ class Hand(unittest.TestCase):
         self.assertEqual(self.c.events(P)[-1], (WA, 3))
         self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor, page=1), 0)
 
+    def test_an_unpaged_pass_after_paged_ones_hands_the_backlog_s_rest_and_what_waited_behind_it(self):
+        wz = "zeta/" + "f" * 8 + "-0000-4000-8000-000000000000"
+        self.a.take(P, [ev(WA, 1), ev(WA, 2), ev(wz, 1)])
+        self.hello({})
+        self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor, page=1), 1)
+        self.a.take(P, [ev(WA, 3)])
+        self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor), 3, "in one pass")
+        self.assertEqual(self.c.events(P), [(WA, 1), (WA, 2), (wz, 1), (WA, 3)])
+        self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor), 0)
+
     def test_no_live_connection_is_handed_nothing(self):
         self.a.take(P, [ev(WA, 1)])
         self.c.close()

@@ -8450,27 +8450,43 @@ def drop_spawner_hint(session):
 
 def hinted_spawner(name):
     """(project, member) the one kept hint `name` names (its session's short or the whole id), for a tag a session of
-    this machine writes; None otherwise, or when its project is not one an org-wide name is looked up in here."""
+    this machine writes; None otherwise. A hint is taken only for a project an org-wide name is looked up in, and only
+    while the project's log has said nothing of that session: once any event of it is here (its `joined`, or a
+    `retired` that ends it before the session it continues in has come), the log answers, and the entry is dropped."""
     if not os.environ.get("CLAUDE_CODE_SESSION_ID") or not os.path.exists(spawner_hints_path()):
         return None
-    hits = [v for k, v in spawner_hints().items() if name in (k, k[:8])]
+    scope = {p.id: p for p in org_scope()}
+    hits = [v for k, v in spawner_hints().items() if name in (k, k[:8]) and v.get("project") in scope]
     if len(hits) != 1:
         return None
     h = hits[0]
-    p = next((p for p in org_scope() if p.id == h["project"]), None)
-    if p is None:
+    p = scope[h["project"]]
+    if log_knows_session(p, h["session"]):
+        drop_spawner_hint(h["session"])
         return None
     return p, Member(session=h["session"], short=h["session"][:8], alias=h["alias"] or h["session"][:8],
                      name_source="hint", machine=h["machine"], local=False, state="", state_age=None, charge="",
                      charge_source="", status="", by="", worktree="", seat=None)
 
 
-def settled_by_row(name, found):
-    """A row now answers `name`: a hint of the session it named is dropped (a row, once there, always wins)."""
-    if found and os.path.exists(spawner_hints_path()):
-        named = [k for k in spawner_hints() if name in (k, k[:8])]
-        for k in named:
-            drop_spawner_hint(k)
+def log_knows_session(project, session):
+    """Whether the project's log holds any writer of `session` here: its plain writer or an audience stream of it,
+    under any machine's name."""
+    try:
+        names = os.listdir(os.path.join(project.home, "log"))
+    except OSError:
+        return False
+    return any(n.endswith("." + session + ".jsonl") or "." + session + "~" in n for n in names)
+
+
+def settled_by_row(found):
+    """Rows now answer a name: a hint of a session among them, or among the ids that name them, is dropped (a row,
+    once there, always wins); a hint of any other session is kept."""
+    if not found or not os.path.exists(spawner_hints_path()):
+        return
+    answered = {x for _, m in found for x in (m.session, *former_ids(m))}
+    for k in [k for k in spawner_hints() if k in answered]:
+        drop_spawner_hint(k)
 
 
 def resolve_tag(project, t):
@@ -8515,8 +8531,10 @@ def _resolve_tag(project, t):
     if project is None:
         scope = org_scope()
         found = one_per_session(match_members(name, short, scope))
-        settled_by_row(name, found)
-        return one_member(raw, found, True) if found else hinted_spawner(name) or no_member(raw, name, short, scope)
+        settled_by_row(found)
+        if found:
+            return one_member(raw, found, True)
+        return (None if short else hinted_spawner(name)) or no_member(raw, name, short, scope)
     if short:
         found = one_per_session(match_members(name, short, org_scope()))
         return one_member(raw, found, True) if found else no_member(raw, name, short, org_scope())
@@ -8524,7 +8542,7 @@ def _resolve_tag(project, t):
     if found:
         return one_member(raw, found, False)
     found = one_per_session(match_members(name, "", org_scope(), alias=False))
-    settled_by_row(name, found)
+    settled_by_row(found)
     if found:
         return one_member(raw, found, True)
     hinted = hinted_spawner(name)
