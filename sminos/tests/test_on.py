@@ -780,13 +780,10 @@ class New(On):
 
 
     def test_each_try_of_the_wait_names_the_spawner_where_it_is_then(self):
-        """The spawner moved to another project while the VM enrolled: the try that spawns sends its address as it
-        is then, never the one read before the VM was made; the nonce stays the request's."""
-        d = os.path.join(self.home, "moved")
-        os.makedirs(d)
-        with open(os.path.join(d, ".smns"), "w") as f:
-            json.dump({"project": str(uuidlib.uuid4()), "name": "moved", "remote": "", "hub": {"org": "org-1"}}, f)
-        q = self.project_of(d)
+        """The spawner's project changed on disk while the VM enrolled (its checkout's `.smns`, written by another
+        process): the try that spawns reads it again and sends the address as it is then, never the one read before
+        the VM was made; the nonce stays the request's."""
+        moved = str(uuidlib.uuid4())
         sent = []
 
         def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
@@ -795,16 +792,17 @@ class New(On):
                 return 0, ["dc-x-0001  ready in 0m01s"], "", False, True
             sent.append(json.loads(vm_side(args).asked_from))
             if len(sent) == 1:
-                sminos.write_override(self.sid, q.id)
-                self.reconcile(q)
+                with open(os.path.join(self.work, ".smns"), "w") as f:
+                    json.dump({"project": moved, "name": "moved", "remote": "", "hub": {"org": "org-1"}}, f)
                 return 1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled"})], "", False, True
             return 0, [self.spawned(machine="dc-x-0001")], "", False, True
+        before = sminos.resolve_project(self.work)
         with mock.patch.object(on, "run_devcloud", side_effect=run), \
                 mock.patch.dict(os.environ, {"SMINOS_ON_ENROLL_POLL": "0"}):
             code, out, err = self.spawn("--on", "new")
         self.assertEqual(code, 0, err)
-        self.assertEqual([r["by"]["project"] for r in sent], [sminos.resolve_project(self.work).id, q.id])
-        self.assertEqual([r["by"]["project_name"] for r in sent], ["repo", "moved"])
+        self.assertEqual([(r["by"]["project"], r["by"]["project_name"]) for r in sent],
+                         [(before.id, before.name), (moved, "moved")])
         self.assertEqual({r["nonce"] for r in sent}, {NONCE})
 
     def test_a_tag_named_as_the_branch_reads_the_branch(self):
@@ -830,7 +828,7 @@ class New(On):
         self.assertEqual(code, 0, err)
         self.assertIn(said, out.splitlines())
 
-    def waited(self, *answers, wait="60", poll="30", bound="480", reach_takes=0):
+    def waited(self, *answers, wait="60", poll="30", bound="480", reach_takes=0, on_="new", spawned=False):
         """`--on new` under a clock that only sleeping and each read of the reach rule (`reach_takes` seconds)
         move, devcloud answering `up` with a host and each `vm ssh` with the next of `answers` ((exit, lines,
         timed out)): (exit, stderr, each try's (start, bound))."""
@@ -852,8 +850,8 @@ class New(On):
         env = {"SMINOS_ON_ENROLL_WAIT": wait, "SMINOS_ON_ENROLL_POLL": poll, "SMINOS_ON_TIMEOUT": bound}
         with mock.patch.object(on, "run_devcloud", side_effect=run), mock.patch.object(on, "time", fake), \
                 mock.patch.object(on, "reach", slow_reach), mock.patch.dict(os.environ, env):
-            code, out, err = self.spawn("--on", "new")
-        self.assertNotIn("seat spawned on", out)
+            code, out, err = self.spawn("--on", on_)
+        self.assertEqual("seat spawned on" in out, spawned, out + err)
         return code, err, tries
 
     def test_the_wait_starts_no_try_at_its_deadline_and_bounds_each_by_what_is_left(self):
@@ -880,6 +878,41 @@ class New(On):
                       "or may not have started there, and devcloud vm ssh dc-x-0001 -- sminos list shows", err)
         self.assertNotIn("nothing was spawned", err)
         self.assertIn(". The VM dc-x-0001 is kept and", err)
+
+    NOT_ENROLLED = (1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled"})], False)
+    NOT_READ = (1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "spawner-unknown"})], False)
+
+    def test_a_vm_that_has_not_read_the_spawner_is_tried_again_within_the_enrollment_s_bound(self):
+        """One bound, from the first refusal of either kind: enrolled late, then still downloading the project's log,
+        then spawned."""
+        code, err, tries = self.waited(self.NOT_ENROLLED, self.NOT_READ,
+                                       (0, [self.spawned(machine="dc-x-0001")], False), wait="90", spawned=True)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tries, [(1000.0, 480.0), (1030.0, 60.0), (1060.0, 30.0)])
+        self.assertIn("dc-x-0001 is up and not enrolled in the org yet: waiting up to 2 minutes", err)
+        self.assertIn("dc-x-0001 has not read this session from the project's log yet (a machine enrolled moments "
+                      "ago downloads it first): waiting for it, within the same 2 minutes, then spawning", err)
+
+    def test_at_the_bound_nothing_is_opened_and_the_vm_is_kept(self):
+        code, err, tries = self.waited(self.NOT_READ, self.NOT_READ, self.NOT_READ)
+        self.assertEqual(tries, [(1000.0, 480.0), (1030.0, 30.0)])
+        self.assertEqual(code, on.EXIT_LATER, err)
+        self.assertIn("spawn --on: dc-x-0001 had not read this session from the project's log within 1 minutes (it "
+                      "is still downloading the log): no thread was opened there. Once it has, sminos spawn --on "
+                      "dc-x-0001 opens it", err)
+        self.assertIn(". The VM dc-x-0001 is kept and this session's thread owns it: devcloud vm down dc-x-0001 ends "
+                      "it", err)
+        self.assertNotIn("did not enroll", err)
+
+    def test_a_named_vm_that_has_not_read_the_spawner_is_waited_for_too(self):
+        """A VM that exists can be behind on the project's log as well; it is never one the Mac made, so nothing is
+        said kept."""
+        code, err, tries = self.waited(self.NOT_READ, (0, [self.spawned()], False), on_="vm1", spawned=True)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(tries), 2)
+        code, err, tries = self.waited(self.NOT_READ, self.NOT_READ, self.NOT_READ, on_="vm1")
+        self.assertEqual(code, on.EXIT_LATER, err)
+        self.assertNotIn("is kept", err)
 
     def test_stopped_between_two_tries_of_the_wait_keeps_the_vm(self):
         def guard(*_):
@@ -1219,248 +1252,6 @@ class Outcome(On):
                 self.assertFalse(os.path.exists(ran), "nothing was launched")
 
 
-class SpawnerHint(On):
-    """`say "@<short>"` from a session this machine holds as a seat's reaches the spawner the seat's own record
-    names (its `spawner_address`, written at the launch `spawn --asked-from` made) while nothing in any log here
-    answers the short (a fresh VM still downloading its project's log), and never once anything does; no other
-    author takes it, and nothing else reads it."""
-
-    SPAWNER = "abcd1234-5678-4abc-8def-0123456789ab"
-
-    def setUp(self):
-        super().setUp()
-        self.team = self.carried("team")
-        self.pid = sminos.resolve_project(self.team).id
-        self.child, _ = self.session(root=self.team)
-        self.recorded(self.child)
-        self.address = {"session": self.SPAWNER, "alias": "boss", "project": self.pid, "machine": "mac",
-                        "org": "org-1"}
-
-    def carried(self, name, **hub):
-        d = os.path.join(self.home, name)
-        os.makedirs(d)
-        with open(os.path.join(d, ".smns"), "w") as f:
-            json.dump({"project": str(uuidlib.uuid4()), "name": name, "remote": "",
-                       "hub": hub or {"org": "org-1"}}, f)
-        self.project_of(d)
-        return d
-
-    def seat_of(self, session, address, alias="w", former=(), cwd=None):
-        """A seat of this machine whose current session is `session` (its earlier ones `former`), its record
-        carrying `address` as spawn --asked-from leaves it (None: no address)."""
-        seat_id = str(uuidlib.uuid4())
-        sminos.meta_set(seat_id, {"uuid": seat_id, "current": session, "short": session[:8], "alias": alias,
-                                  "group": "team", "cwd": cwd or self.team, "status": "working", "sessions": list(former),
-                                  **({sminos.SPAWNER_ADDRESS: address} if address is not None else {})})
-        sminos.forget_caches()
-        return seat_id
-
-    def say(self, text, session=None, cwd=None):
-        self.sid = session or self.child
-        return self.sminos_argv("say", text, cwd=cwd or self.team)
-
-    def recorded_to(self, text):
-        for p in sminos.known_projects():
-            log = os.path.join(p.home, "log")
-            for name in sorted(os.listdir(log)) if os.path.isdir(log) else []:
-                if name.endswith(".jsonl"):
-                    with open(os.path.join(log, name)) as f:
-                        for line in f:
-                            e = json.loads(line)
-                            if text in str(e.get("text")):
-                                return e.get("to")
-        return None
-
-    def log_text(self, pid):
-        log = os.path.join(sminos.find_project(pid).home, "log")
-        out = []
-        for n in sorted(os.listdir(log)):
-            with open(os.path.join(log, n)) as f:
-                out.append(f.read())
-        return "".join(out)
-
-    def remote_event(self, kind, seq, project=None, session=None, **fields):
-        """An event of a session of mac (the spawner's, by default), as the download brings it."""
-        session = session or self.SPAWNER
-        p = project or sminos.find_project(self.pid)
-        path = sminos.writer_path(p, "mac/" + session)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a") as f:
-            f.write(json.dumps({"ts": "2026-11-22T00:00:%02d.000Z" % seq, "writer": "mac/" + session, "seq": seq,
-                                "kind": kind, "session": session, **fields}) + "\n")
-        sminos.forget_caches()
-
-    def joined(self, seq, project=None, session=None, alias="boss", **fields):
-        self.remote_event("joined", seq, project, session, alias=alias, name_source="user", machine="mac",
-                          cwd="/Users/x/team", worktree="", role="", **fields)
-
-    def test_without_an_address_the_tag_is_refused_as_before(self):
-        self.seat_of(self.child, None)
-        code, out, err = self.say("@abcd1234 up")
-        self.assertEqual(code, 4, out + err)
-        self.assertIsNone(self.recorded_to("up"))
-        # The words say what was searched: the caller's project by alias, and every project known here by id.
-        self.assertIn("no member @abcd1234 in project team, nor a session of that id in any project known here", err)
-
-    def test_a_tag_nothing_answers_reaches_the_spawner_its_seat_names(self):
-        self.seat_of(self.child, self.address)
-        code, out, err = self.say("@abcd1234 up, and here")
-        self.assertEqual(code, 0, out + err)
-        self.assertEqual(self.recorded_to("up, and here"), [{"session": self.SPAWNER, "alias": "boss"}])
-        code, out, err = self.say("@%s by the whole id" % self.SPAWNER)
-        self.assertEqual(code, 0, out + err)
-        self.assertEqual(self.recorded_to("by the whole id"), [{"session": self.SPAWNER, "alias": "boss"}])
-
-    def test_an_earlier_session_of_the_seat_takes_it_too(self):
-        earlier, _ = self.session(root=self.team)
-        self.recorded(earlier)
-        self.seat_of(self.child, self.address, former=[earlier])
-        code, out, err = self.say("@abcd1234 from before the hand-off", session=earlier)
-        self.assertEqual(code, 0, out + err)
-        self.assertEqual(self.recorded_to("from before the hand-off"), [{"session": self.SPAWNER, "alias": "boss"}])
-
-    def test_a_session_no_seat_holding_an_address_holds_takes_none(self):
-        """Only the spawned thread's preamble promised the address: another session of this machine, a seat
-        without one included, is refused as it is without it."""
-        self.seat_of(self.child, self.address)
-        other, _ = self.session(root=self.team)
-        self.recorded(other)
-        code, out, err = self.say("@abcd1234 from a session of no seat", session=other)
-        self.assertEqual(code, 4, out + err)
-        self.assertIsNone(self.recorded_to("from a session of no seat"))
-        seated, _ = self.session(root=self.team)
-        self.recorded(seated)
-        self.seat_of(seated, None, alias="v")
-        code, out, err = self.say("@abcd1234 from a seat with none", session=seated)
-        self.assertEqual(code, 4, out + err)
-
-    def test_each_seat_reaches_the_spawner_its_own_record_names(self):
-        """Two spawns asked by one spawner, each from its own project: neither replaces the other's address."""
-        elsewhere = self.carried("elsewhere")
-        q = sminos.resolve_project(elsewhere).id
-        self.seat_of(self.child, self.address)
-        second, _ = self.session(root=elsewhere)
-        self.recorded(second)
-        self.seat_of(second, {**self.address, "project": q}, alias="v", cwd=elsewhere)
-        code, out, err = self.say("@abcd1234 from the first", cwd=self.team)
-        self.assertEqual(code, 0, out + err)
-        code, out, err = self.say("@abcd1234 from the second", session=second, cwd=elsewhere)
-        self.assertEqual(code, 0, out + err)
-        self.assertIn("from the first", self.log_text(self.pid))
-        self.assertNotIn("from the second", self.log_text(self.pid))
-        self.assertIn("from the second", self.log_text(q))
-
-    def test_a_tag_written_with_no_session_takes_none(self):
-        self.seat_of(self.child, self.address)
-        code, out, err = self.sminos_argv("say", "@abcd1234 from a host program", session=False, cwd=self.team)
-        self.assertEqual(code, 4, out + err)
-
-    def test_who_thread_answers_from_rows_alone(self):
-        self.seat_of(self.child, self.address)
-        self.sid = self.child
-        code, out, err = self.sminos_argv("who", "--thread=abcd1234", cwd=self.team)
-        self.assertEqual(code, 4, out + err)
-
-    def test_a_row_wins(self):
-        self.seat_of(self.child, self.address)
-        self.joined(1, alias="boss-row")
-        code, out, err = self.say("@abcd1234 once the row is here")
-        self.assertEqual(code, 0, out + err)
-        self.assertEqual(self.recorded_to("once the row is here"), [{"session": self.SPAWNER, "alias": "boss-row"}])
-
-    def test_a_row_of_any_state_that_answers_the_short_comes_first(self):
-        """The spawner's session is the first of a seat on mac, so the seat's thread id is its id; this machine holds
-        a later occupant's `joined` and `retired` before the first occupant's writer. The short names that ended
-        thread: refused as it is with no address."""
-        later = "eeee0000-5678-4abc-8def-0123456789ab"
-        self.seat_of(self.child, self.address)
-        self.joined(1, session=later, alias="boss", seat=self.SPAWNER, thread=self.SPAWNER)
-        self.remote_event("retired", 2, session=later, reason="retire", by="op")
-        code, out, err = self.say("@abcd1234 to the ended thread")
-        self.assertEqual(code, 4, out + err)
-        self.assertIn("was retired", err)
-        self.assertIsNone(self.recorded_to("to the ended thread"))
-
-    def test_a_project_this_enrollment_does_not_carry_for_the_request_s_org_takes_none(self):
-        """A stale checkout of the hinted project that names another org, or one mirrored by git: no reply goes
-        into it."""
-        seat_id = self.seat_of(self.child, None)
-        for name, smns in (("stale", {"hub": {"org": "org-2"}}), ("mirrored", {"remote": "/Users/x/team.git"})):
-            with self.subTest(project=name):
-                d = os.path.join(self.home, name)
-                os.makedirs(d)
-                pid = str(uuidlib.uuid4())
-                with open(os.path.join(d, ".smns"), "w") as f:
-                    json.dump({"project": pid, "name": name, "remote": "", **smns}, f)
-                self.project_of(d)
-                self.assertTrue(sminos.not_carried(sminos.find_project(pid), "org-1"))
-                sminos.meta_set(seat_id, {sminos.SPAWNER_ADDRESS: {**self.address, "project": pid}})
-                code, out, err = self.say("@abcd1234 into %s" % name)
-                self.assertEqual(code, 4, out + err)
-                self.assertIsNone(self.recorded_to("into %s" % name))
-
-    def test_a_session_the_log_has_ended_is_not_revived(self):
-        """The spawner's writer has come with its `joined` and a `retired` (a hand-off whose next session has not
-        come yet, or a retire): the log answers, so the tag is refused as it is without an address."""
-        self.seat_of(self.child, self.address)
-        for reason in ("continued", "retire"):
-            with self.subTest(reason=reason):
-                with contextlib.suppress(FileNotFoundError):
-                    os.unlink(sminos.writer_path(sminos.find_project(self.pid), "mac/" + self.SPAWNER))
-                self.joined(1)
-                self.remote_event("retired", 2, reason=reason, by="boss")
-                code, out, err = self.say("@abcd1234 to a session that has gone (%s)" % reason)
-                self.assertEqual(code, 4, out + err)
-                self.assertIsNone(self.recorded_to("to a session that has gone (%s)" % reason))
-
-    def test_a_session_another_project_has_ended_is_not_revived(self):
-        """Projects download independently: the spawner moved to another project and handed off there, and that
-        project's log came first. The hinted project still holds nothing of it; the address is still not taken."""
-        q = self.project_of(self.carried("elsewhere"))
-        self.seat_of(self.child, self.address)
-        self.joined(1, project=q)
-        self.remote_event("retired", 2, project=q, reason="continued", by="boss")
-        code, out, err = self.say("@abcd1234 moved on")
-        self.assertNotEqual(code, 0, out + err)
-        self.assertIsNone(self.recorded_to("moved on"))
-
-    def test_a_writer_of_the_spawner_holding_only_a_message_does_not_end_it(self):
-        """A writer file can exist in a project only because its session tagged someone there: no membership of
-        it, so the log does not speak for the spawner yet."""
-        q = self.project_of(self.carried("elsewhere"))
-        self.seat_of(self.child, self.address)
-        self.remote_event("message", 1, project=q, text="@zzzz9999 a word", to=[])
-        self.assertTrue(os.path.exists(sminos.writer_path(q, "mac/" + self.SPAWNER)))
-        code, out, err = self.say("@abcd1234 still reached")
-        self.assertEqual(code, 0, out + err)
-        self.assertEqual(self.recorded_to("still reached"), [{"session": self.SPAWNER, "alias": "boss"}])
-
-    def test_a_session_of_a_machine_the_directory_retires_is_not_revived(self):
-        self.seat_of(self.child, self.address)
-        with open(os.path.join(os.environ["SMINOS_HOME"], "daemon", "org.json"), "w") as f:
-            json.dump({"projects": [], "machines": [{"name": "mac", "retired": True}], "at": ""}, f)
-        sminos.forget_caches()
-        code, out, err = self.say("@abcd1234 to a deleted machine")
-        self.assertEqual(code, 4, out + err)
-        self.assertIsNone(self.recorded_to("to a deleted machine"))
-
-    def test_a_sender_with_no_project_takes_it_for_a_bare_short_but_not_for_a_qualified_tag(self):
-        self.seat_of(self.child, self.address)
-        self.sid = self.child
-        with mock.patch.object(sminos, "caller_project", return_value=None):
-            code, out, err = self.sminos_argv("say", "@abcd1234#ffff qualified", cwd=self.team)
-            self.assertEqual(code, 4, out + err)
-            self.assertIsNone(self.recorded_to("qualified"))
-            code, out, err = self.sminos_argv("say", "@abcd1234 bare", cwd=self.team)
-            self.assertEqual(code, 0, out + err)
-            self.assertEqual(self.recorded_to("bare"), [{"session": self.SPAWNER, "alias": "boss"}])
-
-    def test_an_address_for_a_project_not_known_here_is_not_used(self):
-        self.seat_of(self.child, {**self.address, "project": str(uuidlib.uuid4())})
-        code, out, err = self.say("@abcd1234 nowhere")
-        self.assertEqual(code, 4, out + err)
-
-
 class VmSide(On):
     """The VM side's own line, for each way it ends, read by the Mac's check."""
 
@@ -1518,60 +1309,58 @@ class VmSide(On):
         self.assertNotIn("not_carried", d, "a project this enrollment carries: no key")
         self.assertIn('boss (@abcd1234, in repo on mac; sminos say "@abcd1234 …" reaches it)', launched["task"])
 
-    def addresses(self):
-        """{seat id: the spawner's address its record carries}, for each seat of this machine that carries one."""
-        return {s["seat_id"]: s[sminos.SPAWNER_ADDRESS] for s in sminos.seats() if sminos.SPAWNER_ADDRESS in s}
+    SPAWNER = "abcd1234-5678-4abc-8def-0123456789ab"
 
-    def test_a_request_naming_its_spawner_s_session_puts_its_address_on_the_seat_s_record(self):
+    def by(self, **over):
+        """The spawner's `by` as a Mac of this version sends it: its project the one the directory is in."""
+        p = sminos.resolve_project(self.work)
+        return {"alias": "boss", "short": self.SPAWNER[:8], "project": p.id, "project_name": p.name, "machine": "mac",
+                "session": self.SPAWNER, **over}
+
+    def remote_joined(self, session, alias="boss"):
+        """A `joined` of a session of mac in the directory's project, as the download brings it."""
+        p = sminos.resolve_project(self.work)
+        path = sminos.writer_path(p, "mac/" + session)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps({"ts": "2026-11-22T00:00:01.000Z", "writer": "mac/" + session, "seq": 1,
+                                "kind": "joined", "session": session, "alias": alias, "name_source": "user",
+                                "machine": "mac", "cwd": "/Users/x/repo", "worktree": "", "role": ""}) + "\n")
+        sminos.forget_caches()
+
+    def test_a_spawner_this_machine_has_not_read_yet_is_refused_and_nothing_is_launched(self):
         """A fresh VM holds no row of the spawner until its first download of the project's log reaches the
-        spawner's writer: the request's full session id, with its org, is kept on the spawned seat's own record so
-        that thread's `@<short>` reaches it meanwhile."""
-        spawner = "abcd1234-5678-4abc-8def-0123456789ab"
-        by = {"alias": "boss", "short": "abcd1234", "project": "p", "project_name": "repo", "machine": "mac",
-              "session": spawner}
-        code, lines, err, _ = self.asked(by=by)
-        verdict, d = on.judge(lines, NONCE, "w", code)
-        self.assertEqual((code, verdict), (0, "ok"), err)
-        self.assertEqual(self.addresses(), {d["seat"]: {"session": spawner, "alias": "boss", "project": "p",
-                                                         "machine": "mac", "org": "org-1"}})
-        self.assertFalse(os.path.exists(os.path.join(os.environ["SMINOS_HOME"], "daemon", "spawner-hints.json")),
-                         "no machine-wide store")
-        self.assertNotIn(sminos.SPAWNER_ADDRESS, sminos.public_seat(sminos.reload_seat(d["seat"])))
+        spawner's writer: the child's first `@<short>` would reach no one, so nothing is opened yet."""
+        code, lines, err, launched = self.asked(by=self.by())
+        self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1,
+                                                                         "why": "spawner-unknown"}), err)
+        self.assertIn("spawn: this machine has not read the spawner, boss (@abcd1234), from the project's log yet", err)
+        self.assertEqual(launched, {}, "no launcher was started")
+        self.assertEqual(sminos.seats(), [], "no seat record was written")
 
-    def test_a_refill_with_no_address_leaves_none_of_the_one_before(self):
-        spawner = "abcd1234-5678-4abc-8def-0123456789ab"
-        by = {"alias": "boss", "short": "abcd1234", "project": "p", "project_name": "repo", "machine": "mac",
-              "session": spawner}
-        code, lines, err, launched = self.asked(by=by)
-        self.assertEqual(on.judge(lines, NONCE, "w", code)[0], "ok", err)
-        self.end(launched["proc"])
-        seat = on.judge(lines, NONCE, "w", code)[1]["seat"]
-        sminos.meta_set(seat, {"status": "stopped"})
+    def test_a_spawner_whose_row_answers_its_short_is_spawned_for(self):
+        self.remote_joined(self.SPAWNER)
+        code, lines, err, launched = self.asked(by=self.by())
+        self.assertEqual((code, on.judge(lines, NONCE, "w", code)[0]), (0, "ok"), err)
+        self.assertIn('boss (@abcd1234, in ', launched["task"])
+
+    def test_a_short_that_answers_another_member_is_refused_as_not_read(self):
+        """The child's tag reads the short as its project's aliases first: a member named so takes it, and the
+        spawner's message would go to that member."""
+        self.remote_joined(self.SPAWNER)
+        self.remote_joined("eeee0000-5678-4abc-8def-0123456789ab", alias=self.SPAWNER[:8])
+        code, lines, err, launched = self.asked(by=self.by())
+        self.assertEqual(on.judge(lines, NONCE, "w", code)[1].get("why"), "spawner-unknown", err)
+        self.assertEqual(launched, {})
+
+    def test_a_request_from_an_older_mac_is_spawned_for_at_once(self):
+        """No `by.session`: nothing is asked of the log, as before this version."""
         code, lines, err, _ = self.asked()
-        verdict, d = on.judge(lines, NONCE, "w", code)
-        self.assertEqual((verdict, d.get("refilled")), ("ok", True), err)
-        self.assertEqual(self.addresses(), {})
+        self.assertEqual((code, on.judge(lines, NONCE, "w", code)[0]), (0, "ok"), err)
 
-    def test_a_refused_spawn_keeps_no_address(self):
-        """A spawn that launched nothing wrote no seat record: nothing of its spawner is kept."""
-        by = {"alias": "boss", "short": "abcd1234", "project": "p", "project_name": "repo", "machine": "mac",
-              "session": "abcd1234-5678-4abc-8def-0123456789ab"}
-        code, lines, err, _ = self.asked(by=by, launch=("", "no banner here"))
-        self.assertNotEqual(code, 0, err)
-        self.assertEqual(self.addresses(), {})
-        self.assertEqual(sminos.seats(), [])
-
-    def test_a_request_from_an_older_mac_keeps_no_address(self):
-        code, lines, err, _ = self.asked()
-        self.assertEqual(on.judge(lines, NONCE, "w", code)[0], "ok", err)
-        self.assertEqual(self.addresses(), {})
-
-    def test_a_session_its_short_does_not_begin_keeps_no_address(self):
-        by = {"alias": "boss", "short": "abcd1234", "project": "p", "project_name": "repo", "machine": "mac",
-              "session": "ffff1234-5678-4abc-8def-0123456789ab"}
-        code, lines, err, _ = self.asked(by=by)
-        self.assertEqual(on.judge(lines, NONCE, "w", code)[0], "ok", err)
-        self.assertEqual(self.addresses(), {})
+    def test_a_session_its_short_does_not_begin_is_read_as_absent(self):
+        code, lines, err, _ = self.asked(by=self.by(session="ffff1234-5678-4abc-8def-0123456789ab"))
+        self.assertEqual((code, on.judge(lines, NONCE, "w", code)[0]), (0, "ok"), err)
 
     def test_each_refusal_ends_with_a_whole_line_of_its_why(self):
         self.unenroll()

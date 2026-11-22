@@ -359,7 +359,7 @@ def public_seat(s):
     its launch's options, an open entry's events) removed — for every
     model-facing surface (list, list --json, chart). A member's row carries
     its `thread` and `opened`."""
-    hidden = (*threads_module().SEAT_KEYS, SPAWNER_ADDRESS)   # the address: hinted_spawner's alone
+    hidden = threads_module().SEAT_KEYS
     return {k: v for k, v in s.items() if k != "task" and k not in hidden and not SECRET_RE.search(k)}
 
 
@@ -8399,78 +8399,6 @@ def one_member(raw, found, qualify):
     return found[0]
 
 
-# The spawner's address on the seat a spawn another machine asked for launched (`--asked-from`'s `by` with its full
-# session id, and the request's org), in the seat's own record, written by the launch's first write
-# (spawn_fresh): a machine enrolled moments ago holds no row of the spawner until its first download of the project's
-# log reaches the spawner's writer, which on a large log can take most of an hour, so that thread's `@<short>`
-# reaches it meanwhile (hinted_spawner). It lives and ends with the seat's record; nothing but _resolve_tag reads it.
-SPAWNER_ADDRESS = "spawner_address"   # {session, alias, project, machine, org}
-
-
-def spawner_address(asked):
-    """The address a spawn another machine asked for (`asked`, read_request's) keeps on its seat, or None: an older
-    Mac sends no session, and read_request keeps one only whole and begun by its short."""
-    by = (asked or {}).get("by")
-    if not (isinstance(by, dict) and isinstance(by.get("session"), str)):
-        return None
-    return {"session": by["session"], "alias": by["alias"], "project": by["project"], "machine": by["machine"],
-            "org": asked["org"]}
-
-
-def address_of_author(author):
-    """The spawner's address of the one seat of this machine that holds `author` as its current session or one
-    of its earlier ones (a seat still provisional found as caller_seat finds it); None for any other author."""
-    held = [s for s in seats() if isinstance(s.get(SPAWNER_ADDRESS), dict)
-            and (author == s["current"] or isinstance(s.get("sessions"), list) and author in s["sessions"])]
-    if not held:
-        s = caller_seat()
-        held = [s] if s is not None and isinstance(s.get(SPAWNER_ADDRESS), dict) else []
-    return held[0][SPAWNER_ADDRESS] if len(held) == 1 else None
-
-
-def hinted_spawner(name):
-    """(project, member) for `name`, a bare short or session id, from the spawner's address the tag's author's
-    seat holds (address_of_author); None otherwise. Only while nothing here speaks for that name or the machine:
-    a name anything in any project's log answers takes the path it takes with no address (log_answers), and a
-    machine the org's directory retires has ended its sessions. Only into a project an org-wide name is looked up
-    in that this machine's enrollment carries for the request's org (not_carried, read now): a checkout of that
-    project naming another org, or one mirrored by git, never takes the reply."""
-    author = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    if not UUID_RE.fullmatch(author):
-        return None
-    h = address_of_author(author)
-    if h is None or not (isinstance(h.get("session"), str) and UUID_RE.fullmatch(h["session"])) \
-            or name not in (h["session"], h["session"][:8]):
-        return None
-    p = next((p for p in org_scope() if p.id == h.get("project")), None)
-    if p is None or not isinstance(h.get("org"), str) or not_carried(p, h["org"]):
-        return None
-    if machine_retired(h.get("machine")) or log_answers(name):
-        return None
-    return p, Member(session=h["session"], short=h["session"][:8], alias=str(h.get("alias") or "") or h["session"][:8],
-                     name_source="hint", machine=str(h.get("machine") or ""), local=False, state="", state_age=None,
-                     charge="", charge_source="", status="", by="", worktree="", seat=None)
-
-
-def log_answers(name):
-    """Whether anything a project known here holds answers `name` as an id: a row of any state (a member, a seat's
-    row, an ended thread's), by its session, the sessions it continues, its thread's or its thread id; or a session
-    whose membership the log holds (a `joined`, a withdrawal, a retirement, a move of its own), the session it
-    continues in, the one it continues, or a thread a `joined` of it is stamped with. A writer file alone is no such
-    evidence: a session's file is in a project's log as soon as it tags someone there."""
-    def names(x):
-        return bool(x) and (x == name or x[:8] == name)
-    for p in known_projects():
-        view = view_of(p)
-        if any(id_reach(m, name) for m in [*view.members, *view.rows, *view.ended]):
-            return True
-        if any(r["latest"] is not None and any(names(x) for x in (sid, r["to"], r["continues"],
-                                                                   *(ep[1] for ep in r["episodes"])))
-               for sid, r in view.info.items()):
-            return True
-    return False
-
-
 def resolve_tag(project, t):
     """The (project, member) one tag reaches (_resolve_tag), the sender told
     when it reached it by an alias the member held before (note_former)."""
@@ -8513,9 +8441,7 @@ def _resolve_tag(project, t):
     if project is None:
         scope = org_scope()
         found = one_per_session(match_members(name, short, scope))
-        if found:
-            return one_member(raw, found, True)
-        return (None if short else hinted_spawner(name)) or no_member(raw, name, short, scope)
+        return one_member(raw, found, True) if found else no_member(raw, name, short, scope)
     if short:
         found = one_per_session(match_members(name, short, org_scope()))
         return one_member(raw, found, True) if found else no_member(raw, name, short, org_scope())
@@ -8525,9 +8451,6 @@ def _resolve_tag(project, t):
     found = one_per_session(match_members(name, "", org_scope(), alias=False))
     if found:
         return one_member(raw, found, True)
-    hinted = hinted_spawner(name)
-    if hinted:
-        return hinted
     no_member(raw, name, short, [project],
               [(p, m) for p, m in match_members(name, "", org_scope(), ids=False) if p.id != project.id],
               ids=org_scope())
@@ -14111,10 +14034,6 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     # Merged into the launch dict itself, so the caller's fields are on the
     # record's very first write and cannot be lost to a later failure.
     launch.update(stamp or {})
-    address = spawner_address(asked)
-    if address is not None:
-        # The seat's own: only its thread's preamble promised the spawner's address (hinted_spawner).
-        launch[SPAWNER_ADDRESS] = address
     # The session already runs, so a failed append does not fail the spawn: an
     # exit 1 would make a dispatcher release the run and leave the worker
     # running unbound. Each event is attempted on its own, and each one that
@@ -14172,7 +14091,7 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         drop = ("pending_short", "engine", "pid", "event_log", "run_id", "run_bearer", "fence",
                 "bind_confirmed", "nonce", "run_ended_at", "ended_run_id", "ticket", "board", "board_dispatch",
                 "board_detached", "closure_package", "retired_from", "relayed_comment",
-                "sweep_recoveries", SPAWNER_ADDRESS)
+                "sweep_recoveries")
         write = {**launch, "now": "", "attempts": (prev["attempts"] if prev else 0) + 1, "history": history[-10:]}
         remove = tuple(k for k in drop if k not in launch) + REPLACED_DROPS
         launched_entry = refill_launch(prev, write, remove, by, log_failed) if prev and prev["current"] else None
@@ -14400,6 +14319,7 @@ def cmd_spawn(a):
         cwd = cwd_or_die(on.expand_home(a.cwd), "spawn")
         on.hold_to_origin(req, cwd, answer)
         on.hold_to_org(req, cwd, answer)
+        on.hold_to_spawner(req, cwd, answer)
         a.cwd = cwd
         answer.ok(spawn_here(a, asked=req))
 
