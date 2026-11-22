@@ -53,7 +53,7 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) M5 — The roster, the listing and the pool. `b4a9bdd7..10b8740a`, clean at its third review; `sminos-idle` 32,772 calls a second.
 - [x] (2026-11-21) M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture. `442c9784..e9fd15e0`, three reviews (the bound), then round 3's last finding (a test-harness race) fixed; the replay 112 lines `ok`, no amendment; `sminos-idle` 32,100 calls a second.
 - [x] (2026-11-21) M7 — Requests across machines: the endpoint's word, and what a requester is told. `cdc800c4..ede64e18`, clean at its second review; the acceptance scene's seven steps met; `sminos-idle` 32,781 calls a second.
-- [ ] The review of M1 to M7 as one range, by the composite's holder, and its fixes.
+- [x] (2026-11-22) The review of M1 to M7 as one range, by the composite's holder (`b7413f10..ffc6569a`, 19 confirmed), and its fixes: A1 to A11 and MAWS's reworked case 15 (`ffc6569a..4411a917`), three task reviews, the last round's three fixes after the bound; the replay 121 lines `ok`; `sminos-idle` 32,126 calls a second. The holder reads the range a second time after M8.
 - [ ] M8 — Older copies, what is written beside the code, the version, and the acceptance.
 - [ ] The branch reviewed at its end (Decision Log, "Verification"), and its fixes.
 
@@ -2650,6 +2650,27 @@ while the milestones are built, one observation and its evidence each.
   signer is caught). Scoped to requests: a message's path stays as on
   main, where a word is shown marked unverified and an act has no such
   mark.
+- 2026-11-22 — **The fix wave's reviews, rounds 1 to 3, as fixed**
+  (`3800a09a..4411a917`). A1: a sender's frame is required under the
+  project its newest membership in effect names, read with the membership
+  from one fresh scan (`sminos.member_project_now`), so a retired sender
+  owes none and a moved one waits for the destination's. A6: an outstanding
+  request is this machine's by `appended_here` (a former name's queue and
+  a receipt included), and its answer is looked up where it is held: the
+  record for a thread here, `ANSWERS_HEARD` for another machine's, filled
+  by `Link.hear_answers` from the events an import stored (`HubLog.take(...,
+  kept=)`), each checked by `answer_of`'s rule; an uplink started after the
+  answer was imported keeps the channel followed until the request
+  expires, which is the cost of keeping all-log reads off the leaving scan.
+  A7: the uplink's request pass tries every lock (store, finisher, wake,
+  and the finisher's append through `lock_until`, the entry left for
+  replay), and finishes no open entry of another operation (`finishes=
+  False`: `pending entry`, the reconciliation finishes it). A8: the
+  ordered input is read from one strict listing of `log/` and `queued/`
+  (`_input_files`); a listed file not readable is unreadable unless
+  `lstat` says it is gone. A11: a word that could not commit, or was taken
+  without an outcome, waits `WORDS_EVERY` (`request_retry`), whatever
+  other reply makes a pass due.
 
 ## Outcomes & Retrospective
 
