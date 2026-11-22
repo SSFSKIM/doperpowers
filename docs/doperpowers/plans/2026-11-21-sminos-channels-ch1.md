@@ -55,8 +55,9 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) M7 — Requests across machines: the endpoint's word, and what a requester is told. `cdc800c4..ede64e18`, clean at its second review; the acceptance scene's seven steps met; `sminos-idle` 32,781 calls a second.
 - [x] (2026-11-22) The review of M1 to M7 as one range, by the composite's holder (`b7413f10..ffc6569a`, 19 confirmed), and its fixes: A1 to A11 and MAWS's reworked case 15 (`ffc6569a..4411a917`), three task reviews, the last round's three fixes after the bound; the replay 121 lines `ok`; `sminos-idle` 32,126 calls a second. The holder reads the range a second time after M8.
 - [x] (2026-11-22) M8 — Older copies, what is written beside the code, the version, and the acceptance. `1be3f7fb..f6c205ad` (main merged twice, then `bef6f74e`), three reviews (the bound), then round 3's two findings fixed (Decision Log, "M8 as built"); sminos 1.54.0; the scene 47/0; the check on a real engine three steps passed; `sminos-idle` 32,737 calls a second.
-- [x] (2026-11-22) The holder's second panel over the whole range (`bef6f74e..317c7e6a`, 23 confirmed), and its fix wave C1 to C9 (`317c7e6a..ad2796e6`), one task review, its fixes after it; L4 to L16 logged; the replay 121 lines `ok`; `sminos-idle` 32,348 calls a second.
-- [ ] The holder's high-rung reading of the fix wave (`317c7e6a..` the head), and the merge.
+- [x] (2026-11-22) The holder's second panel over the whole range (`bef6f74e..317c7e6a`, 23 confirmed), and its fix wave C1 to C9 (`317c7e6a..ad2796e6`), one task review, its fixes after it; L4 to L15 logged (C9 fixed, no L16); the replay 121 lines `ok`; `sminos-idle` 32,348 calls a second.
+- [x] (2026-11-22) The holder's high-rung reading of the fix wave (`317c7e6a..18c2f7bf`), the third and last: D1 to D4 fixed (`78074970`), one logged, one dismissed; `sminos-idle` 32,230 calls a second.
+- [ ] The merge (the holder's).
 
 ## Words this document adds
 
@@ -1509,43 +1510,48 @@ In `S/sminos_channels.py`:
         state: str                # "applied" | "refused" | "pending" | "ignored" | "failed"
         why: str                  # refused: one of REASONS; pending, ignored and failed: a word of the tables
                                   # below; applied: "unchanged" when the set already read so, "" else
-    def requests_of(channel) -> (signature, list[dict])
+    def requests_of(channel, whole=True) -> (signature, list[dict])
         # the ordered input: the log's `channel-request` events of §2's shape in the merged read's order, then
         # those among this machine's queued appends for that log, in the queue's order (seq None, read without
-        # changing the queue); with the signature of the files both were read under
+        # changing the queue); with the signature of the files both were read under. An input missing a file
+        # (a directory that cannot be listed, a writer file or queue that cannot be read) raises PositionsUnread;
+        # `whole` False reads what it can instead (`channel show`)
     def event_key(channel, request) -> tuple
         # (the channel's id, the request's writer, its seq, its event hash): what a word is asked and kept under
     def expired(request, now=None) -> bool        # its ts is unreadable or older than REQUEST_TTL
     def sender_verified(channel, request) -> True | False | None
-        # True for a writer of this machine in a log where its name is provenance (own_writers_here). Else from the
-        # key an import stores on the event, `verified`: False when it is no object or its signer's kind is
+        # True for a request this machine appended itself (`appended_here`), whatever its writer's name. Else
+        # from the key an import stores on the event, `verified`: False when it is no object or its signer's kind is
         # `legacy`; None while the revocation set cannot be read; False when the set names the signer; else True
     def reach_token(session) -> tuple | None
         # the session's record's owners with its access, shares and policyRev (sminos_audience.policy_of); None
         # while the record cannot be read
-    def judge(channel, request, record, earlier, word=None, asked=None, *, project=None, now=None, facts=None) -> Outcome
-        # (M4: `project` chosen before the lock and never looked up under it; `now` for the expiry; `facts`
-        # the evaluation's fresh reader)
+    def judge(channel, request, record, earlier, word=None, asked=None, project=_LOOK, now=None, facts=None) -> Outcome
+        # (M4: `project`, the thread's own project as its caller found it, None for none; not given (`_LOOK`)
+        # it is looked up, which a caller under the record's lock never lets it do; `now` for the expiry;
+        # `facts` the evaluation's fresh reader)
         # the table below and nothing else: reads, no write, no lock. `record`: the target's, as its caller read
         # it. `earlier`: the requests of the ordered input before this one. `word`: the endpoint's ("deliver" |
         # "refuse" | None), the one kept under this request's event_key and no other. `asked`: {"session",
         # "reach"} the word was asked for. "applied" and "refused" are what a write would record; nothing has
         # been written
-    def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_until=None) -> Outcome
+    def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_until=None, finishes=True) -> Outcome
         # one request: judge() on what it reads, then, when that says a statement is owed, set_channels with a
         # decide that runs judge() again on the record it is given and on fresh reads, and writes that second
         # answer or nothing. An input whose signature moved since `earlier` was read is read again, three
-        # times in the call, then pending `moved`
+        # times in the call, then pending `moved`. `finishes` False (the uplink's pass, on its consumer's
+        # thread): an entry the record holds already is not finished here, and the request is pending `entry`;
+        # the finish of the entry this call committed is `finish_thread(..., only=<its id>)` (C1)
     def ask_of(channel, request) -> dict | None
         # what the endpoint is asked about a request left pending `endpoint`, read now: {"key": its event_key,
         # "thread", "session": the thread's current session, "project": the thread's own project, "reach":
         # reach_token(session)}; None when row 3 or 7 holds, or the record cannot be read
-    def carry_due(channel, words=None, also=(), lock_until=None, wake_until=None) -> list[(dict, Outcome)]
+    def carry_due(channel, words=None, also=(), lock_until=None, wake_until=None, finishes=True) -> list[(dict, Outcome)]
         # (M4: the daemon passes `wake_until` now, so it only tries the wake lock; a command waits SWEEP_WAIT)
         # the pass: every request of the ordered input that is not expired and names a thread of this machine,
         # in order, then the requests of `also` it does not hold (a command's own, in hand), each through
         # carry_out; a request pending leaves the later ones for its thread pending `earlier`.
-        # `words`: {event_key: (word, asked)}
+        # `words`: {event_key: (word, asked)}; `finishes`, carry_out's
 
 `judge` answers by the first row that holds. T is the record whose id is
 the request's `thread`.
@@ -1554,7 +1560,7 @@ the request's `thread`.
 |---|---|---|
 | 1 | the request is expired | ignored `expired` |
 | 2 | a request among `earlier` under another writer carries this request's `id` | ignored `duplicate`: not carried out, and `channel show` says so |
-| 3 | T is no record of this machine, or has ended, or never had the request's `session`, or that session is now another record's current one, or T's session is lane B | ignored `not-here`: nothing is written for either thread, and the request expires |
+| 3 | T is no record of this machine, or has ended, or never had the request's `session`, or that session is now another record's current one (the session's owner found in `thread_of`'s order over every record, set-aside and ended ones included: by T1 an archived human-opened record owns its current session before an older copy's seat), or T's session is lane B | ignored `not-here`: nothing is written for either thread, and the request expires |
 | 4 | T's `answered` holds the request's channel and id | ignored `answered` |
 | 5 | a request among `earlier` for the same thread is not expired, passes rows 2 and 3, and is not in T's `answered` | pending `earlier` |
 | 6 | T has an open entry | pending `entry` |
@@ -1608,13 +1614,23 @@ The words a command and `channel show` print:
 | `earlier` | behind an earlier request for it in this channel |
 | `entry` | its record holds an unfinished operation |
 | `wake` | it is being woken; its machine's next pass carries this out |
+| `busy` | its record is being written by another process; its machine's next pass carries this out |
 | `vacant`, `between` | the thread holds no session now; its session is between two projects |
 | `no-channels` | its machine's endpoint does not serve channels |
 | `unverifiable` | its machine cannot read its revocation set |
 | `endpoint` | its machine's endpoint has not said whether you may message it |
 | `moved` | its session, its reach or the channel's log changed while its machine decided: tried again |
+| `unreadable` | the channel's log is there and could not be read; its machine's next pass carries this out |
+| `record-unreadable` | its session's record is there and could not be read; its machine's next pass carries this out |
+| `queued` | it waits in its machine's queue under a name the machine wrote as before; it is carried out once the queue is released |
+| `expired` | not carried out: the request is more than seven days old |
+| `not-here` | not carried out: it names a session that is no longer that thread's, or a thread that has ended |
+| `audience` | not sent (its endpoint refused the audience it went under: its target's reach changed before it was signed) |
 | `failed` (a thread's own change) | nothing was recorded (`<the pending word for why>`): run the command again |
 | `failed lane-b` | nothing was recorded (this session is lane B now, and no thread): run the command again |
+
+The code holds these as `WORDS` and `OWN_FAILED` (`S/sminos_channels.py`), which are the source when the two
+differ; a thread's own `failed` also reads `unreadable` and `record-unreadable` there.
 
 On another machine a requester reads none of the pending words: it reads
 `pending on <machine> since <time>`, which covers a machine that is off, one
@@ -1648,9 +1664,11 @@ and never a channel; while `Link.serves_channels` it carries the thread's
 and done; a `subscribe` for one with the `end` a project gives for a
 session it does not hold.
 
-`fresh_frame` passes `channels_of(m.session)`'s entries that pass
-`is_channel_id`, the first 128, for a lane A member while `Link.serves_channels`,
-and `()` otherwise; its key (`made_of`) takes that tuple.
+`fresh_frame` passes `sminos_channels.frame_channels(session, holders)`
+(`channels_of`'s entries that pass `is_channel_id`, the first 128, read from
+`sminos_threads.set_holders`, so a thread in none is one lookup) for a
+session among the holders while `Link.serves_channels`, and `()` otherwise;
+its key (`made_of`) takes that tuple.
 
 ### §8. The CLI
 
@@ -1755,11 +1773,12 @@ the baseline first:
         # {(channel id, writer, seq): the event held there} for every event the channels' logs hold now: what
         # was there before this code ran. Taken before any verb, tick or uplink of this code reads the store,
         # since a reading verb reconciles
-    def published(frames, channel_ids, before={}, allowed=ALLOWED) -> list[str]
-        # each breach among the frames a stand-in kept, one line each; [] for none
-    def written(sminos_home, channel_ids, machine, before={}, allowed=ALLOWED) -> list[str]
-        # the same over the store: the channel's log files of this machine's writers, its host store, and any
-        # delivery record under a channel's log
+    def published(frames, channel_ids, before={}, allowed=ALLOWED, welcomed=()) -> list[str]
+        # each breach among the frames a stand-in kept, one line each; [] for none. `welcomed`: the numbers of
+        # the connections whose welcome listed `channels` (a `member` frame with `channels` on any other is one)
+    def written(sminos_home, channel_ids, machine, before={}, allowed=ALLOWED, deliveries=True) -> list[str]
+        # the same over the store: the channel's log files of this machine's writers, its host store, and (with
+        # `deliveries`, CH2 passing False) any delivery record under a channel's log
 
 A breach is: a `member` frame whose `project` is a channel id; a
 session-plane message whose project is one (`presence`, `machine`, `host`,
@@ -2714,8 +2733,9 @@ while the milestones are built, one observation and its evidence each.
   non-empty boundary carried.
 - 2026-11-22 — **The second whole-range review and its fix wave**
   (`317c7e6a..ad2796e6`). The holder's second panel over `bef6f74e..317c7e6a`
-  confirmed 23 (2 P1); its triage ruled nine fixed (C1 to C9), thirteen
-  logged (L4 to L16, rows in TECH-DEBT's "sminos channels"), one dismissed.
+  confirmed 23 (2 P1); its triage ruled nine fixed (C1 to C9), twelve
+  logged (L4 to L15, rows in TECH-DEBT's "sminos channels"; C9 was fixed, so
+  no L16), one dismissed.
   C1 took the triage's alternative shape: the uplink's request pass reads
   its target's member frame as the plane last read it
   (`Link.member_on_lane`) and reads no view, and its finish call finishes
@@ -2743,6 +2763,36 @@ while the milestones are built, one observation and its evidence each.
   seat; the narrowing was reverted. The review's fixes (`ad2796e6`) had no
   review of their own; the holder's high-rung reading of `317c7e6a..` is
   theirs.
+- 2026-11-22 — **The holder's third and last reading** (high rung, of
+  `317c7e6a..18c2f7bf`): six findings, each a gap in one of the wave's own
+  fixes; four fixed (`78074970`), one logged, one dismissed, no review
+  after. It found no wrong verdict from C1's frame as the plane last read
+  it: the request path rechecks membership and reach, and a frame under the
+  wrong project defers the ask. D1: a channel entry's carry reads the
+  channel's log by its id's path when its registration cannot be read, and
+  registers nothing (no evidence is doubt, not absence). D2: the last lane
+  read takes only FileNotFoundError as a missing record (`_gone`). D3: the
+  unquoted tag guard (`shortened_channel_qualifier`, the name kept) splits
+  the `@word` where the leading tags stop at its last `/` and lets
+  `names_channel` decide the whole qualifier, `name#<whole id>` included,
+  with no grammar of its own. D4: an exact seat group of a name no project
+  has resolves before the channel ambiguity exit; a project of that name
+  keeps its precedence. Logged: the request's own finish can take the
+  registration lock with no bound (`lifecycle` → `_append` → `store_path` →
+  `project_path`, where the registration changed since the pass read it),
+  in the older-hang row, which names it and A1's `member_under` as the two
+  consumer-thread callers CH1 added. Dismissed: a terminal `create`
+  reconciling its target before it refuses an uncarried channel (a
+  refusal's read may reconcile as any read does; "nothing was written" is
+  about channel facts).
+- 2026-11-22 — **Accepted by the holder: a retried purge's `retired` for
+  every seat purge.** M8's round-3 fix (`f6c205ad`, `end_seat`) writes the
+  session's `retired` first for an already-ended seat whose session is no
+  member there, whose process runs on and whose last event does not hold
+  against it. It applies to every seat purge, not only a channel's kept
+  end: a session that moved projects and is purged from its old seat while
+  still running gets one redundant `retired` in the old project's log. The
+  holder accepted it as built.
 
 ## Outcomes & Retrospective
 
@@ -2758,18 +2808,22 @@ the merge base's at M5, the wire frames of a thread in no channel with the
 old fixture's at M6, every gate at every milestone). sminos 1.54.0.
 
 **How it was proved.** Every acceptance item by the proof map, on the final
-head: the gates GREEN (11/11) with `sminos-idle` at 32,737 calls a
-second under its 33,570 limit (each milestone between 32,024 and 32,781);
-the acceptance scene's seven steps, 47 checks, none failed (run alone at
-`b2ed53c7`, and inside the `sminos-channels` gate on every head since); MAWS's fixture
-(its master `27e7208a1`, case 15 the request exchange) replayed, 121 lines
-`ok`, no amendment; the older-copy suite over 1.27.10, 1.51.0 and 1.52.0, 303 checks;
-and the check on a real engine, three steps passed under a scratch home.
-Its step 3 shows the record's positions for the channel unchanged across a
-hand-off only as empty before and after, since the channel's log held
-nothing then: a non-empty boundary carried across a real hand-off is left
-to CH2's full pass on a real engine, which the composite's Risks already
-give it.
+head. The final code head is `78074970`; the head after it changes this
+document only. On `78074970`: the gates GREEN (11/11, run 45001621562)
+with `sminos-idle` at 32,230 calls a second under its 33,570 limit (every
+milestone and fix round between 32,024 and 32,838); MAWS's fixture (its
+master `27e7208a1`, case 15 the request exchange) replayed, 121 lines
+`ok`, no amendment. The acceptance scene's seven steps, 47 checks, none
+failed: covered by the `sminos-channels` gate (`test-channels-machines.sh`,
+whose last case it is) and run alone there with `--scene --show` as well.
+The older-copy suite over 1.27.10, 1.51.0 and 1.52.0, 303 checks: covered
+by the `sminos-suites-a` gate (`test-older-cli.sh`). The check on a real
+engine, which no gate covers, run again on `78074970` under a scratch home
+(Claude Code 2.1.330): its three steps passed, as at M8. Its step 3 shows
+the record's positions for the channel unchanged across a hand-off only as
+empty before and after, since the channel's log held nothing then: a
+non-empty boundary carried across a real hand-off is left to CH2's full
+pass on a real engine, which the composite's Risks already give it.
 
 **Not proved here.** The real endpoint's answer to a channel-request's
 `reach?` (recorded below, before this section was written): the replay
