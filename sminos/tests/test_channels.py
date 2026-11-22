@@ -687,6 +687,38 @@ class ChannelReconcile(Machine):
         self.assertIn(sessions["a"], rec.get("former") or [])
         self.assertEqual(sminos.threads_module().get(tid).get("pending"), None)
 
+    def test_a_legacy_absorption_whose_predecessors_record_was_lost_carries_its_published_reach(self):
+        """The frontier's second review (C2): a restore kept the private predecessor's publication and the journal,
+        not its session record. The carry of an entry owed to a channel withholds only what concerns the channel
+        (its cursor, its override, a publication there): the predecessor's reach is read from its publication in
+        the log the entry names, read-only, as for a project's entry, so the job ends private, not listed."""
+        sessions = {}
+
+        def prepare(a, job):
+            threads = sminos.threads_module()
+            sminos.write_override(a, DESK)
+            sminos.log_append_batch(self.p, "%s/%s" % (MACHINE, a), [{
+                "kind": "retired", "session": a, "by": "join", "reason": "moved", "project": DESK,
+                "thread": threads.thread_of(a)["thread"]}])
+            # The older copy's `joined` of the private session into the channel, under its stream: it publishes.
+            stream = "%s/%s~%s" % (MACHINE, a, sminos.audience_digest(["member-1"]))
+            sminos.keep_stream(self.c, stream, ["member-1"])
+            sminos.log_append(self.c, stream, "joined", session=a, alias="worker", name_source="user",
+                              machine=MACHINE, cwd=self.root, worktree="", role="", seat="", by="join",
+                              origin={"kind": "terminal"})
+            os.unlink(records.record_path(a))   # the restore kept no record of it
+            self.procs[-2].kill()
+            self.procs[-2].wait()
+            self.assertNotEqual((records.read(job) or {}).get("access"), "private", "the job's own, not inherited")
+            sessions.update(a=a)
+        a, job, tid, other = self.absorption(4, "present", prepare)
+        rec = records.read(job)
+        self.assertEqual(rec.get("access"), "private", "the predecessor's reach, from its publication")
+        self.assertIn(sessions["a"], rec.get("former") or [])
+        self.assertEqual(sminos.threads_module().get(tid).get("pending"), None)
+        self.assertEqual([e["kind"] for e in self.log_events(DESK) if e.get("session") == job], [],
+                         "nothing published in the channel's log")
+
     def test_a_legacy_absorption_cut_after_its_deletion_keeps_its_claim(self):
         """M8's review, round 2: cut after the provisional record's deletion, the claim is committed: kept, not
         rolled back, the continuing record the job's one owner and the entry cleared."""
@@ -830,6 +862,18 @@ class Doors(Machine):
         self.assertEqual(rc, 1, err)
         self.assertIn("desk-integration is a channel", err)
         self.assertEqual(self.log_events(PROJ), [], "no member was looked up: nothing reconciled, nothing recorded")
+
+    def test_a_shortened_channel_qualifier_unquoted_is_refused_before_anything_is_recorded(self):
+        """`@desk-integration#5c2a9e10/worker`, unquoted: the tag parser reads no `#` in a qualifier, so it opens no
+        tag; it is refused as the quoted form is, wherever the leading run meets it, and nothing is recorded."""
+        sid = "6c00000a-0000-4000-8000-0000000000ca"
+        self.live(sid, self.root)
+        q = "desk-integration#%s" % DESK[:8]
+        for text in ("@%s/worker hello" % q, "@worker @%s/worker hello" % q, "@%s/worker: hello" % q):
+            rc, out, err = self.cli("say", text, cwd=self.root)
+            self.assertEqual(rc, 1, (text, err))
+            self.assertIn("%s is a channel" % q, err, text)
+        self.assertEqual(self.log_events(PROJ), [], "nothing recorded")
 
     def test_an_unregistered_channel_id_is_a_channel_at_every_door(self):
         other = "9e000001-0000-8000-8000-0000000000e1"

@@ -1080,7 +1080,16 @@ class Link:
         push alone; `refuse` settled `refused-reach` here, with no outcome
         back. An answer to no ask held here, or one naming neither, is no
         answer: the event stays owed, asked again under a new id, no attempt
-        counted."""
+        counted. One on a channel's request that names neither consumes
+        nothing: its ask stays held, and is asked again at its deadline, the
+        ordinary timer, never at the reply's speed (the frontier's second
+        review, C8, A11's rule)."""
+        pre = self.asks.get(frame.get("id")) if isinstance(frame.get("id"), str) else None
+        if pre is not None and "request" in pre and pre.get("t") == "reach?" \
+                and frame.get("verdict") not in sminos.REACH_VERDICTS:
+            log("the endpoint's answer on the reach of %s in %s names no verdict (%r): no answer, asked again at its "
+                "deadline" % (sminos.event_ref(pre["event"]), pre["project"].name, frame.get("verdict")))
+            return
         held = self.held_ask(frame, "reach?")
         if held is None:
             return
@@ -2281,9 +2290,9 @@ class Link:
         it left pending `endpoint` asked `reach? {id, project: the channel,
         session: the thread's current session, event: the request, its
         verified left out}`, the thread's member frame first under its own
-        project (member_under: asked with the channel, members_before
-        would find no row there). One ask out at a time for a request, held under the
-        event it asks about (sminos_channels.event_key) with the session and
+        project, as the plane last read it (member_on_lane: no view read, so
+        nothing reconciled on the consumer's thread). One ask out at a time
+        for a request, held under the event it asks about (sminos_channels.event_key) with the session and
         reach it was put for (ask_of). Not through queue_asks' hold filter:
         a stopped thread is asked about and placed while it stays stopped.
         Called only while a channel is open on this stream (Link.channels),
@@ -2345,21 +2354,44 @@ class Link:
                 if self.session_lane.queued() >= UPLOAD_AHEAD:
                     self.words_due = True   # asked once the lane has room
                     return
-                if not self.member_under(asked["project"], asked["session"]):
+                if not self.member_on_lane(asked["project"], asked["session"]):
                     if asked["session"] in self.members_unsent:
                         self.words_due = True   # its frame waits for lane capacity: asked once it is queued
-                    continue   # a row not there yet: the next timed or nudged pass asks it
+                    continue   # a row not there yet, or under another project: asked after the plane's next read
                 ask = os.urandom(12).hex()
                 self.hold_asks([(ask, {"key": key, "project": channel, "event": r, "t": "reach?",
                                        "request": {"session": asked["session"], "reach": asked["reach"]}},
                                  {"t": "reach?", "id": ask, "project": pid, "session": asked["session"],
                                   "event": {k: v for k, v in r.items() if k != "verified"}})])
 
+    def member_on_lane(self, project, session):
+        """Whether the session's member frame is on the lane under `project`,
+        its own project now, and current, as a request's ask needs it first
+        (CH1's M7), read with no view: the row the plane last read there,
+        its record read now (no lock), sent again when its frame changed
+        (publish_members). False while the plane has no row for it there, or
+        its frame names another project (it moved since the plane read it):
+        the request stays pending and is asked once the plane's own read
+        (Link.members, every tick before the words pass) has the row. A view
+        reconciles, and a reconciliation replays the project's open entries,
+        whose locks (a hand-off's cursor lock among them) no deadline bounds:
+        nothing on the consumer's thread for a request waits on one (the
+        frontier's second review, C1)."""
+        rows = self.plane.member_rows.get(project.id, {})
+        if session not in rows or project.id not in self.member_known:
+            return False
+        rows[session] = rows[session]._replace(record=sminos.session_record(session))
+        if session in self.members_unsent or self.members_sent.get(session) != self.fresh_frame(project.id,
+                                                                                              rows[session]):
+            self.publish_members(time.monotonic())
+        return session not in self.members_unsent \
+            and (self.members_sent.get(session) or {}).get("project") == project.id
+
     def member_under(self, project, session):
         """Whether the session's member frame on the lane is its frame under
-        `project`, its own project now, as a request's ask needs it first
-        (CH1's M7): members_before, and when the frame it leaves names
-        another project or none (the plane read the session before it
+        `project`, its own project now, as an upload of a channel's log needs
+        its sender's first (senders_before): members_before, and when the
+        frame it leaves names another project or none (the plane read the session before it
         moved), that project's rows and those of the project the frame
         named read again and the members published; False while the frame
         is not there, the ask left to the next pass."""

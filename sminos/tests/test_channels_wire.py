@@ -599,6 +599,11 @@ class Asks(Requests, T1.Sessions):
         return link
 
     def ask_pass(self, link):
+        """One tick's ask pass, as Link.tick runs it: the members the plane reads (Link.members, a reconciling read,
+        due now), then the words pass. The ask itself reads frames as they are (C1)."""
+        sminos.forget_caches()
+        link.next_member_read = 0.0
+        link.members(time.monotonic())
         sminos.forget_caches()
         link.ask_words({})
 
@@ -813,12 +818,13 @@ class Asks(Requests, T1.Sessions):
         tid, sid, _ = self.human()
         self.remote(DESK, "add", sid, tid)
         link = self.link()
-        with mock.patch.object(link, "member_under", return_value=False):
+        with mock.patch.object(link, "member_on_lane", return_value=False):
             self.ask_pass(link)
         self.assertEqual(self.asks(link), [])
         self.assertFalse(link.words_due, "no row: not asked again at every tick")
         link.members_unsent = {sid}
-        with mock.patch.object(link, "member_under", return_value=False):
+        with mock.patch.object(link, "member_on_lane", return_value=False), \
+                mock.patch.object(link, "publish_members"):
             self.ask_pass(link)
         self.assertTrue(link.words_due, "its frame waits for the lane: asked as soon as it is queued")
         link.members_unsent = set()
@@ -834,7 +840,7 @@ class Asks(Requests, T1.Sessions):
         self.answer(link, ask, "maybe")
         self.assertEqual((self.held(tid), self.answered(tid)), ([], []))
         self.ask_pass(link)
-        self.assertEqual(len(self.asks(link)), 2, "asked again")
+        self.assertEqual(len(self.asks(link)), 1, "held still, asked again at its deadline (C8)")
 
     def test_the_pass_needs_reach_and_channels_and_reads_nothing_without_an_open_channel(self):
         tid, sid, _ = self.human()
@@ -1313,7 +1319,8 @@ class Asks(Requests, T1.Sessions):
         with open(path, "a+") as held:
             fcntl.flock(held, fcntl.LOCK_EX)   # the successor's cursor, written by another process
             at = time.monotonic()
-            self.ask_pass(link)
+            sminos.forget_caches()
+            link.ask_words({})   # the ask alone: the plane's own read (Link.members) is the older hang's, not this
             took = time.monotonic() - at
             fcntl.flock(held, fcntl.LOCK_UN)
         self.assertLess(took, 1.0, "the pass waited on the hand-off's cursor lock")
@@ -1322,6 +1329,171 @@ class Asks(Requests, T1.Sessions):
         self.assertEqual(self.carry(DESK, wake_until=time.time())[a["id"]].why, "endpoint",
                          "the daemon's pass finishes the entry first, as before")
         self.assertIsNone(threads.get(tid).get("pending"))
+
+    # -- the frontier review, round 2 (the holder's second fix wave)
+
+    def held_for(self, path, seconds):
+        """`path`'s lock taken as another process takes it (its own open file, on a thread here), let go after
+        `seconds`."""
+        taken = threading.Event()
+
+        def hold():
+            with open(path, "a+") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                taken.set()
+                time.sleep(seconds)
+                fcntl.flock(f, fcntl.LOCK_UN)
+        t = threading.Thread(target=hold, daemon=True)
+        t.start()
+        self.assertTrue(taken.wait(5))
+        self.addCleanup(t.join)
+        return t
+
+    def cut_hand_off(self, old=None, oproc=None, tid=None):
+        """A thread whose record holds a hand-off's open entry (an advance cut after its record's write): (its
+        thread id, the path of the cursor lock its carry takes)."""
+        if old is None:
+            old, oproc, tid = T1.Sessions.member(self)   # (Store's member() reads a row)
+        job, _ = self.job(old)
+        self.end(oproc)
+        with self.kill_after_begin(), self.assertRaises(T1.Killed):
+            self.reconcile()
+        self.assertEqual(threads.get(tid)["pending"]["op"], "advance")
+        return tid, sminos.project_path(self.p, "cursors", sminos.reader_key(job) + ".json")[:-len(".json")] + ".lock"
+
+    def test_c1_the_ask_pass_reads_frames_as_they_are_and_reconciles_nothing(self):
+        """A target whose member frame is not on the lane is pending until the plane's own read publishes it: the
+        ask pass reads no view, which would reconcile the project and replay its open entries (a hand-off's carry
+        waits on the successor's cursor lock with no deadline), so a lock another process holds stops no frame."""
+        tb, sb, _ = self.human()
+        tid, path = self.cut_hand_off()
+        self.remote(DESK, "add", sb, tb)
+        link = self.link()
+        t = self.held_for(path, 2.0)
+        sminos.forget_caches()
+        at = time.monotonic()
+        link.ask_words({})
+        took = time.monotonic() - at
+        self.assertLess(took, 1.0, "the ask pass waited on the hand-off's cursor lock")
+        self.assertEqual(self.asks(link), [], "its frame not on the lane: nothing asked")
+        self.assertFalse(link.words_due, "nor asked at every tick: the plane's read publishes the frame")
+        self.assertEqual(threads.get(tid)["pending"]["op"], "advance", "nothing of the project replayed")
+        t.join()
+        self.ask_pass(link)   # the tick's members first (Link.members, a reconciling read), then the ask
+        [ask] = self.asks(link)
+        self.assertEqual(ask["session"], sb)
+        at = link.session_lane.sent.index(ask)
+        self.assertIn(self.p.id, [f["project"] for f in link.session_lane.sent[:at]
+                                  if f.get("t") == "member" and f.get("session") == sb], "its frame first")
+
+    def test_c1_a_stale_frame_is_sent_again_from_the_row_as_it_is_and_one_under_another_project_waits(self):
+        """What the ask needs of the frame is read without a view: the row the plane last read, its record read now,
+        sent again when it changed; a frame that names another project (the session moved since the plane read it)
+        waits for the plane's next read, nothing asked meanwhile."""
+        tid, sid, _ = self.human()
+        self.remote(DESK, "add", sid, tid)
+        link = self.link()
+        link.members(time.monotonic())
+        sent = dict(link.members_sent[sid])
+        self.record(sid, owners=["@machine", "member-9"])   # its owners changed: the frame on the lane is stale
+        sminos.forget_caches()
+        with mock.patch.object(link.plane, "refresh", side_effect=AssertionError("a view was read")):
+            link.ask_words({})
+        [ask] = self.asks(link)
+        self.assertNotEqual(link.members_sent[sid], sent, "sent again from the row, its record read now")
+        at = link.session_lane.sent.index(ask)
+        self.assertEqual([f for f in link.session_lane.sent[:at] if f.get("t") == "member"
+                          and f.get("session") == sid][-1], link.members_sent[sid], "the current frame first")
+        tid2, sid2, _ = self.human()
+        self.remote(DESK, "add", sid2, tid2)
+        link.members(time.monotonic() + 2 * uplink.plane.MEMBERS_WHOLE)
+        link.members_sent[sid2] = {**link.members_sent[sid2], "project": ELSEWHERE}   # read before it moved
+        sminos.forget_caches()
+        with mock.patch.object(link.plane, "refresh", side_effect=AssertionError("a view was read")), \
+                mock.patch.object(link, "publish_members"):
+            link.ask_words({})
+        self.assertEqual([a["session"] for a in self.asks(link)], [sid], "the moved one waits")
+
+    def test_c1_the_requests_finish_finishes_only_the_entry_it_committed(self):
+        """Between the request's commit and its finish another process finishes the statement and commits a hand-off
+        of the thread: the request's finish call leaves that entry to the reconciliation, and never waits on its
+        carry's cursor lock."""
+        old, oproc, tid = T1.Sessions.member(self, owned=False)
+        self.assertTrue(channels.machine_owns(old), "the machine's owners: row 10 needs no word")
+        e = self.request(DESK, "add", old, tid)   # this machine's own, for a thread of its own
+        real, overtaken = threads.set_channels, []
+
+        def committed_then_overtaken(thread_id, decide, **kw):
+            entry = real(thread_id, decide, **kw)
+            if entry is not None and not overtaken:
+                sminos.finish_thread(thread_id)   # the statement, by another finisher
+                self.held_for(self.cut_hand_off(old, oproc, tid)[1], 2.0)
+                overtaken.append(time.monotonic())
+            return entry
+        with mock.patch.object(threads, "set_channels", committed_then_overtaken):
+            sminos.forget_caches()
+            now = time.time()
+            got = {r["id"]: o for r, o in channels.carry_due(self.chan(DESK), lock_until=now, wake_until=now,
+                                                              finishes=False)}
+            waited = time.monotonic() - overtaken[0] if overtaken else None
+        self.assertEqual(got[e["id"]], channels.Outcome("applied"))
+        self.assertLess(waited, 1.0, "the request's finish waited on the hand-off's cursor lock")
+        self.assertEqual(threads.get(tid)["pending"]["op"], "advance", "the hand-off's left to the reconciliation")
+
+    def test_c8_a_malformed_reach_reply_keeps_the_ask_held_until_its_deadline(self):
+        """A reply that names no verdict is no answer, and consumes nothing: the ask stays held, nothing marks the next
+        pass due, and it is asked again once its deadline passes (the ordinary timer), never at the reply's speed."""
+        tid, sid, _ = self.human()
+        self.remote(DESK, "add", sid, tid)
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        link.words_due = False
+        self.answer(link, ask, "maybe", carried=False)
+        self.assertIn(ask["id"], link.asks, "still held")
+        self.assertFalse(link.words_due, "no pass made due")
+        self.ask_pass(link)
+        self.assertEqual(len(self.asks(link)), 1, "not asked again before its deadline")
+        later = link.asks[ask["id"]]["deadline"] + 1
+        link.expire_asks(later)
+        with mock.patch.object(uplink.time, "monotonic", return_value=later):
+            self.ask_pass(link)
+        self.assertEqual(len(self.asks(link)), 2, "asked again once its deadline passed")
+        self.answer(link, self.asks(link)[-1], "deliver")
+        self.assertEqual(self.held(tid), [DESK])
+
+    def test_c9_a_sender_that_joined_its_destination_before_retiring_from_its_source_owes_its_frame_there(self):
+        """A move whose destination's `joined` comes before the source's `retired moved` naming it is a membership
+        of the destination (a dual membership of one tick, then the move): the request goes after the sender's
+        frame there, never without it."""
+        tid, sid, _ = self.human()
+        _, sender, _ = self.human()
+        other = self.hub_project("9a9a9a9a-0000-4000-8000-00000000009d", "further")
+        link = self.link()
+        hl = link.logs[DESK]
+        hl.on_have({"t": "have", "project": DESK, "have": {}})
+        e = self.request(DESK, "add", sid, tid, writer=sminos.writer_id(sender))
+        stamp = threads.stamp(sender)
+        sminos.write_override(sender, other.id)   # its `join further`: the session's project is the destination now
+        self.write_own(sender, [self.old_joined(sender, alias="mover", thread=stamp)], p=other)
+        time.sleep(0.005)
+        self.write_own(sender, [{"kind": "retired", "reason": "moved", "project": other.id, "thread": stamp}])
+        sminos.forget_caches()
+        self.assertEqual(getattr(sminos.member_project_now(sender), "id", None), other.id)
+        sent = []
+        real = link.member_under
+
+        def under(project, session):
+            sent.append((project.id, session))
+            return real(project, session)
+        with mock.patch.object(link, "member_under", under):
+            link.upload(hl)
+        self.assertIn((other.id, sender), sent, "its frame looked for under the destination")
+        uploads = [(f, ms) for f, ms in self.uploaded(link) if any(x["writer"] == e["writer"] for x in f["events"])]
+        self.assertTrue(uploads)
+        for frame, members in uploads:
+            self.assertIn(other.id, [m["project"] for m in members if m.get("session") == sender],
+                          "uploaded only after its frame under the destination")
 
 
 class WireAsks(unittest.TestCase):

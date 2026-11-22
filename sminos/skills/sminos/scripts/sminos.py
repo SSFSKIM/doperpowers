@@ -3034,14 +3034,25 @@ def member_project_now(session):
     """The project `session` is a member of now, read fresh from every
     project's files (last_project's scan, its per-generation answer passed
     by), the project and the membership from that one read: the project
-    whose `joined` is the newest membership event in effect. None when that
-    event is a retirement: one into nothing, one from where it was, or a
-    `moved` whose destination's `joined` is not written (or older than the
-    move). What an upload of a channel's log asks of a sender
+    whose `joined` is the newest membership event in effect, or the
+    destination of a newest `retired` `moved` whose own `joined` there is
+    in effect (written before the move's retirement, as a reconciliation
+    may). None when that event is a retirement: one into nothing, one from
+    where it was, or a `moved` whose destination's `joined` is not written
+    or not in effect. What an upload of a channel's log asks of a sender
     (sminos_uplink.Link.senders_before): a frame is owed only where it is
     a member."""
     best = _membership_in_effect(session)
-    return best[0] if best is not None and best[1]["kind"] == "joined" else None
+    if best is None:
+        return None
+    if best[1]["kind"] == "joined":
+        return best[0]
+    # A move whose destination joined before the source's `retired moved` named it (a dual membership of one tick):
+    # a member there (the frontier's second review, C9).
+    dest = str(best[1].get("project") or "") if best[1].get("reason") == "moved" else ""
+    p = known_project(dest) if dest and valid_name(dest) and not is_channel_id(dest) else None
+    last = threads_module().in_effect(_own_events(p, session)) if p is not None else None
+    return p if last is not None and last["kind"] == "joined" else None
 
 
 def last_project(session):
@@ -4832,8 +4843,8 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
                 rec = records.establish(sid, prov, _RECORD_DEADLINE)[0]
         except (OSError, LockBusy, ValueError) as e:
             warn("the record of session %s could not be written: %s" % (sid[:8], e))
-    if rec is not None and records.is_final(rec) and project is not None:
-        publish_owners(project, sid, events)
+    if rec is not None and records.is_final(rec) and project is not None and not is_channel_id(project.id):
+        publish_owners(project, sid, events)   # never into a channel's log (CH1): nothing is published there
     return rec
 
 
@@ -5158,14 +5169,14 @@ def thread_transition(project, thread_id, op, events, required=False, began=None
     return appended
 
 
-def finish_thread(thread_id, appended=None, project=None, lock_until=None):
+def finish_thread(thread_id, appended=None, project=None, lock_until=None, only=None):
     """sminos_threads.finish, its events appended through this module's own
     lifecycle, a hand-off's carry run by it (carry_hand_offs) and an end's
     settlement (settle_ended), so the caches a verb reads afterwards (its
     views) see them, whichever copy of this module loaded the threads
-    module."""
+    module. `only`: the one entry, by its id, the caller committed."""
     return threads_module().finish(thread_id, appended, project, append=lifecycle, lock_until=lock_until,
-                                   before=carry_hand_offs, settle=settle_ended, stop=purge_stop)
+                                   before=carry_hand_offs, settle=settle_ended, stop=purge_stop, only=only)
 
 
 def purge_stop(record, entry):
@@ -6636,16 +6647,19 @@ def carry_hand_offs(project, entry):
     is durable (the cursor and the override written, and the provenance
     carried), without which nothing of the entry is appended. An entry whose
     `carry` does not read carries nothing durable: it stays open. `project`
-    None: an entry owed to a channel, whose provenance alone is carried."""
+    a channel (None for one not registered here): an entry an older copy
+    owed it, whose provenance alone is carried."""
     pair = entry.get("carry")
     if not (isinstance(pair, list) and len(pair) == 2 and all(UUID_RE.fullmatch(str(x)) for x in pair)):
         return False
     old, new = pair
-    if project is None:
+    if project is None or is_channel_id(project.id):
         # An entry an older copy owed a channel (sminos_threads._finish): the reach and provenance alone, from the
-        # pair, read from the records; the cursor and the override are the channel's, and stay behind.
-        ensure_record(None, new, former=[old])
-        return carried(None, old, new)
+        # pair; the cursor and the override are the channel's, and stay behind. What concerns the channel alone is
+        # withheld: the predecessor's publication there is still read, read-only, wherever its record is lost (the
+        # frontier's second review, C2), and nothing is published there (ensure_record).
+        ensure_record(project, new, former=[old])
+        return carried(project, old, new)
     return carry_hand_off(project, old, new) and carried(project, old, new)
 
 
@@ -8712,20 +8726,40 @@ def leading_tags(text):
     `,:;` allowed. Only this leading run addresses anyone: an @ later in the
     text (a quoted alias, an error message naming a seat) is just text.
     Returns [{"raw", "project", "name", "short"}]."""
+    return _leading_run(text)[0]
+
+
+def _leading_run(text):
+    """leading_tags' tags, and where in `text` their run stops."""
     tags, pos = [], 0
     while True:
         pos = SPACE_RE.match(text, pos).end()
         m = TAG_RE.match(text, pos)
         if not m:
-            return tags
+            return tags, pos
         end = m.end()
         while end < len(text) and text[end] in ",:;":
             end += 1
         if end < len(text) and not text[end].isspace():
-            return tags
+            return tags, pos
         project, _, name = (m.group(1) or m.group(2)).rpartition("/")
         tags.append({"raw": m.group(0), "project": project, "name": name, "short": m.group(3) or ""})
         pos = end
+
+
+# A tag whose qualifier is a channel's shortened name, unquoted (`@desk#5c2a9e10/worker`): TAG_RE reads no `#` in a
+# qualifier, so it opens no tag, and its words would be recorded untagged.
+SHORTENED_QUALIFIER_RE = re.compile(r'@([\w.-]+#[0-9a-f]{1,8})/[\w.-]+(?:#[0-9a-f]{1,8})?[,:;]*(?=\s|$)')
+
+
+def shortened_channel_qualifier(text):
+    """The `name#short` of a channel that the tag where the message's leading
+    run of tags stops (_leading_run) is qualified by, unquoted, else "": a
+    say refuses it as it refuses a channel-qualified tag, before anything
+    is recorded (the frontier's second review, C7). Any other text there is
+    the message's, as before."""
+    m = SHORTENED_QUALIFIER_RE.match(text, _leading_run(text)[1])
+    return m.group(1) if m and names_channel(m.group(1)) is not None else ""
 
 
 def project_seats(project):
@@ -9043,6 +9077,8 @@ def resolve_tags(project, text, raws=None):
     split's text (sminos_audience.stream_for); left empty for `@all`, which
     names no session."""
     tags = leading_tags(text)
+    if (q := shortened_channel_qualifier(text)):
+        die(channel_say_refusal(q), 1)   # nothing is said into a channel yet (CH1, §8), however it is tagged
     if not tags:
         return project, [], text, False
     if any(is_all(t) for t in tags):
@@ -12333,7 +12369,8 @@ def find_target(q):
     reconcile handed the seat off to one.
 
     A full id — a seat id or session id — names its seat directly, and so
-    does `group/alias` when the qualifier is a group and no project. Any other
+    does `group/alias` when the qualifier is a group and no project (a
+    channel of the group's name included). Any other
     name, `<project>/<alias>` by the project's name or id included, is
     resolved as a tag is (resolve_tag): its projects (those it names; for
     `alias#short` every project known here; else the caller's, then for a
@@ -12382,6 +12419,11 @@ def find_target(q):
     proj, _, rest = q.rpartition("/")
     name, _, short = rest.partition("#")
     if proj and names_channel(proj) is not None:
+        # An exact seat group of that name resolves as before (the frontier's second review, C4): the refusal is for
+        # what is otherwise only the channel's.
+        hit = group_seat(proj, name) if not short else None
+        if hit:
+            return hit
         # No thread is found through a channel in this version (CH1, §8): a verb's fact goes to the thread's own
         # project, which a lookup through a channel's roster would not name.
         die("'%s' names a thread through a channel, which is not available in this version of sminos yet: name it "

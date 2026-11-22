@@ -48,6 +48,7 @@ runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devclo
 import contextlib
 import fcntl
 import glob
+import io
 import json
 import os
 import shutil
@@ -1390,6 +1391,119 @@ class Frontier(Requests):
         self.assertEqual(self.answered(tid), [])
         sminos._MERGED.clear()
         self.assertEqual(self.carry(DESK), {first["id"]: O("applied"), later["id"]: O("applied")}, "in order")
+
+
+
+class Frontier2(Requests):
+    """The fixes of the frontier review's second round that §6's carrying out and the verbs own (C3 to C6)."""
+
+    during_positions = Frontier.during_positions
+    assert_unwritten = Frontier.assert_unwritten
+
+    def verb(self, *argv, session=""):
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": session} if session else {}):
+            if not session:
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            return self.cli(*argv)
+
+    def test_c3_a_channel_write_is_refused_where_this_machines_enrollment_does_not_carry_its_log(self):
+        """A channel registered under another enrollment (another org's hub): its log is one the uplink leaves out,
+        so create's revival, add and env each refuse before anything is written, rather than say success for
+        facts that never sync. Leaving one stays possible."""
+        tid, sid, _ = self.human()
+        cid = channels.mint_channel_id()
+        sminos.register_if_absent(sminos.make_project(cid, "old", "", "", {"url": HUB["url"], "org": "org-0"}))
+        sminos.forget_caches()
+        home = os.path.join(sminos.projects_root(), cid)
+
+        def files():
+            return sorted((os.path.relpath(os.path.join(d, f), home), os.path.getsize(os.path.join(d, f)))
+                          for d, _, fs in os.walk(home) for f in fs)
+        before = files()
+        for argv, session in ((("channel", "create", "old"), sid), (("channel", "add", "old", sid), ""),
+                              (("channel", "add", "old"), sid), (("channel", "env", "add", "old", "beta"), sid)):
+            with self.subTest(argv):
+                code, out = self.verb(*argv, session=session)
+                self.assertEqual(code, 1, out)
+                self.assertIn("this machine's enrollment does not carry its log (%s)" % sminos.OTHER_ORG, out)
+                self.assertIn("nothing was written", out)
+        self.assertEqual(files(), before, "nothing written in its log")
+        self.assertEqual(self.held(tid), [])
+        self.assertEqual(self.statements(sid), [])
+        # One of this enrollment that left this machine (memberless, unlisted): a member placed is what brings it back.
+        kept = channels.mint_channel_id()
+        sminos.register_if_absent(sminos.make_project(kept, "kept", "", "", HUB))
+        sminos.write_json(sminos.leaving_path(), {"counted": {}, "left": [kept]})
+        sminos.forget_caches()
+        self.assertEqual(sminos.not_carried(self.chan(kept), HUB["org"]), sminos.LEFT_HERE)
+        code, out = self.verb("channel", "create", "kept", session=sid)
+        self.assertEqual(code, 0, out)
+        self.assertIn("is in it again", out)
+        self.assertEqual(self.held(tid), [kept])
+
+    def test_c4_an_exact_seat_group_still_resolves_beside_a_channel_of_its_name(self):
+        """`g/worker`, where `g` is a seat group and no project: a channel named `g` arriving does not make the
+        seat unreachable by that exact name; what is only the channel's is still refused."""
+        tid, sid, _ = self.seat("worker")
+        sminos.register_if_absent(sminos.make_project(channels.mint_channel_id(), "g", "", "", HUB))
+        sminos.forget_caches()
+        self.assertIsNotNone(sminos.names_channel("g"))
+        kind, res, _ = sminos.find_target("g/worker")
+        self.assertEqual((kind, res["seat_id"]), ("seat", tid))
+        self.assertEqual(channels._target("g/worker").thread, tid)
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as out:
+            sminos.find_target("g/nobody")
+        self.assertEqual(out.exception.code, sminos.EXIT_UNKNOWN)
+        self.assertIn("names a thread through a channel", err.getvalue())
+
+    def test_c5_a_record_that_cannot_be_read_at_the_last_read_defers_the_write(self):
+        """The last lane read: a session record that is missing is absence (lane A, as ever); one that is there and
+        cannot be read writes nothing, a request pending for it and a thread's own change failed, as an unreadable
+        writer file does (A8)."""
+        tid, sid, _ = self.human()
+        e = self.request(DESK, "add", sid, tid)
+        path = records.record_path(sid)
+        with open(path) as f:
+            kept = f.read()
+
+        def spoil():
+            with open(path, "w") as f:
+                f.write("{")
+
+        def mend():
+            with open(path, "w") as f:
+                f.write(kept)
+            sminos.forget_caches()
+        with self.during_positions(spoil):
+            self.assertEqual(self.carry(DESK, also=[e])[e["id"]], O("pending", "record-unreadable"))
+        self.assert_unwritten(tid, sid)
+        mend()
+        with self.during_positions(spoil):
+            self.assertEqual(channels.change(tid, LOBBY, "add", sid), O("failed", "record-unreadable"))
+        self.assert_unwritten(tid, sid)
+        self.assertIn("record-unreadable", channels.WORDS)
+        self.assertIn("record-unreadable", channels.OWN_FAILED)
+        mend()
+        self.assertEqual(self.carry(DESK), {e["id"]: O("applied")}, "carried out once it reads again")
+
+    def test_c6_a_session_still_current_on_a_newer_ended_record_names_no_older_thread(self):
+        """§6's row 3 reads whose current session it is over ended records too: the addressed session is the current
+        one of another, newer record that has ended (in place, then set aside), so an older thread that once had it
+        is not placed by a request naming it."""
+        tid, sid, _ = self.human()
+        tid2, sid2, _ = self.human()
+        self.raw(tid, lambda r: r.update(sessions=[sid2] + [x for x in r.get("sessions", []) if x != sid2]))
+        e = self.request(DESK, "add", sid2, tid)
+        self.assertEqual(self.carry(DESK, also=[e])[e["id"]], O("ignored", "not-here"), "its live current one")
+        self.raw(tid2, lambda r: r.update(ended={"at": sminos.now(), "reason": "retire", "by": "", "pid": None}))
+        self.assertEqual(self.carry(DESK, also=[e])[e["id"]], O("ignored", "not-here"), "ended, in place")
+        self.assertTrue(threads._change(tid2, lambda view, raw: "aside"))
+        sminos.forget_caches()
+        self.assertTrue(os.path.exists(threads._human_path(tid2, aside=True)))
+        self.assertIsNone(threads.current_record(sid2, fresh=True), "no live record's current one")
+        self.assertEqual(self.carry(DESK, also=[e])[e["id"]], O("ignored", "not-here"), "set aside")
+        self.assertEqual((self.held(tid), self.answered(tid)), ([], []))
+        self.assertEqual(self.statements(sid), [])
 
 
 if __name__ == "__main__":

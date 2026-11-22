@@ -223,11 +223,12 @@ def change(thread_id, channel, op, session, lock_until=None):
     process does), `entry` (its record holds an operation not finished
     yet), `vacant` (it holds no session), `between` (its session is a member
     of no project now), `moved` (`session` is not the thread's current one
-    any more, or the thread ended) or `unreadable` (the channel's log is
+    any more, or the thread ended), `unreadable` (the channel's log is
     there and could not be read, so where the membership begins is not
-    known). Never `pending`: no request exists for a
-    later pass to carry out, so the caller says nothing was recorded and to
-    run it again.
+    known), `lane-b` or `record-unreadable` (set_channels' last reads: the
+    session is lane B now, or its record is there and cannot be read).
+    Never `pending`: no request exists for a later pass to carry out, so
+    the caller says nothing was recorded and to run it again.
 
     The statement goes to the project in whose log the session is a member
     at the write, read under the record's lock from the session's own
@@ -298,8 +299,8 @@ def change(thread_id, channel, op, session, lock_until=None):
         if said[0] != "between":
             return Outcome("failed", said[0])
         unwritten = made[-1].get("unwritten") if made else None
-        if unwritten in ("moved", "lane-b"):
-            return Outcome("failed", unwritten)   # set_channels' last reads: the session is not this thread's now
+        if unwritten in ("moved", "lane-b", "record-unreadable"):
+            return Outcome("failed", unwritten)   # set_channels' last reads: not this thread's now, or not readable
         sminos.forget_caches()   # the project read before the lock: is the session a member elsewhere now?
         again = sminos.last_project(session)
         if getattr(again, "id", None) == getattr(project, "id", None):
@@ -375,6 +376,8 @@ WORDS = {
     "endpoint": "its machine's endpoint has not said whether you may message it",
     "moved": "its session, its reach or the channel's log changed while its machine decided: tried again",
     "unreadable": "the channel's log is there and could not be read; its machine's next pass carries this out",
+    "record-unreadable": "its session's record is there and could not be read; its machine's next pass carries this "
+                         "out",
     "queued": "it waits in its machine's queue under a name the machine wrote as before; it is carried out once the "
               "queue is released",
     "expired": "not carried out: the request is more than seven days old",
@@ -391,6 +394,7 @@ OWN_FAILED = {
     "moved": "this session is no longer its thread's current one, or the thread has ended",
     "unreadable": "the channel's log is there and could not be read",
     "lane-b": "this session is lane B now, and no thread",
+    "record-unreadable": "this session's record is there and could not be read",
 }
 CAPABILITY_REFUSAL = ("this machine's endpoint does not serve channels (its welcome listed no channels): nothing "
                       "was written")
@@ -540,13 +544,18 @@ class _Facts:
     record asked for twice in it reads once."""
 
     def __init__(self):
-        self._current = {}
+        self._owner = {}
 
-    def current_record(self, session):
-        """The record whose current session `session` is, from the stores as they are."""
-        if session not in self._current:
-            self._current[session] = sminos.threads_module().current_record(session, fresh=True)
-        return self._current[session]
+    def owner(self, session):
+        """The record whose current session `session` is, ended ones and those
+        set aside included (thread_of's order; a reservation is none), from the
+        stores as they are: whose session it is for §6's row 3."""
+        if session not in self._owner:
+            threads = sminos.threads_module()
+            t = threads.thread_of(session)
+            self._owner[session] = t if t is not None and t["current"] == session and not threads.reservation(t) \
+                else None
+        return self._owner[session]
 
     def outside_origin(self, channel, e):
         """Rows 8 and 9: a request this machine did not append itself
@@ -648,15 +657,16 @@ def _names_here(record, request, facts):
     """§6's row 3, the other way round: the request names `record`'s thread
     as this machine holds it. The record is there and has not ended, has had
     the request's session, that session is no other record's current one
-    now (read from the stores as they are), and the thread's session is not
-    lane B."""
+    now, an ended record's included (read from the stores as they are: a
+    newer record that ended still holds it, the frontier's second review,
+    C6), and the thread's session is not lane B."""
     threads = sminos.threads_module()
     if record is None or record["thread"] != request["thread"] or threads.record_ended(record):
         return False
     session = request["session"]
     if session != record["current"] and session not in record["sessions"]:
         return False
-    other = facts.current_record(session)
+    other = facts.owner(session)
     if other is not None and other["thread"] != record["thread"]:
         return False
     return not facts.lane_b(record["current"])
@@ -819,7 +829,9 @@ def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_unt
             return Outcome("pending", "busy")
         if entry is not None:
             try:
-                sminos.finish_thread(tid, project=project, lock_until=lock_until)
+                # The entry this call committed, and no other: one committed since in its place (another process
+                # finished this statement, then began a hand-off) is its own replay's, whose carry no deadline bounds.
+                sminos.finish_thread(tid, project=project, lock_until=lock_until, only=entry["id"])
             except (sminos.LockBusy, sminos.LogWriteFailed, OSError) as e:
                 sminos.warn("the statement of %s's channels is left to the next reconciliation: %s"
                             % (tid[:8], e or "its lock is busy"))
@@ -839,6 +851,8 @@ def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_unt
             return Outcome("ignored", "not-here")   # row 3: the session is no thread's of this machine's now
         if unwritten == "reach":
             return Outcome("pending", "moved")      # row 13: the word was for a reach the thread no longer has
+        if unwritten == "record-unreadable":
+            return Outcome("pending", unwritten)    # its lane not known: carried out once the record reads again
         # `between`: the session is no member of `project` now.
         sminos.forget_caches()
         again = sminos.last_project(record["current"])
@@ -1186,6 +1200,24 @@ def _memberless(channel):
     return channel.id not in held_channels() and channel.id not in listed
 
 
+def _refuse_uncarried(channel, doing):
+    """A channel write refused, before anything is written, where this
+    machine's enrollment does not carry the channel's log (sminos.not_carried,
+    the test the uplink makes of every log it opens: a registration of no
+    hub or of another enrollment's, one the org's directory retired, or no
+    enrollment at all): the write would say success for facts that never
+    leave this machine (the frontier's second review, C3). A channel that
+    left this machine (has_left: memberless, and unlisted for the counted
+    period) is not refused: a member placed in it is what brings it back
+    (Leaving). Nor is a thread's remove of itself: leaving is always
+    possible."""
+    enrolled = sminos.enrollment()
+    why = sminos.not_carried(channel, enrolled["org"]) if enrolled is not None else sminos.NOT_ENROLLED
+    if why and why != sminos.LEFT_HERE:
+        sminos.die("cannot %s %s: this machine's enrollment does not carry its log (%s): nothing was written"
+                   % (doing, channel.name, why), 1)
+
+
 def _print_rows(rows):
     for t, _, line in rows:
         print("%s: %s" % (t.label, line))
@@ -1204,8 +1236,12 @@ def cmd_channel(a):
     if a.channel_op == "create":
         sys.exit(_create(a.name, a.thread, session))
     if a.channel_op == "env":
-        sys.exit(env(find_channel(a.channel), a.env_op, a.machine, session))
+        channel = find_channel(a.channel)
+        _refuse_uncarried(channel, "change the pool of")
+        sys.exit(env(channel, a.env_op, a.machine, session))
     channel = find_channel(a.channel)
+    if a.channel_op == "add":
+        _refuse_uncarried(channel, "add to")
     if not a.threads and not session:
         sminos.die("from a terminal, sminos channel %s names the threads it places: sminos channel %s %s "
                    "<thread>..." % (a.channel_op, a.channel_op, a.channel), 1)
@@ -1255,6 +1291,7 @@ def _create(name, thread, session):
         cid = mint_channel_id()
         candidate = sminos.make_project(cid, name, "", "", {"url": enrolled["url"], "org": enrolled["org"]})
     else:
+        _refuse_uncarried(back, "bring back")
         candidate = back
     me = sminos.threads_module().current_record(session, fresh=True) if session else None
     choices = None

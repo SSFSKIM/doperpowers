@@ -884,8 +884,9 @@ def set_channels(thread_id, decide, lock_until=None, wake_until=None):
 
     The last reads before the write, once every part of it is made (the
     positions, the ledger, the entry), are _last_reads': the session no
-    other record's current one, not lane B, its reach the one a word was
-    given for (the Change's `reach`, when it has one), and its own events
+    other record's current one, its record readable and not lane B, its
+    reach the one a word was given for (the Change's `reach`, when it has
+    one), and its own events
     leaving it a member of the Change's project. Nothing is written (None)
     unless all of them hold, and the Change is marked `unwritten` with the
     one that did not, so a move, a lane change or a change of reach that
@@ -950,6 +951,10 @@ def _last_reads(thread_id, change):
 
     - `moved`: the session is now another record's current one (the stores
       as they are);
+    - `record-unreadable`: the session's record is there and cannot be
+      read, so its lane is not known (a missing one is absence: lane A); the
+      write waits, as for a writer file that cannot be read (the frontier's
+      second review, C5);
     - `lane-b`: the session is lane B now (its session record's controller,
       written under another lock than the store's): it is no thread, and no
       statement is written for it;
@@ -967,7 +972,10 @@ def _last_reads(thread_id, change):
     if other is not None and other["thread"] != thread_id:
         return "moved"
     records = sminos.records_module()
-    if records.lane_of(records.read(session)) == "B":
+    rec = records.read(session)
+    if rec is None and records.unreadable(session):
+        return "record-unreadable"   # missing is absence (lane A); there and unreadable is not known to be lane A
+    if records.lane_of(rec) == "B":
         return "lane-b"
     if "reach" in change and sminos.channels_module().reach_token(session) != change["reach"]:
         return "reach"
@@ -1797,7 +1805,7 @@ def _owe(project, entry, event, appended, append):
 
 
 def finish(thread_id, appended=None, project=None, append=None, lock_until=None, before=None, settle=None,
-           stop=None):
+           stop=None, only=None):
     """Carries out the record's open entry from where it stands, and clears
     it (§6, steps 2 to 4): each event the log does not hold yet; then, in
     one write, the entry removed and an end's record set aside or deleted
@@ -1852,21 +1860,28 @@ def finish(thread_id, appended=None, project=None, append=None, lock_until=None,
     process still holds the session, whoever finishes the entry (a verb
     cut before its own stop, a reading verb, a tick), since the record that
     names the process is gone after it. No store lock is held through it:
-    only the record's finisher lock."""
+    only the record's finisher lock.
+
+    `only`, an entry's id: that entry and no other is finished (the caller
+    committed it and owes its events): an entry that stands in its place,
+    another operation's committed since, is left to its own replay, and the
+    answer is whether that entry is no longer open."""
     appended = [] if appended is None else appended
-    if not (get(thread_id) or {}).get("pending"):
+    pending = (get(thread_id) or {}).get("pending")
+    if not pending or (only is not None and pending.get("id") != only):
         return True
     with _finish_lock(thread_id, lock_until):
         return _finish(thread_id, appended, project, append or sminos.lifecycle, lock_until,
-                       before or sminos.carry_hand_offs, settle or sminos.settle_ended, stop or sminos.purge_stop)
+                       before or sminos.carry_hand_offs, settle or sminos.settle_ended, stop or sminos.purge_stop,
+                       only)
 
 
-def _finish(thread_id, appended, project, append, deadline, before, settle, stop):
+def _finish(thread_id, appended, project, append, deadline, before, settle, stop, only=None):
     home = project.id if project is not None else None
     while True:
         t = get(thread_id)
         entry = (t or {}).get("pending")
-        if not entry:
+        if not entry or (only is not None and entry.get("id") != only):
             return True
         if entry.get("op") == RESERVED:
             holder = get(entry.get("by"))
@@ -1900,7 +1915,12 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
             if held == "held" and not entry.get("merged"):
                 _merge_absorbed(thread_id, entry, other, deadline)
         if entry.get("carry") and not entry.get("carried"):
-            if not before(None if channel else project, entry):   # a channel's: its reach alone
+            # A channel's carries its reach alone, the predecessor's publication read (read-only) in the channel's
+            # log, as a project's entry reads it in its own (None for a channel not registered here).
+            log = project
+            if channel and (project is None or project.id != entry["project"]):
+                log = sminos.known_project(str(entry["project"]))
+            if not before(log, entry):
                 return False
             # Carried once: a replay does not carry again what a later deliberate change undid (a `join --cwd`
             # that removed the job's override after the copy, while an event was still owed).
@@ -1984,7 +2004,8 @@ def _say_voided(thread_id, entry):
     addresses to the channel, whoever finishes it, under the finisher lock
     and before any of it (the frontier review's B1, M8's review): no event
     appended there, no hand-off's cursor or override carried under it (its
-    reach and provenance are: `before` given no project), no settlement of
+    reach and provenance are: `before` given the channel, whose log it
+    reads and never writes), no settlement of
     what is held for the session under it. Every local step is finished as
     for any entry, so the record ends as an ordinary finish leaves it: an
     absorption's hold, merge and deletion (a claim cut before its hold
