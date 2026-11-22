@@ -2260,8 +2260,9 @@ class Link:
                     self.words_due = True   # asked once the lane has room
                     return
                 if not self.member_under(asked["project"], asked["session"]):
-                    self.words_due = True   # asked once its frame under its own project is queued
-                    continue
+                    if asked["session"] in self.members_unsent:
+                        self.words_due = True   # its frame waits for lane capacity: asked once it is queued
+                    continue   # a row not there yet: the next timed or nudged pass asks it
                 ask = os.urandom(12).hex()
                 self.hold_asks([(ask, {"key": key, "project": channel, "event": r, "t": "reach?",
                                        "request": {"session": asked["session"], "reach": asked["reach"]}},

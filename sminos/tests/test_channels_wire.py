@@ -782,6 +782,24 @@ class Asks(Requests, T1.Sessions):
                 self.ask_pass(link)
                 self.assertEqual(len(self.asks(link)), 1, "answered: never asked again")
 
+    def test_a_frame_still_missing_after_the_refresh_waits_for_the_ordinary_pass(self):
+        """Only a frame queued behind lane capacity asks for the next tick at once (words_due, which also makes
+        that tick's upload pass a whole look); a row that is not there waits for the timed or nudged pass."""
+        tid, sid, _ = self.human()
+        self.remote(DESK, "add", sid, tid)
+        link = self.link()
+        with mock.patch.object(link, "member_under", return_value=False):
+            self.ask_pass(link)
+        self.assertEqual(self.asks(link), [])
+        self.assertFalse(link.words_due, "no row: not asked again at every tick")
+        link.members_unsent = {sid}
+        with mock.patch.object(link, "member_under", return_value=False):
+            self.ask_pass(link)
+        self.assertTrue(link.words_due, "its frame waits for the lane: asked as soon as it is queued")
+        link.members_unsent = set()
+        self.ask_pass(link)
+        self.assertEqual(len(self.asks(link)), 1)
+
     def test_an_answer_that_names_no_verdict_is_none(self):
         tid, sid, _ = self.human()
         self.remote(DESK, "add", sid, tid)
