@@ -1170,7 +1170,9 @@ on each machine. Expected, step by step:
    B under members, each with its own project; the request for B as
    applied; and the pool as `alpha` with one live and one stopped, `beta`
    with one stopped. `sminos list` run as A and as B shows the caller's
-   project and then `# desk-integration` with the three rows.
+   project as `list` prints it today (for the stopped B, whose project's
+   only rows are hidden, its "no members" and hidden lines) and then
+   `# desk-integration` with the three rows.
 3. The stand-ins of `alpha` and `beta` list the channel in `known`;
    `gamma`'s does not. On `gamma`, `sminos list --org` ends with the
    `# desk-integration` section.
@@ -1701,7 +1703,11 @@ a section for each channel known here whose roster is not empty. In
 and no key otherwise; the sections add nothing to it.
 
 **`channel show`.** A heading `# <name>  <id>`; `members`, the roster's rows
-with the project column (`(none)` for none); `requests`, one line each for
+with the project column (`(none)` for none), each with the state word of its
+own project's view (C1: `stopped` where the thread is a stopped human's or
+has a transcript, else `gone`, so a spawned seat on the test engine reads
+`gone`); the pool has two counts (D4), live and not live, and its second,
+under the word "stopped", is every row in a hidden state; `requests`, one line each for
 the log's requests that have not expired, oldest first: its time, its verb,
 its target, its requester, and `applied`, `refused: <words>`, `refused: not
 reachable (the hub withheld it)` (from M7), `not carried out: another
@@ -2515,6 +2521,16 @@ while the milestones are built, one observation and its evidence each.
   holds; it names B as `birch#<short>`, since a bare alias resolves only in
   the caller's own project. All seven steps of the acceptance scene are met
   (36 checks).
+- 2026-11-21 — **M7's two observations** (the holder's ruling: as
+  designed). A roster row carries its own project's view's state word, so
+  a spawned seat with no transcript reads `gone` while the pool counts it
+  under "stopped", the pool's one count of rows in a hidden state (§8
+  amended; no third count). A stopped B's own `list` prints its project
+  section as today's `list` does for a project whose only rows are hidden,
+  and the channel section follows (C6's order); a session running `list` is
+  live outside a test, so the case is the fixture's (the scene's step 2
+  amended). `ask_of(channel, …)` beside `answer_of(channel, …)` is
+  accepted, and the holder carries both to Y1.
 
 ## Outcomes & Retrospective
 
