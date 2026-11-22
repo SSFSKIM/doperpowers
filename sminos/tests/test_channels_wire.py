@@ -27,6 +27,7 @@ runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devclo
 import contextlib
 import io
 import json
+import fcntl
 import os
 import subprocess
 import sys
@@ -57,7 +58,7 @@ import sminos_threads as threads  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
 import test_threads as T1  # noqa: E402 — its fixtures by module
-from test_channels_requests import OTHER, SIGNER, Requests  # noqa: E402
+from test_channels_requests import OTHER, SAME_ID, SIGNER, Requests  # noqa: E402
 
 LIMIT = threads.CHANNEL_LIMIT
 
@@ -585,9 +586,14 @@ class Asks(Requests, T1.Sessions):
     def asks(self, link):
         return [f for f in link.session_lane.sent if f.get("t") == "reach?"]
 
-    def answer(self, link, ask, verdict, **more):
+    def answer(self, link, ask, verdict, carried=True, **more):
+        """The endpoint's answer on `ask`, and (`carried`) the requests' pass it makes due, which uses the word
+        (the receive loop only keeps it: A7)."""
         sminos.forget_caches()
         link.on_reach({"t": "reach", "id": ask["id"], "verdict": verdict, **more}, None)
+        if carried:
+            sminos.forget_caches()
+            link.ask_requests()
 
     def test_one_ask_per_request_due_and_none_for_one_that_needs_no_word(self):
         tid, sid, _ = self.human()
@@ -615,17 +621,17 @@ class Asks(Requests, T1.Sessions):
 
     def test_the_word_answers_the_event_asked_about_once(self):
         tid, sid, _ = self.human()
-        first = self.remote(DESK, "add", sid, tid, rid="same-id")
+        first = self.remote(DESK, "add", sid, tid, rid=SAME_ID)
         link = self.link()
         self.ask_pass(link)
         [ask] = self.asks(link)
         self.assertEqual(link.asks[ask["id"]]["key"], channels.event_key(self.chan(DESK), first))
         # A second writer's request under the same id, imported while the first one's question is outstanding.
-        second = self.request(DESK, "remove", sid, tid, writer="third/" + OTHER, rid="same-id",
+        second = self.request(DESK, "remove", sid, tid, writer="third/" + OTHER, rid=SAME_ID,
                               verified={"signer": SIGNER})
         self.answer(link, ask, "deliver")
         self.assertEqual(self.held(tid), [DESK], "the first one's add, and not the second one's remove")
-        self.assertEqual(self.answers(sid), [(DESK, "same-id", "applied", None, (DESK,))])
+        self.assertEqual(self.answers(sid), [(DESK, SAME_ID, "applied", None, (DESK,))])
         self.answer(link, ask, "deliver")   # again: no ask is held under its id now
         self.ask_pass(link)
         self.assertEqual(len(self.asks(link)), 1, "the second is a duplicate: never asked about")
@@ -635,10 +641,10 @@ class Asks(Requests, T1.Sessions):
         self.assertEqual(self.held(tid), [DESK], "an old answer carries no later request")
         self.ask_pass(link)
         asks = self.asks(link)
-        self.assertEqual([a["event"]["id"] for a in asks], ["same-id", later["id"]])
+        self.assertEqual([a["event"]["id"] for a in asks], [SAME_ID, later["id"]])
         self.answer(link, asks[-1], "deliver")
         self.assertEqual(self.held(tid), [])
-        self.assertEqual(second["id"], "same-id")
+        self.assertEqual(second["id"], SAME_ID)
 
     def test_two_requests_for_one_thread_and_channel_are_asked_one_at_a_time_in_order(self):
         tid, sid, _ = self.human()
@@ -844,6 +850,120 @@ class Asks(Requests, T1.Sessions):
         self.assertEqual(channels._request_line(shown)[-1], "refused: not reachable (the hub withheld it)")
         after = os.stat(os.path.join(c.home, sminos.UPLINK_STATE))
         self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns), "read, unchanged")
+
+
+    # -- the frontier review, round 1 (the holder's fix wave)
+
+    def uploaded(self, link):
+        """Each `events` frame the link sent and the member frames before it: [(frame, [member frames before])]."""
+        sent, out = link.log_lane.sent, []
+        for i, f in enumerate(sent):
+            if f.get("t") == "events":
+                out.append((f, [m for m in sent[:i] if m.get("t") == "member"]))
+        return out
+
+    def test_a1_a_request_goes_up_after_its_senders_member_frame_under_the_senders_own_project(self):
+        """The sender joined its project since the plane last read it: its frame is looked for under its own
+        project (a channel's rows are empty by design), and the request waits until that frame is on the lane."""
+        tid, sid, _ = self.human()
+        _, sender, _ = self.human()
+        link = self.link()
+        hl = link.logs[DESK]
+        hl.on_have({"t": "have", "project": DESK, "have": {}})
+        e = self.request(DESK, "add", sid, tid, writer=sminos.writer_id(sender))
+        sminos.forget_caches()
+        real = link.publish_members
+
+        def lane_full(now):
+            link.members_unsent = set(link.members_unsent) | {sender}   # the frame is due and not queued yet
+        with mock.patch.object(link, "publish_members", lane_full):
+            link.upload(hl)
+        self.assertEqual(self.uploaded(link), [], "not uploaded while the sender's frame is not on the lane")
+        link.members_unsent = set()
+        link.publish_members = real
+        link.upload(hl)
+        [(frame, members)] = self.uploaded(link)
+        self.assertEqual([x["seq"] for x in frame["events"]], [e["seq"]])
+        self.assertEqual([m["project"] for m in members if m.get("session") == sender], [self.p.id],
+                         "the sender's frame first, under its own project")
+
+    def test_a6_a_channel_with_a_request_written_here_outstanding_does_not_leave(self):
+        """No thread of this machine is in it, so the leaving rule reaches it; a request this machine wrote there
+        that nothing has answered keeps it (and brings back one that left: Leaving's `stays` is may_leave's
+        negation) until the request is answered, the hub withheld it, or its lifetime is out."""
+        tid, sid, _ = self.human()
+        link = self.link()
+        c = self.chan(DESK)
+        self.assertTrue(link.may_leave(c), "nothing outstanding: it may leave")
+        e = self.request(DESK, "add", sid, "a" * 32)   # for a thread of another machine, as a verb writes it
+        sminos.forget_caches()
+        self.assertFalse(link.may_leave(c), "a request of this machine's, for a thread of another, outstanding")
+        sminos.write_json(os.path.join(c.home, sminos.UPLINK_STATE), {"withheld": {e["writer"]: [e["seq"]]}})
+        sminos.forget_caches()
+        self.assertTrue(link.may_leave(c), "the hub withheld it: nothing comes of it")
+        os.unlink(os.path.join(c.home, sminos.UPLINK_STATE))
+        sminos.forget_caches()
+        self.assertFalse(link.may_leave(c))
+        with mock.patch.object(channels, "request_ttl", return_value=0.0):
+            self.assertTrue(link.may_leave(c), "expired: nothing outstanding")
+        f = self.request(LOBBY, "remove", sid, tid)   # this machine's own thread, not in it
+        sminos.forget_caches()
+        self.assertFalse(link.may_leave(self.chan(LOBBY)), "not answered yet")
+        self.assertEqual(self.carry(LOBBY, also=[f])[f["id"]], channels.Outcome("applied", "unchanged"))
+        sminos.forget_caches()
+        self.assertTrue(link.may_leave(self.chan(LOBBY)), "answered")
+
+    def test_a7_an_answer_waits_on_no_lock_and_the_pass_that_carries_requests_uses_it(self):
+        tid, sid, _ = self.human()
+        self.remote(DESK, "add", sid, tid)
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        with open(os.path.join(threads.store_dir(), ".lock"), "a+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            at = time.monotonic()
+            self.answer(link, ask, "deliver", carried=False)
+            took = time.monotonic() - at
+            fcntl.flock(held, fcntl.LOCK_UN)
+        self.assertLess(took, 0.5, "the receive loop waited on the store's lock")
+        self.assertEqual(self.held(tid), [], "nothing carried on the receive loop")
+        self.assertTrue(link.words_due, "the next pass is due, to use the word")
+        self.ask_pass(link)
+        self.assertEqual(self.held(tid), [DESK], "the pass carried it out on the word")
+        self.assertEqual(len(self.asks(link)), 1, "not asked again")
+
+    def test_a11_a_word_that_could_not_be_committed_waits_for_the_ordinary_interval(self):
+        tid, sid, _ = self.human()
+        self.remote(DESK, "add", sid, tid)
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        with open(sminos.wake_lock_path(tid), "a+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)   # a wake of the thread in flight in another process
+            self.answer(link, ask, "deliver", carried=False)
+            self.ask_pass(link)
+            self.assertEqual(self.held(tid), [])
+            self.assertEqual(len(self.asks(link)), 1, "not asked again at the endpoint's speed")
+            self.assertFalse(link.words_due, "nothing makes the next pass due at once")
+            fcntl.flock(held, fcntl.LOCK_UN)
+        self.ask_pass(link)   # the ordinary pass
+        self.assertEqual(len(self.asks(link)), 2, "asked again at the ordinary interval")
+        self.answer(link, self.asks(link)[-1], "deliver")
+        self.ask_pass(link)
+        self.assertEqual(self.held(tid), [DESK])
+
+    def test_a10_a_request_the_endpoint_refused_audience_is_shown_withheld_for_its_audience(self):
+        tid, sid, _ = self.human()
+        e = self.request(DESK, "add", sid, "a" * 32)   # for a thread of another machine, as a verb writes it
+        c = self.chan(DESK)
+        for state in ({"dead": {e["writer"]: {"at": [e["seq"]], "last": e["seq"]}}},
+                      {"voided": {e["writer"]: [e["seq"]]}}):
+            with self.subTest(state=sorted(state)):
+                sminos.write_json(os.path.join(c.home, sminos.UPLINK_STATE), state)
+                [shown] = channels.requests_shown(c)
+                self.assertEqual((shown["state"], shown["reason"]), ("withheld", "audience"))
+                self.assertEqual(channels._request_line(shown)[-1], "refused: " + channels.WORDS["audience"])
+                self.assertTrue(self.link().may_leave(c), "nothing comes of it: nothing outstanding")
 
 
 class WireAsks(unittest.TestCase):
