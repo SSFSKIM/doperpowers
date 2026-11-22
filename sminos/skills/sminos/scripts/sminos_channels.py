@@ -1375,21 +1375,22 @@ def _sweep():
                 had.setdefault(m.thread, set()).update((m.session,) + tuple(m.former) + tuple(m.thread_sessions))
             if m.session in where and where[m.session] != p.id:
                 continue
-            kept.append((p, v, m))
-    # One row a stamped thread across the views: a refill displaces a session in one project and joins its
-    # replacement in another, and the two halves can be imported in either order.
+            kept.append((p, v, m, _row_read(v.info.get(m.session))))
+    # One row a thread across the views: a refill displaces a session in one project and joins its replacement in
+    # another, and the two halves can be imported in either order. A row's thread is its stamp, else an older
+    # copy's unstamped row's statement in effect (_thread_read), the rule thread_of_row addresses it by (CH2's M1).
     by_thread = {}
-    for p, v, m in kept:
-        if m.thread:
-            by_thread.setdefault(m.thread, []).append((p, v, m))
+    for p, v, m, got in kept:
+        if _thread_read(got):
+            by_thread.setdefault(_thread_read(got), []).append((p, v, m))
     current = {tid: _newest_row(found) for tid, found in by_thread.items() if len(found) > 1}
     rosters_, rows, read = {}, {}, {}
-    for p, v, m in kept:
-        if m.thread in current and current[m.thread] != (p.id, m.session):
+    for p, v, m, got in kept:
+        if _thread_read(got) in current and current[_thread_read(got)] != (p.id, m.session):
             continue
         if m.session:
             rows.setdefault(m.session, (p, m))
-            read[(p.id, m.session)] = (m,) + _row_read(v.info.get(m.session))
+            read[(p.id, m.session)] = (m,) + got
         if sminos.has_ended(m):
             continue
         for c in m.channels:
@@ -1397,6 +1398,12 @@ def _sweep():
     value = {"rosters": rosters_, "had": had, "rows": rows, "read": read, "views": views, "ended": None}
     _SWEPT["views"], _SWEPT["value"] = views, value
     return value
+
+
+def _thread_read(read):
+    """The thread a row is, from what _sweep read of it (_row_read): its stamp, else its statement's thread;
+    "" for none."""
+    return read[0] or read[1]
 
 
 def _row_read(r):
@@ -1489,19 +1496,39 @@ def id_form(name):
     return _ID_FORM.fullmatch(name) is not None
 
 
+def _kept_read(project, member):
+    """What the sweep that produced a row read of it, (stamp, statement's thread); None for a row the last sweep
+    did not produce (never a read made after the row was found)."""
+    value = _SWEPT.get("value")
+    got = value["read"].get((project.id, member.session)) if value is not None else None
+    return got[1:] if got is not None and got[0] is member else None
+
+
+def row_thread(project, member):
+    """The thread a row is, by the one rule a channel's rows are told
+    apart by (CH2's M1): its `joined`'s stamp, else an older copy's
+    unstamped row's statement in effect; "" for none. A roster's row is
+    read from what its sweep kept; any other (a project's member list) from
+    its project's view. For telling two rows of one thread apart, never for
+    addressing one (thread_of_row)."""
+    got = _kept_read(project, member)
+    return _thread_read(got if got is not None else _row_read(sminos.view_of(project).info.get(member.session)))
+
+
 def shared_rows(session):
     """The rows of the rosters of the channels the thread whose current
     session `session` is holds (channels_of), each thread once though it is
-    in several: what a bare `@alias` is also looked up in (§1). [] with no
-    roster read when the record holds none, or there is no session (a person
-    at a terminal), so such a sender pays one read of its own record."""
+    in several (row_thread): what a bare `@alias` is also looked up in
+    (§1). [] with no roster read when the record holds none, or there is no
+    session (a person at a terminal), so such a sender pays one read of its
+    own record."""
     held = [c for c in channels_of(session) if sminos.is_channel_id(c)] if session else []
     if not held:
         return []
     every, seen, out = rosters(), set(), []
     for c in held:
         for p, m in every.get(c, []):
-            key = m.thread or m.session
+            key = row_thread(p, m) or m.session
             if key not in seen:
                 seen.add(key)
                 out.append((p, m))
@@ -1514,49 +1541,58 @@ def thread_of_row(project, member):
     it beside its rows): the thread its `joined` in effect is stamped with,
     else, where an older copy left it unstamped, the `thread` of its
     statement in effect. None where both are there and disagree, where
-    neither is, and for a row no sweep read (never a lookup made after the
-    row was found)."""
-    key = (project.id, member.session)
-    for value in (_SWEPT.get("value"), None):
-        value = value if value is not None else _sweep()
-        got = value["read"].get(key)
-        if got is not None and got[0] is member:
-            break
-    else:
+    neither is, and for a row the last sweep did not produce: nothing is
+    read again here."""
+    got = _kept_read(project, member)
+    if got is None:
         return None
-    _, stamp, said = got
+    stamp, said = got
     if stamp and said and stamp != said:
         return None
     thread = stamp or said
     return (thread, member.session) if thread and member.session else None
 
 
-def _statements_in_effect(events):
-    """One log's statements that took effect, in the merged read's order:
-    [(session, thread, channels, ts, the stamp of the session's `joined` in
-    effect then)], by the fold's own rule (sminos_threads.Fold.state: under
-    the writer of that `joined`, after it). Kept beside the log (log_memo)."""
+def _stated(events):
+    """One log's statements that took effect and its sessions' episodes,
+    folded in the merged read's order by the reducer's own rules
+    (sminos_threads.Fold; _projection's episode rule): {"said": [(session,
+    thread, channels, the stamp of the session's `joined` in effect then)],
+    "episodes": {session: [[mark, {the threads of the statements that took
+    effect in it}], ...]}}. A statement takes effect under the `joined` in
+    effect, which is its session's last episode's, so it is that episode's
+    whatever the clocks say. Kept beside the log (log_memo)."""
     threads = sminos.threads_module()
-    fold, out = threads.Fold(), []
+    fold, said, episodes = threads.Fold(), [], {}
     for e in events:
         sid, kind = e.get("session"), e.get("kind")
         if kind not in ("joined", "retired", "channels") or not isinstance(sid, str) or not sid \
                 or sminos.writer_session(e.get("writer") or "") != sid:
             continue
-        if kind != "channels":
-            fold.add(sid, e)
+        if kind == "channels":
+            fold.state(sid, e)
+            if fold.stated.get(sid) is e:
+                stamp = (fold.joined.get(sid) or {}).get("thread")
+                said.append((sid, e["thread"], threads.stated_set(e), stamp if isinstance(stamp, str) else ""))
+                if episodes.get(sid):
+                    episodes[sid][-1][1].add(e["thread"])
             continue
-        fold.state(sid, e)
-        if fold.stated.get(sid) is e:
-            stamp = (fold.joined.get(sid) or {}).get("thread")
-            out.append((sid, e["thread"], threads.stated_set(e), str(e.get("ts") or ""),
-                        stamp if isinstance(stamp, str) else ""))
-    return out
+        before = fold.effect.get(sid)
+        if fold.add(sid, e) is None or kind != "joined":
+            continue
+        stamp = e["thread"] if isinstance(e.get("thread"), str) else ""
+        mark, eps = stamp or str(e.get("seat") or ""), episodes.setdefault(sid, [])
+        if not eps or (stamp and eps[-1][0] and stamp != eps[-1][0]) or (
+                before is not None and before["kind"] == "retired" and before.get("reason") in ("continued", "replaced")):
+            eps.append([mark, set()])
+        elif stamp or (mark and not eps[-1][0]):
+            eps[-1][0] = mark
+    return {"said": said, "episodes": episodes}
 
 
 def _stated_views():
-    """[(view, its statements in effect)] for every project's view the roster's sweep read."""
-    return [(v, sminos.log_memo(v.events, "channel-statements", _statements_in_effect)) for _, v in _sweep()["views"]]
+    """[(view, what _stated folds of its log)] for every project's view the roster's sweep read."""
+    return [(v, sminos.log_memo(v.events, "channel-statements", _stated)) for _, v in _sweep()["views"]]
 
 
 def _listed(v, sid):
@@ -1572,67 +1608,64 @@ def once_in(channel):
     left out. A statement that never took effect, and another writer's,
     count for nothing: a stamp alone is any writer's to set."""
     cid = getattr(channel, "id", channel)
-    return {thread for v, said in _stated_views() for sid, thread, chans, _, stamp in said
+    return {thread for v, folded in _stated_views() for sid, thread, chans, stamp in folded["said"]
             if cid in chans and stamp in ("", thread) and _listed(v, sid)}
 
 
 def claimants(session_id):
     """The threads that have had a session, as this reader's logs say (§1):
-    the mark of each of its episodes (_projection's `episodes`, its
-    stretches under one thread) in every project's view known here, an
-    episode the log shows unlisted to this reader left out. An unstamped
-    episode counts with the thread of the statement that took effect in it;
-    one that has neither makes it None: the id names no one thread. Not
-    from displayed rows: View.ended leaves out seated rows, and a row's
-    former_ids does not hold its own session."""
+    the mark of each of its episodes (its stretches under one thread, by
+    _projection's rule) in every project's view known here, an episode the
+    log shows unlisted to this reader left out. An unmarked episode counts
+    with the threads of the statements that took effect in it (_stated:
+    under its `joined`, in the fold's order); one that has neither makes it
+    None: the id names no one thread. Not from displayed rows: View.ended
+    leaves out seated rows, and a row's former_ids does not hold its own
+    session."""
     out = set()
-    for v, said in _stated_views():
+    for v, folded in _stated_views():
         if not _listed(v, session_id):
             continue
-        eps = v.info[session_id]["episodes"]
-        own = [(ts, thread) for sid, thread, _, ts, _ in said if sid == session_id]
-        for i, (start, mark, _, _) in enumerate(eps):
-            if mark:
-                out.add(mark)
-                continue
-            end = eps[i + 1][0] if i + 1 < len(eps) else None
-            # A statement before any episode is the first's (episode_mark's rule).
-            within = {thread for ts, thread in own if (i == 0 or ts >= start) and (end is None or ts < end)}
-            if not within:
+        for mark, said in folded["episodes"].get(session_id, ()):
+            if not (mark or said):
                 return None
-            out |= within
+            out |= {mark} if mark else said
     return out
 
 
 def _current_rows(thread_id):
-    """[(Project, Member)] of a thread's row in any project's view here now, not ended: where a thread is
-    reached when it is not in the channel."""
-    return [(p, m) for p, m in _sweep()["rows"].values()
-            if m.thread == thread_id and not sminos.has_ended(m) and m.state != "retired"]
+    """[(Project, Member)] of a thread's row (row_thread) in any project's view here now, not ended: where a
+    thread is reached when it is not in the channel."""
+    swept = _sweep()
+    return [(p, m) for p, m in swept["rows"].values()
+            if _thread_read(swept["read"][(p.id, m.session)][1:]) == thread_id
+            and not sminos.has_ended(m) and m.state != "retired"]
 
 
 def _threads_known():
     """Every thread a row of a project's view here names, current or ended."""
     swept = _sweep()
-    known = set(swept["had"])
+    known = set(swept["had"]) | {_thread_read(got[1:]) for got in swept["read"].values()}
     known.update(m.thread for _, v in swept["views"] for m in v.ended if m.thread)
-    return known
+    return known - {""}
 
 
 def _labels(rows):
     return sminos.candidate_labels(rows, False) or "none of them can be reached from here"
 
 
-def _no_member(channel, name, short, label, rows, at):
-    """Exit 4 for a name no member of the channel answers to (§2), naming where it answers elsewhere."""
+def _no_member(channel, name, short, label, rows, at, elsewhere=None):
+    """Exit 4 for a name no member of the channel answers to (§2), naming where it answers elsewhere: the rows
+    `elsewhere` gives (a thread the name already came to), else those the name reaches in every project."""
     inside = {(p.id, m.session) for p, m in rows}
-    elsewhere = [(p, m) for p, m in sminos.one_per_session(sminos.match_members(name, short, sminos.org_scope()))
-                 if (p.id, m.session) not in inside]
+    if elsewhere is None:
+        elsewhere = sminos.one_per_session(sminos.match_members(name, short, sminos.org_scope()))
+    elsewhere = [(p, m) for p, m in elsewhere if (p.id, m.session) not in inside]
     sminos.die("no member %s in channel %s%s" % (label, channel.name, "; elsewhere: %s" % sminos.candidate_labels(
         elsewhere, True, at) if elsewhere else ""), sminos.EXIT_UNKNOWN)
 
 
-def _as_thread(channel, thread, addressed, once):
+def _as_thread(thread, addressed, once):
     """§1's answer for a name that came to one thread: its roster row ("in"), else, once in the channel, its
     row now ("out", None, None where it has none); None for a thread never in it."""
     rows = [(p, m) for p, m, t in addressed if t[0] == thread]
@@ -1645,25 +1678,27 @@ def _as_thread(channel, thread, addressed, once):
 
 
 def _reach_by_id(channel, name, label, rows, at):
-    """§1's table for a name in id form: a thread id's prefix first, then a
-    session's (claimants). None when the name is no thread's and no
-    session's this reader can read, so it is looked up as an alias."""
+    """§1's table for a name in id form: (where, Project, Member, how), how
+    "thread" for a thread id's prefix, "session" for a session's
+    (claimants). None when the name is no thread's and no session's this
+    reader can read, so it is looked up as an alias."""
     addressed = [(p, m, t) for p, m in rows if (t := thread_of_row(p, m)) is not None]
     hit = [(p, m) for p, m, t in addressed if t[0].startswith(name)]
     if len(hit) > 1:
         sminos.die("ambiguous %s in channel %s matches: %s" % (label, channel.name, _labels(hit)),
                    sminos.EXIT_UNKNOWN)
     if hit:
-        return ("in",) + hit[0]
+        return ("in",) + hit[0] + ("thread",)
     once = once_in(channel)
     named = sorted(t for t in once if t.startswith(name))
     if len(named) > 1:
         sminos.die("ambiguous %s in channel %s matches: %s" % (
             label, channel.name, _labels([r for t in named for r in _current_rows(t)])), sminos.EXIT_UNKNOWN)
     if named:
-        return _as_thread(channel, named[0], addressed, once)
-    if any(t.startswith(name) for t in _threads_known()):
-        _no_member(channel, name, "", label, rows, at)   # a thread never in the channel: no old reply
+        return _as_thread(named[0], addressed, once) + ("thread",)
+    known = [t for t in _threads_known() if t.startswith(name)]
+    if known:   # a thread never in the channel: no old reply
+        _no_member(channel, name, "", label, rows, at, [r for t in known for r in _current_rows(t)])
     sessions = sorted({sid for v, _ in _stated_views() for sid in v.info if sid.startswith(name) and _listed(v, sid)})
     if not sessions:
         return None
@@ -1682,41 +1717,49 @@ def _reach_by_id(channel, name, label, rows, at):
             label, channel.name, why, _labels(theirs)), sminos.EXIT_UNKNOWN)
     if not had:
         return None
-    got = _as_thread(channel, had.pop(), addressed, once)
+    thread = had.pop()
+    got = _as_thread(thread, addressed, once)
     if got is None:
-        _no_member(channel, name, "", label, rows, at)
-    return got
+        _no_member(channel, name, "", label, rows, at, _current_rows(thread))
+    return got + ("session",)
 
 
-def reach_in(channel, name, short="", at=""):
+def reach_in(channel, name, short="", at="", how=False):
     """The member of the channel a name reaches (§1): ("in", Project,
     Member), the one row of roster(channel) it reaches with its own
     project; ("out", Project, Member) for a thread that was once in the
     channel and is not now, with its row in its own project (None, None
     where it has none: it ended, or this reader may not read it), its
     caller saying what that means. Every other miss exits 4, in §2's words;
-    `at`, how a refusal's `elsewhere` names a row ("@" for a tag).
+    `at`, how a refusal's `elsewhere` names a row ("@" for a tag). With
+    how=True a fourth value says what the name matched: "short", "thread",
+    "session", "alias" or "former" (an alias the row held before).
 
-    With `short`: a row whose alias is `name` and whose session's short
-    begins so. A name in id form: a thread id's prefix first, then a
-    session's (_reach_by_id); one that is neither is looked up as an alias.
-    An alias: the rows whose current alias it is, and only when there is
-    none those that held it before (current_first); several are refused,
-    each as alias#short."""
+    With `short` (`alias#short`): a row whose alias is `name` and whose
+    session id begins with `short`. A name in id form: a thread id's prefix
+    first, then a session's (_reach_by_id); one that is neither is looked
+    up as an alias. An alias: the rows whose current alias it is, and only
+    when there is none those that held it before (current_first). Two rows
+    a name reaches are refused, each as alias#short."""
     rows = roster(channel)
     label = "%s#%s" % (name, short) if short else name
-    if not short and id_form(name):
-        got = _reach_by_id(channel, name, label, rows, at)
-        if got is not None:
-            return got
-    hits = [(p, m, how) for p, m in rows if (how := sminos.alias_reach(m, name, short))]
-    found = sminos.current_first(hits, name)
+    got = None
+    if short:
+        found = [(p, m) for p, m in rows if m.alias == name and m.session.startswith(short)]
+        kind = "short"
+    elif id_form(name) and (got := _reach_by_id(channel, name, label, rows, at)) is not None:
+        found, kind = [got[1:3]], got[3]
+    else:
+        hits = [(p, m, h) for p, m in rows if (h := sminos.alias_reach(m, name))]
+        found = sminos.current_first(hits, name)
+        kind = "former" if hits and all(h == "former" for _, _, h in hits) else "alias"
     if len(found) > 1:
         sminos.die("ambiguous %s in channel %s matches: %s" % (label, channel.name, _labels(found)),
                    sminos.EXIT_UNKNOWN)
     if not found:
         _no_member(channel, name, short, label, rows, at)
-    return ("in",) + found[0]
+    answer = (got[0] if got is not None else "in",) + tuple(found[0])
+    return answer + (kind,) if how else answer
 
 
 def _answers_a_request(e):

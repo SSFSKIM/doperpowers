@@ -424,5 +424,113 @@ class IdForm(Names):
         self.assertEqual(self.reach("minder", sid[:8]), ("in", self.p.id, sid), "alias#short")
 
 
+# ------------------------------------------------------------ the first review's findings (M1, round 1)
+
+
+class Review1(Names):
+    def batch(self, p, w, events):
+        """Events of one writer appended in one take, each with the fields given (a `ts` among them)."""
+        got = sminos.log_append_batch(p, w, events, skip_src=False)
+        sminos.forget_caches()
+        return got
+
+    def test_1_a_bare_alias_takes_the_threads_roster_row_over_its_home_row_mid_refill(self):
+        """A refill whose destination half (app) is read before the source's retirement (the sender's project):
+        `desk/worker` and a bare `@worker` reach the same row, where the thread is now."""
+        _, sid = self.named(None, alias="sender")
+        self.placed(threads.thread_of(sid)["thread"], sid, DESK)
+        tid, old, new = (str(uuidlib.uuid4()) for _ in range(3))
+        self.joined(self.p, "beta/" + old, old, "worker", tid)
+        self.stated(self.p, "beta/" + old, old, tid, [DESK])
+        self.joined(self.app, "beta/" + new, new, "worker", tid)
+        self.stated(self.app, "beta/" + new, new, tid, [DESK])
+        self.assertEqual(self.reach("worker"), ("in", APP, new))
+        code, out = self.as_session(sid, "say", "@worker the schema changed")
+        self.assertEqual(code, 0, out)
+        sminos.forget_caches()
+        e, = [e for e in sminos.log_read(self.app) if e["kind"] == "say"]
+        self.assertEqual([r["session"] for r in e["to"]], [new], "the successor, in its project")
+        self.assertEqual([e for e in sminos.log_read(self.p) if e["kind"] == "say" and "copy" not in e], [])
+
+    def test_2_a_statement_is_its_joineds_episodes_whatever_the_clock(self):
+        """A statement, its session's retirement and a new unstamped join in one millisecond, in that writer
+        order: the statement is the first episode's, and the second, unmarked with none, names no one thread."""
+        sid, tid, succ = (str(uuidlib.uuid4()) for _ in range(3))
+        w = "beta/" + sid
+        self.joined(self.app, w, sid, "handed", tid)
+        at = sminos.now(ms=True)
+        self.batch(self.app, w, [
+            {"kind": "channels", "session": sid, "thread": tid, "op": os.urandom(8).hex(), "channels": [DESK],
+             "ts": at},
+            {"kind": "retired", "session": sid, "reason": "continued", "to": succ, "by": "", "thread": tid, "ts": at},
+            {**self.old_joined(sid, alias="again"), "session": sid, "ts": at}])
+        self.joined(self.app, "beta/" + succ, succ, "handed", tid)
+        self.stated(self.app, "beta/" + succ, succ, tid, [DESK])
+        self.assertIsNone(channels.claimants(sid))
+        code, err = refused(channels.reach_in, self.chan(DESK), sid)
+        self.assertEqual(code, sminos.EXIT_UNKNOWN)
+        self.assertIn("cannot be told to one thread", err)
+
+    def test_3a_an_older_copys_row_that_left_is_out_with_its_row(self):
+        sid, tid = str(uuidlib.uuid4()), str(uuidlib.uuid4())
+        w = "beta/" + sid
+        self.joined(self.app, w, sid, "older")
+        self.stated(self.app, w, sid, tid, [DESK])
+        self.assertEqual(self.reach(tid), ("in", APP, sid))
+        self.stated(self.app, w, sid, tid, [])
+        self.assertEqual(self.reach(tid), ("out", APP, sid), "readable: its row, by its statement's thread")
+
+    def test_3b_a_stamped_successor_and_its_older_copys_predecessor_are_one_row(self):
+        tid, old, new = (str(uuidlib.uuid4()) for _ in range(3))
+        self.joined(self.p, "beta/" + old, old, "worker")
+        self.stated(self.p, "beta/" + old, old, tid, [DESK])
+        self.joined(self.app, "beta/" + new, new, "worker", tid)
+        self.stated(self.app, "beta/" + new, new, tid, [DESK])
+        self.assertEqual(self.sessions_of(DESK), [(APP, new)], "one thread, one row: the newest")
+
+    def test_4_alias_short_is_the_alias_and_its_current_sessions_prefix_of_any_length(self):
+        tid, sid, _ = self.far("faraway")
+        self.assertEqual(self.reach("faraway", sid[:9]), ("in", APP, sid), "nine characters")
+        self.assertEqual(self.reach("faraway", sid[:3]), ("in", APP, sid), "three")
+        for short in (tid[:8], "0" * 8 if not sid.startswith("0") else "f" * 8):
+            code, err = refused(channels.reach_in, self.chan(DESK), "faraway", short)
+            self.assertEqual(code, sminos.EXIT_UNKNOWN, short)
+            self.assertIn("no member faraway#%s in channel desk" % short, err)
+
+    def test_4_a_hex_alias_binds_the_seat_not_its_session(self):
+        stid, ssid, _ = self.seat("cafebabe")
+        self.placed(stid, ssid, DESK)
+        kind, seat, bound = sminos.find_target("desk/cafebabe")
+        self.assertEqual((kind, seat["seat_id"], bound), ("seat", stid, ""), "an alias names the seat")
+        kind, seat, bound = sminos.find_target("desk/cafebabe#%s" % ssid[:8])
+        self.assertEqual((kind, bound), ("seat", ssid), "alias#short binds the session")
+
+    def test_5_thread_of_row_reads_nothing_again(self):
+        self.far("faraway")
+        (p, m), = channels.roster(self.chan(DESK))
+        sminos.forget_caches()
+        channels.rosters()   # another sweep: the row above is not its own
+        with mock.patch.object(channels, "_sweep", side_effect=AssertionError("swept again")), \
+                mock.patch.object(sminos, "view_of", side_effect=AssertionError("a view read again")):
+            self.assertIsNone(channels.thread_of_row(p, m))
+
+    def test_minor_1_a_thread_outside_the_channel_named_by_nine_is_named_where_it_is(self):
+        tid, sid, _ = self.far("stranger", chans=(LOBBY,))
+        code, err = refused(channels.reach_in, self.chan(DESK), tid[:9])
+        self.assertEqual(code, sminos.EXIT_UNKNOWN)
+        self.assertIn("no member %s in channel desk; elsewhere: app/stranger#%s" % (tid[:9], sid[:8]), err)
+
+    def test_a_thread_prefix_two_roster_threads_share_is_refused_naming_both(self):
+        t1, t2 = "abcdef01-2345-4000-8000-000000000001", "abcdef01-2345-4000-8000-000000000002"
+        s1, s2 = str(uuidlib.uuid4()), str(uuidlib.uuid4())
+        for t, s, alias in ((t1, s1, "one"), (t2, s2, "two")):
+            self.joined(self.app, "beta/" + s, s, alias, t)
+            self.stated(self.app, "beta/" + s, s, t, [DESK])
+        code, err = refused(channels.reach_in, self.chan(DESK), "abcdef01-2345")
+        self.assertEqual(code, sminos.EXIT_UNKNOWN)
+        self.assertIn("ambiguous abcdef01-2345 in channel desk matches: one#%s, two#%s" % (s1[:8], s2[:8]), err)
+        self.assertEqual(self.reach(t2), ("in", APP, s2), "the whole id tells them apart")
+
+
 if __name__ == "__main__":
     unittest.main()

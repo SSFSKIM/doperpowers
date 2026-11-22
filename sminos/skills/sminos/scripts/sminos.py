@@ -9077,18 +9077,24 @@ def _with_shared(name, project, rows):
     """A bare alias's candidates for a sender in channels (CH2's M1): the
     project's members, and the rows of the rosters of the channels it is in
     (`rows`, sminos_channels.shared_rows) in a project a tag may write into
-    (org_scope), each thread once, matched as match_members matches an
-    alias (a current alias before one held before)."""
+    (org_scope), matched as match_members matches an alias (a current alias
+    before one held before), each thread once: two rows of one thread
+    (sminos_channels.row_thread; a refill or a move whose halves are read
+    in two logs) are its roster's row, where the thread is now."""
+    chans = channels_module()
     open_ = {p.id for p in org_scope()}
-    hits, seen = [], set()
-    for p, m in [(project, m) for m in members(project)] + [(p, m) for p, m in rows if p.id in open_]:
-        key = m.thread or m.session
-        if m.state == "retired" or has_ended(m) or key in seen:
+    canonical = {}
+    for p, m in rows:
+        if p.id in open_:
+            canonical.setdefault(chans.row_thread(p, m) or m.session, (p, m))
+    best = {}
+    for p, m in [(project, m) for m in members(project)] + list(canonical.values()):
+        if m.state == "retired" or has_ended(m) or not (how := alias_reach(m, name)):
             continue
-        seen.add(key)
-        if (how := alias_reach(m, name)):
-            hits.append((p, m, how))
-    return current_first(hits, name)
+        key = chans.row_thread(p, m) or m.session
+        if key not in best or best[key][2] == "former" and how == "alias":   # a current alias before one held
+            best[key] = canonical.get(key, (p, m)) + (how,)
+    return current_first(list(best.values()), name)
 
 
 def resolve_tags(project, text, raws=None):
@@ -12527,18 +12533,15 @@ def _through_channel(q, channel, name, short, scope):
     session) for a seat of this machine, else ("member", its own project,
     member); exit 4, saying how to name it, for a thread that was in the
     channel and is not now."""
-    chans = channels_module()
-    where, project, m = chans.reach_in(channel, name, short)
+    where, project, m, how = channels_module().reach_in(channel, name, short, how=True)
     if where == "out":
         own = "%s#%s or %s" % (m.alias, m.short, m.short) if m is not None else "<alias>#<short> or <short>"
         die("'%s' names a thread through %s, which it is not in now: name it by its own name (%s)"
             % (q, channel.name, own), EXIT_UNKNOWN)
     note_former(name, short, project, m, scope)
-    # A name that bound the session, not the seat (its short, an id that is not the thread's, an alias the session
-    # held before), binds that session, as the lookup below binds one.
-    thread = (chans.thread_of_row(project, m) or ("",))[0]
-    bound = short or chans.id_form(name) and not (thread and thread.startswith(name)) \
-        or alias_reach(m, name) == "former"
+    # A name that matched the session, not the seat (its short, a session's id, an alias the session held before),
+    # binds that session, as the lookup below binds one; a thread's id (a seat's is its own) does not.
+    bound = how in ("short", "session", "former")
     return ("seat", m.seat, m.session if bound else "") if m.seat else ("member", project, m)
 
 
