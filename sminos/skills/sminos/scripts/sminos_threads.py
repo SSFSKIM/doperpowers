@@ -881,11 +881,14 @@ def set_channels(thread_id, decide, lock_until=None, wake_until=None):
     not move: a turn's watcher stands down at a generation it did not see,
     and a membership changed during a turn must not cost it its reply.
 
-    The last guard before the write, once every part of it is made (the
-    positions, the ledger, the entry), is the Change's session's own events
-    in its project: nothing is written (None) unless they leave it a member
-    there, so a move that lands meanwhile is never committed past (§3: the
-    session a member of the project).
+    The last reads before the write, once every part of it is made (the
+    positions, the ledger, the entry), are _last_reads': the session no
+    other record's current one, not lane B, its reach the one a word was
+    given for (the Change's `reach`, when it has one), and its own events
+    leaving it a member of the Change's project. Nothing is written (None)
+    unless all of them hold, and the Change is marked `unwritten` with the
+    one that did not, so a move, a lane change or a change of reach that
+    lands meanwhile is never committed past.
 
     `wake_until`, when given, is the wake lock's own deadline (the store
     lock keeps `lock_until`'s): a reconciliation passes the time now, so it
@@ -919,18 +922,13 @@ def set_channels(thread_id, decide, lock_until=None, wake_until=None):
             else:
                 raw.pop(key, None)
         raw["pending"] = entry
-        # The last guard before the write, after everything it writes is made: where the statement goes. A move
-        # that lands while the positions or the ledger are read is seen here, and nothing is written (`raw` is
-        # dropped with the False). One that lands after this read is the accepted case: the statement goes to the
-        # project left, after the writer's `retired`, and states nothing there. The writer files are chosen by this
-        # machine's names as its identity file holds them now: a rename the invocation has not seen never hides a
-        # move made under the new name (own_events_now).
-        own = sminos.own_events_now(change["project"], change["session"])
-        if not member(own):
+        # The last reads before the write, after everything it writes is made (_last_reads): a change of any of
+        # them while the positions or the ledger are read is seen here, and nothing is written (`raw` is dropped
+        # with the False), the Change marked with why. One that lands after these reads is the accepted case.
+        why = _last_reads(thread_id, change)
+        if why is not None:
+            change["unwritten"] = why
             return False
-        if change.get("writer") is not None and not sminos.restated_holds(change["project"], change["session"],
-                                                                         change["writer"], own):
-            return False   # C5: the writer, and the project its newest joined names, as the reconciliation read them
         written.append(entry)
         return True
 
@@ -939,6 +937,45 @@ def set_channels(thread_id, decide, lock_until=None, wake_until=None):
     finally:
         hold.release()
     return written[0] if written else None
+
+
+def _last_reads(thread_id, change):
+    """The last reads before a set's record is written (set_channels; the
+    frontier review's A4), in one place, after everything the write holds
+    is made: None when the Change still holds, else why it does not, which
+    its caller turns into the outcome the same change would have given a
+    moment earlier, never a write on the old answer. No lock is taken: a
+    move after these reads is the reconciliation's (C5).
+
+    - `moved`: the session is now another record's current one (the stores
+      as they are);
+    - `lane-b`: the session is lane B now (its session record's controller,
+      written under another lock than the store's): it is no thread, and no
+      statement is written for it;
+    - `reach`: the session's reach is not the one the endpoint's word was
+      given for (the Change's `reach`, a request's binding);
+    - `between`: its own events no longer leave it a member of the Change's
+      project, read from its writer files chosen by this machine's names as
+      its identity file holds them now (own_events_now: a rename the
+      invocation has not seen never hides a move made under the new name);
+      for a restatement (the Change's `writer`), also the writer and the
+      project its newest joined names, as the reconciliation read them
+      (sminos.restated_holds)."""
+    session, project = change["session"], change["project"]
+    other = current_record(session, fresh=True)
+    if other is not None and other["thread"] != thread_id:
+        return "moved"
+    records = sminos.records_module()
+    if records.lane_of(records.read(session)) == "B":
+        return "lane-b"
+    if "reach" in change and sminos.channels_module().reach_token(session) != change["reach"]:
+        return "reach"
+    own = sminos.own_events_now(project, session)
+    if not member(own):
+        return "between"
+    if change.get("writer") is not None and not sminos.restated_holds(project, session, change["writer"], own):
+        return "between"
+    return None
 
 
 def held_set(record):

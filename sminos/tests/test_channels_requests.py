@@ -50,11 +50,13 @@ import fcntl
 import glob
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import unittest
+import uuid as uuidlib
 from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -72,6 +74,7 @@ import sminos_rl10 as rl10  # noqa: E402
 O = channels.Outcome
 OTHER = "6b000009-0000-4000-8000-0000000000b9"     # a session of another machine: the remote requester
 SIGNER = {"kind": "machine", "keyId": "key-other"}
+SAME_ID = "5a" * 16                               # one request id two writers use (§2: 32 lower-case hex digits)
 
 
 def forbidden(*a, **k):
@@ -190,16 +193,16 @@ class Table(Requests):
         its id arrives; the word for the first answers the first alone."""
         tid, sid, _, other = self.two()
         self.owners(other, ["member-other"])   # so the second writer's own request would need a word too
-        first = self.remote(DESK, "add", sid, tid, rid="same-id")
-        self.assertEqual(self.carry(DESK), {"same-id": O("pending", "endpoint")})
-        second = self.request(DESK, "remove", sid, tid, writer=sminos.writer_id(other), rid="same-id")
+        first = self.remote(DESK, "add", sid, tid, rid=SAME_ID)
+        self.assertEqual(self.carry(DESK), {SAME_ID: O("pending", "endpoint")})
+        second = self.request(DESK, "remove", sid, tid, writer=sminos.writer_id(other), rid=SAME_ID)
         self.assertEqual(self.judge(DESK, second, tid), O("ignored", "duplicate"))
         words = {**self.words(DESK, first, "deliver", sid), **self.words(DESK, second, "deliver", sid)}
         got = [(r["writer"], o) for r, o in channels.carry_due(self.chan(DESK), words=words)]
         self.assertEqual(got, [(first["writer"], O("applied"))], "the second passed by: its id is answered")
         self.assertEqual(self.judge(DESK, second, tid), O("ignored", "duplicate"))
         self.assertEqual(self.held(tid), [DESK], "the first one's add, and not the second one's remove")
-        self.assertEqual(self.answers(sid), [(DESK, "same-id", "applied", None, (DESK,))])
+        self.assertEqual(self.answers(sid), [(DESK, SAME_ID, "applied", None, (DESK,))])
         self.assertEqual(self.carry(DESK, words=words), {}, "once")
 
     def test_row_3_a_request_that_names_no_thread_here_changes_neither_and_writes_nothing(self):
@@ -705,7 +708,7 @@ class Absorbed(Life, T1.LateHandOff):
         old, job, tid, theirs = self.late()
         c = self.chan(DESK)
         e = sminos.log_append(c, "other/" + OTHER, "channel-request", op="add", session=job, thread=theirs,
-                              id="before-the-absorption", verified={"signer": SIGNER})
+                              id="be" * 16, verified={"signer": SIGNER})
         words = {channels.event_key(c, e): ("deliver", {"session": job, "reach": channels.reach_token(job)})}
         sminos.forget_caches()
         self.assertEqual({r["id"]: o for r, o in channels.carry_due(c, words=words)},
@@ -794,15 +797,15 @@ class Verbs(Requests):
         sminos.forget_caches()
         c = self.chan(DESK)
         old = sminos._queue(c, "oldname/human", [{"kind": "channel-request", "op": "add", "session": sid,
-                                                  "thread": tid, "id": "said-under-the-old-name"}])[0]
+                                                  "thread": tid, "id": "0d" * 16}])[0]
         self.assertEqual(self.carry(DESK), {old["id"]: O("pending", "queued")})
         sminos.forget_caches()
         daemon.channel_pass([c], sminos.seats())
         self.assertEqual(self.statements(sid), [], "the daemon refused nothing")
         sminos.release_queued(c, sminos.writer_id())
         sminos.forget_caches()
-        self.assertEqual(self.carry(DESK), {"said-under-the-old-name": O("applied")}, "as this machine's own")
-        self.assertEqual([x[1:3] for x in self.answers(sid)], [("said-under-the-old-name", "applied")])
+        self.assertEqual(self.carry(DESK), {old["id"]: O("applied")}, "as this machine's own")
+        self.assertEqual([x[1:3] for x in self.answers(sid)], [(old["id"], "applied")])
         self.assertEqual(self.held(tid), [DESK])
 
     def test_a_former_names_request_that_names_no_thread_here_holds_nothing_back(self):
@@ -812,7 +815,7 @@ class Verbs(Requests):
         self.identity("testhost", {"oldname": []})
         self.head_wait()
         sminos._queue(self.chan(DESK), "oldname/human", [{"kind": "channel-request", "op": "add", "session": other,
-                                                          "thread": tid, "id": "an-old-one-naming-another"}])
+                                                          "thread": tid, "id": "0e" * 16}])
         time.sleep(0.002)
         code, out = self.verb("channel", "add", "desk", sid)
         self.assertEqual(code, 0, out)
@@ -1088,6 +1091,179 @@ class Verbs(Requests):
         self.assertIn(": was not in desk", out)
         self.assertEqual(self.held(tid), [])
         self.assertEqual(len(self.answers(sid)), 4)
+
+
+# ------------------------------------------------------------ the frontier review, round 1 (the holder's fix wave)
+
+
+class Frontier(Requests):
+    """The fixes of the frontier review's first round that §6's carrying out owns (A2 to A5, A8, A9)."""
+
+    def test_a2_the_shortcut_holds_only_for_a_requester_this_machine_has_a_record_of(self):
+        """An event under this machine's name that this machine did not write (one the hub brought back under a
+        reused name, a home rebuilt) is not its own: it takes the endpoint's word, whatever its owners."""
+        tid, sid, _ = self.human()
+        # The person at this machine: a request with no append receipt here.
+        e = self.request(DESK, "add", sid, tid)
+        os.unlink(sminos.receipt_path(self.chan(DESK), e["writer"]))
+        self.assertEqual(self.carry(DESK), {e["id"]: O("pending", "endpoint")}, "not appended here: asked")
+        self.assertEqual(self.carry(DESK, words=self.words(DESK, e, "deliver", sid)), {e["id"]: O("applied")})
+        # A session of this machine's name whose owners are the thread's, with no thread or seat record here.
+        ghost = str(uuidlib.uuid4())
+        shutil.copy(records.record_path(sid), records.record_path(ghost))
+        self.assertTrue(sminos.same_owner_local({"writer": sminos.writer_id(ghost)}, sid, self.chan(DESK)),
+                        "by the owners alone, the same owner")
+        r = self.request(DESK, "remove", sid, tid, writer=sminos.writer_id(ghost))
+        self.assertEqual(self.carry(DESK), {r["id"]: O("pending", "endpoint")}, "no record of it: asked")
+        self.assertEqual(self.held(tid), [DESK])
+        # Written here, under either writer: no word.
+        tid2, sid2, _, other = self.two()
+        mine = self.request(DESK, "add", sid2, tid2)
+        self.assertEqual(self.carry(DESK, also=[mine])[mine["id"]], O("applied"))
+        theirs = self.request(DESK, "remove", sid2, tid2, writer=sminos.writer_id(other))
+        self.assertEqual(self.carry(DESK, also=[theirs])[theirs["id"]], O("applied"))
+
+    def test_a2_a_request_this_machine_queued_is_its_own(self):
+        """A request in this machine's own queue for its writer's head has no position or receipt yet; the queue
+        is this machine's, so it is honoured with no word."""
+        tid, sid, _ = self.human()
+        ident = rl10.cutover()
+        sminos.mark_enrolled(ident["name"], ident["enrolled"])
+        sminos.forget_caches()
+        e = self.request(DESK, "add", sid, tid)
+        self.assertIsNone(e["seq"], "queued")
+        self.assertEqual(self.carry(DESK), {e["id"]: O("applied")})
+
+    def test_a3_the_terminals_shortcut_reads_the_targets_owners_from_its_record(self):
+        """The endpoint's last resolved owners of the target (its audience entry) do not make the person at this
+        machine its owner once the record names another owner."""
+        tid, sid, _, other = self.two()
+        for s in (sid, other):
+            audience.keep_audience({"session": s, "owners": ["member-me"], "members": None, "policyRev": 0})
+        self.assertEqual(audience.machine_owners(), ["member-me"])
+        self.owners(sid, ["member-someone"])   # stronger provenance replaced the machine's provisional owners
+        self.assertTrue(sminos.owners_meet("", sid), "the stale audience entry would meet")
+        e = self.request(DESK, "add", sid, tid)
+        self.assertEqual(self.carry(DESK), {e["id"]: O("pending", "endpoint")})
+        self.owners(sid, ["member-me"])
+        self.assertEqual(self.carry(DESK), {e["id"]: O("applied")}, "the machine's owner, by the record")
+
+    def during_positions(self, change):
+        """sminos.channel_positions with `change` made as it is read: after the judgment under the lock, before
+        the record's write."""
+        real = sminos.channel_positions
+
+        def reading(*a, **k):
+            change()
+            return real(*a, **k)
+        return mock.patch.object(sminos, "channel_positions", reading)
+
+    def assert_unwritten(self, tid, sid):
+        t = threads.get(tid)
+        self.assertEqual((t["channels"], t.get("pending"), t.get("answered")), ([], None, None), "nothing written")
+        self.assertEqual(self.statements(sid), [])
+
+    def test_a4_a_reach_changed_while_the_positions_are_read_commits_nothing(self):
+        tid, sid, _ = self.human()
+        e = self.remote(DESK, "add", sid, tid)
+        words = self.words(DESK, e, "deliver", sid)
+        with self.during_positions(lambda: self.bump(sid)):
+            self.assertEqual(self.carry(DESK, words=words), {e["id"]: O("pending", "moved")})
+        self.assert_unwritten(tid, sid)
+        self.assertEqual(self.carry(DESK, words=self.words(DESK, e, "deliver", sid)), {e["id"]: O("applied")})
+
+    def test_a4_a_session_turned_lane_b_while_the_positions_are_read_gets_no_statement(self):
+        tid, sid, _ = self.human()
+        e = self.request(DESK, "add", sid, tid)
+        with self.during_positions(lambda: records.set_controller(sid, "B")):
+            self.assertEqual(self.carry(DESK, also=[e])[e["id"]], O("ignored", "not-here"))
+        self.assert_unwritten(tid, sid)
+        records.set_controller(sid, "A")
+        self.assertEqual(self.carry(DESK), {e["id"]: O("applied")}, "judged anew once it is lane A again")
+
+    def test_a4_a_threads_own_change_rechecks_its_lane_last(self):
+        tid, sid, _ = self.human()
+        with self.during_positions(lambda: records.set_controller(sid, "B")):
+            self.assertEqual(channels.change(tid, DESK, "add", sid), O("failed", "lane-b"))
+        self.assert_unwritten(tid, sid)
+        self.assertIn("lane-b", channels.OWN_FAILED)
+        records.set_controller(sid, "A")
+        self.assertEqual(channels.change(tid, DESK, "add", sid), O("applied"))
+
+    def test_a4_a_move_while_the_positions_are_read_is_still_between(self):
+        tid, sid, _ = self.human()
+        e = self.request(DESK, "add", sid, tid)
+        with self.during_positions(lambda: self.write_own(sid, [{"kind": "retired", "reason": "moved", "project": "",
+                                                                 "thread": tid}])):
+            self.assertEqual(self.carry(DESK, also=[e])[e["id"]], O("pending", "between"))
+        self.assert_unwritten(tid, sid)
+
+    def test_a5_a_session_named_by_its_full_id_is_stamped_with_its_canonical_thread(self):
+        """An older copy's seat over a session its human opened: the full id resolves as that seat, and the
+        request names the thread whose record is the session's canonical one."""
+        tid, sid, _ = self.human()
+        seat_id = str(uuidlib.uuid4())
+        sminos.meta_set(seat_id, {"uuid": seat_id, "current": sid, "alias": "w", "group": "g", "cwd": self.root,
+                                  "status": "idle"})   # the older CLI's seat, no thread keys
+        self.reconcile()
+        self.assertEqual(sminos.find_target(sid)[0], "seat")
+        self.assertEqual(threads.current_record(sid, fresh=True)["thread"], tid)
+        self.assertEqual(channels._target(sid).thread, tid)
+        code, out = self.cli("channel", "add", "desk", sid)
+        self.assertEqual(code, 0, out)
+        self.assertIn(": in desk", out)
+        self.assertEqual(self.held(tid), [DESK])
+
+    def unreadable(self, path):
+        """`path` there and not to be opened (its stat still reads), forgotten by the read caches."""
+        real = open
+
+        def opening(p, *a, **k):
+            if os.path.abspath(str(p)) == os.path.abspath(path):
+                raise PermissionError(13, "Permission denied", p)
+            return real(p, *a, **k)
+        sminos._LOG_FILES.pop(path, None)
+        sminos._MERGED.clear()
+        return mock.patch("builtins.open", opening)
+
+    def test_a8_nothing_is_carried_past_a_writer_file_that_cannot_be_read(self):
+        tid, sid, _, other = self.two()
+        first = self.request(DESK, "add", sid, tid, writer=sminos.writer_id(other))
+        later = self.request(DESK, "remove", sid, tid)
+        path = sminos.writer_path(self.chan(DESK), first["writer"])
+        with self.unreadable(path):
+            self.assertEqual(self.carry(DESK, also=[later]), {later["id"]: O("pending", "unreadable")})
+            self.assertEqual(self.carry(DESK), {}, "nothing of the channel carried")
+            with self.assertRaises(sminos.PositionsUnread):
+                channels.requests_of(self.chan(DESK))
+        self.assertEqual(self.held(tid), [])
+        sminos._MERGED.clear()
+        self.assertEqual(self.carry(DESK), {first["id"]: O("applied"), later["id"]: O("applied")}, "in order")
+        self.assertEqual([a[1] for a in self.answered(tid)], [first["id"], later["id"]])
+
+    def test_a8_nor_past_an_operator_queue_that_cannot_be_read(self):
+        tid, sid, _ = self.human()
+        ident = rl10.cutover()
+        sminos.mark_enrolled(ident["name"], ident["enrolled"])
+        sminos.forget_caches()
+        e = self.request(DESK, "add", sid, tid)
+        self.assertIsNone(e["seq"])
+        [queue] = glob.glob(os.path.join(self.chan(DESK).home, sminos.QUEUED, "*.jsonl"))
+        with self.unreadable(queue):
+            self.assertEqual(self.carry(DESK, also=[e]), {e["id"]: O("pending", "unreadable")})
+        self.assertEqual(self.held(tid), [])
+        self.assertEqual(self.carry(DESK), {e["id"]: O("applied")})
+
+    def test_a9_a_request_id_is_32_lower_case_hex_digits(self):
+        tid, sid, _ = self.human()
+        for bad in ("same-id", "A" * 32, "a" * 31, "a" * 33, "a" * 32 + "\n", "{\"private\": 1}"):
+            with self.subTest(bad):
+                e = self.request(DESK, "add", sid, tid, rid=bad)
+                self.assertFalse(channels.is_request(e))
+                self.assertEqual(self.carry(DESK), {}, "no request")
+        good = self.request(DESK, "add", sid, tid, rid="0123456789abcdef" * 2)
+        self.assertTrue(channels.is_request(good))
+        self.assertEqual(self.carry(DESK), {good["id"]: O("applied")})
 
 
 if __name__ == "__main__":

@@ -371,8 +371,8 @@ class Answers(Roster):
 
     def test_a_request_under_an_id_another_writer_used_first_reads_not_carried_out(self):
         tid, sid, _, other = self.two()
-        self.request(DESK, "add", sid, tid, rid="same-id")
-        self.request(DESK, "remove", sid, tid, writer=sminos.writer_id(other), rid="same-id")
+        self.request(DESK, "add", sid, tid, rid="5a" * 16)
+        self.request(DESK, "remove", sid, tid, writer=sminos.writer_id(other), rid="5a" * 16)
         self.carry(DESK)
         code, out = self.cli("channel", "show", "desk", "--json")
         self.assertEqual(code, 0, out)

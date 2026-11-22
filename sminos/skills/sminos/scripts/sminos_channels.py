@@ -43,6 +43,7 @@ project. What is here:
 import glob
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -269,7 +270,9 @@ def change(thread_id, channel, op, session, lock_until=None):
                 said[-1] = "limit"
                 return None
             after = chans + [cid] if op == "add" else [c for c in chans if c != cid]
-            return {"project": project, "session": session, "channels": after, "answer": None}
+            made.append({"project": project, "session": session, "channels": after, "answer": None})
+            return made[-1]
+        made = []
         try:
             entry = threads.set_channels(thread_id, decide, lock_until=lock_until)
         except sminos.WakeBusy:
@@ -295,6 +298,9 @@ def change(thread_id, channel, op, session, lock_until=None):
             return Outcome("refused", "limit")
         if said[0] != "between":
             return Outcome("failed", said[0])
+        unwritten = made[-1].get("unwritten") if made else None
+        if unwritten in ("moved", "lane-b"):
+            return Outcome("failed", unwritten)   # set_channels' last reads: the session is not this thread's now
         sminos.forget_caches()   # the project read before the lock: is the session a member elsewhere now?
         again = sminos.last_project(session)
         if getattr(again, "id", None) == getattr(project, "id", None):
@@ -374,6 +380,8 @@ WORDS = {
               "queue is released",
     "expired": "not carried out: the request is more than seven days old",
     "not-here": "not carried out: it names a session that is no longer that thread's, or a thread that has ended",
+    "audience": "not sent (its endpoint refused the audience it went under: its target's reach changed before it "
+                "was signed)",
 }
 # Why a thread's own add or remove was not recorded (change's `failed`), in `nothing was recorded (<why>)`.
 OWN_FAILED = {
@@ -383,6 +391,7 @@ OWN_FAILED = {
     "between": "its session is between two projects",
     "moved": "this session is no longer its thread's current one, or the thread has ended",
     "unreadable": "the channel's log is there and could not be read",
+    "lane-b": "this session is lane B now, and no thread",
 }
 CAPABILITY_REFUSAL = ("this machine's endpoint does not serve channels (its welcome listed no channels): nothing "
                       "was written")
@@ -390,12 +399,19 @@ LIMIT_REFUSAL = "%s is in 128 channels, the limit: nothing was written"
 CARRIED = ("applied", "refused")   # the outcomes a write records; every other is said and writes nothing
 
 
+REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}")   # a request's `id` as §2 writes it (uuid4().hex)
+
+
 def is_request(e):
     """Whether an event is a `channel-request` of §2's shape: `op` add or
-    remove, and a `session`, a `thread` and an `id`, each a string that is
-    not empty. A reader takes one that lacks any as no request."""
+    remove, a `session`, a `thread` and a writer, each a string that is not
+    empty, and an `id` of 32 lower-case hex digits, as the verbs write it.
+    A reader takes any other as no request: an answer copies the id into
+    its target's own project, whose readers may be more than the request's,
+    so nothing but a random id is ever carried there."""
     return isinstance(e, dict) and e.get("kind") == "channel-request" and e.get("op") in ("add", "remove") \
-        and all(isinstance(e.get(k), str) and e[k] for k in ("session", "thread", "id", "writer"))
+        and all(isinstance(e.get(k), str) and e[k] for k in ("session", "thread", "writer")) \
+        and isinstance(e.get("id"), str) and REQUEST_ID_RE.fullmatch(e["id"]) is not None
 
 
 def _logged_requests(events):
@@ -421,21 +437,35 @@ def input_signature(channel):
             keys(sorted(glob.glob(os.path.join(glob.escape(channel.home), sminos.QUEUED, "*.jsonl")))))
 
 
-def requests_of(channel):
+def requests_of(channel, whole=True):
     """(signature, requests): the ordered input of a carrying out (§6). The
     channel log's requests in the merged read's order, then those among this
     machine's queued appends for that log (an append that waits for its
     writer's head), in the queue's order, each with `seq` None, read without
     changing the queue; one whose writer and id the log holds already (a
     release cut short) once. The signature (input_signature) is taken
-    before the read, so a file that moves during it moves it too."""
+    before the read, so a file that moves during it moves it too.
+
+    A writer file of the log, or a queue, that is there and cannot be read
+    raises sminos.PositionsUnread, as an unreadable channel log does where a
+    membership begins (Y3): an input missing a file has no order, and a
+    request after one it cannot see must not be carried past it. `whole`
+    False reads what it can instead (`channel show`, which only reads)."""
     sig = input_signature(channel)
-    _, events = sminos._store_whole(channel, "log", shared=True)
+    files, events = sminos._store_whole(channel, "log", shared=True)
+    unread = [path for path, key in files if key is None and os.path.lexists(path)]
+    try:
+        queues = sminos.queued_operators(channel)
+        queued = sminos.said_order(queues) if queues else []
+    except OSError as e:
+        unread.append(getattr(e, "filename", None) or "its queue")
+        queues, queued = {}, []
+    if unread and whole:
+        raise sminos.PositionsUnread("channel %s: %s cannot be read, so no request of it is carried out"
+                                     % (channel.name, ", ".join(sorted(os.path.basename(str(p)) for p in unread))))
     logged = sminos.log_memo(events, "channel-requests", _logged_requests)
-    queues = sminos.queued_operators(channel)
     held = {(e["writer"], e["id"]) for e in logged}
-    queued = [{**e, "seq": None} for e in sminos.said_order(queues) if is_request(e)
-              and (e["writer"], e["id"]) not in held] if queues else []
+    queued = [{**e, "seq": None} for e in queued if is_request(e) and (e["writer"], e["id"]) not in held]
     return sig, [dict(e) for e in logged] + queued
 
 
@@ -499,16 +529,48 @@ class _Facts:
 
     def shares_owners(self, channel, e, session):
         """Row 10: the request's writer is this machine's own and shares the
-        thread's owners: a session's writer by sminos.same_owner_local, the
-        human writer, which that rule does not answer for, by
-        sminos.owners_meet("", session) in a log where this machine's name
-        is provenance; each by the identity read now."""
+        thread's owners, and this machine holds a record of its own about
+        that requester, never its name alone (an event under this machine's
+        name can come back from the hub after the name was reused, or a home
+        rebuilt): a session's writer by sminos.same_owner_local and a thread
+        or seat record here that has had that session (thread_of); the
+        human writer, which that rule does not answer for, for a request
+        this machine appended itself (appended_here) whose target's record,
+        read now, names the machine's owners (machine_owns), in a log where
+        this machine's name is provenance; each by the identity read now.
+        Every other request under this machine's name takes the endpoint's
+        word."""
         writer = str(e.get("writer") or "")
         head, _, tail = sminos.writer_base(writer).rpartition("/")
         if tail != "human":
-            return sminos.same_owner_local(e, session, channel, fresh=True)
+            return sminos.same_owner_local(e, session, channel, fresh=True) \
+                and sminos.threads_module().thread_of(sminos.writer_session(writer)) is not None
         return self.own_writers_here(channel) and head == sminos.machine_name_now() \
-            and sminos.owners_meet("", session)
+            and appended_here(channel, e) and machine_owns(session)
+
+
+def appended_here(channel, request):
+    """Whether this machine appended the request itself: one of its own
+    queued appends (no position yet: the queue is this machine's alone), or
+    a logged one its append receipt names (sminos.receipted: the receipt is
+    written under the writer file's lock before the event, outside log/, so
+    nothing imported has one)."""
+    return request.get("seq") is None or sminos.receipted(channel, request)
+
+
+def machine_owns(session):
+    """Whether the machine's owners (the person at its terminal) own the
+    session, read from the session's record as it is now: it names the
+    machine's token, or a member the endpoint resolved as the machine's
+    owner. Never the endpoint's last resolved owners of the session itself,
+    which a record replaced since (stronger provenance) can outlive."""
+    records = sminos.records_module()
+    rec = records.read(session) if session else None
+    owners = rec.get("owners") if rec and isinstance(rec.get("owners"), list) else []
+    if records.MACHINE in owners:
+        return True
+    resolved = sminos.audience_module().machine_owners()
+    return bool(resolved) and bool(set(resolved) & set(owners))
 
 
 def sender_verified(channel, request, facts=None):
@@ -670,7 +732,10 @@ def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_unt
     cid, tid = channel.id, request["thread"]
     why = "moved"
     for _ in range(3):
-        sig, requests = requests_of(channel)
+        try:
+            sig, requests = requests_of(channel)
+        except sminos.PositionsUnread:
+            return Outcome("pending", "unreadable")
         earlier = _earlier(requests, request)
         record = threads.get(tid)
         if record is not None and record.get("pending") and not threads.reservation(record) \
@@ -699,9 +764,13 @@ def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_unt
             chans = list(threads.stated_set({"channels": threads.held_set(rec)}))
             if out.state == "applied" and out.why != "unchanged":
                 chans = chans + [cid] if request["op"] == "add" else [c for c in chans if c != cid]
-            return {"project": project, "session": rec["current"], "channels": chans,
-                    "answer": {"channel": cid, "id": request["id"], "ts": request["ts"], "result": out.state,
-                               "reason": out.why if out.state == "refused" else ""}}
+            made.append({"project": project, "session": rec["current"], "channels": chans,
+                         "answer": {"channel": cid, "id": request["id"], "ts": request["ts"], "result": out.state,
+                                    "reason": out.why if out.state == "refused" else ""}})
+            if word is not None and isinstance(asked, dict):
+                made[-1]["reach"] = asked.get("reach")   # checked again last, after the positions (_last_reads)
+            return made[-1]
+        made = []
         try:
             entry = threads.set_channels(tid, decide, lock_until=lock_until, wake_until=wake_until)
         except sminos.WakeBusy:
@@ -727,7 +796,13 @@ def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_unt
             continue
         if said[-1].state not in CARRIED:
             return said[-1]
-        # The Change was refused by set_channels' last guard: the session is no member of `project` now.
+        # The Change was refused by set_channels' last reads: what judge() would have said of it a moment earlier.
+        unwritten = made[-1].get("unwritten") if made else None
+        if unwritten in ("moved", "lane-b"):
+            return Outcome("ignored", "not-here")   # row 3: the session is no thread's of this machine's now
+        if unwritten == "reach":
+            return Outcome("pending", "moved")      # row 13: the word was for a reach the thread no longer has
+        # `between`: the session is no member of `project` now.
         sminos.forget_caches()
         again = sminos.last_project(record["current"])
         if getattr(again, "id", None) == getattr(project, "id", None):
@@ -764,6 +839,9 @@ def ask_of(channel, request):
             "project": project, "reach": reach}
 
 
+_UNREAD_SAID = {}   # channel id → the last unreadable input said in daemon.log, said once while it stays
+
+
 def carry_due(channel, words=None, also=(), lock_until=None, wake_until=None):
     """The pass (§6): every request of the ordered input that is not expired
     and names a thread of this machine that has not ended, in order, then
@@ -775,7 +853,15 @@ def carry_due(channel, words=None, also=(), lock_until=None, wake_until=None):
     [(request, Outcome)] of the requests carried."""
     threads = sminos.threads_module()
     words = words or {}
-    _, requests = requests_of(channel)
+    try:
+        _, requests = requests_of(channel)
+    except sminos.PositionsUnread as e:
+        # Nothing of the channel is carried while a file of its input cannot be read; a command's own is told why.
+        if _UNREAD_SAID.get(channel.id) != str(e):
+            sminos.daemon_log(str(e))
+        _UNREAD_SAID[channel.id] = str(e)
+        return [(r, Outcome("pending", "unreadable")) for r in also]
+    _UNREAD_SAID.pop(channel.id, None)
     have = {(r["writer"], r["id"]) for r in requests}
     own = {(r.get("writer"), r.get("id")) for r in also}
     todo = requests + [r for r in also if (r.get("writer"), r.get("id")) not in have]
@@ -858,8 +944,12 @@ def _target(q):
     if found[0] == "none":
         sminos.die("no seat or member matching '%s'" % q, sminos.EXIT_UNKNOWN)
     if found[0] == "seat":
+        # A full id resolves as a seat even where it is an older copy's seat over a session its human opened: the
+        # thread named is the session's canonical record (current_record), the seat's own only where none is.
         s = found[1]
-        return _local(threads.get(s["seat_id"]), found[2] or s["current"], s["alias"])
+        session = found[2] or s["current"]
+        record = threads.current_record(session, fresh=True) if session else None
+        return _local(record if record is not None else threads.get(s["seat_id"]), session, s["alias"])
     m = found[2]
     if m.local:
         record = threads.current_record(m.session, fresh=True)
@@ -1402,9 +1492,9 @@ def requests_shown(channel, now=None):
     hub withheld (sminos_hublog.withheld_of: its uplink's own record, read
     with no lock; M7), else `pending` with the machine its target's row
     was last seen on."""
-    _, reqs = requests_of(channel)
+    _, reqs = requests_of(channel, whole=False)
     index, out = _answer_index(), []
-    withheld = sminos.sibling_module("sminos_hublog").withheld_of(channel)
+    settled = _settled_own(channel)
     for i, r in enumerate(reqs):
         if expired(r, now):
             continue
@@ -1419,8 +1509,9 @@ def requests_shown(channel, now=None):
             if answer is not None:
                 state = answer["result"]
                 reason = answer.get("reason") if state == "refused" else None
-            elif r.get("seq") in withheld.get(r["writer"], ()):
-                state, reason = "withheld", "not-reachable"   # the hub withheld it: its target never read it
+            elif r.get("seq") in settled.get(r["writer"], {}):
+                # The hub withheld it, or the endpoint refused its stream's audience: its target never read it.
+                state, reason = "withheld", settled[r["writer"]][r["seq"]]
             else:
                 local = sminos.threads_module().get(r["thread"])
                 machine = row[1].machine if row else sminos.host_name() if local is not None else None
@@ -1431,13 +1522,54 @@ def requests_shown(channel, now=None):
     return out
 
 
+def outstanding(channel, now=None):
+    """Whether the channel holds a request one of this machine's writers
+    wrote (by its name now) that is still outstanding: its lifetime not
+    out, its id no other writer's first (§6's row 2), and nothing has come
+    of it as this machine reads (no answer, answer_of; not withheld or
+    refused by the hub, settled). What keeps the channel's log open here
+    while no thread of this machine is in it (sminos_uplink's leaving
+    rule), so the ask pass can carry it; a file of it that cannot be read
+    keeps it too."""
+    try:
+        _, reqs = requests_of(channel)
+    except sminos.PositionsUnread:
+        return True
+    me = sminos.machine_name_now()
+    mine = [(i, r) for i, r in enumerate(reqs) if sminos.writer_base(r["writer"]).rpartition("/")[0] == me
+            and not expired(r, now)]
+    if not mine:
+        return False
+    settled = _settled_own(channel)
+    index = _answer_index()
+    return any(not _duplicate(r, reqs[:i]) and r.get("seq") not in settled.get(r["writer"], ())
+               and _answer_in(index, channel, r) is None for i, r in mine)
+
+
+def _settled_own(channel):
+    """{writer: {seq: reason}} of this machine's writers' positions in the
+    channel's log that the upstream did not carry and never will, as its
+    uplink keeps them (uplink.json, read with no lock): `not-reachable` where
+    the hub withheld one (sminos_hublog.withheld_of), `audience` where the
+    endpoint refused its stream's audience (sminos_hublog.refused_audience_of:
+    the stream chosen for the target was stale when it was signed)."""
+    hublog = sminos.sibling_module("sminos_hublog")
+    out = {}
+    for reason, held in (("audience", hublog.refused_audience_of(channel)), ("not-reachable",
+                                                                          hublog.withheld_of(channel))):
+        for w, seqs in held.items():
+            out.setdefault(w, {}).update(dict.fromkeys(seqs, reason))
+    return out
+
+
 def _request_line(r):
     if r["state"] == "applied":
         what = "applied"
     elif r["state"] == "refused":
         what = "refused: %s" % WORDS.get(r["reason"], r["reason"] or "?")
     elif r["state"] == "withheld":
-        what = "refused: not reachable (the hub withheld it)"
+        what = "refused: " + WORDS["audience"] if r["reason"] == "audience" else \
+            "refused: not reachable (the hub withheld it)"
     elif r["state"] == "duplicate":
         what = WORDS["duplicate"]
     elif r["machine"]:

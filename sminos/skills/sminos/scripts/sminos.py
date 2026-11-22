@@ -3606,7 +3606,8 @@ def addressed_append(project, session, recipients, kind, fields, why):
 # Append receipts (O12 M6): the provenance of this machine's operator words.
 # The writer name is not provenance — a git mirror's merge can bring a
 # `<thisname>/human` line no one here wrote — so each `human` event _append
-# stores under this machine's own writer gets a machine-private receipt,
+# stores under this machine's own writer (and each `channel-request`,
+# RECEIPTED_KINDS) gets a machine-private receipt,
 # `projects/<id>/receipts/<writer>.jsonl`, one `{seq, hash}` line, written in
 # the same append under the writer file's lock, before the event itself: an
 # event appended here always has one. The directory is outside log/, so git
@@ -3634,13 +3635,18 @@ def receipt_path(project, writer):
     return os.path.join(project.home, RECEIPTS, writer.replace("/", ".") + ".jsonl")
 
 
+# The kinds an append receipt is written for: a person's words (O12 M6), and a channel's request, whose
+# receipt is what "this machine appended it" means to §6's row 10 (CH1; sminos_channels.appended_here).
+RECEIPTED_KINDS = ("human", "channel-request")
+
+
 def _write_receipts(project, writer, events):
-    """The receipts of the `human` events an append stores under this
-    machine's own writer (its name now); the caller holds the writer file's
-    lock. One whose body has no canonical form gets none."""
+    """The receipts of the events of RECEIPTED_KINDS an append stores under
+    this machine's own writer (its name now); the caller holds the writer
+    file's lock. One whose body has no canonical form gets none."""
     if writer.rpartition("/")[0] != host_name():
         return
-    lines = [{"seq": e["seq"], "hash": h} for e in events if e["kind"] == "human" and (h := event_hash(e))]
+    lines = [{"seq": e["seq"], "hash": h} for e in events if e["kind"] in RECEIPTED_KINDS and (h := event_hash(e))]
     if not lines:
         return
     path = project_path(project, RECEIPTS, writer.replace("/", ".") + ".jsonl")

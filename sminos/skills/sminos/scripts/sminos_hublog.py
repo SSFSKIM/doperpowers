@@ -407,6 +407,30 @@ def withheld_of(project):
     return _withheld_in(d) if isinstance(d, dict) else {}
 
 
+def refused_audience_of(project):
+    """{writer: {seq}}: the positions of this machine's writers the endpoint
+    refused `audience` in the project's log, as its uplink keeps them
+    (uplink.json: HubLog.dead's `at` while the writer is stopped, then
+    HubLog.voided once a void went up in their place): an event there never
+    reaches its readers. What `channel show` reads (CH1); a read that takes
+    no lock and changes nothing, {} as withheld_of reads none."""
+    try:
+        d = sminos.json_at(os.path.join(project.home, STATE_FILE))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    dead, voided = d.get("dead"), d.get("voided")
+    for w, held in (dead.items() if isinstance(dead, dict) else ()):
+        if isinstance(held, dict) and isinstance(held.get("at"), list):
+            out.setdefault(w, set()).update(s for s in held["at"] if type(s) is int and s >= 1)
+    for w, seqs in (voided.items() if isinstance(voided, dict) else ()):
+        if isinstance(seqs, list):
+            out.setdefault(w, set()).update(s for s in seqs if type(s) is int)
+    return {w: seqs for w, seqs in out.items() if seqs}
+
+
 class HubLog:
     """One hub project's log plane: what this machine says of it up the
     stream, and how it takes what the hub sends of it."""
