@@ -14,11 +14,15 @@ and not `reach`:
   an untagged post nobody's.
 - The reply line run as written: in the channel's log for a member's frame,
   in the sender's project for an outsider's, directly to a member that has
-  since left the channel, to the session that continues a sender handed
-  off, and never to a thread that came to hold the sender's old session.
+  since left the channel (refused where its project is retired or has
+  left this machine, as `@<short>` is), to the session that continues a
+  sender handed off, and never to a thread that came to hold the sender's
+  old session; once run by a shell exactly as the frame writes it.
 - An outsider's copy as record_copy keeps it: in a project whose log is not
   filtered by audience, to a private member, none and its warning; for
-  recipients of two audiences, an event and a copy each.
+  recipients of two audiences, an event and a copy each; one that cannot
+  be written, tried after the delivery and changing none of it.
+- A torn row: no entry, and its tag cut from the text (`Lines`).
 - Each refusal of §2 with nothing appended to any log (`Refused`).
 - `chat <channel>`, `list <channel>`, and a person's and a machine's words
   (`Read`, `Words`).
@@ -254,6 +258,26 @@ class Member(Say):
         self.assertEqual(self.line_for(out, "writer"), ["sent"])
         self.assertEqual(len(self.got(sreceived, "answer")), 1)
 
+    def test_the_reply_line_runs_as_written_in_a_shell(self):
+        """The frame's command itself, its placeholder alone replaced: the launcher's path and the quoting."""
+        rtid, rsid, received = self.live("reader")
+        stid, ssid, sreceived = self.live("writer")
+        self.as_session(ssid, "say", "--in", "desk", "@reader what of it")
+        [frame] = self.got(received, "what of it")
+        m = re.search(r"\[To reply, run in Bash: (.*)\]", frame)
+        self.assertIsNotNone(m, frame)
+        self.assertEqual(m.group(1).count("<your reply>"), 1)
+        command = m.group(1).replace("<your reply>", "it is answered")
+        run = subprocess.run(["/bin/sh", "-c", command], cwd=self.root, capture_output=True, text=True,
+                             env=dict(os.environ, CLAUDE_CODE_SESSION_ID=rsid))
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        sminos.forget_caches()
+        a = self.says()[-1]
+        self.assertEqual(a["text"], "@%s/%s it is answered" % (DESK, stid[:8]))
+        self.assertEqual(a["to"], [{"session": ssid, "alias": "writer", "thread": stid}])
+        self.assertEqual(a["thread"], rtid)
+        self.assertEqual(len(self.got(sreceived, "it is answered")), 1)
+
     def test_the_reply_line_after_its_sender_was_handed_off_reaches_the_session_that_continues_it(self):
         rtid, rsid, received = self.live("reader")
         stid, old, oproc, sreceived = self.live_member("writer")
@@ -317,6 +341,30 @@ class Member(Say):
                       "Drop --in to reach it in its own project" % ("@" + stid), out)
 
 
+    def test_the_reply_line_to_a_sender_whose_project_has_left_or_is_retired_is_refused_as_the_short_tag_is(self):
+        rtid, rsid, received = self.live("reader")
+        stid, ssid, sreceived = self.open_here("writer", self.app_root)
+        self.add(stid, ssid, DESK)
+        self.as_session(ssid, "say", "--in", "desk", "@reader question", cwd=self.app_root)
+        [frame] = self.got(received, "question")
+        self.removed(stid, ssid)
+        sminos.write_json(sminos.leaving_path(), {"counted": {}, "left": [APP]})
+        cannot = "@%s/%s was in desk and cannot be reached now" % (DESK, stid[:8])
+        for gone in ("left", "retired"):
+            if gone == "retired":
+                sminos.write_json(sminos.leaving_path(), {"counted": {}, "left": []})
+            before = self.logs()
+            with mock.patch.object(sminos, "org_retired", lambda pid: gone == "retired" and pid == APP):
+                code, out = self.as_session(rsid, "say", "@%s ordinary" % ssid[:8])
+                self.assertEqual(code, 4, (gone, out))
+                code, out = self.reply(rsid, frame, "answer to a project that is gone")
+            self.assertEqual(code, 4, (gone, out))
+            self.assertIn(cannot, out, gone)
+            self.assertNotIn("sent to it directly", out, gone)
+            self.assertEqual(self.logs(), before, "nothing appended (%s)" % gone)
+        self.assertEqual(self.got(sreceived, "answer to a project that is gone"), [])
+
+
 # ------------------------------------------------------------ a session that is no member says (B2)
 
 
@@ -342,6 +390,30 @@ class Outsider(Say):
         [frame] = self.got(received, "from outside")
         self.assertIn("[sminos chat desk %s from outside (not in desk) → @you]" % sminos.event_ref(e), frame)
         self.assertEqual(reply_of(frame), "%s/%s" % (APP, osid[:8]), "the sender in its own project")
+
+    def test_a_copy_that_cannot_be_written_is_tried_after_the_delivery_and_changes_nothing_it_did(self):
+        rtid, rsid, received = self.live("reader")
+        otid, osid, _ = self.outsider()
+        real, tried = sminos.log_append, []
+
+        def append(project, writer, kind, **fields):
+            if project.id == APP and fields.get("copy"):
+                tried.append(sys.stdout.getvalue())   # what the sender had read when the copy was tried
+                raise OSError("disk full")
+            return real(project, writer, kind, **fields)
+
+        with mock.patch.object(sminos, "log_append", append):
+            code, out = self.as_session(osid, "say", "--in", "desk", "@reader a copy fails", cwd=self.app_root)
+        self.assertEqual(code, 0, out)
+        [seen] = tried
+        self.assertIn("reader: sent", seen.splitlines(), "the delivery pass ran before the copy was tried")
+        self.assertEqual(self.line_for(out, "reader"), ["sent"])
+        self.assertIn("sminos: warning: delivered, but its copy could not be recorded in app: disk full", out)
+        [e] = self.says()
+        self.assertEqual(e["to"], [{"session": rsid, "alias": "reader", "thread": rtid}])
+        self.assertEqual([c for _, c in self.project_says(self.app) if c.get("copy")], [], "no copy")
+        self.assertEqual(len(self.got(received, "a copy fails")), 1, "delivered")
+        self.assertEqual(self.owed_to(rtid), [], "and settled")
 
     def test_the_two_forms_of_the_reply_line(self):
         rtid, rsid, received = self.live("reader")
@@ -470,6 +542,29 @@ class Lines(Say):
         code, out = self.as_session(ssid, "say", "--in", "desk", "@torn @olden both")
         self.assertEqual(code, 0, out)
         self.assertEqual([r["alias"] for r in self.says()[-1]["to"]], ["olden"], "the torn row given no entry")
+
+    def test_a_torn_rows_tag_is_left_out_of_the_text_its_recipients_read(self):
+        """A torn row is given no entry, and its tag no place in the text: the text goes to a stream splitter
+        that rebuilds it only for several audiences, so what one audience reads would name the row it skips."""
+        rtid, rsid, received = self.live("reader")
+        stid, ssid, _ = self.live("writer")
+        torn_sid = str(uuidlib.uuid4())
+        w = "beta/" + torn_sid
+        sminos.log_append(self.app, w, "joined", session=torn_sid, alias="hidden", name_source="user",
+                          machine="beta", cwd="/w", worktree="", role="", seat="", by="",
+                          session_kind="interactive", thread=str(uuidlib.uuid4()))
+        sminos.log_append(self.app, w, "state", session=torn_sid, state="idle", machine="beta")
+        sminos.log_append(self.app, w, "channels", session=torn_sid, thread=str(uuidlib.uuid4()),
+                          op=os.urandom(8).hex(), channels=[DESK])
+        sminos.forget_caches()
+        code, out = self.as_session(ssid, "say", "--in", "desk", "@hidden#%s @reader the plan" % torn_sid[:8])
+        self.assertEqual(code, 0, out)
+        [e] = self.says()
+        self.assertEqual(e["to"], [{"session": rsid, "alias": "reader", "thread": rtid}])
+        self.assertEqual(e["text"], "@reader the plan", "the skipped row's tag is not in the event's text")
+        [frame] = self.got(received, "the plan")
+        self.assertNotIn("hidden", frame)
+        self.assertNotIn(torn_sid[:8], frame)
 
     def test_a_recipient_whose_record_here_no_longer_holds_the_channel_is_told_and_not_delivered(self):
         rtid, rsid, received = self.live("reader")
@@ -626,6 +721,29 @@ class Read(Say):
         self.assertIn("chat desk · 1 new", out)
         self.assertIn("after", out)
         self.assertNotIn("  before", out)
+
+    def test_chat_of_a_seat_in_its_first_session_leaves_out_what_its_thread_said_in_another(self):
+        """A seat's thread id is its first session's, so a reader whose key is its own session can still be a
+        thread: its own messages are its thread's, whichever session wrote them (a refill's, then the first
+        session restored), as a frame counts them."""
+        sid, proc = self.session()
+        code, out = self.cli("seat", "add", "g", "w", "--session", sid)
+        self.assertEqual(code, 0, out)
+        self.reconcile()
+        tid = threads.stamp(sid)
+        self.assertEqual(tid, sid, "the seat's thread is its first session's id")
+        self.add(tid, sid, DESK)
+        other = str(uuidlib.uuid4())   # its second occupant's, between a refill and the first's restoring
+        sminos.log_append(self.chan(DESK), sminos.writer_id(other), "say", **{
+            "from": "w", "to": "*", "text": "said in its second session", "thread": tid})
+        wtid, wsid, _ = self.live("writer")
+        self.as_session(wsid, "say", "--in", "desk", "from another thread")
+        code, out = self.as_session(sid, "chat", "desk")
+        self.assertEqual(code, 0, out)
+        self.assertIn("chat desk · 1 new", out)
+        self.assertIn("from another thread", out)
+        self.assertNotIn("said in its second session", out)
+        self.assertTrue(os.path.exists(os.path.join(self.chan(DESK).home, "cursors", tid + ".json")))
 
     def test_chat_over_an_older_copys_closed_join_changes_no_record_and_no_log_file(self):
         sid, proc, tid = self.member(name="olden")

@@ -7482,6 +7482,15 @@ def member_row(project, session):
                    session in local, False, info, shadowing(project, session, info, all_seats))
 
 
+def logged_members(project):
+    """The members the project's log holds now, each read as member_row
+    reads it: no session of this machine reconciled in, nothing appended (a
+    refusal's read of where a name answers, CH2's M4)."""
+    _, events = _store_whole(project, "log", shared=True)
+    sessions = sorted({e["session"] for e in events if e["kind"] == "joined" and isinstance(e.get("session"), str)})
+    return [m for m in (member_row(project, sid) for sid in sessions) if m is not None]
+
+
 def members(project):
     """The project's members (see project_view)."""
     return project_view(project)[0]
@@ -10629,7 +10638,9 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
     """A tagged or untagged say's appends and deliveries, its destination
     and recipients resolved: one event per audience its recipients give
     (streams_for), a copy in the sender's own project where the message
-    went to another (record_copy), and each recipient's line (deliver_say).
+    went to another (record_copy: before the deliveries for a project's
+    say, as before; after them for a channel's), and each recipient's line
+    (deliver_say).
     `said` (a sminos_channels.Said) is given for a channel's log, and only
     then: the fields its events add (the sender's `thread`, an outsider's
     `from_project`), whether a copy is kept, the line said after the
@@ -10671,11 +10682,15 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
         recorded.append((e, rs))
     if said is not None and said.after:
         print(said.after)
-    if recorded and copied:
+    if recorded and copied and said is None:
         record_copy(home, [(dest, e) for e, _ in recorded])
     held_for = []
     for e, rs in recorded:
         held_for += deliver_say(dest, e, e["writer"], rs, rows=said.rows if said is not None else None)
+    if recorded and copied and said is not None:
+        # A channel's copy after the delivery pass (CH2's M4): its warning, when it cannot be written, follows
+        # what was delivered, and changes none of it.
+        record_copy(home, [(dest, e) for e, _ in recorded])
     if a.exit_held and held_for:
         sys.exit(EXIT_HELD)
 
@@ -10761,6 +10776,19 @@ def cmd_chat(a):
     events = log_read(project)
     # A member that moved to another project is part of the conversation it left.
     pool = [e for e in events if e["kind"] in kinds or (not a.kind and is_moved(e))]
+    mine = writer_id(sid or None)
+    chat_read(project, a, events, pool, sid, lambda e: writer_base(e["writer"]) != mine,
+              lambda e, label: moved_line(e, events) if is_moved(e) else chat_line(e, label(e)))
+
+
+def chat_read(log, a, events, pool, key, unread, line):
+    """A chat read's window, its cursor's advance and what it prints, over
+    a project's log (cmd_chat) and a channel's (sminos_channels.chat) alike:
+    -n tails `pool` and --since reads it from a time, neither moving the
+    cursor; else what is above the cursor kept under `key` and not the
+    reader's own (`unread`), at most 30, then +N earlier, the cursor moved
+    past every event of `events`. `line(e, label)` is an event's line,
+    `label` sender_labels(log)."""
     earlier = 0
     if a.since is not None:
         since = normalize_ts(a.since)
@@ -10768,9 +10796,8 @@ def cmd_chat(a):
     elif a.n is not None:
         window, head = pool[-a.n:], "last %d of %d" % (min(a.n, len(pool)), len(pool))
     else:
-        cursor = cursor_load(project, sid)
-        mine = writer_id(sid or None)
-        above = [e for e in pool if writer_base(e["writer"]) != mine and e["seq"] > cursor.get(e["writer"], 0)]
+        cursor = cursor_load(log, key)
+        above = [e for e in pool if unread(e) and e["seq"] > cursor.get(e["writer"], 0)]
         window = above[-30:]
         earlier = len(above) - len(window)
         head = "%d new" % len(above)
@@ -10778,19 +10805,19 @@ def cmd_chat(a):
         for e in events:
             advanced[e["writer"]] = max(advanced.get(e["writer"], 0), e["seq"])
         if advanced != cursor:
-            cursor_save(project, sid, advanced)
+            cursor_save(log, key, advanced)
     if a.json:
         for e in window:
             print(json.dumps(e, ensure_ascii=False))
         if earlier:
-            sys.stderr.write("+%d earlier — sminos chat %s -n %d\n" % (earlier, project.name, len(window) + earlier))
+            sys.stderr.write("+%d earlier — sminos chat %s -n %d\n" % (earlier, log.name, len(window) + earlier))
         return
-    print("chat %s · %s" % (project.name, head))
+    print("chat %s · %s" % (log.name, head))
     if earlier:
-        print("+%d earlier — sminos chat %s -n %d" % (earlier, project.name, len(window) + earlier))
-    label = sender_labels(project)
+        print("+%d earlier — sminos chat %s -n %d" % (earlier, log.name, len(window) + earlier))
+    label = sender_labels(log)
     for e in window:
-        print(moved_line(e, events) if is_moved(e) else chat_line(e, label(e)))
+        print(line(e, label))
     if not window:
         print("(no new messages)" if a.since is None and a.n is None else "(no messages)")
 

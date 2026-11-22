@@ -907,9 +907,10 @@ class Doors(Machine):
         rc, out, err = self.cli("say", "@worker @desk-integration/worker hello", cwd=self.root)
         self.assertEqual(rc, 4, err)
         self.assertIn("one message, one log: the tags name app, desk-integration", err,
-                      "a bare name resolves to its thread's own project, beside the channel (CH2's M4)")
-        self.assertEqual([e for e in self.log_events(PROJ) + self.log_events(DESK) if e["kind"] in ("human", "say")],
-                         [], "nothing recorded")
+                      "a bare name is read in the sender's own project, beside the channel (CH2's M4)")
+        self.assertEqual(self.log_events(PROJ) + self.log_events(DESK), [],
+                         "the refusal names the bare tag's log with no member looked up: nothing reconciled, nothing "
+                         "recorded")
 
     def test_a_channel_qualifier_by_its_whole_id_unquoted_is_refused_too(self):
         """The holder's reading, D3: the qualifier is decided by the name resolver, whole: `log_label`'s

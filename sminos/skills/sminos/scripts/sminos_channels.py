@@ -1840,6 +1840,22 @@ def _log_name(q):
     return tiers[0].name if tiers else q
 
 
+def _bare_logs(own, t):
+    """How the refusal of a mix names the logs an unqualified tag is read
+    in, with no member looked up through a view (a refusal reconciles
+    nothing and appends nothing): `@alias#short` and a name in id form, the
+    projects a short tag reaches (org_scope) whose log holds a member it
+    answers to (sminos.logged_members); else, and for a bare alias, the
+    sender's own project (`own`); else the tag itself."""
+    name, short = t["name"], t["short"]
+    if short or id_form(name):
+        hits = {p.name for p in sminos.org_scope() for m in sminos.logged_members(p)
+                if m.state != "retired" and (sminos.alias_reach(m, name, short) if short else sminos.id_reach(m, name))}
+        if hits:
+            return hits
+    return {own.name} if own is not None else {t["raw"]}
+
+
 def _entry_of(channel, p, m):
     """The `to` entry of a roster's row ({session, alias, thread}: the thread and the session from one reading of
     the row, thread_of_row), or None for a row that is not addressed, its line said."""
@@ -1902,8 +1918,9 @@ def speak(channel, a, session, tags):
         else:
             others.append(t)
     if others:
-        names = {channel.name} | {_log_name(t["project"]) if t["project"] else sminos.resolve_tag(home, t)[0].name
-                                  for t in others}
+        own = home if session else sminos.caller_project(None)
+        names = {channel.name}.union(*({_log_name(t["project"])} if t["project"] else _bare_logs(own, t)
+                                       for t in others))
         sminos.die(ONE_LOG % ", ".join(sorted(names)), sminos.EXIT_UNKNOWN)
     recipients, raws, rows, wake = [], [], {}, False
     if any(sminos.is_all(t) for t in tags):
@@ -1914,8 +1931,9 @@ def speak(channel, a, session, tags):
                 recipients.append(r)
                 rows[r["thread"]] = (p, m)
     else:
-        run = sminos.audience_module().leading_run(a.text)[0]
-        outs, held = {}, []
+        au = sminos.audience_module()
+        run = au.leading_run(a.text)[0]
+        outs, held, skipped = {}, [], False
         for i, t in enumerate(inside):
             where, p, m, _ = reach_in(channel, t["name"], t["short"], at="@", how=True,
                                       then=DROP_IN if via_in else "")
@@ -1923,12 +1941,15 @@ def speak(channel, a, session, tags):
             if where == "out":
                 if via_in:
                     sminos.die(LEFT_WITH_IN % (t["raw"], channel.name), sminos.EXIT_UNKNOWN)
-                if m is None:
+                if m is None or p.id not in {q.id for q in sminos.org_scope()}:
+                    # Ended, or in a project a short tag may not write into (retired in the org's directory, or
+                    # left this machine): the guard `@<short>` meets, before anything is appended or said.
                     sminos.die(CANNOT_REACH % (t["raw"], channel.name), sminos.EXIT_UNKNOWN)
                 outs.setdefault(p.id, (p, []))[1].append((t, m, (i, raw)))
                 continue
             r = _entry_of(channel, p, m)
             if r is None:
+                skipped = True
                 continue
             at = next((j for j, x in enumerate(recipients) if x["thread"] == r["thread"]), None)
             if at is None:
@@ -1956,6 +1977,10 @@ def speak(channel, a, session, tags):
             return
         if tags and not recipients:
             sminos.die(NONE_ADDRESSED % channel.name, sminos.EXIT_UNKNOWN)
+        if skipped:
+            # A row given no entry has no tag in the text either: a stream splitter rebuilds the text only for
+            # several audiences, and one audience's event would name the row it skipped.
+            a.text = au.split_text(a.text, [raw for _, raw in sorted(x for places in held for x in places)])
         raws = held
     fields = {"thread": thread} if kind == "say" and thread else {}
     if outsider:
@@ -1978,62 +2003,32 @@ def owing_for(channel, thread):
     return owing(channel, record, own_row(record)), ""
 
 
-def _reader_key(session):
-    """Whose chat cursor a channel's read moves (§6): the reader's thread, as its delivery record is keyed, so a
-    hand-off carries nothing; a session that is no thread, and a person at a terminal, as today."""
-    return sminos.threads_module().stamp(session) or session if session else session
-
-
 def chat(channel, a, session):
-    """cmd_chat's body over a channel's log (§6): the channel's own view
-    first (view_of, which reconciles a channel as a channel), never
-    sminos.reconcile, which would run a project's reconciliation over what an
-    older copy joined into it; the window and the lines as cmd_chat makes
-    them, a line whose event carries `from_project` with the frame's clause
-    after its sender; `--host` refused. Any reader that can read the log may:
-    a channel bounds no one's reach. The cursor is the thread's
-    (_reader_key), and the thread's own messages are not unread."""
+    """cmd_chat's read over a channel's log (§6), by sminos.chat_read: the
+    channel's own view first (view_of, which reconciles a channel as a
+    channel), never sminos.reconcile, which would run a project's
+    reconciliation over what an older copy joined into it; a line whose
+    event carries `from_project` with the frame's clause after its sender;
+    `--host` refused. Any reader that can read the log may: a channel bounds
+    no one's reach. The reader is its thread (stamp): the cursor is kept
+    under it, as its delivery record is, so a hand-off carries nothing, and
+    the thread's own messages are not unread, whichever of its sessions
+    wrote them (sminos.frame_of's rule). A session that is no thread, and a
+    person at a terminal, read as in a project: the cursor the session's
+    (or the terminal's), its own writer's messages not unread."""
     if a.host:
         sminos.die(HOST_IS_PROJECTS % channel.name, 1)
     sminos.view_of(channel)
     kinds = tuple(a.kind) if a.kind else sminos.CHAT_KINDS
     events = sminos.log_read(channel)
     pool = [e for e in events if e["kind"] in kinds]
-    earlier = 0
-    if a.since is not None:
-        since = sminos.normalize_ts(a.since)
-        window, head = [e for e in pool if e["ts"] >= since], "since %s" % a.since
-    elif a.n is not None:
-        window, head = pool[-a.n:], "last %d of %d" % (min(a.n, len(pool)), len(pool))
-    else:
-        key = _reader_key(session)
-        thread = key if key and key != session else ""
-        cursor = sminos.cursor_load(channel, key)
-        me = sminos.writer_id(session or None)
-        above = [e for e in pool if e["seq"] > cursor.get(e["writer"], 0)
-                 and (e.get("thread") != thread if thread else sminos.writer_base(e["writer"]) != me)]
-        window = above[-30:]
-        earlier = len(above) - len(window)
-        head = "%d new" % len(above)
-        advanced = dict(cursor)
-        for e in events:
-            advanced[e["writer"]] = max(advanced.get(e["writer"], 0), e["seq"])
-        if advanced != cursor:
-            sminos.cursor_save(channel, key, advanced)
-    if a.json:
-        for e in window:
-            print(json.dumps(e, ensure_ascii=False))
-        if earlier:
-            sys.stderr.write("+%d earlier — sminos chat %s -n %d\n" % (earlier, channel.name, len(window) + earlier))
-        return
-    print("chat %s · %s" % (channel.name, head))
-    if earlier:
-        print("+%d earlier — sminos chat %s -n %d" % (earlier, channel.name, len(window) + earlier))
-    label = sminos.sender_labels(channel)
-    for e in window:
-        print(sminos.chat_line(e, (" (not in %s)" % channel.name if e.get("from_project") else "") + label(e)))
-    if not window:
-        print("(no new messages)" if a.since is None and a.n is None else "(no messages)")
+    thread = sminos.threads_module().stamp(session) if session else ""
+    me = sminos.writer_id(session or None)
+    sminos.chat_read(channel, a, events, pool, thread or session,
+                     (lambda e: e.get("thread") != thread) if thread else
+                     (lambda e: sminos.writer_base(e["writer"]) != me),
+                     lambda e, label: sminos.chat_line(
+                         e, (" (not in %s)" % channel.name if e.get("from_project") else "") + label(e)))
 
 
 def _answers_a_request(e):
