@@ -53,6 +53,7 @@ import endpoint_standin  # noqa: E402
 import sminos  # noqa: E402
 import sminos_channels as channels  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
+import sminos_records as records  # noqa: E402
 import sminos_rl10 as rl10  # noqa: E402
 import sminos_threads as threads  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
@@ -946,11 +947,152 @@ class Asks(Requests, T1.Sessions):
             self.assertEqual(len(self.asks(link)), 1, "not asked again at the endpoint's speed")
             self.assertFalse(link.words_due, "nothing makes the next pass due at once")
             fcntl.flock(held, fcntl.LOCK_UN)
-        self.ask_pass(link)   # the ordinary pass
+        self.ask_pass(link)
+        self.assertEqual(len(self.asks(link)), 1, "a pass before the ordinary interval asks nothing")
+        self.ordinary_pass(link)
         self.assertEqual(len(self.asks(link)), 2, "asked again at the ordinary interval")
         self.answer(link, self.asks(link)[-1], "deliver")
-        self.ask_pass(link)
         self.assertEqual(self.held(tid), [DESK])
+
+    def ordinary_pass(self, link):
+        """An ask pass one ordinary words interval later."""
+        later = time.monotonic() + uplink.WORDS_EVERY + 1
+        with mock.patch.object(uplink.time, "monotonic", return_value=later):
+            self.ask_pass(link)
+
+    # -- the fix wave's review, round 1
+
+    def test_a1_a_sender_whose_frame_cannot_be_made_yet_holds_the_upload_and_one_in_no_project_does_not(self):
+        tid, sid, _ = self.human()
+        _, sender, _ = self.human()
+        link = self.link()
+        hl = link.logs[DESK]
+        hl.on_have({"t": "have", "project": DESK, "have": {}})
+        e = self.request(DESK, "add", sid, tid, writer=sminos.writer_id(sender))
+        path = records.record_path(sender)
+        with open(path) as f:
+            kept = f.read()
+        with open(path, "w") as f:
+            f.write("not a record")   # its record cannot make a frame now: not available yet
+        sminos.forget_caches()
+        link.upload(hl)
+        self.assertEqual(self.uploaded(link), [], "the request waits for its sender's frame")
+        with open(path, "w") as f:
+            f.write(kept)
+        sminos.forget_caches()
+        link.upload(hl)
+        [(frame, members)] = self.uploaded(link)
+        self.assertEqual([x["seq"] for x in frame["events"]], [e["seq"]])
+        self.assertEqual([m["project"] for m in members if m.get("session") == sender and not m.get("gone")][-1:],
+                         [self.p.id], "after its frame, under its own project")
+        # A sender in no project now has no frame owed: its request goes.
+        _, gone, _ = self.human()
+        later = self.request(DESK, "remove", sid, tid, writer=sminos.writer_id(gone))
+        self.write_own(gone, [{"kind": "retired", "reason": "moved", "project": "", "thread": threads.stamp(gone)}])
+        sminos.forget_caches()
+        self.assertIsNone(sminos.last_project(gone))
+        link.upload(hl)
+        self.assertEqual([x["seq"] for f, _ in self.uploaded(link) for x in f["events"]
+                          if x["writer"] == later["writer"]], [later["seq"]])
+
+    def test_a6_a_request_written_here_stays_outstanding_across_a_rename(self):
+        tid, sid, _ = self.human()
+        link = self.link()
+        before = sminos.machine_name_now()
+        e = self.request(DESK, "add", sid, "a" * 32)   # receipted under the name then
+        c, lobby = self.chan(DESK), self.chan(LOBBY)
+        sminos._queue(lobby, "oldname/human", [{"kind": "channel-request", "op": "add", "session": sid,
+                                                "thread": "b" * 32, "id": "0f" * 16}])
+        self.identity("newname", {before: [], "oldname": []})
+        sminos.forget_caches()
+        self.assertNotEqual(sminos.machine_name_now(), sminos.writer_base(e["writer"]).rpartition("/")[0])
+        self.assertFalse(link.may_leave(c), "its receipt says this machine wrote it")
+        self.assertFalse(link.may_leave(lobby), "a former name's queue needs the log open to be released")
+
+    def test_a6_the_leaving_rule_reads_no_other_log_and_hears_a_remote_targets_answer(self):
+        tid, sid, _ = self.human()
+        link = self.link()
+        c, lobby = self.chan(DESK), self.chan(LOBBY)
+        e = self.request(DESK, "add", sid, "a" * 32)    # a thread of another machine
+        local = self.request(LOBBY, "remove", sid, tid)  # this machine's own thread, not in it
+        sminos.forget_caches()
+        every = mock.patch.object(channels, "_answer_index", side_effect=AssertionError("every project's log read"))
+        roster = mock.patch.object(channels, "_sweep", side_effect=AssertionError("the roster read"))
+        with every, roster:
+            self.assertFalse(link.may_leave(c))
+            self.assertFalse(link.may_leave(lobby))
+        self.assertEqual(self.carry(LOBBY, also=[local])[local["id"]], channels.Outcome("applied", "unchanged"))
+        sminos.forget_caches()
+        with every, roster:
+            self.assertTrue(link.may_leave(lobby), "answered, by its record")
+        # The remote target's answer, imported in its own project's log, is heard as it arrives.
+        pid = "9a9a9a9a-0000-4000-8000-00000000009a"
+        sminos.register_if_absent(sminos.make_project(pid, "theirs", "", "", {"url": URL, "org": ORG}))
+        sminos.forget_caches()
+        link.logs[pid] = hublog.HubLog(sminos.known_project(pid), link.cred)
+        link.opened.add(pid)
+        them = "6e000001-0000-4000-8000-0000000000e1"
+        statement = {"ts": sminos.now(ms=True), "writer": "other/" + them, "seq": 1, "kind": "channels",
+                     "session": them, "thread": "a" * 32, "op": "add", "channels": [DESK],
+                     "answers": {"channel": DESK, "id": e["id"]}, "result": "applied"}
+        link.on_events({"t": "events", "project": pid, "events": [endpoint_standin.Endpoint.arriving(
+            statement, {"kind": "machine", "ref": "ref-other", "name": "other", "keyId": "k-other"})]}, None)
+        self.assertTrue(os.path.exists(sminos.writer_path(sminos.known_project(pid), "other/" + them)), "imported")
+        sminos.forget_caches()
+        with every, roster:
+            self.assertTrue(link.may_leave(c), "its answer heard")
+
+    def test_a7_the_pass_waits_on_no_lock_so_the_next_frame_is_dispatched(self):
+        ta, sa, _ = self.human()
+        tb, sb, _ = self.human()
+        self.remote(DESK, "add", sa, ta)
+        self.remote(LOBBY, "add", sb, tb)
+        link = self.link()
+        link.logs[LOBBY] = hublog.HubLog(self.chan(LOBBY), link.cred)
+        link.opened.add(LOBBY)
+        link.channels.add(LOBBY)
+        self.ask_pass(link)
+        asks = {a["session"]: a for a in self.asks(link)}
+        self.assertEqual(set(asks), {sa, sb})
+        path = os.path.join(threads.store_dir(), ".finish", ta + ".lock")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a+") as held, mock.patch.object(sminos, "warn"):
+            fcntl.flock(held, fcntl.LOCK_EX)   # A's finisher, in another process
+            at = time.monotonic()
+            self.answer(link, asks[sa], "deliver")   # and the tick's pass, on the consumer's thread
+            took = time.monotonic() - at
+            self.answer(link, asks[sb], "deliver")   # the next frame, dispatched
+            fcntl.flock(held, fcntl.LOCK_UN)
+        self.assertLess(took, 1.0, "the pass waited on A's finisher lock")
+        self.assertEqual(self.held(ta), [DESK], "recorded; its statement left to the replay")
+        self.assertEqual(self.held(tb), [LOBBY])
+
+    def test_a11_another_requests_reply_does_not_retry_one_that_could_not_commit_early(self):
+        ta, sa, _ = self.human()
+        tb, sb, _ = self.human()
+        self.remote(DESK, "add", sa, ta)
+        self.remote(DESK, "add", sb, tb)
+        link = self.link()
+        self.ask_pass(link)
+        asks = {a["session"]: a for a in self.asks(link)}
+        self.assertEqual(set(asks), {sa, sb})
+        with open(sminos.wake_lock_path(ta), "a+") as la, open(sminos.wake_lock_path(tb), "a+") as lb:
+            fcntl.flock(la, fcntl.LOCK_EX)
+            fcntl.flock(lb, fcntl.LOCK_EX)
+            self.answer(link, asks[sa], "deliver", carried=False)
+            self.ask_pass(link)
+            self.assertEqual(len(self.asks(link)), 2)
+            self.answer(link, asks[sb], "deliver", carried=False)
+            self.ask_pass(link)   # due for B's reply
+            self.assertEqual(len(self.asks(link)), 2, "B's reply does not retry A before its interval")
+            fcntl.flock(la, fcntl.LOCK_UN)
+            fcntl.flock(lb, fcntl.LOCK_UN)
+        self.ordinary_pass(link)
+        again = self.asks(link)[2:]
+        self.assertEqual(sorted(a["session"] for a in again), sorted([sa, sb]), "each at its own interval")
+        for a in again:
+            self.answer(link, a, "deliver")
+        self.assertEqual((self.held(ta), self.held(tb)), ([DESK], [DESK]))
 
     def test_a10_a_request_the_endpoint_refused_audience_is_shown_withheld_for_its_audience(self):
         tid, sid, _ = self.human()

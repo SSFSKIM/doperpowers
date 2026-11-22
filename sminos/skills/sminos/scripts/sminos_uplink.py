@@ -746,6 +746,11 @@ class Here:
         return policy.known_checkouts(project)
 
 
+# CH1: (channel id, request id) → (the thread answered, when heard, monotonic): Link.hear_answers, kept across
+# connections for the uplink process's life.
+ANSWERS_HEARD = {}
+
+
 class Link:
     """One connection's conversation with the endpoint (RL10). Frames down
     are dispatched by `t`: the log plane's here, the session plane's to
@@ -793,6 +798,7 @@ class Link:
         self.reach_silent = set()  # RL10: the asked keys whose `reach?` went unanswered, said once in daemon.log
         self.requests_failing = {}  # CH1: channel id → the failure of its requests' pass as last said (ask_requests)
         self.request_words = {}     # CH1: a request's event_key → (the endpoint's word, its binding): ask_requests'
+        self.request_retry = {}     # CH1: a request's event_key → when (monotonic) it may be asked again
         self.words_due = True     # RL10: the words pass runs at the next tick (and every WORDS_EVERY)
         self.next_words = 0.0     # RL10: when it runs again unasked (monotonic)
         self.restating = False    # RL10: this connection's welcome began a restatement not closed by `restated` yet
@@ -1266,8 +1272,28 @@ class Link:
         appended, rejections = hl.take(frame.get("events"))
         if appended:
             self.imported[hl.project.id] = hl
+            if self.channels:
+                self.hear_answers(frame.get("events"))
         if rejections and hl.project.id in self.opened:
             self.report(hl, rejections)
+
+    def hear_answers(self, events):
+        """The answers to channels' requests among an import's events kept
+        (sminos_channels.answers_in) in ANSWERS_HEARD, across the uplink
+        process's connections, each for a request's lifetime: what the
+        leaving rule reads of a thread of another machine
+        (sminos_channels.outstanding), never every project's log. Run only
+        while a channel is open on this stream (a channel with an outstanding
+        request of this machine's stays open), so a machine with none pays
+        nothing; an uplink started since an answer came does not hear it,
+        and its request keeps the channel open until its lifetime is out."""
+        now = time.monotonic()
+        heard = sminos.channels_module().answers_in(
+            [raw.get("event") for raw in events if isinstance(raw, dict)] if isinstance(events, list) else [])
+        ttl = sminos.channels_module().request_ttl()
+        for k in [k for k, v in ANSWERS_HEARD.items() if now - v[1] > ttl]:
+            del ANSWERS_HEARD[k]
+        ANSWERS_HEARD.update((k, (thread, now)) for k, thread in heard.items())
 
     def on_spent(self, frame, _stream):
         """RL10's `spent {project, writer, seq, reason}`: a position the
@@ -1447,7 +1473,8 @@ class Link:
         tells one, inline, so a project costs no call here."""
         return not self.unfollowed(p.id) and p.id != sminos.machine_project_id(self.cred["org"], p.name) \
             and not ((p.id in self.channels or p.id not in self.opened and sminos.is_channel_id(p.id))
-                     and sminos.channels_module().outstanding(p)) \
+                     and sminos.channels_module().outstanding(
+                         p, {k: v[0] for k, v in ANSWERS_HEARD.items()})) \
             and (sminos.org_entry(p.id) or {}).get("kind") != "machine" \
             and not (p.root and sminos.read_refused(p.root)) \
             and not any(sminos.read_refused(loc.path) for loc in sminos.declared_here(p.id)) \
@@ -2101,20 +2128,20 @@ class Link:
 
     def senders_before(self, log, sessions):
         """members_before for the sessions an upload of `log` carries. A
-        channel's rows are empty by design (its view has no members), so a
-        sender whose frame was never sent is looked for under its own
-        project (sminos.last_project), as a request's target is for its ask
-        (member_under): its frame there goes first, and while it cannot be
-        queued nothing of the channel's goes. A sender in no project now has
-        none to give, as for a project's upload. A project's log is
-        members_before's alone."""
+        channel's rows are empty by design (its view has no members), so
+        each sender is asked of its own project now (sminos.last_project):
+        its frame there, current and on the lane (member_under, as a
+        request's target's is for its ask), goes first, and while it is not
+        (not queued yet, or its row or record cannot make one yet) nothing
+        of the channel's goes. A sender in no project now owes no frame. A
+        project's log is members_before's alone."""
         if log.id not in self.channels:
             return self.members_before(log, sessions)
-        for sid in sorted(s for s in sessions if s and s not in self.members_sent):
+        for sid in sorted(s for s in sessions if s):
             own = sminos.last_project(sid)
-            if own is not None and not self.members_before(own, {sid}):
+            if own is not None and not self.member_under(own, sid):
                 return False
-        return self.members_before(log, {s for s in sessions if s in self.members_sent})
+        return True
 
     def mark_revoked(self, known):
         """The revocation set kept since the last tick applied to what is
@@ -2258,6 +2285,8 @@ class Link:
         chans = sminos.channels_module()
         for key in [k for k in self.request_words if k[0] not in self.channels]:
             del self.request_words[key]   # a word for a channel no longer open here: asked again once it is
+        for key in [k for k in self.request_retry if k[0] not in self.channels]:
+            del self.request_retry[key]
         for pid in sorted(self.channels):
             hl = self.logs.get(pid)
             if hl is None:
@@ -2268,7 +2297,10 @@ class Link:
             # at the ordinary interval, never at the endpoint's reply speed.
             words = {k: self.request_words.pop(k) for k in [k for k in self.request_words if k[0] == pid]}
             try:
-                carried = chans.carry_due(channel, words=words, wake_until=time.time())
+                # On the consumer's thread: every lock only tried (the wake lock, the store's, a finisher's), a busy
+                # one left to a later pass, so a frame behind this tick is never held past its deadline.
+                now = time.time()
+                carried = chans.carry_due(channel, words=words, lock_until=now, wake_until=now)
             except (Exception, SystemExit) as e:  # noqa: BLE001 — one channel's failure is not the pass's
                 failed = repr(e)
                 if self.requests_failing.get(pid) != failed:
@@ -2278,12 +2310,20 @@ class Link:
             self.requests_failing.pop(pid, None)
             if any(o.state in chans.CARRIED for _, o in carried):
                 self.next_upload = 0.0   # its statement goes up on the next pass
+            at = time.monotonic()
             for r, outcome in carried:
+                key = chans.event_key(channel, r)
+                if key in words and outcome.state not in chans.CARRIED and outcome.why != "moved":
+                    # Its word could not commit (a wake in flight, a busy lock, an unreadable file): asked again at
+                    # the ordinary interval, whatever other reply makes a pass due before it.
+                    self.request_retry[key] = at + WORDS_EVERY
+                elif outcome.state != "pending":
+                    self.request_retry.pop(key, None)   # carried out, or ignored: nothing to ask again
                 if (outcome.state, outcome.why) != ("pending", "endpoint"):
                     continue
-                key = chans.event_key(channel, r)
-                if key in self.asked:
+                if key in self.asked or self.request_retry.get(key, 0.0) > at:
                     continue
+                self.request_retry.pop(key, None)
                 asked = chans.ask_of(channel, r)
                 if asked is None:
                     continue
