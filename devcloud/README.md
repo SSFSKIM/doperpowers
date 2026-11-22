@@ -636,7 +636,11 @@ last handed to with `vm owner`; the stored names keep the word "creator"),
 as one JSON object whose `answer` is `owned`, `none` (every account listed in
 full) or `unknown` (naming each account that could not be used and each
 listing that failed). Unlike `ls` it never takes a partial fleet for the
-whole. The shape is in `driver/owned.py`. Exit 6 is its "nothing here owns
+whole, with one exception: an account whose provider never had a passing
+copy on this Mac (neither `providers/.pass/<account>` nor its pass record)
+is answered as holding none of this Mac's threads' hosts, named in `unused`
+and on stderr, since only that Mac's driver could have made or taken one
+there. The shape is in `driver/owned.py`. Exit 6 is its "nothing here owns
 a VM", so it is kept to the machines where the driver does not run: a host,
 a copy of devcloud without `driver/`, and a machine with no seed key. A
 driver that is present and does not import fails with its traceback, exit 1.

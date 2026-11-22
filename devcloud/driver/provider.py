@@ -37,6 +37,13 @@ def pass_paths(profile_dir, account):
     return providers / ".pass" / account, providers / f"{account}.pass.json"
 
 
+def never_passed(profile_dir, account):
+    """Whether a profile provider has neither a passing copy nor a pass record
+    here: no call of the account has ever run on this Mac (only a pass puts a
+    version into use, and nothing in the driver removes one)."""
+    return not account.shipped and not any(p.exists() for p in pass_paths(profile_dir, account.name))
+
+
 def not_registered(account):
     return DriverError(UNUSABLE, f"provider {account.provider} of account {account.name} is not registered (the "
                                  f"person runs devcloud vm provider register {account.name} --confirmed, then "

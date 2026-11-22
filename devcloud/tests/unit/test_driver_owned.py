@@ -84,7 +84,7 @@ class OwnedByTest(DriverBase):
         self.add_server("dc-a-0001", vm_labels(**{"devcloud-creator": "0000ffff"}))
         code, answer = self.ask("@abcd1234")
         self.assertEqual(code, 0)
-        self.assertEqual(answer, {"answer": "none", "vms": [], "unknown": [], "listed": ["main", "spare"]})
+        self.assertEqual(answer, {"answer": "none", "vms": [], "unknown": [], "listed": ["main", "spare"], "unused": []})
 
     def test_asking_runs_no_reaper_and_touches_no_host(self):
         self.add_server("dc-old-0001", vm_labels(expires=NOW - 3600, **{"devcloud-creator": "abcd1234"}),
@@ -105,6 +105,68 @@ class OwnedByTest(DriverBase):
         [missing] = answer["unknown"]
         self.assertEqual((missing["account"], missing["provider"], missing["failed"]), ("spare", "fake", "account"))
         self.assertIn("passing copy", missing["reason"])
+
+    def spare_unregistered(self):
+        toml = self.profile_dir / "driver.toml"
+        toml.write_text(toml.read_text().rsplit(f'registered = "{self.sha}"', 1)[0])
+        self.ctx.reload_profile()
+
+    def spare_never_passed(self):
+        """The spare account's provider with no passing copy and no pass
+        record on this Mac: never in use here."""
+        (self.profile_dir / "providers" / ".pass" / "spare").unlink()
+        (self.profile_dir / "providers" / "spare.pass.json").unlink()
+
+    def assert_unused_spare(self):
+        self.add_server("dc-a-0001", vm_labels(**{"devcloud-creator": "0000ffff"}))
+        code, answer = self.ask("@abcd1234")
+        self.assertEqual(code, 0)
+        self.assertEqual(answer, {"answer": "none", "vms": [], "unknown": [], "listed": ["main"],
+                                  "unused": ["spare"]})
+        [line] = [line for line in self.err.getvalue().splitlines() if "spare" in line]
+        self.assertIn("never had a passing copy", line)
+
+    def test_an_account_whose_registered_provider_never_passed_here_is_unused_not_unknown(self):
+        self.spare_never_passed()
+        self.assert_unused_spare()
+
+    def test_an_account_whose_provider_was_never_registered_or_passed_is_unused_too(self):
+        self.spare_never_passed()
+        self.spare_unregistered()
+        self.assert_unused_spare()
+
+    def test_a_match_beside_a_never_passed_account_is_owned(self):
+        self.spare_never_passed()
+        self.add_server("dc-a-0001", vm_labels(**{"devcloud-creator": "abcd1234"}))
+        code, answer = self.ask("@abcd1234")
+        self.assertEqual((code, answer["answer"], self.names(answer)), (0, "owned", ["dc-a-0001"]))
+        self.assertEqual((answer["unknown"], answer["unused"]), ([], ["spare"]))
+
+    def test_a_never_passed_account_beside_a_failed_listing_leaves_only_the_failed_one_unknown(self):
+        self.spare_never_passed()
+        self.behave(fail={"list": 1})
+        code, answer = self.ask("@abcd1234")
+        self.assertEqual((code, answer["answer"]), (0, "unknown"))
+        self.assertEqual([(m["account"], m["failed"]) for m in answer["unknown"]], [("main", "listing")])
+        self.assertEqual((answer["listed"], answer["unused"]), ([], ["spare"]))
+
+    def assert_spare_unknown(self):
+        code, answer = self.ask("@abcd1234")
+        self.assertEqual((code, answer["answer"]), (0, "unknown"))
+        self.assertEqual([(m["account"], m["failed"]) for m in answer["unknown"]], [("spare", "account")])
+        self.assertEqual(answer["unused"], [])
+
+    def test_a_passing_copy_whose_registration_went_away_is_still_unknown(self):
+        self.spare_unregistered()
+        self.assert_spare_unknown()
+
+    def test_a_copy_without_its_record_is_still_unknown(self):
+        (self.profile_dir / "providers" / "spare.pass.json").unlink()
+        self.assert_spare_unknown()
+
+    def test_a_record_without_its_copy_is_still_unknown(self):
+        (self.profile_dir / "providers" / ".pass" / "spare").unlink()
+        self.assert_spare_unknown()
 
     def test_a_provider_whose_listing_fails_is_unknown(self):
         self.behave(fail={"list": 1})

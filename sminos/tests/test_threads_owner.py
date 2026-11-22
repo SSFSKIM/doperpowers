@@ -599,6 +599,11 @@ class Unknown(Owner):
         self.assertIsNone(reply(provider=None), "no provider, and no adopted machine")
         self.assertIsNone(reply(provider=None, adopted="yes"), "adopted only as true")
 
+    def test_a_reply_naming_accounts_never_in_use_here_is_read_as_its_answer(self):
+        # devcloud 0.18.1 adds `unused`, the accounts its driver never used on this Mac, beside `listed`.
+        reply = {"answer": "none", "vms": [], "unknown": [], "listed": ["main"], "unused": ["spare"]}
+        self.assertEqual(threads.x9_reply(reply, ["abcd1234"]), reply)
+
     def test_a_copy_older_than_0_17_2_is_not_run_and_its_version_and_place_are_named(self):
         layout = os.path.join(self.home, "layout")
         beside = os.path.join(layout, "devcloud", "bin", "devcloud")
