@@ -446,9 +446,10 @@ class UnderTheLock(Requests):
             "the revocation set": ("remote", lambda sid: sminos.write_json(rl10.revoked_path(), {
                 "version": 2, "devices": [], "members": [], "keys": ["key-other"]}), O("refused", "not-reachable")),
             "the capability": ("remote", lambda sid: audience.keep_capabilities([]), O("pending", "no-channels")),
-            # Renamed, the session held under the old name: the old name's human writer is no longer this machine's.
-            "the machine's identity": ("person", lambda sid: self.identity("renamed", {"testhost": [sid]}),
-                                       O("refused", "not-reachable")),
+            # Renamed: a session's writer under the old name is no longer one same_owner_local vouches for, so
+            # its request, this machine's own by its receipt, takes the endpoint's word.
+            "the machine's identity": ("session", lambda sid: self.identity("renamed", {"testhost": [sid]}),
+                                       O("pending", "endpoint")),
             "the session's membership": ("person", lambda sid: self.write_own(sid, [
                 {"kind": "retired", "reason": "moved", "project": ""}]), O("pending", "between")),
         }
@@ -466,7 +467,11 @@ class UnderTheLock(Requests):
 
     def fresh_case(self, by, change, want):
         tid, sid, _ = self.human()
-        e = self.remote(DESK, "add", sid, tid) if by == "remote" else self.request(DESK, "add", sid, tid)
+        if by == "session":
+            _, other, _ = self.human()
+            e = self.request(DESK, "add", sid, tid, writer=sminos.writer_id(other))
+        else:
+            e = self.remote(DESK, "add", sid, tid) if by == "remote" else self.request(DESK, "add", sid, tid)
         words = self.words(DESK, e, "deliver", sid) if by == "remote" else None
         first = self.judge(DESK, e, tid, word="deliver" if words else None, asked=self.asked(sid))
         self.assertEqual(first, O("applied"), "the first evaluation would carry it out")
@@ -1099,13 +1104,25 @@ class Verbs(Requests):
 class Frontier(Requests):
     """The fixes of the frontier review's first round that §6's carrying out owns (A2 to A5, A8, A9)."""
 
+    def imported_own(self, cid, op, sid, tid, writer=None, **more):
+        """A request under this machine's own name that this machine did not append: in its log, with no append
+        receipt (as one the hub brought back under a reused name would be), with the import's `verified`."""
+        more.setdefault("verified", {"signer": SIGNER})
+        e = self.request(cid, op, sid, tid, writer=writer, **more)
+        path = sminos.receipt_path(self.chan(cid), e["writer"])
+        with open(path) as f:
+            kept = [line for line in f if line.strip() and json.loads(line)["seq"] != e["seq"]]
+        with open(path, "w") as f:
+            f.writelines(kept)
+        self.assertFalse(channels.appended_here(self.chan(cid), e))
+        return e
+
     def test_a2_the_shortcut_holds_only_for_a_requester_this_machine_has_a_record_of(self):
         """An event under this machine's name that this machine did not write (one the hub brought back under a
         reused name, a home rebuilt) is not its own: it takes the endpoint's word, whatever its owners."""
         tid, sid, _ = self.human()
         # The person at this machine: a request with no append receipt here.
-        e = self.request(DESK, "add", sid, tid)
-        os.unlink(sminos.receipt_path(self.chan(DESK), e["writer"]))
+        e = self.imported_own(DESK, "add", sid, tid)
         self.assertEqual(self.carry(DESK), {e["id"]: O("pending", "endpoint")}, "not appended here: asked")
         self.assertEqual(self.carry(DESK, words=self.words(DESK, e, "deliver", sid)), {e["id"]: O("applied")})
         # A session of this machine's name whose owners are the thread's, with no thread or seat record here.
@@ -1113,8 +1130,8 @@ class Frontier(Requests):
         shutil.copy(records.record_path(sid), records.record_path(ghost))
         self.assertTrue(sminos.same_owner_local({"writer": sminos.writer_id(ghost)}, sid, self.chan(DESK)),
                         "by the owners alone, the same owner")
-        r = self.request(DESK, "remove", sid, tid, writer=sminos.writer_id(ghost))
-        self.assertEqual(self.carry(DESK), {r["id"]: O("pending", "endpoint")}, "no record of it: asked")
+        r = self.imported_own(DESK, "remove", sid, tid, writer=sminos.writer_id(ghost))
+        self.assertEqual(self.carry(DESK), {r["id"]: O("pending", "endpoint")}, "not appended here: asked")
         self.assertEqual(self.held(tid), [DESK])
         # Written here, under either writer: no word.
         tid2, sid2, _, other = self.two()
@@ -1264,6 +1281,69 @@ class Frontier(Requests):
         good = self.request(DESK, "add", sid, tid, rid="0123456789abcdef" * 2)
         self.assertTrue(channels.is_request(good))
         self.assertEqual(self.carry(DESK), {good["id"]: O("applied")})
+
+    # -- the fix wave's review, round 1
+
+    def test_rows_8_and_9_an_imported_request_under_this_machines_name_is_from_outside(self):
+        """The ruling of 2026-11-22: one predicate (appended_here) decides "this machine's own" for every row."""
+        tid, sid, _ = self.human()
+        e = self.imported_own(DESK, "add", sid, tid)
+        self.assertTrue(channels._Facts().outside_origin(self.chan(DESK), e), "row 8: from outside")
+        audience.keep_capabilities([])
+        self.assertEqual(self.carry(DESK), {e["id"]: O("pending", "no-channels")})
+        audience.keep_capabilities(["channels"])
+        sminos.write_json(sminos.sibling_module("sminos_policy").policy_path(), {"read_only": True})
+        self.assertEqual(self.carry(DESK), {e["id"]: O("refused", "read-only")}, "row 9: read-only refuses it")
+        mine = self.request(LOBBY, "add", sid, tid)   # appended here: no request from outside, read-only or not
+        self.assertFalse(channels._Facts().outside_origin(self.chan(LOBBY), mine))
+        self.assertEqual(self.carry(LOBBY), {mine["id"]: O("applied")})
+
+    def test_row_11_an_imported_request_under_this_machines_name_has_its_signer_read(self):
+        tid, sid, _ = self.human()
+        unsigned = self.imported_own(DESK, "add", sid, tid, verified=None)
+        self.assertFalse(channels.sender_verified(self.chan(DESK), unsigned), "no verified key: refused")
+        self.assertEqual(self.carry(DESK, words=self.words(DESK, unsigned, "deliver", sid)),
+                         {unsigned["id"]: O("refused", "not-reachable")})
+        sminos.write_json(rl10.revoked_path(), {"version": 1, "devices": [], "members": [], "keys": ["key-other"]})
+        revoked = self.imported_own(DESK, "add", sid, tid)
+        self.assertEqual(self.carry(DESK, words=self.words(DESK, revoked, "deliver", sid)),
+                         {revoked["id"]: O("refused", "not-reachable")}, "a revoked signer is caught")
+        own = self.request(DESK, "remove", sid, tid)
+        self.assertTrue(channels.sender_verified(self.chan(DESK), own), "appended here: verified as this machine's")
+        self.assertEqual(self.held(tid), [])
+
+    def listing_denied(self, where):
+        """`where` (a directory) there and not to be listed."""
+        real_listdir, real_scandir = os.listdir, os.scandir
+
+        def denied(real):
+            def call(p=".", *a, **k):
+                if os.path.abspath(os.fspath(p)) == os.path.abspath(where):
+                    raise PermissionError(13, "Permission denied", p)
+                return real(p, *a, **k)
+            return call
+        sminos._MERGED.clear()
+        return mock.patch("os.listdir", denied(real_listdir)), mock.patch("os.scandir", denied(real_scandir))
+
+    def test_a8_nothing_is_carried_past_a_log_or_a_queue_that_cannot_be_listed(self):
+        tid, sid, _, other = self.two()
+        first = self.request(DESK, "add", sid, tid, writer=sminos.writer_id(other))
+        ident = rl10.cutover()
+        sminos.mark_enrolled(ident["name"], ident["enrolled"])
+        sminos.forget_caches()
+        later = self.request(DESK, "remove", sid, tid)   # queued for its writer's head
+        self.assertIsNone(later["seq"])
+        for where in (os.path.join(self.chan(DESK).home, "log"), os.path.join(self.chan(DESK).home, sminos.QUEUED)):
+            with self.subTest(os.path.basename(where)):
+                listdir, scandir = self.listing_denied(where)
+                with listdir, scandir:
+                    self.assertEqual(self.carry(DESK, also=[later]), {later["id"]: O("pending", "unreadable")})
+                    with self.assertRaises(sminos.PositionsUnread):
+                        channels.requests_of(self.chan(DESK))
+                self.assertEqual(self.held(tid), [])
+                self.assertEqual(self.answered(tid), [])
+        sminos._MERGED.clear()
+        self.assertEqual(self.carry(DESK), {first["id"]: O("applied"), later["id"]: O("applied")}, "in order")
 
 
 if __name__ == "__main__":

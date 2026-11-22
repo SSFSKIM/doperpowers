@@ -452,8 +452,9 @@ def requests_of(channel, whole=True):
     request after one it cannot see must not be carried past it. `whole`
     False reads what it can instead (`channel show`, which only reads)."""
     sig = input_signature(channel)
+    unread = _unlistable(channel) if whole else []
     files, events = sminos._store_whole(channel, "log", shared=True)
-    unread = [path for path, key in files if key is None and os.path.lexists(path)]
+    unread += [path for path, key in files if key is None and os.path.lexists(path)]
     try:
         queues = sminos.queued_operators(channel)
         queued = sminos.said_order(queues) if queues else []
@@ -467,6 +468,23 @@ def requests_of(channel, whole=True):
     held = {(e["writer"], e["id"]) for e in logged}
     queued = [{**e, "seq": None} for e in queued if is_request(e) and (e["writer"], e["id"]) not in held]
     return sig, [dict(e) for e in logged] + queued
+
+
+def _unlistable(channel):
+    """The directories of the channel's input (its log, its queues) that are
+    there and cannot be listed: a listing that fails is no empty directory
+    (glob, which the readers list through, takes it for one), so the input
+    is not whole. Only a directory that does not exist holds nothing, as
+    where a membership begins reads it (sminos.channel_positions)."""
+    out = []
+    for where in (os.path.join(channel.home, "log"), os.path.join(channel.home, sminos.QUEUED)):
+        try:
+            os.listdir(where)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            out.append(where)
+    return out
 
 
 def _queued_under_former_name(request):
@@ -505,14 +523,10 @@ class _Facts:
             self._current[session] = sminos.threads_module().current_record(session, fresh=True)
         return self._current[session]
 
-    def outside_origin(self, e):
-        return sminos.sibling_module("sminos_policy").outside_origin(e, fresh=True)
-
-    def own_writers_here(self, channel):
-        return sminos.own_writers_here(channel, fresh=True)
-
-    def is_self(self, name, session=""):
-        return sminos.is_self(name, session, fresh=True)
+    def outside_origin(self, channel, e):
+        """Rows 8 and 9: a request this machine did not append itself
+        (appended_here) is from outside, whatever its writer's name."""
+        return not appended_here(channel, e)
 
     def read_only(self):
         """The policy's `read_only`, read now; a file that is no policy reads
@@ -528,33 +542,30 @@ class _Facts:
         return bool(session) and records.lane_of(records.read(session)) == "B"
 
     def shares_owners(self, channel, e, session):
-        """Row 10: the request's writer is this machine's own and shares the
-        thread's owners, and this machine holds a record of its own about
-        that requester, never its name alone (an event under this machine's
-        name can come back from the hub after the name was reused, or a home
-        rebuilt): a session's writer by sminos.same_owner_local and a thread
-        or seat record here that has had that session (thread_of); the
-        human writer, which that rule does not answer for, for a request
-        this machine appended itself (appended_here) whose target's record,
-        read now, names the machine's owners (machine_owns), in a log where
-        this machine's name is provenance; each by the identity read now.
-        Every other request under this machine's name takes the endpoint's
+        """Row 10: a request this machine appended itself (appended_here, the
+        one test of "this machine's own" for every row) whose writer shares
+        the thread's owners: a session's writer by sminos.same_owner_local,
+        the human writer, which that rule does not answer for, by the
+        target's record read now naming the machine's owners (machine_owns);
+        by the identity read now. Every other request takes the endpoint's
         word."""
+        if not appended_here(channel, e):
+            return False
         writer = str(e.get("writer") or "")
-        head, _, tail = sminos.writer_base(writer).rpartition("/")
-        if tail != "human":
-            return sminos.same_owner_local(e, session, channel, fresh=True) \
-                and sminos.threads_module().thread_of(sminos.writer_session(writer)) is not None
-        return self.own_writers_here(channel) and head == sminos.machine_name_now() \
-            and appended_here(channel, e) and machine_owns(session)
+        if sminos.writer_base(writer).rpartition("/")[2] != "human":
+            return sminos.same_owner_local(e, session, channel, fresh=True)
+        return machine_owns(session)
 
 
 def appended_here(channel, request):
-    """Whether this machine appended the request itself: one of its own
-    queued appends (no position yet: the queue is this machine's alone), or
-    a logged one its append receipt names (sminos.receipted: the receipt is
-    written under the writer file's lock before the event, outside log/, so
-    nothing imported has one)."""
+    """Whether this machine appended the request itself, the one test of a
+    request being this machine's own (§6's rows 8 to 11; the holder's ruling
+    of 2026-11-22), never its writer's name: one of its own queued appends
+    (no position yet: the queue is this machine's alone, a former name's
+    included), or a logged one its append receipt names (sminos.receipted:
+    the receipt is written under the writer file's lock before the event,
+    outside log/, so nothing imported has one, and it stays under the name
+    the append used)."""
     return request.get("seq") is None or sminos.receipted(channel, request)
 
 
@@ -573,17 +584,14 @@ def machine_owns(session):
     return bool(resolved) and bool(set(resolved) & set(owners))
 
 
-def sender_verified(channel, request, facts=None):
+def sender_verified(channel, request):
     """Whether the request's sender is held as verified (C3): True for a
-    writer of this machine in a log where its name is provenance
-    (own_writers_here). Else from the key an import stores on the event,
-    `verified`: False when it is no object or its signer is none or of kind
-    `legacy`; None while the revocation set cannot be read; False when the
-    set names the signer; else True."""
-    facts = facts or _Facts()
-    writer = str(request.get("writer") or "")
-    if facts.own_writers_here(channel) and facts.is_self(sminos.writer_base(writer).rpartition("/")[0],
-                                                         sminos.writer_session(writer)):
+    request this machine appended itself (appended_here). Else from the key
+    an import stores on the event, `verified`, whatever its writer's name:
+    False when it is no object or its signer is none or of kind `legacy`;
+    None while the revocation set cannot be read; False when the set names
+    the signer; else True."""
+    if appended_here(channel, request):
         return True
     verified = request.get("verified")
     signer = verified.get("signer") if isinstance(verified, dict) else None
@@ -679,13 +687,13 @@ def judge(channel, request, record, earlier, word=None, asked=None, project=_LOO
     where = sminos.last_project(current) if project is _LOOK else project
     if not _member_of(where, current):
         return Outcome("pending", "between")
-    outside = facts.outside_origin(request)
+    outside = facts.outside_origin(channel, request)
     if outside and not facts.serves_channels():
         return Outcome("pending", "no-channels")
     if outside and facts.read_only():
         return Outcome("refused", "read-only")
     if not facts.shares_owners(channel, request, current):
-        verified = sender_verified(channel, request, facts)
+        verified = sender_verified(channel, request)
         if verified is False:
             return Outcome("refused", "not-reachable")
         if verified is None:
@@ -1522,28 +1530,54 @@ def requests_shown(channel, now=None):
     return out
 
 
-def outstanding(channel, now=None):
-    """Whether the channel holds a request one of this machine's writers
-    wrote (by its name now) that is still outstanding: its lifetime not
-    out, its id no other writer's first (§6's row 2), and nothing has come
-    of it as this machine reads (no answer, answer_of; not withheld or
-    refused by the hub, settled). What keeps the channel's log open here
-    while no thread of this machine is in it (sminos_uplink's leaving
-    rule), so the ask pass can carry it; a file of it that cannot be read
-    keeps it too."""
+def outstanding(channel, heard=None, now=None):
+    """Whether the channel holds a request this machine appended itself
+    (appended_here: its receipt or its own queue, a former name's
+    included, never the name it went under) that is still outstanding:
+    its lifetime not out, its id no other writer's first (§6's row 2), not
+    withheld or refused by the upstream (_settled_own), and not answered.
+    The answer is looked up where it is held, never by reading every log:
+    for a thread of this machine its record (`answered`, or the record
+    ended); for one of another machine `heard`, {(channel id, request id):
+    thread} of the answering statements this machine's uplink imported
+    (sminos_uplink.Link.answers_heard), so until one is heard such a
+    request is outstanding until its lifetime is out. What keeps the
+    channel's log open here while no thread of this machine is in it
+    (sminos_uplink's leaving rule), so the ask pass can carry it; a file
+    of it that cannot be read or listed keeps it too."""
     try:
         _, reqs = requests_of(channel)
     except sminos.PositionsUnread:
         return True
-    me = sminos.machine_name_now()
-    mine = [(i, r) for i, r in enumerate(reqs) if sminos.writer_base(r["writer"]).rpartition("/")[0] == me
-            and not expired(r, now)]
-    if not mine:
-        return False
-    settled = _settled_own(channel)
-    index = _answer_index()
-    return any(not _duplicate(r, reqs[:i]) and r.get("seq") not in settled.get(r["writer"], ())
-               and _answer_in(index, channel, r) is None for i, r in mine)
+    threads, heard, settled = sminos.threads_module(), heard or {}, None
+    for i, r in enumerate(reqs):
+        if expired(r, now) or _duplicate(r, reqs[:i]) or not appended_here(channel, r):
+            continue
+        settled = _settled_own(channel) if settled is None else settled
+        if r.get("seq") in settled.get(r["writer"], {}):
+            continue
+        record = threads.get(r["thread"])
+        if record is not None:
+            if threads.record_ended(record) or (channel.id, r["id"]) in _answered(record):
+                continue
+            return True
+        if heard.get((channel.id, r["id"])) != r["thread"]:
+            return True
+    return False
+
+
+def answers_in(events):
+    """{(channel id, request id): thread} of the statements among `events`
+    that answer a request (a `channels` event with a well-formed `answers`
+    and a `thread`): what the uplink keeps of what it imports, for
+    outstanding."""
+    out = {}
+    for e in events:
+        a = e.get("answers") if isinstance(e, dict) and e.get("kind") == "channels" else None
+        if isinstance(a, dict) and sminos.is_channel_id(a.get("channel")) and isinstance(a.get("id"), str) \
+                and isinstance(e.get("thread"), str) and e.get("result") in CARRIED:
+            out[(a["channel"], a["id"])] = e["thread"]
+    return out
 
 
 def _settled_own(channel):
