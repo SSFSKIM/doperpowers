@@ -74,7 +74,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) The fourth read, narrow, of what the third revision changed (six P1, four P2: "ready with the listed edits, no further design round"); all ten written in, and the header re-pinned to the branch with the composite's amendment merged (`f2c737f2`) (Decision Log, "The fourth read").
 - [x] (2026-11-22) M1 — Names through a channel. `de0ed736`, fixes `6e2b7b90`, `78b07c42`; reviewed clean at the third review. Gates GREEN on `78b07c42`; sminos-idle 32,191; sminos-channels 1m37s.
 - [x] (2026-11-22) M2 — What a channel owes a thread: the debt and its transitions. `a604658a`, fix `00e1b6b5`; two reviews at the high rung, the second's two findings (a corrupt record's shapes no writer emits) logged in TECH-DEBT. Gates GREEN on `00e1b6b5`; sminos-idle 32,766; sminos-channels 1m51s.
-- [ ] M3 — Pushing and waking from a channel's log. (Built `af78de21`, `11482879`; gates GREEN; sminos-idle 32,254; sminos-channels 2m08s; in review.)
+- [x] (2026-11-22) M3 — Pushing and waking from a channel's log. `af78de21`, `11482879`, fixes `b544d7f4`, `0c969840`, `dddf22b4`; three reviews at the high rung (the bound), the third's four fixes (`dddf22b4`) made after it and named to M6's review of M2 to M6. Gates GREEN on `dddf22b4`; sminos-idle 32,724; sminos-channels 2m08s.
 - [ ] M4 — Saying into a channel: the doors, the reply, the read.
 - [ ] M5 — The scene on a real engine.
 - [ ] M6 — Across machines: asking, and carrying out off the consumer thread.
@@ -3660,6 +3660,37 @@ them today.
     thread can be placed in a channel at all. The test stages the record
     by hand and proves the last check and the push there; the TECH-DEBT row
     says channels do not work under such a home and gives the one-line fix.
+  - *(As amended by its three reviews, `b544d7f4`, `0c969840`,
+    `dddf22b4`.)* A deliverer reads a session's row without reconciling
+    (`sminos.member_row`, sharing `view_of`'s cached projection), so a pass
+    finishes no other thread's open entry; `own_row` finds the project by
+    `member_project_now`'s rule over literal registration paths
+    (`_project_now`, validating a moved destination with `valid_name`
+    first), which a bracket in the home's path does not defeat, and the last
+    check still owns the tie. Each event gets one `still_owed(o, e)` at the
+    start of its turn in all three entry points, before any hold,
+    revocation, verdict refusal, or an earlier pass's admitted receipt or
+    noted push is accepted; nothing is checked between this pass's own
+    hand-over and its settlement. A channel's failure is counted only after
+    `still_owed(o, e)` is read again, in `_conclude`, and an outcome is
+    published only after `_conclude` returns. `holder_push` decides what a
+    `recorded` means: after a wake, while the event is still owed,
+    `held:starting`; otherwise the stop; and in a channel a recipient with no
+    current thread, or retired in its own project, is the stop. With the
+    wake lock busy and the session live, `wake_member` answers
+    `UNHELD_LIVE` after the last check is read again, and only on that does
+    `holder_push` push to the process read afresh; nothing launches without
+    the pass's own hold. A person's words reach the bridge under the scope
+    `<channel>#<thread>` in the field every loaded bridge keys its marks on
+    (`project`), so a 1.54 bridge in a running session keeps two threads
+    apart; `sminos/hooks` is unchanged. A channel's receipt lookup indexes
+    the receipt file by seq, remembering its inode, size, mtime and ctime,
+    reading on from where the index ends when the file grew and from the
+    start when it changed without growing, and answering None when it
+    cannot be read; a project's lookup is the old code. The held-pass memory
+    of a channel is forgotten when it loses its last holder, a channel
+    frame's unread count is by thread alone, and a project's receipt calls
+    pass no thread.
 
 
 ## Outcomes & Retrospective
