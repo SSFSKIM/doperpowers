@@ -636,12 +636,15 @@ last handed to with `vm owner`; the stored names keep the word "creator"),
 as one JSON object whose `answer` is `owned`, `none` (every account listed in
 full or named under `unused`) or `unknown` (naming each account that could
 not be used and each listing that failed). Unlike `ls` it never takes a
-partial fleet for the whole, with one exception: an account whose provider never passed under
-this profile (no `providers/.pass/<account>`, no pass record, and no pass
-artifact under a name no account has) is answered as holding none of the
-asking threads' hosts, named in `unused` and on stderr, since only a driver
-that used it could have made or taken one there. A session that uses another
-profile is outside it, as it is outside every answer of this command. The
+partial fleet for the whole, with one exception: an account whose provider
+never passed under this profile (no `providers/.pass/<account>`, no pass
+record, and no pass artifact under a name no account has) is answered as
+holding none of the asking threads' hosts, named in `unused` and on stderr,
+since only a driver that used it could have made or taken one there. The
+judgment reads the profile as it stands, so a profile changed by hand so
+that a used account loses its pass artifacts reads it as unused. A session
+that uses another profile is outside it, as it is outside every answer of
+this command. The
 shape is in `driver/owned.py`. Exit 6 is its "nothing here owns a VM", so
 it is kept to the machines where the driver does not run: a host,
 a copy of devcloud without `driver/`, and a machine with no seed key. A

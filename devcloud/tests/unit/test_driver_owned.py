@@ -183,6 +183,12 @@ class OwnedByTest(DriverBase):
                 self.assert_spare_unknown()
                 orphan.unlink()
 
+    def test_a_test_s_staging_file_is_no_pass_and_blocks_nothing(self):
+        self.spare_never_passed()
+        (self.profile_dir / "providers" / ".pass" / ".spare.new").write_text("staged")
+        (self.profile_dir / "providers" / ".pass" / ".old-spare.new").write_text("staged")
+        self.assert_unused_spare()
+
     def test_a_dangling_link_where_the_copy_would_be_is_still_unknown(self):
         self.spare_never_passed()
         (self.profile_dir / "providers" / ".pass" / "spare").symlink_to(self.tmp / "nowhere")

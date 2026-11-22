@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import signal
 import stat
 import subprocess
@@ -38,6 +39,9 @@ def pass_paths(profile_dir, account):
     return providers / ".pass" / account, providers / f"{account}.pass.json"
 
 
+_STAGED = re.compile(r"\.[^/]+\.new")   # conformance.test's staged copy
+
+
 def never_passed(profile_dir, account, configured):
     """Whether a profile provider has confirmably never passed under this
     profile: neither its passing copy nor its pass record is there (only a
@@ -49,7 +53,7 @@ def never_passed(profile_dir, account, configured):
         return False
     providers = pathlib.Path(profile_dir) / "providers"
     try:
-        copies = _entries(providers / ".pass")
+        copies = {n for n in _entries(providers / ".pass") if not _STAGED.fullmatch(n)}
         records = {n.removesuffix(".pass.json") for n in _entries(providers) if n.endswith(".pass.json")}
     except OSError:
         return False
