@@ -75,7 +75,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M1 — Names through a channel. `de0ed736`, fixes `6e2b7b90`, `78b07c42`; reviewed clean at the third review. Gates GREEN on `78b07c42`; sminos-idle 32,191; sminos-channels 1m37s.
 - [x] (2026-11-22) M2 — What a channel owes a thread: the debt and its transitions. `a604658a`, fix `00e1b6b5`; two reviews at the high rung, the second's two findings (a corrupt record's shapes no writer emits) logged in TECH-DEBT. Gates GREEN on `00e1b6b5`; sminos-idle 32,766; sminos-channels 1m51s.
 - [x] (2026-11-22) M3 — Pushing and waking from a channel's log. `af78de21`, `11482879`, fixes `b544d7f4`, `0c969840`, `dddf22b4`; three reviews at the high rung (the bound), the third's four fixes (`dddf22b4`) made after it and named to M6's review of M2 to M6. Gates GREEN on `dddf22b4`; sminos-idle 32,724; sminos-channels 2m08s.
-- [ ] M4 — Saying into a channel: the doors, the reply, the read.
+- [ ] M4 — Saying into a channel: the doors, the reply, the read. (Built `d5c345bc`; gates GREEN; sminos-idle 32,117; sminos-channels 2m22s; in review.)
 - [ ] M5 — The scene on a real engine.
 - [ ] M6 — Across machines: asking, and carrying out off the consumer thread.
 - [ ] M7 — Held to MAWS's fixture, and what a channel costs.
@@ -3691,6 +3691,34 @@ them today.
     of a channel is forgotten when it loses its last holder, a channel
     frame's unread count is by thread alone, and a project's receipt calls
     pass no thread.
+- 2026-11-22 — **M4 as built** (`d5c345bc`). Decisions the executor made
+  where the plan is silent, kept by the controller:
+  - The door is `speak(channel, a, session, tags)`, which works out itself
+    whether the say came through `--in`. `cmd_say`'s tail is one path for a
+    project and a channel (`say_into`); a channel's say adds a `Said`, and
+    a project's runs as before.
+  - Refusals the plan does not word, each a draft (open point 4): a
+    selector beside `--in <channel>` (exit 1); every tagged row torn
+    (nothing recorded, exit 4); a say into a channel id registered nowhere
+    ("no channel … known", exit 4; `chat` and `list` of such an id keep
+    CH1's refusal). `--in <project>` with a channel's tag is the mix
+    refusal from a terminal (exit 4) and today's "--in is for an operator"
+    from a session (exit 2). Without `--in`, the mix refusal resolves the
+    bare tag to name its project, which reconciles; CH1's test that said no
+    member is looked up first now pins "refused, nothing recorded".
+  - Several `out` tags to one project go as one direct message to it; any
+    other mix with them is the mix refusal. `reach_in` gains `then=""`, for
+    `--in`'s "Drop --in to reach it…".
+  - A local recipient whose delivery defers (an open entry, lane B) or
+    whose delivery record cannot be read reads `pending`. A non-member
+    session with no home project writes the member's shape (not possible on
+    an enrolled machine).
+  - `chat <channel>` leaves out `retired` and `moved` lines. `frame_landed`'s
+    rule for two logs of one name applies only where one of them is a
+    channel, so a project's is as before.
+  - B11 is held by `test_channels_say.py`'s `SameAsBase`, which builds the
+    merge base `61b27ebe` from git and compares `say` and `chat` over a
+    store with no channel (frames and log, but for ids, times and paths).
 
 
 ## Outcomes & Retrospective
