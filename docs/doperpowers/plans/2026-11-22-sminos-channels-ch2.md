@@ -1716,6 +1716,18 @@ the name the message gave it).
   the thread's own project; a control question left open by another
   session in another project is still open; and no log of a channel holds
   a host kind.
+- *(Added 2026-11-22, the holder's check on M3's bridge key.)* Since M3 a
+  person's words reach the bridge under `project = <channel>#<thread>`
+  (Decision Log, "M3 as built"), and the bridge keeps that field. B7 is
+  proved with a bridge that has actually taken a channel's frame under
+  that key, twice: the bridge as a 1.54 session has it loaded, and this
+  tree's. After it, that session's next words to its human and a question
+  it opens land in the thread's own project, and nothing is appended or
+  queued under the channel's id, nor under the `#` form as a log (no
+  directory, no queue entry, no outbox, no frame under it). `T/
+  test_channels_delivery.py`'s
+  `test_a_persons_words_reach_the_bridge_scoped_by_the_thread_they_are_owed_to`
+  pins only the key the bridge is given, not what the bridge does after.
 
 **Does not touch:** `append_host`, `export_live`, `close_questions`,
 `session_project`, the manager's subscriptions (one project each, as
@@ -3683,7 +3695,9 @@ them today.
     the pass's own hold. A person's words reach the bridge under the scope
     `<channel>#<thread>` in the field every loaded bridge keys its marks on
     (`project`), so a 1.54 bridge in a running session keeps two threads
-    apart; `sminos/hooks` is unchanged. A channel's receipt lookup indexes
+    apart; `sminos/hooks` is unchanged. (Its test pins the key alone; what a bridge
+    that took a frame under it writes after is proved in M9, the holder's
+    check of 2026-11-22.) A channel's receipt lookup indexes
     the receipt file by seq, remembering its inode, size, mtime and ctime,
     reading on from where the index ends when the file grew and from the
     start when it changed without growing, and answering None when it
