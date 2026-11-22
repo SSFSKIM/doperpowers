@@ -2534,4 +2534,11 @@ while the milestones are built, one observation and its evidence each.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Pending — written at finish. Recorded ahead of it:
+
+- Not proved here: the real endpoint's answer to a channel-request's
+  `reach?` (project the channel, session a member of another project); the
+  fleet check of M8 and CH2 reads it, and until MAWS answers, the built
+  behaviour is pending `endpoint`. The holder has put the exchange to
+  MAWS's architect, with a request for a fixture case (one `deliver`, one
+  `refuse`) that the replay would then take.
