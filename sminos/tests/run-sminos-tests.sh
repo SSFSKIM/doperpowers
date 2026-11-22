@@ -563,13 +563,20 @@ run_suites_c() {
   if python3 -B "$SCRIPT_DIR/test_stdin_bodies.py"; then
     pass "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"
   else fail "each verb's prose from stdin, and the launcher on a session's PATH (test_stdin_bodies.py)"; fi
-  # EN.G1 (docs/doperpowers/plans/2026-11-21-sminos-environments-en-g1.md): its five suite files, here and nowhere else.
+  # EN.G1 (docs/doperpowers/plans/2026-11-21-sminos-environments-en-g1.md): its five suite files and its live check's
+  # (test-fresh-machine.sh), here and nowhere else.
   if python3 -B "$SCRIPT_DIR/test_notice.py"; then
     pass "a machine's notice: the marker, its route and frame, a direct send's runs, say --exit-held (test_notice.py)"
   else fail "a machine's notice: the marker, its route and frame, a direct send's runs, say --exit-held (test_notice.py)"; fi
   if "$SCRIPT_DIR/test-notice-machines.sh"; then
     pass "a machine's notice between two machines: the thread's current session, the frame, going on (test-notice-machines.sh)"
   else fail "a machine's notice between two machines: the thread's current session, the frame, going on (test-notice-machines.sh)"; fi
+  if "$SCRIPT_DIR/test-fresh-machine.sh"; then
+    pass "a machine enrolled late: no thread until the spawner is read, the backlog a page at a time, the row wins (test-fresh-machine.sh)"
+  else fail "a machine enrolled late: no thread until the spawner is read, the backlog a page at a time, the row wins (test-fresh-machine.sh)"; fi
+  if FRESH_MACHINE_ORDER=reverse "$SCRIPT_DIR/test-fresh-machine.sh"; then
+    pass "the same with the backlog's writers in reverse order: nothing depends on the hub's lexical order"
+  else fail "the same with the backlog's writers in reverse order: nothing depends on the hub's lexical order"; fi
   if python3 -B "$SCRIPT_DIR/test_who_thread.py"; then
     pass "who --thread: the thread a name is, one JSON line for devcloud vm owner (test_who_thread.py)"
   else fail "who --thread: the thread a name is, one JSON line for devcloud vm owner (test_who_thread.py)"; fi

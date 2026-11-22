@@ -421,6 +421,48 @@ class Hand(unittest.TestCase):
         self.assertEqual(self.hand(), 1)
         self.assertEqual(self.c.events(P), [(WA, 3)])
 
+    def test_a_paged_backlog_comes_in_the_hub_s_order_and_what_comes_after_waits_behind_it(self):
+        """`page`: the first download as the hub runs it (EN.G1's live check): writer by writer, lexically, a page
+        a pass; an event the source takes after the first pass is live, queued behind the whole backlog even where
+        its writer sorts first."""
+        wz = "zeta/" + "f" * 8 + "-0000-4000-8000-000000000000"
+        self.a.take(P, [ev(WA, 1), ev(WA, 2), ev(wz, 1), ev(wz, 2)])
+        self.hello({})
+        self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor, page=1), 1)
+        self.assertEqual(self.c.events(P), [(WA, 1)])
+        self.a.take(P, [ev(WA, 3)])   # live: after the backlog was drawn
+        for _ in range(3):
+            endpoint_standin.hand(self.a, self.b, self.cursor, page=1)
+        self.assertEqual(self.c.events(P), [(WA, 1), (WA, 2), (wz, 1), (wz, 2)], "the backlog, in order, and only it")
+        self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor, page=1), 1, "then what came after it")
+        self.assertEqual(self.c.events(P)[-1], (WA, 3))
+        self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor, page=1), 0)
+
+    def test_a_chosen_order_hands_the_named_writers_first(self):
+        wz = "zeta/" + "f" * 8 + "-0000-4000-8000-000000000000"
+        self.a.take(P, [ev(WA, 1), ev(WA, 2), ev(wz, 1), ev(wz, 2)])
+        self.hello({})
+        for _ in range(4):
+            endpoint_standin.hand(self.a, self.b, self.cursor, page=1, order=[wz])
+        self.assertEqual(self.c.events(P), [(wz, 1), (wz, 2), (WA, 1), (WA, 2)])
+
+    def test_a_chosen_order_holds_without_a_page(self):
+        wz = "zeta/" + "f" * 8 + "-0000-4000-8000-000000000000"
+        self.a.take(P, [ev(WA, 1), ev(wz, 1)])
+        self.hello({})
+        self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor, order=[wz]), 2)
+        self.assertEqual(self.c.events(P), [(wz, 1), (WA, 1)])
+
+    def test_an_unpaged_pass_after_paged_ones_hands_the_backlog_s_rest_and_what_waited_behind_it(self):
+        wz = "zeta/" + "f" * 8 + "-0000-4000-8000-000000000000"
+        self.a.take(P, [ev(WA, 1), ev(WA, 2), ev(wz, 1)])
+        self.hello({})
+        self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor, page=1), 1)
+        self.a.take(P, [ev(WA, 3)])
+        self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor), 3, "in one pass")
+        self.assertEqual(self.c.events(P), [(WA, 1), (WA, 2), (wz, 1), (WA, 3)])
+        self.assertEqual(endpoint_standin.hand(self.a, self.b, self.cursor), 0)
+
     def test_no_live_connection_is_handed_nothing(self):
         self.a.take(P, [ev(WA, 1)])
         self.c.close()

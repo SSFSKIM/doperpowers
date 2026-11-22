@@ -117,6 +117,19 @@ python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import sminos_record
 r.establish(sys.argv[2], r.default_provenance("hook"))' "$SCRIPTS" "$S"
 (cd "$WORK" && "$SMINOS" list >/dev/null 2>&1) || true
 PROJECT_NAME="$(cd "$WORK" && "$SMINOS" project show 2>/dev/null | sed -n 's/^project *\([^ ]*\).*/\1/p' | head -1)"
+# vm1 has read the spawner from the project's log, as its download brings it once the spawner's writer comes
+# (test-fresh-machine.sh shows the VM side before then): its writer copied into vm1's log, the project's id the same
+# on both machines (a hub project derived from the remote).
+python3 -B - "$SCRIPTS" "$WORK" "$S" "$SMINOS_HOME" "$VS" <<'PY'
+import os, shutil, sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+work, session, mac, vm = sys.argv[2:]
+src = sminos.writer_path(sminos.resolve_project(work), "mac/" + session)
+dst = os.path.join(vm, os.path.relpath(src, mac))
+os.makedirs(os.path.dirname(dst), exist_ok=True)
+shutil.copyfile(src, dst)
+PY
 
 standin() { # JSON of devcloud-standin.json's members besides sminos and ssh_hosts.vm1 (vm1_env: more of vm1's env)
   python3 - "$HOME/devcloud-standin.json" "$SMINOS" "$T" "$PATH" "${1:-{\}}" <<'PY'
