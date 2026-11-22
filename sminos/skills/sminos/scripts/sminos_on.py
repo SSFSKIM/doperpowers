@@ -22,6 +22,8 @@ carry, or has not read the spawner the request names from its log yet
 (which the Mac waits out), and ending, for
 every way it ends after the request was read, with the outcome line. The
 line's shape is one, printed here and accepted here (outcome_whole)."""
+import contextlib
+import io
 import json
 import math
 import os
@@ -61,7 +63,7 @@ SHORT_RE = re.compile(r"[0-9a-f]{8}")
 HEAD_RE = re.compile(r"[0-9a-f]{40}")
 # §8's table: each `why` the VM side says, with the exits it says it with.
 WHYS = {"not-enrolled": (1,), "other-org": (1,), "other-repository": (1,), "spawner-unknown": (1,),
-        "other": (1, 2, 4)}
+        "spawner-shadowed": (1,), "other": (1, 2, 4)}
 WAITED_ON = ("not-enrolled", "spawner-unknown")   # the VM side's refusals the Mac waits out (row 26, 26a)
 EXIT_LATER = 75   # row 27a: the VM had not read the spawner by the wait's end; sysexits' EX_TEMPFAIL, try again later
 BY_KEYS = ("alias", "short", "project", "project_name", "machine")
@@ -315,36 +317,52 @@ def hold_to_org(req, cwd, answer):
                       % (cwd, project.name, why))
 
 
-def hold_to_spawner(req, cwd, answer):
-    """Step 4b: where the request names the spawner's session, nothing is
-    launched until this machine's log answers for it: the short resolved
-    as the child's first `say "@<short>"` will resolve it a moment later
-    (sminos._resolve_tag's bare name, from the project the seat would be
-    filed in: its aliases, then every project known here by id), rows
-    only, one member and that session. A machine enrolled moments ago
-    holds no row of the spawner until its first download of the project's
-    log reaches the spawner's writer, and the preamble promises the
-    address; the Mac waits it out (row 26a). A request without the
-    session (an older Mac's) asks nothing of the log."""
+def hold_to_spawner(req, cwd, alias, answer):
+    """Step 4b: where the request names the spawner's session, the child's
+    own first `say "@<short>"`, asked before the launch: the resolver
+    that `say` runs (sminos._resolve_tag), from the project the seat
+    would be filed in, the child's alias standing where its seat will. It
+    resolves to the spawner's session in the request's project: the
+    launch goes on. To no one (a machine enrolled moments ago holds no
+    row of the spawner until its first download of the project's log
+    reaches the spawner's writer): `spawner-unknown`, which the Mac waits
+    out (row 26a). To anyone else, the child itself, another member, or
+    the spawner's row in another project: `spawner-shadowed`, at once,
+    never waited on. A request without the session (an older Mac's) asks
+    nothing of the log; a `--worktree` checkout the engine has not made
+    yet is checked as the directory asked for (§10)."""
     by = req["by"]
     if by is None or "session" not in by:
         return
     project = sminos.seat_project({"cwd": cwd, "group": sminos.derive_group(cwd)})
     short = by["short"]
-    # Every project known here, as the child will find them: its seat makes its own project one (known_projects).
-    scope = sminos.org_scope()
-    if project is not None and project.id not in {p.id for p in scope}:
-        scope.append(project)
+
+    def shadowed(whom, advice=""):
+        answer.refuse("spawner-shadowed", "spawn: the spawner's short, @%s, names %s on this machine, so the "
+                                          "session's first message to its spawner, %s, would reach it instead: "
+                                          "nothing was spawned%s" % (short, whom, by["alias"], advice))
+    if alias == short:
+        # Its alias answers the tag before any id does, in the project its seat is filed in (_resolve_tag).
+        shadowed("the session asked for itself (its alias %s)" % alias, ". Name the session otherwise: spawn it "
+                 "under another alias")
     if project is not None:
-        found = sminos.match_members(short, "", [project], ids=False) or \
-            sminos.one_per_session(sminos.match_members(short, "", scope, alias=False))
-    else:
-        found = sminos.one_per_session(sminos.match_members(short, "", scope))
-    if len(found) == 1 and found[0][1].session == by["session"]:
+        sminos.project_path(project, "log")   # known here, as the seat about to be written makes it (known_projects)
+    said = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(said):
+            p, m = sminos._resolve_tag(project, sminos.leading_tags("@" + short)[0])
+    except SystemExit:
+        words = said.getvalue().strip()
+        words = words[len("sminos: "):] if words.startswith("sminos: ") else words
+        if words.startswith("ambiguous"):
+            shadowed("more than one member (%s)" % words)
+        answer.refuse("spawner-unknown", "spawn: this machine has not read the spawner, %s (@%s), from the project's "
+                                         "log yet (a machine enrolled moments ago downloads it first), so the "
+                                         "session's first message to it would reach no one: nothing was spawned"
+                      % (by["alias"], short))
+    if m.session == by["session"] and p.id == by["project"]:
         return
-    answer.refuse("spawner-unknown", "spawn: this machine has not read the spawner, %s (@%s), from the project's log "
-                                     "yet (a machine enrolled moments ago downloads it first), so the session's first "
-                                     "message to it would reach no one: nothing was spawned" % (by["alias"], short))
+    shadowed("%s (@%s, in %s)" % (m.alias, m.short, p.name))
 
 
 # ------------------------------------------------------------------ the Mac side
@@ -795,9 +813,29 @@ def remote(c, vm, request, directory, enrolled):
     bound = seconds("SMINOS_ON_TIMEOUT", REMOTE_TIMEOUT)
     wait = seconds("SMINOS_ON_ENROLL_WAIT", ENROLL_WAIT)
     deadline, waited_on = None, []
+
+    def wait_over():
+        """The wait's end, by its last refusal (rows 27a and 27), once it has come."""
+        if deadline is None or deadline - time.monotonic() > 0:
+            return
+        if waited_on[-1] == "spawner-unknown":
+            c.refuse("spawn --on: %s had not read this session from the project's log within %d minutes (it is "
+                     "still downloading the log): no thread was opened there. Once it has, sminos spawn --on %s "
+                     "opens it" % (vm, round(wait / 60), vm), EXIT_LATER)
+        c.refuse("spawn --on new: %s did not enroll within %d minutes: nothing was spawned. Once sminos "
+                 "machines lists it, sminos spawn --on %s spawns there" % (vm, round(wait / 60), vm))
     while True:
+        wait_over()   # before the route back is read again: past the wait's end, the wait's end is what is said
         if c.session:
-            sminos.forget_caches()   # what the session's project resolves from, read as it is now
+            sminos.forget_caches()   # what the session's project and this machine's enrollment are read from, now
+            now = sminos.enrollment()
+            if now is None:
+                c.refuse("spawn --on: this machine is no longer enrolled in the org, so the session on %s could "
+                         "tell this one nothing: nothing was spawned" % vm)
+            if now["org"] != enrolled["org"]:
+                c.refuse("spawn --on: this machine is now enrolled in another org than when the VM was asked for "
+                         "(%s, not %s), so the session on %s and this one could not reach each other: nothing was "
+                         "spawned" % (now["org"], enrolled["org"], vm))
             request = {**request, "by": route_back(c, enrolled)}   # the reach rule read with it
         # The positionals after `--`, so that an alias the Mac's parser took after its own (`-alias`) is one there.
         # The session variable cleared there for this call alone: where a client sends it and a host accepts it,
@@ -809,15 +847,8 @@ def remote(c, vm, request, directory, enrolled):
         if deadline is not None:
             # The wait bounds every try it starts: none at or past its end, and each given only what is left,
             # read last before the try (the reach rule's read takes time too).
-            left = deadline - time.monotonic()
-            if left <= 0 and waited_on[-1] == "spawner-unknown":
-                c.refuse("spawn --on: %s had not read this session from the project's log within %d minutes (it is "
-                         "still downloading the log): no thread was opened there. Once it has, sminos spawn --on %s "
-                         "opens it" % (vm, round(wait / 60), vm), EXIT_LATER)
-            if left <= 0:
-                c.refuse("spawn --on new: %s did not enroll within %d minutes: nothing was spawned. Once sminos "
-                         "machines lists it, sminos spawn --on %s spawns there" % (vm, round(wait / 60), vm))
-            given = min(bound, left)
+            wait_over()
+            given = min(bound, deadline - time.monotonic())
         c.reaching = vm
         code, lines, err, timed_out, ended = run_devcloud(c, args, stdin=a.task, timeout=given, keep_err=True,
                                                           vm=vm, nonce=request["nonce"])

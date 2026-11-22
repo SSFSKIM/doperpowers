@@ -12,13 +12,15 @@
 # - The spawner read before the thread opens: with the relay from mac held
 #   back, the VM side of `spawn --on` (`spawn --asked-from`, its request
 #   naming the spawner's session) refuses `spawner-unknown` on its outcome
-#   line and asks the engine for nothing; once the spawner's writer is
-#   handed, the same call opens the thread, whose `@<short>` is recorded for
+#   line and asks the engine for nothing, and so again while the backlog's
+#   pages of other writers come in this run's order; once the spawner's
+#   writer is handed, the same call opens the thread, whose `@<short>` is recorded for
 #   the spawner's session by its row and mac delivers it there; once the
 #   spawner's thread changed session, the tag follows the row. (The Mac's
 #   wait for it, its bound, words and exit: test_on.py's `New`.)
 # - The thread reached once read: before the backlog reaches a stopped
-#   thread that changed session, `@<short>` of its first session is refused
+#   thread that changed session (lexically; in reverse it comes first),
+#   `@<short>` of its first session is refused
 #   as it always was (exit 4); a page at a time, and what mac writes after
 #   the hello only behind the backlog; at its end, the host's notice to the
 #   first session's short reaches the thread's current session.
@@ -268,11 +270,22 @@ assert_contains "$(cat "$T/asked.err")" "spawn: this machine has not read the sp
   "in words that say what it waits for"
 assert_equals "$(launches)" "0" "the engine was asked to launch nothing"
 assert_equals "$(seats_on_vm)" "0" "and no seat was written"
-# The spawner's writer, ahead of the rest of the backlog (the hub's order is not promised).
-until_true eval 'hand "$EPM" "$EPV" 2 "mac/$SA"; binds "$PP" "${SA:0:8}" "$SA"' || true
+# The backlog a page at a time, in this run's writer order, the VM side asked again while another writer's page
+# is all that has come (the filler's lexically, the thread's in reverse).
+refused_meanwhile=0
+for _ in $(seq 1 100); do
+  page
+  binds "$PP" "${SA:0:8}" "$SA" && break
+  asked_here
+  [ "$RC" = 1 ] && grep -Fq '"why":"spawner-unknown"' <<<"$OUTS" && refused_meanwhile=1
+done
+assert_equals "$refused_meanwhile" "1" "refused still while only another writer's pages have come"
+assert_equals "$(launches)" "0" "and nothing launched meanwhile"
 binds "$PP" "${SA:0:8}" "$SA" && pass "vm has read the spawner's writer" || fail "vm has read the spawner's writer"
-binds "$PP" "${R1:0:8}" "$R2" && fail "and not yet the thread's (the backlog is still to come)" \
-  || pass "and not yet the thread's (the backlog is still to come)"
+if [ -z "${ORDER[0]:-}" ]; then
+  binds "$PP" "${R1:0:8}" "$R2" && fail "and not yet the thread's (the backlog is still to come)" \
+    || pass "and not yet the thread's (the backlog is still to come)"
+fi
 asked_here
 assert_rc 0 "$RC" "the same call now opens the thread"
 CHILD="$(py 'import json, sys; print(json.loads(sys.argv[1].split(" ", 2)[2])["session"])' "$OUTS")"
@@ -290,10 +303,12 @@ got spa "up on vm" && pass "mac delivered it to the spawner's session" || fail "
 # ---- the backlog, a page at a time ----------------------------------------------------------------
 echo "the backlog, a page at a time:"
 rl10_as vm vm
-on_vm "$SMINOS" who --thread="${R1:0:8}"
-assert_rc 4 "$RC" "before the backlog reaches the thread: who --thread of its first session answers nothing"
-on_vm "$SMINOS" say "@${R1:0:8} devcloud on vm: too early"
-assert_rc 4 "$RC" "and a tag of it is refused, as it always was"
+if [ -z "${ORDER[0]:-}" ]; then   # in reverse order the thread's writers came first, before the spawner's
+  on_vm "$SMINOS" who --thread="${R1:0:8}"
+  assert_rc 4 "$RC" "before the backlog reaches the thread: who --thread of its first session answers nothing"
+  on_vm "$SMINOS" say "@${R1:0:8} devcloud on vm: too early"
+  assert_rc 4 "$RC" "and a tag of it is refused, as it always was"
+fi
 page
 rl10_as mac mac
 run_in "$P" env CLAUDE_CODE_SESSION_ID="$F" "$SMINOS" say "live after the hello"

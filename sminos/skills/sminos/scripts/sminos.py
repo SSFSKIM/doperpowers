@@ -14319,7 +14319,7 @@ def cmd_spawn(a):
         cwd = cwd_or_die(on.expand_home(a.cwd), "spawn")
         on.hold_to_origin(req, cwd, answer)
         on.hold_to_org(req, cwd, answer)
-        on.hold_to_spawner(req, cwd, answer)
+        on.hold_to_spawner(req, cwd, a.alias, answer)
         a.cwd = cwd
         answer.ok(spawn_here(a, asked=req))
 

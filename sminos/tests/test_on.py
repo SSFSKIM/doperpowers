@@ -914,6 +914,68 @@ class New(On):
         self.assertEqual(code, on.EXIT_LATER, err)
         self.assertNotIn("is kept", err)
 
+    def test_a_spawner_named_as_someone_else_is_never_waited_on(self):
+        shadowed = (1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "spawner-shadowed"})], False)
+        for on_ in ("new", "vm1"):
+            with self.subTest(on=on_):
+                code, err, tries = self.waited(shadowed, (0, [self.spawned()], False), on_=on_)
+                self.assertEqual((code, len(tries)), (1, 1), err)
+                self.assertIn("sminos answered exit 1; its line above says why", err)
+                self.assertNotIn("waiting", err)
+
+    def test_an_enrollment_gone_or_changed_between_tries_refuses_and_keeps_the_vm(self):
+        """The request's org is the enrollment's as it is at each try: never another org's, and none sent once
+        this machine is no longer enrolled."""
+        identity = os.path.join(os.environ["SMINOS_HOME"], "daemon", "identity.json")
+        for change, words in ((lambda: os.unlink(identity), "spawn --on: this machine is no longer enrolled in the org"),
+                              (lambda: self.enroll(org="org-2"), "spawn --on: this machine is now enrolled in "
+                                                                  "another org than when the VM was asked for")):
+            with self.subTest(words=words[:40]):
+                self.enroll()
+                sent = []
+
+                def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
+                    if args[:2] == ["vm", "up"]:
+                        c.ready.append("dc-x-0001")
+                        return 0, ["dc-x-0001  ready in 0m01s"], "", False, True
+                    sent.append(json.loads(vm_side(args).asked_from))
+                    change()
+                    return 1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "not-enrolled"})], "", False, \
+                        True
+                with mock.patch.object(on, "run_devcloud", side_effect=run), \
+                        mock.patch.dict(os.environ, {"SMINOS_ON_ENROLL_POLL": "0"}):
+                    code, out, err = self.spawn("--on", "new")
+                self.assertEqual(code, 1, err)
+                self.assertIn(words, err)
+                self.assertIn(". The VM dc-x-0001 is kept and", err)
+                self.assertEqual([r["org"] for r in sent], ["org-1"], "no second try")
+
+    def test_the_wait_s_end_is_read_before_the_route_back(self):
+        """A route back read after the wait has ended would refuse in its own words; the wait's end is what is
+        true."""
+        clock, left = [1000.0], [self.NOT_READ, self.NOT_READ, (0, [self.spawned(machine="dc-x-0001")], False)]
+        reach = on.reach
+
+        def late_reach(c):
+            if clock[0] >= 1060:
+                c.refuse("the route back, read past the wait")
+            reach(c)
+
+        def run(c, args, stdin=None, timeout=None, keep_err=False, **kw):
+            if args[:2] == ["vm", "up"]:
+                c.ready.append("dc-x-0001")
+                return 0, ["dc-x-0001  ready in 0m01s"], "", False, True
+            code, lines, timed_out = left.pop(0)
+            return code, lines, "", timed_out, True
+        fake = mock.Mock(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+        env = {"SMINOS_ON_ENROLL_WAIT": "60", "SMINOS_ON_ENROLL_POLL": "30"}
+        with mock.patch.object(on, "run_devcloud", side_effect=run), mock.patch.object(on, "time", fake), \
+                mock.patch.object(on, "reach", late_reach), mock.patch.dict(os.environ, env):
+            code, out, err = self.spawn("--on", "new")
+        self.assertEqual(code, on.EXIT_LATER, err)
+        self.assertIn("had not read this session from the project's log within 1 minutes", err)
+        self.assertNotIn("the route back, read past the wait", err)
+
     def test_stopped_between_two_tries_of_the_wait_keeps_the_vm(self):
         def guard(*_):
             raise AssertionError("the SIGTERM reached this test's own handler, not sminos's")
@@ -1256,7 +1318,7 @@ class VmSide(On):
     """The VM side's own line, for each way it ends, read by the Mac's check."""
 
     def asked(self, req=None, cwd=None, raw=None, task="a task", stdin=None, runcwd=None, session=None,
-              launch=None, launcher=None, **over):
+              launch=None, launcher=None, alias="w", **over):
         """The VM side run here with `req` (each key of `over` set, DROP's taken out), or `raw` as the value:
         (exit, stdout's lines, stderr, what was launched); `runcwd`, the directory the engine says the job runs
         in (a --worktree's), else the directory asked for; `session`, the session it runs in (none, as over
@@ -1268,7 +1330,7 @@ class VmSide(On):
         req.update(over)
         req = {k: v for k, v in req.items() if v is not DROP}
         out, err = io.StringIO(), io.StringIO()
-        argv = ["spawn", "w", task, "--asked-from", raw or json.dumps(req), "--cwd", cwd or self.work]
+        argv = ["spawn", alias, task, "--asked-from", raw or json.dumps(req), "--cwd", cwd or self.work]
         launched = {}
 
         def start(args, cwd_, settings):
@@ -1317,9 +1379,9 @@ class VmSide(On):
         return {"alias": "boss", "short": self.SPAWNER[:8], "project": p.id, "project_name": p.name, "machine": "mac",
                 "session": self.SPAWNER, **over}
 
-    def remote_joined(self, session, alias="boss"):
-        """A `joined` of a session of mac in the directory's project, as the download brings it."""
-        p = sminos.resolve_project(self.work)
+    def remote_joined(self, session, alias="boss", project=None):
+        """A `joined` of a session of mac in the directory's project (or `project`), as the download brings it."""
+        p = project or sminos.resolve_project(self.work)
         path = sminos.writer_path(p, "mac/" + session)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a") as f:
@@ -1344,14 +1406,42 @@ class VmSide(On):
         self.assertEqual((code, on.judge(lines, NONCE, "w", code)[0]), (0, "ok"), err)
         self.assertIn('boss (@abcd1234, in ', launched["task"])
 
-    def test_a_short_that_answers_another_member_is_refused_as_not_read(self):
+    def shadowed(self, code, lines, err, launched, alias="w"):
+        """The VM side refused at once, the short naming someone else: no launch, no seat."""
+        self.assertEqual(on.judge(lines, NONCE, alias, code), ("refused", {"ok": False, "exit": 1,
+                                                                           "why": "spawner-shadowed"}), err)
+        self.assertEqual(launched, {}, "no launcher was started")
+        self.assertEqual(sminos.seats(), [], "no seat record was written")
+
+    def test_a_short_that_answers_another_member_is_refused_at_once(self):
         """The child's tag reads the short as its project's aliases first: a member named so takes it, and the
-        spawner's message would go to that member."""
+        spawner's message would go to that member. Nothing the download brings changes that: no wait."""
         self.remote_joined(self.SPAWNER)
         self.remote_joined("eeee0000-5678-4abc-8def-0123456789ab", alias=self.SPAWNER[:8])
         code, lines, err, launched = self.asked(by=self.by())
-        self.assertEqual(on.judge(lines, NONCE, "w", code)[1].get("why"), "spawner-unknown", err)
-        self.assertEqual(launched, {})
+        self.shadowed(code, lines, err, launched)
+        self.assertIn("spawn: the spawner's short, @abcd1234, names abcd1234 (@eeee0000, in repo) on this machine", err)
+
+    def test_a_child_whose_alias_is_the_spawner_s_short_is_refused_at_once(self):
+        """Its own alias would take its first `@<short>`: the message would reach the child itself."""
+        self.remote_joined(self.SPAWNER)
+        code, lines, err, launched = self.asked(by=self.by(), alias=self.SPAWNER[:8])
+        self.shadowed(code, lines, err, launched, alias=self.SPAWNER[:8])
+        self.assertIn("names the session asked for itself (its alias abcd1234)", err)
+        self.assertIn("spawn it under another alias", err)
+
+    def test_the_spawner_s_row_in_another_project_is_not_its_row_in_the_one_asked(self):
+        """The request names the spawner's project now; this machine holds only its row of the project it was in
+        before, which the child's tag would reach, writing to that project's log."""
+        before = os.path.join(self.home, "before")
+        os.makedirs(before)
+        with open(os.path.join(before, ".smns"), "w") as f:
+            json.dump({"project": str(uuidlib.uuid4()), "name": "before", "remote": "", "hub": {"org": "org-1"}}, f)
+        old = self.project_of(before)
+        self.remote_joined(self.SPAWNER, project=old)
+        code, lines, err, launched = self.asked(by=self.by())
+        self.shadowed(code, lines, err, launched)
+        self.assertIn("names boss (@abcd1234, in before) on this machine", err)
 
     def test_a_request_from_an_older_mac_is_spawned_for_at_once(self):
         """No `by.session`: nothing is asked of the log, as before this version."""

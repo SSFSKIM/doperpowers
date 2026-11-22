@@ -572,8 +572,8 @@ run_suites_c() {
     pass "a machine's notice between two machines: the thread's current session, the frame, going on (test-notice-machines.sh)"
   else fail "a machine's notice between two machines: the thread's current session, the frame, going on (test-notice-machines.sh)"; fi
   if "$SCRIPT_DIR/test-fresh-machine.sh"; then
-    pass "a machine enrolled late: the spawner by its hint, the backlog a page at a time, the row wins (test-fresh-machine.sh)"
-  else fail "a machine enrolled late: the spawner by its hint, the backlog a page at a time, the row wins (test-fresh-machine.sh)"; fi
+    pass "a machine enrolled late: no thread until the spawner is read, the backlog a page at a time, the row wins (test-fresh-machine.sh)"
+  else fail "a machine enrolled late: no thread until the spawner is read, the backlog a page at a time, the row wins (test-fresh-machine.sh)"; fi
   if FRESH_MACHINE_ORDER=reverse "$SCRIPT_DIR/test-fresh-machine.sh"; then
     pass "the same with the backlog's writers in reverse order: nothing depends on the hub's lexical order"
   else fail "the same with the backlog's writers in reverse order: nothing depends on the hub's lexical order"; fi
