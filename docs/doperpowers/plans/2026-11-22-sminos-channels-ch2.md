@@ -76,7 +76,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M2 — What a channel owes a thread: the debt and its transitions. `a604658a`, fix `00e1b6b5`; two reviews at the high rung, the second's two findings (a corrupt record's shapes no writer emits) logged in TECH-DEBT. Gates GREEN on `00e1b6b5`; sminos-idle 32,766; sminos-channels 1m51s.
 - [x] (2026-11-22) M3 — Pushing and waking from a channel's log. `af78de21`, `11482879`, fixes `b544d7f4`, `0c969840`, `dddf22b4`; three reviews at the high rung (the bound), the third's four fixes (`dddf22b4`) made after it and named to M6's review of M2 to M6. Gates GREEN on `dddf22b4`; sminos-idle 32,724; sminos-channels 2m08s.
 - [x] (2026-11-22) M4 — Saying into a channel: the doors, the reply, the read. `d5c345bc`, fixes `934afd76`, `b9fc61a4`; reviewed clean at the third review (one Minor on a draft sentence's wording left for open point 4). Gates GREEN on `b9fc61a4`; sminos-idle 32,663; sminos-channels 2m06s.
-- [ ] M5 — The scene on a real engine.
+- [x] (2026-11-22) M5 — The scene on a real engine. Run whole against `f775004d` (Claude Code 2.1.330, haiku, a scratch home): all four steps showed what they expect; no fault of M1 to M4, no code changed; the checker found nothing over the stand-in's frames and the store; every process stopped. Step 4's hand-off made as Surprises says.
 - [ ] M6 — Across machines: asking, and carrying out off the consumer thread.
 - [ ] M7 — Held to MAWS's fixture, and what a channel costs.
 - [ ] M8 — The lead, and whose words a post is.
@@ -1975,8 +1975,11 @@ scratch org. Never the person's real configuration.
    second nonce once, and the last paragraph of that frame is the
    machine's `[sminos] ` line saying it was woken.
 4. B is handed to a background job by the engine's own hand-off from
-   inside the session (as T1's and CH1's passes did it), after `claude
-   --resume <B's session>` attaches to it. Expect, within two ticks: one
+   inside the session (as T1's and CH1's passes did it): B's job is
+   stopped, `claude --resume <B's session>` opens it in a terminal, and
+   `/background` there hands it off (on 2.1.330 a resume of a running
+   background job only attaches to it, and `/background` in an attached
+   view only detaches; M5's pass). Expect, within two ticks: one
    row for B's thread in `# probe`, under the job's session id; the
    record's boundary for `probe` equal, byte for byte, to step 1's, and
    not empty; and one delivery record under the channel's log for B's
@@ -3099,6 +3102,30 @@ them today.
   message's ask on a reply that names no verdict, for a project too, so
   the TECH-DEBT row on it is gone and this child has nothing to decide
   there.
+- Observation: the scene on a real engine (M5) held as the suites staged
+  it, and the composite's delegated unknown, a non-empty boundary across a
+  real hand-off, holds: the engine's own order kept the thread's boundary
+  byte for byte, its one delivery record (the same file, the same inode),
+  and a reply line of a frame sent before the hand-off reached the job
+  once. Both of the scene's pushes went through the engine's inbox (live
+  and on a wake); none went through the bridge.
+  Evidence: M5's report, step 4.
+- Observation: on Claude Code 2.1.330 `claude --resume` of a running
+  background job attaches to it, and `/background` in an attached view only
+  detaches; a hand-off needs a terminal process (stop the job, resume,
+  `/background`). Concrete Steps' step 4 is worded so.
+- Observation: the engine's auto mode judges a peer reply call by call:
+  one session's unasked reply by a channel frame's line was refused as
+  unsanctioned communication and allowed once its user asked; another's
+  was allowed. It bears on what M10's E2 and E4 can expect of a session.
+- Observation: a long `SMINOS_HOME` defeats the bridge silently: a
+  `bridge/<uuid>.sock` path past 103 characters cannot be bound by Python
+  on macOS. The base's; a TECH-DEBT row ("sminos channels") records it.
+- Observation: the checker (`channel_wire.published`) reads a dict as a
+  bare frame, so the stand-in's control `state()["received"]` (dicts of
+  `conn` and `frame`) passes unchecked; the suites pass `ep.received`
+  (tuples) and are unaffected. M6, which touches `published`, makes it
+  refuse a shape it does not know.
 
 ## Decision Log
 
