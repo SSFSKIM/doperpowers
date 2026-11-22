@@ -177,11 +177,8 @@ export type Check = { toolUseId: string; tool: string; agentId: string | null; i
 /** An agent the desk is stopping: its id, and its note's keeping (resolved once kept, or not to be). */
 export type AgentStop = { agentId: string; noted: Promise<void> }
 export type ListedAgent = { id: string; description: string; type: string; status: string; parentId?: string; name?: string }
-/**
- * A log event's key: its project (absent from a CLI older than the project in the key), writer and seq; in a
- * channel's log, the thread it is owed to too.
- */
-export type DeliveryKey = { project?: string; thread?: string; writer: string; seq: number }
+/** A log event's key: its project (absent from a CLI older than the project in the key), writer and seq. */
+export type DeliveryKey = { project?: string; writer: string; seq: number }
 /** A log event submitted as the human's words, whose row is still to be kept. */
 export type Submission = { key: DeliveryKey; text: string }
 /**
@@ -414,10 +411,9 @@ export type BridgeState = {
   override?: Override
   /**
    * Per mark, the highest seq of a log event submitted: delivery goes in seq
-   * order, so any key at or below it was. A mark is `<project>/<writer>`,
-   * `<channel>#<thread>/<writer>` for a channel's key, or the bare writer for
-   * a key naming no project; kept marks are taken as they come, whichever
-   * they are.
+   * order, so any key at or below it was. A mark is `<project>/<writer>`, or
+   * the bare writer for a key naming no project; kept marks are taken as
+   * they come, whichever they are.
    */
   delivered: Map<string, number>
   /**

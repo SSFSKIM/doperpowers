@@ -257,7 +257,7 @@ def load_kept(session):
     sent for a desk RPC was answered, "rpcs": {nonce: the answer's op, ok,
     result, error, code, and, for a command, its run's end once it came};
     once the engine dropped a delivery the mod had submitted,
-    "refused": [{"key": {project?, thread?, writer, seq}, "reason"}], oldest first, the
+    "refused": [{"key": {project?, writer, seq}, "reason"}], oldest first, the
     last REFUSED_KEPT, which the daemon reports
     (sminos_outcomes.report_refused); nothing kept reads as none."""
     try:
@@ -284,8 +284,7 @@ def _refusal(r):
     """Whether `r` is a refusal as the child keeps it."""
     key = r.get("key") if isinstance(r, dict) else None
     return isinstance(key, dict) and isinstance(key.get("writer"), str) and type(key.get("seq")) is int \
-        and isinstance(key.get("project", ""), str) and isinstance(key.get("thread", ""), str) \
-        and isinstance(r.get("reason"), str)
+        and isinstance(key.get("project", ""), str) and isinstance(r.get("reason"), str)
 
 
 def _kept_end(e):
@@ -311,15 +310,11 @@ def _media_key(upload, index, state):
 
 
 def _mark(key):
-    """The mark a delivery key raises, as the mod's (deliveryMark): every
-    project numbers a writer's events on its own, so `<project>/<writer>`,
-    or the bare writer for a key naming no project (a CLI older than the
-    project in the key); a channel's key names its thread too (CH2's M3),
-    `<channel>#<thread>/<writer>`."""
-    project, thread, writer = key.get("project"), key.get("thread"), key.get("writer")
-    if not isinstance(project, str):
-        return writer
-    return "%s#%s/%s" % (project, thread, writer) if isinstance(thread, str) else "%s/%s" % (project, writer)
+    """The mark a delivery key raises, as the mod's: every project numbers a
+    writer's events on its own, so `<project>/<writer>`, or the bare writer
+    for a key naming no project (a CLI older than the project in the key)."""
+    project, writer = key.get("project"), key.get("writer")
+    return "%s/%s" % (project, writer) if isinstance(project, str) else writer
 
 
 # ------------------------------------------------------------------ the client
@@ -446,7 +441,7 @@ def _refused(kept, key, reason):
     last REFUSED_KEPT, its reason cut to REASON_MAX; as it was for a key that
     is not one."""
     key = key if isinstance(key, dict) else {}
-    key = {k: key[k] for k in ("project", "thread", "writer", "seq") if k in key}
+    key = {k: key[k] for k in ("project", "writer", "seq") if k in key}
     refused = kept.get("refused") or []
     if not _refusal({"key": key, "reason": ""}) or any(r["key"] == key for r in refused):
         return kept

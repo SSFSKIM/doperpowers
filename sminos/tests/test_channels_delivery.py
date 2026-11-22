@@ -440,6 +440,32 @@ class HandOff(Channel):
         self.assertEqual(self.settled(tid, W1), e["seq"])
 
 
+    def test_a_push_that_fails_across_a_hand_off_counts_no_attempt_and_its_successor_is_pushed_it(self):
+        tid, old, oproc, received = self.live_member()
+        e = self.message((old, tid), text="failed across")
+        for _ in range(sminos.DELIVERY_ATTEMPTS - 1):
+            sminos.delivered_fail(self.chan(DESK), tid, W1, e["seq"])
+        control, got = sminos.control_module(), {}
+        real = control.push_live
+
+        def push_live(peer, session, text, *a, **k):
+            # The hand-off lands after push_member found the peer and before the push binds it: nothing goes.
+            if "failed across" in text and not got:
+                got["job"], got["jreceived"] = self.handed(old, oproc)
+                raise sminos.SendFailed("before", "the inbox went")
+            return real(peer, session, text, *a, **k)
+        with mock.patch.object(control, "push_live", push_live):
+            self.deliver()
+        self.assertEqual(self.got(received, "failed across"), [])
+        self.assertEqual(self.got(got["jreceived"], "failed across"), [])
+        w = self.record_of(tid)[W1]
+        self.assertEqual((w["settled"], w["attempts"]), (0, sminos.DELIVERY_ATTEMPTS - 1),
+                         "not given up: the failure was no attempt of the thread's")
+        self.deliver()
+        self.assertEqual(len(self.got(got["jreceived"], "failed across")), 1, "pushed to the session that continues it")
+        self.assertEqual(self.settled(tid, W1), e["seq"])
+
+
 class Boundary(Channel):
     def test_an_attempt_the_boundary_has_passed_is_cleared_and_the_writers_next_message_goes(self):
         tid, sid, received = self.live()
@@ -684,6 +710,17 @@ class OwnProject(Channel):
         self.assertEqual(self.settled(tid, W1), e["seq"])
 
 
+    def test_a_synced_moves_destination_is_checked_as_a_name_before_any_lookup(self):
+        tid, sid, received = self.live()
+        # As a synced or hand-edited line could say it: written as retire_moved writes one, its destination no name.
+        sminos.lifecycle(self.p, sid, "retired", required=False, by="", reason="moved", project="../escape")
+        sminos.forget_caches()
+        real, asked = sminos.registration, []
+        with mock.patch.object(sminos, "registration", lambda pid: (asked.append(pid), real(pid))[1]):
+            self.assertIsNone(channels._project_now(sid))
+        self.assertNotIn("../escape", asked, "never read as a path")
+
+
 
 # ------------------------------------------------------------ an open entry, from both sides
 
@@ -880,6 +917,47 @@ class Launch(Channel):
         self.assertEqual(len(self.woken_got(sid, "no hold, no launch")), 1, "the next pass wakes it")
 
 
+    def test_a_removal_and_a_reopening_while_the_wakes_lock_is_busy_push_nothing(self):
+        tid, sid = self.stopped()
+        self.message((sid, tid), text="removed while busy")
+        real_hold, busy, got = sminos.launch_hold, [True], {}
+
+        def launch_hold(thread_id):
+            if busy and busy.pop():
+                # Busy (another's transition); meanwhile the thread is removed and its session reopened.
+                self.assertEqual(channels.change(tid, DESK, "remove", sid).state, "applied")
+                got["received"] = self.terminal(sid)
+                return None, "sweep"
+            return real_hold(thread_id)
+        with mock.patch.object(sminos, "launch_hold", launch_hold):
+            self.deliver()
+        self.assertEqual(self.got(got["received"], "removed while busy"), [], "the reopened session gets nothing")
+        self.assertEqual(self.settled(tid, W1), 0)
+        self.assertEqual(self.resumes(sid), [])
+
+    def test_a_woken_process_that_stops_before_the_push_leaves_the_event_held_starting_and_marked(self):
+        tid, sid = self.stopped()
+        e = self.message((sid, tid), text="woken then gone")
+        real, once = sminos.push_member, []
+
+        def push_member(m, frame, *a, **k):
+            # No process answered by the push (the woken one stopped first): what push_member answers then.
+            if "woken then gone" in frame and not once:
+                once.append(True)
+                return "recorded"
+            return real(m, frame, *a, **k)
+        with mock.patch.object(sminos, "push_member", push_member):
+            self.deliver()
+        self.assertEqual(len(self.resumes(sid)), 1)
+        w = self.record_of(tid).get(W1, {})
+        self.assertEqual(w.get("held"), {e["seq"]: tid}, "held for its thread: `starting`")
+        self.assertEqual((w.get("settled", 0), w.get("attempts", 0)), (0, 0), "owed, no attempt counted")
+        self.deliver()
+        self.assertEqual(len(self.woken_got(sid, "woken then gone")), 1, "then pushed, once")
+        self.assertEqual(len(self.resumes(sid)), 1, "no second launch")
+        self.assertEqual(self.settled(tid, W1), e["seq"])
+
+
 # ------------------------------------------------------------ a receipt and the thread it was for
 
 
@@ -963,6 +1041,24 @@ class Receipts(Channel):
         self.assertEqual(calls, [(("p", "s", W1, 1), {})] * 6, "no thread argument at all for a project")
 
 
+    def test_an_admitted_receipt_of_an_earlier_membership_settles_nothing_on_an_owing_taken_before(self):
+        for entry in ("deliver_next", "deliver_reach"):
+            with self.subTest(entry=entry):
+                tid, sid, received = self.live(name="r-" + entry[-4:])
+                e = self.message((sid, tid), text="admitted before, " + entry)
+                self.receipt(DESK, sid, e, tid, admitted=True)
+                sminos.forget_caches()
+                t = threads.get(tid)
+                o = channels.owing(self.chan(DESK), t, channels.own_row(t))
+                self.assertEqual(channels.change(tid, DESK, "remove", sid).state, "applied")
+                self.add(tid, sid, DESK)
+                if entry == "deliver_next":
+                    sminos.deliver_next(self.chan(DESK), o.member, owing=o)
+                else:
+                    self.assertIsNone(sminos.deliver_reach(self.chan(DESK), o.member, e, "deliver", owing=o))
+                self.assertEqual(self.settled(tid, W1), 0, "nothing settled below the new boundary")
+
+
 # ------------------------------------------------------------ what this machine appended
 
 
@@ -1000,31 +1096,64 @@ class Appended(Channel):
         self.assertIsNone(sminos.receipt_of(self.p, own, p_e["seq"]), "a project's say keeps none, as before")
 
 
-    def test_a_receipt_file_is_read_once_while_unchanged_and_keeps_its_last_valid_line_per_seq(self):
+    def receipts(self, log, own, lines, tail=""):
+        path = sminos.receipt_path(log, own)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in lines) + tail)
+        return path
+
+    def parsed(self):
+        """What a channel's receipt index parses, as the length of each text it is given."""
+        real, seen = sminos._receipt_lines, []
+        patcher = mock.patch.object(sminos, "_receipt_lines", lambda text: (seen.append(len(text)), real(text))[1])
+        return patcher, seen
+
+    def test_a_channels_receipt_file_is_parsed_once_extended_by_an_append_and_keeps_its_last_valid_line(self):
         own = "%s/%s" % (sminos.host_name(), str(uuidlib.uuid4()))
         chan = self.chan(DESK)
-        path = sminos.receipt_path(chan, own)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         lines = [{"seq": i, "hash": "h%d" % i} for i in range(1, 2001)]
         lines += [{"seq": 5, "hash": "again"}, {"seq": 6, "hash": 7}]
-        with open(path, "w") as f:
-            f.write("".join(json.dumps(r) + "\n" for r in lines) + "{torn\n")
-        real_open, opened = open, []
-
-        def counting(file, *a, **k):
-            if file == path:
-                opened.append(file)
-            return real_open(file, *a, **k)
-        with mock.patch("builtins.open", counting):
+        path = self.receipts(chan, own, lines, "{torn\n")
+        patcher, seen = self.parsed()
+        with patcher:
             got = [sminos.receipt_of(chan, own, seq) for seq in range(1, 2001)]
-        self.assertEqual(len(opened), 1, "read once while the file is unchanged")
+        self.assertEqual(len([n for n in seen if n]), 1, "its lines parsed once while the file is unchanged")
         self.assertEqual(got[4], "again", "a seq written twice is its last line's")
         self.assertEqual(got[5], "h6", "a line with no hash names none")
         self.assertEqual(got[1999], "h2000")
+        line = json.dumps({"seq": 2001, "hash": "late"}) + "\n"
         with open(path, "a") as f:
-            f.write(json.dumps({"seq": 2001, "hash": "late"}) + "\n")
-        self.assertEqual(sminos.receipt_of(chan, own, 2001), "late", "read again once it changed")
-        self.assertIsNone(sminos.receipt_of(chan, own, 2002))
+            f.write(line)
+        patcher, seen = self.parsed()
+        with patcher:
+            self.assertEqual(sminos.receipt_of(chan, own, 2001), "late", "what the append added")
+        self.assertLessEqual(sum(seen), len(line), "and only that, parsed")
+        with open(path, "a") as f:
+            f.write(json.dumps({"seq": 2002, "hash": "unended"}))
+        self.assertEqual(sminos.receipt_of(chan, own, 2002), "unended", "a line its newline has not ended yet")
+        self.assertIsNone(sminos.receipt_of(chan, own, 2003))
+
+    def test_a_receipt_that_cannot_be_read_now_names_nothing_in_a_project_and_in_a_channel(self):
+        for log in (self.p, self.chan(DESK)):
+            with self.subTest(log=log.name):
+                own = "%s/%s" % (sminos.host_name(), str(uuidlib.uuid4()))
+                path = self.receipts(log, own, [{"seq": 1, "hash": "h1"}])
+                self.assertEqual(sminos.receipt_of(log, own, 1), "h1")
+                os.chmod(path, 0)
+                self.addCleanup(os.chmod, path, 0o600)
+                self.assertIsNone(sminos.receipt_of(log, own, 1), "fail closed, as before")
+                os.chmod(path, 0o600)
+                self.assertEqual(sminos.receipt_of(log, own, 1), "h1")
+
+    def test_a_projects_receipt_lookup_is_todays_and_keeps_no_index(self):
+        own = "%s/%s" % (sminos.host_name(), str(uuidlib.uuid4()))
+        path = self.receipts(self.p, own, [{"seq": i, "hash": "h%d" % i} for i in range(1, 50)])
+        patcher, seen = self.parsed()
+        with patcher:
+            self.assertEqual(sminos.receipt_of(self.p, own, 49), "h49")
+        self.assertEqual(seen, [], "no channel's index for a project")
+        self.assertNotIn(path, sminos._RECEIPT_INDEX)
 
 
 # ------------------------------------------------------------ the transitions, as pushes
@@ -1193,7 +1322,7 @@ class Words(Channel):
         self.assertIsNone(sminos.deliver_reach(self.chan(DESK), o.member, a, "refuse", "late", owing=o))
         self.assertEqual(self.settled(tid, W1), 0, "the refusal decided nothing on an event the thread is not owed")
 
-    def test_a_persons_words_reach_the_bridge_keyed_by_the_thread_they_are_owed_to(self):
+    def test_a_persons_words_reach_the_bridge_scoped_by_the_thread_they_are_owed_to(self):
         tid, sid, received = self.live()
         e = self.message((sid, tid), writer="%s/human" % FAR, kind="human", text="words for the thread")
         o = self.owing_of(tid)
@@ -1207,9 +1336,14 @@ class Words(Channel):
         with mock.patch.object(control, "post_command", post_command):
             self.assertEqual(sminos.deliver_verdict(self.chan(DESK), o.member, e, "words", owing=o), "sent")
             control.deliver(sid, "p", {"writer": "m/human", "seq": 3}, "text")
-        self.assertEqual(keys, [{"project": DESK, "thread": tid, "writer": e["writer"], "seq": e["seq"]},
+        self.assertEqual(keys, [{"project": "%s#%s" % (DESK, tid), "writer": e["writer"], "seq": e["seq"]},
                                 {"project": "p", "writer": "m/human", "seq": 3}],
-                         "the bridge's mark is the thread's in a channel; a project's key as it was")
+                         "the thread in the scope a bridge keys on; a project's key as it was")
+        # Every bridge a session has loaded keys its mark on `project` (sminos_bridge._mark is the mod's rule).
+        bridge = sminos.sibling_module("sminos_bridge")
+        marks = {bridge._mark(k) for k in (keys[0], dict(keys[0], project="%s#%s" % (DESK, SENDER_THREAD)),
+                                           dict(keys[0], project=DESK))}
+        self.assertEqual(len(marks), 3, "one thread's mark is neither another's nor the channel's")
 
 
 # ------------------------------------------------------------ a return that writes the boundary anew

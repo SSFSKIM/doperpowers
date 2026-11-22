@@ -89,13 +89,15 @@ def deliver(session, project, event, text, thread=None):
     every project numbers a writer's events on its own. A duplicate is taken
     as delivered, since it was submitted before, but said: were it not, the
     event would be lost with no other trace. In a channel's log (`thread`,
-    CH2's M3) the key names the thread it is owed to as well: the channel
-    numbers a writer's events once for every thread, and a session may
-    serve one thread, then another."""
-    key = {"project": project, "writer": event["writer"], "seq": event["seq"]}
-    if thread is not None:
-        key = {"project": project, "thread": thread, "writer": event["writer"], "seq": event["seq"]}
-    body = {"op": "deliver", "key": key, "text": text}
+    CH2's M3) the key's scope is the channel and the thread it is owed to,
+    `<channel id>#<thread id>` in its `project`: the channel numbers a
+    writer's events once for every thread, and a session may serve one
+    thread, then another. A bridge takes `project` as an opaque scope (its
+    mark `<project>/<writer>`, its refusals' key, the child's kept marks),
+    so every bridge a running session has loaded keeps the threads apart
+    (`#` is in no project's or channel's id)."""
+    scope = project if thread is None else "%s#%s" % (project, thread)
+    body = {"op": "deliver", "key": {"project": scope, "writer": event["writer"], "seq": event["seq"]}, "text": text}
     try:
         r = post_command(B.endpoint(session), body)
     except Unanswered as e:

@@ -3717,31 +3717,59 @@ def _write_receipts(project, writer, events):
         f.write("".join(json.dumps(r) + "\n" for r in lines))
 
 
-_RECEIPT_INDEX = {}   # receipt file → (its stat key when read, {seq: hash}): receipt_of's, while unchanged
-
-
 def receipt_of(project, writer, seq):
     """The hash the append receipt holds for the writer's seq, or None. A
     seq written twice (an append whose event could not be written after its
-    receipt was) is the last line's that names a hash. The file is indexed
-    by seq once and read again only when it changed (its inode, size or
-    mtime): a channel's pass asks for every event it decides (CH2's M3)."""
-    path = receipt_path(project, writer)
+    receipt was) is the last line's. In a channel's log the file is indexed
+    (_channel_receipt): its pass asks for every event it decides (CH2's
+    M3)."""
+    if is_channel_id(project.id):
+        return _channel_receipt(receipt_path(project, writer), seq)
     try:
-        st = os.stat(path)
-        key = (st.st_ino, st.st_size, st.st_mtime_ns)
-        held = _RECEIPT_INDEX.get(path)
-        if held is None or held[0] != key:
-            # Stated before it is read: a line appended in between is in this index, and the next stat reads anew.
-            with open(path) as f:
-                held = _RECEIPT_INDEX[path] = (key, _receipt_index(f.read()))
+        with open(receipt_path(project, writer)) as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            r = json.loads(line) if line.strip() else None
+        except ValueError:
+            continue
+        if isinstance(r, dict) and type(r.get("seq")) is int and r["seq"] == seq and isinstance(r.get("hash"), str):
+            return r["hash"]
+    return None
+
+
+_RECEIPT_INDEX = {}   # a channel's receipt file → [inode, the bytes indexed (whole lines), {seq: hash}]
+
+
+def _channel_receipt(path, seq):
+    """receipt_of for a channel's writer: the file opened each time (one that
+    cannot be read now names nothing, as receipt_of answers), its whole
+    lines indexed by seq once and extended by what an append added since,
+    read again from the start when its inode changed or it shrank. The last
+    line naming a hash wins: a line not yet ended by its newline is read
+    each time, after the index."""
+    try:
+        with open(path, "rb") as f:
+            st = os.fstat(f.fileno())
+            held = _RECEIPT_INDEX.get(path)
+            if held is None or held[0] != st.st_ino or st.st_size < held[1]:
+                held = _RECEIPT_INDEX[path] = [st.st_ino, 0, {}]
+            f.seek(held[1])
+            tail = f.read()
     except OSError:
         _RECEIPT_INDEX.pop(path, None)
         return None
-    return held[1].get(seq)
+    whole, ended, rest = tail.rpartition(b"\n")
+    if ended:
+        held[2].update(_receipt_lines(whole.decode("utf-8", "replace")))
+        held[1] += len(whole) + 1
+    return _receipt_lines(rest.decode("utf-8", "replace")).get(seq) or held[2].get(seq)
 
 
-def _receipt_index(text):
+def _receipt_lines(text):
+    """{seq: hash} of receipt lines, the last naming a hash for a seq winning."""
     index = {}
     for line in text.split("\n"):
         try:
@@ -7895,10 +7923,12 @@ def deliver_next(project, member, due=False, owing=None):
     (sminos_channels.appended_here), and no outcome is kept for the uplink.
     The last check is made again for each event before anything is decided
     of it but a frame already handed over (a noted push, an admitted
-    receipt): an Owing taken before a removal and an add chose by a
-    boundary since passed. One that fails, there or later (before a push,
-    around a wake's launch), stops the pass for the thread, nothing pushed
-    or settled (PassLost)."""
+    receipt), and that is accepted only for an event past the boundary the
+    thread's file holds then (sminos_channels.lies_past): an Owing taken
+    before a removal and an add chose by a boundary since passed. One that
+    fails, there or later (before a push, around a wake's launch, before a
+    failure is counted), stops the pass for the thread, nothing pushed or
+    settled (PassLost)."""
     o = owing
     if o is None and is_channel_id(project.id):
         raise AssertionError("a channel's log is delivered only with its Owing (sminos_channels.deliver)")
@@ -7936,6 +7966,8 @@ def deliver_next(project, member, due=False, owing=None):
                 noted = _delivery(record, writer).get("pushed")
                 for i, e in enumerate(queue):
                     if o is not None:
+                        if not channels.lies_past(o, e):
+                            raise PassLost()   # an earlier membership's receipt settles nothing below this one's
                         outside = not channels.appended_here(project, e)
                     if noted and noted[0] == e["seq"]:
                         outcome = noted[1]
@@ -8017,12 +8049,19 @@ def _conclude(project, member, session, e, outcome, outside, owing=None):
     (`held:reach`). A `refused-reach` is settled here alone: no outcome goes
     back (P5 O18 D3: a refusal here stays here). With `owing` (a channel's
     log) the record is the thread's, and no outcome is kept for the uplink:
-    under a channel's id that would be a publication (CH2's §4)."""
+    under a channel's id that would be a publication (CH2's §4), and a
+    failure is counted only while the last check still holds for the event
+    (else PassLost: a failure across a hand-off is no attempt of the
+    thread's)."""
     outcomes = sibling_module("sminos_outcomes")
     key = session if owing is None else owing.thread
     if holder_waiting(outcome):
         return False
     if outcome.startswith("failed"):
+        if owing is not None and not channels_module().still_owed(owing, e):
+            # A push that failed before its text reached a session (an inbox write, a receipt's push) across a
+            # hand-off, a removal or an end: the thread's no more, so no attempt of its is counted.
+            raise PassLost()
         if delivered_fail(project, key, e["writer"], e["seq"]) < DELIVERY_ATTEMPTS:
             return False
         daemon_log("gave up delivering %s (%s) to %s after %d attempts: %s" % (
@@ -8111,7 +8150,12 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
     With `owing` (a channel's log) the last check (sminos_channels.
     still_owed) is made first, for this event, and again by the wake around
     its launch: one that fails raises PassLost, nothing handed over; the
-    session's membership is read in the thread's own project."""
+    session's membership is read in the thread's own project. A push that
+    comes back `recorded` is that stop too, unless it is an event for the
+    live alone whose thread is stopped (stopped_for_the_live) or it follows
+    a wake (woken_unpushed: `held:starting` while the thread is still owed
+    it). A wake that took no hold (a busy lock, the session live) is
+    followed by a live push to the peer read afresh."""
     if owing is not None and not channels_module().still_owed(owing, e):
         raise PassLost()
     home = project if owing is None else owing.project
@@ -8122,11 +8166,16 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
         got, locks = wake_member(project, member, session, e, words, due, **_kw(owing))
         if got and got != "woken":
             return got
+        if owing is not None and locks is None:
+            # Woken by no one (a wake lock busy while the session reads live): pushed as a live push is, to the
+            # process read afresh, by its receipt mode.
+            peer = peer_for_session(session)
     try:
         if locks is not None:
             peer = peer_for_session(session)   # under the locks the wake kept, let go below whatever comes
         if locks is not None and peer is None:
-            return woken_unpushed(session, **_kw(owing))   # its inbox went between the wake's look and this one
+            # Its inbox went between the wake's look and this one.
+            return woken_unpushed(session, **_kw(owing), **({} if owing is None else {"e": e}))
         if not retry and (peer is None or peer.get("pid") is None
                           or (member.seat is None and latest_membership(_own_events(home, session)) == "retired")):
             outcome = push_event(project, member, session, e, events, cursor, words=words, **_kw(owing))
@@ -8136,12 +8185,15 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
             plan = holder_module().plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None,
                                         words=words, **_th(owing))
             outcome = holder_carry(plan, project, member, session, e, events, cursor, peer, **_kw(owing))
+        if locks is None and owing is not None and outcome == "recorded" \
+                and not stopped_for_the_live(owing, e, session):
+            raise PassLost()   # a push that reached no one the thread is (stopped_for_the_live)
         if locks is not None:
             outcome = {"sent": "woken", "sent?": "woken?"}.get(outcome, outcome)
             if outcome == "recorded":
                 # A push after a wake that handed nothing over (no process answered by then) settles nothing:
                 # `recorded` is an end's or a stale hold's alone.
-                outcome = woken_unpushed(session, outcome, **_kw(owing))
+                outcome = woken_unpushed(session, outcome, **_kw(owing), **({} if owing is None else {"e": e}))
             t = threads_module().current_record(session, fresh=True)
             if t is not None and t["opened"] == "spawned" and (outcome in PUSHED or outcome == HOLDER_AWAITING):
                 seat = reload_seat(t["thread"])
@@ -8152,17 +8204,22 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
         unlock(locks or [])
 
 
-def woken_unpushed(session, outcome="recorded", owing=None):
+def woken_unpushed(session, outcome="recorded", owing=None, e=None):
     """What a push made after a wake (holder_push) that handed nothing over
     comes to: owed, `held:starting` for its thread, while the session is
     still the current one of a thread that has not ended (thread_owed's
     rule); else `outcome`, which an end or a stale hold settles. With
-    `owing` (a channel's log) that else is the last check failing
-    (PassLost): nothing settled."""
+    `owing` (a channel's log, its event `e`) the thread must still be owed
+    the event (still_owed: the thread woken, eligible, its process stopped
+    before the text went), and is then `held:starting` for it, marked, with
+    no attempt counted; else the last check fails (PassLost): nothing
+    settled."""
     t = threads_module().current_record(session, fresh=True)
-    if t is None:
-        if owing is not None:
+    if owing is not None:
+        if t is None or not channels_module().still_owed(owing, e):
             raise PassLost()
+        return hold_outcome("starting", owing.thread)
+    if t is None:
         return outcome
     return hold_outcome("starting", t["thread"])
 
@@ -8577,6 +8634,8 @@ def deliver_verdict(project, member, event, verdict, owing=None):
         noted = _delivery(record, e["writer"]).get("pushed")
         cursor = cursor_load(project, key)
         try:
+            if o is not None and not channels_module().lies_past(o, e):
+                raise PassLost()   # an earlier membership's receipt settles nothing below this one's
             if noted and noted[0] == e["seq"]:
                 outcome = noted[1]
             elif (owed := holder_owed(project, member, session, e, events, cursor, **_kw(o))) \
@@ -8850,6 +8909,8 @@ def deliver_reach(project, member, event, verdict, reason=None, owing=None):
         noted = _delivery(record, e["writer"]).get("pushed")
         cursor = cursor_load(project, key)
         try:
+            if o is not None and not channels_module().lies_past(o, e):
+                raise PassLost()   # an earlier membership's receipt settles nothing below this one's
             if noted and noted[0] == e["seq"]:
                 outcome = noted[1]
             elif (owed := holder_owed(project, member, session, e, events, cursor, **_kw(o))) \
@@ -8935,8 +8996,8 @@ def push_event(project, member, session, e, events, cursor, words=None, owing=No
     endpoint's verdict on a person's words (push_live). With `owing` (a
     channel's log) the membership is read in the thread's own project, and
     a session retired there (a move among the reasons) is the last check
-    failing (PassLost), never `recorded`; so is a push that comes back
-    `recorded` unless stopped_for_the_live says it stands. The bridge's
+    failing (PassLost), never `recorded` (what a push that comes back
+    `recorded` is in a channel is holder_push's to decide). The bridge's
     key names the thread (push_member's `thread`)."""
     if owing is not None:
         if member.seat is None and latest_membership(_own_events(owing.project, session)) == "retired":
@@ -8944,11 +9005,8 @@ def push_event(project, member, session, e, events, cursor, words=None, owing=No
     elif member.seat is None and latest_membership(_own_events(project, session)) == "retired":
         return "recorded"
     verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
-    outcome = push_member(member, frame_of(project, e, events, session, cursor, **_th(owing)), not e.get("wake"),
-                          session=session, event=e, project=project.id, **verdict, **_th(owing))
-    if owing is not None and outcome == "recorded" and not stopped_for_the_live(owing, e, session):
-        raise PassLost()
-    return outcome
+    return push_member(member, frame_of(project, e, events, session, cursor, **_th(owing)), not e.get("wake"),
+                       session=session, event=e, project=project.id, **verdict, **_th(owing))
 
 
 def stopped_for_the_live(owing, e, session):
@@ -10080,9 +10138,10 @@ def wake_member(project, member, session, e, words=None, due=False, owing=None):
     started, and again after the launch returns (_after_launch): one that
     fails raises PassLost; a refusal found after the launch is its outcome,
     nothing handed over. A wake lock busy while the session reads live is
-    ("", None), the push to follow as to a live one: with no hold of its
-    own a channel's pass never goes on to a launch, which would take the
-    lock afresh past the last check."""
+    ("", None) once the last check holds again past that wait, the push to
+    follow as a live push (holder_push reads the peer afresh): with no hold
+    of its own a channel's pass never goes on to a launch, which would take
+    the lock afresh past the last check."""
     threads = threads_module()
     home = project if owing is None else owing.project
     if member.seat is None and latest_membership(_own_events(home, session)) == "retired":
@@ -10190,6 +10249,7 @@ def wake_member(project, member, session, e, words=None, due=False, owing=None):
         kept, locks, hold = locks + hold, [], []
         return "woken", kept   # its lifecycle lock and its wake lock kept for the push that follows
     except _Unheld:
+        checked()   # the last check again, past the wait for the busy lock: a removal or a reopening meanwhile
         return "", None
     except ReachHeld as err:
         return err.outcome(), None

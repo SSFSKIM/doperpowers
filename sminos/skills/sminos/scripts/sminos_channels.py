@@ -2368,6 +2368,18 @@ def still_owed(o, e=None, reach=False):
     return e is None or _past(e, _boundary(t, o.channel.id))
 
 
+def lies_past(o, e):
+    """Whether the event lies past the thread's boundary for the channel as
+    its own file has it now (the thread still in the channel): what a
+    deliverer asks under the thread's delivery lock before it accepts what
+    an earlier pass left for the event (an admitted receipt), which an
+    Owing taken before a removal and an add would settle below the
+    boundary since written. A hand-off changes no boundary."""
+    threads = sminos.threads_module()
+    t = threads.get(o.thread)
+    return t is not None and o.channel.id in threads.held_set(t) and _past(e, _boundary(t, o.channel.id))
+
+
 def owed_here(channel):
     """What `daemon owed` counts for a channel: (Debt, its owed events, or
     None where its delivery record cannot be read) for each thread of this
@@ -2428,7 +2440,8 @@ def _project_now(session):
     if best is None or best[1]["kind"] == "joined":
         return best and best[0]
     dest = str(best[1].get("project") or "") if best[1].get("reason") == "moved" else ""
-    p = sminos.known_project(dest) if dest and not sminos.is_channel_id(dest) else None
+    # A synced event's `project`: checked as a name before any lookup reads a path built from it.
+    p = sminos.known_project(dest) if dest and sminos.valid_name(dest) and not sminos.is_channel_id(dest) else None
     last = threads.in_effect(sminos._own_events(p, session, identity=identity)) if p is not None else None
     return p if last is not None and last["kind"] == "joined" else None
 

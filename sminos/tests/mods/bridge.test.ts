@@ -2283,24 +2283,15 @@ describe('deliver', () => {
     ])
   })
 
-  test("a channel's key names the thread it is owed to: a writer's seq given to one thread is no repeat for another, and a project's mark is not a thread's", async () => {
+  test("a channel's key scopes its project by the thread (`<channel>#<thread>`): one thread's seq is no repeat for another, nor for the channel", async () => {
     const h = harness()
     await h.ready()
-    const a = { project: 'c1', thread: 't-a', writer: 'far/human', seq: 7 }
-    const b = { ...a, thread: 't-b' }
+    const a = { project: 'c1#t-a', writer: 'far/human', seq: 7 }
     expect(await h.command({ op: 'deliver', key: a, text: 'to a' })).toMatchObject({ result: { submitted: true } })
-    expect(await h.command({ op: 'deliver', key: b, text: 'to b' })).toMatchObject({ result: { submitted: true } })
+    expect(await h.command({ op: 'deliver', key: { ...a, project: 'c1#t-b' }, text: 'to b' })).toMatchObject({ result: { submitted: true } })
     expect(await h.command({ op: 'deliver', key: { ...a, seq: 6 }, text: 'a 6' })).toMatchObject({ result: { duplicate: true } })
-    expect(await h.command({ op: 'deliver', key: { project: 'c1', writer: 'far/human', seq: 7 }, text: 'no thread' })).toMatchObject({ result: { submitted: true } })
-    expect(await h.command({ op: 'deliver', key: { ...a, thread: '' }, text: 'x' })).toMatchObject({ ok: false })
-    expect(await h.command({ op: 'deliver', key: { thread: 't-a', writer: 'far/human', seq: 8 }, text: 'x' })).toMatchObject({ ok: false })
-    expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual(['to a', 'to b', 'no thread'])
-    expect(h.ofType('delivered').map((e) => [e.key, e.outcome])).toEqual([
-      [a, 'submitted'],
-      [b, 'submitted'],
-      [{ ...a, seq: 6 }, 'duplicate'],
-      [{ project: 'c1', writer: 'far/human', seq: 7 }, 'submitted'],
-    ])
+    expect(await h.command({ op: 'deliver', key: { ...a, project: 'c1' }, text: 'channel' })).toMatchObject({ result: { submitted: true } })
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual(['to a', 'to b', 'channel'])
   })
 
   test("a hello's kept marks are honored as they come: a bare mark guards only keys naming no project, a scoped one only its project", async () => {
