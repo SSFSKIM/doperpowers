@@ -72,7 +72,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) The plan's two reviews (a design read, eleven findings; a buildability read, fourteen), the holder's rulings on them, and this revision against the code at `bc528d6d` (sminos 1.54.1): a channel's message is owed to a thread by its thread id, nothing a channel's message causes on the uplink's consumer thread pushes or launches, and eleven milestones where there were nine (Decision Log, "The plan's two reviews").
 - [x] (2026-11-22) The third read of the plan, over what the revision rewrote (fourteen P1, two P2), the holder's rulings on it, and this last revision before the build: no absorbed id is kept, no delivery over an open journal entry, a seat made again over a purged seat's session is that thread, the three paths the consumer thread still had are bounded or deferred, and what a verdict is good for is said (Decision Log, "The third read").
 - [x] (2026-11-22) The fourth read, narrow, of what the third revision changed (six P1, four P2: "ready with the listed edits, no further design round"); all ten written in, and the header re-pinned to the branch with the composite's amendment merged (`f2c737f2`) (Decision Log, "The fourth read").
-- [ ] M1 — Names through a channel. (Built `de0ed736`; gates GREEN; sminos-idle 32,266; sminos-channels 1m49s; in review.)
+- [x] (2026-11-22) M1 — Names through a channel. `de0ed736`, fixes `6e2b7b90`, `78b07c42`; reviewed clean at the third review. Gates GREEN on `78b07c42`; sminos-idle 32,191; sminos-channels 1m37s.
 - [ ] M2 — What a channel owes a thread: the debt and its transitions.
 - [ ] M3 — Pushing and waking from a channel's log.
 - [ ] M4 — Saying into a channel: the doors, the reply, the read.
@@ -3568,11 +3568,26 @@ them today.
     into (`org_scope`); the sender's own project and a verb's target are not
     filtered by it. Two answers are refused as `alias#short`, with no
     project.
-  - `thread_of_row` checks that what the last sweep kept is the same row,
-    reads once more if not, and answers None otherwise. `claimants` gives a
-    statement to the episode its time falls in (the first episode for one
-    before any), and an episode a seat stamped counts as that seat's
-    thread. `once_in` and `claimants` leave out sessions the log hides from
+  - *(As amended by its reviews, `6e2b7b90`, `78b07c42`.)* Each roster row
+    carries what the sweep that produced it read (`_SweptRow`, a `Member`
+    with a `swept` field), and `thread_of_row` answers that reading, after
+    any later sweep, and never reads again; a row rebuilt with `_replace`
+    carries none, so a caller asks `thread_of_row` before it transforms a
+    row. `claimants` gives a statement to the episode of the `joined` it
+    took effect under, in fold order, never by time; the episode split and
+    mark rule is one function, `sminos.episode_step`, which `_projection`
+    and the channel fold both call. An episode a seat stamped counts as
+    that seat's thread. Rows of one thread (stamp, else the statement in
+    effect: `row_thread`, never used to address a row) are one row
+    wherever the roster is read (CH1's `list`, `channel show`, the pool
+    included), and a bare alias folds them into the roster's row before
+    any name is matched, so a name only a stale row held reaches nothing.
+    A row whose stamp and statement disagree is neither in nor out and is
+    refused, with no recipient offered (the sentence is a draft).
+    `reach_in(..., how=True)` adds what the name matched, and a seat found
+    through a channel binds its session only for `alias#short`, a
+    session's id, or an alias it held before; `alias#short` matches the
+    current alias and the current session's prefix at any length. `once_in` and `claimants` leave out sessions the log hides from
     this reader.
   - `sminos help` is not changed in M1 (M4 rewrites it).
   - `channel add` finds its target through `find_target`, so it now takes a
