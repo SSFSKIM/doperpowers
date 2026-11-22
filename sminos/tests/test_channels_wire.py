@@ -154,6 +154,24 @@ class Checker(unittest.TestCase):
             got = wire.published([f], [DESK, LOBBY], self.before, welcomed={1})
             self.assertEqual(len(got), 1, (f, got))
 
+    def test_the_older_copy_suites_upload_order_is_first_receipt(self):
+        """older_channel_wire.first_received (test-older-cli.sh's wire check) reads the order the stand-in first
+        received each position in, across frames and within one: a `retired` sent before the older `joined`
+        reads so, and a position sent again counts where it first came."""
+        import older_channel_wire
+        joined, retired = ev(W, 1, "joined", session=S2), ev(W, 2, "retired", session=S2, reason="moved")
+
+        class Ep:
+            cv = threading.Lock()
+
+            def __init__(self, *frames):
+                self.received = [(1, {"t": "events", "project": LOBBY, "events": list(f)}) for f in frames]
+        self.assertEqual(older_channel_wire.first_received(Ep([joined, retired]), LOBBY), [(W, ["joined", "retired"])])
+        self.assertEqual(older_channel_wire.first_received(Ep([retired, joined]), LOBBY), [(W, ["retired", "joined"])])
+        self.assertEqual(older_channel_wire.first_received(Ep([retired], [joined, retired]), LOBBY),
+                         [(W, ["retired", "joined"])])
+        self.assertEqual(older_channel_wire.first_received(Ep([joined]), DESK), [])
+
     def test_the_store(self):
         home = tempfile.mkdtemp(dir=BASE)
         log = os.path.join(home, "projects", LOBBY, "log")

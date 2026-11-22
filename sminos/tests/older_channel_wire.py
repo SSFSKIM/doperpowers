@@ -12,7 +12,8 @@ the store as the older copy left it, clean over an uplink run on it").
         before this), a real uplink run on it until every event of this
         machine's writers in each channel's log is up; then one line for each
         such writer, "<writer's session or `human`> <kind>...", in the order
-        the stand-in took them, and "breaches <n>" with each breach of
+        the stand-in first received them (its frames in order, and each
+        frame's events in order), and "breaches <n>" with each breach of
         channel_wire.published (the frames) and channel_wire.written (the
         store) after it, one a line.
 
@@ -25,7 +26,7 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-sys.path.insert(0, os.environ["SMINOS_SCRIPTS"])
+sys.path.insert(0, os.environ.get("SMINOS_SCRIPTS") or os.path.join(os.path.dirname(HERE), "skills", "sminos", "scripts"))
 sys.path.insert(0, HERE)
 
 import channel_wire as wire  # noqa: E402
@@ -52,6 +53,22 @@ def own_events(cid, machine):
             if e["writer"].split("/")[0].split(".")[0] == machine]
 
 
+def first_received(ep, cid):
+    """[(writer, [kind...])]: each writer's events in a channel's log in the order the stand-in first received
+    them, across its frames and within each frame (a position sent again is counted where it first came), the
+    writers by name: the upload order itself, never the positions sorted."""
+    seen, out = set(), {}
+    with ep.cv:
+        frames = [f for _, f in ep.received if f.get("t") == "events" and f.get("project") == cid]
+    for f in frames:
+        for e in f.get("events") or []:
+            key = (e.get("writer"), e.get("seq"))
+            if key not in seen:
+                seen.add(key)
+                out.setdefault(e.get("writer"), []).append(str(e.get("kind")))
+    return sorted(out.items())
+
+
 def check(path, machine, ids):
     before = kept(path)
     sminos.write_json(rl10.identity_path(), {
@@ -72,9 +89,9 @@ def check(path, machine, ids):
         ep.wait_until(lambda: all(seq in ep.logs.get(cid, {}).get(w, {}) for cid, w, seq in want), timeout=60)
         time.sleep(0.5)   # what a tick after the uploads sends
         for cid in ids:
-            for w, events in sorted(ep.logs.get(cid, {}).items()):
+            for w, kinds in first_received(ep, cid):
                 who = "human" if w.endswith("/human") else w.split("/", 1)[1]
-                print(who, " ".join(events[seq]["kind"] for seq in sorted(events)))
+                print(who, " ".join(kinds))
         breaches = wire.published(ep.received, ids, before) + wire.written(os.environ["SMINOS_HOME"], ids, machine,
                                                                            before)
         print("breaches %d" % len(breaches))

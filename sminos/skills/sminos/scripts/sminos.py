@@ -5625,10 +5625,10 @@ def _reconcile_channel(project, events, by_session):
     lock). A closed session's `joined` is left as it is until the session
     runs again; nothing else of _reconcile runs (no join, no end, no thread
     made or adopted, no hand-off). Before that, an entry an older copy
-    left on a thread of such a session owing the channel an event no copy
-    of this code appends there is voided (void_owed_to_channel), whatever
-    holds the session: it can never be finished, and it would keep the
-    thread out of its own project."""
+    left on a thread of such a session owing the channel's log anything is
+    finished as every finisher does it (sminos_threads.finish, which voids
+    it, replaying none of it), whatever holds the session: it would keep
+    the thread out of its own project."""
     latest, joined, _, _ = log_memo(events, "memberships", _memberships)
     threads, out = threads_module(), []
     for sid, e in joined.items():
@@ -5637,7 +5637,8 @@ def _reconcile_channel(project, events, by_session):
         t = threads.thread_of(sid)
         if t is not None and (t.get("pending") or {}).get("project") == project.id:
             try:
-                threads.void_owed_to_channel(t["thread"], project, lock_until=time.time() + 1)
+                if not finish_thread(t["thread"], project=project, lock_until=time.time() + 1):
+                    continue
             except (OSError, LockBusy) as err:
                 warn("an entry of %s owing %s was not voided yet: %s" % (sid[:8], project.name,
                                                                          err or "its lock is busy"))

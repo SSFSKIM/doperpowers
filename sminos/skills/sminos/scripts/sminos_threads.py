@@ -1875,6 +1875,8 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
             else:
                 _change(thread_id, lambda view, raw: _release(view, raw, entry), deadline)
             return not (get(thread_id) or {}).get("pending")
+        if sminos.is_channel_id(str(entry.get("project") or "")):
+            return _void_into_channel(thread_id, entry, deadline)   # before any effect is replayed
         if project is None or project.id != entry.get("project"):
             project = sminos.known_project(str(entry.get("project") or ""))
         if project is None:
@@ -1960,40 +1962,53 @@ def _finish(thread_id, appended, project, append, deadline, before, settle, stop
             return not (get(thread_id) or {}).get("pending")
 
 
-def void_owed_to_channel(thread_id, channel, lock_until=None):
-    """An open entry whose events go to a channel's log and owe one this
-    code's lifecycle never appends there (anything but a `retired`): an
-    older copy's, begun while it took the channel for the session's
-    project (an interrupted return owing its `joined`, a release its
-    `renamed`, a hand-off). No finisher of this code can carry it, and while
-    it stands the thread is held out of its own project (an ordinary
-    `joined` waits for the record's entry). Cleared in one write, nothing of
-    it carried (its events, its settlement, its carry, its queued `next`),
-    under the record's finisher lock and then its store lock, only while it
-    is still the entry read there; said in daemon.log before the write
-    lands, so a cut says it again (the frontier review's B1). The entry
-    voided, or None (no such entry; LockBusy past `lock_until`)."""
-    voided = []
+def _void_into_channel(thread_id, entry, deadline):
+    """An entry whose events go to a channel's log: an older copy's, begun
+    while it took the channel for the session's project (a return owing
+    its `joined`, a release its `renamed`, a hand-off its `retired`
+    `continued` and `joined`, an end its `retired`). No copy of this code
+    writes a thread's fact into a channel's log (the one write it makes
+    there, the undo of an older copy's `joined`, is the channel's
+    reconciliation's, never a replay's), so nothing of it is replayed: no
+    event, no carry, no settlement, no merge, no stop, no seat brought in
+    line, no queued `next`. Under the finisher lock (finish), before any of
+    those, whoever finishes it (the frontier review's B1, M8's review).
+    What stays is the record's own: an absorption is rolled back (`was`,
+    `unset`: the provisional record keeps its session, one owner) and its
+    reservation released; any other entry is cleared, an end's record set
+    aside or deleted as its `last` says. Said in daemon.log before the
+    write, as intent: a cut says it again; a notice that cannot be written
+    is said on stderr. True when the record has no open entry left."""
+    events = [e for e in entry.get("events") or [] if isinstance(e, dict)]
+    line = "voiding: thread %s's %s entry, which owes %s to channel %s: none of it is replayed" % (
+        thread_id[:8], entry.get("op"), ", ".join(str(e.get("kind")) for e in events) or "no event",
+        sminos.project_label(str(entry.get("project") or "")))
+    if entry.get("op") == "absorb" and entry.get("other"):
+        line += "; the absorption of %s is rolled back" % str(entry["other"])[:8]
+    elif (entry.get("next") or {}).get("op"):
+        line += "; its queued %s is dropped" % entry["next"]["op"]
+    try:
+        sminos.daemon_log(line)
+    except OSError as e:
+        sminos.warn("%s (not written to daemon.log: %s)" % (line, e))
+    if entry.get("op") == "absorb" and entry.get("other"):
+        _undo(thread_id, entry, deadline)
+        _change(entry["other"], lambda view, raw: _release(view, raw, entry), deadline)
+        return not (get(thread_id) or {}).get("pending")
 
-    def void(view, raw):
-        entry = view.get("pending") or {}
-        events = [e for e in entry.get("events") or [] if isinstance(e, dict)]
-        if entry.get("op") == RESERVED or entry.get("project") != channel.id \
-                or not any(e.get("kind") != "retired" for e in events):
+    def clear(view, raw):
+        if (view.get("pending") or {}).get("id") != entry["id"]:
             return False
-        with contextlib.suppress(OSError):
-            sminos.daemon_log("void: thread %s's %s entry owed %s to channel %s, whose log takes no such event "
-                              "of this code's; cleared, nothing of it carried" % (
-                                  thread_id[:8], entry.get("op"),
-                                  ", ".join(str(e.get("kind")) for e in events if e.get("kind") != "retired"),
-                                  channel.name))
         raw.pop("pending", None)
-        voided.append(entry)
+        last = entry.get("last")
+        if last == "purge" and (not entry.get("settle") or view["current"] == entry["settle"]):
+            return "delete"
+        if last == "aside" and view["opened"] == "human":
+            return "aside"
         return True
 
-    with _finish_lock(thread_id, lock_until):
-        _change(thread_id, void, lock_until)
-    return voided[0] if voided else None
+    _change(thread_id, clear, deadline, bump=True)
+    return not (get(thread_id) or {}).get("pending")
 
 
 def _merge_absorbed(thread_id, entry, other, deadline):

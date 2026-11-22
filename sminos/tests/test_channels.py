@@ -585,14 +585,106 @@ class ChannelReconcile(Machine):
             self.assertIsNone(threads.get(tid).get("pending"), "%s: the entry owing the channel is voided" % op)
             with open(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")) as f:
                 said = f.read()
-            self.assertIn("void: thread %s's %s entry owed %s to channel desk-integration" % (tid[:8], op,
-                          "joined" if op == "return" else "renamed"), said, op)
+            self.assertIn("voiding: thread %s's %s entry, which owes %s to channel desk-integration: none of it is "
+                          "replayed" % (tid[:8], op, "joined" if op == "return" else "renamed"), said, op)
             want = [("joined", None), ("retired", "ended")] if op == "return" else \
                 [("joined", None), ("retired", "moved")]
             self.assertEqual(self.kinds(DESK, sid), want, "%s: nothing of this code's but the undo" % op)
             self.assertEqual(sminos.threads_module().in_effect(sminos.own_events_of(self.p, sid))["kind"], "joined",
                              "%s: a member of its own project again" % op)
             self.assertIn(sid, [m.session for m in sminos.view_of(self.p).members], op)
+
+    def thread_for(self, sid):
+        records.establish(sid, records.default_provenance())
+        self.live(sid, self.root)
+        self.tick()
+        return sminos.threads_module().thread_of(sid)["thread"]
+
+    def older_entry(self, tid, entry, **fields):
+        """An entry an older copy began addressed to the channel, cut after the record's write: `fields` the
+        record's change, the entry's `was` and `unset` (as 1.51.0 and 1.52.0 keep them for an absorption)."""
+        threads = sminos.threads_module()
+
+        def cut(view, raw):
+            keys = [*fields, "sessions"]
+            entry.setdefault("was", {k: raw[k] for k in keys if k in raw})
+            entry.setdefault("unset", [k for k in keys if k not in raw])
+            raw.update(fields)
+            if fields.get("current"):
+                raw["sessions"] = [x for x in raw.get("sessions") or [] if x != fields["current"]] + [fields["current"]]
+            raw["pending"] = {"id": "f%031d" % len(raw["sessions"]), "at": sminos.now(), "project": DESK, **entry}
+            return True
+        self.assertTrue(threads._change(tid, cut))
+        sminos.forget_caches()
+        return threads.get(tid)["pending"]
+
+    def test_a_legacy_absorption_into_a_channel_is_rolled_back_one_owner_kept(self):
+        """M8's review: an absorption an older copy began in the channel's log, cut with the job current on the
+        continuing record and the provisional one still there (reserved or not), is rolled back, not voided
+        whole: the continuing record has its session again, the provisional record keeps the job, and one
+        record holds each session."""
+        threads = sminos.threads_module()
+        for n, reserved in ((5, False), (6, True)):
+            a, job = "6c00002%d-0000-4000-8000-0000000000f%d" % (n, n), "6c00003%d-0000-4000-8000-0000000000f%d" % (n, n)
+            tid = self.thread_for(a)
+            self.older_join(a)
+            other = self.thread_for(job)
+            self.assertNotEqual(other, tid)
+            entry = self.older_entry(tid, {"op": "absorb", "other": other, "events": [
+                {"kind": "retired", "session": a, "by": "", "reason": "continued", "to": job, "thread": tid},
+                {"kind": "joined", "session": job, "alias": "worker", "thread": tid}]}, current=job)
+            if reserved:
+                self.assertTrue(threads._change(other, lambda view, raw: raw.update(pending={
+                    "id": entry["id"], "op": threads.RESERVED, "by": tid, "at": sminos.now(), "project": DESK,
+                    "events": []}) or True))
+            sminos.forget_caches()
+            self.assertEqual(threads.get(tid)["current"], job, "cut: two records current for the job")
+            for _ in range(2):
+                self.tick()
+            t, o = threads.get(tid), threads.get(other)
+            self.assertEqual((t["current"], t.get("pending")), (a, None), "reserved %s: the claim rolled back" % reserved)
+            self.assertNotIn(job, t["sessions"])
+            self.assertEqual((o["current"], o.get("pending")), (job, None), "the provisional record keeps the job")
+            self.assertEqual(threads.thread_of(job)["thread"], other)
+            self.assertEqual(threads.thread_of(a)["thread"], tid)
+            self.assertNotIn(("retired", "continued"), self.kinds(DESK, a))
+            self.assertEqual(self.kinds(DESK, job), [], "nothing of the job in the channel's log")
+
+    def test_ordinary_replay_appends_no_retirement_into_a_channel(self):
+        """M8's review: a project's own pass (the daemon ticks projects before channels; join on sight finishes an
+        open entry) meets an older copy's hand-off owing `retired` `continued` and `joined` in the channel's log,
+        and an end owing `retired` `ended` there: none of it is appended, and the cleanup still undoes the live
+        older `joined` with its `retired` `moved`."""
+        threads = sminos.threads_module()
+        a, job = "6c000041-0000-4000-8000-0000000000a1", "6c000042-0000-4000-8000-0000000000a2"
+        tid = self.thread_for(a)
+        self.older_join(a)
+        self.live(job, self.root)
+        self.older_entry(tid, {"op": "advance", "events": [
+            {"kind": "retired", "session": a, "by": "", "reason": "continued", "to": job, "thread": tid},
+            {"kind": "joined", "session": job, "alias": "worker", "thread": tid}]}, current=job)
+        sminos.forget_caches()
+        sminos.finish_thread(tid, project=self.p)   # a project's replay, as join on sight makes it
+        self.assertEqual(self.kinds(DESK, a), [("joined", None)], "the replay appended nothing to the channel")
+        self.assertEqual(threads.get(tid).get("pending"), None)
+        self.tick()
+        self.assertEqual(self.kinds(DESK, a), [("joined", None), ("retired", "moved")], "the cleanup's undo")
+        self.assertEqual(self.kinds(DESK, job), [])
+        b = "6c000043-0000-4000-8000-0000000000a3"
+        tid = self.thread_for(b)
+        self.procs[-1].kill()   # its terminal closed: nothing holds it
+        self.procs[-1].wait()
+        self.older_join(b)
+        self.older_entry(tid, {"op": "end", "last": "aside", "events": [
+            {"kind": "retired", "session": b, "by": "", "reason": "ended", "thread": tid}]},
+            ended={"at": sminos.now(), "reason": "ended", "by": "", "pid": None})
+        for _ in range(2):
+            self.tick()
+        self.assertEqual(self.kinds(DESK, b), [("joined", None)], "an end's retirement is not appended there either")
+        self.assertIsNone((threads.get(tid) or {}).get("pending"))
+        with open(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")) as f:
+            written = [line for line in f if line.split(" ", 1)[1].startswith("voiding: thread %s's end entry" % tid[:8])]
+        self.assertEqual(len(written), 1, "said once")
 
     def test_a_resumes_roster_gives_no_tag_through_a_channel(self):
         """The frontier review's B3: a message an older copy sent to a peer

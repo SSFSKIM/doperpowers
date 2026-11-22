@@ -41,7 +41,9 @@
 #   being enrolled: the channel registered as the org's directory registers it, the thread placed in it by a
 #   request of this machine's person, its statement answering it, and a channel-env of its own): its `list`,
 #   `list --json`, tagged `say`, `send` and `daemon tick` exit and print what they do over the same store
-#   without channels (normalised: ids, paths, times), launch as they did, and leave the record's set, positions
+#   without channels (normalised: ids, paths, times), launch as they did, land and fare as they did (each message
+#   in the log it went to, the thread's delivery record, the outcomes, what the engine's inbox took: 1.27 refuses
+#   both, 1.51 holds both, 1.52 wakes the thread and pushes each once), and leave the record's set, positions
 #   and answer as written; its tick reconciles the channel as a project with no member, and its `projects`
 #   lists it as one, where this code's lists none. A `joined` the copy writes for the session (1.27's, once its
 #   human reopens it) is followed at this code's next reconciliation by a statement of the same set; so is a
@@ -53,7 +55,8 @@
 #   in between, it is listed in neither), leaves it a member of its one project with its set as it was and a
 #   `retired` `moved` in the channel's log; and an uplink run on that store (older_channel_wire.py, the store
 #   enrolled then) is clean by channel_wire.py, baselined on the store as the older copy left it: the older
-#   `joined` uploaded in its place, this code's `retired` after it, and nothing else of this code's. 1.52.0 has
+#   `joined` uploaded in its place, this code's `retired` after it (the order the stand-in first received them,
+#   across frames and within one), and nothing else of this code's. 1.52.0 has
 #   no every-copy case (it wakes the thread its human opened, as this code does): over channels it is held to
 #   what it does without them.
 #
@@ -581,7 +584,7 @@ for value, name in zip(subs[::2], subs[1::2]):
 text = re.sub(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z?", "<ts>", text)
 text = re.sub(r"\b\d+(\.\d+)?[smhd]\b", "<age>", text)
 sys.stdout.write(text)' "$SID" "<sid>" "${SID:0:8}" "<short>" "$THREAD" "<thread>" "${THREAD:0:8}" "<tshort>" \
-    "$PROJECT" "<project>" "${PROJECT:0:8}" "<pshort>" "$REPO" "<repo>" "$(dirname "$HOME")" "<case>" <<<"$1"
+    "$PROJECT" "<project>" "${PROJECT:0:8}" "<pshort>" "$CHANNEL" "<channel>" "$REPO" "<repo>" "$(dirname "$HOME")" "<case>" <<<"$1"
 }
 older_over() { # the older copy's verbs over the case's store: VERBS, each one's exit and output, normalised,
   # its tick's line for the channel, the channel's own, apart in TICK_CHANNEL; with KEYS set, the thread record's
@@ -606,7 +609,36 @@ $out
 "
     [ -z "${KEYS:-}" ] || assert_equals "$(record_keys)" "$KEYS" "after its $label the record's set, positions and answer are as written"
   done
-  VERBS="$VERBS== launches $(launches) $(older_launches)"
+  VERBS="$VERBS== launches $(launches) $(older_launches)
+== delivery
+$(normal "$(delivery)")"
+}
+delivery() { # what became of the older copy's say and send: each message in the log it landed in (its writer, kind
+  # and recipients), the thread's delivery record there (held marks, settled prefixes), the outcomes, and what the
+  # engine's inbox took for the session
+  py 'import glob, json, os, sys
+home, sid = sys.argv[1], sys.argv[2]
+for log in sorted(glob.glob(os.path.join(home, "projects", "*", "log"))):
+    pid = os.path.basename(os.path.dirname(log))
+    for path in sorted(glob.glob(os.path.join(log, "*.jsonl"))):
+        for line in open(path):
+            e = json.loads(line)
+            if "from the older" in str(e.get("text") or ""):
+                print("message", pid, e["writer"], e["seq"], e["kind"], [r.get("session") for r in e.get("to") or []],
+                      e["text"])
+    rec = os.path.join(home, "projects", pid, "delivered", sid + ".json")
+    if os.path.exists(rec):
+        d = json.load(open(rec))
+        for w in sorted(d):
+            if isinstance(d[w], dict):
+                print("delivered", pid, w, "settled", d[w].get("settled", 0), "held", sorted(d[w].get("held") or []))
+    out = os.path.join(home, "projects", pid, "outcomes.jsonl")
+    if os.path.exists(out):
+        for line in open(out):
+            o = json.loads(line)
+            print("outcome", pid, json.dumps({k: o[k] for k in ("event", "session", "outcome") if k in o}, sort_keys=True))
+' "$SMINOS_HOME" "$SID"
+  frames "$SID" | sed 's/^/pushed /'
 }
 stated() { # this code's view of the session's row: the set its log states there, "<none>" for no row
   here_py 'import sminos
@@ -627,7 +659,24 @@ channel_store() { # label — the copy's verbs over a store with channels, again
   assert_equals "$KEYS" '[["'"$CHANNEL"'"], {"'"$CHANNEL"'": {"alpha/human": 1}}, [["'"$CHANNEL"'", "'"$REQUEST"'"]], null]' \
     "the record holds the set, where its membership began and the request it answered"
   older_over
-  assert_equals "$VERBS" "$plain" "each verb exits and prints as it did without channels, and launches as it did"
+  assert_equals "$VERBS" "$plain" "each verb exits and prints as it did without channels, launches as it did, and its messages land and fare as they did"
+  local fate
+  fate="$(normal "$(delivery)")"
+  assert_not_contains "$fate" "<channel>" "neither message is in the channel's log"
+  case "$(version_of "$OLDER")" in
+    1.27.*) assert_equals "$fate" "" "1.27 refuses both (the session ended, as it reads it): neither lands anywhere" ;;
+    1.51.*)
+      assert_equals "$(grep -c '^message <project> alpha/human [12] human \[.<sid>.\]' <<<"$fate")" 2 \
+        "1.51 records both in the thread's project, addressed to the session"
+      assert_contains "$fate" "delivered <project> alpha/human settled 0 held [[1, '<thread>'], [2, '<thread>']]" \
+        "and holds both for the thread, pushing neither" ;;
+    1.52.*)
+      assert_equals "$(grep -c '^message <project> alpha/human [12] human \[.<sid>.\]' <<<"$fate")" 2 \
+        "1.52 records both in the thread's project, addressed to the session"
+      assert_equals "$(grep '^pushed\|^delivered' <<<"$fate")" "$(printf '%s\n' \
+        "delivered <project> alpha/human settled 2 held []" "pushed hello from the older say" \
+        "pushed a send from the older copy")" "wakes the thread and pushes each once, settling both" ;;
+  esac
   assert_equals "$TICK_CHANNEL" "desk-integration: reconciled 0 · published 0 · delivered 0" \
     "its tick reconciles the channel as a project with no member"
   KEYS=""
