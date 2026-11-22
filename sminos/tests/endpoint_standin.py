@@ -862,7 +862,7 @@ def hand(source, dest, cursor_path, page=None, order=None):
         if fresh:
             held = {"at": hello["at"], "after": dict(hello["have"])}
         wrapped = source.accepted(project, held["after"])
-        if page is not None and fresh:
+        if (page is not None or order) and fresh:
             # The backlog's end, writer by writer: what the source holds now.
             held["backlog"] = {}
             for w in wrapped:
