@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -44,12 +45,12 @@ class Client:
     """A connection to a stand-in, as sminos's uplink holds one: its hello,
     then frames up, and every frame that came down kept."""
 
-    def __init__(self, ep_dir, token):
+    def __init__(self, ep_dir, token, capabilities=(), **hello):
         d = endpoint_standin.read_json(os.path.join(ep_dir, "rl10.json"))
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.connect(d["socket"])
         self.buf, self.down, self.asked = b"", [], 0
-        self.up({"t": "hello", "token": token, "capabilities": []})
+        self.up({"t": "hello", "token": token, "capabilities": list(capabilities), **hello})
 
     def up(self, *frames):
         self.sock.sendall(b"".join(json.dumps(f).encode() + b"\n" for f in frames))
@@ -147,6 +148,223 @@ class Opened(unittest.TestCase):
             c2.close()
         finally:
             ep.stop()
+
+
+C1 = "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c"   # channels' ids (version 8)
+C2 = "0123abcd-4567-8abc-a123-456789abcdef"
+C3 = "9e8d7c6b-5a49-8382-b1a0-0f1e2d3c4b5a"
+APP = "7d2b9c40-1f3e-4a6b-8c5d-9e0f1a2b3c4d"
+S1, S2, S3 = ("6c00000%d-0000-4000-8000-0000000000c%d" % (n, n) for n in (1, 2, 3))
+
+
+def member(sid, project=APP, lane="A", **fields):
+    return {"t": "member", "session": sid, "alias": "m", "project": project, "lane": lane, "state": "idle",
+            **fields}
+
+
+class Known(unittest.TestCase):
+    """`known`, MAWS's rule (its master at 8ae3b0843: the registry's
+    #knownNow, rl10/members.ts's restatement and memberChannels): the logs
+    the live connection opened without `follow` whose id a held member
+    names, by its `project` and, while the hello listed `channels`, by a
+    lane A member's `channels` (its distinct channels' ids, up to 128); a
+    member frame whose project is a channel's id is that session gone. While
+    no connection is live, or a welcome's restatement is not closed by
+    `restated`, the last answer stands, and a held member the restatement
+    left out is gone at its `restated`. And the welcome lists `channels`
+    only to a hello that listed it."""
+
+    def connect(self, ep, capabilities=("channels",), **hello):
+        c = Client(ep.dir, ep.token, capabilities, **hello)
+        self.addCleanup(c.close)
+        welcome = c.read(lambda f: f.get("t") == "welcome")
+        return c, welcome
+
+    def settle(self, c, ep):
+        """Every frame sent before it is taken (a words? with no project is answered at once, in order)."""
+        c.asked += 1
+        sentinel = "known-%d" % c.asked
+        c.up({"t": "words?", "id": sentinel})
+        c.read(lambda f: f.get("t") == "words" and f.get("id") == sentinel)
+
+    def test_the_rule_on_hand_fed_frames(self):
+        ep = started("known", capabilities=["access", "channels"])
+        self.addCleanup(ep.stop)
+        self.assertEqual(ep.known(), set(), "no connection and no answer yet: nothing known")
+        c, welcome = self.connect(ep)
+        self.assertEqual(welcome["capabilities"], ["access", "channels"])
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}},
+             {"t": "hello", "project": C1, "name": "desk", "have": {}},
+             {"t": "hello", "project": C2, "name": "lobby", "have": {}, "follow": True},
+             member(S1, channels=[C1, C2, C3, "not-a-channel", APP]))
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), set(), "the restatement is open: the last answer stands")
+        c.up({"t": "restated"})
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP, C1}, "its project and the channel opened without follow: not the "
+                         "followed one, nor one not opened")
+        self.assertEqual(ep.state()["known"], sorted([APP, C1]), "in its state, for the shell suites")
+        c.up(member(S1))
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP}, "a member that states none no longer counts")
+        c.up(member(S2, lane="B", channels=[C1]))
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP}, "a lane B member's channels never count")
+        valid = ["%08x-0000-8000-8000-000000000000" % n for n in range(128)]
+        c.up(member(S3, channels=valid + [C1]))
+        self.settle(c, ep)
+        self.assertNotIn(C1, ep.known(), "past 128 distinct channels' ids nothing counts")
+        c.up(member(S3, channels=["not-a-channel"] * 100 + [valid[0]] * 40 + [C1]))
+        self.settle(c, ep)
+        self.assertIn(C1, ep.known(), "ids that are no channel's, and one id again, use none of the 128: past raw "
+                      "slot 128, a valid id still counts")
+        c.up(member(S3, channels=[C1]), member(S1, project=C1, channels=[C1]))
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP, C1}, "S3's counts")
+        self.assertNotIn(S1, ep.members, "a member frame naming a channel as its project is that session gone")
+        c.up({"t": "member", "session": S3, "gone": True})
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP}, "S2, lane B, still names the app; S3 gone")
+        c.up({"t": "member", "session": S2, "gone": True})
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), set(), "no member: nothing known")
+
+    def test_without_the_capability_on_the_hello(self):
+        ep = started("known-old", capabilities=["access", "channels"])
+        self.addCleanup(ep.stop)
+        c, welcome = self.connect(ep, capabilities=())
+        self.assertEqual(welcome["capabilities"], ["access"], "the welcome lists channels only to a hello that did")
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}},
+             {"t": "hello", "project": C1, "name": "desk", "have": {}},
+             member(S1, channels=[C1]), {"t": "restated"})
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP}, "a member's channels count only while the hello listed channels")
+
+    def test_a_reconnection_keeps_the_last_answer_until_its_restatement_closes(self):
+        ep = started("known-again", capabilities=["channels"])
+        self.addCleanup(ep.stop)
+        c, _ = self.connect(ep)
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}},
+             {"t": "hello", "project": C1, "name": "desk", "have": {}},
+             member(S1, channels=[C1]), member(S3), {"t": "restated"})
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP, C1})
+        c.close()
+        ep.wait_until(lambda: ep.current is None)
+        self.assertEqual(ep.known(), {APP, C1}, "away: the last answer stands, a restart is not every session ending")
+        c2, _ = self.connect(ep)
+        ep.wait_until(lambda: ep.current is not None and ep.current.number == 2)
+        self.assertEqual(ep.known(), {APP, C1}, "restating, nothing opened yet: the last answer stands")
+        c2.up({"t": "hello", "project": C1, "name": "desk", "have": {}, "follow": True},
+              {"t": "hello", "project": APP, "name": "app", "have": {}}, member(S3))
+        self.settle(c2, ep)
+        self.assertEqual(ep.known(), {APP, C1}, "still restating: S1's frame not restated yet is no reason to change")
+        c2.up({"t": "restated"})
+        self.settle(c2, ep)
+        self.assertNotIn(S1, ep.members, "S1, left out of the restatement, is gone at its restated")
+        self.assertEqual(ep.known(), {APP}, "the desk, followed on this connection and named by no held member, "
+                         "is known no more")
+        c2.up({"t": "hello", "project": C1, "name": "desk", "have": {}}, member(S3, channels=[C1]))
+        self.settle(c2, ep)
+        self.assertEqual(ep.known(), {APP, C1}, "its last hello of each, and the members held, decide")
+
+    def test_a_state_read_as_a_connection_is_installed_keeps_the_last_answer(self):
+        """The new connection is `current` and its restatement open in one
+        step: a read between the two (here, inside the policy's write, which
+        runs before the welcome) never takes the new connection's empty
+        hellos as the answer."""
+        ep = started("known-gap", capabilities=["channels"])
+        self.addCleanup(ep.stop)
+        c, _ = self.connect(ep)
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}}, member(S1), {"t": "restated"})
+        self.settle(c, ep)
+        self.assertEqual(ep.known(), {APP})
+        c.close()
+        ep.wait_until(lambda: ep.current is None)
+        ep.policy = None   # so the next hello's policy is written, between its install and its welcome
+        seen = []
+        write = endpoint_standin.write_private
+
+        def reading(path, data, mode=0o600):
+            if path.endswith("policy.json"):
+                seen.append((ep.current is not None, ep.state()["known"]))
+            return write(path, data, mode)
+        with mock.patch.object(endpoint_standin, "write_private", reading):
+            c2, _ = self.connect(ep, policy={"read_only": False, "ceiling": "default"})
+        self.assertEqual(seen, [(True, [APP])], "read in the gap: the last answer, the new connection installed")
+        self.assertEqual(ep.known(), {APP}, "and still, the restatement open")
+        c2.up({"t": "hello", "project": APP, "name": "app", "have": {}}, member(S1), {"t": "restated"})
+        self.settle(c2, ep)
+        self.assertEqual(ep.known(), {APP})
+
+    def test_a_late_frame_of_the_replaced_connection_changes_nothing(self):
+        """A member or `restated` still buffered on a connection a new one
+        replaced is that connection's, and is not applied: it neither
+        restates a member nor closes the new restatement."""
+        ep = started("known-late", capabilities=["channels"])
+        self.addCleanup(ep.stop)
+        c, _ = self.connect(ep)
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}}, member(S1), member(S3), {"t": "restated"})
+        self.settle(c, ep)
+        c2, _ = self.connect(ep)
+        ep.wait_until(lambda: ep.current is not None and ep.current.number == 2)
+        old = mock.Mock(number=1)
+        ep.answer(old, member(S1, channels=[C1]))
+        ep.answer(old, {"t": "restated"})
+        self.assertEqual(ep.unrestated, {S1, S3}, "the new restatement is still open, neither member restated")
+        self.assertFalse(ep.restatement_applied(2))
+        self.assertNotIn("channels", ep.members[S1], "the old connection's frame was not taken")
+        c2.up({"t": "hello", "project": APP, "name": "app", "have": {}}, member(S3), {"t": "restated"})
+        self.settle(c2, ep)
+        self.assertTrue(ep.restatement_applied(2))
+        self.assertEqual((S1 in ep.members, ep.known()), (False, {APP}), "the new connection's restated decides")
+
+    def test_a_frame_whose_connection_is_replaced_while_it_waits_for_the_lock_is_not_applied(self):
+        """Which connection owns a frame is read under the state lock that
+        applies it: a `restated` (or a member) of the live connection that
+        waits for the lock while a replacement is installed finds that
+        connection replaced, and closes nothing."""
+        ep = started("known-race", capabilities=["channels"])
+        self.addCleanup(ep.stop)
+        c, _ = self.connect(ep)
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}}, member(S1), {"t": "restated"})
+        self.settle(c, ep)
+        first = ep.current
+        ep.restated_conns.clear()
+        replacement = mock.Mock(number=2)
+        for frame in ({"t": "restated"}, member(S1, channels=[C1])):
+            done = threading.Event()
+            with ep.cv:
+                late = threading.Thread(target=lambda f=frame: (ep.answer(first, f), done.set()), daemon=True)
+                late.start()
+                time.sleep(0.3)   # the old connection's frame is in answer(), waiting for the lock
+                self.assertFalse(done.is_set(), "it waits for the state lock")
+                ep.install(replacement, {"t": "hello", "capabilities": ["channels"]})
+            self.assertTrue(done.wait(10))
+            self.assertEqual(ep.unrestated, {S1}, "the replacement's restatement is still open (%s)" % frame["t"])
+            self.assertFalse(ep.restatement_applied(1) or ep.restatement_applied(2), "nothing applied")
+            self.assertIn(S1, ep.members)
+            self.assertNotIn("channels", ep.members[S1], "the old connection's member frame was not taken")
+            first, replacement = replacement, mock.Mock(number=replacement.number + 1)
+            ep.restated_conns.clear()
+
+    def test_a_connection_that_ends_before_its_restated_withdraws_nothing(self):
+        ep = started("known-cut", capabilities=["channels"])
+        self.addCleanup(ep.stop)
+        c, _ = self.connect(ep)
+        c.up({"t": "hello", "project": APP, "name": "app", "have": {}}, member(S1), {"t": "restated"})
+        self.settle(c, ep)
+        c.close()
+        ep.wait_until(lambda: ep.current is None)
+        c2, _ = self.connect(ep)
+        ep.wait_until(lambda: ep.current is not None and ep.current.number == 2)
+        c2.close()
+        ep.wait_until(lambda: ep.current is None)
+        self.assertIn(S1, ep.members, "a restatement cut short withdraws nothing")
+        c3, _ = self.connect(ep)
+        c3.up({"t": "hello", "project": APP, "name": "app", "have": {}}, {"t": "restated"})
+        self.settle(c3, ep)
+        self.assertEqual((S1 in ep.members, ep.known()), (False, set()), "the next one's restated does")
 
 
 class Hand(unittest.TestCase):
@@ -385,6 +603,24 @@ class RelayFailures(unittest.TestCase):
 
 def tearDownModule():
     shutil.rmtree(BASE, ignore_errors=True)
+
+
+class WithholdAsJSON(unittest.TestCase):
+    """`withhold` given as an object, as `set` gives one to a stand-in
+    `serve` runs (CH1's M7): an upload whose form carries every field with
+    that value, `project` naming the log, is withheld `not-reachable` and
+    never kept; any other is taken."""
+
+    def test_an_upload_the_object_names_is_withheld(self):
+        ep = endpoint_standin.Endpoint(os.path.join(BASE, "withhold"), withhold={"project": P,
+                                                                               "kind": "channel-request"})
+        request = {**ev(WA, 1), "kind": "channel-request"}
+        self.assertEqual([f["refusal"]["reason"] for f in ep.take(P, [request])], ["not-reachable"])
+        self.assertEqual(ep.withheld, {P: {WA: [1]}})
+        self.assertNotIn(WA, ep.logs.get(P, {}), "never kept, so never relayed")
+        self.assertEqual(ep.take(P, [ev(WA, 2)]), [], "another kind is taken")
+        self.assertEqual(ep.take(Q, [{**request, "seq": 1}]), [], "another log is taken")
+        self.assertEqual(sorted(ep.logs[P][WA]), [2])
 
 
 if __name__ == "__main__":

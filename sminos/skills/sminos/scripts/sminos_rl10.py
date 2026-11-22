@@ -293,8 +293,9 @@ class Connection:
 # M6b): it executes `record.access`, `record.shares` and `record.owners` (sminos_rpc), which the endpoint offers only
 # while this is advertised. `locations` (the project registry's §D, §L): it keeps the org frame's `locations` and
 # `complete`, resolves by them (§E.1 to §E.3) and acknowledges each kept `gen` (`locations-kept`), so the machine's
-# MAWS makes stored statements only for it.
-CAPABILITIES = ("audience", "record", "locations")
+# MAWS makes stored statements only for it. `channels` (CH1, the channels-and-threads design's X5): a lane A thread's
+# member frame carries its declared channels while the welcome lists it, which MAWS counts for the machine's `known`.
+CAPABILITIES = ("audience", "record", "locations", "channels")
 
 
 def hello_frame(token, version, policy):

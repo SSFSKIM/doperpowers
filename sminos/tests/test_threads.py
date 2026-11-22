@@ -33,6 +33,7 @@ Run: python3 -B sminos/tests/test_threads.py
 import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import contextlib
+import glob
 import hashlib
 import io
 import json
@@ -65,6 +66,7 @@ import sminos_threads as threads  # noqa: E402
 import endpoint_standin  # noqa: E402 — the endpoint's `audience` frame, for the hub fixture
 
 VECTORS = os.path.join(HERE, "vectors", "maws", "channel-rule.json")
+CHANNEL = "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c"   # a channel's id (version 8), registered nowhere
 PIN = os.path.join(HERE, "vectors", "maws", "channel-rule.PIN.json")
 
 
@@ -938,6 +940,7 @@ def types_link(uplink, sent):
     link.plane = mock.Mock()
     link.plane.bridges.answers.return_value = None
     link.frames, link.members_sent, link.members_unsent = {}, {}, set()
+    link.serves_channels = False   # what a welcome that listed no channels leaves (CH1's M6)
     link.session_lane = LaneStub()
     return link
 
@@ -1102,6 +1105,40 @@ class SeatPurge(Machine):
                          "the session was no member: the purge owed no event")
 
 
+class ChannelPurgeRetried(SeatPurge):
+    def test_a_purge_over_a_channel_purges_kept_end_keeps_the_session_from_being_adopted_again(self):
+        """M8's review, round 3: an older copy's purge of a seat whose session it had moved into a channel (only
+        `retired` `moved` in its real project) owed its `retired` to the channel's log; finished, it keeps the
+        seat's end. Its stop slow or failed, a second purge deletes the seat only behind an ordinary retirement,
+        which holds against the process still running, so the session is not joined again."""
+        sid, seat_id = self.seat()
+        sminos.log_append_batch(self.p, sminos.writer_id(sid), [{
+            "kind": "retired", "session": sid, "by": "join", "reason": "moved", "project": CHANNEL,
+            "thread": seat_id}])
+        sminos.forget_caches()
+        with self.failing_appends():
+            code, out = self.cli("retire", "--purge", "g/w")
+        self.assertNotEqual(code, 0, out)
+
+        def addressed(view, raw):
+            raw["pending"]["project"] = CHANNEL
+            return True
+        self.assertTrue(threads._change(seat_id, addressed))
+        sminos.forget_caches()
+        with mock.patch.object(sminos, "purge_stop"):   # a stop that is slow or fails: the process runs on
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertTrue(sminos.finish_thread(seat_id))
+            self.assertTrue(threads.record_ended(threads.get(seat_id)), "the channel purge's end kept")
+            code, out = self.cli("remove", "g/w")
+        self.assertEqual(code, 0, out)
+        last = threads.in_effect(self.own(sid))
+        self.assertEqual((last["kind"], last["reason"], str(last.get("pid"))), ("retired", "retire",
+                                                                                str(self.procs[-1].pid)), out)
+        self.reconcile()
+        self.assertFalse(self.is_member(sid), "not joined again")
+        self.assertIsNone(threads.thread_of(sid), "nor adopted as a new thread")
+
+
 class SeatPurgeRetried(SeatPurge):
     def test_a_remove_cut_after_its_stamped_event_and_retried_through_the_verb_ends_once(self):
         sid, seat_id = self.seat()
@@ -1162,7 +1199,7 @@ class OlderWritesScope(Machine):
         self.reconcile()
         tid = threads.stamp(sid)
         self.write_own(sid, [{"kind": "retired", "by": "old", "reason": "retire", "pid": proc.pid}])   # an older CLI's
-        latest, joined, effect = sminos._memberships(sminos.log_read(self.p))   # the reconciliation's reading
+        latest, joined, effect, _ = sminos._memberships(sminos.log_read(self.p))   # the reconciliation's reading
         self.assertEqual(effect[sid]["reason"], "retire")
         # Reopened and joined again in the same project before the rule acts.
         fields = sminos.joined_fields("again", "user", self.root, session_kind="interactive", session=sid)
@@ -2106,7 +2143,10 @@ class LateHandOff(Sessions):
             self.reconcile()
         held = threads.get(theirs)["pending"]
         self.assertEqual((held["op"], held["by"], held["id"]), (threads.RESERVED, tid, threads.get(tid)["pending"]["id"]))
-        self.assertFalse(threads.update(theirs, {"channels": ["c"]}), "update() leaves a held record alone")
+        self.assertFalse(threads.update(theirs, {"launch": threads.launch_of(self.root)}),
+                         "update() leaves a held record alone")
+        with self.assertRaises(ValueError):
+            threads.update(theirs, {"channels": ["c"]})   # a thread's set is set_channels' alone (CH1's §3)
         self.assertIsNone(threads.begin(theirs, "end", self.p, []), "no operation starts on it")
         self.assertEqual(threads.thread_of(job)["thread"], tid, "the lookup answers the absorbing thread")
         self.assertTrue(sminos.entry_open(job), "the hook reads it as an open entry")
@@ -2395,6 +2435,31 @@ class Refill(Sessions):
         self.assertEqual([m.thread for m in there.members if m.session == new], [seat_id])
         self.assertEqual(threads.in_effect([e for e in here.events if e.get("session") == old])["reason"],
                          "replaced")
+
+    def test_a_refill_whose_displaced_retirement_an_older_copy_owed_a_channel_still_fills_its_seat(self):
+        """M8's review: an older copy that took a channel for the seat's project began the refill's launch there
+        (the displaced session's `retired` owed to the channel's log), and the poll's advance into a real project
+        waits behind it. The finisher voids the retirement and promotes the advance as ever: the seat holds the
+        new session, a member of its own project, and nothing reaches the channel's log."""
+        old, seat_id = self.seated()
+        other = self.project_of(self.repo("other"))
+        with self.failing_retirement():
+            new, _, out = self.refill(seat_id, cwd=other.root)
+        entry = threads.get(seat_id)["pending"]
+        self.assertEqual(entry["next"]["project"], other.id, out)
+
+        def addressed(view, raw):
+            raw["pending"]["project"] = CHANNEL
+            return True
+        self.assertTrue(threads._change(seat_id, addressed))
+        sminos.forget_caches()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertTrue(sminos.finish_thread(seat_id, project=other))
+        seat = sminos.load_seat(sminos.meta_path(seat_id))
+        self.assertEqual((seat["current"], seat["sessions"], seat.get("pending")), (new, [old, new], None))
+        self.assertEqual(threads.in_effect(self.own(new, other))["thread"], seat_id, "its joined, in its project")
+        self.assertEqual(threads.thread_of(new)["thread"], seat_id)
+        self.assertFalse(glob.glob(os.path.join(sminos.projects_root(), CHANNEL, "log", "*")), "the channel's log")
 
     def test_a_refill_into_another_project_owes_the_displaced_sessions_retirement_in_its_own(self):
         for cut in (None, "launch"):

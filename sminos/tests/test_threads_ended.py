@@ -43,6 +43,7 @@ from test_threads import BASE, Killed, ms_ago, sminos, threads  # noqa: E402
 from test_threads_stopped import Rig, wait_for  # noqa: E402
 
 PERIOD = 3600
+CHANNEL = "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c"   # a declared channel's id (version 8), in its record's set
 SPACING = 600   # the ending pass's: a census's answer is taken up no older than this (sweep() makes each pass due)
 ENV = {"SMINOS_THREAD_END_AFTER": str(PERIOD), "SMINOS_THREAD_END_EVERY": str(SPACING)}
 
@@ -290,7 +291,7 @@ class Settled(Ending):
     def test_what_was_held_is_settled_at_its_end_and_not_pushed_when_it_returns(self):
         sid = self.closed()
         tid = threads.stamp(sid)
-        threads.set_channels(tid, ["c-one"])
+        self.assertEqual(sminos.channels_module().change(tid, CHANNEL, "add", sid).state, "applied")   # CH1's §3
         for n in (1, 2):
             code, out = self.say("@alpha number %d" % n)
             self.assertEqual(code, 0, out)
@@ -309,7 +310,7 @@ class Settled(Ending):
         self.assertEqual((m.alias, m.charge, m.thread), ("alpha", "owns alpha", tid))
         t = threads.get(tid)
         self.assertEqual(self.human_files(), [tid + ".json"], "back in the thread store")
-        self.assertEqual((t["channels"], t.get("ended"), t.get("stopped"), t.get("swept")), (["c-one"], None, None,
+        self.assertEqual((t["channels"], t.get("ended"), t.get("stopped"), t.get("swept")), ([CHANNEL], None, None,
                                                                                              None))
         self.assertEqual([e["kind"] for e in self.own(sid) if e["kind"] in ("joined", "retired")],
                          ["joined", "retired", "joined"])

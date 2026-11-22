@@ -48,7 +48,9 @@ as sminos's reconnect does):
   `reach?` (P5 O18 D3) likewise with `reach {id, verdict, reason?}` from
   `reach_verdicts` by id, else `reach_verdict` (a callable in-process:
   (frame) → verdict or None; a verdict is `deliver`, `refuse` — sent with
-  reason `not-reachable` — or (`refuse`, reason)), silent when neither
+  reason `not-reachable` — or (`refuse`, reason), MAWS's reasons being
+  `not-reachable` and `unverified`, the latter for an unverified sender to
+  a private recipient (its `decideReach` at 5346ff6d3)), silent when neither
   names one, as an endpoint that holds no record of the session is;
   `restated` (the end of sminos's restatement after a welcome) is kept.
   `handler`, in-process, is called with each frame first and may return
@@ -87,9 +89,12 @@ over, as the endpoint refuses a stream it does not sign. `refuse_upload` (ctl
 `refuse` {project, writer, seq, reason?}) sends `refused {project, refusal:
 {reason, writer, seq}}`, `not-reachable` by default, with no message.
 
-The hub's reach judgement (P5 O18 D5), in-process: `withhold`, a callable
-(project, event in its upload form) → truthy, withholds the upload it holds
-for at a position not yet held, as the hub withholds an event out of reach:
+The hub's reach judgement (P5 O18 D5): `withhold`, a callable (project,
+event in its upload form) → truthy in-process, or an object of fields (with
+`project` for the log) that an upload's form carries with those values, as
+`set` gives one (CH1's M7: a request the hub withholds), withholds the
+upload it holds for at a position not yet held, as the hub withholds an
+event out of reach:
 the position is added to `withheld` (so the next `have` lists it and counts
 it), the body kept aside, and `refused {reason: not-reachable, writer, seq}`
 sent with no message; the writer goes on. A resend there is refused
@@ -108,6 +113,29 @@ holds and what was handed since; the `relay` command is a pass each way
 between every two of the stand-ins it names. What carries them between
 endpoints in production is MAWS's relay; the hand-off carries the frames
 themselves, never one written by hand.
+
+Declared channels (CH1's M6), as MAWS's endpoint at its master 8ae3b0843
+does them (the registry's `#knownNow`, rl10/link.ts's `sessionProjects`,
+rl10/members.ts's restatement and `memberChannels`): the welcome lists
+`channels`, when `capabilities` holds it, only to a hello that listed it
+(`welcomes` keeps each welcome sent, with its connection); a member frame
+whose `project` is a channel's id is that session gone; a connection is
+made `current` with its restatement of every member held open, in one
+step, which its own `restated` closes, each held member it left out then
+gone (a connection that ends before its `restated` withdraws nothing; a
+member or `restated` frame still buffered on a connection a new one
+replaced is not applied; `restatement_applied(n)`, `restated` in the
+state, says connection n's was applied, not only received); and `known()`
+(`known` in the state, sorted) is the machine's known logs: those the live
+connection's hellos
+opened without `follow` (each log's last hello there) whose id a held
+member names, by its `project` and, while that connection's hello listed
+`channels`, by a lane A member's `channels` (memberChannels: its distinct
+channels' ids in order, up to 128, an entry that is no channel's id or one
+again using none of them). While no connection is live or a restatement is
+open the last answer stands, as MAWS keeps it (a sminos restarting is not
+every project's sessions ending); it is taken again at each member, hello
+and `restated` outside a restatement, as MAWS's `knownMoved` asks it.
 
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
@@ -133,6 +161,28 @@ FIELDS = ("token", "identity", "policy", "revoked", "org", "build", "state_versi
           "audiences", "admit", "withheld", "archive", "refuse_audience", "withhold")
 TS_MS = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 TS_S = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+CHANNEL_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")   # MAWS's isChannelId
+CHANNEL_LIMIT = 128   # the member frame's channels MAWS counts
+
+
+def is_channel_id(value):
+    return isinstance(value, str) and CHANNEL_ID.fullmatch(value) is not None
+
+
+def member_channels(member):
+    """MAWS's memberChannels: the channels a member frame states, as the
+    endpoint counts them: one pass in the frame's order, ids that are no
+    channel's skipped, stopped at the 128th distinct id."""
+    chans = member.get("channels")
+    if not isinstance(chans, list):
+        return []
+    counted = []
+    for entry in chans:
+        if is_channel_id(entry) and entry not in counted:
+            counted.append(entry)
+            if len(counted) == CHANNEL_LIMIT:
+                break
+    return counted
 
 
 def iso(t=None):
@@ -295,6 +345,9 @@ class Endpoint:
         self.reach_verdicts = {}
         self.reach_verdict = None
         self.members = {}   # session → its last `member` frame (the member state an action's context is read from)
+        self.unrestated = None   # the members held at the latest welcome not restated since; None outside a restatement
+        self.restated_conns = set()   # the connections whose restatement its `restated` closed (applied, not received)
+        self.last_known = set()  # known()'s last answer, which stands while away or restating
         self.relay = True
         self.capabilities = []   # the welcome's (an O18 endpoint's: ["access", "reach"])
         self.audiences = []      # `audience` frames' bodies, sent after each welcome to an sminos whose hello says `audience`
@@ -312,6 +365,7 @@ class Endpoint:
         self.lines = []         # [(connection number, line)]: every line after a connection's hello, as it came
         self.logs = {}          # project id → {writer: {seq: the event in its upload form}}
         self.hellos = []        # [(connection number, hello)] accepted
+        self.welcomes = []      # [(connection number, welcome)] sent
         self.refused = []       # [(connection number, first line as JSON or text)] refused
         self.conns = 0
         self.current = None
@@ -429,20 +483,20 @@ class Endpoint:
                     except OSError:
                         pass
                 return
-            old = None
-            with self.cv:
-                old, self.current = self.current, conn
-                self.hellos.append((conn.number, hello))
-                self.received.append((conn.number, hello))
-                self.cv.notify_all()
+            old = self.install(conn, hello)
             if old is not None:
                 old.close()
             if self.policy is None and isinstance(hello.get("policy"), dict):
                 self.policy = hello["policy"]
                 write_private(os.path.join(self.dir, "policy.json"), self.policy)
-            conn.write({"t": "welcome", "protocol": {"major": 1, "minor": 0}, "capabilities": list(self.capabilities),
-                        "build": self.build, "identity": self.identity, "policy": self.policy,
-                        "stateVersion": self.state_version})
+            listed = hello.get("capabilities") if isinstance(hello.get("capabilities"), list) else []
+            welcome = {"t": "welcome", "protocol": {"major": 1, "minor": 0},
+                       "capabilities": [c for c in self.capabilities if c != "channels" or "channels" in listed],
+                       "build": self.build, "identity": self.identity, "policy": self.policy,
+                       "stateVersion": self.state_version}
+            with self.cv:
+                self.welcomes.append((conn.number, welcome))
+            conn.write(welcome)
             conn.write({"t": "revoked", **self.revoked})
             if self.org is not None:
                 conn.write({"t": "org", **self.org})
@@ -470,8 +524,23 @@ class Endpoint:
             with self.cv:
                 if self.current is conn:
                     self.current = None
+                    self.unrestated = None   # a restatement cut short withdraws nothing
                 self.cv.notify_all()
             conn.close()
+
+    def install(self, conn, hello):
+        """A connection whose hello was taken made the live one, and its
+        restatement of every member held opened, in one step under the state
+        lock: a read between the two would take the new connection's empty
+        hellos as the answer, which MAWS's last answer never is. The
+        connection it replaces, or None."""
+        with self.cv:
+            old, self.current = self.current, conn
+            self.unrestated = set(self.members)   # a welcome: every member held is to be restated
+            self.hellos.append((conn.number, hello))
+            self.received.append((conn.number, hello))
+            self.cv.notify_all()
+        return old
 
     def answer(self, conn, frame):
         t = frame.get("t")
@@ -485,10 +554,29 @@ class Endpoint:
         elif t == "rpc-result" and self.ack_results:
             out.append({"t": "rpc-ack", "opId": frame.get("opId"), "nonce": frame.get("nonce")})
         elif t == "member" and isinstance(frame.get("session"), str):
-            if frame.get("gone") is True:
-                self.members.pop(frame["session"], None)
-            else:
-                self.members[frame["session"]] = frame
+            with self.cv:
+                # Whose frame it is is read under the lock that applies it: one still buffered on a connection a
+                # new one replaced (also while it waited for this lock) is that connection's, and not applied.
+                if self.current is not conn:
+                    pass
+                elif frame.get("gone") is True or is_channel_id(frame.get("project")):
+                    self.members.pop(frame["session"], None)   # a channel is no member's project: that session gone
+                else:
+                    self.members[frame["session"]] = frame
+                    if self.unrestated is not None:
+                        self.unrestated.discard(frame["session"])
+                self.known()
+                self.cv.notify_all()
+        elif t == "restated":
+            with self.cv:
+                if self.current is conn:   # read under the lock, as for a member
+                    for sid in self.unrestated or ():
+                        self.members.pop(sid, None)   # held, left out of the restatement: it left while away
+                    if self.unrestated is not None:
+                        self.restated_conns.add(conn.number)
+                    self.unrestated = None
+                self.known()
+                self.cv.notify_all()
         elif t == "words?" and not isinstance(frame.get("project"), str):
             out.append({"t": "words", "id": frame.get("id"), "verdict": "refuse"})   # O10 M6: no project, no words
         elif t == "words?":
@@ -505,8 +593,11 @@ class Endpoint:
                 verdict, reason = (verdict, "not-reachable") if isinstance(verdict, str) else tuple(verdict)
                 out.append({"t": "reach", "id": frame.get("id"), "verdict": verdict,
                             **({"reason": reason} if verdict == "refuse" else {})})
-        elif t == "hello" and isinstance(frame.get("project"), str) and self.relay:
-            out.append(self.have(frame["project"]))
+        elif t == "hello" and isinstance(frame.get("project"), str):
+            with self.cv:
+                self.known()
+            if self.relay:
+                out.append(self.have(frame["project"]))
         elif t == "events" and isinstance(frame.get("project"), str) and isinstance(frame.get("events"), list):
             out += self.take(frame["project"], frame["events"])
         for f in out:
@@ -556,7 +647,7 @@ class Endpoint:
                     reason = "not-reachable" if self.withheld_bodies[(project, writer, seq)] == form else "conflict"
                 elif seq in held.get(writer, {}) and held[writer][seq] != form:
                     reason = "conflict"
-                elif seq not in held.get(writer, {}) and self.withhold is not None and self.withhold(project, form):
+                elif seq not in held.get(writer, {}) and self.withholds(project, form):
                     self.withheld_bodies[(project, writer, seq)] = form
                     self.withheld.setdefault(project, {}).setdefault(writer, []).append(seq)
                     reason = "not-reachable"
@@ -569,6 +660,18 @@ class Endpoint:
                             "refusal": {"reason": reason, "writer": writer, "seq": seq,
                                         **({"message": message} if message else {})}})
         return out
+
+    def withholds(self, project, form):
+        """Whether the hub withholds this upload (`withhold`): a callable's
+        answer, or, for one given as JSON (`set`, the shell suites), an
+        object every one of whose fields the upload form carries with that
+        value (`project` names the log)."""
+        w = self.withhold
+        if callable(w):
+            return bool(w(project, form))
+        if not isinstance(w, dict) or not w:
+            return False
+        return all((project if k == "project" else form.get(k)) == v for k, v in w.items())
 
     def refuse_upload(self, project, writer, seq, reason="not-reachable"):
         """The hub's refusal of an upload as the endpoint passes it down, with
@@ -666,6 +769,36 @@ class Endpoint:
                                               "follow": f.get("follow") is True, "at": at}
             return {"conn": conn, "projects": projects}
 
+    def restatement_applied(self, conn):
+        """Whether connection `conn`'s restatement was closed by its own
+        `restated`, applied (not only received): `known` is its own from then."""
+        with self.cv:
+            return conn in self.restated_conns
+
+    def known(self):
+        """The logs this machine is known to hold (MAWS's rule, the module's
+        docstring): those the live connection opened without `follow` whose
+        id a held member names; the last answer while no connection is live
+        or its restatement is open."""
+        with self.cv:
+            conn = self.current.number if self.current is not None else None
+            if conn is None or self.unrestated is not None:
+                return set(self.last_known)
+            hello = next((h for n, h in reversed(self.hellos) if n == conn), {})
+            listed = hello.get("capabilities") if isinstance(hello.get("capabilities"), list) else []
+            unfollowed = {}
+            for n, f in self.received:
+                if n == conn and f.get("t") == "hello" and isinstance(f.get("project"), str):
+                    unfollowed[f["project"]] = f.get("follow") is not True
+            named = set()
+            for m in self.members.values():
+                if isinstance(m.get("project"), str):
+                    named.add(m["project"])
+                if "channels" in listed and m.get("lane") == "A":
+                    named.update(member_channels(m))
+            self.last_known = {pid for pid, held in unfollowed.items() if held and pid in named}
+            return set(self.last_known)
+
     # ---------------------------------------------------- the test's reads
 
     def frames(self, t=None, conn=None):
@@ -703,7 +836,9 @@ class Endpoint:
                     "refused": [{"conn": n, "first": f} for n, f in self.refused],
                     "received": [{"conn": n, "frame": f} for n, f in self.received],
                     "identity": self.identity, "policy": self.policy, "revoked": self.revoked,
-                    "legacy": self.legacy(), "token": self.token}
+                    "legacy": self.legacy(), "token": self.token,
+                    "welcomes": [{"conn": n, "welcome": w} for n, w in self.welcomes],
+                    "known": sorted(self.known()), "restated": sorted(self.restated_conns)}
 
 
 # ------------------------------------------------------------- the subprocess

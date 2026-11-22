@@ -540,13 +540,14 @@ def stream_audience(project, writer):
     return list(got) if is_audience(got) else None
 
 
-def keep_stream(project, writer, audience):
-    """A stream writer's audience, kept before its first event is written."""
+def keep_stream(project, writer, audience, lock_until=None):
+    """A stream writer's audience, kept before its first event is written;
+    `lock_until`, LockBusy for its lock not had by then."""
     if audience is None or not sminos.is_stream(writer) or stream_audience(project, writer) == audience:
         return
     path = sminos.project_path(project, STREAMS)
     with open(path + ".lock", "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        sminos.flock_until(lock, lock_until)
         try:
             try:
                 d = sminos.json_at(path)

@@ -388,6 +388,49 @@ def desk():
     return {"sminos": version if isinstance(version, str) else "unknown", "rpcs": list(rpc.RL10_RPC_NAMES), "reads": []}
 
 
+def _withheld_in(d):
+    raw = d.get("withheld")
+    return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
+        if isinstance(raw, dict) else {}
+
+
+def withheld_of(project):
+    """{writer: {seq}}: the positions of this machine's writers the hub
+    withheld in the project's log, as its uplink keeps them (uplink.json,
+    HubLog.withheld): what the CLI reads to say a request was withheld
+    (`channel show`, CH1's M7). A read that takes no lock and changes
+    nothing; {} for a file missing or that holds no JSON object."""
+    try:
+        d = sminos.json_at(os.path.join(project.home, STATE_FILE))
+    except (OSError, ValueError):
+        return {}
+    return _withheld_in(d) if isinstance(d, dict) else {}
+
+
+def refused_audience_of(project):
+    """{writer: {seq}}: the positions of this machine's writers the endpoint
+    refused `audience` in the project's log, as its uplink keeps them
+    (uplink.json: HubLog.dead's `at` while the writer is stopped, then
+    HubLog.voided once a void went up in their place): an event there never
+    reaches its readers. What `channel show` reads (CH1); a read that takes
+    no lock and changes nothing, {} as withheld_of reads none."""
+    try:
+        d = sminos.json_at(os.path.join(project.home, STATE_FILE))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    dead, voided = d.get("dead"), d.get("voided")
+    for w, held in (dead.items() if isinstance(dead, dict) else ()):
+        if isinstance(held, dict) and isinstance(held.get("at"), list):
+            out.setdefault(w, set()).update(s for s in held["at"] if type(s) is int and s >= 1)
+    for w, seqs in (voided.items() if isinstance(voided, dict) else ()):
+        if isinstance(seqs, list):
+            out.setdefault(w, set()).update(s for s in seqs if type(s) is int)
+    return {w: seqs for w, seqs in out.items() if seqs}
+
+
 class HubLog:
     """One hub project's log plane: what this machine says of it up the
     stream, and how it takes what the hub sends of it."""
@@ -485,9 +528,7 @@ class HubLog:
         withheld while an event of this machine's held them (withhold_own),
         kept for good: the file keeps the event, the hub a tombstone, and
         the archive copies the tombstone."""
-        raw = self.state().get("withheld")
-        return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
-            if isinstance(raw, dict) else {}
+        return _withheld_in(self.state())
 
     def writers(self, own=False, live=None):
         """{writer: (last seq, path)} of the writer files the log holds (each
@@ -1281,11 +1322,12 @@ class HubLog:
             return True
         return same_uncoded(held, e, self.is_own(e["writer"]))
 
-    def take(self, events):
+    def take(self, events, kept=None):
         """An `events` frame from the endpoint: each event, wrapped and
         verified by the endpoint (`unwrapped`), checked by its shape and
         appended with its `verified` key, or refused. Returns (how many were
-        appended, the `rejected` frames)."""
+        appended, the `rejected` frames). `kept`, a list, gains each event
+        appended, as stored: never one held back on a gap."""
         if not isinstance(events, list):
             log("an events frame for %s without a list of events: ignored" % self.project.name)
             return 0, []
@@ -1305,6 +1347,8 @@ class HubLog:
                                           self.same)
                 if outcome == "appended":
                     appended += 1
+                    if kept is not None:
+                        kept.append(e)
                 elif outcome == "gap":
                     log("held back %s in %s: its seq is not one past the writer's last (the hub sends what is "
                         "missing at the next hello)" % (position(e), self.project.name))
@@ -1415,7 +1459,12 @@ class HubLog:
         return True
 
     def deliver(self):
-        """What an import made owed to this machine's members, delivered now."""
+        """What an import made owed to this machine's members, delivered now.
+        Nothing for a channel, which has no member (CH1, C1): its
+        reconciliation is the daemon's channel pass, which the nudge after an
+        import wakes."""
+        if sminos.is_channel_id(self.project.id):
+            return
         sminos.forget_caches()
         total, reached = daemon.deliver_owed(self.project, sminos.view_of(self.project, titles=False))
         if total:

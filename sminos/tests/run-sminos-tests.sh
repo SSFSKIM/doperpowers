@@ -384,14 +384,15 @@ held_mark() {   # <delivered record> <writer> <seq>: "<attempts> <whether seq is
 
 # ---- the suite's parts -------------------------------------------------------
 # SMINOS_PART picks one, for a CI gate each: `core` is this file's own cases,
-# `suites` the files it runs beside them (run_suites); unset runs both. The
-# files are cut into three lists of about equal duration, `suites-a`,
-# `suites-b` and `suites-c`, one CI gate each (about 8 min each on
-# 2026-11-21, when the one list took 24); a new file goes at the end of c,
-# and moving a cut line rebalances them.
+# `suites` the files it runs beside them (run_suites), `channels` the declared
+# channels' suites (run_channels, CH1); unset runs all three. The parts are
+# disjoint: no suite runs in two. The suites' files are cut into three lists
+# of about equal duration, `suites-a`, `suites-b` and `suites-c`, one CI gate
+# each (about 8 min each on 2026-11-21, when the one list took 24); a new file
+# goes at the end of c, and moving a cut line rebalances them.
 SMINOS_PART="${SMINOS_PART:-all}"
-case "$SMINOS_PART" in all | core | suites | suites-a | suites-b | suites-c) ;; *)
-  echo "SMINOS_PART is all, core, suites, suites-a, suites-b or suites-c" >&2; exit 2 ;; esac
+case "$SMINOS_PART" in all | core | suites | suites-a | suites-b | suites-c | channels) ;; *)
+  echo "SMINOS_PART is all, core, suites, suites-a, suites-b, suites-c or channels" >&2; exit 2 ;; esac
 run_suites_a() {
   if python3 "$SCRIPT_DIR/test_tui_pending_send.py"; then pass "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; else
     fail "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; fi
@@ -423,8 +424,8 @@ run_suites_a() {
     fail "the verbs, what a sender is told on any machine, and the direct send (test_wake_verbs.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_wake_senders.py"; then pass "one, two and five senders over the three ways against the wake, its holds, its grace and its transitions (test_wake_senders.py)"; else
     fail "one, two and five senders over the three ways against the wake, its holds, its grace and its transitions (test_wake_senders.py)"; fi
-  if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10 and 1.51.0 beside this code, each held to its version (test-older-cli.sh)"; else
-    fail "sminos 1.27.10 and 1.51.0 beside this code, each held to its version (test-older-cli.sh)"; fi
+  if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10, 1.51.0 and 1.52.0 beside this code, each held to its version, over a store with channels too (test-older-cli.sh)"; else
+    fail "sminos 1.27.10, 1.51.0 and 1.52.0 beside this code, each held to its version, over a store with channels too (test-older-cli.sh)"; fi
   if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else
     fail "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager.py"; then pass "the session manager's command: windows, pending, subscriptions (test_manager.py)"; else
@@ -469,8 +470,8 @@ run_suites_b() {
     fail "hub projects, and the hub verbs on an endpoint's enrollment (test-hub.sh)"; fi
   if python3 "$SCRIPT_DIR/test_rl10.py"; then pass "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, legacy-key? (test_rl10.py)"; else
     fail "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, legacy-key? (test_rl10.py)"; fi
-  if python3 -B "$SCRIPT_DIR/test_endpoint_standin.py"; then pass "the endpoint stand-in's hand-off between two machines (test_endpoint_standin.py)"; else
-    fail "the endpoint stand-in's hand-off between two machines (test_endpoint_standin.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_endpoint_standin.py"; then pass "the endpoint stand-in: the hand-off between two machines, known by MAWS's rule (test_endpoint_standin.py)"; else
+    fail "the endpoint stand-in: the hand-off between two machines, known by MAWS's rule (test_endpoint_standin.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_streams.py"; then pass "audience streams on the writing side: the names, a session's own stream, the split say, the private sender's refusal, redaction, an unreadable record (test_streams.py)"; else
     fail "audience streams on the writing side: the names, a session's own stream, the split say, the private sender's refusal, redaction, an unreadable record (test_streams.py)"; fi
   if python3 "$SCRIPT_DIR/test_snapshots.py"; then pass "the endpoint's policy-cache rebuild: snapshots? answered in bounded pages, remote writers only, the last done (test_snapshots.py)"; else
@@ -496,11 +497,10 @@ run_suites_b() {
   if python3 "$SCRIPT_DIR/test_heads.py"; then pass "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; else
     fail "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; fi
   # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink
-  # (rl10_conformance.py): every line as written but those its AMENDMENTS name (sminos's threads), played as amended.
+  # (rl10_conformance.py): every line as written, its probes checked over the whole conversation instead.
   while IFS= read -r line; do
     case "$line" in
       "ok "*) pass "rl10 conformance: ${line#ok }" ;;
-      "amend "*) pass "rl10 conformance (amended for threads): ${line#amend }" ;;
       *) fail "rl10 conformance: ${line#FAIL }" ;;
     esac
   done < <(python3 -B "$SCRIPT_DIR/rl10_conformance.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/rl10-conversation.json" 2>&1)
@@ -588,6 +588,33 @@ run_suites_c() {
   else fail "spawn --on between two machines: the VM side for real, its refusals, the wait, what is not known (test-on.sh)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
+# The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a
+# gate of their own (sminos-channels).
+run_channels() {
+  if python3 -B "$SCRIPT_DIR/test_channels.py"; then
+    pass "a channel id told from a project's at every door: the vectors, the kind, names, the .smns rule, an older join (test_channels.py)"
+  else fail "a channel id told from a project's at every door: the vectors, the kind, names, the .smns rule, an older join (test_channels.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_wire.py"; then
+    pass "the wire: the checker's breaches, a thread's channels on its member frame, a channel's follow, a real uplink over an older copy's join (test_channels_wire.py)"
+  else fail "the wire: the checker's breaches, a thread's channels on its member frame, a channel's follow, a real uplink over an older copy's join (test_channels_wire.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_store.py"; then
+    pass "a thread's declared set: one durable operation, its statement and its reader, against a wake (test_channels_store.py)"
+  else fail "a thread's declared set: one durable operation, its statement and its reader, against a wake (test_channels_store.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_life.py"; then
+    pass "the set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption (test_channels_life.py)"
+  else fail "the set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption (test_channels_life.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_requests.py"; then
+    pass "requests on one machine: every row of the table, under the lock, the words, order and identity (test_channels_requests.py)"
+  else fail "requests on one machine: every row of the table, under the lock, the words, order and identity (test_channels_requests.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_roster.py"; then
+    pass "the roster, the listing and the pool: list's sections, --channel, answers, channel show and env (test_channels_roster.py)"
+  else fail "the roster, the listing and the pool: list's sections, --channel, answers, channel show and env (test_channels_roster.py)"; fi
+  echo
+  if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; else
+    fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; fi
+  if "$SCRIPT_DIR/test-channels-machines.sh"; then pass "channels across three machines: known for two holders and not a follower, a removal, a return, the last member (test-channels-machines.sh)"; else
+    fail "channels across three machines: known for two holders and not a follower, a removal, a return, the last member (test-channels-machines.sh)"; fi
+}
 summary() {
   echo
   # T2's M2: no launch carries a message. Every resume the stub saw went to the test engine, which wrote one that
@@ -609,6 +636,7 @@ case "$SMINOS_PART" in
   suites-a) run_suites_a; summary ;;
   suites-b) run_suites_b; summary ;;
   suites-c) run_suites_c; summary ;;
+  channels) run_channels; summary ;;
 esac
 
 if [[ "${SMINOS_FAMILY_ONLY:-0}" != 1 ]]; then
@@ -7854,5 +7882,5 @@ assert_rc 2 "$RC" "daemon with no verb is a usage error"
 cd "$WORK"
 unset STUB_COUNTER
 
-[ "$SMINOS_PART" = core ] || run_suites
+if [ "$SMINOS_PART" = all ]; then run_suites; run_channels; fi
 summary

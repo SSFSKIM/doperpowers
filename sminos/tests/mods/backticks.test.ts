@@ -25,6 +25,7 @@ const REFUSED: [string, string, string][] = [
   ['inside a loop', `for p in a b; do sminos say "@$p see ${B}y${B}"; done`, 'y'],
   ['reached through another command', `devcloud vm ssh box -- sminos say "stop with ${B}svc stop${B} over ssh"`, 'svc stop'],
   ['through env', `env -i sminos say "${B}id${B}"`, 'id'],
+  ['a channel verb reached through another command', `devcloud vm ssh box -- sminos channel create "desk-${B}hostname${B}"`, 'hostname'],
   ['inside a $( )', `x=$(sminos say "${B}id${B}")`, 'id'],
   ['an unquoted heredoc feeding it', `sminos say - <<EOF\nthe fix is in ${B}parse()${B}\nEOF`, 'parse()'],
   ['a heredoc with <<-', `sminos say - <<-EOF\n\tsee ${B}a${B}\n\tEOF`, 'a'],

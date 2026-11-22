@@ -23,6 +23,12 @@
 #   rl10_directory <body> <ep-dir>...  the org's directory (an `org` frame's
 #                            body) the stand-ins hold, sent down each live
 #                            connection
+#   rl10_known_directory <body> <ep-dir>...  the directory <body> with every
+#                            log some stand-in lists in `known` added as an
+#                            entry of kind hub (named by the hello that opened
+#                            it), sent as rl10_directory sends one: a machine
+#                            follows a channel because another holds it, as
+#                            on the fleet (CH1's M6); the body sent printed
 #   rl10_relay <ep-dir>...   one hand-off pass each way between every two; a
 #                            failure other than a connection gone says why on
 #                            stderr and returns non-zero
@@ -77,6 +83,30 @@ rl10_directory() {
     python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$d" set "{\"org\": $body}" >/dev/null
     python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$d" send "{\"frames\": [{\"t\": \"org\", ${body#\{}]}" >/dev/null 2>&1 || true
   done
+}
+
+rl10_known_directory() {
+  local body
+  body="$(python3 -B - "$SCRIPT_DIR" "$@" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import endpoint_standin
+body = json.loads(sys.argv[2])
+listed = {p["id"] for p in body.get("projects", [])}
+for d in sys.argv[3:]:
+    state = json.loads(endpoint_standin.ctl_call(d, "state", {}))
+    names = {f.get("project"): f.get("name") for r in state["received"] for f in [r["frame"]]
+             if f.get("t") == "hello" and isinstance(f.get("project"), str)}
+    for pid in state["known"]:
+        if pid not in listed:
+            listed.add(pid)
+            body.setdefault("projects", []).append({"id": pid, "name": names.get(pid) or pid, "kind": "hub",
+                                                    "retired": False})
+print(json.dumps(body))
+PY
+)" || return 1
+  rl10_directory "$body" "${@:2}"
+  printf '%s\n' "$body"
 }
 
 rl10_relay() { python3 "$SCRIPT_DIR/endpoint_standin.py" relay "$@" >/dev/null; }

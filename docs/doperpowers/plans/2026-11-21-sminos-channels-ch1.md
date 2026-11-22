@@ -46,16 +46,18 @@ lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-21) This plan written against the composite at `ef34f2ca` and the code at `1fdc73a0` (sminos 1.52.0), commit `71575958`.
 - [x] (2026-11-21) The plan's first review for buildability (fourteen findings); the composite revised for two of them (`95fef6b7`) and this plan revised on it (Decision Log, "The plan's review").
 - [x] (2026-11-21) The revision's review, the second and last before the build (eight findings; the composite made exact in one place, `331e2dd5`), folded in (Decision Log, "The plan's second review").
-- [ ] M1 — A channel id is told from a project's at every door, and nothing is published under one.
-- [ ] M2 — A thread's declared set: one durable operation, its statement and the statement's reader.
-- [ ] M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption.
-- [ ] M4 — Requests on one machine, and the verbs that write them.
-- [ ] M5 — The roster, the listing and the pool.
-- [ ] M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture.
-- [ ] M7 — Requests across machines: the endpoint's word, and what a requester is told.
-- [ ] The review of M1 to M7 as one range, by the composite's holder, and its fixes.
-- [ ] M8 — Older copies, what is written beside the code, the version, and the acceptance.
-- [ ] The branch reviewed at its end (Decision Log, "Verification"), and its fixes.
+- [x] (2026-11-21) M1 — A channel id is told from a project's at every door, and nothing is published under one. `dba3f5e8..eee82f3b`, three reviews (the bound), then the idle trim and round 3's last finding fixed (Decision Log, "M1's idle trim"); `sminos-idle` 32,161 calls a second.
+- [x] (2026-11-21) M2 — A thread's declared set: one durable operation, its statement and the statement's reader. `5ec8f9d6..ec4034c1`, clean at its third review; `sminos-idle` 32,165 calls a second.
+- [x] (2026-11-21) M3 — The set across a thread's life: the log kept equal to the record, a return, a continuation, an absorption. `54cacc3a..7748fde1`, three reviews (the bound), then round 3's last finding fixed; `sminos-idle` 32,024 calls a second.
+- [x] (2026-11-21) M4 — Requests on one machine, and the verbs that write them. `04cc6146..9ffbe8c5`, three reviews (the bound), then round 3's last finding fixed; `sminos-idle` 32,232 calls a second.
+- [x] (2026-11-21) M5 — The roster, the listing and the pool. `b4a9bdd7..10b8740a`, clean at its third review; `sminos-idle` 32,772 calls a second.
+- [x] (2026-11-21) M6 — The wire: the capability, `member.channels`, opening without `follow`, MAWS's fixture. `442c9784..e9fd15e0`, three reviews (the bound), then round 3's last finding (a test-harness race) fixed; the replay 112 lines `ok`, no amendment; `sminos-idle` 32,100 calls a second.
+- [x] (2026-11-21) M7 — Requests across machines: the endpoint's word, and what a requester is told. `cdc800c4..ede64e18`, clean at its second review; the acceptance scene's seven steps met; `sminos-idle` 32,781 calls a second.
+- [x] (2026-11-22) The review of M1 to M7 as one range, by the composite's holder (`b7413f10..ffc6569a`, 19 confirmed), and its fixes: A1 to A11 and MAWS's reworked case 15 (`ffc6569a..4411a917`), three task reviews, the last round's three fixes after the bound; the replay 121 lines `ok`; `sminos-idle` 32,126 calls a second. The holder reads the range a second time after M8.
+- [x] (2026-11-22) M8 — Older copies, what is written beside the code, the version, and the acceptance. `1be3f7fb..f6c205ad` (main merged twice, then `bef6f74e`), three reviews (the bound), then round 3's two findings fixed (Decision Log, "M8 as built"); sminos 1.54.0; the scene 47/0; the check on a real engine three steps passed; `sminos-idle` 32,737 calls a second.
+- [x] (2026-11-22) The holder's second panel over the whole range (`bef6f74e..317c7e6a`, 23 confirmed), and its fix wave C1 to C9 (`317c7e6a..ad2796e6`), one task review, its fixes after it; L4 to L15 logged (C9 fixed, no L16); the replay 121 lines `ok`; `sminos-idle` 32,348 calls a second.
+- [x] (2026-11-22) The holder's high-rung reading of the fix wave (`317c7e6a..18c2f7bf`), the third and last: D1 to D4 fixed (`78074970`), one logged, one dismissed; `sminos-idle` 32,230 calls a second.
+- [ ] The merge (the holder's).
 
 ## Words this document adds
 
@@ -212,7 +214,9 @@ lock, the delivery lock and held. Added here:
   finishes drops what the provisional record had gained; an older copy that
   itself begins a return leaves the record's positions as they were before
   the end, so a later release may push what the channel's log gained while
-  the thread was ended; a session an older copy joined into a channel and
+  the thread was ended, and so does a return of this code's over a channel
+  whose log is there and cannot be read, for that channel alone (the
+  holder's ruling of 2026-11-21); a session an older copy joined into a channel and
   that is closed before this code's next reconciliation is listed in
   neither until it runs again; a 1.51.0 or 1.52.0 copy's `list --json`
   shows a spawned thread's record keys it does not know, the positions and
@@ -931,6 +935,11 @@ leaves.
   is staged by registering the channel under the fixture's own id and name
   and placing S1 by `sminos_channels.change`, which writes nothing into the
   channel's log (the hello's `have` is `{}`), then removing it.
+- MAWS's case 15 (its master `27e7208a1`, taken in by the frontier's fix
+  wave): the statements answering its two requests stay unwritten, since
+  both targets are private and the fixture sends no `audience` frame for
+  its policy revision; the targets' records hold the answers, which the
+  replay checks.
 - **If a line of the replay then differs from what sminos sends,** in a
   field and not in a missing stage, no amendment is written: the exact line
   as the fixture has it and as sminos sent it goes to the holder, who takes
@@ -1118,7 +1127,7 @@ failed and exits non-zero on any failure. The replay prints one `ok` or
 **At each milestone's end, and before the frontier review,** the gates, on
 the pushed commit (they run on GitHub Actions and test the committed HEAD):
 
-    ci-gate --gates sminos,sminos-suites,sminos-channels,sminos-idle,sminos-mods,shell-lint,repo-checks
+    ci-gate --gates sminos,sminos-suites-a,sminos-suites-b,sminos-suites-c,sminos-channels,sminos-idle,sminos-mods,shell-lint,repo-checks
 
 with `mods-types` from M5 on (the guard mod changes) and `version-bump` in
 M8. Expected: one `PASS` line per gate, then `GREEN` and the run's address.
@@ -1168,7 +1177,9 @@ on each machine. Expected, step by step:
    B under members, each with its own project; the request for B as
    applied; and the pool as `alpha` with one live and one stopped, `beta`
    with one stopped. `sminos list` run as A and as B shows the caller's
-   project and then `# desk-integration` with the three rows.
+   project as `list` prints it today (for the stopped B, whose project's
+   only rows are hidden, its "no members" and hidden lines) and then
+   `# desk-integration` with the three rows.
 3. The stand-ins of `alpha` and `beta` list the channel in `known`;
    `gamma`'s does not. On `gamma`, `sminos list --org` ends with the
    `# desk-integration` section.
@@ -1201,7 +1212,7 @@ configuration.
 
 1. In `<scratch>/a` a session A, in `<scratch>/b` a session B, each one
    turn, both left open. A runs `sminos channel create probe` and `sminos
-   channel add probe @<B's short>`. Expect: B's transcript unchanged, and
+   channel add probe <B's short>` (`find_target` takes no leading `@`). Expect: B's transcript unchanged, and
    `sminos list` from both showing `# probe` with both.
 2. `/clear` in B. Expect: `sminos list --channel probe` shows the thread B
    left, `stopped`, and not the new session; `sminos list` from the new
@@ -1298,7 +1309,9 @@ the making of a record write `channels: []` themselves, not through
     SEAT_KEYS = (..., "began", "answered")
     CHANNEL_LIMIT = 128
 
-    def set_channels(thread_id, decide, lock_until=None) -> dict | None
+    def set_channels(thread_id, decide, lock_until=None, wake_until=None) -> dict | None
+        # (M3: `wake_until`, when given, bounds the wake lock's poll alone, so a reconciliation only tries it
+        # while it still waits its turn at the store lock up to `lock_until`)
         # The one way a thread's set, where its memberships began, its answered requests or a statement is
         # written. Takes the thread's wake lock as begin() does for a transition (sminos.wake_lock, a bounded
         # poll until `lock_until`, SWEEP_WAIT from now by default), and lets it go once the record is written;
@@ -1373,9 +1386,14 @@ the record within a scan.
 In `S/sminos_channels.py`, the callers that build `decide`:
 
     def change(thread_id, channel, op, session, lock_until=None) -> Outcome
-        # C1, C2 (§6's Outcome): `applied`, or `failed` with why it could not be recorded (`wake`, `entry`,
-        # `vacant`, `between`); never `pending`, since no request exists for a later pass to carry out
-    def restate(project, thread_id, session, writer, seen) -> bool
+        # C1, C2 (§6's Outcome): `applied`; `refused` `limit` for an add past 128, nothing written; or
+        # `failed` with why it could not be recorded (`wake`, `entry`, `vacant`, `between`, `moved`: the
+        # session is no longer the thread's current one, or the record ended or is gone; `unreadable`: the
+        # channel's log or a writer file of it is there and could not be read); never `pending`,
+        # since no request exists for a later pass to carry out
+    def restate(project, thread_id, session, writer, seen, appended=None) -> bool
+        # (M3: `appended`, this pass's own appends; restate finishes its own entry, so the statement shows in
+        # the same pass)
         # C5: `seen` the set the reconciliation read from the record. Only tries the wake lock. True when a
         # statement was owed and its entry begun; a failure to finish it is the next reconciliation's
 
@@ -1424,7 +1442,8 @@ this child never opens for a channel.
         def state(self, session, event) -> None
             # folds one own `channels` event of `session`: it is the session's statement in effect when its
             # writer is the writer of the session's latest `joined` (self.joined) and its seq is above that
-            # `joined`'s; any other is none. add() of a `joined` clears the session's statement
+            # `joined`'s; any other is none. add() of a `joined` clears the session's statement, and a
+            # `retired` in effect for that writer ends it: no statement is in effect without its `joined`
     def stated_set(event) -> tuple
         # a statement's `channels` as a reader takes them: its strings that pass is_channel_id, in order, each
         # once, the first 128; () for no statement
@@ -1468,7 +1487,8 @@ fold above, which keeps only the statement in effect:
         # every `channels` event that carries a well-formed `answers`, in every project's log this machine reads
         # (sminos.known_projects), in the merged read's order, whatever is in effect there now; kept beside each
         # merged log and for the cache generation
-    def answer_of(request) -> dict | None
+    def answer_of(channel, request) -> dict | None
+        # (M5: `channel` is passed, since a request event does not carry its channel's id)
         # the first of answers() for its channel and id whose `thread` stamp is the request's `thread` and whose
         # writer's session is one that thread has had, as this reader can tell: a session its row lists (its
         # current one, those it continues, its thread's others), or one whose own `joined` in the log the
@@ -1490,40 +1510,48 @@ In `S/sminos_channels.py`:
         state: str                # "applied" | "refused" | "pending" | "ignored" | "failed"
         why: str                  # refused: one of REASONS; pending, ignored and failed: a word of the tables
                                   # below; applied: "unchanged" when the set already read so, "" else
-    def requests_of(channel) -> (signature, list[dict])
+    def requests_of(channel, whole=True) -> (signature, list[dict])
         # the ordered input: the log's `channel-request` events of §2's shape in the merged read's order, then
         # those among this machine's queued appends for that log, in the queue's order (seq None, read without
-        # changing the queue); with the signature of the files both were read under
+        # changing the queue); with the signature of the files both were read under. An input missing a file
+        # (a directory that cannot be listed, a writer file or queue that cannot be read) raises PositionsUnread;
+        # `whole` False reads what it can instead (`channel show`)
     def event_key(channel, request) -> tuple
         # (the channel's id, the request's writer, its seq, its event hash): what a word is asked and kept under
     def expired(request, now=None) -> bool        # its ts is unreadable or older than REQUEST_TTL
     def sender_verified(channel, request) -> True | False | None
-        # True for a writer of this machine in a log where its name is provenance (own_writers_here). Else from the
-        # key an import stores on the event, `verified`: False when it is no object or its signer's kind is
+        # True for a request this machine appended itself (`appended_here`), whatever its writer's name. Else
+        # from the key an import stores on the event, `verified`: False when it is no object or its signer's kind is
         # `legacy`; None while the revocation set cannot be read; False when the set names the signer; else True
     def reach_token(session) -> tuple | None
         # the session's record's owners with its access, shares and policyRev (sminos_audience.policy_of); None
         # while the record cannot be read
-    def judge(channel, request, record, earlier, word=None, asked=None) -> Outcome
+    def judge(channel, request, record, earlier, word=None, asked=None, project=_LOOK, now=None, facts=None) -> Outcome
+        # (M4: `project`, the thread's own project as its caller found it, None for none; not given (`_LOOK`)
+        # it is looked up, which a caller under the record's lock never lets it do; `now` for the expiry;
+        # `facts` the evaluation's fresh reader)
         # the table below and nothing else: reads, no write, no lock. `record`: the target's, as its caller read
         # it. `earlier`: the requests of the ordered input before this one. `word`: the endpoint's ("deliver" |
         # "refuse" | None), the one kept under this request's event_key and no other. `asked`: {"session",
         # "reach"} the word was asked for. "applied" and "refused" are what a write would record; nothing has
         # been written
-    def carry_out(channel, request, word=None, asked=None, lock_until=None) -> Outcome
+    def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_until=None, finishes=True) -> Outcome
         # one request: judge() on what it reads, then, when that says a statement is owed, set_channels with a
         # decide that runs judge() again on the record it is given and on fresh reads, and writes that second
         # answer or nothing. An input whose signature moved since `earlier` was read is read again, three
-        # times in the call, then pending `moved`
-    def ask_of(request) -> dict | None
+        # times in the call, then pending `moved`. `finishes` False (the uplink's pass, on its consumer's
+        # thread): an entry the record holds already is not finished here, and the request is pending `entry`;
+        # the finish of the entry this call committed is `finish_thread(..., only=<its id>)` (C1)
+    def ask_of(channel, request) -> dict | None
         # what the endpoint is asked about a request left pending `endpoint`, read now: {"key": its event_key,
         # "thread", "session": the thread's current session, "project": the thread's own project, "reach":
         # reach_token(session)}; None when row 3 or 7 holds, or the record cannot be read
-    def carry_due(channel, words=None, also=(), lock_until=None) -> list[(dict, Outcome)]
+    def carry_due(channel, words=None, also=(), lock_until=None, wake_until=None, finishes=True) -> list[(dict, Outcome)]
+        # (M4: the daemon passes `wake_until` now, so it only tries the wake lock; a command waits SWEEP_WAIT)
         # the pass: every request of the ordered input that is not expired and names a thread of this machine,
         # in order, then the requests of `also` it does not hold (a command's own, in hand), each through
         # carry_out; a request pending leaves the later ones for its thread pending `earlier`.
-        # `words`: {event_key: (word, asked)}
+        # `words`: {event_key: (word, asked)}; `finishes`, carry_out's
 
 `judge` answers by the first row that holds. T is the record whose id is
 the request's `thread`.
@@ -1532,15 +1560,15 @@ the request's `thread`.
 |---|---|---|
 | 1 | the request is expired | ignored `expired` |
 | 2 | a request among `earlier` under another writer carries this request's `id` | ignored `duplicate`: not carried out, and `channel show` says so |
-| 3 | T is no record of this machine, or has ended, or never had the request's `session`, or that session is now another record's current one, or T's session is lane B | ignored `not-here`: nothing is written for either thread, and the request expires |
+| 3 | T is no record of this machine, or has ended, or never had the request's `session`, or that session is now another record's current one (the session's owner found in `thread_of`'s order over every record, set-aside and ended ones included: by T1 an archived human-opened record owns its current session before an older copy's seat), or T's session is lane B | ignored `not-here`: nothing is written for either thread, and the request expires |
 | 4 | T's `answered` holds the request's channel and id | ignored `answered` |
 | 5 | a request among `earlier` for the same thread is not expired, passes rows 2 and 3, and is not in T's `answered` | pending `earlier` |
 | 6 | T has an open entry | pending `entry` |
 | 7 | T holds no session; or its session is a member of no project now | pending `vacant`; pending `between` |
-| 8 | the request is from elsewhere (`policy.outside_origin`) and the kept welcome lists no `channels` | pending `no-channels` |
-| 9 | the request is from elsewhere and the machine admits nothing from outside (`policy.read_only`) | refused `read-only` |
-| 10 | its writer is this machine's own and shares the thread's owners: a session's writer by `same_owner_local`, the human writer by `owners_meet("", session)` | honoured |
-| 11 | `sender_verified` is False; is None | refused `not-reachable`; pending `unverifiable` |
+| 8 | the request is from elsewhere (not `appended_here`: neither a queued append of this machine, a former name's included, nor receipted here) and the kept welcome lists no `channels` | pending `no-channels` |
+| 9 | the request is from elsewhere (not `appended_here`) and the machine admits nothing from outside (`policy.read_only`) | refused `read-only` |
+| 10 | the request is `appended_here` and its writer shares the thread's owners: a session's writer by `same_owner_local`, the human writer by the target's record, read now, naming the machine's owners (`machine_owns`) | honoured |
+| 11 | the request is not `appended_here` and `sender_verified` (its signer read against the revocation set) is False; is None | refused `not-reachable`; pending `unverifiable` |
 | 12 | no word for this event | pending `endpoint` |
 | 13 | a word, either one, and T's current session or its `reach_token` is not what `asked` holds | pending `moved`: the word is dropped and the request asked about again |
 | 14 | the word is `refuse` | refused `not-reachable` |
@@ -1555,15 +1583,25 @@ lock `decide` runs the whole table again, on reads that are fresh in fact
 (§3), with `earlier` taken as read only if the input's signature is the
 one it was read under: what it then answers is what is written, and an
 answer that is no longer `applied` or `refused` writes nothing and is the
-outcome. That is the last read before the record's write; what is
-imported after it is a later arrival. Requests for different channels are
-not ordered against each other.
+outcome. Then, once the positions, the ledger and the entry are made,
+`set_channels` reads last, in one place (`_last_reads`), that the session
+is no other record's current one, is not lane B, has the reach a word was
+given for, and is a member of the statement's project; a change in any of
+them writes nothing and is the outcome a moment earlier would have given
+(a request `ignored not-here` for lane B or another record's session,
+`pending moved` for its reach, `pending between`; a thread's own change
+`failed moved`, `failed lane-b` or `failed between`). Those are the last
+reads before the record's write; what is imported after them is a later
+arrival. Requests for different channels are not ordered against each
+other.
 
 The pass's three callers: the command, for each request it wrote for a
 thread of its own machine (handed in as `also`, no words); the daemon's
 tick, for every channel known here, after the channel's reconciliation;
-the uplink, at each ask pass and at each answer (M7), which asks about
-what the pass left pending `endpoint`.
+the uplink's ask pass (M7), which asks about what the pass left pending
+`endpoint` and uses each word it has kept. An answer is recorded by
+`on_reach` under its event's key and binding and carries nothing itself
+(the frontier review's A7): the next ask pass consumes it, once.
 
 The words a command and `channel show` print:
 
@@ -1576,12 +1614,23 @@ The words a command and `channel show` print:
 | `earlier` | behind an earlier request for it in this channel |
 | `entry` | its record holds an unfinished operation |
 | `wake` | it is being woken; its machine's next pass carries this out |
+| `busy` | its record is being written by another process; its machine's next pass carries this out |
 | `vacant`, `between` | the thread holds no session now; its session is between two projects |
 | `no-channels` | its machine's endpoint does not serve channels |
 | `unverifiable` | its machine cannot read its revocation set |
 | `endpoint` | its machine's endpoint has not said whether you may message it |
 | `moved` | its session, its reach or the channel's log changed while its machine decided: tried again |
+| `unreadable` | the channel's log is there and could not be read; its machine's next pass carries this out |
+| `record-unreadable` | its session's record is there and could not be read; its machine's next pass carries this out |
+| `queued` | it waits in its machine's queue under a name the machine wrote as before; it is carried out once the queue is released |
+| `expired` | not carried out: the request is more than seven days old |
+| `not-here` | not carried out: it names a session that is no longer that thread's, or a thread that has ended |
+| `audience` | not sent (its endpoint refused the audience it went under: its target's reach changed before it was signed) |
 | `failed` (a thread's own change) | nothing was recorded (`<the pending word for why>`): run the command again |
+| `failed lane-b` | nothing was recorded (this session is lane B now, and no thread): run the command again |
+
+The code holds these as `WORDS` and `OWN_FAILED` (`S/sminos_channels.py`), which are the source when the two
+differ; a thread's own `failed` also reads `unreadable` and `record-unreadable` there.
 
 On another machine a requester reads none of the pending words: it reads
 `pending on <machine> since <time>`, which covers a machine that is off, one
@@ -1594,7 +1643,8 @@ In `S/sminos_rl10.py`: `CAPABILITIES = ("audience", "record", "locations",
 
 In `S/sminos_uplink.py`:
 
-    Link.channels: bool                      # the welcome listed `channels` (welcomed_rl10)
+    Link.serves_channels: bool               # the welcome listed `channels` (welcomed_rl10); M6, since M1's
+                                             # `Link.channels` is the set of open channels' logs
     def Link.unfollowed(self, pid) -> bool   # the hello carries no `follow`: holds(pid) for a project,
                                              # sminos_channels.opens_unfollowed(pid) for a channel
     def Link.holds(self, pid) -> bool        # as today for a project; False for a channel
@@ -1609,14 +1659,16 @@ In `S/sminos_uplink.py`:
 | a channel no record here names | `follow` | none | the same |
 
 A thread's `member` frame names its own project as `project`, as today,
-and never a channel; while `Link.channels` it carries the thread's
+and never a channel; while `Link.serves_channels` it carries the thread's
 `channels`. A `snapshots?` for a channel is answered with one page, empty
 and done; a `subscribe` for one with the `end` a project gives for a
 session it does not hold.
 
-`fresh_frame` passes `channels_of(m.session)`'s entries that pass
-`is_channel_id`, the first 128, for a lane A member while `Link.channels`,
-and `()` otherwise; its key (`made_of`) takes that tuple.
+`fresh_frame` passes `sminos_channels.frame_channels(session, holders)`
+(`channels_of`'s entries that pass `is_channel_id`, the first 128, read from
+`sminos_threads.set_holders`, so a thread in none is one lookup) for a
+session among the holders while `Link.serves_channels`, and `()` otherwise;
+its key (`made_of`) takes that tuple.
 
 ### §8. The CLI
 
@@ -1629,7 +1681,9 @@ and `()` otherwise; its key (`made_of`) takes that tuple.
 
 A `<channel>` is an id, a `name#short` or a name (`find_channel`); a
 `<thread>` is what `find_target` takes. Exit 0 when every target was
-applied or is pending; 1 when the verb or any target was refused, or the
+applied or is pending, or was answered already by its machine with no
+answer this command can read (it says so, and where the thread is now);
+1 when the verb or any target was refused, or the
 caller's own change could not be recorded; 4 for a name that is unknown or
 ambiguous; 2 for usage.
 
@@ -1684,10 +1738,16 @@ a section for each channel known here whose roster is not empty. In
 and no key otherwise; the sections add nothing to it.
 
 **`channel show`.** A heading `# <name>  <id>`; `members`, the roster's rows
-with the project column (`(none)` for none); `requests`, one line each for
+with the project column (`(none)` for none), each with the state word of its
+own project's view (C1: `stopped` where the thread is a stopped human's or
+has a transcript, else `gone`, so a spawned seat on the test engine reads
+`gone`); the pool has two counts (D4), live and not live, and its second,
+under the word "stopped", is every row in a hidden state; `requests`, one line each for
 the log's requests that have not expired, oldest first: its time, its verb,
 its target, its requester, and `applied`, `refused: <words>`, `refused: not
-reachable (the hub withheld it)` (from M7), `not carried out: another
+reachable (the hub withheld it)` (from M7), `refused: not sent (its endpoint
+refused the audience it went under: its target's reach changed before it
+was signed)` (state `withheld`, reason `audience`), `not carried out: another
 request in this channel used its id first`, or `pending on <machine> since
 <time>`; `pool`, one line a machine: its name, `<n> live, <m> stopped`
 counted from the roster's rows there (`live`: a state of `FILLED`;
@@ -1713,11 +1773,12 @@ the baseline first:
         # {(channel id, writer, seq): the event held there} for every event the channels' logs hold now: what
         # was there before this code ran. Taken before any verb, tick or uplink of this code reads the store,
         # since a reading verb reconciles
-    def published(frames, channel_ids, before={}, allowed=ALLOWED) -> list[str]
-        # each breach among the frames a stand-in kept, one line each; [] for none
-    def written(sminos_home, channel_ids, machine, before={}, allowed=ALLOWED) -> list[str]
-        # the same over the store: the channel's log files of this machine's writers, its host store, and any
-        # delivery record under a channel's log
+    def published(frames, channel_ids, before={}, allowed=ALLOWED, welcomed=()) -> list[str]
+        # each breach among the frames a stand-in kept, one line each; [] for none. `welcomed`: the numbers of
+        # the connections whose welcome listed `channels` (a `member` frame with `channels` on any other is one)
+    def written(sminos_home, channel_ids, machine, before={}, allowed=ALLOWED, deliveries=True) -> list[str]
+        # the same over the store: the channel's log files of this machine's writers, its host store, and (with
+        # `deliveries`, CH2 passing False) any delivery record under a channel's log
 
 A breach is: a `member` frame whose `project` is a channel id; a
 session-plane message whose project is one (`presence`, `machine`, `host`,
@@ -1790,9 +1851,41 @@ the replay stay where they run today.
 
 ## Surprises & Discoveries
 
-None yet. The controller records here what changes the understanding of the
-design while the milestones are built, one observation and its evidence
-each.
+The controller records here what changes the understanding of the design
+while the milestones are built, one observation and its evidence each.
+
+- (M1) `_stated_decision` would take an org-frame location statement that
+  names a channel's id as that folder's project; MAWS refuses linking a
+  folder to a channel id. Guarded by the holder's ruling (Decision Log,
+  2026-11-21, "A location statement naming a channel").
+- (M1) An older copy's `end_closed` writing a `retired` for a closed session
+  into a channel's log is stopped by nothing but `lifecycle`'s guard; the
+  undoing `retired` is the one write the constraint allows there (C4).
+- (M1) The `sminos-channels` gate runs in about 20 to 25 seconds at M1.
+- (M2) T2's wake writes its record's fields (`wake_job`, `wake_line`,
+  `wake_done`) through `update`, which refuses a record with an open entry:
+  the concrete reason the operation must refuse inside a wake's own hold.
+- (M2) 1.51.0 and 1.52.0 finish a `channels` entry by their own `_owe` and
+  `lifecycle`, unchanged (their `_finish` checks no operation); 1.27.10
+  leaves record and entry alone, and this code's next `list` finishes it.
+  All three keep `began` and `answered`, since they rewrite a record whole.
+- (M2) `project_path` creates a project's home and its `project.json` on
+  first use, so a reader that must create nothing (`channel_positions`)
+  joins `project.home` itself.
+- (M4) `same_owner_local`, `outside_origin` and `own_writers_here` read
+  identity and enrollment from per-invocation caches, so the second
+  evaluation re-reads them from `identity.json` itself (`_Facts`).
+- (Before the frontier) MAWS's fixture case 15 (its master `41d340fc3`,
+  blob `d4c63d36`) cannot be replayed without changing how sminos reads the
+  wire, so it is not taken in: its `request:R` is `{writer, seq, kind:
+  channel-request, from, text, attest, sig}`, where §2's request is `{op,
+  session, thread, id}` (`is_request` reads R as no request, so no `reach?`
+  is asked about it), and it expects two `reach?` about one event (for S2
+  and S1) where sminos asks once a request, for the one target it names.
+  For the case to replay MAWS needs two §2-shaped requests, each naming one
+  thread and its session. Sent to the holder as a contract finding; MAWS
+  reworked the case so (its master `27e7208a1`), and the reworked case
+  replays (Decision Log, "The frontier's fix wave as built").
 
 ## Decision Log
 
@@ -2101,7 +2194,688 @@ each.
     and 1.52.0 hide `channels` and expose `began` and `answered` (M8, the
     accepted list); §2 no longer calls `channel-env`'s `thread` an
     addition, since the composite's C2 names it.
+- 2026-11-21 — **M1 as built.** `cmd_projects` needed no change: its input
+  is `known_projects`, which never yields a channel, so the fourth kind its
+  tier order would raise on never reaches it; the listings with a channel
+  registered beside them are pinned byte for byte. `project_label`,
+  `moved_here`, the private-stream lookup and `daemon status`/owed read
+  `known_logs` (they serve a log, not a person's choice of project);
+  `_holding_projects` and `last_project` skip a channel, which is never a
+  session's project. `Plane.refresh` of a channel does not call `view_of`:
+  the daemon's channel pass is the one reconciler of a channel's log.
+  `find_channel(required=False)` still exits on a project or an ambiguous
+  name and returns none only when nothing matches, so a caller asking "is
+  this a channel" never silently takes a project. `name#short` takes a
+  non-UUID id whole, else a hex prefix of eight or more. `append_host`
+  raises `LogWriteFailed` for a channel, handled at `main` as any failed
+  write. `register` takes the enrollment's hub and org and raises on a
+  machine not enrolled (a channel's log syncs only through a hub).
+  `held_channels` is cached by the cache generation and the thread stores'
+  stat key. §9's checker: `published(frames, welcomed=())` takes the
+  stand-in's `(conn, frame)` pairs or bare frames, `welcomed` the
+  connections whose welcome listed `channels`; `written(..., deliveries=True)`,
+  which CH2 passes false.
+- 2026-11-21 — **A location statement naming a channel** (the holder's
+  ruling). C1 and C4 hold at every door by this copy's own check, not by
+  another program's refusal: an org location statement that names a
+  channel id as a folder's project is read as no statement for that folder,
+  which resolves as if it were absent, with one test beside M1's door
+  tests.
+- 2026-11-21 — **The `sminos-channels` gate's timeout** (the holder's
+  ruling). Five minutes through the build, since the part grows at every
+  milestone to M7 and one minute for a 24-second run goes red on a slow
+  runner; M8 sets it to about twice the measured run of the whole part.
+  This replaces, for M1 to M7, Concrete Steps' "kept at about twice" and
+  M1's "set again as the part grows".
+- 2026-11-21 — **M1's review, round 1, as fixed.** Every door holds
+  without registration: an explicit channel id at a refusing door is
+  classified by `is_channel_id` alone (an unregistered one stands in as a
+  project with no root, so `names_channel` keeps one type), while
+  `find_channel` still needs a registration; `join`'s channel refusal comes
+  before the seat's. A rooted guess and the seat's fallback never yield a
+  channel, so `known_projects` holds none and `say` never takes one as its
+  destination. A channel's reconciliation is its own function,
+  `_reconcile_channel`: it only undoes an older copy's `joined` (`retired`
+  `moved`) while a seat or a live process holds the session, and leaves a
+  closed one as it is; an import into a channel's log runs no project
+  reconciliation and no delivery, and still nudges the daemon. Every tag's
+  qualifier is checked before any member lookup. An exact project name wins
+  over a `name#short` spelling, the qualifier parsed from the right. An org
+  directory entry with a channel id is never a machine, and a record's
+  `channels` that is not a list reads as absent.
+- 2026-11-21 — **M1's review, rounds 2 and 3.** Round 2's fixes: an
+  unregistered channel id is refused as a channel at the project-lookup
+  doors too (`chat`, `list`, `list --project`); a refusal's label for a log
+  is the first spelling that resolves back to that log alone (`name#short`,
+  then `name#<whole id>`, then the bare id), exact-name precedence
+  unchanged; the tag preflight exits only on a clash that includes a
+  channel, so a store with no channel refuses tags in today's order. Left
+  open after round 3, the owner's bound, and sent to the holder: a project
+  whose exact name is an unregistered channel's id is still found by that
+  name at `project_tiers` and `find_project` (`list <id>` shows it; `say
+  --in <id>` refuses it; nothing is written either way). Handed to M2: the
+  uplink's `open_projects()` classifies every open project at each tick on a
+  machine with no channel, against the constraint "The idle daemon stays
+  cheap" (sminos-idle once 0.5% over its calls ceiling at `79985839`, then
+  passed).
+- 2026-11-21 — **CI's split of the suites gate** (PR #588, taken in with
+  `origin/main` at the boundary of M1 and M2). `sminos-suites` is three
+  gates, `sminos-suites-a`, `-b` and `-c` (`run_suites_a|b|c`, `run_suites`
+  calling all three); Concrete Steps' gate line names the three. The
+  channel part stays its own: `SMINOS_PART` takes `channels` beside the
+  three, and `all` runs every suites part and then `run_channels`. A suite
+  this child adds to the general list goes at the end of `run_suites_c`.
+- 2026-11-21 — **The idle cost of channels** (the holder's ruling). A
+  machine that holds no channel pays nothing per tick for channels: whether
+  a log is a channel's is decided once, when it is opened or first known,
+  and kept as state beside the open logs; the tick's loops read that state
+  and call no per-log function for it, and a duty only channels have runs
+  over the channel set alone. Built in M1 after its third review. Proof:
+  `sminos-idle`'s own figure back at main's within the spread between runs
+  (about 1%; main 32.6k calls a second, M1 at 33.4k to 33.7k before the
+  trim), no new test. From M2 to M7 every milestone records the idle figure
+  at its gate, makes anything it adds to the tick conditional on a channel
+  held or open, and brings to the holder, before it lands, any change that
+  cannot keep the figure at main's. `bench_scale.py`'s limits stay.
+- 2026-11-21 — **M1's idle trim, and round 3's last finding, as built**
+  (`eee82f3b`, after the third review; no fourth). The uplink decides when
+  it opens a log whether it is a channel's and keeps the answer in
+  `Link.channels` beside `opened`; the tick's loops read that set and ask
+  no log's id, and the re-hello on a flip of `unfollowed` runs over the
+  channel set alone. `unfollowed` still asks the id of a log that is not
+  open (one that left), so a channel a thread here is in can come back;
+  that costs nothing while every log is open. The daemon's tick reads
+  projects and channels from one pass over the registrations
+  (`known_kinds`); the seat's guard sits inside `seat_project`'s cached
+  resolution; `_holding_projects` asks a log's id only after the listing
+  shows it holds the session. `sminos-idle`: 32,161 calls a second at 3.78
+  ticks (main 32,582 at 3.83; about 8,500 a tick either way). The project
+  resolvers (`project_tiers`, `find_project`) refuse a channel-shaped
+  argument before any name lookup, so a project named like a channel's id
+  no longer shadows it and stays reachable by its own id.
+- 2026-11-21 — **M2 as built** (`5ec8f9d6..dcbbb18e`). The fold ends a
+  session's statement at its writer's `retired` as well as at a new
+  `joined`: C2 reads membership as the statement after the `joined` in
+  effect, and with a `retired` in effect there is none, so a statement
+  written after the writer's `retired` (a move between the record's write
+  and the statement) states nothing (§5 amended). `change` takes its
+  project from `last_project` before the lock, which only chooses where to
+  look; under the lock it reads the session's own events in that project
+  (no lock, nothing written), and a session no longer a member there drops
+  the caches and asks once more an attempt, three at most, the same answer
+  again being `failed between`. `change`'s outcomes gain `failed moved`
+  (the session is no longer the thread's current one, or the record ended
+  or is gone) and `refused limit` for an own add past 128, nothing written
+  (§3 amended). `change` refuses at once in a process that holds the
+  thread's wake lock, before it finishes any entry. `REQUEST_TTL`,
+  `REASONS`, `expired` and `request_ttl()` are defined in M2, since
+  `set_channels` prunes `answered` and checks an answer's reason; §6 names
+  them as before. `T/test-older-cli.sh` runs 1.52.0 on the cut case alone:
+  that copy wakes a stopped thread itself, so the every-copy expectation
+  "launched nothing" cannot hold for it, and its own expectations are M8's.
+- 2026-11-21 — **M2's review, round 1, as fixed** (`e78b7204`). The read
+  under the store lock is read-only on every stream (audience streams read
+  by their literal paths, never through `project_path`). The membership
+  check that chooses the statement's project is the last read before the
+  record write, after the positions; a move during the position read
+  writes nothing, and `change` looks for the session again in its new
+  project or answers `failed between`. No lock coordinates with a move:
+  the window left is in effect the accepted move after the record's write,
+  which the reconciliation (M3) repairs. A log or writer file that is
+  there and cannot be read raises `sminos.PositionsUnread`, and `change`
+  answers `failed unreadable` with no partial `began` (§3 amended); a log
+  that does not exist still reads `{}`. The fold takes an event as a
+  statement only with a statement's fields (`is_statement`: a `channels`
+  list, a `thread`, an `op`). A finisher's timeout after the record has
+  committed answers `applied`, nudges the daemon and leaves the entry for
+  replay.
+- 2026-11-21 — **M2's review, round 2, as fixed** (`ec4034c1`). The
+  membership guard is the last read before the write: `set_channels` builds
+  the whole change first (positions, the walk of `answered`, the entry) and
+  only then reads the session's own events in the change's project.
+  `channel_positions` reads the channel's `project.json` itself: missing is
+  "not registered" and `{}`; a read error, unparseable JSON, or a file that
+  is not this channel's registration raises `PositionsUnread`, since where a
+  membership begins cannot then be known. `known_project` keeps its
+  tolerance; the two share `_registered_as`.
+- 2026-11-21 — **M3 as built** (`54cacc3a..aa816f2d`). The reconciliation
+  is `_reconcile`'s last step, `_keep_sets`, over the `_memberships` memo,
+  which now also returns the statements in effect, with the pass's own
+  appends folded in. It runs only when a log states some set or a thread
+  here holds one: the holders are `sminos_threads.set_holders()`, derived
+  from `_live_index` and cached while that index is the same object, so a
+  machine with no channel compares nothing. The candidates are the holders
+  and the sessions whose log states a non-empty set; sets are compared as a
+  reader takes them (`stated_set`). The writer compared is the one of the
+  session's `joined` in effect, and the reconciliation passes a session
+  whose `own_stream` differs from it (a change of reach not yet snapshot),
+  since a statement there would state nothing, again at every pass.
+  `restate` takes its project, session and writer from what the
+  reconciliation read and never scans for them; this is what repairs M2's
+  accepted window (the project moved to gets its statement at its own
+  reconciliation). `set_channels` gains `wake_until` and `restate` gains
+  `appended` (§3 amended). A return writes `began` anew in its own record
+  write (`_began_anew`); a channel whose log is there and cannot be read
+  then keeps its position from before the end, with a warning, rather than
+  hold the return up, as an older copy's return leaves it. The absorption's
+  merge is a write of its own in `finish` (`_merge_absorbed`), marked
+  `merged` in the entry so that a replay merges once. A seat cannot `join`,
+  so the `join` cases are of threads their humans opened. Left to M4's
+  fresh reads: the `own_stream` read inside `restate`'s `decide` uses the
+  module's ordinary readers; a stale writer can only skip a statement or
+  write one that states nothing, which the next pass repairs.
+- 2026-11-21 — **A return over an unreadable channel log** (the holder's
+  ruling; Y3). A return over a channel whose log is there and cannot be
+  read keeps that channel's `began` from before the end, writes the others
+  anew, commits, and says so once; it is on the accepted list beside the
+  older copy's return. A return must not wait on one channel's log: a
+  thread that cannot come back because a log it only reads is unreadable
+  is the worse fault, and a wake would inherit it. What the kept positions
+  cost: events the channel gained while the thread was ended count as
+  after its membership began, so CH2 may push them once at the return,
+  where the design means them not owed; nothing is lost or misaddressed
+  (they are the channel's own events, and the thread is a member). *Lost:
+  an unknown-boundary marker,* a third state of the record that CH2 and
+  every older finisher would have to read, for a local read error a
+  healthy machine does not produce. An add differs on purpose: it has no
+  earlier positions to keep, so it stays `failed unreadable` with nothing
+  written (M2). The holder folds this into the composite (C3, Y3) at CH1's
+  landing.
+- 2026-11-21 — **M3's review, round 1, as fixed** (`483a1e69`). A
+  restatement's last guard, under the record's lock, is
+  `sminos.restated_holds`, reading files as they are: the session's
+  `joined` in effect is under the Change's `writer`; that writer is the one
+  its events go under now, with the machine's name read afresh
+  (`machine_name_now`), not from the per-invocation cache; and that
+  `joined` is the session's newest on this machine (`_joined_since`), which
+  is what "its current project" means here. C1 to C4 keep M2's guard. The
+  reconciliation's step is gated first by `channels_here()` (one stat of
+  `projects/` a cache generation), and `set_holders()` runs only when the
+  log states a set or a channel is registered here; so a set made only of
+  channels not registered here is not kept equal to the record, which only
+  M2's test-only `change` can make today. The notice of channels dropped
+  past the limit at an absorption is written before the merge's write, so
+  a cut repeats it rather than losing it. The united `answered` is sorted
+  oldest first.
+- 2026-11-21 — **M3's review, rounds 2 and 3, as fixed** (`cb09530c`,
+  `7748fde1`). Where a session is now (`_current_here`, the restatement's
+  guard) is `last_project`'s rule read fresh and read-only: among the
+  membership events in effect in every log here the newest decides, a
+  `retired` `moved` standing for its destination, so a past `joined` a
+  later `retired` ended vetoes nothing (a join back is stated). A tie at
+  the newest moment that names two projects makes no project current and
+  writes nothing; the move's `retired`, newer than both, decides the next
+  pass. This last fix came after the third review and had none of its
+  own. The return's notice over an unreadable channel log is best-effort:
+  one line in an ordinary run, possibly none across a cut between the
+  return's write and the line (replaying it would need a new entry key
+  and a finisher step). `channels_here()` never caches a failed listing:
+  only ENOENT answers no channel, for the generation; any other error
+  looks the holders up.
+- 2026-11-21 — **M4 as built** (`04cc6146..f5f93f62`). `judge` takes
+  `project` (chosen before the lock by `last_project`, passed in, never
+  looked up under it), `now` and `facts`, the second evaluation's fresh
+  reader (`_Facts`: identity and enrollment from `identity.json`, the
+  policy by `stored()`, since `sminos_policy.load` writes to `daemon.log`);
+  `carry_out` and `carry_due` take `wake_until` (§6 amended). `carry_due`
+  passes by, unjudged, a request whose thread is gone, ended or expired, or
+  that the record already answered; a command's own request is always
+  judged. Every pass judges afresh, so a request ignored `not-here` while
+  its thread was lane B is carried out once it is lane A again. Words
+  added: pending `busy` (the store lock) and `unreadable`; ignored
+  `expired` and `not-here`, which a command prints with exit 1; and
+  `change`'s failures (`OWN_FAILED`) with M2's `moved` and `unreadable`.
+  A command whose own request the daemon answered first prints what the
+  record holds now. `create` brings a channel back only when it is the
+  one log answering the name, no live record names it and `org.json`
+  lists it not; otherwise the name is refused. A channel id is a uuid4
+  with its version nibble set to 8. Row 3's lane B is read from the
+  target's current session's record. A queued request is dropped from the
+  ordered input once the log holds its writer and id. Every path keeps M3's
+  gate: a request is carried out only for a channel registered here.
+- 2026-11-21 — **M4's review, round 1, as fixed** (`0a43efe5`). Every
+  membership check under a lock (`_member_of`, `set_channels`' last guard,
+  `_current_here`) picks writer files by the identity `identity.json` holds
+  now; `is_self`, `own_writers_here`, `same_owner_local` and
+  `outside_origin` take `fresh`, and `_Facts` calls them rather than keep
+  copies of the same-owner rule. A terminal's `create` runs the first
+  member's stream choice against the channel about to be made before it
+  registers anything. A request read from a former name's queue is pending
+  `queued` until `release_queued` rewrites it under the current name, and
+  sorts after the log's requests as every queued append does; no event
+  logged under a former name is trusted. The store-locked comparison of
+  the ordered input is by file stats alone (`input_signature`). A command
+  whose request was answered first reports from the statement that
+  answered it (the record's open entry, else its sessions' events), and
+  when neither can be read says it was answered and where the thread is
+  now, exit 0. A failed write for one target is that target's outcome.
+- 2026-11-21 — **M4's review, rounds 2 and 3, as fixed** (`ba2c784c`,
+  `9ffbe8c5`). A request from a former name's queue is deferred `queued`
+  only after §6's rows 3 and 4 (whom it names, the answered ledger), so one
+  that names no thread here is `ignored not-here` and holds no later
+  request back. A command's row keeps the recorded outcome of a request
+  answered first (`_answered_line` returns the line and the `Outcome`), and
+  `create`'s summary is built from it. `_current_here` takes one fresh
+  identity for its whole scan. `create`'s stream choice: the preflight
+  against the channel about to be made refuses an unreachable target with
+  nothing registered; `place` chooses again at the append for that one
+  recipient, and when that choice refuses or gives another writer or
+  audience it appends nothing, says the channel stays registered with no
+  member and that the same command run again brings it back, and exits 1.
+  That race (the target's reach narrowed during the registration) is the
+  one exception to "refused before anything is written": a registration
+  with no member is left, never a request under an audience the target no
+  longer has. This last fix came after the third review and had none of
+  its own.
+- 2026-11-21 — **M5 as built** (`b4a9bdd7..f5644cc9`). Y1's
+  `answer_of` takes the channel, `answer_of(channel, request)`, since a
+  request event does not carry its channel's id (§5 amended; sent to the
+  holder for CH2). The roster is cached while every project view it read is
+  still the one `view_of` returns, so it is dropped exactly when a view is.
+  The sessions a thread has had are its member rows' (current, `former`,
+  `thread_sessions`) and any whose own `joined` in the statement's log is
+  stamped with that thread. A bare `list` is one with no scope filter
+  (`--stopped` and `--all` are still bare); `--channel` sections fold
+  nothing and print no `+N hidden` line; `--org`'s channel sections are
+  narrowed by the other filters, and a section emptied by them is left out;
+  `find` prints none. `channel show` needs no capability (it only reads);
+  it prints times to the second and a requester as `alias#short`,
+  `<short>@<machine>` or "the person at <machine>". `channel env`'s
+  "not in the channel" reads the roster, and the machine is matched
+  case-insensitively against the org's directory. `member_json`, which the chart's
+  member JSON also uses, carries `channels` only on a row in a channel. The
+  M5 unit tests are `T/test_channels_roster.py`, in the `channels` part.
+  A13 for the listing: `list`, `list --org`, `list --json`, `list
+  --stopped`, `list --all` and `list --org --json`, from a terminal and
+  from a session, identical to the merge base's over one store with no
+  channel (ages normalised).
+- 2026-11-21 — **M5's review, round 1, as fixed** (`4ab6784f`). `env`
+  checks the terminal, the machine and then membership, and that last
+  check (`_states`) reads only the session's own events in its project, so
+  a refusal never reconciles or appends; its membership is what the
+  thread's log states, so while a restatement is due a channel only the
+  record holds is refused. A session with rows in two projects' views keeps
+  the row of the project its newest membership points to (`_where_now`,
+  `last_project`'s rule), in the roster, `list --channel --json` (which
+  keeps exactly the roster's rows) and the pool; at a tie of two projects
+  the roster keeps neither, as `_current_here` writes nothing then. A
+  refusal answers a request only with a `reason` in `REASONS`. A pending
+  request takes its target's machine and label from the last ended row
+  this reader may still read, never put back in a roster. `member_json`'s
+  `channels` follows the roster's test for an ended row. Reversed: the pool
+  does not count queued `channel-env` appends (an `env` has a session
+  writer, and the queue holds the operator's appends alone); it reads the
+  merged log.
+- 2026-11-21 — **M5's review, round 2, as fixed** (`10b8740a`). After the
+  same-session move rule, a thread whose rows appear in several projects'
+  views keeps the row with the newest `joined` in effect (`_newest_row`;
+  a tie keeps neither), so a refill across projects is one row. `env`'s
+  preflight requires the `joined` in effect to be stamped with the record's
+  thread, still reading files alone. A pending target's fallback is the
+  latest visible end, by its `retired` in effect.
+- 2026-11-21 — **M6 as built** (`442c9784..563c4531`). The welcome's word
+  is `Link.serves_channels` (§7 renamed: M1's `Link.channels` is the set of
+  open channels' logs). The frame's set is `sminos_channels.frame_channels(
+  session, holders)`, equal to `channels_of` filtered to channels' ids
+  (pinned) but reading `set_holders()` once a publish, so a thread in no
+  channel costs one lookup where MAWS lists `channels`; `made_of` takes the
+  tuple, which is `()` without the word, so a flip of the word is covered;
+  the lane A rule sits in `member_frame`. The replay plays all 112 lines of
+  the fixture `ok`, with no amendment; the harness gains `AFTER = {(13, 4):
+  (13, 2)}` (step 13.4 must match a frame sent after 13.2's, so the removal
+  is proven), which amends no line. Case 13 is staged in a subprocess
+  (`register`, then `change`), as a verb runs, so it does not race the
+  uplink's thread. The stand-in's `known` takes the first 128 entries and
+  then filters by the predicate (X5's reading); a suite's directory
+  (`rl10_known_directory`) names a known log by the hello that opened it.
+  The three-machine "return" is T1's end and return (`retire`, then the
+  session running again); a removal and a re-add is its own case.
+- 2026-11-21 — **M6's review, round 1, as fixed** (`cdce4334`). The
+  stand-in's `known` follows MAWS's rule at `8ae3b0843` (its endpoint's
+  `registry.ts` and `rl10/members.ts`): a welcome opens a restatement of
+  the members it holds, `restated` withdraws those left out, a connection
+  cut before its `restated` withdraws nothing, and while no connection is
+  live or a restatement is open `known()` is the last answer; a member's
+  channels are counted as `memberChannels` counts them (distinct valid ids
+  up to 128, invalid and repeated entries passed by). The stand-in keeps
+  its members across connections, as MAWS does. `Link.holders()` asks
+  `sminos.channels_here()` first, so a publish under a welcome listing
+  `channels` never reads the thread stores on a machine with no channel
+  (`NoChannelHere`; `bench_scale.py`'s idle endpoint negotiates no
+  `channels`, so this test stands in for the gate there). A fresh store's
+  checker takes an empty baseline: only the older-copy case grandfathers
+  events.
+- 2026-11-21 — **M6's review, rounds 2 and 3, as fixed** (`d774d1fa`,
+  `e9fd15e0`, test code alone). The stand-in installs a connection and
+  opens its restatement in one step under its lock (`Endpoint.install`),
+  checks which connection a `member` or `restated` frame belongs to under
+  the lock that applies it, and keeps a replaced connection's frames in
+  `received` for the checker without applying them; the suites wait on
+  `restatement_applied(n)`, set only when that connection's own `restated`
+  is applied. The last fix came after the third review and had none of
+  its own.
+- 2026-11-21 — **M7 as built** (`cdc800c4..ede81a01`). `ask_of` takes the
+  channel, since `event_key` needs it (§6 amended, as `answer_of` in M5);
+  it answers none for a queued request with no position yet and for a
+  session record it cannot read. The request pass runs at the end of
+  `ask_words`, only while a channel is open, and sends through `hold_asks`,
+  past the message asks' hold filter. An answer past `REACH_WAIT` is
+  dropped even when it arrives before `expire_asks` runs. A channel whose
+  pass fails is logged once and does not stop the others. The stand-in's
+  `withhold` takes a JSON object of fields; it relays no tombstone for a
+  position it withheld, so the suite puts a withheld request last for its
+  writer. The expired case runs a daemon with `SMINOS_CHANNEL_REQUEST_TTL=3`.
+  The scene runs on three fresh homes, so `--scene` runs alone; a pass is:
+  rebuild the directory, relay, tick each machine, relay until the step
+  holds; it names B as `birch#<short>`, since a bare alias resolves only in
+  the caller's own project. All seven steps of the acceptance scene are met
+  (36 checks).
+- 2026-11-21 — **M7's two observations** (the holder's ruling: as
+  designed). A roster row carries its own project's view's state word, so
+  a spawned seat with no transcript reads `gone` while the pool counts it
+  under "stopped", the pool's one count of rows in a hidden state (§8
+  amended; no third count). A stopped B's own `list` prints its project
+  section as today's `list` does for a project whose only rows are hidden,
+  and the channel section follows (C6's order); a session running `list` is
+  live outside a test, so the case is the fixture's (the scene's step 2
+  amended). `ask_of(channel, …)` beside `answer_of(channel, …)` is
+  accepted, and the holder carries both to Y1.
+- 2026-11-21 — **The endpoint's `reach?` for a request, as MAWS reads it**
+  (its master `5346ff6d3`; Outcomes). It finds the recipient by `session`
+  alone, which is why the target's current own-project frame goes first
+  (M7's review, round 1) and why the ask stays owed while the endpoint
+  holds no record of it; `project` is the event's scope for its
+  signature, so a request is signed and presented under the channel's id
+  on every path; a refusal's reason is `not-reachable` or `unverified`,
+  and sminos reads any refusal as refused whatever its word.
+- 2026-11-21 — **M7's review, round 1, as fixed** (`8331c9e4`, `ede64e18`).
+  A request's ask waits for its thread's member frame under the project the
+  thread is in now (`Link.member_under`): when the frame on the lane names
+  the old project or none, both projects' rows are read again and
+  republished, and otherwise the ask waits for the next pass. A request is
+  presented under the channel's id on every path (the append, the upload,
+  the import, the `reach?`), pinned on the frames and on the receiving
+  log. A refusal is recorded `refused not-reachable` whatever its reason
+  word and is not asked again. The scene asserts every read's exit, the
+  order of B's sections and §8's whole sentence, and one checker helper
+  (`checked_clean`) serves both of its cases.
+- 2026-11-21 — **Before the frontier** (`46f7bcd9..a3bc63da`). `origin/main`
+  merged at `b7413f10` (EN.G1, sminos 1.53.0, devcloud 0.18.0): both
+  changes kept where they meet, `known_logs` filtered by EN.G1's
+  `not_carried`, `cmd_say` running EN.G1's notice checks before the
+  channel refusal; the `sminos-channels` gate sits after
+  `sminos-on-devcloud` in `.github/ci-kit.yml`. `sminos who --thread`,
+  new with EN.G1, refuses a target qualified by a channel (M1's verb loop
+  in `T/test-channels.sh`). A request's ask marks the pass due only while
+  the target's frame waits for lane capacity (`members_unsent`). After the
+  merge `sminos-idle` reads 32,789 calls a second at 3.83 ticks (limit
+  33,570; file calls 2,778, limit 2,970).
+- 2026-11-22 — **"This machine's own" rests on a record this machine holds**
+  (the frontier review's A2, the holder's ruling; §6 row 10 revised). The
+  shortcut of row 10 is held to a requester this machine has a record of:
+  a session's writer needs a thread or seat record here that has had that
+  session (`thread_of`); the human writer needs a request this machine
+  appended itself, and its target's record read now (never the endpoint's
+  last resolved owners, A3) naming the machine's owners. The test of
+  "appended here": the request is one of this machine's queued appends (no
+  `seq` yet), or `sminos.receipted(channel, request)` holds, a `{seq, hash}`
+  line in `projects/<id>/receipts/<writer>.jsonl` written under the writer
+  file's lock before the event and outside `log/`, so nothing imported ever
+  has one (`channel-request` joins `RECEIPTED_KINDS`). Every other request
+  under this machine's name takes the endpoint's word. *Lost: the writer's
+  machine name,* which a retired machine's reused name or a rebuilt home
+  also carries. Left to the holder: rows 8, 9 and 11 still read the name as
+  provenance (`outside_origin`, and `sender_verified` answering for an own
+  name before it reads the signer).
+- 2026-11-22 — **One last read before the record's write** (the frontier
+  review's A4 with scalpel-1#6, the holder's ruling; §6 and §8 revised).
+  After the positions, the ledger and the entry are made, `_last_reads`
+  checks in one helper the session's being no other record's current one,
+  its lane, the reach a word was given for (`reach_token`), and its
+  project membership; any change writes nothing and gives the outcome the
+  same change would have given a moment earlier, never a commit on the old
+  answer. No lock is added: a move after these reads is the
+  reconciliation's (the M2 ruling). A thread's own change gains `failed
+  lane-b`.
+- 2026-11-22 — **The frontier's fix wave as built** (`ffc6569a..0323f37b`).
+  A1: a channel's upload sends first, under its own project, each
+  sender's member frame never sent (`Link.senders_before`), and waits while
+  one cannot be queued. A5: a seat branch of `_target` takes the thread's
+  canonical record (`current_record(session, fresh=True)`). A6: `may_leave`
+  is false for a channel that holds a request this machine wrote and that
+  is outstanding (`sminos_channels.outstanding`: not answered, withheld,
+  refused `audience` or expired). A7 and A11: `on_reach` takes no lock; it
+  keeps the word under its key and binding (`request_words`) for the pass
+  that carries requests, which uses it once and drops it, so a request it
+  cannot commit is asked again at the ordinary interval. A8: a log writer
+  file or a queue of the channel that is there and cannot be read raises
+  `PositionsUnread`, and nothing of that channel is carried (`pending
+  unreadable`); an unreadable queue had raised `PermissionError` before,
+  not read as empty. A9: a request's `id` is 32 lower-case hex digits
+  (`REQUEST_ID_RE`, a full match), anything else no request. A10: a request
+  whose upload the endpoint refused for its audience reads `withheld`,
+  reason `audience` (`sminos_hublog.refused_audience_of`; §8 amended).
+  MAWS's reworked case 15 (its master `27e7208a1`, blob `78282c78`) is
+  taken in, with the scenes `add-machine` and `machine-event`: the replay
+  plays 121 lines `ok`, no amendment. In it the statements answering the
+  two requests stay unwritten (both targets private, and the fixture sends
+  no `audience` frame for its policy revision); the records hold the
+  answers, which the replay checks.
+- 2026-11-22 — **"This machine's own" for rows 8, 9 and 11 too** (the
+  holder's ruling). For a channel request one predicate, A2's
+  `appended_here` (a queued append of this machine, or a receipt), decides
+  "this machine's own" for rows 8 to 11: a request under this machine's
+  name with neither is an outside event, so `outside_origin` is true for it
+  (read-only refuses it) and `sender_verified` reads its signer (a revoked
+  signer is caught). Scoped to requests: a message's path stays as on
+  main, where a word is shown marked unverified and an act has no such
+  mark.
+- 2026-11-22 — **The fix wave's reviews, rounds 1 to 3, as fixed**
+  (`3800a09a..4411a917`). A1: a sender's frame is required under the
+  project its newest membership in effect names, read with the membership
+  from one fresh scan (`sminos.member_project_now`), so a retired sender
+  owes none and a moved one waits for the destination's. A6: an outstanding
+  request is this machine's by `appended_here` (a former name's queue and
+  a receipt included), and its answer is looked up where it is held: the
+  record for a thread here, `ANSWERS_HEARD` for another machine's, filled
+  by `Link.hear_answers` from the events an import stored (`HubLog.take(...,
+  kept=)`), each checked by `answer_of`'s rule; an uplink started after the
+  answer was imported keeps the channel followed until the request
+  expires, which is the cost of keeping all-log reads off the leaving scan.
+  A7: the uplink's request pass tries every lock (store, finisher, wake,
+  and the finisher's append through `lock_until`, the entry left for
+  replay), and finishes no open entry of another operation (`finishes=
+  False`: `pending entry`, the reconciliation finishes it). A8: the
+  ordered input is read from one strict listing of `log/` and `queued/`
+  (`_input_files`); a listed file not readable is unreadable unless
+  `lstat` says it is gone. A11: a word that could not commit, or was taken
+  without an outcome, waits `WORDS_EVERY` (`request_retry`), whatever
+  other reply makes a pass due.
+- 2026-11-22 — **M8 as built** (`1be3f7fb..b2ed53c7`). B1: an entry an older copy addressed
+  to a channel is finished by the ordinary finisher (`sminos_threads._finish`,
+  under the finisher lock, before any effect is replayed, on every path that
+  finishes an entry) with what it owes the channel voided: no event appended
+  to the channel's log, no hand-off reach carried and no settlement under
+  it, with a `daemon.log` line; every local step (an absorption's hold,
+  merge and deletion, a lost claim undone, the stop, the seat, a queued
+  `next`) runs as for any entry. A purge so finished keeps its record as an
+  end's, since with its retirement voided the ended record is what keeps
+  the session from being adopted again. The hand-off's carry of such an
+  entry is its reach and provenance alone, read from the records by the
+  journal's pair; the entry stays open until they are carried, and the
+  channel's cursor and override stay behind. A later purge of a seat whose
+  channel purge kept its end retires the session in its own project first
+  while its process still runs, so deleting the seat never leaves that
+  process to be joined again. (Its review's first two rounds
+  found the first form of this, voiding or undoing the whole entry, losing
+  local work: a committed absorption, a refill's `next` into a real
+  project, a purge's stop; the third, after which these last two sentences
+  were built with no review of their own, a private predecessor's reach not
+  carried and a retried purge deleting the kept end.) B2: `keep_org` completes an older copy's registration of a
+  channel the org lists, with no root, the enrollment's hub and the
+  directory's name (`register_listed_channel`). B3: a resume's roster finds
+  no member in a channel's log, and still follows a `retired moved` out of
+  it. B4: `tag_project` tags a project whose name is shaped like a channel
+  id by its id, and `project init` refuses such a name. The older-copy
+  suite checks "what each copy did without channels" by running the same
+  verbs over a second store without channels and comparing the normalised
+  outputs (1.52.0 is held to its own behaviour the same way); its wire
+  check enrols the store only after the older copy's verbs. sminos is
+  1.54.0, above main's 1.53.1; the `sminos-channels` timeout is 4 minutes
+  (about twice the part's 1m40s, in whole minutes). The merges of main
+  (`067e6d44`, `dd6b36f7`) were resolved by hand at the version (1.54.0
+  kept) and at the end of `TECH-DEBT.md` (main's two EN.G1 rows end their
+  section; "sminos channels" follows); the rest merged clean. The check on
+  a real engine passed its three steps (Concrete Steps' step 1 amended:
+  `find_target` takes the bare short); in step 3 the positions for `probe`
+  were `{}` before and after the hand-off, since the channel's log held
+  nothing then, so that step shows them unchanged without showing a
+  non-empty boundary carried.
+- 2026-11-22 — **The second whole-range review and its fix wave**
+  (`317c7e6a..ad2796e6`). The holder's second panel over `bef6f74e..317c7e6a`
+  confirmed 23 (2 P1); its triage ruled nine fixed (C1 to C9), twelve
+  logged (L4 to L15, rows in TECH-DEBT's "sminos channels"; C9 was fixed, so
+  no L16), one dismissed.
+  C1 took the triage's alternative shape: the uplink's request pass reads
+  its target's member frame as the plane last read it
+  (`Link.member_on_lane`) and reads no view, and its finish call finishes
+  only the entry it committed (`finish_thread(..., only=)`); the older hang
+  of every plane refresh stays a TECH-DEBT row, which now names its
+  remaining callers on the consumer's thread (CH1 added one: `member_under`
+  at a channel's upload). A legacy channel hand-off's carry reads the
+  predecessor's publication in the channel's log, read-only (C2); `add`,
+  `env` and `create`'s revival refuse, before anything is resolved or
+  written, a channel this enrollment does not carry ("its registration on
+  this machine names another org", or no hub), a channel that left this
+  machine excepted, since placing a member is what brings it back, and
+  `remove` never refused (C3); a session record that exists and cannot be
+  read at the last read defers the write as `record-unreadable` (C5); a
+  shortened channel qualifier left unquoted is refused in `cmd_say` before
+  any selector or tag is read (C7); a request's malformed reach reply keeps
+  the ask held to its deadline (C8, requests' asks only: main's own loop on
+  a message's malformed reply is a TECH-DEBT row, measured at 2,827 asks in
+  3 seconds on `bef6f74e`); C4 and C9 as ruled. Row 3 (C6) resolves the
+  addressed session's owner in `thread_of`'s order over every record,
+  set-aside ones included: the wave first narrowed it to sessions the
+  target only had, for a seat "answering for its own current session", and
+  its one task review showed that reason false, since by T1 an archived
+  human-opened record owns its current session before an older copy's
+  seat; the narrowing was reverted. The review's fixes (`ad2796e6`) had no
+  review of their own; the holder's high-rung reading of `317c7e6a..` is
+  theirs.
+- 2026-11-22 — **The holder's third and last reading** (high rung, of
+  `317c7e6a..18c2f7bf`): six findings, each a gap in one of the wave's own
+  fixes; four fixed (`78074970`), one logged, one dismissed, no review
+  after. It found no wrong verdict from C1's frame as the plane last read
+  it: the request path rechecks membership and reach, and a frame under the
+  wrong project defers the ask. D1: a channel entry's carry reads the
+  channel's log by its id's path when its registration cannot be read, and
+  registers nothing (no evidence is doubt, not absence). D2: the last lane
+  read takes only FileNotFoundError as a missing record (`_gone`). D3: the
+  unquoted tag guard (`shortened_channel_qualifier`, the name kept) splits
+  the `@word` where the leading tags stop at its last `/` and lets
+  `names_channel` decide the whole qualifier, `name#<whole id>` included,
+  with no grammar of its own. D4: an exact seat group of a name no project
+  has resolves before the channel ambiguity exit; a project of that name
+  keeps its precedence. Logged: the request's own finish can take the
+  registration lock with no bound (`lifecycle` → `_append` → `store_path` →
+  `project_path`, where the registration changed since the pass read it),
+  in the older-hang row, which names it and A1's `member_under` as the two
+  consumer-thread callers CH1 added. Dismissed: a terminal `create`
+  reconciling its target before it refuses an uncarried channel (a
+  refusal's read may reconcile as any read does; "nothing was written" is
+  about channel facts).
+- 2026-11-22 — **Accepted by the holder: a retried purge's `retired` for
+  every seat purge.** M8's round-3 fix (`f6c205ad`, `end_seat`) writes the
+  session's `retired` first for an already-ended seat whose session is no
+  member there, whose process runs on and whose last event does not hold
+  against it. It applies to every seat purge, not only a channel's kept
+  end: a session that moved projects and is purged from its old seat while
+  still running gets one redundant `retired` in the old project's log. The
+  holder accepted it as built.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**What CH1 delivers.** A declared channel exists and holds members, with
+nothing said in it yet: `sminos channel create | add | remove | show | env`,
+a thread placed without acting on its own machine when the command returns
+and on another machine when that machine's daemon reads the request, the
+roster in `sminos list` beside the member's project, the channel's log
+opened at the hub as a holder by every machine with a member, and every
+form of message into a channel refused in §8's sentence. A session in no
+channel sends and prints what it did before (A13: the listing compared with
+the merge base's at M5, the wire frames of a thread in no channel with the
+old fixture's at M6, every gate at every milestone). sminos 1.54.0.
+
+**How it was proved.** Every acceptance item by the proof map, on the final
+head. The final code head is `78074970`; the head after it changes this
+document only. On `78074970`: the gates GREEN (11/11, run 45001621562)
+with `sminos-idle` at 32,230 calls a second under its 33,570 limit (every
+milestone and fix round between 32,024 and 32,838); MAWS's fixture (its
+master `27e7208a1`, case 15 the request exchange) replayed, 121 lines
+`ok`, no amendment. The acceptance scene's seven steps, 47 checks, none
+failed: covered by the `sminos-channels` gate (`test-channels-machines.sh`,
+whose last case it is) and run alone there with `--scene --show` as well.
+The older-copy suite over 1.27.10, 1.51.0 and 1.52.0, 303 checks: covered
+by the `sminos-suites-a` gate (`test-older-cli.sh`). The check on a real
+engine, which no gate covers, run again on `78074970` under a scratch home
+(Claude Code 2.1.330): its three steps passed, as at M8. Its step 3 shows
+the record's positions for the channel unchanged across a hand-off only as
+empty before and after, since the channel's log held nothing then: a
+non-empty boundary carried across a real hand-off is left to CH2's full
+pass on a real engine, which the composite's Risks already give it.
+
+**Not proved here.** The real endpoint's answer to a channel-request's
+`reach?` (recorded below, before this section was written): the replay
+holds sminos to MAWS's fixture of it, and the fleet check reads the real
+one.
+
+**What the build taught.**
+
+- Per-milestone review missed what lives where milestones meet. Four of
+  seven milestones reached the three-review bound, and still the holder's
+  panel over M1 to M7 as one range confirmed nineteen findings (four P1),
+  most of them where M4's judgment of a request on one machine met M7's
+  wire: the order of a request's upload and its sender's member frame,
+  "this machine's own" decided by a name, owners read stale, the last read
+  before the write. A child of this size wants the range read whole before
+  its last milestone, as this plan had it, and again after it, as the
+  holder takes it.
+- Recovering an older copy's work is suppression, not undoing. B1's first
+  form voided or rolled back an entry an older copy had addressed to a
+  channel, and each of M8's three reviews found local work it lost (an
+  ownership transfer, a refill, a purge's stop, a private session's reach).
+  What held was the ordinary finisher with only the channel-addressed
+  effects withheld: the journal already knows how to finish every local
+  step, and a second path that re-derives them misses some.
+- The idle gate shaped the design more than any contract did. A machine with
+  no channel paying nothing per tick (the holder's ruling at M1) left about
+  2.5% of headroom and moved code into `Link.channels` and `known_kinds`;
+  every later milestone was built against that budget.
+- The older-copy suite's cost grew threefold (24 s to 74 s) for the
+  without-channels comparison store, which is what makes its assertions
+  exact; it runs in `sminos-suites-a`, well inside that part's timeout.
+- Main moved five times during the build (the suites split, EN.G1, two
+  smaller sminos and devcloud changes); each merge was taken at a milestone
+  boundary, and only EN.G1's touched code CH1 had changed (`hub_projects`,
+  `cmd_say`, the gate list), resolved so both hold.
+
+**Recorded ahead of this section:**
+
+- Not proved here: the real endpoint's answer to a channel-request's
+  `reach?` (project the channel, session a member of another project); the
+  fleet check of M8 and CH2 reads it, and until MAWS answers, the built
+  behaviour is pending `endpoint`. The holder has put the exchange to
+  MAWS's architect, with a request for a fixture case (one `deliver`, one
+  `refuse`) that the replay would then take. MAWS's answer from its master
+  `5346ff6d3` (`decideReach`), with no change to the endpoint: the
+  recipient is found by `session` alone, and one whose record the endpoint
+  does not hold yet gets no answer (the ask stays owed); the sender needs
+  no member row under `project`, which is the event's own scope (for this
+  machine's writer the signature ledger is looked up under it, the owners
+  from the asker's member under its own project; for another machine's
+  event `verifyEvent({org, project})`, so a request is signed over the
+  channel's id); the verdict is `deliver` on a shared owner or a reach of
+  `list` or wider, else `refuse` with `not-reachable` (`unverified` for an
+  unverified sender to a private recipient). MAWS adds the exchange as the
+  fixture's last case.
