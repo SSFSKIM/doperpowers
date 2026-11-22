@@ -1,6 +1,6 @@
 ---
 name: writing-skills
-description: Use when creating or editing any authored agent behavior — a skill, a registered agent definition, a worker protocol, a dispatch-prompt template — or verifying a skill works before deployment
+description: Use when creating or editing authored agent behavior in the doperpowers repository — a skill, a registered agent definition, a worker protocol, a dispatch-prompt template — or verifying such a skill works before deployment
 ---
 
 # Writing Skills
