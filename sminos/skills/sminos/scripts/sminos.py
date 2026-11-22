@@ -2995,6 +2995,35 @@ def _session_project(session, launch_cwd, fresh=False):
 _LAST = {}   # session → last_project's answer, per cache generation
 
 
+def _membership_in_effect(session):
+    """(Project, event) of the newest membership event in effect of
+    `session`'s own, of this machine, across every project's files as they
+    are now (last_project's scan); None for none."""
+    best, at = None, ""
+    for path in glob.glob(os.path.join(projects_root(), "*", "project.json")):
+        pid = os.path.basename(os.path.dirname(path))
+        # A channel is no session's project (CH1): an older copy's `join` into one is a move to read past.
+        p = known_project(pid) if not is_channel_id(pid) else None
+        last = threads_module().in_effect(_own_events(p, session)) if p is not None else None
+        if last is not None and str(last.get("ts") or "") >= at:
+            best, at = (p, last), str(last.get("ts") or "")
+    return best
+
+
+def member_project_now(session):
+    """The project `session` is a member of now, read fresh from every
+    project's files (last_project's scan, its per-generation answer passed
+    by), the project and the membership from that one read: the project
+    whose `joined` is the newest membership event in effect. None when that
+    event is a retirement: one into nothing, one from where it was, or a
+    `moved` whose destination's `joined` is not written (or older than the
+    move). What an upload of a channel's log asks of a sender
+    (sminos_uplink.Link.senders_before): a frame is owed only where it is
+    a member."""
+    best = _membership_in_effect(session)
+    return best[0] if best is not None and best[1]["kind"] == "joined" else None
+
+
 def last_project(session):
     """The project known here that `session`'s latest own membership event,
     of this machine, puts it in, read rather than told: the project of a
@@ -3010,14 +3039,7 @@ def last_project(session):
     (_holding_projects is recorded_project's alone). Every project's files
     under every name, but only until the first frame's `locations`."""
     if session not in _LAST:
-        best, at = None, ""
-        for path in glob.glob(os.path.join(projects_root(), "*", "project.json")):
-            pid = os.path.basename(os.path.dirname(path))
-            # A channel is no session's project (CH1): an older copy's `join` into one is a move to read past.
-            p = known_project(pid) if not is_channel_id(pid) else None
-            last = threads_module().in_effect(_own_events(p, session)) if p is not None else None
-            if last is not None and str(last.get("ts") or "") >= at:
-                best, at = (p, last), str(last.get("ts") or "")
+        best = _membership_in_effect(session)
         if best is not None and best[1]["kind"] == "retired" and best[1].get("reason") == "moved":
             dest = str(best[1].get("project") or "")
             _LAST[session] = known_project(dest) if dest and valid_name(dest) and not is_channel_id(dest) else None

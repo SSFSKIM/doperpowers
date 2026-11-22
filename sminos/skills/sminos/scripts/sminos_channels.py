@@ -482,7 +482,7 @@ def requests_of(channel, whole=True):
     sig = _signature(logs, queue_files, unlisted)
     unread = list(unlisted) if whole else []
     files, events = sminos._store_whole(channel, "log", shared=True, paths=logs)
-    unread += [path for path, key in files if key is None and os.path.lexists(path)]
+    unread += [path for path, key in files if key is None and not _gone(path)]
     try:
         queues = sminos.queued_operators(channel, paths=queue_files)
         queued = sminos.said_order(queues) if queues else []
@@ -496,6 +496,20 @@ def requests_of(channel, whole=True):
     held = {(e["writer"], e["id"]) for e in logged}
     queued = [{**e, "seq": None} for e in queued if is_request(e) and (e["writer"], e["id"]) not in held]
     return sig, [dict(e) for e in logged] + queued
+
+
+def _gone(path):
+    """Whether a listed file is no longer there: FileNotFoundError alone. A
+    stat refused any other way (a permission) says nothing of whether it
+    is there, so the file is unread, never absent (os.path.lexists is False
+    for both)."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
 
 
 def _queued_under_former_name(request):
@@ -735,7 +749,7 @@ def _earlier(requests, request):
     return list(requests)
 
 
-def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_until=None):
+def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_until=None, finishes=True):
     """One request (§6): judge() on what it reads, then, when that says a
     statement is owed, sminos_threads.set_channels with a decide that runs
     judge() again on the record it is given and on fresh reads, and writes
@@ -746,7 +760,11 @@ def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_unt
     what is left. A wake lock that cannot be had is pending `wake`;
     `wake_until`, when given, bounds its poll alone (a pass only tries it),
     `lock_until` the store lock's (and the wake lock's when no `wake_until`
-    is given: a command waits as a transition does)."""
+    is given: a command waits as a transition does). `finishes` False (the
+    uplink's pass, on its consumer's thread): an entry the record holds
+    already is not finished here (another operation's replay takes locks no
+    deadline bounds, a hand-off's carry among them), so the request is
+    pending `entry` (row 6) until a reconciliation finishes it."""
     threads = sminos.threads_module()
     cid, tid = channel.id, request["thread"]
     why = "moved"
@@ -757,7 +775,7 @@ def carry_out(channel, request, word=None, asked=None, lock_until=None, wake_unt
             return Outcome("pending", "unreadable")
         earlier = _earlier(requests, request)
         record = threads.get(tid)
-        if record is not None and record.get("pending") and not threads.reservation(record) \
+        if finishes and record is not None and record.get("pending") and not threads.reservation(record) \
                 and sminos.wake_held(tid) is None:
             try:
                 sminos.finish_thread(tid, lock_until=lock_until)
@@ -861,14 +879,15 @@ def ask_of(channel, request):
 _UNREAD_SAID = {}   # channel id → the last unreadable input said in daemon.log, said once while it stays
 
 
-def carry_due(channel, words=None, also=(), lock_until=None, wake_until=None):
+def carry_due(channel, words=None, also=(), lock_until=None, wake_until=None, finishes=True):
     """The pass (§6): every request of the ordered input that is not expired
     and names a thread of this machine that has not ended, in order, then
     the requests of `also` it does not hold (a command's own, in hand), each
     through carry_out; a request its thread's record has answered already
     is passed by (judge's row 4, read from the record without a lock: it
     writes nothing either way), and a request pending leaves the later ones
-    for its thread pending `earlier`. `words`: {event_key: (word, asked)}.
+    for its thread pending `earlier`. `words`: {event_key: (word, asked)};
+    `finishes`, carry_out's.
     [(request, Outcome)] of the requests carried."""
     threads = sminos.threads_module()
     words = words or {}
@@ -897,7 +916,7 @@ def carry_due(channel, words=None, also=(), lock_until=None, wake_until=None):
             out.append((r, Outcome("pending", "earlier")))
             continue
         word, asked = words.get(event_key(channel, r), (None, None))
-        got = carry_out(channel, r, word, asked, lock_until=lock_until, wake_until=wake_until)
+        got = carry_out(channel, r, word, asked, lock_until=lock_until, wake_until=wake_until, finishes=finishes)
         if got.state in CARRIED:
             records[r["thread"]] = threads.get(r["thread"])
         elif got.state == "pending":

@@ -1239,6 +1239,72 @@ class Asks(Requests, T1.Sessions):
         self.answer(link, self.asks(link)[-1], "deliver")
         self.assertEqual(self.held(ta), [DESK])
 
+    # -- the fix wave's review, round 3
+
+    def test_a1_a_sender_that_moved_since_its_project_was_cached_waits_for_its_frame_under_the_destination(self):
+        """last_project's answer is kept per cache generation: one taken before a move names the source, where the
+        sender's own events now say `retired moved`. That is no retirement into nothing: the sender's project is
+        read again, fresh, and its frame there goes first."""
+        tid, sid, _ = self.human()
+        _, sender, _ = self.human()
+        other = self.hub_project("9a9a9a9a-0000-4000-8000-00000000009c", "elsewhere")
+        link = self.link()
+        hl = link.logs[DESK]
+        hl.on_have({"t": "have", "project": DESK, "have": {}})
+        e = self.request(DESK, "add", sid, tid, writer=sminos.writer_id(sender))
+        stamp = threads.stamp(sender)
+        self.write_own(sender, [{"kind": "retired", "reason": "moved", "project": other.id, "thread": stamp}])
+        self.write_own(sender, [self.old_joined(sender, alias="mover", thread=stamp)], p=other)
+        sminos.forget_caches()
+        sminos._LAST[sender] = self.p   # the generation's answer, taken before the move
+        sent = []
+        real = link.member_under
+
+        def under(project, session):
+            sent.append((project.id, session))
+            return real(project, session)
+        with mock.patch.object(link, "member_under", under):
+            link.upload(hl)
+        self.assertIn((other.id, sender), sent, "its frame looked for under the destination")
+        for frame, members in self.uploaded(link):
+            if any(x["writer"] == e["writer"] for x in frame["events"]):
+                self.assertIn(other.id, [m["project"] for m in members if m.get("session") == sender],
+                              "uploaded only after its frame under the destination")
+
+    def test_a7_the_pass_finishes_no_open_entry_so_a_held_cursor_lock_holds_no_frame(self):
+        """A thread whose record holds an open entry of another operation (a hand-off cut after its record's
+        write) is pending `entry` to the uplink's pass, which finishes nothing of it there: the carry's cursor
+        lock, held by another process, never stops the consumer; the reconciliation off that thread finishes it."""
+        tb, sb, _ = self.human()
+        link = self.link()
+        link.logs[LOBBY] = hublog.HubLog(self.chan(LOBBY), link.cred)
+        link.opened.add(LOBBY)
+        link.channels.add(LOBBY)
+        # B's member frame on the lane already: its ask reads no row again, so the plane's refresh (which
+        # reconciles the project, and replays its open entries, as every tick's does) is not what is tested here.
+        self.assertTrue(link.member_under(self.p, sb))
+        old, oproc, tid = T1.Sessions.member(self)   # (Store's member() reads a row)
+        job, _ = self.job(old)
+        self.end(oproc)
+        with self.kill_after_begin(), self.assertRaises(T1.Killed):
+            self.reconcile()
+        self.assertEqual(threads.get(tid)["pending"]["op"], "advance")
+        a = self.remote(DESK, "add", job, tid)
+        self.remote(LOBBY, "add", sb, tb)
+        path = sminos.project_path(self.p, "cursors", sminos.reader_key(job) + ".json")[:-len(".json")] + ".lock"
+        with open(path, "a+") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)   # the successor's cursor, written by another process
+            at = time.monotonic()
+            self.ask_pass(link)
+            took = time.monotonic() - at
+            fcntl.flock(held, fcntl.LOCK_UN)
+        self.assertLess(took, 1.0, "the pass waited on the hand-off's cursor lock")
+        self.assertEqual(threads.get(tid)["pending"]["op"], "advance", "left to the reconciliation")
+        self.assertEqual([x["session"] for x in self.asks(link)], [sb], "the next request asked about")
+        self.assertEqual(self.carry(DESK, wake_until=time.time())[a["id"]].why, "endpoint",
+                         "the daemon's pass finishes the entry first, as before")
+        self.assertIsNone(threads.get(tid).get("pending"))
+
 
 class WireAsks(unittest.TestCase):
     """A real uplink against a stand-in that serves `reach` and `channels`:

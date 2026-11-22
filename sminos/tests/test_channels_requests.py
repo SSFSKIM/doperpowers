@@ -1366,6 +1366,31 @@ class Frontier(Requests):
             _, reqs = channels.requests_of(self.chan(DESK))
         self.assertEqual([r["id"] for r in reqs], [first["id"], later["id"]])
 
+    def test_a8_nor_past_a_listed_writer_file_whose_metadata_cannot_be_read(self):
+        """A writer file the listing named whose stat and lstat are refused (a permission, not an absence) is
+        unread: only FileNotFoundError says a listed file is gone."""
+        tid, sid, _, other = self.two()
+        first = self.request(DESK, "add", sid, tid, writer=sminos.writer_id(other))
+        later = self.request(DESK, "remove", sid, tid)
+        path = sminos.writer_path(self.chan(DESK), first["writer"])
+
+        def denied(real):
+            def call(p, *a, **k):
+                if not isinstance(p, int) and os.path.abspath(os.fspath(p)) == os.path.abspath(path):
+                    raise PermissionError(13, "Permission denied", p)
+                return real(p, *a, **k)
+            return call
+        sminos._LOG_FILES.pop(path, None)
+        sminos._MERGED.clear()
+        with mock.patch("os.stat", denied(os.stat)), mock.patch("os.lstat", denied(os.lstat)):
+            self.assertEqual(self.carry(DESK, also=[later]), {later["id"]: O("pending", "unreadable")})
+            with self.assertRaises(sminos.PositionsUnread):
+                channels.requests_of(self.chan(DESK))
+        self.assertEqual(self.held(tid), [])
+        self.assertEqual(self.answered(tid), [])
+        sminos._MERGED.clear()
+        self.assertEqual(self.carry(DESK), {first["id"]: O("applied"), later["id"]: O("applied")}, "in order")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2130,23 +2130,21 @@ class Link:
     def senders_before(self, log, sessions):
         """members_before for the sessions an upload of `log` carries. A
         channel's rows are empty by design (its view has no members), so
-        each sender is asked of its own project now (sminos.last_project):
+        each sender is asked of its own project now (member_project_now):
         its frame there, current and on the lane (member_under, as a
         request's target's is for its ask), goes first, and while it is not
         (not queued yet, or its row or record cannot make one yet) nothing
-        of the channel's goes. A sender that is a member of no project now
-        owes no frame: one in none, and one whose own events in the project
-        last_project names leave it no member there (a `retire` since it
-        wrote: last_project names where it retired from, and no frame
-        under it ever comes). A project's log is members_before's alone."""
+        of the channel's goes. The sender's project and its membership
+        there are read together, fresh (sminos.member_project_now: a
+        generation's last_project may predate a move), and a sender that is
+        a member of no project now owes no frame (a `retire` since it
+        wrote, a move into nothing, a move whose `joined` is not written
+        yet). A project's log is members_before's alone."""
         if log.id not in self.channels:
             return self.members_before(log, sessions)
-        threads = sminos.threads_module()
         for sid in sorted(s for s in sessions if s):
-            own = sminos.last_project(sid)
-            if own is None or not threads.member(sminos.own_events_of(own, sid)):
-                continue
-            if not self.member_under(own, sid):
+            own = sminos.member_project_now(sid)
+            if own is not None and not self.member_under(own, sid):
                 return False
         return True
 
@@ -2308,7 +2306,7 @@ class Link:
                 # On the consumer's thread: every lock only tried (the wake lock, the store's, a finisher's), a busy
                 # one left to a later pass, so a frame behind this tick is never held past its deadline.
                 now = time.time()
-                carried = chans.carry_due(channel, words=words, lock_until=now, wake_until=now)
+                carried = chans.carry_due(channel, words=words, lock_until=now, wake_until=now, finishes=False)
             except (Exception, SystemExit) as e:  # noqa: BLE001 — one channel's failure is not the pass's
                 failed = repr(e)
                 if self.requests_failing.get(pid) != failed:
