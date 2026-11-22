@@ -124,7 +124,7 @@ class OwnedByTest(DriverBase):
         self.assertEqual(answer, {"answer": "none", "vms": [], "unknown": [], "listed": ["main"],
                                   "unused": ["spare"]})
         [line] = [line for line in self.err.getvalue().splitlines() if "spare" in line]
-        self.assertIn("never had a passing copy", line)
+        self.assertIn("never passed under this profile", line)
 
     def test_an_account_whose_registered_provider_never_passed_here_is_unused_not_unknown(self):
         self.spare_never_passed()
@@ -166,6 +166,35 @@ class OwnedByTest(DriverBase):
 
     def test_a_record_without_its_copy_is_still_unknown(self):
         (self.profile_dir / "providers" / ".pass" / "spare").unlink()
+        self.assert_spare_unknown()
+
+    def test_a_renamed_account_whose_artifacts_are_under_its_old_name_is_still_unknown(self):
+        providers = self.profile_dir / "providers"
+        (providers / ".pass" / "spare").rename(providers / ".pass" / "old-spare")
+        (providers / "spare.pass.json").rename(providers / "old-spare.pass.json")
+        self.assert_spare_unknown()
+
+    def test_an_orphan_record_alone_or_an_orphan_copy_alone_keeps_it_unknown(self):
+        providers = self.profile_dir / "providers"
+        self.spare_never_passed()
+        for orphan in (providers / "old-spare.pass.json", providers / ".pass" / "old-spare"):
+            with self.subTest(orphan=orphan.name):
+                orphan.write_text("{}")
+                self.assert_spare_unknown()
+                orphan.unlink()
+
+    def test_a_dangling_link_where_the_copy_would_be_is_still_unknown(self):
+        self.spare_never_passed()
+        (self.profile_dir / "providers" / ".pass" / "spare").symlink_to(self.tmp / "nowhere")
+        self.assert_spare_unknown()
+
+    def test_a_providers_directory_that_cannot_be_listed_is_still_unknown(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads a directory whatever its mode")
+        self.spare_never_passed()
+        passdir = self.profile_dir / "providers" / ".pass"
+        passdir.chmod(0o300)   # searchable, so main's copy still runs, but not listable
+        self.addCleanup(passdir.chmod, 0o755)
         self.assert_spare_unknown()
 
     def test_a_provider_whose_listing_fails_is_unknown(self):

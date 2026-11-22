@@ -8,18 +8,20 @@ a name equal to its tag `@<short>`, to the bare short id, or ending in
 `#<short>`. The answer is one JSON object, exit 0:
 
   answer   "owned" when a host matched, else "unknown" when anything could
-           not be listed, else "none": every account listed in full
+           not be listed, else "none": every account listed in full or
+           named under `unused`
   vms      the hosts that matched: name, account, provider, creator
            (an adopted host: account "adopted", provider null, adopted true)
   unknown  what could not be asked: account, provider, failed ("account":
            not usable; "listing": its list failed), reason
   listed   the accounts listed in full
-  unused   the accounts not asked because their provider never had a
-           passing copy on this Mac (provider.never_passed): this Mac's
-           driver never made or took a host there, and a host's owner is a
-           thread of the Mac that did, so they hold none of this Mac's
-           threads' hosts; each is named on stderr too. An account with a
-           passing copy it cannot use now stays unknown.
+  unused   the accounts not asked because their provider never passed
+           under this profile (provider.never_passed): no driver under it
+           made or took a host there, and a host's owner is a thread of the
+           Mac whose driver did, so they hold none of the asking profile's
+           threads' hosts; each is named on stderr too. An account with any
+           sign of a pass (a copy it cannot use now, an artifact under a name
+           no account has, a path it cannot look at) stays unknown.
 
 Any other exit printed no answer. It asks no host and runs no reaper."""
 
@@ -53,10 +55,10 @@ def run(ctx, names):
             "creator": f"@{e.vm['labels']['devcloud-creator']}"}
            for e in entries if _matches(e.vm["labels"].get("devcloud-creator"), names)]
     unused = [account for account, failed, _ in missing
-              if failed == "account" and provider.never_passed(ctx.paths.profile, account)]
+              if failed == "account" and provider.never_passed(ctx.paths.profile, account, ctx.profile.accounts)]
     for account in unused:
-        ctx.warn(f"devcloud vm owned-by: account {account.name} not asked: its provider {account.provider} never "
-                 f"had a passing copy on this Mac, so no host there is one this Mac's threads own")
+        ctx.warn(f"devcloud vm owned-by: account {account.name} not asked: its provider never passed under this "
+                 f"profile")
     unknown = [{"account": account.name, "provider": account.provider, "failed": failed, "reason": str(error)}
                for account, failed, error in missing if account not in unused]
     try:
