@@ -5,6 +5,8 @@ cases for a message under a channel's id): a position is a log's, a words?
 is held to the log it names, and a session is this machine's when the replay
 staged it here."""
 
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import os
 import sys
 import unittest
