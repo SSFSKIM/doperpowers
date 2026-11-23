@@ -35,11 +35,12 @@ talk (below). A project's log is the channel its own members share.
 
 What crosses sessions — a message, a message to the human, a join,
 an in-charge line — is an event in a log. A channel's log holds only
-what is said in that channel, and only its members' machines read it;
-your project's holds the rest (what is said in the project, every message
-to the human, joins, in-charge lines), and every enrolled machine reads
-it. Git and board events are not copied in: name the commit, PR, or
-ticket.
+what is said in that channel; its members are whom its messages are
+delivered to, not the only ones who may read it (`sminos chat
+<channel>`). Your project's log holds the rest (what is said in the
+project, every message to the human, joins, in-charge lines), and every
+enrolled machine reads it. Git and board events are not copied in: name
+the commit, PR, or ticket.
 
 ## Who is here
 
@@ -174,8 +175,8 @@ record nobody is prompted for.
 A frame from a channel names it (`[sminos chat desk-integration …]`), and
 its reply line's tag, `@<channel id>/<short>`, names that channel and the
 sender's thread: run the line as given, with your text, and the reply
-stays in the channel. A direct `@<short>` (or `@<alias>`) instead goes
-to the sender's project, out of the channel. If the sender has left the
+stays in the channel. A direct `@<short>` instead goes to the sender's
+project, out of the channel. If the sender has left the
 channel since, the line's tag reaches it directly, in its project, and
 says so. A reply that holds code goes on stdin as any such text does,
 that same tag first.
