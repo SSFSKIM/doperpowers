@@ -478,6 +478,54 @@ class Verb(Lead):
         self.assertFalse(asked, "refused before the prompt")
         self.refused((code, out), "torn#%s: its membership of desk names two threads" % torn_sid[:8], 4, before)
 
+    def test_f5_a_target_that_turns_private_while_the_writer_waits_gets_no_plain_lead(self):
+        """Frontier F5: the stream is chosen before _append takes the writer's locks; the choice is read again under
+        them, so a target that turned private meanwhile gets no identifying lead on the plain writer."""
+        self.au.keep_capabilities(["channels", "access"])
+        rtid, rsid, _ = self.live("reader")
+        self.confirmed_in_process()
+        real = sminos._append
+
+        def append(project, writer, events, **kw):
+            if events and events[0].get("kind") == "channel-lead" and events[0].get("thread"):
+                self.private(rsid)   # while the writer's lock was waited for
+            return real(project, writer, events, **kw)
+        before = self.logs()
+        with mock.patch.object(sminos, "_append", append):
+            code, out = self.at_terminal("channel", "lead", "desk", "reader")
+        self.assertEqual(code, 1, out)
+        self.assertIn("reader#%s's audience changed while its lead was written: nothing was written. Run it again"
+                      % rsid[:8], out)
+        self.assertEqual({k: v for k, v in self.logs().items() if v}, before,
+                         "no lead on the plain writer (whose file the append's open may create, empty)")
+        self.assertEqual(glob.glob(os.path.join(self.chan(DESK).home, sminos.QUEUED, "*.jsonl")), [], "nor queued")
+
+    def test_f5_a_private_target_whose_audience_changes_after_the_reset_says_both_facts(self):
+        self.au.keep_capabilities(["channels", "access"])
+        rtid, rsid, _ = self.live("reader")
+        self.private(rsid)
+        self.confirmed_in_process()
+        real = sminos._append
+
+        def append(project, writer, events, **kw):
+            if events and events[0].get("kind") == "channel-lead" and events[0].get("thread"):
+                records.set_policy(rsid, lambda a, shares: ("listed", shares))
+            return real(project, writer, events, **kw)
+        with mock.patch.object(sminos, "_append", append):
+            code, out = self.at_terminal("channel", "lead", "desk", "reader")
+        self.assertEqual(code, 1, out)
+        self.assertIn("its clearing event was written (desk has no lead now); the private lead was not, because "
+                      "reader#%s's audience changed while it was written" % rsid[:8], out)
+        self.assertEqual([e["thread"] for e in self.leads()], [None], "the reset alone")
+
+    def test_f23_an_id_shaped_alias_is_named_through_the_channel_from_another_project(self):
+        """Frontier F23: an alias in id form that no thread's or session's id begins with is looked up as an alias in
+        the channel (M1's fallback), as a tag in it is."""
+        tid, sid = self.far("deadbeef")
+        code, out, _ = self.tty("y", "channel", "lead", "desk", "deadbeef")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([(e["thread"], e["session"]) for e in self.leads()], [(tid, sid)])
+
     def reader_without(self, writer):
         """lead_of over a copy of this machine's store whose channel's log lacks the stream writer's file: what a
         machine outside that audience holds (the hub never sends it the stream). The alias it reads, or None."""
@@ -551,6 +599,22 @@ class LeadOf(Lead):
         self.lead_event(btid, bsid)
         self.removed(btid, bsid)
         self.assertIsNone(self.lead_now(), "birch left: no lead, and not alder")
+
+    def test_f24_a_lead_history_with_a_file_that_cannot_be_read_gives_no_lead(self):
+        """Frontier F24: the latest lead may be in a writer's file that cannot be read; the one a readable file names
+        is then not the lead in effect. An incomplete read gives no lead."""
+        atid, asid, _ = self.live("alder")
+        btid, bsid, _ = self.live("birch")
+        self.lead_event(atid, asid)
+        self.lead_event(btid, bsid, writer="%s/human" % FAR)
+        self.assertEqual(self.lead_now(), "birch")
+        path = sminos.writer_path(self.chan(DESK), "%s/human" % FAR)
+        os.chmod(path, 0)
+        self.addCleanup(os.chmod, path, 0o600)
+        sminos._LOG_FILES.clear()   # a process of its own: no file's events held from before (a chmod moves no key)
+        self.assertIsNone(self.lead_now(), "not alder: the read is incomplete")
+        os.chmod(path, 0o600)
+        self.assertEqual(self.lead_now(), "birch", "read again whole once the file reads")
 
     def post(self, text):
         code, out = self.at_terminal("say", "--in", "desk", text)

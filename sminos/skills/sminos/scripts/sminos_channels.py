@@ -2469,6 +2469,9 @@ LEAD_WAITS = ("the lead of %s was not written: this machine's writer waits for i
 LEAD_RENAMED = "this machine's name changed while you answered (%s, now %s): nothing was written. Run it again"
 LEAD_RESET_ONLY = ("the lead of %s: its clearing event was written (%s has no lead now); the private lead was not, "
                    "because this machine's name changed (%s, now %s). Run it again")
+LEAD_AUDIENCE = "%s's audience changed while its lead was written: nothing was written. Run it again"
+LEAD_RESET_AUDIENCE = ("the lead of %s: its clearing event was written (%s has no lead now); the private lead was not, "
+                       "because %s's audience changed while it was written. Run it again")
 LEAD_UNMARKED = "this machine's name (%s) is no machine name a reader honours a lead under: nothing was written"
 
 
@@ -2496,9 +2499,15 @@ def lead_of(channel, rows=None):
     decides, whoever wrote the ones before it; None for a `thread` of None;
     else the roster's row (`rows`, the roster by default) addressed as that
     thread (thread_of_row); None when no row is (it ended, left, or this
-    reader may not read it). An earlier lead never comes back in its place."""
+    reader may not read it). An earlier lead never comes back in its place,
+    so a log with a writer's file here that cannot be read gives none: the
+    lead in effect may be in it (a stream this machine was never served is
+    no file here, and no gap)."""
     last = None
-    for e in sminos._store_whole(channel, "log", shared=True)[1]:
+    files, events = sminos._store_whole(channel, "log", shared=True)
+    if any(key is None for _, key in files):
+        return None
+    for e in events:
         if is_lead(e):
             last = e
     if last is None or last["thread"] is None:
@@ -2517,12 +2526,12 @@ def _in_roster(rows, name, short):
         if short:
             if m.alias == name and m.session.startswith(short):
                 return True
+        elif sminos.alias_reach(m, name):   # a name in id form no id begins with is an alias too (reach_in)
+            return True
         elif id_form(name):
             got = thread_of_row(p, m)
             if m.session.startswith(name) or (got is not None and got[0].startswith(name)):
                 return True
-        elif sminos.alias_reach(m, name):
-            return True
     return False
 
 
@@ -2608,15 +2617,25 @@ def lead(q, name):
     machine = sminos.writer_base(writer).rpartition("/")[0]
     if sminos.machine_name_now() != machine:
         sminos.die(LEAD_RENAMED % (machine, sminos.machine_name_now()), 1)
-    renamed = []
+    renamed, moved = [], []
 
     def same_name(_events):
         if sminos.machine_name_now() != machine:
             renamed.append(sminos.machine_name_now())
         return not renamed
 
-    def append(w, fields, queue=True):
-        got = sminos._append(channel, w, [{"kind": "channel-lead", **fields}], guard=same_name, queue=queue)
+    def same_stream(events):
+        # The stream was chosen before the writer's locks were waited for: a thread that turned private (or public)
+        # meanwhile would get its lead under the wrong writer, the plain one naming it to every reader.
+        if not same_name(events):
+            return False
+        choice, refusal = sminos.stream_choice(channel, "", [{"session": session, "alias": row[1].alias}], label)
+        if refusal or (choice[0][0], choice[0][1]) != (stream, audience):
+            moved.append(True)
+        return not moved
+
+    def append(w, fields, queue=True, guard=same_name):
+        got = sminos._append(channel, w, [{"kind": "channel-lead", **fields}], guard=guard, queue=queue)
         if not got:
             raise _NotWritten()
         return got[0]
@@ -2637,10 +2656,13 @@ def lead(q, name):
                 append(writer, {"thread": None}, queue=False)
                 cleared = True
             sminos.keep_stream(channel, stream, audience)
-            e = append(stream, {"thread": thread, "session": session})
+            e = append(stream, {"thread": thread, "session": session}, guard=same_stream)
     except sminos.HeadWaits:
         sminos.die(LEAD_WAITS % channel.name, 1)
     except _NotWritten:
+        if not renamed:
+            sminos.die(LEAD_RESET_AUDIENCE % (channel.name, channel.name, label) if cleared
+                       else LEAD_AUDIENCE % label, 1)
         sminos.die(LEAD_RESET_ONLY % (channel.name, channel.name, machine, renamed[0]) if cleared
                    else LEAD_RENAMED % (machine, renamed[0]), 1)
     except (OSError, sminos.audience_module().StreamUnknown) as err:
