@@ -550,6 +550,34 @@ class Outsider(Say):
         [c] = [c for _, c in self.project_says(self.project_of(local)) if c.get("copy")]
         self.assertTrue(c["text"].endswith("listed now"), "known listed: its copy kept")
 
+    def test_a_listed_entry_an_older_writer_kept_is_no_knowledge_until_a_frame_says_members_here(self):
+        """The kept file outlives an upgrade and an older uplink writes it: its `members: null` is written for a
+        frame that said `members` and for one that did not alike, so it proves nothing. Such an entry, under a
+        welcome with `access`, keeps no copy (today's warning); the same word taken by this tree's uplink does."""
+        warning = ("delivered; its copy is not kept in loose: the message is for a private session's audience alone, "
+                   "and loose's log is not filtered by audience")
+        self.au.keep_capabilities(["channels", "access"])
+        local = self.loose()
+        ftid, fsid = self.far("faraway")
+        otid, osid, _ = self.open_here("outside", local)
+        self.heard(osid)
+        copies = lambda: [c for _, c in self.project_says(self.project_of(local)) if c.get("copy")]  # noqa: E731
+        path = self.au.audiences_path()
+        with open(path) as f:
+            d = json.load(f)
+        d["sessions"][fsid] = {"owners": ["m-far"], "members": None, "policyRev": 0}   # as an older writer keeps it
+        with open(path, "w") as f:
+            json.dump(d, f)
+        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway an older entry", cwd=local)
+        self.assertEqual(code, 0, out)
+        self.assertIn(warning, out)
+        self.assertEqual(copies(), [], "an older writer's entry: no copy")
+        self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(fsid, ["m-far"])}))
+        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway said here", cwd=local)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("its copy is not kept", out)
+        self.assertEqual([c["text"] for c in copies()], ["@faraway said here"], "the word taken here: its copy")
+
     def test_a_listed_word_is_knowledge_only_under_a_welcome_with_access_and_from_a_frame_that_said_members(self):
         """A remote recipient's `members: null` kept from before a welcome that no longer lists `access` is no
         knowledge, nor is a frame that carried no `members` at all: no copy, today's warning, each; the listed

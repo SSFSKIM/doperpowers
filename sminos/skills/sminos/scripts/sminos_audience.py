@@ -239,15 +239,19 @@ def keep_capabilities(capabilities):
         _write_audiences(d)
 
 
+SAID_LISTED = "saidListed"   # an entry's mark: its frame said `members: null` (audience_entry; CH2's known_listed)
+
+
 def audience_entry(frame):
     """An `audience` frame as kept, or None when it is no such frame: its
     owners (member ids), its members (an audience, or None: listed), its
     policyRev; its digest, when sent, must be its members'. A local
     session's frame may name `withdrawn`, the members its change at that
     policyRev withdrew (as the endpoint checks an `unlisted` notice), kept
-    with it when it names any (O18 M4). A frame that says nothing of
-    `members` is kept with none (every reader's None, as before), so it is
-    never taken for one that said `members: null` (known_listed)."""
+    with it when it names any (O18 M4). One that said `members: null` is
+    kept with SAID_LISTED beside it, which no older writer of the file
+    writes and a frame that says nothing of `members` never gets: what
+    known_listed asks for; every other reader reads the entry as before."""
     sid, owners, members, rev = frame.get("session"), frame.get("owners"), frame.get("members"), frame.get("policyRev")
     if not (sminos.UUID_RE.fullmatch(str(sid or "")) and isinstance(owners, list)
             and all(isinstance(o, str) and o for o in owners) and type(rev) is int and rev >= 0):
@@ -260,7 +264,9 @@ def audience_entry(frame):
             return None
     elif frame.get("digest") is not None:
         return None
-    entry = {"owners": sorted(set(owners)), **({"members": members} if "members" in frame else {}), "policyRev": rev}
+    entry = {"owners": sorted(set(owners)), "members": members, "policyRev": rev}
+    if "members" in frame and members is None:
+        entry[SAID_LISTED] = True
     withdrawn = frame.get("withdrawn")
     if withdrawn is not None:
         if not isinstance(withdrawn, list) or not all(isinstance(m, str) and m for m in withdrawn):
@@ -347,8 +353,9 @@ def known_listed(sids):
     """Whether every session of `sids` is known to be listed (or
     org-wide), from one read of the kept file: a local one's by its record
     (audience_of), a remote one's by the endpoint's word for it alone,
-    under a current welcome that lists `access` and from a frame that said
-    `members` (audience_entry keeps no `members` for one that did not).
+    under a current welcome that lists `access` and from a frame this tree
+    took that said `members: null` (SAID_LISTED: an older writer's entry,
+    or one whose frame said nothing of `members`, is not known).
     audience_of's None for a remote session with no word is not that
     knowledge: a channel's copy in a log the hub does not filter asks for
     it (sminos.record_copy). What cannot be told (an audiences file or a
@@ -361,8 +368,8 @@ def known_listed(sids):
                     return False
                 continue
             entry = entry_of(sid, held)
-            if not ("access" in (held.get("capabilities") or []) and entry is not None and "members" in entry
-                    and entry["members"] is None):
+            if not ("access" in (held.get("capabilities") or []) and entry is not None
+                    and entry.get(SAID_LISTED) is True and "members" in entry and entry["members"] is None):
                 return False
     except StreamUnknown:
         return False

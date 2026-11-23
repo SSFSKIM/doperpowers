@@ -235,16 +235,26 @@ class Streams(tw.Machine):
         link.welcomed_rl10({"t": "welcome", "capabilities": [], "policy": None})
         self.assertFalse(link.visibility or au.capable())
 
-    def test_a_frame_that_says_nothing_of_members_reads_as_a_listed_one_for_a_project(self):
-        """A frame with no `members` key is kept without one (CH2: no knowledge for a channel's copy), and every
-        reader of a project reads it as before: the whole org, its owners kept, a say to it plain."""
+    def test_a_listed_entry_reads_for_a_project_as_before_whoever_wrote_it_and_whatever_its_frame_said(self):
+        """An entry an older writer kept, one from a frame that said nothing of `members`, and one from a frame
+        that said `members: null`: every reader of a project reads each as before (the whole org, its owners, a
+        say to it plain); only the last carries the mark a channel's copy asks for (CH2)."""
         self.capable()
+        said = lambda: (au.audience_of(R), au.owners_of(R), [(w, a) for w, a, _, _ in au.stream_for(  # noqa: E731
+            self.p, None, [{"session": R, "alias": "r"}])])
+        before = (None, [B], [(sminos.writer_id(None), None)])
+        d = json.loads(open(au.audiences_path()).read())
+        d.setdefault("sessions", {})[R] = {"owners": [B], "members": None, "policyRev": 2}   # an older writer's
+        sminos.write_json(au.audiences_path(), d)
+        self.assertEqual(said(), before, "an older writer's entry")
         self.assertTrue(au.keep_audience({"t": "audience", "session": R, "owners": [B], "policyRev": 2}))
-        self.assertNotIn("members", au.entry_of(R))
-        self.assertIsNone(au.audience_of(R))
-        self.assertEqual(au.owners_of(R), [B])
-        self.assertEqual([(w, a) for w, a, _, _ in au.stream_for(self.p, None, [{"session": R, "alias": "r"}])],
-                         [(sminos.writer_id(None), None)])
+        self.assertEqual(au.entry_of(R), {"owners": [B], "members": None, "policyRev": 2}, "kept as before")
+        self.assertEqual(said(), before, "a frame that said nothing of members")
+        self.audience(R, [B], None, 2)
+        self.assertEqual(said(), before, "a frame that said members: null")
+        self.assertEqual({k: v for k, v in au.entry_of(R).items() if k != au.SAID_LISTED},
+                         {"owners": [B], "members": None, "policyRev": 2}, "the same entry, and the mark")
+        self.assertIs(au.entry_of(R)[au.SAID_LISTED], True)
 
     def test_the_hello_advertises_audience(self):
         import sminos_rl10 as rl10
