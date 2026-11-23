@@ -8165,16 +8165,28 @@ def holder_owed(project, member, session, e, events, cursor, owing=None):
                    prepare=False, **_th(owing))
     if plan is None:
         return None
-    if plan.kind in ("push", "legacy"):
-        return HOLDER_RETRY
-    if plan.kind == "awaiting" and peer is None and threads_module().lane_a(session) \
-            and threads_module().current_record(session, fresh=True) is not None:
-        # Handed to a process that is gone, never admitted, and its session now the current one of a lane A thread
-        # (a lane B process's receipt, the session since reopened as lane A and closed): its next step is a push
-        # to the process a wake starts, as for any event owed to a stopped thread (T1's limit: at most one copy
-        # more), never a wait that keeps the thread from being woken.
+    if holder_due(session, plan, peer):
         return HOLDER_RETRY
     return holder_carry(plan, project, member, session, e, events, cursor, peer, **_kw(owing))
+
+
+def holder_due(session, plan, peer):
+    """Whether an event whose held receipt `plan` describes (hd.plan(...,
+    existing_only=True, prepare=False)) is next pushed: the plan says `push`
+    or `legacy`, or it says `awaiting` while no process runs (`peer` None)
+    and the session is the current one of a lane A thread. That last is a
+    receipt handed to a process that is gone, never admitted (a lane B
+    process's, the session since reopened as lane A and closed): its next
+    step is a push to the process a wake starts, as for any event owed to a
+    stopped thread (T1's limit: at most one copy more), never a wait that
+    keeps the thread from being woken. Reads only. holder_owed's
+    HOLDER_RETRY is this, for every log; a channel's reach_due chooses by it
+    (CH2's M6), so its ask goes where the push would retry. A project's
+    reach_due keeps its own test (push or legacy): its asks are today's."""
+    if plan.kind in ("push", "legacy"):
+        return True
+    return plan.kind == "awaiting" and peer is None and threads_module().lane_a(session) \
+        and threads_module().current_record(session, fresh=True) is not None
 
 
 def holder_push(project, member, session, e, events, cursor, words=None, retry=False, due=False, owing=None):
@@ -8641,7 +8653,7 @@ def _verdict_choice(project, session, event, owing):
     return events, record, e
 
 
-def deliver_verdict(project, member, event, verdict, owing=None):
+def deliver_verdict(project, member, event, verdict, owing=None, word=None):
     """The endpoint's verdict on a words-gated event (`words`, `peer` or
     `refuse`, O12 M6) carried out, as deliver_next carries out a push: under
     the session's delivery lock, and only while the event is still its
@@ -8659,7 +8671,16 @@ def deliver_verdict(project, member, event, verdict, owing=None):
 
     `owing` (a channel's log, CH2's M3) as deliver_next's: the thread's lock
     and record, the last check before anything, the thread's selection, and
-    a last check that fails later (PassLost) doing nothing: None."""
+    a last check that fails later (PassLost) doing nothing: None.
+
+    `word` (with `owing` alone, CH2's M6): the path of a kept word the
+    uplink wrote (sminos_channels.keep_word), which the daemon's channel
+    pass carries out (carry_words) taking no lock itself: here, under the
+    thread's lock and after the last check made with the reach, the file is
+    read again and removed (sminos_channels.take_word), and the verdict is
+    carried out only when it was still there, is younger than WORD_KEPT,
+    names this thread, its session and its reach, and names this event and
+    this verdict; else nothing is done on it (None)."""
     o = owing
     if o is None and is_channel_id(project.id):
         raise AssertionError("a channel's log is delivered only with its Owing (sminos_channels.deliver)")
@@ -8678,8 +8699,10 @@ def deliver_verdict(project, member, event, verdict, owing=None):
         noted = _delivery(record, e["writer"]).get("pushed")
         cursor = cursor_load(project, key)
         try:
-            if o is not None and not channels_module().still_owed(o, e):
+            if o is not None and not channels_module().still_owed(o, e, reach=word is not None):
                 raise PassLost()   # before anything is decided of it, an earlier pass's receipt accepted included
+            if word is not None and channels_module().take_word(o, e, word, verdict) is None:
+                return None   # the kept word gone (another carrier took it), stale or not this event's: nothing
             if noted and noted[0] == e["seq"]:
                 outcome = noted[1]
             elif (owed := holder_owed(project, member, session, e, events, cursor, **_kw(o))) \
@@ -8876,9 +8899,14 @@ def reach_due(project, members, owing=None):
                 return False
             if holder.exists(project.id, o.session, e, o.thread):
                 peer = peer_for_session(o.session)
-                plan = holder.plan(project.id, o.session, e, event_hash(e), peer.get("pid") if peer else None,
-                                   existing_only=True, prepare=False, thread=o.thread)
-                if plan is None or plan.kind not in ("push", "legacy"):
+                try:
+                    # On the uplink's consumer thread (M6): the receipts' lock only tried, a busy one leaving the
+                    # event for a later pass.
+                    plan = holder.plan(project.id, o.session, e, event_hash(e), peer.get("pid") if peer else None,
+                                       existing_only=True, prepare=False, thread=o.thread, lock_until=time.time())
+                except LockBusy:
+                    return False
+                if plan is None or not holder_due(o.session, plan, peer):
                     return False
                 verdict = holder.words_of(project.id, o.session, e, o.thread)
             elif words_route(project, e) == "ask":
@@ -8919,7 +8947,7 @@ def reach_due(project, members, owing=None):
     return out
 
 
-def deliver_reach(project, member, event, verdict, reason=None, owing=None):
+def deliver_reach(project, member, event, verdict, reason=None, owing=None, word=None):
     """The endpoint's `reach` answer on an owed event (`deliver` or
     `refuse`, P5 O18 D3) carried out, as deliver_verdict carries out a words
     verdict: under the session's delivery lock, and only while the event is
@@ -8932,7 +8960,8 @@ def deliver_reach(project, member, event, verdict, reason=None, owing=None):
     been `peer`. `refuse` pushes nothing: it settles `refused-reach` on this
     machine alone, said in one daemon.log line that names the position, the
     recipient and the reason, never the text, and no outcome goes back. The
-    outcome, or None. `owing` (a channel's log) as deliver_verdict's."""
+    outcome, or None. `owing` (a channel's log) and `word` (a kept word,
+    CH2's M6) as deliver_verdict's."""
     o = owing
     if o is None and is_channel_id(project.id):
         raise AssertionError("a channel's log is delivered only with its Owing (sminos_channels.deliver)")
@@ -8951,8 +8980,10 @@ def deliver_reach(project, member, event, verdict, reason=None, owing=None):
         noted = _delivery(record, e["writer"]).get("pushed")
         cursor = cursor_load(project, key)
         try:
-            if o is not None and not channels_module().still_owed(o, e):
+            if o is not None and not channels_module().still_owed(o, e, reach=word is not None):
                 raise PassLost()   # before anything is decided of it, an earlier pass's receipt accepted included
+            if word is not None and channels_module().take_word(o, e, word, verdict) is None:
+                return None   # the kept word gone (another carrier took it), stale or not this event's: nothing
             if noted and noted[0] == e["seq"]:
                 outcome = noted[1]
             elif (owed := holder_owed(project, member, session, e, events, cursor, **_kw(o))) \

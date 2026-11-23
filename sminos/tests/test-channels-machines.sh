@@ -27,19 +27,35 @@
 # plan's Concrete Steps, "M8, the acceptance"), on three fresh machines;
 # `--scene` runs it alone, `--show` prints each of its commands with what it
 # printed.
+# The speaking scene (CH2's M6; M11's acceptance, which M8 extends with the
+# lead): three fresh machines whose `claude` is the test engine
+# (wake_engine.py): a message said into a channel on alpha goes up under the
+# channel's id, beta's uplink asks its endpoint (`reach?`) and keeps the word,
+# and beta's daemon carries it out, waking its stopped member; the reply by the
+# frame's line returns the same way; `@all`, an untagged note and a tag to a
+# stopped thread on its own machine; a thread in no channel says into it and is
+# answered directly; a member that left is sent to directly and one that came
+# back through the channel; a notice from a machine of the channel's
+# environment; and the checker over the three stand-ins and stores. Then M6's
+# cases on the same machines: a writer on a machine that holds no member (its
+# member frame first, its log opened with `follow`), what beta held at a
+# removal and a return, and the outcomes the
+# checker reads after beta uploaded again. `--speak` runs the scene alone.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
-# is a stub; the sessions are `sleep`s with engine records the suite writes;
+# is a stub (the test engine in the speaking scene); the sessions are `sleep`s with engine records the suite writes;
 # nothing listens beyond Unix sockets there.
 # run-sminos-tests.sh runs this file in its `channels` part.
 set -euo pipefail
 
 SCENE_ONLY=0
+SPEAK_ONLY=0
 SHOW=0
 for arg in "$@"; do
   case $arg in
     --scene) SCENE_ONLY=1 ;;   # the scene alone (CH1's acceptance)
+    --speak) SPEAK_ONLY=1 ;;   # the speaking scene alone (CH2's, from M6)
     --show) SHOW=1 ;;          # each of the scene's commands printed with what it printed
-    *) echo "usage: $0 [--scene] [--show]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--scene] [--speak] [--show]" >&2; exit 2 ;;
   esac
 done
 
@@ -53,6 +69,11 @@ PASSES=0
 T="$(cd "$(mktemp -d /tmp/smm.XXXXXX)" && pwd -P)"
 PIDS=()
 cleanup() {
+  for st in "$T"/*/engine; do
+    [ -d "$st" ] || continue
+    python3 -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import wake_engine; wake_engine.stop_all(sys.argv[2])' \
+      "$SCRIPT_DIR" "$st" 2>/dev/null || true
+  done
   for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done
   for pid in ${PIDS[@]+"${PIDS[@]}"}; do wait "$pid" 2>/dev/null || true; done
   for _ in $(seq 1 60); do pgrep -f "$T/" >/dev/null 2>&1 || break; sleep 0.05; done
@@ -459,7 +480,417 @@ scene() {
   no_launch sa sb sc && pass "and no launch was recorded" || fail "and no launch was recorded"
 }
 
-if [ "$SCENE_ONLY" = 0 ]; then
+# ------------------------------------------------------------ the speaking scene (CH2's M6, M11's acceptance; M8 adds the lead)
+# Three fresh machines, alpha, beta and gamma, each a sminos home with its daemon, the test engine
+# (wake_engine.py, whose launches and inputs are kept under the machine's engine/) and a stand-in that lists
+# `channels` and `reach` and answers `reach?` deliver. On alpha a live thread its human opened, A (alder), a stopped
+# spawned thread, S (sable), and a live thread in no channel, X (xeno); on beta a stopped thread its human opened,
+# B (birch), in another project, last run in `auto`; on gamma no thread. A pass is the org's directory built again
+# from the stand-ins' `known`, then relays between the stand-ins until what the step expects is there.
+speak_machines() {
+  mkdir -p "$T/engine-bin"
+  printf '#!/usr/bin/env bash\nexec python3 -B "%s" "$@"\n' "$SCRIPT_DIR/wake_engine.py" > "$T/engine-bin/claude"
+  chmod +x "$T/engine-bin/claude"
+  export PATH="$T/engine-bin:$PATH"
+  as() { # dir host — one machine: its HOME, its SMINOS_HOME, its engine's state, its host name
+    export HOME="$T/$1/home" SMINOS_HOME="$T/$1/s" WAKE_ENGINE_STATE="$T/$1/engine" DAEMON_HOST="$2"
+    mkdir -p "$HOME/.claude/sessions" "$SMINOS_HOME/daemon" "$WAKE_ENGINE_STATE"
+  }
+  SA=6a00000a-0000-4000-8000-0000000000aa SS=6a00000b-0000-4000-8000-0000000000ab
+  SX=6a00000c-0000-4000-8000-0000000000ac SB=6b00000a-0000-4000-8000-0000000000ba
+  SG=6c00000a-0000-4000-8000-0000000000ca
+  SDIR="$(directory "$APP" app "$WEB" web "$OPS" ops)"
+  local serve="\"capabilities\": [\"channels\", \"reach\"], \"reach_verdict\": \"deliver\", \"org\": $SDIR" m
+  on pa alpha
+  rl10_cut_over
+  printf '{"ceiling": "auto"}\n' > "$SMINOS_HOME/daemon/policy.json"   # a wake in auto mode asks nothing
+  EPA=$EP
+  mkdir -p "$T/pa/app"
+  printf '{"project": "%s", "name": "app", "hub": {"org": "org-1"}}\n' "$APP" > "$T/pa/app/.smns"
+  live_session alder "$SA" "$T/pa/app"
+  live_session xeno "$SX" "$T/pa/app"
+  run_in "$T/pa/app" "$SMINOS" seat add crew sable --session "$SS"
+  live_session sable "$SS" "$T/pa/app" bg
+  "$SMINOS" daemon tick >/dev/null 2>&1 || true
+  ended sable
+  rl10_serve "$serve"
+  start_daemon
+  on pb beta
+  rl10_cut_over
+  printf '{"ceiling": "auto"}\n' > "$SMINOS_HOME/daemon/policy.json"
+  EPB=$EP
+  mkdir -p "$T/pb/web"
+  printf '{"project": "%s", "name": "web", "hub": {"org": "org-1"}}\n' "$WEB" > "$T/pb/web/.smns"
+  live_session birch "$SB" "$T/pb/web"
+  "$SMINOS" daemon tick >/dev/null 2>&1 || true
+  ended birch
+  rl10_serve "$serve"
+  start_daemon
+  on pc gamma
+  rl10_cut_over
+  printf '{"ceiling": "auto"}\n' > "$SMINOS_HOME/daemon/policy.json"
+  EPC=$EP
+  mkdir -p "$T/pc/ops"
+  printf '{"project": "%s", "name": "ops", "hub": {"org": "org-1"}}\n' "$OPS" > "$T/pc/ops/.smns"
+  rl10_serve "$serve"
+  start_daemon
+  EPS="$EPA $EPB $EPC"
+  for m in "pa alpha" "pb beta" "pc gamma"; do
+    # shellcheck disable=SC2086
+    on $m
+    until_true caps_kept || true
+  done
+  on pa alpha
+  sees_b() { (cd "$T/pa/app" && "$SMINOS" list --org 2>/dev/null) | grep -q "birch"; }
+  speak_pass sees_b || true
+  TA="$(thread_of "$SA")"
+}
+live_session() { # box session dir [kind] — a running session with an inbox (inbox_standin.py): frames in $T/<box>.received
+  : > "$T/$1.received"
+  python3 "$SCRIPT_DIR/inbox_standin.py" "$T/$1.sock" "$T/$1.received" & PIDS+=("$!")
+  local pid=$!
+  until_true test -S "$T/$1.sock"
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"user","kind":"%s","status":"idle","cwd":"%s","messagingSocketPath":"%s","entrypoint":"cli"}\n' \
+    "$pid" "$2" "$1" "${4:-interactive}" "$3" "$T/$1.sock" > "$HOME/.claude/sessions/$1.json"
+  local tx="$HOME/.claude/projects/p-$2/$2.jsonl"   # its transcript, its last turn in `auto` (a wake asks nothing)
+  mkdir -p "$(dirname "$tx")"
+  printf '{"type":"user","uuid":"%s-u1","isSidechain":false,"sessionId":"%s","cwd":"%s","permissionMode":"auto","origin":{"kind":"human"},"message":{"role":"user","content":"go"}}\n' \
+    "${2:0:8}" "$2" "$3" > "$tx"
+  eval "PID_$1=$pid"
+}
+ended() { # box — its process gone, its engine record with it
+  local pid
+  eval "pid=\${PID_$1}"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -f "$HOME/.claude/sessions/$1.json"
+}
+speak_pass() { # command... — the org's directory from the stand-ins' `known`, then relays until it holds (30 s)
+  [ "$SHOW" = 1 ] && printf '\n  -- a pass: relays between the stand-ins\n'
+  # shellcheck disable=SC2086
+  rl10_known_directory "$SDIR" $EPS >/dev/null
+  relay_until "$@"
+}
+received_n() { grep -cF -- "$2" "$T/$1.received" 2>/dev/null || true; }   # box text → frames carrying it
+got() { [ "$(received_n "$1" "$2")" -gt 0 ]; }
+inputs_n() { (cat "$WAKE_ENGINE_STATE/inputs/$1" 2>/dev/null || true) | grep -cF -- "$2" || true; }   # session text
+input_has() { [ "$(inputs_n "$1" "$2")" -gt 0 ]; }
+launches() { cat "$WAKE_ENGINE_STATE/launches" 2>/dev/null || echo 0; }
+thread_of() { # session → its thread id on this machine
+  python3 -c 'import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos_threads
+print(sminos_threads.stamp(sys.argv[1]) or "")' "$1"
+}
+content_with() { # file text — the content of the file's first frame (a JSON line's message content) carrying the text
+  python3 -c 'import json, sys
+for line in open(sys.argv[1]):
+    c = json.loads(line)["message"]["content"] if line.strip() else ""
+    if sys.argv[2] in c:
+        print(c)
+        break' "$1" "$2"
+}
+in_log() { # project-id text → kind, from_project and copy of each of this machine's events of the log carrying the text
+  python3 - "$SMINOS_HOME/projects/$1/log" "$2" <<'PY'
+import glob, json, os, sys
+for p in sorted(glob.glob(os.path.join(sys.argv[1], "*.jsonl"))):
+    for line in open(p):
+        e = json.loads(line)
+        if sys.argv[2] in str(e.get("text") or ""):
+            print(e["kind"], "from_project" in e, "copy" in e)
+PY
+}
+messages_outside() { # channel-id → the say and human events of this machine's logs but the channel's
+  python3 - "$SMINOS_HOME/projects" "$1" <<'PY'
+import glob, json, os, sys
+n = 0
+for p in glob.glob(os.path.join(sys.argv[1], "*", "log", "*.jsonl")):
+    if os.sep + sys.argv[2] + os.sep not in p:
+        n += sum(1 for line in open(p) if line.strip() and json.loads(line).get("kind") in ("say", "human"))
+print(n)
+PY
+}
+asked_about() { # ep-dir text → the questions the stand-in took about events carrying the text: "<t> <project>" lines
+  rl10_q "$1" "sorted({f['t'] + ' ' + f.get('project', '') for c, f in F if f.get('t') in ('words?', 'reach?') and '$2' in str(f.get('event', {}).get('text'))})"
+}
+checked_spoken() { # "channel-id ..." "ep-dir home name" ... — the checker, this child's rules
+  python3 -B - "$SCRIPT_DIR" "$@" <<'PY'
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import channel_wire, endpoint_standin
+ids, out = sys.argv[2].split(), []
+for machine in sys.argv[3:]:
+    ep, home, name = machine.split()
+    state = json.loads(endpoint_standin.ctl_call(ep, "state", {}))
+    frames = [(r["conn"], r["frame"]) for r in state["received"]]
+    welcomed = {w["conn"] for w in state["welcomes"] if "channels" in w["welcome"]["capabilities"]}
+    spoken = channel_wire.ALLOWED_SPOKEN   # a thread's delivery records allowed, their contents checked
+    out += ["%s: %s" % (name, b) for b in channel_wire.published(frames, ids, {}, spoken, welcomed=welcomed)]
+    out += ["%s: %s" % (name, b) for b in channel_wire.written(home, ids, name, {}, spoken, deliveries=False)]
+    for cid in ids:
+        if os.path.exists(os.path.join(home, "projects", cid, "outbox.jsonl")):
+            out.append("%s: an outbox under channel %s" % (name, cid))
+print("\n".join(out) or "clean")
+PY
+}
+from_project_texts() { # channel-id → the texts of the channel's events on this machine that carry from_project
+  python3 - "$SMINOS_HOME/projects/$1/log" <<'PY'
+import glob, json, os, sys
+print(" | ".join(sorted(json.loads(line).get("text", "") for p in glob.glob(os.path.join(sys.argv[1], "*.jsonl"))
+                        for line in open(p) if line.strip() and "from_project" in json.loads(line))))
+PY
+}
+
+speak_scene() {
+  echo "the speaking scene (CH2's M6):"
+  speak_machines
+  assert_equals "$(sees_b && echo yes)" yes "alpha reads beta's thread B, relayed"
+  local desk frame b_line marks
+
+  echo " 1. A creates the channel and adds S and B:"
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" channel create desk-integration
+  assert_rc 0 "$RC" "A creates the channel"
+  desk="$(channel_id desk-integration)"
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" channel add desk-integration sable "birch#${SB:0:8}"
+  assert_contains "$OUT" "sable#${SS:0:8}: in desk-integration" "S is in"
+  assert_contains "$OUT" "birch#${SB:0:8}: asked; pending on beta" "B asked of beta"
+  local three="${SA:0:8} ${SS:0:8} ${SB:0:8}"
+  speak_pass shown_is "$T/pa/app" "$SA" desk-integration "members()" "$three" || true
+  assert_equals "$(shown "$T/pa/app" "$SA" desk-integration "members()")" "$three" "alpha's roster holds the three"
+  on pb beta
+  speak_pass shown_is "$T/pb/web" "$SB" desk-integration "members()" "$three" || true
+  assert_equals "$(shown "$T/pb/web" "$SB" desk-integration "members()")" "$three" "and beta's"
+  marks="$(on pa alpha; messages_outside "$desk") $(messages_outside "$desk")"
+
+  echo " 2. A says into it to B: beta's uplink asks, keeps the word, and its daemon wakes B:"
+  on pa alpha
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" say --in desk-integration "@birch one"
+  assert_rc 0 "$RC" "recorded"
+  assert_contains "$OUT" "birch: recorded (on beta): the session is stopped, and its machine wakes it with this" \
+    "its line for B is what a sender reads for a stopped thread on another machine"
+  on pb beta
+  speak_pass input_has "$SB" "@birch one" || true
+  assert_equals "$(launches)" 1 "beta's engine recorded one launch for B"
+  assert_equals "$(inputs_n "$SB" "@birch one")" 1 "B's input holds one frame"
+  frame="$(content_with "$WAKE_ENGINE_STATE/inputs/$SB" "@birch one")"
+  assert_contains "$(sed -n 2p <<<"$frame")" "[sminos chat desk-integration " "its header names the channel"
+  assert_contains "$frame" "[sminos] A note from sminos on this machine" "with the [sminos] line"
+  b_line="@$desk/${TA:0:8}"
+  assert_contains "$frame" "say \"$b_line <your reply>\"]" "its reply line names the channel's id and A's thread"
+  assert_equals "$(asked_about "$EPB" "@birch one")" "[\"reach? $desk\"]" \
+    "beta asked its endpoint reach? under the channel's id, nothing else"
+
+  echo " 3. B's reply by that line is recorded in the channel and reaches A:"
+  scene_cmd "beta, as B" "$T/pb/web" "$SB" say "$b_line two, from B"
+  assert_rc 0 "$RC" "B's reply recorded"
+  assert_contains "$OUT" "in desk-integration" "in the channel's log"
+  on pa alpha
+  speak_pass got alder "two, from B" || true
+  assert_equals "$(received_n alder "two, from B")" 1 "A's inbox holds it once"
+  assert_equals "$(messages_outside "$desk") $(on pb beta; messages_outside "$desk")" "$marks" \
+    "no project's log on either machine gained a message"
+  assert_equals "$(from_project_texts "$desk")" "" "no event of the channel's log carries from_project"
+  assert_equals "$(in_log "$desk" "" | grep -c True || true)" 0 "nor copy"
+
+  echo " 4. @all reaches the live members, an untagged note no one, a tag the stopped S on its own machine:"
+  b_filled() { [ "$(shown "$T/pa/app" "$SA" desk-integration "[m['state'] in ('busy', 'idle', 'waiting') for m in d['members'] if m['session'] == '$SB']")" = "[True]" ]; }
+  speak_pass b_filled || true   # alpha reads B live, as beta publishes it since its wake
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" say --in desk-integration "@all three to all"
+  assert_rc 0 "$RC" "recorded"
+  on pb beta
+  speak_pass input_has "$SB" "three to all" || true
+  assert_equals "$(inputs_n "$SB" "three to all")" 1 "B, live since step 2, receives it"
+  assert_equals "$(launches)" 1 "with no second launch"
+  on pa alpha
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" say --in desk-integration "a note"
+  assert_rc 0 "$RC" "the untagged note recorded"
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" say "@desk-integration/sable four, to S"
+  assert_rc 0 "$RC" "the tag to S recorded"
+  until_true input_has "$SS" "four, to S" || true
+  assert_equals "$(inputs_n "$SS" "four, to S")" 1 "S is woken on alpha with it"
+  assert_equals "$(launches)" 1 "one launch on alpha"
+  assert_equals "$(inputs_n "$SS" "three to all")" 0 "S, stopped then, was given nothing of the @all"
+  assert_equals "$(asked_about "$EPA" "four, to S")" "[]" "and alpha's endpoint was asked nothing about it"
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" say --in desk-integration "@birch after the note"
+  on pb beta
+  speak_pass input_has "$SB" "after the note" || true   # what A said after the note has reached B
+  assert_equals "$(inputs_n "$SB" "a note") $(received_n alder "a note") $(received_n xeno "a note") $(on pa alpha; inputs_n "$SS" "a note")" \
+    "0 0 0 0" "the note reached no inbox"
+
+  echo " 5. X, in no channel, says into it; A's answer reaches X directly:"
+  on pa alpha
+  scene_cmd "alpha, as X" "$T/pa/app" "$SX" say --in desk-integration "@alder five, from X"
+  assert_rc 0 "$RC" "recorded"
+  assert_contains "$OUT" "you are not in desk-integration" "X is told it is no member"
+  assert_contains "$OUT" "sminos channel add" "and how to join"
+  assert_equals "$(in_log "$desk" "five, from X")" "say True False" "in the channel's log, with from_project"
+  assert_equals "$(in_log "$APP" "five, from X")" "say False True" "a copy in X's project"
+  until_true got alder "five, from X" || true
+  frame="$(content_with "$T/alder.received" "five, from X")"
+  assert_contains "$(sed -n 2p <<<"$frame")" "(not in desk-integration)" "A's frame says its sender is outside"
+  assert_contains "$frame" "say \"@$APP/${SX:0:8} <your reply>\"]" "its reply line names X in X's project"
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" say "@$APP/${SX:0:8} six, to X"
+  assert_rc 0 "$RC" "A's answer recorded"
+  until_true got xeno "six, to X" || true
+  assert_equals "$(received_n xeno "six, to X")" 1 "X's inbox holds A's answer"
+  assert_equals "$(in_log "$APP" "six, to X" | head -1)" "say False False" "in X's project's log"
+  assert_equals "$(in_log "$desk" "six, to X")" "" "and not the channel's"
+  scene_cmd "alpha, as X" "$T/pa/app" "$SX" say "@desk-integration/birch seven, to B"
+  assert_rc 0 "$RC" "X's tag to B in the channel recorded"
+  scene_cmd "alpha, as X" "$T/pa/app" "$SX" say --in desk-integration "@all eight to all"
+  assert_rc 0 "$RC" "X's @all recorded"
+  on pb beta
+  speak_pass input_has "$SB" "eight to all" || true
+  assert_equals "$(inputs_n "$SB" "seven, to B") $(inputs_n "$SB" "eight to all")" "1 1" "B receives both"
+  on pa alpha
+  until_true got alder "eight to all" || true
+  assert_equals "$(received_n alder "eight to all")" 1 "A receives the @all"
+  assert_equals "$(grep -c "desk-integration" "$T/xeno.received" || true)" 0 \
+    "nothing of the channel's log, its @alls among it, was pushed to X"
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" say "@birch nine, to B's project"
+  assert_rc 0 "$RC" "A's tag to B's alias recorded"
+  assert_equals "$(in_log "$APP" "nine, to B's project")" "say False True" "a copy in A's project"
+  on pb beta
+  in_web() { [ "$(in_log "$WEB" "nine, to B's project")" = "say True False" ]; }
+  speak_pass in_web || true
+  assert_equals "$(in_log "$WEB" "nine, to B's project")" "say True False" "recorded in B's project's log"
+
+  echo " 6. A leaves, and B's line goes to A directly; A back, and it is the channel's again; B removed:"
+  on pa alpha
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" channel remove desk-integration
+  assert_contains "$OUT" "alder#${SA:0:8}: out of desk-integration" "A out"
+  on pb beta
+  speak_pass shown_is "$T/pb/web" "$SB" desk-integration "members()" "${SS:0:8} ${SB:0:8}" || true
+  scene_cmd "beta, as B" "$T/pb/web" "$SB" say "$b_line ten, from B"
+  assert_rc 0 "$RC" "B's line run again: recorded"
+  assert_contains "$OUT" "not in desk-integration now" "B is told A is not in the channel now"
+  assert_equals "$(in_log "$desk" "ten, from B")" "" "not in the channel's log"
+  on pa alpha
+  speak_pass got alder "ten, from B" || true
+  assert_equals "$(received_n alder "ten, from B")" 1 "A receives it"
+  assert_equals "$(in_log "$APP" "ten, from B" | head -1 | cut -d' ' -f1)" say "in A's project's log"
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" channel add desk-integration
+  assert_contains "$OUT" "alder#${SA:0:8}: in desk-integration" "A back"
+  on pb beta
+  speak_pass shown_is "$T/pb/web" "$SB" desk-integration "members()" "$three" || true
+  scene_cmd "beta, as B" "$T/pb/web" "$SB" say "$b_line eleven, from B"
+  assert_rc 0 "$RC" "B's line once more: recorded"
+  assert_contains "$OUT" "in desk-integration" "in the channel's log"
+  on pa alpha
+  speak_pass got alder "eleven, from B" || true
+  assert_equals "$(received_n alder "eleven, from B")" 1 "and it reaches A"
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" channel remove desk-integration "birch#${SB:0:8}"
+  assert_rc 0 "$RC" "A removes B"
+  speak_pass shown_is "$T/pa/app" "$SA" desk-integration "members()" "${SA:0:8} ${SS:0:8}" || true
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" say "@desk-integration/birch x"
+  assert_rc 4 "$RC" "a tag to B in the channel: refused"
+  assert_contains "$OUT" "birch" "naming B"
+  assert_contains "$OUT" "elsewhere: @web/birch#${SB:0:8}" "and where it is"
+
+  echo " 7. gamma, which holds no member, posts a notice into it:"
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" channel env add desk-integration gamma
+  assert_rc 0 "$RC" "gamma added to the channel's environment"
+  on pc gamma
+  gamma_knows() { [ -n "$(channel_id desk-integration)" ]; }
+  speak_pass gamma_knows || true
+  scene_cmd "gamma, a terminal" "$T/pc" - say --notice devcloud --in desk-integration "lease ends"
+  assert_rc 0 "$RC" "recorded"
+  on pa alpha
+  shows_notice() { (cd "$T/pa/app" && "$SMINOS" chat desk-integration -n 5 2>/dev/null) | grep -F "lease ends" | grep -qF "devcloud@gamma"; }
+  speak_pass shows_notice || true
+  scene_cmd "alpha, a terminal" "$T/pa/app" - chat desk-integration -n 5
+  assert_contains "$(grep -F "lease ends" <<<"$OUT")" "devcloud@gamma" "sminos chat on alpha shows it from devcloud@gamma"
+  assert_equals "$(received_n alder "lease ends") $(on pb beta; inputs_n "$SB" "lease ends")" "0 0" "no session was prompted"
+
+  echo " 9. the checker over the three stand-ins and stores:"
+  assert_equals "$(checked_spoken "$desk" "$EPA $T/pa/s alpha" "$EPB $T/pb/s beta" "$EPC $T/pc/s gamma")" clean \
+    "nothing went up under the channel but its events, reach? and words?; no outbox under it"
+  assert_equals "$(on pa alpha; from_project_texts "$desk")" "@alder five, from X | @all eight to all | @desk-integration/birch seven, to B" \
+    "from_project is carried by X's three messages alone"
+  DESK_SPOKEN=$desk
+}
+
+# M6's cases on the scene's machines, in a channel of their own (desk-ops: A and B): a writer on a machine that holds
+# no member, what beta held at the boundary, and the outcomes the checker reads once beta has uploaded since. That
+# gamma's log stays open while what it wrote has not gone up is test_channels_wire.py's (a follower leaves only
+# after LEAVE_AFTER_S of connected time, a day, which no scene waits out).
+speak_cases() {
+  echo "speaking across machines (CH2's M6): a writer that holds no member, the boundary, the outcomes:"
+  local ops_ch two="${SA:0:8} ${SB:0:8}" id
+  on pa alpha
+  run_in "$T/pa/app" in_session "$SA" "$SMINOS" channel create desk-ops
+  ops_ch="$(channel_id desk-ops)"
+  run_in "$T/pa/app" in_session "$SA" "$SMINOS" channel add desk-ops "birch#${SB:0:8}"
+  speak_pass shown_is "$T/pa/app" "$SA" desk-ops "members()" "$two" || true
+  on pb beta
+  speak_pass shown_is "$T/pb/web" "$SB" desk-ops "members()" "$two" || true
+  assert_equals "$(shown "$T/pb/web" "$SB" desk-ops "members()")" "$two" "desk-ops holds A and B on beta"
+
+  on pc gamma
+  live_session gauge "$SG" "$T/pc/ops"
+  gamma_knows_ops() { [ -n "$(channel_id desk-ops)" ]; }
+  speak_pass gamma_knows_ops || true
+  run_in "$T/pc/ops" in_session "$SG" "$SMINOS" say --in desk-ops "@all g1, from gamma"
+  assert_rc 0 "$RC" "on gamma, which holds no member, G says into desk-ops"
+  assert_contains "$OUT" "you are not in desk-ops" "told it is no member"
+  up_after_frame() { # gamma's stand-in took G's member frame under ops before the events frame carrying the text
+    rl10_q "$EPC" "(lambda m, u: m is not None and u is not None and m < u)(next((n for n, (c, f) in enumerate(F) if f.get('t') == 'member' and f.get('session') == '$SG' and f.get('project') == '$OPS'), None), next((n for n, (c, f) in enumerate(F) if f.get('t') == 'events' and f.get('project') == '$ops_ch' and any('$1' in str(e.get('text')) for e in f.get('events', []))), None))"
+  }
+  went_up() { [ "$(up_after_frame g1)" = true ]; }
+  until_true went_up || true
+  assert_equals "$(up_after_frame g1)" true "uploaded under the channel's id after G's member frame under its own project"
+  assert_equals "$(follows "$EPC" "$ops_ch")" True "from a log gamma opened with follow"
+  on pa alpha
+  speak_pass got alder "g1, from gamma" || true
+  assert_equals "$(received_n alder "g1, from gamma")" 1 "delivered on alpha"
+  on pb beta
+  speak_pass input_has "$SB" "g1, from gamma" || true
+  assert_equals "$(inputs_n "$SB" "g1, from gamma")" 1 "and on beta"
+  on pa alpha
+  run_in "$T/pa/app" in_session "$SA" "$SMINOS" say "@$OPS/${SG:0:8} g2, to gamma"
+  assert_rc 0 "$RC" "A answers by the frame's line"
+  on pc gamma
+  speak_pass got gauge "g2, to gamma" || true
+  assert_equals "$(received_n gauge "g2, to gamma")" 1 "the answer reaches G in its project on gamma"
+  on pa alpha
+  run_in "$T/pa/app" in_session "$SA" "$SMINOS" say --in desk-ops "@birch b1, relayed late"
+  assert_rc 0 "$RC" "a message to B written on alpha, not relayed yet"
+  on pb beta
+  run_in "$T/pb/web" in_session "$SB" "$SMINOS" channel remove desk-ops
+  assert_rc 0 "$RC" "B removes itself on beta"
+  run_in "$T/pb/web" in_session "$SB" "$SMINOS" channel add desk-ops
+  assert_rc 0 "$RC" "and adds itself again"
+  speak_pass input_has "$SB" "b1, relayed late" || true
+  assert_equals "$(inputs_n "$SB" "b1, relayed late")" 1 "relayed to beta only after that: pushed"
+  set_ep "$EPB" '{"reach_verdict": null}'
+  on pa alpha
+  run_in "$T/pa/app" in_session "$SA" "$SMINOS" say --in desk-ops "@birch b2, relayed early"
+  on pb beta
+  asked_b2() { [ "$(asked_about "$EPB" "b2, relayed early")" != "[]" ]; }
+  speak_pass asked_b2 || true
+  assert_equals "$(asked_about "$EPB" "b2, relayed early")" "[\"reach? $ops_ch\"]" "relayed to beta and asked about, its answer held"
+  run_in "$T/pb/web" in_session "$SB" "$SMINOS" channel remove desk-ops
+  run_in "$T/pb/web" in_session "$SB" "$SMINOS" channel add desk-ops
+  assert_rc 0 "$RC" "B removed and added again before the answer"
+  id="$(rl10_q "$EPB" "[f['id'] for c, f in F if f.get('t') == 'reach?' and 'b2, relayed early' in str(f.get('event', {}).get('text'))][-1]")"
+  python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPB" send "{\"frames\": [{\"t\": \"reach\", \"id\": $id, \"verdict\": \"deliver\"}]}" >/dev/null
+  set_ep "$EPB" '{"reach_verdict": "deliver"}'
+  on pa alpha
+  run_in "$T/pa/app" in_session "$SA" "$SMINOS" say --in desk-ops "@birch b3, after"
+  on pb beta
+  speak_pass input_has "$SB" "b3, after" || true
+  assert_equals "$(inputs_n "$SB" "b3, after") $(inputs_n "$SB" "b2, relayed early")" "1 0" \
+    "the message beta held before the removal is not pushed after it; the next one is"
+
+  run_in "$T/pb/web" in_session "$SB" "$SMINOS" say --in desk-ops "@alder b4, from B"
+  on pa alpha
+  speak_pass got alder "b4, from B" || true
+  assert_equals "$(received_n alder "b4, from B")" 1 "beta uploaded since its pushes were settled"
+  assert_equals "$(checked_spoken "$DESK_SPOKEN $ops_ch" "$EPA $T/pa/s alpha" "$EPB $T/pb/s beta" "$EPC $T/pc/s gamma")" clean \
+    "the checker over both channels: no delivery frame names one, no outbox under one"
+}
+
+if [ "$SCENE_ONLY" = 0 ] && [ "$SPEAK_ONLY" = 0 ]; then
 on a alpha
 rl10_cut_over
 EPA=$EP
@@ -696,7 +1127,14 @@ for pid in ${PIDS[@]+"${PIDS[@]}"}; do wait "$pid" 2>/dev/null || true; done
 PIDS=()
 fi
 
-scene
+[ "$SPEAK_ONLY" = 0 ] && scene
+if [ "$SCENE_ONLY" = 0 ]; then
+  for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done
+  for pid in ${PIDS[@]+"${PIDS[@]}"}; do wait "$pid" 2>/dev/null || true; done
+  PIDS=()
+  speak_scene
+  [ "$SPEAK_ONLY" = 0 ] && speak_cases
+fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

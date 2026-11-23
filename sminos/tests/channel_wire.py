@@ -12,13 +12,16 @@ tick or uplink of this code reads the store (a reading verb reconciles):
     published(endpoint.received, channel_ids, before)   # [] for none
     written(sminos_home, channel_ids, machine, before)  # [] for none
 
-Each returns one line per breach. A breach on the wire:
+Each returns one line per breach; `published` refuses (ValueError) an item
+that is neither a frame (a dict with a string `t`) nor a stand-in's
+(number, frame). A breach on the wire:
 - a `member` frame whose `project` is a channel id;
 - a session-plane message whose project is one (`presence`, `machine`,
   `host`, a subscription's, a request's settlement), but the `end` that
   refuses a `subscribe`;
-- a `pending` frame, a `words?`, or a `reach?` whose event is no
-  `channel-request`, for one;
+- a `pending` frame, a `words?` whose event is no `human`, or a `reach?`
+  whose event is no `channel-request`, `say` or `human`, for one (CH2's
+  M6: before it, any `words?` and any `reach?` but a request's);
 - a `snapshots` answer for one that carries an event;
 - an `events` frame for one carrying, at a position the baseline does not
   hold for that channel with that same event, a kind outside `allowed`;
@@ -57,6 +60,7 @@ ALLOWED = ("channel-request", "channel-env", "retired", "void")
 ALLOWED_SPOKEN = ALLOWED + ("say", "human", "channel-lead")   # what CH2's suites pass as `allowed` (its §8)
 CHANNEL_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 LIMIT = 128
+ASKED_REACH = ("channel-request", "say", "human")   # what a `reach?` under a channel's id may be about (CH2's M6)
 HOST_STORE = "host"
 PUSHED = ("sent", "woken", "sent?", "woken?")   # sminos.PUSHED: what a `pushed` note may say
 THREAD_FILE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(json|lock)")
@@ -126,12 +130,16 @@ def _event_breach(cid, e, before, allowed, where):
 
 
 def _frames(frames):
-    """(connection number or None, frame) for each frame given, alone or as a stand-in's (number, frame)."""
+    """(connection number or None, frame) for each frame given, alone or as a stand-in's (number, frame). A frame is
+    a dict with a string `t`; anything else (the stand-in's control `state()["received"]`, dicts of `conn` and
+    `frame`, among them) is refused with ValueError, never passed by unchecked (CH2's M5)."""
     for f in frames:
-        if isinstance(f, tuple) and len(f) == 2 and isinstance(f[1], dict):
+        if isinstance(f, tuple) and len(f) == 2 and isinstance(f[1], dict) and isinstance(f[1].get("t"), str):
             yield f
-        elif isinstance(f, dict):
+        elif isinstance(f, dict) and isinstance(f.get("t"), str):
             yield None, f
+        else:
+            raise ValueError("not a frame, nor a stand-in's (number, frame): %r" % (f,))
 
 
 def published(frames, channel_ids, before={}, allowed=ALLOWED, welcomed=()):  # noqa: B006 — read, never written
@@ -163,10 +171,10 @@ def published(frames, channel_ids, before={}, allowed=ALLOWED, welcomed=()):  # 
                     out.append("a session-plane %r message under channel %s" % (m.get("kind"), mp))
         elif t == "pending" and (pid in ids or is_channel(pid)):
             out.append("a pending set under channel %s" % pid)
-        elif t == "words?" and (pid in ids or is_channel(pid)):
-            out.append("a words? under channel %s" % pid)
+        elif t == "words?" and (pid in ids or is_channel(pid)) and (f.get("event") or {}).get("kind") != "human":
+            out.append("a words? under channel %s for a %r" % (pid, (f.get("event") or {}).get("kind")))
         elif t == "reach?" and (pid in ids or is_channel(pid)) \
-                and (f.get("event") or {}).get("kind") != "channel-request":
+                and (f.get("event") or {}).get("kind") not in ASKED_REACH:
             out.append("a reach? under channel %s for a %r" % (pid, (f.get("event") or {}).get("kind")))
         elif t == "snapshots" and (pid in ids or is_channel(pid)) and f.get("events"):
             out.append("a snapshots answer for channel %s carries %d events" % (pid, len(f["events"])))

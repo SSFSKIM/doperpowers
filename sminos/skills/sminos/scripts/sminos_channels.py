@@ -60,7 +60,16 @@ project. What is here:
   hands its appends to sminos.say_into with what a channel adds (Said); a
   recipient of this machine's Owing for the sender's own delivery
   (owing_for); and `chat <channel>` (chat).
+- Across machines (CH2's M6, §4): what the uplink asks about a channel's
+  messages (asks_due, by the one selection, one ask per thread and
+  writer), the endpoint's answer kept in a file for the daemon
+  (word_key, keep_word, under `words/`, good for WORD_KEPT seconds and
+  one launch) and carried out by the daemon's channel pass (carry_words,
+  each kept word handed to the delivery operation, which takes it under
+  the thread's lock: take_word); and what holds a channel's log open on a
+  machine that only wrote into it (unsent).
 """
+import glob
 import json
 import os
 import re
@@ -2766,3 +2775,229 @@ def deliver(channel):
             reached.append(o.member.alias)
     daemon.held_pass_forget(channel.id, present)
     return total, reached
+
+
+# ------------------------------------------------------------ asking the endpoint, and carrying its word out (CH2's M6)
+#
+# The uplink asks about a channel's messages and keeps each answer in a file (asks_due, keep_word); the daemon's
+# channel pass carries it out (carry_words), in a process of its own: nothing a channel's message causes on the
+# uplink's consumer thread pushes, launches or waits on a lock without a bound (the plan's §4).
+
+WORD_KEPT = 60   # seconds within which a kept word may begin to be carried out (§4: what the endpoint's word is good for)
+WORDS_DIR = "words"   # under a channel's home: the kept words, <thread>.<ask id>.json, each created whole
+
+
+def word_key(o, e):
+    """What a kept word is remembered under by the uplink (Link.words_kept)
+    and passed over by asks_due while it is good: the channel, the thread,
+    the session and the reach it was asked for, and the event (writer, seq,
+    hash). A hand-off or a change of reach makes another key, so the event
+    is asked about again at once, for the session and the reach as they are
+    then."""
+    return (o.channel.id, o.thread, o.session, o.reach, e["writer"], e["seq"], sminos.event_hash(e))
+
+
+def asks_due(channel, rows, kept=()):
+    """The uplink's choice of what to ask the endpoint about a channel's
+    messages, [(Owing, event, "words?" | "reach?")]: reads only, and no lock
+    waited for. `rows`: {session: (Project, Member)} as the plane holds them.
+    For each thread of this machine in the channel (set_holders) that the
+    log names: one whose session `rows` does not hold is passed by before
+    owing() is asked (owing looks no row up, so nothing here reaches a
+    view); else owing() with that row, and the first owed event of each
+    writer by the thread's selection, as sminos.words_due and reach_due
+    choose for a project given the Owings (a held session asked nothing; an
+    outside event on a read-only machine, one noted pushed, a recipient
+    whose record cannot be read, none), less one whose word_key is in
+    `kept`. "words?" where words_route says ask, else "reach?" where the
+    reach gate needs the endpoint's word. An event a receipt is held for is
+    planned with the receipts' lock only tried (reach_due: a busy one leaves
+    it for a later pass), and asked about when sminos.holder_due says it is
+    next pushed."""
+    threads = sminos.threads_module()
+    holders = [t for t in threads.set_holders().values() if channel.id in threads.held_set(t)]
+    if not holders:
+        return []
+    events = sminos._store_whole(channel, "log", shared=True)[1]   # read, never changed: its index is kept with it
+    index = addressed_threads(events)
+    owings = {}
+    for t in sorted(holders, key=lambda t: t["thread"]):
+        session = t.get("current")
+        if t["thread"] not in index or session not in rows:
+            continue   # nothing names it; or the plane holds no row for its session yet: asked after its next read
+        o = owing(channel, t, rows[session])
+        if o is not None:
+            owings[session] = o
+    if not owings:
+        return []
+    out = []
+    for kind, due in (("words?", sminos.words_due(channel, [], owing=owings)),
+                      ("reach?", sminos.reach_due(channel, [], owing=owings))):
+        for session, es in sorted(due.items()):
+            o = owings[session]
+            out.extend((o, e, kind) for e in es if word_key(o, e) not in kept)
+    return out
+
+
+def _words_dir(channel_id):
+    return os.path.join(sminos.root(), "projects", channel_id, WORDS_DIR)
+
+
+def keep_word(channel_id, thread, ask, word):
+    """The uplink's one write for a channel's answer: `word` (§4's fields:
+    kind, verdict, reason, thread, session, reach, writer, seq, hash, at) as
+    projects/<channel id>/words/<thread>.<ask>.json, created whole (written
+    aside, then renamed into place) and never rewritten, its path built from
+    the ids alone: no registration read, no lock. The path."""
+    d = _words_dir(channel_id)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    path = os.path.join(d, "%s.%s.json" % (thread, ask))
+    tmp = os.path.join(d, ".%s.%s.%d.tmp" % (thread, ask, os.getpid()))
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(word, f, sort_keys=True)
+    os.replace(tmp, path)
+    return path
+
+
+def _as_kept(x):
+    """A value as a kept word's JSON holds it (a reach token's tuples are lists there)."""
+    return json.loads(json.dumps(x))
+
+
+def _read_word(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            w = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not (isinstance(w, dict) and w.get("kind") in ("reach", "words") and isinstance(w.get("thread"), str)
+            and isinstance(w.get("session"), str) and isinstance(w.get("writer"), str) and type(w.get("seq")) is int
+            and isinstance(w.get("at"), (int, float)) and isinstance(w.get("verdict"), str)):
+        return None
+    return w
+
+
+def take_word(o, e, path, verdict):
+    """A kept word taken by the one that carries it out, under the thread's
+    delivery lock (sminos.deliver_verdict, deliver_reach): its file read
+    again and removed; the word when it was still there, is younger than
+    WORD_KEPT, names o.thread, o.session and o.reach, the event `e` (its
+    writer, seq and hash) and `verdict`; else None, and nothing is to be
+    done on it. A second carrier of the same word finds no file."""
+    w = _read_word(path)
+    try:
+        os.unlink(path)
+    except OSError:
+        return None   # gone: another carrier took it
+    if w is None or not 0 <= time.time() - w["at"] < WORD_KEPT:
+        return None
+    if (w["thread"], w["session"], w.get("reach")) != (o.thread, o.session, _as_kept(o.reach)) \
+            or (w["writer"], w["seq"], w.get("hash")) != (e["writer"], e["seq"], sminos.event_hash(e)) \
+            or w["verdict"] != verdict:
+        return None
+    return w
+
+
+def carry_words(channel):
+    """The daemon's channel pass, before deliver: the kept words of the
+    channel carried out, taking no delivery lock itself. For each thread
+    with kept words, oldest first: one older than WORD_KEPT, one whose
+    thread has no owing() now (with own_row(); an open entry, an end, a
+    removal, a lane that defers), and one whose event is no longer its
+    writer's first owed with that body, are removed where they lie; each
+    other is handed to sminos.deliver_reach or deliver_verdict with the
+    Owing and its path, which takes the thread's lock once and there reads
+    the word again, checks it and removes it (take_word). How many were
+    carried out."""
+    d = _words_dir(channel.id)
+    try:
+        names = os.listdir(d)
+    except FileNotFoundError:
+        return 0
+    by_thread = {}
+    for name in names:
+        if name.startswith(".") or not name.endswith(".json"):
+            continue
+        path = os.path.join(d, name)
+        w = _read_word(path)
+        if w is None or name[:-len(".json")].rpartition(".")[0] != w["thread"]:
+            _drop(path)   # no word of this code's
+            continue
+        by_thread.setdefault(w["thread"], []).append((w["at"], path, w))
+    if not by_thread:
+        return 0
+    threads = sminos.threads_module()
+    events = sminos._store_whole(channel, "log", shared=True)[1]
+    carried = 0
+    for thread in sorted(by_thread):
+        t = threads.get(thread)
+        o = owing(channel, t, own_row(t)) if t is not None and not t.get("pending") else None
+        for at, path, w in sorted(by_thread[thread], key=lambda x: (x[0], x[1])):
+            if o is None or not 0 <= time.time() - at < WORD_KEPT:
+                _drop(path)
+                continue
+            e = first_owed(o, w["writer"], events)
+            if e is None or e["seq"] != w["seq"] or sminos.event_hash(e) != w.get("hash"):
+                _drop(path)
+                continue
+            try:
+                if w["kind"] == "reach":
+                    outcome = sminos.deliver_reach(channel, o.member, e, w["verdict"], w.get("reason"), owing=o,
+                                                   word=path)
+                else:
+                    outcome = sminos.deliver_verdict(channel, o.member, e, w["verdict"], owing=o, word=path)
+            except sminos.DeliveryUnreadable as err:
+                sminos.daemon_log("delivery: %s" % err)
+                continue
+            if outcome is not None:
+                carried += 1
+    return carried
+
+
+def _drop(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def unsent(channel):
+    """Whether this machine's writers hold in the channel's log a message (a
+    `say` or a `human`) the upstream has not taken (past the channel's
+    `uplink-taken.json`, as `daemon owed` counts `upload`), or a queued one
+    (`queued`): while either holds, a followed channel does not leave this
+    machine, and one that left comes back (sminos_uplink.Link.may_leave),
+    so what was said here goes up. Requests keep their own rule
+    (outstanding). A file it cannot read keeps the channel too."""
+    hublog = sminos.sibling_module("sminos_hublog")
+    for path in glob.glob(os.path.join(glob.escape(channel.home), sminos.QUEUED, "*.jsonl")):
+        if any(e.get("kind") in sminos.CHAT_KINDS for e in sminos.queued_events(path)):
+            return True
+    try:
+        with open(os.path.join(channel.home, hublog.TAKEN_FILE), encoding="utf-8") as f:
+            held = json.load(f)
+    except FileNotFoundError:
+        held = {}
+    except (OSError, ValueError):
+        return True
+    if not isinstance(held, dict):
+        return True
+    taken = hublog.HubLog.seqs(held.get("taken"))
+    prefix = sminos.machine_name_now().replace("/", ".") + "."
+    log_dir = os.path.join(channel.home, "log")
+    try:
+        names = os.listdir(log_dir)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(".jsonl")):
+            continue
+        path = os.path.join(log_dir, name)
+        writer, last, _ = hublog.writer_and_last(path)
+        if writer and last > taken.get(writer, 0) \
+                and any(e["seq"] > taken.get(writer, 0) and e["kind"] in sminos.CHAT_KINDS
+                        for e in hublog.read_events(path)):
+            return True
+    return False

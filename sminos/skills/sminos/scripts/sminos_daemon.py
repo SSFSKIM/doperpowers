@@ -1400,9 +1400,12 @@ def channel_pass(channels, all_seats):
     and publishes nothing; then its requests are carried out
     (sminos_channels.carry_due), a request a command left or one imported
     from another machine, only trying each thread's wake lock (a wake in
-    flight is the next pass's); then what its log owes this machine's
-    threads is delivered (sminos_channels.deliver, CH2's M3), last, so a
-    request honoured in the tick has set its boundary first. `channels`:
+    flight is the next pass's); then the endpoint's words the uplink kept
+    for its messages are carried out (sminos_channels.carry_words, CH2's
+    M6: the uplink asks and keeps, and pushes nothing itself); then what its
+    log owes this machine's threads is delivered (sminos_channels.deliver,
+    CH2's M3), last, so a request honoured in the tick has set its boundary
+    first. `channels`:
     those known here (sminos.known_kinds' channels), a loop over nothing on
     a machine that knows none. A channel whose pass fails is said in
     daemon.log when the failure is a new one."""
@@ -1410,6 +1413,7 @@ def channel_pass(channels, all_seats):
         try:
             sminos.view_of(c, all_seats, titles=False)
             sminos.channels_module().carry_due(c, wake_until=time.time())
+            sminos.channels_module().carry_words(c)
             sminos.channels_module().deliver(c)
         except MachineClaimed:
             raise

@@ -141,7 +141,15 @@ Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
 persist_legacy, answer_policy, ack_results, verdicts, verdict,
 reach_verdicts, reach_verdict, relay, capabilities, audiences, admit,
-withheld, archive, refuse_audience, withhold.
+withheld, archive, refuse_audience, withhold, notice_words.
+
+What the endpoint says of the two questions whatever its configuration
+(CH2's M6, its plan's §4 and §8), under any project id: a `reach?` about a
+session it holds no `member` frame of is never answered, and a `words?`
+about one is answered `peer` at once; and a notice (an event carrying
+`notice`) asked `words?` is answered `peer` where the configuration says
+`words`, unless `notice_words` is set (the test of sminos's own guard,
+which hands a notice over as a peer's frame whatever the word).
 """
 
 import base64
@@ -158,7 +166,7 @@ LINE_MAX = 1 << 20   # a line at most 1 MiB of UTF-8 (O10 §D); larger text goes
 FIELDS = ("token", "identity", "policy", "revoked", "org", "build", "state_version", "refuse_reason", "ask_legacy",
           "persist_legacy", "answer_policy", "ack_results", "verdicts", "verdict", "reach_verdicts", "reach_verdict",
           "relay", "capabilities",
-          "audiences", "admit", "withheld", "archive", "refuse_audience", "withhold")
+          "audiences", "admit", "withheld", "archive", "refuse_audience", "withhold", "notice_words")
 TS_MS = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 TS_S = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 CHANNEL_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")   # MAWS's isChannelId
@@ -356,6 +364,7 @@ class Endpoint:
         self.archive = False
         self.refuse_audience = []
         self.withhold = None
+        self.notice_words = False   # answer `words` about a notice as configured (sminos's own guard tested): §8
         self.withheld_bodies = {}   # (project id, writer, seq) → the body withheld there (withhold)
         self.unadmitted = {}    # project id → {writer: {seq}}: taken while admission was held back
         self.handler = None
@@ -579,12 +588,18 @@ class Endpoint:
                 self.cv.notify_all()
         elif t == "words?" and not isinstance(frame.get("project"), str):
             out.append({"t": "words", "id": frame.get("id"), "verdict": "refuse"})   # O10 M6: no project, no words
+        elif t == "words?" and not self.holds_member(frame.get("session")):
+            out.append({"t": "words", "id": frame.get("id"), "verdict": "peer"})   # §4: no member of it held here
         elif t == "words?":
             verdict = self.verdicts.get(frame.get("id"))
             if verdict is None and self.verdict is not None:
                 verdict = self.verdict(frame) if callable(self.verdict) else self.verdict
+            if verdict == "words" and "notice" in (frame.get("event") or {}) and not self.notice_words:
+                verdict = "peer"   # a notice is nobody's words (X8): MAWS answers it `peer`
             if verdict is not None:
                 out.append({"t": "words", "id": frame.get("id"), "verdict": verdict})
+        elif t == "reach?" and not self.holds_member(frame.get("session")):
+            pass   # §4: the endpoint answers a `reach?` about a session it holds no member of nothing
         elif t == "reach?":
             verdict = self.reach_verdicts.get(frame.get("id"))
             if verdict is None and self.reach_verdict is not None:
@@ -602,6 +617,12 @@ class Endpoint:
             out += self.take(frame["project"], frame["events"])
         for f in out:
             conn.write(f)
+
+    def holds_member(self, session):
+        """Whether the endpoint holds a `member` frame of the session (its last one, on the current connection's
+        state), as it must before it can answer a question about a push to it."""
+        with self.cv:
+            return isinstance(session, str) and session in self.members
 
     def have(self, project):
         """The `have` the hub answers a hello with, as the endpoint passes it

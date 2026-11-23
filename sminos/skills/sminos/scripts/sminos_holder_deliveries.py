@@ -521,8 +521,8 @@ def _receipt_path(keyhash, create=True):
 
 
 @contextmanager
-def _receipts_lock():
-    with S.flocked(os.path.join(home(), "receipts.lock")):
+def _receipts_lock(lock_until=None):
+    with S.flocked(os.path.join(home(), "receipts.lock"), lock_until=lock_until):
         yield
 
 
@@ -600,7 +600,8 @@ def _attempt(n, proc, launch, body):
             "state": "prepared", "at": S.now(ms=True)}
 
 
-def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only=False, prepare=True, thread=None):
+def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only=False, prepare=True, thread=None,
+         lock_until=None):
     """What a deliverer does with the log event `e` owed to `session`, whose
     live process is `peer_pid` (None: none runs), as the module's contract
     says, preparing a receipt durably when it is to be pushed. The caller
@@ -610,10 +611,13 @@ def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only
     `prepare`, nothing is written or chosen: "push" and "legacy" say a
     handoff would be made, for the caller to check its policy first.
     `thread`: a channel's event's thread, part of what the receipt is found
-    by (key_hash) and kept in its key beside its session."""
+    by (key_hash) and kept in its key beside its session. `lock_until`:
+    the receipts' lock is only tried until then (sminos.LockBusy past it),
+    for a channel's choice of what to ask on the uplink's consumer thread
+    (CH2's M6); without it, waited for as always."""
     keyhash = key_hash(project_id, session, e["writer"], e["seq"], **_thread(thread))
     path = _receipt_path(keyhash)
-    with _receipts_lock():
+    with _receipts_lock(lock_until):
         try:
             r = _read(path)
         except Unreadable as err:
