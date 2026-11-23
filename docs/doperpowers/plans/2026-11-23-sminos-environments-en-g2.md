@@ -66,8 +66,12 @@ owner's fleet at the end (M5), which is parent acceptance line 5.
 - [ ] The owner's answers to O1 to O6 (Decisions that are the owner's).
   The plan builds the default of each unless an answer changes it. M3
   does not merge before the holder has confirmed O6's state.
-- [ ] M1 — A spawn placed in a channel.
-- [ ] M2 — `channel show`: a VM's owner, age and cost.
+- [x] (2026-11-23) M1 — A spawn placed in a channel. Commits
+  14b80ade0..943becdb5, fixes 7ac6f0feb and 93a5f7097; review clean.
+  GREEN on 93a5f7097: `sminos-idle` 32081, `sminos-channels` 4m06s.
+- [x] (2026-11-23) M2 — `channel show`: a VM's owner, age and cost.
+  Commit 628f11876, fix 42a9e9f16; review clean. GREEN on 42a9e9f16:
+  `sminos-idle` 32236, `sminos-channels` 4m08s.
 - [ ] M3 — A VM's notice in the timelines of the channels whose pool holds it.
 - [ ] M4 — What sessions are taught, what sits beside the code, and the
   gates on the final head.
@@ -1320,7 +1324,9 @@ M1 and M2").
 the session. One function, `sminos_channels.place_spawned(thread_id,
 session, seat, asked, org)` (new; `seat` is the seat's `{cwd, group}` on
 a VM, from which step 2 reads the project afresh, and `None` here), which never exits and never raises,
-and returns one entry a channel in the order asked. It opens with
+and returns `(entries, carriage)`: one entry a channel in the order
+asked, and `carriage`, `{project, not_carried}` from the one fresh read of
+the seat's project that step 2 makes (`None` here). It opens with
 `sminos.forget_caches()` and fixes one deadline, `PLACE_BUDGET` (30
 seconds; `SMINOS_PLACE_BUDGET`) from then, for every wait in it. `org` is
 the request's on a VM, and on a spawn without `--on` the org this machine
@@ -1345,8 +1351,27 @@ and for each channel, while time is left:
 5. `change(thread_id, channel, "add", session, lock_until=<the deadline>)`.
 
 A channel whose turn comes with no time left is `failed`, `time`, and is
-not tried. The outcome's own `not_carried` (G1's) is computed after the
-placement, from the same fresh reads.
+not tried. The outcome's own `not_carried` (G1's) is `carriage`'s, so the
+project it names is the one the placement read; where that read did not
+get that far (the deadline came first), the outcome names the launch's
+project with the word `CARRIAGE_UNREAD` ("whether its enrollment carries
+it could not be read"), and the Mac promises no reach. G1's own read
+stands only for a request without `channels`. Only a Mac that sent
+`channels` can receive the word, and it reads any word as no promise.
+
+Every wait inside the placement takes what is left of the deadline,
+however deep (`sminos.waits_until`, and `wait_left` for the child
+processes on the path): the registration's lock, the finisher's, the
+record stores', the project's registration lock, the replay's cursor
+lock, the writer locks of the statement. A finish that would stop a
+purged seat's process is left open inside a placement (its checks wait
+on `ps`, `sysctl` and the engine), and that channel is `time`. A lock
+met after the membership is committed answers `applied`, with the
+warning that the statement is left to the next reconciliation, as
+`sminos channel add` says it; a lock met before the commit is `time`,
+but for the wake lock and a nested settlement, whose expiry reads `wake`
+and `entry` (recorded at M1's review, not fixed: the placement is still
+said failed, with its command).
 
 **The outcome line** gains one key on a success, present exactly when the
 request carried `channels`, one entry a channel in the request's order:
@@ -1381,6 +1406,11 @@ reason for `limit`, and for the new words: "its registration there is
 missing", "its machine's enrollment does not carry it now", "the time for
 placing ran out". A word the Mac does not know is printed as itself. The
 exit is 0 in all of these.
+
+With `--channel`, the seat's own line (G1's banner) names the thread in
+its `sminos say` by the session's whole id, not by `@<short>`, which a
+member named for the short would answer (M1's review); without it the
+banner is G1's, byte for byte.
 
 **Where the call to the VM is lost after the request was sent** (no
 outcome line within the Mac's own bound, output that never ended, an
