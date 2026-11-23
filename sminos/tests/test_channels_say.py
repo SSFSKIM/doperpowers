@@ -327,6 +327,26 @@ class Member(Say):
         self.assertEqual(len(self.got(jreceived, "after it")), 1, "the session that continues the thread")
         self.assertEqual(self.got(sreceived, "after it"), [])
 
+    def test_a_hand_off_the_sweep_finishes_makes_its_sender_a_member_whole(self):
+        """The session that continues a member's thread, its hand-off not yet finished when it says: the rosters'
+        sweep finishes it, and membership and the sender's thread are read after that one sweep, so the post is
+        a member's (its thread, no `from_project`, no copy), never a member's thread with an outsider's project."""
+        rtid, rsid, received = self.live("reader")
+        stid, old, oproc, _ = self.live_member("writer")
+        job, jproc = T1.Sessions.job(self, old)
+        self.inbox(job, jproc, "j")
+        self.assertEqual(channels.channels_of(job), (), "the hand-off is the next reconciliation's to finish")
+        before = self.project_says()
+        code, out = self.as_session(job, "say", "--in", "desk", "@reader from the successor")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(threads.get(stid)["current"], job, "the sweep finished the hand-off")
+        [e] = self.says()
+        self.assertEqual(e["thread"], stid)
+        self.assertNotIn("from_project", e)
+        self.assertNotIn("you are not in desk", out)
+        self.assertEqual([x for x in self.project_says() if x not in before and x[1].get("copy")], [], "no copy")
+        self.assertEqual(len(self.got(received, "from the successor")), 1)
+
     def test_the_reply_line_never_reaches_a_thread_that_came_to_hold_the_senders_old_session(self):
         rtid, rsid, received = self.live("reader")
         stid, old, oproc, sreceived = self.live_member("writer")

@@ -1904,9 +1904,9 @@ def speak(channel, a, session, tags):
     its own machine's record) with its project in `from_project`, its copy
     where record_copy keeps one, and one line; its post into the channel
     refused (NO_HOME) when its project cannot be told, never written as a
-    member's. The sender's
-    stamp is taken after the rosters' sweeps, which can make it a thread,
-    and `@all` leaves out its row by session and by thread, each compared
+    member's. The sender's stamp and its membership are read together,
+    after the rosters' sweeps, which can make it a thread or finish a
+    hand-off into a member's thread, and `@all` leaves out its row by session and by thread, each compared
     with its own kind. A tag qualified by the channel
     that names a thread that was in it and is not now (an old frame's reply
     line) goes to that thread directly, in its own project, by a project's
@@ -1932,9 +1932,8 @@ def speak(channel, a, session, tags):
         home = sminos.caller_project(caller)
         sender = caller["alias"] if caller else sminos.default_from("")
         writer, kind = sminos.writer_id(session), "say"
-        outsider = channel.id not in channels_of(session)
     else:
-        home, sender, writer, kind, outsider = None, "human", sminos.writer_id(), "human", False
+        home, sender, writer, kind = None, "human", sminos.writer_id(), "human"
     if any(sminos.is_all(t) for t in tags) and len(tags) != 1:
         sminos.die("@all stands alone")
     inside, others = [], []
@@ -2028,13 +2027,15 @@ def speak(channel, a, session, tags):
         leader = lead_of(channel)
         if leader is not None and (r := _entry_of(channel, *leader)) is not None:
             recipients, rows, raws = [r], {r["thread"]: leader}, [[]]
+    # The sender's stamp and its membership, both read after every sweep of the rosters above (any can make a live
+    # sender a thread, or finish a hand-off that makes it a member's), so the two are of one reading.
+    thread = threads.stamp(session) if session else ""
+    outsider = bool(session) and channel.id not in channels_of(session)
     if outsider and home is None:
         # No project to name in `from_project`, to keep its copy in, or for a reply to reach: a session that is no
         # member is never written into the channel as one for want of a project (the direct route above, a
         # project's say, needs none).
         sminos.die(NO_HOME % channel.name, 1)
-    # The sender's stamp, taken after every sweep of the rosters above (any can make a live sender a thread).
-    thread = threads.stamp(session) if session else ""
     fields = {"thread": thread} if kind == "say" and thread else {}
     if outsider:
         fields["from_project"] = home.id   # the sender's own project, where a reply finds it (C5)
