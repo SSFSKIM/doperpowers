@@ -4400,11 +4400,16 @@ def held_decided(project, session, e, outcome, owing=None):
     its thread's process or the thread ends, whatever a later pass finds of
     that process (held_owed); any other outcome goes through held_owed.
     `owing` (sminos_channels.Owing, a channel's log): the mark is the
-    thread's, in its own record, and names it."""
+    thread's, in its own record, and names it. In a channel an event for
+    the live alone (`wake`) is never kept as a hold: its hold leaves it owed
+    for this pass alone, unmarked, and the next pass settles it once its
+    thread reads stopped (stopped_for_the_live), so it never holds back its
+    writer's next message, which may wake the thread."""
     if owing is not None:
         record = _writable(project, owing.thread)
         if hold_why(outcome):
-            delivered_held(project, owing.thread, e["writer"], e["seq"], owing.thread)
+            if not e.get("wake"):
+                delivered_held(project, owing.thread, e["writer"], e["seq"], owing.thread)
             return outcome
         return held_owed(project, session, record, e, outcome, owing)
     record = delivered_load(project, session)
@@ -4425,9 +4430,10 @@ def held_owed(project, session, record, e, outcome, owing=None):
     outcome for an event never decided held, stands. With `owing` (a
     channel's log) the mark is the thread's own, so no stale or unreadable
     binding is asked of it, and membership is read in the thread's own
-    project."""
+    project, and an event for the live alone is never held (held_decided),
+    whatever mark an earlier build left on it."""
     if owing is not None:
-        if e["seq"] not in _delivery(record, e["writer"]).get("held", {}):
+        if e.get("wake") or e["seq"] not in _delivery(record, e["writer"]).get("held", {}):
             return outcome
         if outcome != "recorded" and not outcome.startswith("failed"):
             return outcome

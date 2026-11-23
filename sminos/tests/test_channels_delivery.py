@@ -198,6 +198,13 @@ class Channel(Life, Deliveries, T1.Sessions):
             return real(m, frame, *a, **k)
         return mock.patch.object(sminos, "push_member", push_member)
 
+    def held_at_the_hop(self, text, why="mode"):
+        """Every push of a frame carrying `text` meets the thread held at the last hop (its process stopped after
+        the look, bound_peer finding the thread held): what push_member answers then, the hold's outcome."""
+        real = sminos.push_member
+        return mock.patch.object(sminos, "push_member", lambda m, frame, *a, **k: sminos.hold_outcome(why)
+                                 if text in frame else real(m, frame, *a, **k))
+
     def project_files(self):
         """Every file under every project's home here but the channels': what delivery must leave alone."""
         out = {}
@@ -1379,6 +1386,45 @@ class Decided(Channel):
         self.assertEqual(self.settled(tid, W1), everyone["seq"])
 
 
+class LiveOnlyHeld(Channel):
+    """An event for the live alone is never kept as a durable hold (F6's rule, on the last hop's path too): a
+    broadcast that meets a hold at the last hop stays owed unmarked, settles once its thread reads stopped, and
+    never holds back its writer's next named message."""
+
+    def test_a_broadcast_held_at_the_last_hop_keeps_no_hold_and_the_writers_named_message_wakes_the_thread(self):
+        tid, sid = self.stopped()
+        _, proc = self.session(sid=sid)
+        self.inbox(sid, proc)   # running and answering at the pass's look
+        everyone = self.message((sid, tid), text="to all, held at the hop", wake=True)
+        named = self.message((sid, tid), text="then to you")
+        with self.held_at_the_hop("to all, held at the hop"):
+            self.deliver()
+        self.assertNotIn(everyone["seq"], (self.record_of(tid).get(W1) or {}).get("held") or {}, "no durable hold")
+        self.assertEqual(self.owed_to(tid), [(W1, everyone["seq"]), (W1, named["seq"])], "both still owed")
+        self.end(proc)   # the thread stopped
+        self.deliver()
+        self.assertEqual(len(self.resumes(sid)), 1, "the named message wakes it")
+        if not self.woken_got(sid, "then to you"):
+            self.deliver()   # a woken process whose inbox answers late (`held:starting`) is pushed by the next pass
+        self.assertEqual(len(self.woken_got(sid, "then to you")), 1, "and arrives, once")
+        self.assertEqual(len(self.resumes(sid)), 1, "one launch")
+        self.assertEqual(self.woken_got(sid, "to all, held at the hop"), [], "the broadcast settled for a stopped "
+                                                                             "thread, pushed to none")
+        self.assertEqual(self.settled(tid, W1), named["seq"])
+
+    def test_a_mark_an_earlier_build_left_on_a_broadcast_holds_it_no_more(self):
+        tid, sid = self.stopped()
+        everyone = self.message((sid, tid), text="to all, marked before", wake=True)
+        named = self.message((sid, tid), text="then to you")
+        sminos._delivered_write(self.chan(DESK), tid, {W1: sminos._entry(0, held={everyone["seq"]: tid})})
+        self.deliver()
+        self.assertEqual(len(self.resumes(sid)), 1, "the named message wakes it")
+        if not self.woken_got(sid, "then to you"):
+            self.deliver()   # a woken process whose inbox answers late (`held:starting`) is pushed by the next pass
+        self.assertEqual(len(self.woken_got(sid, "then to you")), 1, "and arrives, once")
+        self.assertEqual(self.settled(tid, W1), named["seq"])
+
+
 # ------------------------------------------------------------ a project's delivery as it was (B11)
 
 
@@ -1453,6 +1499,16 @@ class ProjectsAsBefore(Channel):
         self.assertEqual(self.woken_got(sid, "to all after it"), [], "pushed nothing")
         self.assertEqual([o for e, o in got["outcomes"] if e["writer"] == everyone["writer"]], ["recorded"],
                          "decided on the call's hold, as before")
+
+    def test_a_projects_broadcast_held_at_the_last_hop_is_marked_held_as_before(self):
+        tid, sid = self.stopped()
+        _, proc = self.session(sid=sid)
+        self.inbox(sid, proc)
+        everyone = self.to_member(sid, "to all, held at the hop", wake=True)
+        with self.held_at_the_hop("to all, held at the hop"):
+            sminos.deliver_next(self.p, self.project_member(sid))
+        self.assertIn(everyone["seq"], (sminos.delivered_load(self.p, sid).get(everyone["writer"]) or {}).get("held")
+                      or {}, "kept as the thread's hold, as before")
 
     def test_a_projects_wake_reads_nothing_again_at_the_launch_boundary(self):
         tid, sid = self.stopped()
