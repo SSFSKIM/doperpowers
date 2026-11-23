@@ -4052,6 +4052,50 @@ them today.
   help against the lead), N1 to N6 logged in TECH-DEBT (`625e1c82`), N7
   dismissed (above). The wave gets one high-rung review of its own diff and
   no third whole reading now; the final panel after M11 is the third.
+- 2026-11-23 — **The frontier review's second fix wave, as built**
+  (`9a5fc85d` to `cfed0cbe`; G1 to G15 of the holder's second triage, six
+  groups in parallel worktrees, cherry-picked; one high-rung review of the
+  wave's diff, whose three findings, residual paths of G1, G5 and G8, were
+  closed in the same wave). Decisions where the triage was silent, kept by
+  the controller:
+  - A channel's broadcast goes as the pass decided it: no peer at the
+    decision is `recorded` with no second look (G2), settled only if the
+    thread is stopped now, read by process evidence (`running_now`, G4);
+    no event is settled on another event's hold, while an addressed event
+    keeps the call's one cached hold, so one call wakes once (G3, the
+    reviewer read it sound). The launch boundary runs `_planned_check`, the
+    signer's revocation and the read-only policy with it (G14), and a
+    refusal there is the next pass's to conclude.
+  - A copy's knowledge of a remote recipient's audience is the mark
+    `saidListed` that this tree's `audience_entry` writes only for a frame
+    that said `members: null`, under the current welcome's `access`; an
+    entry an older writer kept is unknown for the copy, and a project
+    reads every entry as before (G1).
+  - The sender's stamp and membership come from one post-sweep record
+    (`_sender_now`), never the invocation's index (G8).
+  - Chat cursors are `thread-<id>` and `session-<id>`
+    (`sminos.delivery_cursor`), keys no older copy writes (G12); delivery
+    records and lock paths keep the bare thread id.
+  - A verb through a channel acts on the thread its name resolved: a
+    `ThreadTarget` (a `Member`) or a `ThreadSeat` (a seat's `dict`, the
+    thread an attribute never written back) carries it to `retire`,
+    `remove` and `_target` (`channel add`, `remove`, `lead`); `retire` and
+    `remove` refuse when the record no longer holds the session the name
+    came to (G5). `_with_shared` keys rows by type (G6).
+  - The follow-up `reach?` after a `peer` word waits for its own event's
+    upload as the first ask does (G7); a channel notice defers on an entry
+    opened on the fresh record and is kept while its seat is vacant (G9).
+  - The roster names a channel-only peer unlisted to the reader with no
+    address (G10; a project's peer unlisted since reads as at the merge
+    base, B11), and reads the named channels' registrations by id, newest
+    first, under the deadline (G11).
+  - The replay's three checks each fail on the defect they are for (G13):
+    the audiences the uplink took, the verdict carried and its delivery,
+    and an ask matched before its predecessor.
+  - G15's flake was the test's: `list --org` hides a stopped row, so the
+    step passed only while alpha held B's brief `idle` row; it now waits on
+    `list --org --all` for `stopped @beta` (3 of 5 failing before, 6 of 6
+    passing after).
 
 
 ## Outcomes & Retrospective
