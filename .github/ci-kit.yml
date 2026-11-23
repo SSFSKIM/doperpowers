@@ -76,7 +76,8 @@ gates:
     paths: ["devcloud/driver/**"]
 
   # The declared channels' suites (CH1; SMINOS_PART=channels, disjoint from the two above). About twice the whole
-  # part's job (about 1m40s at CH1's end, 3m15s green at CH2's M6), never under two minutes; set again when the part grows.
+  # part's job (about 1m40s at CH1's end, 2m39s to 3m38s green through CH2's fix waves), never under two minutes; set again
+  # when the part grows.
   - name: sminos-channels
     run: SMINOS_PART=channels bash sminos/tests/run-sminos-tests.sh
     timeout: 8
