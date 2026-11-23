@@ -35,7 +35,7 @@ flowchart LR
 ```
 
 - **It asks before it builds.** `brainstorming` explores what the work should be and grills you in batched rounds while you are there, then presents the design. Nothing that commits a product or design decision is built before you approve it.
-- **One living spec, when the work needs one.** `execspec` writes a single document that carries the design with its reasoning, acceptance as observable behavior, and the plan of work as milestones. It is reviewed before it runs and kept current while it runs: progress, decisions, surprises, and a retrospective at the end.
+- **One living spec, when the work needs one.** `execspec` writes a single document that carries the design with its reasoning, acceptance as observable behavior, and the plan of work as milestones. It is reviewed before it runs and always states the design as it stands: a change of course rewrites the sections it touches, git keeps the history, and a retrospective closes it.
 - **The shape follows the size.** A well-scoped change is built in the session. A one-milestone spec runs in order. Several milestones each go to a fresh subagent (`subagent-driven-execution`), built test-first and reviewed at every dependency boundary, so your session stays the design session.
 - **Review by a different model.** `review-code` sends the finished branch to an independent reviewer from another model family, sized by the stakes: one reviewer for a focused diff, a multi-lens panel with a binding verifier for a large one.
 - **It keeps going.** Between your approval and the merge the agent doesn't stop to ask what's next. It comes back when it meets a decision the design didn't cover.

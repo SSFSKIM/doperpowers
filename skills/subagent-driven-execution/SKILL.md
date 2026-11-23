@@ -47,8 +47,8 @@ or brainstorm first.
 2. **Pre-flight:** check the milestones' order against what each consumes,
    and look for anything in the spec two milestones would read two ways or
    that the review rubric would call a defect (e.g. a mandated test that
-   asserts nothing). Resolve what the spec's intent settles, record it in
-   the Decision Log, and commit; only a fork under the gate goes to whoever
+   asserts nothing). Resolve what the spec's intent settles, write it into
+   the section it belongs to, and commit; only a fork under the gate goes to whoever
    dispatched you (the spec's author session, or your human partner when
    you are running the loop yourself). A clean check proceeds without
    comment.
@@ -58,14 +58,18 @@ or brainstorm first.
    agent handle (Durable Progress below) — fixes resume it. Answer its
    questions before it proceeds. One executor at a time — parallel
    executors conflict in a shared worktree.
-4. **Fold the report back.** When an executor returns, read the decisions
-   and discoveries in its report. Fold the ones a later reader needs into
-   the spec — a decision into the Decision Log, a discovery into
-   Surprises & Discoveries — and commit, so the next executor reads them
-   in the spec rather than in your dispatch. A decision that works
-   against the spec's intent or crosses the gate is not folded: it goes
-   back to the executor, or up to whoever dispatched you; one the reviewer
-   later rejects is reversed in the log when the fix lands.
+4. **Write the report back.** When an executor returns, read the decisions
+   and discoveries in its report, write the ones a later reader needs into
+   the section each belongs to
+   ([../execspec/references/living-spec.md](../execspec/references/living-spec.md),
+   "Keeping the spec current"), and commit, so the next executor reads them
+   in the spec rather than in your dispatch. What the next milestone
+   consumes — an interface as built, a fact about the environment — goes
+   in now. A choice that changes a design decision goes in once the task's
+   review is clean: written into its section it reads as approved design,
+   and a later executor builds on it. A decision that works against the
+   spec's intent or crosses the gate is not written in: it goes back to
+   the executor, or up to whoever dispatched you.
 5. **Review at the frontier:** a task is reviewed clean — nothing left
    that must be fixed (step 6) — before any task that consumes what it
    produced dispatches; the milestones' Interfaces name the producers, and the
@@ -129,16 +133,25 @@ or brainstorm first.
    in the spec's `Progress` with a timestamp and commit — the tick means
    reviewed clean, the same as the ledger's `complete`, and the ledger is
    gitignored, so the committed spec is what a recovery reader sees. For
-   a child of a composite spec, advisory content goes in place and a
-   binding contradiction up as `[parent-impact]` per doperpowers:decomposing
-   rather than into the composite. Implementation noise stays in commit
+   a child of a composite spec, what the task makes false in the composite
+   goes into the execution document's `For the composite's writer` list,
+   and a binding contradiction up as `[parent-impact]` per
+   doperpowers:decomposing; the composite is its writer's to edit. Implementation noise stays in commit
    messages.
 8. **After all tasks:** dispatch the final whole-branch review through
    doperpowers:review-code against `<base>` at the rung the spec's
-   verification entry names (its Decision Log), or the level the branch
-   warrants when none is recorded — a rung agent, or the panel for a
-   large branch — with its own package (`scripts/review-package
-   SPEC_FILE MERGE_BASE HEAD`, MERGE_BASE = `git merge-base main HEAD`).
+   verification names, or the level the branch warrants when none is
+   named — a rung agent, or the panel for a large branch — with its own
+   package (`scripts/review-package SPEC_FILE MERGE_BASE HEAD`,
+   MERGE_BASE = `git merge-base main HEAD`). Its brief names the spec and
+   the commit your human partner approved — for a child of a composite,
+   the composite and the child's parent pin as well — and asks the
+   reviewer to read `git diff --word-diff <commit> <head> -- <file>` for
+   an acceptance item reduced or a design decision changed along the way:
+   a spec first committed on the branch shows in the branch diff only as
+   its final text. The panel takes no brief, so when the review is the
+   panel those facts go up with the pinned range to the session that
+   runs it.
    Then write the spec's `## Outcomes & Retrospective` entry, commit it,
    and integrate the branch ([isolated-workspace.md](isolated-workspace.md), "At finish").
 
@@ -156,18 +169,17 @@ executor's pin. Never dispatch workers on fable or astra: the top tier
 adds cost without adding reliability — the spec absorbs the difficulty,
 not the model, whatever model wrote the spec. When a worker reports BLOCKED on reasoning capacity rather
 than missing context, a sonnet task moves to opus; from opus there is no
-tier above — resolve the hard call yourself in the spec's Decision Log and
+tier above — resolve the hard call yourself in the spec and
 re-dispatch, or split the milestone.
 
 The final whole-branch review is the deliberate exception: it goes through
-doperpowers:review-code at the rung the spec's verification entry names
-(its Decision Log), or the level the branch warrants when none is
-recorded — it is the last gate before merge and the only reader of the
-entire branch.
+doperpowers:review-code at the rung the spec's verification names, or the
+level the branch warrants when none is named — it is the last gate before
+merge and the only reader of the entire branch.
 
 ## Executor statuses
 
-- **DONE** → fold its report back (step 4), then review at the frontier
+- **DONE** → write its report back (step 4), then review at the frontier
   (step 5): package and reviewer now when something downstream consumes
   the task or an early-review reason applies, otherwise it waits for the
   wave.
@@ -225,9 +237,9 @@ pasted prior-task history):
   flag ("don't treat X as a defect", "at most Minor") — that impulse is
   usually you sparing yourself a review loop. Adjudicate findings when they
   come back, against the spec's intent. A finding that exposes a spec
-  statement as wrong is fixed in the spec by you — the design section
-  revised, a dated Decision Log entry; you are its one writer — and in
-  the code by the worker; only a fork under the gate goes up.
+  statement as wrong is fixed in the spec by you — the statement
+  rewritten; you are its one writer — and in the code by the worker; only
+  a fork under the gate goes up.
 - Fix messages — to a resumed executor or a fresh fixer — carry the
   executor contract: re-run the covering tests (name them — a one-line
   fix doesn't need the whole suite), report the command and output;

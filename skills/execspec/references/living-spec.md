@@ -5,10 +5,11 @@ The design spec doperpowers:execspec writes
 doperpowers:brainstorming closed and your human partner approved, is not a
 snapshot of an approval — it is the one document an initiative has, for the
 whole life of its feature: the design with its reasoning, the acceptance,
-the execution, and the record of what happened. Discoveries made while
-building flow back into it, and the feature closes with a retrospective.
-Whoever drives the session maintains it: execspec writes it, execution
-routes discoveries into its record, finishing writes the retrospective.
+the execution, and where the work stands. At every moment it states the
+design as it stands now: what is learned while building is written into
+the section it bears on, and the feature closes with a retrospective. Its
+history is git. Whoever drives the session maintains it: execspec writes
+it, execution keeps it true, finishing writes the retrospective.
 
 The norms come from Codex's ExecPlan doctrine, PLANS.md. The sections that
 bind are quoted below char-for-char — follow the quoted text, not a
@@ -21,7 +22,7 @@ Log of `docs/doperpowers/specs/2026-09-12-one-spec-sized-by-the-gate-design.md`.
 
 **The bar (recalibrated from PLANS.md's novice standard):** a fresh session
 with no conversation history can pick up the spec and continue the work —
-decisions, their whys, and everything learned so far included — and an
+decisions, their whys, and what was learned that bears on them included — and an
 executor with nothing but this document and the code can build any one of
 its milestones. Define terms of art; reference repo common knowledge instead
 of duplicating it.
@@ -71,11 +72,10 @@ thing once, in the section that owns it; every other section points to it.
 
 > Validation is not optional. Include instructions to run tests, to start the system if applicable, and to observe it doing something useful. Describe comprehensive testing for any new features or capabilities. Include expected outputs and error messages so a novice can tell success from failure. Where possible, show how to prove that the change is effective beyond compilation (for example, through a small end-to-end scenario, a CLI invocation, or an HTTP request/response transcript). State the exact test commands appropriate to the project’s toolchain and how to interpret their results.
 
-**Living plans and design decisions** — four of the five bullets, with the spec as the target document. The first bullet ("Record all decisions in the `Decision Log` section") is superseded by "Where reasoning lives" below: at authoring a decision is recorded in the section it shapes; the log is the dated record of what changed after.
+**The retrospective.** Of PLANS.md's five bullets on living plans this one
+binds as written; `Progress` binds through the execution section below, and
+the rest are replaced by "Keeping the spec current":
 
-> * ExecPlans must contain and maintain a `Progress` section, a `Surprises & Discoveries` section, a `Decision Log`, and an `Outcomes & Retrospective` section. These are not optional.
-> * When you discover optimizer behavior, performance tradeoffs, unexpected bugs, or inverse/unapply semantics that shaped your approach, capture those observations in the `Surprises & Discoveries` section with short evidence snippets (test output is ideal).
-> * If you change course mid-implementation, document why in the `Decision Log` and reflect the implications in `Progress`. Plans are guides for the next contributor as much as checklists for you.
 > * At completion of a major task or the full plan, write an `Outcomes & Retrospective` entry summarizing what was achieved, what remains, and lessons learned.
 
 **Prototyping milestones and parallel implementations.** When unknowns are large, the spec declares spike milestones (see "Spike milestones" below).
@@ -148,6 +148,9 @@ loop and plan-executor find milestones by them.
 
 **What a milestone carries.** Every executor reads the whole spec, so a
 milestone entry restates nothing the spec already says — it points. The
+section opens with the verification — which independent reviews the spec
+gets and the rung of the branch review, named at authoring so the executor,
+the reviewer, and a recovering session read the same council — and then the
 constraints that bind every milestone — version floors, dependency limits,
 naming and copy rules, platform requirements, and for a child of a
 composite spec the binding inheritance and cross-child contracts, each
@@ -192,8 +195,8 @@ the real codebase in view, and runs its own test-first cycle.
 **Spike milestones.** A prototyping milestone's deliverable is knowledge,
 not shipped code: state the question it answers, what to build and how to
 run it, what to observe, and the promote-or-discard criteria. It has no
-tests; its proof is the recorded verdict, routed into `Surprises &
-Discoveries` with the criteria applied — promote (a following milestone
+tests; its proof is the verdict, written where the spec posed the question,
+with the criteria applied — promote (a following milestone
 hardens it with tests) or discard (delete the prototype; the knowledge
 stays).
 
@@ -212,32 +215,31 @@ makes elsewhere is not a placeholder — it is the rule.
 
 **When it is written.** After the design is approved, never before: with
 the rest of the spec, once the presentation is approved. Writing it is the first hostile read of the design — a design
-statement the milestones prove wrong is fixed in the design, with a dated
-line in the Decision Log.
+statement the milestones prove wrong is fixed in the design.
 
 **While the spec is being executed**, PLANS.md's implementing rule binds,
 with brainstorming's gate as the one stop: a fork under it that the spec
-does not cover goes to your human partner; everything else is decided and
-logged.
+does not cover goes to your human partner; everything else is decided, and
+written into the spec where a later reader needs it.
 
 > When implementing an executable specification (ExecPlan), do not prompt the user for "next steps"; simply proceed to the next milestone. Keep all sections up to date, add or split entries in the list at every stopping point to affirmatively state the progress made and next steps. Resolve ambiguities autonomously, and commit frequently.
 
 A gap or a contradiction the spec did not foresee is expected, not a
 failure of the spec: the executor resolves it in the spirit of the stated
-intent and the reasons behind the nearby decisions, records what it chose
-and why, and continues. It goes back to the spec's author only for a fork
+intent and the reasons behind the nearby decisions, and continues; what it
+chose reaches the spec through its one writer. It goes back to the spec's author only for a fork
 under the gate — a product, taste, or substantive design decision the spec
 does not cover — or when following the spec would defeat its own purpose.
 
-A spec with one milestone is worked directly by its executor, who records
-its decisions in the Decision Log as it goes. Several run through
+A spec with one milestone is worked directly by its executor, who is its
+writer as it goes. Several run through
 doperpowers:subagent-driven-execution — a fresh executor per milestone, a
 review at each dependency frontier — under a `doperpowers:plan-executor`
 subagent (doperpowers:execspec step 4). On that path the controller is the
-spec's one writer: executors report their decisions and discoveries, and
-the controller folds them into the Decision Log and Surprises &
-Discoveries between tasks, ticks Progress when a milestone's review is
-clean, and commits, so each later executor reads them in the spec; the SDE
+spec's one writer: executors report what they decided and found, and the
+controller writes what a later reader needs into the section it belongs
+to ("Keeping the spec current"), ticks Progress when a milestone's review
+is clean, and commits, so each later executor reads it in the spec; the SDE
 ledger is gitignored, so the committed spec is what a recovery reader
 sees.
 
@@ -245,50 +247,87 @@ sees.
 parallel branches share it — so its execution section is a standalone file
 under `docs/doperpowers/plans/`, headed by the composite's path, the child
 id, and the parent pin. It carries the constraints and the milestones and
-nothing of the design, which lives in the child's section; the SDE loop
-reads it like any spec.
+restates nothing of the composite's design, which lives in the child's
+section. Decisions local to the child that the composite does not carry
+are stated here once: in the milestone they belong to, or among the
+constraints when they span milestones. Its last section, `## For the
+composite's writer`, is state, like Progress: each sentence of the
+composite this child's work makes false or incomplete, with the replacement
+proposed. An advisory sentence the child overturns is replaced by the
+child's own text from then on; a binding one stands until the composite's
+writer rules, and the entry is the proposal. An entry leaves the list when
+the parent pin moves past the rewrite. The SDE loop reads the document like
+any spec.
 
 ## Where reasoning lives
 
 The design sections carry their own reasoning. Where a decision is made,
-the section says why, and names the strongest alternative and why it lost —
-a clause, not a ceremony; the alternatives were generated in the grill, so
-capturing them there is free and stops re-proposals. That is the decision
-record at authoring; no section restates it.
+the section says why, and the reason is written against the choice a
+reader with the code in view would otherwise make. An alternative that was
+seriously weighed is named there with why it lost — a clause, not a
+ceremony — and no other. A decision that rests on a preference or a
+product call has no derivation to give: the section states it as a
+requirement of the product and says what the requirement is for.
 
-The record, after the body, in this order:
+## Keeping the spec current
 
-**`## Surprises & Discoveries`** — in PLANS.md's skeleton format:
+The spec states the design as it stands. When course changes — a ruling, a
+review finding, a discovery, a gap resolved while building — rewrite every
+section the change touches so the document reads as if it had always said
+this: the rule and its reason, with nothing in it that a reader who never
+saw the earlier text could tell had changed. Who ruled, when, in whose
+words, and what the text said before go in the commit message. Every
+executor and reviewer reads the whole document, and a superseded statement
+left standing, or a sentence that tells its own history, is one more thing
+each of them must reconcile. A statement about the system's stages — what
+holds between two releases, what a later milestone builds, what the code on
+the branch still does — is design, not history, and stays.
 
-    - Observation: …
-      Evidence: …
+What is learned while building is written where it bears:
 
-For anything that changed design understanding: an assumption that proved
-false, a measured behavior, a constraint discovered while building. One
-observation and one evidence snippet — test output is ideal; a stop that
-repaired the document is one line and its commit. Incidental implementation
-noise belongs in commit messages, not here.
+| What it is | Where it goes |
+|---|---|
+| The reason for a decision — an assumption that proved false, a measured behavior | Beside the decision, with one evidence snippet (test output is ideal) |
+| A fact as built that a later milestone consumes | Interfaces and Dependencies, or that milestone's entry |
+| A fact about the environment that later milestones need | The constraints that open the execution section |
+| A limit accepted | The repository's tech-debt tracker |
+| A lesson | Outcomes & Retrospective, at finish |
+| Anything else | The commit message, or the executor's report |
 
-**`## Decision Log`** — dated, the record of what moved after the design
-was written. It carries the verification call execspec makes when it writes
-the spec (which independent reviews the work gets and the branch review
-rung — the one entry written at authoring, so the executor, the reviewer,
-and a recovering session read the same council), every change of course
-after approval, and a dated line for any revision that changed the document
-without changing a decision. A course change, in PLANS.md's skeleton format:
+A review finding that was dismissed and that a later reviewer would raise
+again is answered in the reason of the decision it questioned.
 
-    - Decision: …
-      Rationale: …
-      Date/Author: …
+A decision that code, tests, or another document cites carries an id
+(`C5`, `X8`); a rewrite keeps the id, and a withdrawn id is not reused.
 
-with the alternative rejected then. When you change course, revise the
-design sections to match — the document stays consistent as a whole — and
-the log says what moved and why.
+**History is git.** Commit a change of course apart from other work; its
+message is the only account of the change. The baseline is the commit your
+human partner approved: the spec's first commit, made as the approved
+design before any review or execution alters it, or the commit a Progress
+line names when approval came later. Read history at the grain these
+documents have: `git log -- <spec>` for the changes,
+`git log -L '/^### <heading>/,/^##/:<spec>'` for one section,
+`git diff --word-diff <commit> -- <spec>` for everything since an approval
+or a pin.
+
+Two sections say where the work stands:
+
+**`## Progress`** — right after the purpose, in the skeleton above: one line
+per unit of work with its state and date, and the events that leave no
+diff — your human partner's approval and any condition on it, a review
+completed. A change of course shows here as the work it adds or reopens.
+How a unit went is the commit log's.
 
 **`## Outcomes & Retrospective`** — until finish, exactly the line "Pending —
 written at finish." At finish (after the whole-branch review), summarize
 what was achieved against the spec's original purpose, what remains, and
 lessons learned.
+
+A spec written in the earlier form — it keeps a `Decision Log` and
+`Surprises & Discoveries` — continues in that form until it closes: revise
+its sections and add its dated entry as its own entries do. Code may cite
+its log by number, and a log that stops without saying so reads as
+complete.
 
 ## What does NOT bind
 
@@ -297,14 +336,19 @@ code block, prose-first, no-tables formatting (specs are files, not chat
 payloads — use tables, JSON, or diagrams wherever they beat prose for
 precision); novice-grade self-containment (the bar above); the Idempotence
 and Recovery section (worktree isolation + git); Artifacts and Notes and
-"capture evidence" inside the fence (the record's evidence snippets); "do
+"capture evidence" inside the fence (an evidence snippet beside the
+decision it supports); "do
 not prompt the user for next steps" at authoring time (the human gates —
 design approval in doperpowers:brainstorming and spec review in
 doperpowers:execspec — come first; the rule binds only during execution, as
-above); "Record all decisions in the `Decision Log` section" and the
-separate bottom-note rule for revisions (reasoning lives in the design; the
-log is the dated record of change — measured on the reviewer-fold spec, a
-340-line log restating a 630-line design, 2026-09-26). These rejections
+above); the `Surprises & Discoveries` and `Decision Log` sections, "Record
+all decisions in the `Decision Log` section", "document why in the
+`Decision Log`", and the separate bottom-note rule for revisions (the spec
+states the design as it stands and git is its history — measured
+2026-11-22: in the 65 specs here that kept those sections they were 36% of
+the text, one changed ruling stood in four places, and the ruling it
+replaced was still asserted twice above the entry that overturned it).
+These rejections
 carry rationale — read the Decision Logs in
 `docs/doperpowers/specs/2026-07-03-living-specs-design.md` and
 `docs/doperpowers/specs/2026-09-12-one-spec-sized-by-the-gate-design.md`
@@ -316,5 +360,5 @@ Untemplated on purpose: across this repo's existing specs no heading
 structure repeats, and that variance is a feature — form fits problem
 (state tables for state machines, JSON for schemas, prose for concepts).
 Required: the purpose-first opening, Progress right after it, an acceptance
-section phrased as observable behavior, the execution section, and the
-record.
+section phrased as observable behavior, the execution section, and
+Outcomes & Retrospective.
