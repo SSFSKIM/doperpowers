@@ -227,6 +227,23 @@ class Placed(Spawns):
         self.assertEqual(threads.get(self.seat_of()["seat_id"])["channels"], [DESK])
 
 
+    def test_past_the_watcher_the_launch_and_placements_are_said_before_the_status_is_written(self):
+        # The watcher's status write takes the seat store's lock and can fail: what the spawn did is said first.
+        def stuck(seat_id, fields, guard, **kw):
+            if fields.get("status") == "working":
+                raise PermissionError(13, "Permission denied")
+            return True
+        with mock.patch.object(sminos, "poll_until_done", return_value=("", "timeout", "", False)), \
+                mock.patch.object(sminos, "meta_set_if", side_effect=stuck):
+            code, out, err, sid = self.spawn("--channel", "desk", "--wait")
+        self.assertEqual(code, 1, out + err)
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith("seat spawned: ") and "status=working" in lines[0], out)
+        self.assertEqual(lines[1:], ["w#%s: in desk" % sid[:8]])
+        self.assertIn("its status was not recorded", err)
+        self.assertIn("watcher expired", err.splitlines()[-1], "then the watcher's own words, and its exit")
+
+
 # ------------------------------------------------------------ refused before anything is launched (acceptance 4, 5)
 
 
@@ -386,7 +403,8 @@ class AfterLaunch(Spawns):
             code, out, err, sid = self.spawn("--channel", "desk", "--channel", "lobby", alias="v")
         self.assertEqual(code, 0, err)
         self.assertEqual(out.splitlines()[1:], ["v#%s: in desk" % sid[:8]])
-        self.assertIn("was not placed in lobby (its machine is no longer enrolled in this org)", err)
+        self.assertIn("was not placed in lobby (its machine is no longer enrolled in this org): once this machine is "
+                      "enrolled in this org again, sminos channel add %s %s places it" % (LOBBY, sid), err)
 
 
 class Deadline(Spawns):

@@ -1148,6 +1148,10 @@ def said_placements(c, d):
         name = names[p["id"]]
         if p["state"] == "applied":
             print("%s: %s %s" % (label, "already in" if p["why"] == "unchanged" else "in", name), flush=True)
+        elif p["state"] == "failed" and p["why"] == "identity":
+            sminos.warn("spawn completed, but %s was not placed in %s on %s (%s): once %s is enrolled in this org "
+                        "again, sminos channel add %s %s asks its machine, once sminos list --machine %s shows it here"
+                        % (label, name, machine, words(p["state"], p["why"]), machine, p["id"], session, machine))
         else:
             sminos.warn("spawn completed, but %s was not placed in %s on %s (%s): sminos channel add %s %s asks its "
                         "machine, once sminos list --machine %s shows it here"

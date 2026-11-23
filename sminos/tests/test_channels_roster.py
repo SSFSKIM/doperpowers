@@ -993,6 +993,14 @@ class Vms(Roster):
         pool = {e["machine"]: e for e in json.loads(self.show("--json"))["pool"]}
         self.assertEqual(pool["beta"]["vm"]["owner"], {"creator": "@" + self.far_s[:8], "thread": self.far_t,
                                                        "session": new, "alias": "refill"})
+        # The refill's destination retired by the org's directory: a project an org-wide name is not looked up in
+        # (org_scope) gives no owner row; the creator's own row, in app, is shown.
+        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "org.json"), {
+            "projects": [{"id": WEB, "name": "web", "retired": True}],
+            "machines": [{"name": n} for n in (sminos.host_name(), "beta", "gamma", "box-1")], "at": sminos.now(ms=True)})
+        sminos.forget_caches()
+        self.assertIn("  beta  1 live, 0 stopped  vm owned by faraway#%s, up 3d4h, 1.00 EUR so far" % self.far_s[:8],
+                      self.pool_lines(self.show()))
 
 
 class PoolOfOne(Roster):

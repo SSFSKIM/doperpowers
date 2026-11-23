@@ -15537,13 +15537,21 @@ def finish_turn(seat_id, short, alias, uuid_hint, guard, said=None):
     still holds — never resurrecting a purged record nor clobbering a newer
     session. A watcher timeout is not a finished turn: status stays working
     (also conditionally) and the reply is readable later with `sminos reply`;
-    `said`, given, is called first: what the spawn says of its launch before
-    this exit (a spawn placed in channels, EN.G2's §1)."""
+    `said`, given, is called before anything is written: what the spawn says
+    of its launch before this exit (a spawn placed in channels, EN.G2's §1:
+    after the launch nothing is a refusal), and then a status write that
+    fails is a warning, never an end that says nothing."""
     uuid, state, _cwd, finished = poll_until_done(short, watcher_iterations())
     if not finished:
-        meta_set_if(seat_id, {"status": "working", "updated": now()}, guard)
-        if said is not None:
+        if said is None:
+            meta_set_if(seat_id, {"status": "working", "updated": now()}, guard)
+        else:
             said()
+            try:
+                meta_set_if(seat_id, {"status": "working", "updated": now()}, guard)
+            except (OSError, LockBusy) as e:
+                warn("the seat %s is still working, and its status was not recorded: %s"
+                     % (alias, e or "its lock is busy"))
         sys.stderr.write("sminos: watcher expired; turn %s of %s is still running (status=working). "
                          "Read it later with: sminos reply %s\n" % (short, alias, alias))
         sys.exit(1)

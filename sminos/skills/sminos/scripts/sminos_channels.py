@@ -1491,7 +1491,9 @@ def place_spawned(thread_id, session, seat, asked, org):
     its sminos.not_carried word ("" where carried); no project and
     sminos.NOT_ENROLLED where the enrollment is gone or of another org; no
     project and CARRIAGE_UNREAD where the reads did not get that far (the
-    deadline, an error, a directory in no project). None without a seat.
+    deadline, an error, a directory in no project); the project read and
+    sminos.NOT_ENROLLED where a channel's own read found the enrollment gone
+    (what was applied before stands). None without a seat.
     The caches are dropped first, so the enrollment, the org's directory
     and each registration are read as they are now, again before each
     channel, and again at the end; one deadline, PLACE_BUDGET from then
@@ -1563,6 +1565,10 @@ def _place_all(thread_id, session, seat, asked, org, deadline):
             _said(e)
             state, why = "failed", "error"
         out.append({"id": c["id"], "state": state, "why": why})
+    if seat is not None and any(e["why"] == "identity" for e in out):
+        # The enrollment went while the channels were placed: what was applied stands, the seat's project is the one
+        # read, and its carriage is said lost, so the outcome promises no reach.
+        carriage = {"project": (carriage or {}).get("project"), "not_carried": sminos.NOT_ENROLLED}
     return out, carriage
 
 
@@ -1607,6 +1613,10 @@ def spawned_lines(alias, session, asked, placed):
         name = names.get(p["id"], p["id"])
         if p["state"] == "applied":
             out.append("%s: %s %s" % (label, "already in" if p["why"] == "unchanged" else "in", name))
+        elif p["state"] == "failed" and p["why"] == "identity":
+            warnings.append("spawn completed, but %s was not placed in %s (%s): once this machine is enrolled in this "
+                            "org again, sminos channel add %s %s places it"
+                            % (label, name, placement_words(p["state"], p["why"]), p["id"], session))
         elif p["state"] == "refused" and p["why"] == "limit":
             # The same add meets the same limit until the thread has left a channel (CH2's limit, a refill's set).
             warnings.append("spawn completed, but %s was not placed in %s (%s): one of its memberships must be removed "
@@ -2746,7 +2756,8 @@ def _owners(creators):
     short id (a label word the driver allows, `@retired-worker`). The short
     names the thread; who is shown is the thread's row as the rosters keep
     it (_sweep: after a refill across projects whose two halves are both
-    seen, its newest occupant's, never the session that made the host).
+    seen, its newest occupant's, never the session that made the host),
+    where that row's project is in org_scope too.
     One pass over the org's members for every creator at once: what it
     costs is one read of the members of every project in org_scope, as one
     `@<short>` tag's lookup reads them, whatever the number of creators. A
@@ -2756,7 +2767,8 @@ def _owners(creators):
         return {}
     shorts = {c[1:]: c for c in creators if _SHORT_ID.fullmatch(c[1:])}
     hits = {c: [] for c in creators}
-    for p in sminos.org_scope():
+    scope = sminos.org_scope()
+    for p in scope:
         for m in sminos.members(p):
             if m.state == "retired" or sminos.has_ended(m) or not m.session:
                 continue
@@ -2769,9 +2781,10 @@ def _owners(creators):
             for short, creator in shorts.items():
                 if short in ids:
                     hits[creator].append((p, m, ids[short]))
-    kept = {}
+    kept, eligible = {}, {p.id for p in scope}
     for p, m in _sweep()["rows"].values():
-        kept.setdefault(_thread_read(m.swept), (p, m))
+        if p.id in eligible:   # a row of a project an org-wide name is not looked up in is no owner's row
+            kept.setdefault(_thread_read(m.swept), (p, m))
     out = {}
     for creator in creators:
         found = sminos.one_per_session(sminos.current_first(hits[creator], creator[1:]))

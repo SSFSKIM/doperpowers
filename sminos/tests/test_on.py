@@ -2067,6 +2067,38 @@ class OnChannels(On):
         for absent in ("channel add", "once it is listed here", ": in desk", "not placed in"):
             self.assertNotIn(absent, out + err)
 
+    def test_an_enrollment_lost_between_two_channels_on_the_vm_is_carried_and_no_reach_is_promised(self):
+        # The VM side for real (VmSide.asked): its identity file removed once the first add is made. The outcome
+        # keeps the applied entry and the seat's project, and its `not_carried` says the enrollment is gone; the Mac
+        # then promises no reach and offers the add only once the VM is enrolled again.
+        sminos.audience_module().keep_capabilities(["channels"])
+        real = sminos.channels_module().change
+
+        def leave_once_desk_is_added(thread_id, channel, *args, **kw):
+            got = real(thread_id, channel, *args, **kw)
+            if channel.id == DESK:
+                self.unenroll()
+            return got
+        project = sminos.resolve_project(self.work)
+        with mock.patch.object(sminos.channels_module(), "change", side_effect=leave_once_desk_is_added):
+            code, lines, err, _ = VmSide.asked(self, by=None, channels=[{"id": DESK, "name": "desk"},
+                                                                        {"id": LOBBY, "name": "lobby"}])
+        verdict, d = on.judge(lines, NONCE, "w", code, [DESK, LOBBY])
+        self.assertEqual(verdict, "ok", err)
+        self.assertEqual(d["channels"], [{"id": DESK, "state": "applied", "why": ""},
+                                         {"id": LOBBY, "state": "failed", "why": "identity"}])
+        self.assertEqual((d["project"]["id"], d.get("not_carried")), (project.id, sminos.NOT_ENROLLED))
+        self.enroll()
+        self.answers("vm1", lines[-1])
+        code, out, err = self.spawn("--on", "vm1", "--channel", "desk", "--channel", "lobby")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("message it:", out, "no reach promised")
+        self.assertIn("which its enrollment does not carry (%s)" % sminos.NOT_ENROLLED, err)
+        self.assertIn("w#%s: in desk" % JOB[:8], out)
+        self.assertIn("was not placed in lobby on %s (its machine is no longer enrolled in this org): once %s is "
+                      "enrolled in this org again, sminos channel add %s %s asks its machine"
+                      % (d["machine"], d["machine"], LOBBY, JOB), err)
+
     def test_an_older_vm_that_reports_no_channels_is_said_so_naming_no_membership(self):
         self.answers("vm1", self.spawned())
         code, out, err = self.spawn("--on", "vm1", "--channel", "desk")
