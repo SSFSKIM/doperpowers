@@ -36,6 +36,7 @@ import copy
 import fcntl
 import functools
 import json
+import math
 import os
 import re
 import shlex
@@ -2560,6 +2561,137 @@ def owned_among(reply, shorts):
         return Owned("unknown", [], list(reply.unknown), shorts) if reply.unknown else \
             no_answer(shorts, "devcloud answered unknown and named nothing it could not ask")
     return Owned("none", [], [], shorts)
+
+
+# ------------------------------------------------------------ what a named host is, for `channel show` (EN.G2's M2)
+
+DEVCLOUD_INFO_MIN = (0, 19, 0)   # the first devcloud that answers `vm info`
+DEVCLOUD_INFO_BOUND = 20         # seconds `channel show` waits for it at most
+DEVCLOUD_INFO_MARGIN = 5         # of those, the driver's start and its report; the rest is the providers' budget
+
+
+class Info(NamedTuple):
+    """devcloud's answer about some hosts by name (EN.G2's plan, Interfaces
+    §2 and §3): `state` "asked" (`reply` its whole reply), "unavailable"
+    (devcloud not run here, or its word that its driver does not run here)
+    or "failed" (asked, and no whole answer); `why` the reason, "" when
+    asked."""
+    state: str
+    why: str
+    reply: object
+
+
+def vm_info(names):
+    """`devcloud vm info --within <budget> -- <names>`, found, run and
+    stopped as owned_by's question is, from a devcloud of 0.19.0 or later
+    (the copy SMINOS_DEVCLOUD names taken at its word), cut off at the
+    smaller of DEVCLOUD_INFO_BOUND and devcloud_timeout(), the providers'
+    budget that cutoff less DEVCLOUD_INFO_MARGIN, at least a second. Its
+    reply is held to info_reply's test before anything reads it."""
+    names = list(names)
+    where, path = find_devcloud()
+    if where is None:
+        return Info("unavailable", "no devcloud CLI was found here", None)
+    if where != "$SMINOS_DEVCLOUD":
+        version = devcloud_version(path)
+        if version is None or version < DEVCLOUD_INFO_MIN:
+            least = ".".join(map(str, DEVCLOUD_INFO_MIN))
+            return Info("unavailable", "the devcloud at %s is %s, and only %s or later answers this (not run)" % (
+                path, "%s, older than %s" % (".".join(map(str, version)), least) if version
+                else "of no readable version", least), None)
+    cutoff = min(float(DEVCLOUD_INFO_BOUND), devcloud_timeout())
+    within = max(1.0, cutoff - DEVCLOUD_INFO_MARGIN)
+    env = dict(os.environ)
+    env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            proc = subprocess.Popen([path, "vm", "info", "--within", "%g" % within, "--"] + names,
+                                    stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env)
+        except OSError as e:
+            return Info("failed", "devcloud could not be run (%s): %s" % (path, e.strerror or e), None)
+        try:
+            code = proc.wait(cutoff)
+        except BaseException as e:   # past the cutoff, or this process stopped (a Ctrl-C)
+            stop_tree(proc.pid, proc.wait)
+            if not isinstance(e, subprocess.TimeoutExpired):
+                raise
+            return Info("failed", "devcloud vm info gave no answer within %gs, and was stopped" % cutoff, None)
+        printed = [_text(f) for f in (out, err)]
+    if code == 6:
+        return Info("unavailable", "devcloud's driver does not run on this machine (a devcloud host, or no seed "
+                                   "key)", None)
+    first = next((line.strip() for text in (printed[1], printed[0]) for line in text.splitlines() if line.strip()),
+                 "it printed nothing")
+    if code != 0:
+        return Info("failed", "devcloud vm info exited %d: %s" % (code, first[:300]), None)
+    try:
+        d = json.loads(printed[0], parse_constant=_no_constant)
+    except ValueError:
+        d = None
+    if not info_reply(d, names):
+        # Nothing of a reply that is not whole is printed (Interfaces §3): not even its first line.
+        return Info("failed", "devcloud vm info gave no whole answer", None)
+    return Info("asked", "", d)
+
+
+def _no_constant(name):
+    raise ValueError("%s is no number" % name)
+
+
+def info_reply(d, names):
+    """Whether `d` is a whole reply of `vm info` about `names` (Interfaces
+    §3), what `channel show`'s renderers trust: never an exception."""
+    try:
+        return _info_whole(d, {n.lower() for n in names})
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
+def _number(v):
+    """A number of 0 or more the renderers can use, never a boolean: finite
+    as a float (an integer past a float's range is no such number)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(v)) and v >= 0
+    except OverflowError:
+        return False
+
+
+def _named(v):
+    return isinstance(v, str) and bool(v)
+
+
+def _creator_word(v):
+    """A host's `creator` a line can print: `@` and a word of printable
+    characters with no space. The short id a host holds, mostly; the driver
+    takes any label word there (`@retired-worker`), which names no thread
+    and is shown as it is, never a reason to read the reply as not whole."""
+    return isinstance(v, str) and v[:1] == "@" and len(v) > 1 and v.isprintable() and not any(
+        c.isspace() for c in v)
+
+
+def _info_whole(d, asked):
+    if not (isinstance(d, dict) and all(isinstance(d.get(k), list) for k in ("hosts", "unknown", "listed", "unused"))):
+        return False
+    for h in d["hosts"]:
+        if not (isinstance(h, dict) and _named(h.get("name")) and h["name"].lower() in asked
+                and _named(h.get("account")) and "creator" in h and "provider" in h
+                and (h["creator"] is None or _creator_word(h["creator"]))):
+            return False
+        if _named(h.get("provider")) and "adopted" not in h:
+            if not (_number(h.get("created")) and "spent" in h and (h["spent"] is None or _number(h["spent"]))
+                    and "currency" in h and (h["currency"] is None or isinstance(h["currency"], str))):
+                return False
+        elif not (h["provider"] is None and h.get("adopted") is True
+                  and all(k in h and h[k] is None for k in ("created", "spent", "currency"))):
+            return False
+    for u in d["unknown"]:
+        if not (isinstance(u, dict) and _named(u.get("account")) and "provider" in u
+                and (u["provider"] is None or isinstance(u["provider"], str))
+                and u.get("failed") in ("account", "listing", "time") and isinstance(u.get("reason"), str)):
+            return False
+    return all(_named(a) for a in d["listed"] + d["unused"])
 
 
 def owner_sessions(thread):

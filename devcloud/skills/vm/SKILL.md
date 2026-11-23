@@ -91,10 +91,12 @@ cap line from `vm up` makes an exit 4 a question for the person. Once a
 VM exists, any refusal or unknown outcome ends with the line that it is
 kept: read the VM's own line above it. Where it reports the alias as
 taken, spawn on that VM under another alias with `--on <name>`; where
-the outcome is not known, look first with the command the line names
-(`devcloud vm ssh <name> -- sminos list`), since trying again can open a
-second seat. However it is opened, the seat is a session on the VM that
-the person sees and steers from the desk like any other, and its first
+the outcome is not known, look first as the line says, since trying
+again can open a second seat, and do not spawn again because a look
+found nothing: without `--channel` the line's listing reads one project
+and can miss the seat. However it is opened, the seat is a
+session on the VM that the person sees and steers from the desk like any
+other, and its first
 message names you and how to reach you: it reports back the way any seat
 does, with commits pushed, pull requests and `sminos say` to you. Work
 that is not pushed lives only on the VM.
@@ -122,7 +124,20 @@ offline is not by itself such a case (the VM can still see a hold that
 machine published before), and the message waits for it there. Only from
 a VM made from now on, whose own sminos and the reader's are updated,
 does it arrive from `devcloud@<name>` (the VM's own notice, which nobody
-answers) and go on for a held thread. `devcloud vm lease <name>
+answers) and go on for a held thread. A VM made from now on, whose own
+sminos is updated, also records each notice, where it can, in every
+channel whose pool it reads itself in (a thread of it is in the channel,
+or a member added the machine by hand; a channel its enrollment does not
+carry, or whose log it cannot write, is passed over): `sminos chat
+<channel>` shows it, addressed to no one, so it stands in for none of the
+deliveries above. That copy is the notice's own text, the repositories
+with unpushed work and the instruction to down the VM included, and
+everyone who may read the channel reads it, beyond the owner's project;
+downing the VM is still the owning thread's decision alone. On a Mac,
+`sminos channel show <channel>` shows what this Mac's devcloud has of
+each VM of the channel: who owns it, how long it has run and what it has
+cost (list price times age), with a line after the pool when devcloud
+could not be asked or did not cover an account. `devcloud vm lease <name>
 <duration>` sets the end to now plus the duration, and `lease <name>
 keep` removes it. A change between kept and leased makes the host rejoin
 the tailnet under the same name, and `lease` waits until it is back.

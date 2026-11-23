@@ -27,7 +27,7 @@ def _age(created, now):
     return f"{days}d{hours}h" if days else f"{hours}h{minutes}m" if hours else f"{minutes}m"
 
 
-def _spent(type_, created, now):
+def spent(type_, created, now):
     """The type's list price times the VM's age, or None without a price."""
     price = (type_ or {}).get("hourly_price")
     if price is None:
@@ -95,7 +95,7 @@ def ls(ctx, as_json=False):
         rows.append({"name": e.vm["name"], "account": e.account.name, "provider": e.account.provider,
                      "lifetime": labels.get("devcloud-lifetime", "?"), "expires": _expires(e.vm), "state": state,
                      "price": price_text(type_) if type_ else "-", "created": e.vm["created"],
-                     "spent": _spent(type_, e.vm["created"], now), "currency": (type_ or {}).get("currency"),
+                     "spent": spent(type_, e.vm["created"], now), "currency": (type_ or {}).get("currency"),
                      "creator": labels.get("devcloud-creator", "-"),
                      "confirmed": labels.get("devcloud-confirmed") == "1", "id": e.vm["id"],
                      "idle_seconds": max(0, now - idle_at) if idle_at is not None else None})
@@ -132,11 +132,11 @@ def ls(ctx, as_json=False):
             table.append((row["name"], "adopted", row["lifetime"], _relative(row["expires"], now), row["state"], "-",
                           "-", "-", row["creator"], "-"))
         else:
-            spent = "-" if row["spent"] is None else f"{row['spent']:.2f}" + (
+            cost = "-" if row["spent"] is None else f"{row['spent']:.2f}" + (
                 f" {row['currency']}" if row["currency"] else "")
             table.append((row["name"], f"{row['provider']}/{row['account']}", row["lifetime"],
                           _relative(row["expires"], now), row["state"], _age(row["created"], now), row["price"],
-                          spent, row["creator"],
+                          cost, row["creator"],
                           "-" if row["idle_seconds"] is None else _age(now - row["idle_seconds"], now)))
     widths = [max(len(r[i]) for r in table) for i in range(len(table[0]))]
     for r in table:

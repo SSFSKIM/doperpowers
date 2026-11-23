@@ -45,7 +45,14 @@
 # cases on the same machines: a writer on a machine that holds no member (its
 # member frame first, its log opened with `follow`), what beta held at a
 # removal and a return, and the outcomes the
-# checker reads after beta uploaded again. `--speak` runs the scene alone.
+# checker reads after beta uploaded again. Last, a thread spawned on beta with
+# `--channel` (EN.G2's M1) is in the roster and the pool as alpha reads them,
+# and `channel show` on alpha prints beta's line with the VM's owner, age and
+# cost as alpha's devcloud (its stand-in) answers `vm info` (EN.G2's M2);
+# then beta, whose threads are in desk-ops, and gamma, added to its pool by
+# hand, each record a notice there with `say --notice devcloud --pools`, and
+# `sminos chat` on alpha shows both from `devcloud@<machine>` (EN.G2's M3).
+# `--speak` runs the scene alone.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub (the test engine in the speaking scene); the sessions are `sleep`s with engine records the suite writes;
 # nothing listens beyond Unix sockets there.
@@ -977,6 +984,72 @@ speak_cases() {
   assert_equals "$(received_n alder "b4, from B")" 1 "beta uploaded since its pushes were settled"
   assert_equals "$(checked_spoken "$DESK_SPOKEN $ops_ch" "$EPA $T/pa/s alpha" "$EPB $T/pb/s beta" "$EPC $T/pc/s gamma")" clean \
     "the checker over both channels: no delivery frame names one, no outbox under one"
+  spawn_placed "$ops_ch"
+  pools_notice
+}
+spawn_placed() { # channel-id — EN.G2's M1: a thread spawned with --channel on beta, as alpha reads the channel
+  echo "a spawn placed in a channel (EN.G2's M1): spawned on beta with --channel, read on alpha:"
+  local placed sid
+  on pb beta
+  run_in "$T/pb/web" in_session "$SB" "$SMINOS" spawn wren "a task" --channel desk-ops
+  assert_rc 0 "$RC" "B spawns a thread on beta, placed in desk-ops"
+  sid="$(sed -n 's/^wren#\([0-9a-f]\{8\}\): in desk-ops$/\1/p' <<<"$OUT")"
+  assert_equals "${#sid}" 8 "its line says it is in desk-ops"
+  on pa alpha
+  placed="${SA:0:8} ${SB:0:8} $sid"
+  placed="$(tr ' ' '\n' <<<"$placed" | sort | tr '\n' ' ')"
+  placed="${placed% }"
+  speak_pass shown_is "$T/pa/app" "$SA" desk-ops "members()" "$placed" || true
+  assert_equals "$(shown "$T/pa/app" "$SA" desk-ops "members()")" "$placed" "alpha's roster of desk-ops holds it"
+  # wren counts as live or as stopped by when alpha reads it, as its fake session's turn has ended on beta or not.
+  local beta_pool="[(e['machine'], e['live'] + e['stopped']) for e in d['pool'] if e['machine'] == 'beta']"
+  speak_pass shown_is "$T/pa/app" "$SA" desk-ops "$beta_pool" "[('beta', 2)]" || true
+  assert_equals "$(shown "$T/pa/app" "$SA" desk-ops "$beta_pool")" "[('beta', 2)]" \
+    "and alpha's pool counts beta's two threads there"
+  # EN.G2's M2: the machine the spawned thread put in the pool is a VM to alpha's devcloud (its stand-in here).
+  echo "the pool's VM (EN.G2's M2): channel show on alpha, its devcloud answering vm info for beta:"
+  local created
+  created=$(( $(date +%s) - 3630 ))
+  printf '{"info": {"stdout": "{\\"hosts\\": [{\\"name\\": \\"beta\\", \\"account\\": \\"main\\", \\"provider\\": \\"hetzner\\", \\"creator\\": \\"@%s\\", \\"created\\": %s, \\"spent\\": 0.1178, \\"currency\\": \\"EUR\\"}], \\"unknown\\": [], \\"listed\\": [\\"main\\"], \\"unused\\": []}"}}\n' \
+    "${SB:0:8}" "$created" > "$HOME/devcloud-standin.json"
+  run_in "$T/pa/app" in_session "$SA" "$SMINOS" channel show desk-ops
+  assert_rc 0 "$RC" "channel show desk-ops on alpha"
+  if grep -Eq "^  beta  [0-9]+ live, [0-9]+ stopped  vm owned by [^ ]+#${SB:0:8}, up 1h0m, 0\.12 EUR so far$" <<<"$OUT"; then
+    pass "beta's line names the thread that owns it, its age and its cost"
+  else fail "beta's line names the thread that owns it, its age and its cost"; echo "    in: ${OUT:0:900}"; fi
+  assert_equals "$(grep -c '^  alpha  [0-9]* live, [0-9]* stopped$' <<<"$OUT")" "1" "alpha's own line as it was"
+  assert_equals "$(tail -1 "$HOME/devcloud-standin.calls" | python3 -c 'import json, sys; a = json.load(sys.stdin)["argv"]; print(" ".join(a[:2] + a[4:]))')" \
+    "vm info -- beta" "devcloud asked once, about beta and not about alpha"
+  rm -f "$HOME/devcloud-standin.json"
+}
+pools_notice() { # — EN.G2's M3: a machine's notice recorded in each channel whose pool holds it, read on alpha
+  echo "a VM's notice in its pools' channels (EN.G2's M3): beta (its threads) and gamma (added by hand) say it:"
+  on pa alpha
+  run_in "$T/pa/app" in_session "$SA" "$SMINOS" channel env add desk-ops gamma
+  assert_rc 0 "$RC" "A adds gamma to desk-ops's pool by hand"
+  on pc gamma
+  local by_hand="[e['machine'] for e in d['pool'] if e['by_hand']]"
+  speak_pass shown_is "$T/pc/ops" "$SG" desk-ops "$by_hand" "['gamma']" || true
+  assert_equals "$(shown "$T/pc/ops" "$SG" desk-ops "$by_hand")" "['gamma']" "gamma's own copy holds it in the pool"
+  run_in "$T/pc/ops" "$SMINOS" say --notice devcloud --pools "gamma idles 3d"
+  assert_rc 0 "$RC" "gamma's notice, at a terminal there"
+  assert_contains "$OUT" "in desk-ops" "recorded in desk-ops"
+  on pb beta
+  run_in "$T/pb/web" "$SMINOS" say --notice devcloud --pools "beta idles 3d"
+  assert_rc 0 "$RC" "beta's notice, at a terminal there"
+  assert_contains "$OUT" "in desk-ops" "recorded in desk-ops"
+  on pa alpha
+  both_shown() {
+    local out
+    out="$(cd "$T/pa/app" && "$SMINOS" chat desk-ops -n 30 2>/dev/null)" || true
+    grep -F "beta idles 3d" <<<"$out" | grep -qF "devcloud@beta" && grep -F "gamma idles 3d" <<<"$out" | grep -qF "devcloud@gamma"
+  }
+  speak_pass both_shown || true
+  run_in "$T/pa/app" "$SMINOS" chat desk-ops -n 30
+  assert_contains "$(grep -F "beta idles 3d" <<<"$OUT")" "devcloud@beta" "sminos chat on alpha shows beta's from devcloud@beta"
+  assert_contains "$(grep -F "gamma idles 3d" <<<"$OUT")" "devcloud@gamma" "and gamma's from devcloud@gamma"
+  assert_equals "$(grep -F "idles 3d" <<<"$OUT" | grep -c " → \*  " || true)" 2 "each addressed to no one"
+  assert_equals "$(received_n alder "idles 3d") $(on pb beta; inputs_n "$SB" "idles 3d")" "0 0" "no session was prompted"
 }
 
 if [ "$SCENE_ONLY" = 0 ] && [ "$SPEAK_ONLY" = 0 ]; then

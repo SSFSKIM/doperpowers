@@ -68,7 +68,10 @@ def read(path):
         return None
 
 
-def text(d, state, current, found):
+def text(d, state, current, found, short=False):
+    """The idle notice; `short`, the form a channel's log records where notices.CHANNEL_TEXT is "short" (EN.G2's
+    M3; the full text otherwise, the owner's choice): nothing of what is on the machine
+    (the repositories with unpushed work) and not the instruction that is the owning thread's alone."""
     from .lease import iso
     seconds = max(0, current - state["active_at"])
     duration = f"{int(seconds // 86400)}d {int(seconds % 86400 // 3600)}h"
@@ -77,9 +80,11 @@ def text(d, state, current, found):
     if d.created is not None and d.hourly_price is not None:
         spent = d.hourly_price * max(0, current - d.created) / 3600
         cost = f"; estimated cost so far {spent:.2f}" + (f" {d.currency}" if d.currency else "")
+    said = f"devcloud on {d.name}: idle {duration}; last active {iso(state['active_at'])}; {lifetime}{cost}"
+    if short:
+        return said
     unpushed = ", ".join(f"{repo} ({what})" for repo, what in found) if found else "none"
-    return (f"devcloud on {d.name}: idle {duration}; last active {iso(state['active_at'])}; {lifetime}{cost}; "
-            f"unpushed: {unpushed}; end it with devcloud vm down {d.name}")
+    return f"{said}; unpushed: {unpushed}; end it with devcloud vm down {d.name}"
 
 
 def observe(user, d, path=None, now=time.time, activity=None):
@@ -126,7 +131,8 @@ def send(user, d, pending, notify=None, scan=None, say=print):
     state, current = pending
     found = (scan or (lambda: unpushed(user)))()
     message = text(d, state, current, found)
-    (notify or (lambda message: notices.deliver(user, d, message, say=say)))(message)
+    (notify or (lambda message: notices.deliver(user, d, message, say=say,
+                                                short=text(d, state, current, found, short=True))))(message)
 
 
 def delivered(pending, path=None, now=time.time):

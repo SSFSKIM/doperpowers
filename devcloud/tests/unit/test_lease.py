@@ -413,7 +413,7 @@ class WarningTest(LeaseBase):
 
     def test_says_to_the_creator_as_the_user_naming_the_end_and_the_unpushed_work(self):
         self.warn()
-        (argv, user), = self.calls
+        (argv, user), (channels, channels_user) = self.calls
         text = f"devcloud on dc-build-7f3a: lease ends at {lease.iso(NOW)}; unpushed: app (2 unpushed commits), lib " \
                "(uncommitted changes)"
         self.assertEqual(lease.iso(NOW), "2026-10-14T17:46Z")
@@ -422,15 +422,32 @@ class WarningTest(LeaseBase):
         self.assertEqual(argv, ["/usr/bin/python3", str(self.cli), "say", "--notice", "devcloud", "--exit-held",
                                 f"@build#4f2a {text}"])
         self.assertEqual(user, self.user)
+        # EN.G2's M3: then the channels' record, with the notice's own full text (the owner's answer to O6).
+        self.assertEqual(channels, ["/usr/bin/python3", str(self.cli), "say", "--notice", "devcloud", "--pools", text])
+        self.assertEqual(channels_user, self.user)
+
+    def test_the_short_warning_names_the_machine_and_the_end_and_no_repository(self):
+        found = [("app", "2 unpushed commits"), ("lib", "uncommitted changes")]
+        full = lease.warning_text("dc-build-7f3a", NOW, found)
+        short = lease.warning_text("dc-build-7f3a", NOW, found, short=True)
+        self.assertEqual(short, f"devcloud on dc-build-7f3a: lease ends at {lease.iso(NOW)}")
+        self.assertTrue(full.startswith(short + "; "))
+        for name in ("app", "lib", "unpushed"):
+            self.assertIn(name, full)
+            self.assertNotIn(name, short)
 
     def test_without_a_creator_or_unenrolled_the_journal_and_wall(self):
         # A stray phase-1 hub.json is no enrollment: the desk refuses DX2, so `say` would reach no one.
-        for kwargs in ({"creator": None}, {"cut_over": False}, {"cut_over": False, "stray_hub": True}):
+        # With no creator and no project the chain calls no sminos, and the channels' record is still made: the
+        # host's sminos is found and the host cut over (EN.G2's M3). Unenrolled, nothing calls sminos.
+        for kwargs, after in (({"creator": None}, ["say"]), ({"cut_over": False}, []),
+                              ({"cut_over": False, "stray_hub": True}, [])):
             with self.subTest(**kwargs):
                 self.calls.clear()
                 said = self.warn(**kwargs)
-                self.assertEqual([argv[0] for argv, _ in self.calls], ["wall"])
-                self.assertIn("unpushed: app", said[-1])
+                self.assertEqual([argv[0] if argv[0] == "wall" else argv[2] for argv, _ in self.calls],
+                                 ["wall", *after])
+                self.assertIn("unpushed: app", next(line for line in said if line.startswith("devcloud notice: dev")))
 
 
 class UnpushedTest(unittest.TestCase):

@@ -6,6 +6,7 @@
   devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
   devcloud vm ls [--json]
   devcloud vm owned-by <tag|short>...
+  devcloud vm info [--within <seconds>] <name>...
   devcloud vm ssh <name> [--root] [-- command...]
   devcloud vm lease <name> <duration|keep>
   devcloud vm owner <name> <thread>
@@ -24,7 +25,7 @@ import os
 import signal
 import sys
 
-from . import adopt, conformance, images, ops, owned, owner, reaper, up
+from . import adopt, conformance, images, info, ops, owned, owner, reaper, up
 from .context import Context, Paths
 from .errors import FAILED, NOT_DRIVER, USAGE, DriverError
 
@@ -79,6 +80,10 @@ def parser():
     p = sub.add_parser("owned-by", help="which hosts name these creators, as JSON: owned, none or unknown "
                                         "(for a program; see driver/owned.py)")
     p.add_argument("names", nargs="*", metavar="tag|short")
+    p = sub.add_parser("info", help="what the named hosts are, as JSON: owner, creation, cost so far "
+                                    "(for a program; see driver/info.py)")
+    p.add_argument("--within", metavar="SECONDS", help="the providers' budget (12 s)")
+    p.add_argument("names", nargs="*", metavar="name")
     p = sub.add_parser("ssh", help="a shell or a command on a host",
                        usage="devcloud vm ssh <name> [--root] [-- command...]",
                        description="One argument after -- is a shell line as given; several are quoted as words.")
@@ -120,6 +125,8 @@ def _dispatch(ctx, args, command):
         return ops.ls(ctx, as_json=args.json)
     if args.command == "owned-by":
         return owned.run(ctx, args.names)
+    if args.command == "info":
+        return info.run(ctx, args.names, args.within)
     if args.command == "ssh":
         return ops.ssh(ctx, args.name, root=args.root, command=command)
     if args.command == "lease":

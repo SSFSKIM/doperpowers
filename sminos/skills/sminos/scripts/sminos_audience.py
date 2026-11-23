@@ -183,6 +183,22 @@ def advertised(capability):
     return isinstance(caps, list) and capability in caps
 
 
+def kept_capability(capability):
+    """The last welcome kept here, read in three (EN.G2's plan, Interfaces
+    §1): True where its capabilities list holds `capability`, False where
+    that list is there without it, None where it is not known (no file, one
+    that cannot be read, or one holding no welcome's capabilities: a machine
+    whose uplink has not kept a welcome yet). A spawn placed in a channel
+    waits out the third and is refused for the second; advertised keeps its
+    two answers for its callers."""
+    try:
+        d = _read_kept()
+    except StreamUnknown:
+        return None
+    caps = None if d is None else d.get("capabilities")
+    return capability in caps if isinstance(caps, list) else None
+
+
 def widening_through_app():
     """Whether widening a session's reach here is the app's alone, so the
     CLI refuses it ("use MAWS") from a terminal too and keeps narrowing (P5
