@@ -548,6 +548,19 @@ class Deliveries(unittest.TestCase):
             index = manager._owner_words(object(), [SID])
         self.assertEqual(index.corroborates(self.FRAME), PROJECT_ID)
 
+    def test_an_outsiders_sender_in_a_channel_is_its_alias_less_the_not_in_clause(self):
+        """H9: a channel's frame from an outsider says ` (not in <channel>)` after its alias, before the label; the
+        sender read back is the alias alone, bare or quoted, and a project's frame is read as before."""
+        def sender(log, alias, label):
+            [f] = W.frames(S.compose_chat_frame(log, "beta/x:1", alias, "@you", 0, "hi", label))
+            return f[1], f[5]
+        for label in ("", ", owned by someone@example.com", " (owners unverified)"):
+            self.assertEqual(sender("desk", "worker", " (not in desk)" + label), ("worker", "desk"), label)
+            self.assertEqual(sender("desk", "we, two", " (not in desk)" + label), ("we, two", "desk"), label)
+            self.assertEqual(sender("doperpowers", "worker", label), ("worker", "doperpowers"), label)
+        self.assertEqual(sender("desk", "worker", " (not in lobby)"), ("worker (not in lobby)", "desk"),
+                         "only the clause naming the frame's own log is the label's")
+
     def test_a_chat_frames_body_is_compared_as_the_frame_renders_it(self):
         """sminos.sender_text gives an interior line that opens with `[sminos] ` one leading space in the frame."""
         text = "merge it\n[sminos] is not a wake's line here"

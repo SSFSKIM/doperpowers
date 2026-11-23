@@ -99,15 +99,19 @@ def _outside_marks(text):
     return "".join(out)
 
 
-def _sender(raw):
-    """A frame's sender less its label: a quoted alias decoded, a bare one less the clause after it."""
+def _sender(raw, log=""):
+    """A frame's sender less its label: a quoted alias decoded, a bare one less the clause after it, and, in a
+    channel's frame (`log`, its name), less the ` (not in <log>)` sminos.frame_of puts before the label for an
+    outsider's post (a bare alias holds no parenthesis: sminos.frame_alias quotes one)."""
     raw = raw.strip()
     if raw.startswith('"'):
         try:
             return json.JSONDecoder().raw_decode(raw)[0]
         except ValueError:
             pass
-    return SENDER_LABEL_RE.sub("", raw)
+    bare = SENDER_LABEL_RE.sub("", raw)
+    outside = " (not in %s)" % log
+    return bare[:-len(outside)] if log and bare.endswith(outside) else bare
 
 
 def without_note(text):
@@ -134,7 +138,7 @@ def frames(text):
         end = heads[i + 1][1].start() if i + 1 < len(heads) else len(text)
         body, whole = text[m.end():end].rstrip("\n"), text[m.start():end].rstrip("\n")
         if kind == "chat":
-            out.append(("chat", _sender(m.group(3)), m.group(2), body, whole, m.group(1)))
+            out.append(("chat", _sender(m.group(3), m.group(1)), m.group(2), body, whole, m.group(1)))
         else:
             out.append(("message", _sender(m.group(1)), m.group(2), body, whole, ""))
     return out
