@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # review-engine.sh — the codex review engine the qa-loops loop ran until it
 # moved onto doperpowers:review-code's lane (2026-09-13); kept here as the
-# bench's `--engine codex` baseline. Driven by the doperpowers:codex-companion runtime (vendored codex
-# app-server client; sibling skill). PURE correctness review: a plain run is
+# bench's `--engine codex` baseline. Driven by the archived codex-companion runtime (vendored codex
+# app-server client; archive/codex-companion/). PURE correctness review: a plain run is
 # codex's native `review` verb with no ticket/spec input of any kind; the
 # single optional modification is a diff-derived structural LENS
 # (CODEX_REVIEW_LENS_FILE / CODEX_REVIEW_LENS, see the lens block below),
@@ -39,8 +39,8 @@ command -v codex >/dev/null 2>&1 || { echo "review-engine: codex CLI not found" 
 command -v node  >/dev/null 2>&1 || { echo "review-engine: node not found" >&2; exit 127; }
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-companion="$script_dir/../../skills/codex-companion"
-[ -f "$companion/scripts/with-effort.mjs" ] || { echo "review-engine: codex-companion skill not found at $companion" >&2; exit 127; }
+companion="$script_dir/../../archive/codex-companion"
+[ -f "$companion/scripts/with-effort.mjs" ] || { echo "review-engine: archived codex-companion not found at $companion" >&2; exit 127; }
 
 model="${CODEX_REVIEW_MODEL:-gpt-6-astra}"
 effort="${CODEX_REVIEW_EFFORT:-high}"

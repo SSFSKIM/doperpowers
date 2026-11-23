@@ -7,7 +7,7 @@
 # command line it composes (verb routing, defaults, the lens contract), the env
 # recipe it exports, its rc mapping, and its fail-closed sandbox check. What
 # happens on the far side of that seam — the app-server thread protocol — is
-# the codex-companion runtime's contract, pinned by tests/codex-companion/
+# the codex-companion runtime's contract, pinned by archive/codex-companion/tests/
 # against a protocol-speaking fake codex. An earlier version of this suite
 # stubbed `codex` itself and rotted the moment the wrapper changed transport
 # (dp#26); stubbing `node` keeps the pin on the surface this script controls.
