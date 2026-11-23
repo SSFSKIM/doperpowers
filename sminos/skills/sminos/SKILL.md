@@ -162,7 +162,7 @@ their agent ids; other sessions are reached through sminos.
     sminos channel create desk-integration                 # a channel, you its first member
     sminos channel add desk-integration proj-b/parser 7a11ce01   # threads placed in it: another project's as <project>/<alias> or its short; another machine's asked
     sminos channel remove desk-integration [<thread>...]   # out of it (none named: you); nothing is retired
-    sminos channel show desk-integration                   # its members, each in its own project; its requests
+    sminos channel show desk-integration                   # its members, each in its own project; its requests; its pool
     sminos say --in desk-integration "@parser the schema moved"   # said in the channel
     sminos say "@desk-integration/parser the schema moved"       # the same, the channel named by the tag
     sminos chat desk-integration                           # its conversation
@@ -186,6 +186,17 @@ already held of the channel's log at the new add is not pushed to it
 In a channel the tags mean what they do in a project: `@alias` delivers
 or wakes, `@all` reaches its live members, and untagged is a record
 nobody is prompted for.
+
+A channel's pool is the machines its members run on, and any a member
+added by hand. On a Mac with
+devcloud, `channel show` gives each devcloud VM of the pool the thread
+that owns it, how long it has run and what it has cost so far (its
+type's list price times its age, not a bill), where that Mac's devcloud
+can list the VM's account; elsewhere, or for what devcloud could not
+answer, a line after the pool says those facts are not shown and why.
+A line in a channel's chat from `devcloud@<vm>` is that machine's
+notice, recorded for the channel and addressed to no one: the thread
+that owns the VM was told separately, and nobody answers the line.
 
 A frame from a channel names it (`[sminos chat desk-integration …]`), and
 its reply line's tag, `@<channel id>/<short>`, names that channel and the
@@ -265,7 +276,7 @@ processes, so run them on its machine.
 ## Spawning siblings
 
     sminos spawn <alias> - [--brief B] [--role R] [--cwd DIR] [--worktree NAME]
-                [--model M] [--settings FILE] [--effort E] [--wait] <<'EOF'
+                [--model M] [--settings FILE] [--effort E] [--wait] [--channel <channel>]... <<'EOF'
     <the task, as written>
     EOF
 
@@ -274,9 +285,13 @@ your project, or `--cwd`'s; `--brief` is its in-charge line until its first deri
 Spawning an alias whose seat is not live re-fills it fresh; a live seat
 is refused. `--wait` only watches, for `DAEMON_TIMEOUT`: the seat works
 on after, and `reply` reads its live transcript.
+`--channel` places the new thread in each channel as it starts; a spawn
+without it puts the thread in none of yours. A placement that failed
+leaves the thread running (exit 0); its warning says why and, where a
+command can, gives the `sminos channel add` that places it.
 
     sminos spawn <alias> - --on <vm>|new [--vm-project owner/repo[@ref]]... [--vm-confirmed]
-                [--cwd <path there>] [--brief B] [--role R] [--worktree NAME] <<'EOF'
+                [--cwd <path there>] [--brief B] [--role R] [--worktree NAME] [--channel <channel>]... <<'EOF'
     <the task, as written>
     EOF
 
@@ -288,8 +303,10 @@ guards a VM it makes). The new session is told your address; from a
 terminal, which `new` refuses, it is told "the operator". It is refused, saying
 why, from a VM, from a machine or project the org does not share, from a
 session whose reach is not this machine's default, and with `--wait` or
-`--settings`. The VM itself, its caps and its end are the `devcloud:vm`
-skill's.
+`--settings`. Where its outcome is not known, a session may have started
+there: look first with the commands its line gives, since running the
+spawn again can open a second one. The VM itself, its caps and its end
+are the `devcloud:vm` skill's.
 
 **What gets a session.** A session is for a separable standing
 responsibility — one that outlives the task that revealed it, held by
