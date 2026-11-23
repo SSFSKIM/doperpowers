@@ -2467,6 +2467,8 @@ LEAD_WAITS = ("the lead of %s was not written: this machine's writer waits for i
               "clearing event a private lead goes behind cannot go first: nothing was written. Run it again once its "
               "daemon has caught up")
 LEAD_RENAMED = "this machine's name changed while you answered (%s, now %s): nothing was written. Run it again"
+LEAD_RESET_ONLY = ("the lead of %s: its clearing event was written (%s has no lead now); the private lead was not, "
+                   "because this machine's name changed (%s, now %s). Run it again")
 LEAD_UNMARKED = "this machine's name (%s) is no machine name a reader honours a lead under: nothing was written"
 
 
@@ -2568,8 +2570,8 @@ def lead(q, name):
     human writer, plain for a thread that is not private, under that
     writer's audience stream after a plain clearing event for one that is,
     which must land first (refused, nothing queued, while the plain writer
-    waits for its head). Each append checks the name again under its
-    writer's lock. The exit code."""
+    waits for its head: _append(queue=False)). Each append checks the name
+    again under its writer's lock. The exit code."""
     if os.environ.get("CLAUDE_CODE_SESSION_ID"):
         sminos.die(LEAD_IN_SESSION, 1)
     if not sminos.audience_module().advertised("channels"):
@@ -2606,19 +2608,15 @@ def lead(q, name):
     machine = sminos.writer_base(writer).rpartition("/")[0]
     if sminos.machine_name_now() != machine:
         sminos.die(LEAD_RENAMED % (machine, sminos.machine_name_now()), 1)
-    why = []
+    renamed = []
 
-    def guard(waits):
-        def check(_events):
-            if sminos.machine_name_now() != machine:
-                why.append(LEAD_RENAMED % (machine, sminos.machine_name_now()))
-            elif waits and sminos.waits_for_head(channel, writer):
-                why.append(LEAD_WAITS % channel.name)
-            return not why
-        return check
+    def same_name(_events):
+        if sminos.machine_name_now() != machine:
+            renamed.append(sminos.machine_name_now())
+        return not renamed
 
-    def append(w, fields, waits=False):
-        got = sminos._append(channel, w, [{"kind": "channel-lead", **fields}], guard=guard(waits))
+    def append(w, fields, queue=True):
+        got = sminos._append(channel, w, [{"kind": "channel-lead", **fields}], guard=same_name, queue=queue)
         if not got:
             raise _NotWritten()
         return got[0]
@@ -2633,16 +2631,18 @@ def lead(q, name):
                 sminos.die(LEAD_RENAMED % (machine, sminos.writer_base(stream).rpartition("/")[0]), 1)
             if audience is not None:
                 # The private event goes only behind a plain clearing event that has landed. A writer waits for its
-                # head on its own, so the reset is refused, before anything is queued, while the plain writer
-                # waits: a reset left queued would clear the earlier lead with no `none` run, and the private event
-                # would go up ahead of it.
-                append(writer, {"thread": None}, waits=True)
+                # head on its own, so the reset is refused rather than queued (queue=False: _append's one reading
+                # of the wait, under the writer's lock): a reset left queued would clear the earlier lead with no
+                # `none` run, and the private event would go up ahead of it.
+                append(writer, {"thread": None}, queue=False)
                 cleared = True
             sminos.keep_stream(channel, stream, audience)
             e = append(stream, {"thread": thread, "session": session})
+    except sminos.HeadWaits:
+        sminos.die(LEAD_WAITS % channel.name, 1)
     except _NotWritten:
-        sminos.die(("the lead of %s was not written (a clearing event was: it has no lead now): %s" % (
-            channel.name, why[0])) if cleared else why[0], 1)
+        sminos.die(LEAD_RESET_ONLY % (channel.name, channel.name, machine, renamed[0]) if cleared
+                   else LEAD_RENAMED % (machine, renamed[0]), 1)
     except (OSError, sminos.audience_module().StreamUnknown) as err:
         sminos.die("the lead of %s was not written%s: %s" % (
             channel.name, " (a clearing event was: it has no lead now)" if cleared else "", err), 1)

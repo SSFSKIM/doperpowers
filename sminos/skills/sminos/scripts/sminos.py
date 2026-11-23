@@ -3400,6 +3400,11 @@ def operator_writer(writer):
     return base.endswith("/human") and base.count("/") == 1
 
 
+class HeadWaits(Exception):
+    """_append(queue=False) to a writer that waits for its head: nothing was
+    written, nothing queued."""
+
+
 def waits_for_head(project, writer):
     """Whether an append to `writer` in `project` waits for the upstream's
     head (the rule above): this machine's operator writer or a stream of it,
@@ -3584,7 +3589,7 @@ def waits_line(project, writer):
 
 
 def _append(project, writer, events, skip_src=False, guard=None, store="log", held=False, released=False,
-            lock_until=None):
+            lock_until=None, queue=True):
     """Append events to the writer's file under `.sync.lock` shared (git never
     rewrites log/ while an appender writes) and the file's own lock (seq is the
     last line's plus one, past any position the uplink spent, which it spends
@@ -3596,6 +3601,9 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
     (writer_locks). An own writer's `human` events in the log get their
     append receipts under the same lock, first (_write_receipts).
     `lock_until`: LockBusy, nothing appended, for a lock not had by then.
+    A log writer that waits for its head (waits_for_head) gets the events
+    queued, or with `queue=False` HeadWaits, nothing queued: the one reading
+    of the wait, under the writer's lock, decides either way.
     Returns the events as written."""
     if any(e["kind"] in LIFECYCLE for e in events):
         _VIEWS.pop(project.id, None)
@@ -3623,6 +3631,8 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
             if not events:
                 return []
             if store == "log" and not released and waits_for_head(project, writer):
+                if not queue:
+                    raise HeadWaits()
                 return _queue(project, writer, events)
             seq = _last_seq(f)
             spent = spent_seqs(project, writer) if store == "log" else set()

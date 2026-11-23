@@ -353,6 +353,66 @@ class Verb(Lead):
         sminos.release_queued(self.chan(DESK), plain)
         self.assertEqual(self.lead_now(), "alder", "the earlier lead survives the queue's release")
 
+    def confirmed_in_process(self):
+        """The person's yes, given in this process (the cases below stage what happens between two reads inside
+        one append, which only an in-process call can reach; the yes itself is driven on a pty above)."""
+        p = mock.patch.object(sminos.sibling_module("sminos_visibility"), "confirmed", return_value=True)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_a_head_wait_that_begins_between_a_check_and_the_append_never_queues_the_reset(self):
+        """Review round 3: whether the private lead's reset may go is one decision, at _append's own head check
+        under the writer's lock (queue=False), never a guard's read followed by a second one: a welcome that marks
+        a new enrolment holds no writer lock, so the answer can change between two reads. Here it changes right
+        after the first read of waits_for_head, and the reset is still never queued."""
+        self.au.keep_capabilities(["channels", "access"])
+        rtid, rsid, _ = self.live("reader")
+        self.private(rsid)
+        self.confirmed_in_process()
+        plain, real, calls = sminos.writer_id(), sminos.waits_for_head, []
+
+        def waits_for_head(project, writer):
+            got = real(project, writer)
+            if writer == plain and not calls:
+                calls.append(got)
+                # A same-name re-enrollment's welcome, between this read and any later one: the plain writer now
+                # waits for its head.
+                sminos.mark_enrolled(sminos.host_name(), "2026-11-10T00:00:00.000Z")
+                sminos.keep_headed(self.chan(DESK), [plain])
+            return got
+        with mock.patch.object(sminos, "waits_for_head", waits_for_head):
+            code, out = self.at_terminal("channel", "lead", "desk", "reader")
+        self.assertEqual(calls, [False], "the head was ready at the one read that decided")
+        self.assertEqual(glob.glob(os.path.join(self.chan(DESK).home, sminos.QUEUED, "*.jsonl")), [],
+                         "the reset never entered the queue")
+        self.assertEqual(code, 0, out)
+        self.assertEqual([e["thread"] for e in self.leads()], [None, rtid], "the reset landed, then the lead")
+
+    def test_a_rename_between_the_reset_and_the_private_lead_says_both_facts(self):
+        """Review round 3: a rename after the private lead's reset landed says what is true: the reset was written,
+        the private lead was not, and why."""
+        self.au.keep_capabilities(["channels", "access"])
+        rtid, rsid, _ = self.live("reader")
+        self.private(rsid)
+        self.confirmed_in_process()
+        rl10 = sminos.sibling_module("sminos_rl10")
+        host, real = sminos.host_name(), sminos._append
+
+        def append(project, writer, events, **kw):
+            got = real(project, writer, events, **kw)
+            if events and events[0].get("kind") == "channel-lead" and events[0].get("thread") is None:
+                with open(rl10.identity_path()) as f:
+                    ident = json.load(f)
+                ident["name"] = "renamed-host"
+                sminos.write_json(rl10.identity_path(), ident, mode=0o600)
+            return got
+        with mock.patch.object(sminos, "_append", append):
+            code, out = self.at_terminal("channel", "lead", "desk", "reader")
+        self.assertEqual(code, 1, out)
+        self.assertIn("its clearing event was written (desk has no lead now); the private lead was not, because this "
+                      "machine's name changed (%s, now renamed-host)" % host, out)
+        self.assertNotIn("nothing was written", out)
+
     def test_a_rename_while_the_prompt_is_read_writes_nothing(self):
         """Review round 2: both writers come from the machine's name as its files say after the answer; a rename
         meanwhile refuses, with nothing written under the old name or the new."""
@@ -360,7 +420,8 @@ class Verb(Lead):
         rl10 = sminos.sibling_module("sminos_rl10")
 
         def renamed():
-            ident = json.load(open(rl10.identity_path()))
+            with open(rl10.identity_path()) as f:
+                ident = json.load(f)
             ident["name"] = "renamed-host"
             sminos.write_json(rl10.identity_path(), ident, mode=0o600)
         before = self.logs()
