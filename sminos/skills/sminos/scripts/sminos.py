@@ -9655,7 +9655,10 @@ def _with_shared(name, project, rows):
     # no channel-mate's name reaches it, and its own project's members still do.
     shared = [(p, m) for p, m in rows if p.id in open_ and chans.thread_of_row(p, m) is not None]
     for p, m in shared + [(project, m) for m in members(project)]:
-        key = chans.row_thread(p, m) or m.session
+        # Typed: a thread's id is compared with threads' alone, a session's with sessions' (a refilled seat's thread
+        # id is its first session's, which can be another row's session now).
+        thread = chans.row_thread(p, m)
+        key = ("thread", thread) if thread else ("session", m.session)
         if key not in seen:
             seen.add(key)
             pairs.append((p, m))

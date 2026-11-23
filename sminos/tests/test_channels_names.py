@@ -735,6 +735,37 @@ class Frontier2(Names):
             self.assertEqual(self.cli("retire", "desk/victim")[0], 0)
         self.assertEqual(seen, [(self.p.id, None), (self.p.id, t1)])
 
+    def refilled_over(self, alias_seat, alias_old):
+        """A channel peer in app whose thread id S is a session id that an unstamped member of the sender's project
+        holds (a refilled seat's first session, back as an older copy's row): S."""
+        s, s2 = str(uuidlib.uuid4()), str(uuidlib.uuid4())
+        self.joined(self.app, "beta/" + s2, s2, alias_seat, s)
+        self.stated(self.app, "beta/" + s2, s2, s, [DESK])
+        self.joined(self.p, "beta/" + s, s, alias_old)
+        sminos.log_append(self.p, "beta/" + s, "state", session=s, state="idle", machine="beta")
+        sminos.forget_caches()
+        return s, s2
+
+    def test_g6_a_project_member_whose_session_is_a_channel_peers_thread_id_is_still_reached(self):
+        tid, ssid = self.named(None, alias="sender")
+        self.placed(tid, ssid, DESK)
+        s, _ = self.refilled_over("keeper", "olden")
+        code, out = self.as_session(ssid, "say", "@olden hello")
+        self.assertEqual(code, 0, out)
+        sminos.forget_caches()
+        e, = [e for e in sminos.log_read(self.p) if e["kind"] == "say"]
+        self.assertEqual([r["session"] for r in e["to"]], [s])
+
+    def test_g6_and_one_alias_both_answer_is_refused_as_ambiguous(self):
+        tid, ssid = self.named(None, alias="sender")
+        self.placed(tid, ssid, DESK)
+        s, s2 = self.refilled_over("twin", "twin")
+        code, out = self.as_session(ssid, "say", "@twin hello")
+        self.assertEqual(code, sminos.EXIT_UNKNOWN, out)
+        self.assertIn("ambiguous @twin matches: ", out)
+        self.assertIn("twin#%s" % s[:8], out)
+        self.assertIn("twin#%s" % s2[:8], out)
+
 
 if __name__ == "__main__":
     unittest.main()
