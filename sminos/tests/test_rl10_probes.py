@@ -124,6 +124,12 @@ class Order(unittest.TestCase):
     def test_an_ask_about_an_own_event_waits_for_its_member_frame_and_its_upload(self):
         self.assertEqual(sorted(probes.order_edges(self.cases())[(0, 4)]), [(0, 0), (0, 2)])
 
+    def test_an_upload_to_everyone_waits_for_its_writer_s_member_frame_alone(self):
+        to_all = {"up": {"t": "events", "project": self.CH, "events": [
+            {"writer": "{{name}}/" + self.S7, "seq": 1, "kind": "say", "to": "*"}]}}
+        cases = [{"steps": [self.member(self.S8), self.member(self.S7), to_all]}]
+        self.assertEqual(probes.order_edges(cases)[(0, 2)], [(0, 1)])
+
     def test_an_ask_waits_for_the_latest_member_frame_before_it(self):
         self.assertEqual(probes.order_edges(self.cases())[(1, 1)], [(1, 0)])
 

@@ -48,7 +48,9 @@ through sminos's own `say`, its clock held at the fixture's `ts`; a thread id
 the fixture names for a session of this machine bound to the one sminos
 minted for it, bind_threads), and the endpoint's `audience` for each local
 session, sent down after the member frame that states it (its members and
-digest of this run's members), and nothing is amended here. What is checked
+digest as the fixture pins them: the member ids are the fixture's, and the
+digest is the endpoint's input, never this code's to make), and nothing is
+amended here. What is checked
 over the whole conversation in place of the probes is rl10_probes.py's,
 built for a conversation of several logs.
 
@@ -172,12 +174,6 @@ CASES = CONVERSATION["cases"]
 B = dict(CONVERSATION["bindings"])   # the sample values; this run's replace them where they are its own
 B.update(token=os.urandom(32).hex(), wrongToken=os.urandom(32).hex(),
          legacyKey=codes.b64url(os.urandom(32)))
-# An audience's members and digest, of this run's members: in id order, as the endpoint sends them.
-for _who in ("A", "B", "AB"):
-    _members = sorted(B["member:" + m] for m in _who)
-    B["digest:" + _who] = sminos.audience_digest(_members)
-    if len(_who) > 1:
-        B["members:" + _who] = _members
 # An RPC's time (`created:<as>`): its own when it goes down.
 LAZY = tuple(sorted({k for k in B if k.startswith("created:")} |
                     {m.decode() for m in re.findall(rb"\{\{(created:[^}]+)\}\}", RAW)}))
@@ -1064,11 +1060,6 @@ AFTER = {(13, 4): [(13, 2)]}
 for _at, _deps in probes.order_edges(CASES).items():
     AFTER[_at] = sorted(set(AFTER.get(_at, [])) | set(_deps))
 
-# A step whose line comes on the next connection: none since the fixture
-# places the host resend on the reconnect, before its restated.
-NEXT_CONNECTION = {}
-DEFERRED = []
-
 
 # ------------------------------------------------------------- unstaged asks
 
@@ -1197,18 +1188,6 @@ def check_restated(ci, si):
     return True, "the case's restatement is before restated"
 
 
-def run_deferred(conn_name):
-    for (ci, si), why, step, opts in list(DEFERRED):
-        ok, why2 = up(ci, si, step, opts)
-        if ok:
-            n, i = STEPS[(ci, si)]
-            restated = STEPS.get((11, 17))
-            ok = restated is not None and restated[0] == n and i < restated[1]
-            why2 = "" if ok else "not before the restated of connection %d" % n
-        say("ok" if ok else "FAIL", "%s (%s)%s" % (name_of(ci, si, step), why, "" if ok else " — " + why2))
-        DEFERRED.remove(((ci, si), why, step, opts))
-
-
 def replay():
     global P_, Q_
     P_, Q_ = stage_machine()
@@ -1245,9 +1224,6 @@ def replay():
                 name = name_of(ci, si, step)
                 if (ci, si) in PROBES:
                     continue   # said at the end, with what sminos does instead
-                if (ci, si) in NEXT_CONNECTION:
-                    DEFERRED.append(((ci, si), NEXT_CONNECTION[(ci, si)], step, {}))
-                    continue
                 if "up" in step:
                     ok, fail = up(ci, si, step, {})
                 elif "down" in step:
@@ -1263,8 +1239,6 @@ def replay():
                 if ok and step.get("up", {}).get("t") == "restated":
                     ok, said = check_restated(ci, si)
                     fail = "" if ok else said
-                    if ok and ci == 11:
-                        run_deferred("main")
                 say("ok" if ok else "FAIL", name + (" — " + fail if not ok else ""))
         time.sleep(1.0)
         for (ci, si), (why, probe) in sorted(PROBES.items()):
@@ -1275,8 +1249,6 @@ def replay():
                 continue
             ok, said = probe()
             say("ok" if ok else "FAIL", "%s — the endpoint's alone (%s): %s" % (name_of(ci, si, step), why, said))
-        for (ci, si), _, step, _ in DEFERRED:
-            say("FAIL", "%s — never matched on a later connection" % name_of(ci, si, step))
         if not FAILED:
             replay_beyond()   # while the uplink still runs: its reads are what is checked
     finally:

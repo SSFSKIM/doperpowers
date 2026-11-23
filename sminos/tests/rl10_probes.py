@@ -73,9 +73,10 @@ def order_edges(cases):
     """{(case, step): [(case, step)]}: the lines a channel's line waits for,
     read off the lines themselves in the fixture's order. An `events` up
     waits for the latest member frame of its writer's session and of each
-    session it writes to; a words? or reach? waits for the latest member
-    frame of the session it asks about, and, for an own event (given inline),
-    for the upload that carried it. A line of no channel waits for none."""
+    session it writes to (none for a `to` that is no list, "*"); a words?
+    or reach? waits for the latest member frame of the session it asks
+    about, and, for an own event (given inline), for the upload that
+    carried it. A line of no channel waits for none."""
     member, uploaded, edges = {}, {}, {}
     for ci, case in enumerate(cases):
         for si, step in enumerate(case["steps"]):
@@ -90,7 +91,8 @@ def order_edges(cases):
             deps = set()
             if line.get("t") == "events":
                 for e in line.get("events") or []:
-                    for s in [_session_of(e.get("writer"))] + [t.get("session") for t in e.get("to") or []]:
+                    to = e.get("to") if isinstance(e.get("to"), list) else []   # "*", everyone: no one session's frame
+                    for s in [_session_of(e.get("writer"))] + [t.get("session") for t in to]:
                         if s in member:
                             deps.add(member[s])
                     uploaded[(line["project"], e.get("writer"), e.get("seq"))] = (ci, si)
