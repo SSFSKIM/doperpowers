@@ -79,7 +79,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M5 — The scene on a real engine. Run whole against `f775004d` (Claude Code 2.1.330, haiku, a scratch home): all four steps showed what they expect; no fault of M1 to M4, no code changed; the checker found nothing over the stand-in's frames and the store; every process stopped. Step 4's hand-off made as Surprises says.
 - [x] (2026-11-22) M6 — Across machines: asking, and carrying out off the consumer thread. `5af6ab8c`, fixes `e7742001`, `d5b03b63`, `15198aa9`, `52d5241d`; reviewed with M2 to M6 as one range (three reviews on the medium rung, the bound), the third's fix (`52d5241d`) made after it and named to the frontier panel. Gates GREEN on `52d5241d`; sminos-idle 32,216; sminos-channels 3m15s of its 6m timeout.
 - [ ] M7 — Held to MAWS's fixture, and what a channel costs.
-- [ ] M8 — The lead, and whose words a post is.
+- [ ] M8 — The lead, and whose words a post is. (Built `92382f49`; gates GREEN; sminos-idle 32,801; sminos-channels 3m17s; in review.)
 - [ ] M9 — What reads a session's exchanges reads a channel's.
 - [ ] The review of M1 to M9 as one range (the holder's), and its fixes.
 - [ ] M10 — What sessions are taught, and its evaluation.
@@ -3862,6 +3862,27 @@ them today.
   and B2 stays unproved until then. *The bench (open point 7):* accepted,
   the index of statements not promoted; the figures (Surprises) and what
   would promote it are a TECH-DEBT row.
+- 2026-11-22 — **M8 as built** (`92382f49`). Decisions the executor made
+  where the plan is silent, kept by the controller:
+  - A lead named by a name the channel's roster answers is found through
+    `reach_in`, from any directory; any other name through `_target`: one
+    no one answers exits 4, and a thread with no row in the roster exits 1
+    (`LEAD_NOT_IN`).
+  - `is_lead` is stricter than §5's list: an event with `to`, or with no
+    `thread` key, is not a lead event; it is ignored and clears nothing.
+  - The verb is refused on a machine whose name no reader would honour a
+    lead under, as `say --notice` is.
+  - The stream is chosen twice: before the prompt, so its refusal comes
+    first, and again at the append; only when the second choice gives an
+    audience is the plain clearing event written first. If the clearing
+    event lands and the stream's append fails, the refusal says the
+    channel has no lead now; a queued append prints the waiting line.
+  - A private lead outside its audience is proved on a copy of the store
+    without the stream writer's file (no lead read) and on the raw upload
+    a link sends, since the stand-in relays every upload alike. Step 8 of
+    the speaking scene runs S as a background job with no bridge, so the
+    person's words go to a supervisor stand-in; the bridge's key is proved
+    in Python, and a `peer` word's frame from `human` in the `Post` tests.
 
 
 ## Outcomes & Retrospective
