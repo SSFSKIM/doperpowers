@@ -1068,6 +1068,32 @@ class Asks(Requests, T1.Sessions):
         sminos.forget_caches()
         self.assertFalse(link.may_leave(c), "a person's message still queued here")
 
+    def test_a_lead_written_here_not_taken_keeps_the_channel_and_brings_it_back(self):
+        """CH2's M8, review round 1: a lead (and a clearing one) is written on a machine with no member as readily
+        as a person's message: unsent counts it, so a followed channel stays open, or comes back, until it went
+        up, plain or under a stream, and when it waits in the queue."""
+        self.human()
+        link = self.link()
+        c = self.chan(DESK)
+        human = "%s/human" % sminos.host_name()
+        taken = {}
+        for writer, fields in ((human, {"thread": None}), (human + "~" + "0" * 16, {"thread": S1, "session": S1})):
+            with self.subTest(writer=writer):
+                e = sminos.log_append(c, writer, "channel-lead", **fields)
+                sminos.forget_caches()
+                self.assertTrue(channels.unsent(c))
+                self.assertFalse(link.may_leave(c), "a lead written here, not taken by the upstream")
+                taken[writer] = e["seq"]
+                hublog.HubLog(c, link.cred).write_taken({"taken": dict(taken)})
+                sminos.forget_caches()
+                self.assertFalse(channels.unsent(c), "gone up")
+        os.makedirs(os.path.join(c.home, sminos.QUEUED), exist_ok=True)
+        with open(sminos.queued_path(c, human), "w") as f:
+            f.write(json.dumps({"ts": sminos.now(ms=True), "writer": human, "kind": "channel-lead",
+                                "thread": None}) + "\n")
+        sminos.forget_caches()
+        self.assertTrue(channels.unsent(c), "a clearing event still queued here")
+
     def test_a_machine_whose_name_begins_with_this_ones_holds_no_upload_here(self):
         """Review round 1: unsent counts this machine's writers by the writer's exact machine, as HubLog.own does,
         never by a file name's prefix: `<host>.peer/human` is another machine's, and keeps no log open here."""

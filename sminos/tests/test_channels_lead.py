@@ -14,7 +14,11 @@ that is never run and whose welcome listed `channels`:
   private, under that writer's audience stream after a plain clearing event
   for one that is, on this machine and for a thread of another machine; the
   raw upload of a private lead, and a less-privileged reader's copy of the
-  log, which reads no lead; `none` clears it.
+  log, which reads no lead; `none` clears it. Also: refused inside a
+  session before any migration; a torn row refused before the prompt; a
+  removal, an end or a hand-off while the prompt is read refused, nothing
+  written; a private lead not written behind a reset that waits for its
+  head.
 - Whose lead is in effect (`LeadOf`): the last honoured `channel-lead` by
   merge order, two machines' human writers the later holding; one under a
   session's writer, under `hub/<member>` or carrying `notice` ignored; a
@@ -28,13 +32,17 @@ that is never run and whose welcome listed `channels`:
   frame from `human`; a stopped lead is woken by it; a notice tagged to the
   lead is a machine's notice whatever the word, and the manager's
   classifier does not mark it the owner's; nothing a push of a post leaves
-  under the channel or in the lead's project is a word to a human (B7).
+  under the channel or in the lead's project is a word to a human (B7);
+  another machine's verified post to the lead here arrives on `peer` as a
+  peer's frame.
 - `channel show` and its `--json` with and without a lead (`Show`).
+- The pty driver (`Driver`, pty_answer.py): killed and reaped at its
+  deadline.
 
 Hermetic: test_channels_say's Say (test_wake's Engine, HOME, SMINOS_HOME and
 the engine's state temporary; the engine first on PATH); the typed yes on a
-controlling pty of the CLI's own (pty.fork), as test_visibility drives
-`confirmed`; the uplink a Link over the store whose lanes keep what they are
+controlling pty of the CLI's own (pty_answer.py, the driver the shell
+suites share), as test_visibility drives `confirmed`; the uplink a Link over the store whose lanes keep what they are
 sent, as test_channels_wire's Messages drives one.
 Run: python3 -B sminos/tests/test_channels_lead.py
 """
@@ -43,8 +51,6 @@ runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devclo
 import glob
 import json
 import os
-import pty
-import select
 import shutil
 import subprocess
 import sys
@@ -57,6 +63,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
 import endpoint_standin  # noqa: E402
+import pty_answer  # noqa: E402
 import test_threads as T1  # noqa: E402
 from test_channels_life import DESK, HUB  # noqa: E402
 from test_channels_say import APP, FOREIGN, Say  # noqa: E402
@@ -101,36 +108,14 @@ class Lead(Say):
     def env(self):
         return {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
 
-    def tty(self, answer, *argv, cwd=None):
+    def tty(self, answer, *argv, cwd=None, meanwhile=None):
         """The CLI on a controlling pty of its own, a person typing `answer` at its prompt (none typed when no
-        prompt comes): (exit code, what it printed, whether it prompted)."""
-        env = self.env()
-        pid, fd = pty.fork()
-        if pid == 0:
-            try:
-                os.chdir(cwd or self.root)
-                os.execve(sys.executable, [sys.executable, "-B", os.path.join(SCRIPTS, "sminos.py"), *argv], env)
-            finally:
-                os._exit(127)
-        out, sent, end = b"", False, time.monotonic() + 60
-        while time.monotonic() < end:
-            ready, _, _ = select.select([fd], [], [], 1)
-            if not ready:
-                continue
-            try:
-                chunk = os.read(fd, 4096)
-            except OSError:
-                break
-            if not chunk:
-                break
-            out += chunk
-            if not sent and b"[y/N]" in out:
-                os.write(fd, answer.encode() + b"\n")
-                sent = True
-        _, status = os.waitpid(pid, 0)
-        os.close(fd)
+        prompt comes; `meanwhile()` run while the prompt is shown): (exit code, what it printed, whether it
+        prompted). A child that does not end in time is killed, its code None."""
+        got = pty_answer.run([sys.executable, "-B", os.path.join(SCRIPTS, "sminos.py"), *argv], answer,
+                             cwd=cwd or self.root, env=self.env(), meanwhile=meanwhile)
         sminos.forget_caches()
-        return os.waitstatus_to_exitcode(status), out.decode("utf-8", "replace").replace("\r\n", "\n"), sent
+        return got
 
     def alone(self, *argv, cwd=None):
         """The CLI with no controlling terminal (a new session: /dev/tty opens nothing)."""
@@ -332,6 +317,84 @@ class Verb(Lead):
         self.refused((code, out), "the lead reader#%s" % rsid[:8], 1, before)
         self.assertFalse(asked)
 
+    def test_inside_a_session_it_is_refused_before_any_migration(self):
+        """Review round 1: the refusal comes in the launcher's dispatch, before migrate (which can wait on a lock
+        and rewrite records)."""
+        rtid, rsid, _ = self.live("reader")
+        with mock.patch.object(sminos, "migrate", side_effect=AssertionError("migrated")):
+            code, out = self.as_session(rsid, "channel", "lead", "desk", "reader")
+        self.assertEqual(code, 1, out)
+        self.assertIn(channels.LEAD_IN_SESSION, out)
+
+    def test_a_private_lead_waits_for_its_plain_clearing_event_to_land(self):
+        """Review round 1: a writer waits for its head on its own (sminos.waits_for_head is per writer), so where
+        the plain clearing event is queued the private event is not written ahead of it: refused, saying the
+        clearing event is queued and the lead unchanged until it goes up."""
+        self.au.keep_capabilities(["channels", "access"])
+        rtid, rsid, _ = self.live("reader")
+        self.private(rsid)
+        plain = sminos.writer_id()
+        # A new enrolment, whose first `have` named a head upstream for the plain writer and none for the stream:
+        # the plain writer waits for its head, the stream does not.
+        sminos.mark_enrolled(sminos.host_name(), "2026-11-10T00:00:00.000Z")
+        sminos.keep_headed(self.chan(DESK), [plain])
+        sminos.forget_caches()
+        self.assertTrue(sminos.waits_for_head(self.chan(DESK), plain))
+        code, out, asked = self.tty("y", "channel", "lead", "desk", "reader")
+        self.assertEqual(code, 1, out)
+        self.assertIn("its clearing event waits for this machine's head", out)
+        self.assertNotIn("leads desk", out)
+        self.assertEqual(self.leads(), [], "nothing in the log: the private event was not written ahead of it")
+        queued = [e for path in glob.glob(os.path.join(self.chan(DESK).home, sminos.QUEUED, "*.jsonl"))
+                  for e in sminos.queued_events(path)]
+        self.assertEqual([(e["kind"], e.get("thread")) for e in queued], [("channel-lead", None)], "only the reset")
+
+    def test_a_thread_that_leaves_or_ends_while_the_prompt_is_read_is_not_named(self):
+        """Review round 1: after the answer the chosen thread is read again by its id, its row and its current
+        session; a change refuses, asking for a run again, and the alias is not resolved again."""
+        rtid, rsid, _ = self.live("reader")
+        before = self.logs()
+        code, out, asked = self.tty("y", "channel", "lead", "desk", "reader",
+                                    meanwhile=lambda: self.removed(rtid, rsid))
+        self.assertTrue(asked)
+        self.assertEqual(code, 1, out)
+        self.assertIn("reader#%s changed while you answered" % rsid[:8], out)
+        self.assertNotIn("leads desk", out)
+        self.assertEqual(self.leads(), [])
+        del before
+
+    def test_a_hand_off_while_the_prompt_is_read_is_not_named_under_the_old_session(self):
+        tid, old, oproc, _ = self.live_member("reader")
+
+        def hand_off():
+            job, jproc = T1.Sessions.job(self, old)
+            self.inbox(job, jproc, "j")
+            self.reconcile()
+            self.end(oproc)
+            self.reconcile()
+        code, out, asked = self.tty("y", "channel", "lead", "desk", "reader", meanwhile=hand_off)
+        self.assertTrue(asked)
+        self.assertEqual(code, 1, out)
+        self.assertIn("changed while you answered", out)
+        self.assertEqual(self.leads(), [], "no event under the predecessor's session")
+
+    def test_a_torn_row_is_refused_before_the_prompt(self):
+        """Review round 1: a row whose stamp and statement name two threads is addressed as no thread
+        (thread_of_row None), as M4 refuses it for a tag."""
+        torn_sid = str(uuidlib.uuid4())
+        w = "%s/%s" % (FAR, torn_sid)
+        sminos.log_append(self.app, w, "joined", session=torn_sid, alias="torn", name_source="user", machine=FAR,
+                          cwd="/w", worktree="", role="", seat="", by="", session_kind="interactive",
+                          thread=str(uuidlib.uuid4()))
+        sminos.log_append(self.app, w, "state", session=torn_sid, state="idle", machine=FAR)
+        sminos.log_append(self.app, w, "channels", session=torn_sid, thread=str(uuidlib.uuid4()),
+                          op=os.urandom(8).hex(), channels=[DESK])
+        sminos.forget_caches()
+        before = self.logs()
+        code, out, asked = self.tty("y", "channel", "lead", "desk", "torn")
+        self.assertFalse(asked, "refused before the prompt")
+        self.refused((code, out), "torn#%s: its membership of desk names two threads" % torn_sid[:8], 4, before)
+
     def reader_without(self, writer):
         """lead_of over a copy of this machine's store whose channel's log lacks the stream writer's file: what a
         machine outside that audience holds (the hub never sends it the stream). The alias it reads, or None."""
@@ -394,7 +457,9 @@ class LeadOf(Lead):
         self.lead_event(atid, asid)
         self.assertEqual(self.lead_now(), "alder")
         self.lead_event(None, None, writer="%s/human~%s" % (FAR, "0" * 16))
-        self.assertIsNone(self.lead_now(), "a clearing event under a stream of a machine's human writer")
+        self.assertEqual(self.lead_now(), "alder", "a clearing event is plain: one under a stream clears nothing")
+        self.lead_event(None, None, writer="%s/human" % FAR)
+        self.assertIsNone(self.lead_now(), "a plain one does")
 
     def test_a_lead_not_in_effect_leaves_no_lead_and_an_earlier_lead_never_comes_back(self):
         atid, asid, _ = self.live("alder")
@@ -568,6 +633,25 @@ class Post(Lead):
         self.assertEqual(keys, [], "the bridge handed nothing")
         self.no_word_to_a_human(rtid, rsid)
 
+    def test_another_machines_verified_post_to_the_lead_here_arrives_on_peer_as_a_peers_frame(self):
+        """Review round 1: the remote writer's seam. The post was written at a terminal of another machine whose
+        lead this thread is: here it is an import, verified, with no receipt, and the endpoint's word for another
+        machine's human writer is `peer`."""
+        rtid, rsid, received = self.live("reader")
+        keys = self.bridge()
+        time.sleep(0.002)
+        e = sminos.log_append(self.chan(DESK), "%s/human" % FAR, "human", **{
+            "from": "human", "to": [{"session": rsid, "alias": "reader", "thread": rtid}], "text": "from beta's owner",
+            "verified": {"signer": {"kind": "machine", "keyId": "key-beta"}}})
+        sminos.forget_caches()
+        self.assertFalse(channels.appended_here(self.chan(DESK), e), "an import, no receipt here")
+        self.worded(self.link(), "peer", "from beta's owner")
+        [frame] = self.got(received, "from beta's owner")
+        self.assertIn("from human", frame)
+        self.assertNotIn("To reply", frame)
+        self.assertEqual(keys, [], "the bridge handed nothing")
+        self.no_word_to_a_human(rtid, rsid)
+
     def test_a_stopped_lead_is_woken_by_the_post(self):
         tid, sid = self.stopped()
         self.lead_event(tid, sid)
@@ -616,6 +700,24 @@ class Show(Lead):
         self.removed(rtid, rsid)
         code, out = self.at_terminal("channel", "show", "desk", "--json")
         self.assertNotIn("lead", json.loads(out), "a lead not in effect is none")
+
+
+
+# ------------------------------------------------------------ the pty driver
+
+
+class Driver(unittest.TestCase):
+    def test_a_command_that_never_prompts_or_never_ends_is_killed_and_reaped_at_the_deadline(self):
+        """Review round 1: a prompt regression fails its test instead of hanging the gate."""
+        for argv in (["sleep", "30"], [sys.executable, "-c", "import time; print('[y/N] '); time.sleep(30)"]):
+            with self.subTest(argv=argv[0]):
+                at = time.monotonic()
+                code, out, _ = pty_answer.run(argv, "y", deadline=1)
+                self.assertIsNone(code)
+                self.assertLess(time.monotonic() - at, 10)
+        code, out, prompted = pty_answer.run([sys.executable, "-c", "print(input('Go? [y/N] '))"], "y")
+        self.assertEqual((code, prompted), (0, True))
+        self.assertIn("Go? [y/N] y", out)
 
 
 if __name__ == "__main__":

@@ -2460,6 +2460,11 @@ LEADS = "%s leads %s"
 LEAD_ELSEWHERE = "(on %s: a message you type here reaches it as a peer's, not as its human's words)"
 LEAD_PRIVATE = "(private: only machines that may read it see that it leads)"
 NO_LEAD = "%s has no lead"
+LEAD_TORN = "%s: its membership of %s names two threads (its stamp and its statement disagree): nothing was written"
+LEAD_CHANGED = ("%s changed while you answered (it left %s, ended, or went on in another session): nothing was written. "
+                "Run it again")
+LEAD_WAITS = ("the lead of %s was not written: its clearing event waits for this machine's head after its enrolment, "
+              "and goes first: the lead stays as it was until it goes up, and is none after. Run it again then")
 LEAD_UNMARKED = "this machine's name (%s) is no machine name a reader honours a lead under: nothing was written"
 
 
@@ -2468,7 +2473,8 @@ def is_lead(e):
     its plain writer `<machine>/human` with a machine's name by the notice's
     grammar (sminos.NOTICE_MACHINE_RE, never `hub` or `legacy`), an audience
     stream of it included; no `notice` and no `to`; and `thread` a non-empty
-    string with a non-empty string `session`, or None with no `session`."""
+    string with a non-empty string `session`, or None with no `session`
+    under the plain writer (a clearing event is plain, C2)."""
     if not isinstance(e, dict) or e.get("kind") != "channel-lead" or "thread" not in e or "notice" in e or "to" in e:
         return False
     machine, _, last = sminos.writer_base(str(e.get("writer") or "")).rpartition("/")
@@ -2476,7 +2482,7 @@ def is_lead(e):
         return False
     thread = e.get("thread")
     if thread is None:
-        return "session" not in e
+        return "session" not in e and not sminos.is_stream(e["writer"])   # a clearing event is plain (C2)
     return isinstance(thread, str) and bool(thread) and isinstance(e.get("session"), str) and bool(e["session"])
 
 
@@ -2568,12 +2574,23 @@ def lead(q, name):
         prompt = LEAD_CLEAR_PROMPT % channel.name
     else:
         row = _lead_row(channel, name)
-        thread, session = thread_of_row(*row)
+        got = thread_of_row(*row)
+        if got is None:   # a torn row is addressed as no thread (M4 refuses it for a tag)
+            sminos.die(LEAD_TORN % (_label(row[1].alias, row[1].session), channel.name), sminos.EXIT_UNKNOWN)
+        thread, session = got
         label = _label(row[1].alias, session)
         _lead_choice(channel, session, row[1].alias, label)
         prompt = LEAD_PROMPT % (label, channel.name, channel.name)
     if not sminos.sibling_module("sminos_visibility").confirmed("", None, prompt=prompt, none=LEAD_NO_TERMINAL):
         sminos.die(NOT_CONFIRMED, 1)
+    if row is not None:
+        # The person may have taken a while: the thread chosen is read again by its id (its row in the roster and
+        # the session that row holds); a change refuses, and the name is not resolved again.
+        sminos.forget_caches()
+        row = next(((p, m) for p, m in roster(channel) if (got := thread_of_row(p, m)) is not None
+                    and got[0] == thread), None)
+        if row is None or thread_of_row(*row)[1] != session:
+            sminos.die(LEAD_CHANGED % (label, channel.name), 1)
     cleared = False
     try:
         if row is None:
@@ -2582,7 +2599,11 @@ def lead(q, name):
             # Chosen again at the append: the person may have taken a while at the prompt.
             stream, audience = _lead_choice(channel, session, row[1].alias, label)
             if audience is not None:
-                cleared = sminos.log_append(channel, writer, "channel-lead", thread=None) is not None
+                # The private event goes only behind a plain clearing event that has landed: a writer waits for its
+                # head on its own, so one queued would let the private event go up first.
+                if sminos.log_append(channel, writer, "channel-lead", thread=None)["seq"] is None:
+                    sminos.die(LEAD_WAITS % channel.name, 1)
+                cleared = True
             sminos.keep_stream(channel, stream, audience)
             e = sminos.log_append(channel, stream, "channel-lead", thread=thread, session=session)
     except (OSError, sminos.audience_module().StreamUnknown) as err:
@@ -3145,9 +3166,14 @@ def _drop(path):
         pass
 
 
+UNSENT_KINDS = sminos.CHAT_KINDS + ("channel-lead",)   # what keeps a channel's log open until it has gone up
+
+
 def unsent(channel):
     """Whether this machine's writers hold in the channel's log a message (a
-    `say` or a `human`) the upstream has not taken (past the channel's
+    `say` or a `human`) or a lead (`channel-lead`, a clearing one included:
+    CH2's M8, which a machine with no member writes too) the upstream has
+    not taken (past the channel's
     `uplink-taken.json`, as `daemon owed` counts `upload`), or a queued one
     (`queued`): while either holds, a followed channel does not leave this
     machine, and one that left comes back (sminos_uplink.Link.may_leave),
@@ -3157,7 +3183,7 @@ def unsent(channel):
     another machine's). A file it cannot read keeps the channel too."""
     hublog = sminos.sibling_module("sminos_hublog")
     for path in glob.glob(os.path.join(glob.escape(channel.home), sminos.QUEUED, "*.jsonl")):
-        if any(e.get("kind") in sminos.CHAT_KINDS for e in sminos.queued_events(path)):
+        if any(e.get("kind") in UNSENT_KINDS for e in sminos.queued_events(path)):
             return True
     try:
         with open(os.path.join(channel.home, hublog.TAKEN_FILE), encoding="utf-8") as f:
@@ -3184,7 +3210,7 @@ def unsent(channel):
         path = os.path.join(log_dir, name)
         writer, last, _ = hublog.writer_and_last(path)
         if writer and writer.startswith(machine + "/") and last > taken.get(writer, 0) \
-                and any(e["seq"] > taken.get(writer, 0) and e["kind"] in sminos.CHAT_KINDS
+                and any(e["seq"] > taken.get(writer, 0) and e["kind"] in UNSENT_KINDS
                         for e in hublog.read_events(path)):
             return True
     return False

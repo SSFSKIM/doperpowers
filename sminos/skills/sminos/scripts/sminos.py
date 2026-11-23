@@ -20983,6 +20983,9 @@ def main(argv=None):
         # anything, the task's read included, as `say --notice` is; over `devcloud vm ssh` no session runs it.
         die("spawn: --asked-from is the form another machine's sminos calls over devcloud vm ssh, and a session is "
             "not one: drop it (sminos spawn --on <vm> opens a session on another machine)")
+    if a.cmd == "channel" and a.channel_op == "lead" and os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        # The owner's act alone (CH2's M8): refused inside a session before anything is read or migrated.
+        die(channels_module().LEAD_IN_SESSION, 1)
     stdin_body(a)
     migrate()
     HINTS["on"] = a.cmd in READING_VERBS

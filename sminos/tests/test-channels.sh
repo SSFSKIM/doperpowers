@@ -378,32 +378,9 @@ assert_rc 0 "$RC" "the plain tag still reaches the thread"
 assert_contains "$OUT" "in app" "in its own project"
 
 echo "the lead (CH2's M8):"
-at_tty() { # answer command... — OUT and RC of the command on a controlling pty of its own, the answer typed at its prompt
-  set +e
-  OUT="$(python3 - "$@" <<'PY'
-import os, pty, select, sys, time
-answer, argv = sys.argv[1], sys.argv[2:]
-pid, fd = pty.fork()
-if pid == 0:
-    os.execvp(argv[0], argv)
-out, sent, end = b"", False, time.monotonic() + 60
-while time.monotonic() < end:
-    if not select.select([fd], [], [], 1)[0]:
-        continue
-    try:
-        chunk = os.read(fd, 4096)
-    except OSError:
-        break
-    if not chunk:
-        break
-    out += chunk
-    if not sent and b"[y/N]" in out:
-        os.write(fd, answer.encode() + b"\n")
-        sent = True
-sys.stdout.write(out.decode("utf-8", "replace").replace("\r\n", "\n"))
-sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
-PY
-)"; RC=$?; set -e
+at_tty() { # answer command... — OUT and RC of the command on a controlling pty of its own, the answer typed at
+  set +e   # its prompt (pty_answer.py: killed and reaped at its deadline, exit 124)
+  OUT="$(python3 -B "$SCRIPT_DIR/pty_answer.py" "$@" 2>&1)"; RC=$?; set -e
 }
 no_tty() { # command... — OUT and RC of the command with no controlling terminal (a new session)
   set +e

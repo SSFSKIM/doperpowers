@@ -648,37 +648,14 @@ PY
 }
 
 tty_cmd() { # label dir answer args... — sminos run there on a controlling pty of its own, the answer typed at its
-  local label=$1 dir=$2 answer=$3   # prompt: OUT and RC; printed with --show
-  shift 3
+  local label=$1 dir=$2 answer=$3 line   # prompt (pty_answer.py: killed and reaped at its deadline, exit 124): OUT
+  shift 3                                # and RC; printed with --show
   set +e
-  OUT="$(cd "$dir" && python3 - "$answer" "$SMINOS" "$@" <<'PY'
-import os, pty, select, sys, time
-answer, argv = sys.argv[1], sys.argv[2:]
-pid, fd = pty.fork()
-if pid == 0:
-    os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
-    os.execvp(argv[0], argv)
-out, sent, end = b"", False, time.monotonic() + 60
-while time.monotonic() < end:
-    if not select.select([fd], [], [], 1)[0]:
-        continue
-    try:
-        chunk = os.read(fd, 4096)
-    except OSError:
-        break
-    if not chunk:
-        break
-    out += chunk
-    if not sent and b"[y/N]" in out:
-        os.write(fd, answer.encode() + b"\n")
-        sent = True
-sys.stdout.write(out.decode("utf-8", "replace").replace("\r\n", "\n"))
-sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
-PY
-)"; RC=$?; set -e
+  OUT="$(cd "$dir" && env -u CLAUDE_CODE_SESSION_ID python3 -B "$SCRIPT_DIR/pty_answer.py" "$answer" "$SMINOS" "$@" 2>&1)"
+  RC=$?; set -e
   if [ "$SHOW" = 1 ]; then
     printf '\n  [%s] $ sminos %s   (typed: %s)\n' "$label" "$*" "$answer"
-    [ -n "$OUT" ] && sed 's/^/    /' <<<"$OUT"
+    while IFS= read -r line; do printf '    %s\n' "$line"; done <<<"$OUT"
     printf '    (exit %s)\n' "$RC"
   fi
 }
