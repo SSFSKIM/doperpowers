@@ -827,6 +827,20 @@ class OpenEntry(Channel, T1.LateHandOff):
         self.assertEqual(self.got(jreceived, "to the absorbed"), [], "owed to no one")
         self.assertEqual(self.settled(tid, W1), mine["seq"])
 
+    def test_no_owing_for_a_thread_whose_session_is_another_threads_now(self):
+        old, job, tid, theirs = self.late()
+        self.add(theirs, job, DESK)
+        self.message((job, theirs), text="to the absorbed")
+        with self.elsewhere() as there:
+            row = (self.p, next(m for m in sminos.view_of(there).members if m.session == job))
+        with self.kill_after_begin(), self.assertRaises(Killed):
+            self.reconcile()
+        sminos.forget_caches()
+        t = threads.get(theirs)
+        self.assertEqual((t["current"], t.get("pending")), (job, None), "its own file names the session, no entry")
+        self.assertEqual(threads.current_record(job, fresh=True)["thread"], tid, "the session is the absorber's now")
+        self.assertIsNone(channels.owing(self.chan(DESK), t, row))
+
     def test_a_pass_chosen_for_the_provisional_thread_and_let_go_after_the_begin_pushes_nothing(self):
         old, job, tid, theirs = self.late()
         self.add(theirs, job, DESK)

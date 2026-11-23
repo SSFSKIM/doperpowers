@@ -2762,10 +2762,16 @@ def owing(channel, record, row):
     looks no row up: `row` is (the thread's own project, its Member there),
     given by the caller, and None for it is None. None also while the
     record holds an open journal entry (`pending`, whatever its operation:
-    its current session is not settled yet) and while the session's record
-    defers (_session_read)."""
+    its current session is not settled yet), while the session's current
+    record, read afresh, is not this thread's or holds an open entry (an
+    absorption's `begin`, before the record it absorbs is reserved), as
+    still_owed reads it, and while the session's record defers
+    (_session_read)."""
     d = debt(channel, record)
     if d is None or row is None or record.get("pending"):
+        return None
+    now = sminos.threads_module().current_record(d.session, fresh=True)
+    if now is None or now["thread"] != d.thread or now.get("pending"):
         return None
     defers, token = _session_read(d.session)
     if defers:
