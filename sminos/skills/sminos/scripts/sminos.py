@@ -2954,8 +2954,9 @@ def moving_elsewhere(session):
 
 
 def known_project(pid):
-    """A project registered here (its project.json), by id, or None."""
-    return _registered_as(pid, registration(pid))
+    """A project registered here (its project.json), by id, or None. An id that
+    is no name reads no path built from it."""
+    return _registered_as(pid, registration(pid)) if valid_name(pid) else None
 
 
 def _registered_as(pid, d):
@@ -19924,8 +19925,8 @@ def _roster_channel_exchanges(rows, context, until=None):
     _roster_channels), where two members' exchange leaves no copy in any project. There "mine" is by thread: a
     message whose `thread` is the session's thread, or an entry of whose `to` names it. A peer met there is
     keyed by its thread, (ROSTER_THREAD, thread), whatever session or channel it was met in, `session` the one
-    the latest exchange named; a message from outside a channel carries `from_project`, its sender's own
-    project, as one from another project does. No new unit of work starts once `until` has passed: before the
+    the latest exchange named; a message from outside a channel is its author's thread's too where it names
+    one, else keyed by `from_project`, its sender's own project, as one from another project is. No new unit of work starts once `until` has passed: before the
     registrations are read, between the logs replayed for statements, between channels. Answers whether the
     thread holds a channel now as its statements say (the latest that took effect names one): what decides,
     for resolve_tag, whether a bare alias is matched in shared rosters too; True when they could not all be
@@ -19969,7 +19970,9 @@ def _roster_channel_exchanges(rows, context, until=None):
             elif sender and any(r["thread"] == thread for r in named_to):
                 seen.add(ref)
                 outside = str(e.get("from_project") or "")
-                key = (outside, sender) if outside else (ROSTER_THREAD, by) if by else (c.id, sender)
+                # Its author's thread when the post names one, wherever it came from: the session it was written
+                # from may be another thread's since.
+                key = (ROSTER_THREAD, by) if by else (outside, sender) if outside else (c.id, sender)
                 _roster_note(rows, key, "in", e["ts"], str(e.get("from") or ""), sender)
     return holds
 
@@ -20061,7 +20064,7 @@ def _roster_thread_index(index, until=None):
     """Fills the roster's one thread index ({"read": {project dir names}, "rows": {thread: [(project, session,
     row, projection)]}, "complete": bool}) from the projections of every project known here, read-only (no
     view, no reconciliation: the guide must not write), a project at a time, in the directory's order, none
-    started once `until` has passed. A row the log shows unlisted to this reader is none. Whether every
+    started, read or projected once `until` has passed. A row the log shows unlisted to this reader is none. Whether every
     project has been read: a thread's row is never chosen from a part of them."""
     if index["complete"]:
         return True
@@ -20074,15 +20077,19 @@ def _roster_thread_index(index, until=None):
             continue
         if _roster_past(until):
             return False
-        index["read"].add(name)
         p = known_project(name)
-        if p is None:
-            continue
-        info = _projection(log_read(p))
-        for sid, r in info.items():
-            t = info_thread(r)
-            if t and not unlisted_here(sid, r):
-                index["rows"].setdefault(t, []).append((p, sid, r, info))
+        if p is not None:
+            if _roster_past(until):
+                return False
+            events = log_read(p)
+            if _roster_past(until):
+                return False
+            info = _projection(events)
+            for sid, r in info.items():
+                t = info_thread(r)
+                if t and not unlisted_here(sid, r):
+                    index["rows"].setdefault(t, []).append((p, sid, r, info))
+        index["read"].add(name)
     index["complete"] = True
     return True
 
@@ -20103,6 +20110,8 @@ def _roster_thread_row(thread, all_seats, index, until=None):
     for p, sid, r, info in index["rows"].get(thread, []):
         latest = (r or {}).get("latest") or {}
         if latest.get("kind") == "joined" or (latest.get("kind") == "retired" and latest.get("reason") in END_REASONS):
+            if _roster_past(until):
+                return None, False
             found.append(((p, sid, r, info), _member(sid, r, seats_by_session(p, all_seats).get(sid), None, False,
                                                      True, info)))
     live = [x for x in found if ((x[0][2] or {}).get("latest") or {}).get("kind") == "joined" and not has_ended(x[1])]
@@ -20202,7 +20211,10 @@ def roster_text(session, launch):
                 continue
             pkey = (now[0].id, now[1].session) if now else key
             if pkey in peers:   # two sessions of one member
-                peers[pkey]["keys"].append(key)
+                held = peers[pkey]
+                held["keys"].append(key)
+                if thread and not held["thread"]:   # what merge_threads merges a project's stale row into
+                    held["thread"], held["complete"] = thread, complete
                 continue
             peers[pkey] = {"now": now, "keys": [key], "thread": thread, "complete": complete}
             added += 1
