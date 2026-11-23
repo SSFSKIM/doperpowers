@@ -1890,6 +1890,22 @@ def _entry_of(channel, p, m):
     return {"session": got[1], "alias": m.alias, "thread": got[0]}
 
 
+def _sender_now(channel, session):
+    """(the sender's stamp, whether it is in `channel`), both from one fresh
+    reading of the stores (thread_of, as stamp reads it): the stamp its
+    thread's id where it is that thread's current session ("" otherwise),
+    and membership the channel in the set of that same record, read as
+    channels_of reads one (current_record: not ended, not reserved), never
+    through the invocation's index, which a sweep may have warmed before
+    another process changed the record."""
+    threads = sminos.threads_module()
+    t = threads.thread_of(session, ended=False) if session else None
+    if t is None or t["current"] != session:
+        return "", False
+    held = not threads.record_ended(t) and not threads.reservation(t) and channel.id in threads.held_set(t)
+    return t["thread"], held
+
+
 def speak(channel, a, session, tags):
     """The door (§2): a say that names a channel, by `--in` or by a tag's
     qualifier, from a session or a person at a terminal (`session` ""). It
@@ -1903,7 +1919,7 @@ def speak(channel, a, session, tags):
     the recipients (reach_in, `@all` the roster's live rows but the sender's,
     each entry's thread and session from one reading of its row); and who
     writes: a member, a person at a terminal and a machine's notice as a
-    member; a session that is no member (channels_of, read once, here, from
+    member; a session that is no member (_sender_now, read once, here, from
     its own machine's record) with its project in `from_project`, its copy
     where record_copy keeps one, and one line; its post into the channel
     refused (NO_HOME) when its project cannot be told, never written as a
@@ -2031,9 +2047,9 @@ def speak(channel, a, session, tags):
         if leader is not None and (r := _entry_of(channel, *leader)) is not None:
             recipients, rows, raws = [r], {r["thread"]: leader}, [[]]
     # The sender's stamp and its membership, both read after every sweep of the rosters above (any can make a live
-    # sender a thread, or finish a hand-off that makes it a member's), so the two are of one reading.
-    thread = threads.stamp(session) if session else ""
-    outsider = bool(session) and channel.id not in channels_of(session)
+    # sender a thread, or finish a hand-off that makes it a member's), from one record (_sender_now).
+    thread, member = _sender_now(channel, session)
+    outsider = bool(session) and not member
     if outsider and home is None:
         # No project to name in `from_project`, to keep its copy in, or for a reply to reach: a session that is no
         # member is never written into the channel as one for want of a project (the direct route above, a

@@ -347,6 +347,33 @@ class Member(Say):
         self.assertEqual([x for x in self.project_says() if x not in before and x[1].get("copy")], [], "no copy")
         self.assertEqual(len(self.got(received, "from the successor")), 1)
 
+    def test_a_membership_staged_after_the_sweep_warmed_the_index_is_read_with_the_stamp_from_one_record(self):
+        """The sweep warms this invocation's index of the live records; another process then adds the sender to
+        the channel. The stamp reads the stores as they are: so must the membership, from the same record, or a
+        member's thread is written with an outsider's `from_project`, its line and its copy."""
+        atid, asid, areceived = self.live("ann")
+        otid, osid, _ = self.outsider()
+        real = channels.roster
+
+        def roster_then_added(channel):
+            got = real(channel)
+            self.assertEqual(channels.channels_of(osid), ())   # the index, warmed by this invocation
+            stale, gen = list(threads._LIVE), sminos._GENERATION[0]
+            self.assertTrue(stale, "kept")
+            self.assertEqual(channels.change(otid, DESK, "add", osid).state, "applied")   # by another process
+            threads._LIVE[:], sminos._GENERATION[0] = stale, gen
+            return got
+        with mock.patch.object(channels, "roster", roster_then_added), \
+                mock.patch.object(threads, "RACY_NS", 0):   # the index kept, as it is once the stores settle
+            code, out = self.as_session(osid, "say", "--in", "desk", "@all a member now", cwd=self.app_root)
+        self.assertEqual(code, 0, out)
+        [e] = self.says()
+        self.assertEqual(e["thread"], otid)
+        self.assertNotIn("from_project", e, "a member's, as its record holds")
+        self.assertNotIn("you are not in desk", out)
+        self.assertEqual([c for _, c in self.project_says(self.app) if c.get("copy")], [], "no copy")
+        self.assertEqual(len(self.got(areceived, "a member now")), 1)
+
     def test_the_reply_line_never_reaches_a_thread_that_came_to_hold_the_senders_old_session(self):
         rtid, rsid, received = self.live("reader")
         stid, old, oproc, sreceived = self.live_member("writer")
