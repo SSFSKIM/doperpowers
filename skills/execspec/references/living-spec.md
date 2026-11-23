@@ -264,25 +264,22 @@ the section says why, and the reason is written against the choice a
 reader with the code in view would otherwise make. An alternative that was
 seriously weighed is named there with why it lost — a clause, not a
 ceremony — and no other. What your human partner settled as a preference
-or a product call is a requirement of the product: state it as one, where
-a derived decision states its reason.
+or a product call is a requirement of the product, and the section states
+it as one, with what it is for, in the place where a derived decision
+states its reason.
 
 ## Keeping the spec current
 
 The spec states the design as it stands. When course changes — a ruling, a
 review finding, a discovery, a gap resolved while building — rewrite every
 section the change touches so the document reads as if it had always said
-this: the rule and its reason. Every executor and reviewer reads the whole
-document, and a superseded statement left standing, or a sentence that
-tells its own history, is one more thing each of them must reconcile. A
-statement about the system's stages — what holds between two releases, what
-a later milestone builds — is design, not history, and stays.
-
-A rule that changes after its code has landed leaves the code behind the
-spec. Say which work brings it in line — a milestone added or amended, a
-Progress item, in a composite the child that owns it — because without
-that the mismatch reads the same as a spec that is wrong about the code,
-and the next writer corrects the spec back.
+this: the rule and its reason. Who ruled, when, in whose words, and what
+the text said before go in the commit message. Every executor and reviewer
+reads the whole document, and a superseded statement left standing, or a
+sentence that tells its own history, is one more thing each of them must
+reconcile. A statement about the system's stages — what holds between two
+releases, what a later milestone builds, what the code on the branch still
+does — is design, not history, and stays.
 
 What is learned while building is written where it bears:
 
@@ -301,9 +298,8 @@ again is answered in the reason of the decision it questioned.
 A decision that code, tests, or another document cites carries an id
 (`C5`, `X8`); a rewrite keeps the id, and a withdrawn id is not reused.
 
-**History is git.** Commit a change of course apart from other work, with a
-message that says what moved and why — your human partner's words quoted
-when they ruled; that message is the only account of the change. The
+**History is git.** Commit a change of course apart from other work; its
+message is the only account of the change. The
 baseline is the commit your human partner approved: the spec's first
 commit, made as the approved design before any review or execution alters
 it, or the commit a Progress line names when approval came later. Read
@@ -317,7 +313,8 @@ Two sections say where the work stands:
 **`## Progress`** — right after the purpose, in the skeleton above: one line
 per unit of work with its state and date, and the events that leave no
 diff — your human partner's approval and any condition on it, a review
-completed. How a unit went is the commit log's.
+completed. A change of course shows here as the work it adds or reopens.
+How a unit went is the commit log's.
 
 **`## Outcomes & Retrospective`** — until finish, exactly the line "Pending —
 written at finish." At finish (after the whole-branch review), summarize

@@ -234,9 +234,7 @@ pasted prior-task history):
   come back, against the spec's intent. A finding that exposes a spec
   statement as wrong is fixed in the spec by you — the statement
   rewritten; you are its one writer — and in the code by the worker; only
-  a fork under the gate goes up. Where the spec names work that will bring
-  the code in line with a changed rule, the code is what is behind and the
-  spec stands.
+  a fork under the gate goes up.
 - Fix messages — to a resumed executor or a fresh fixer — carry the
   executor contract: re-run the covering tests (name them — a one-line
   fix doesn't need the whole suite), report the command and output;

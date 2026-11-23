@@ -124,8 +124,7 @@ first. Your return states the fork, the exact spec text at issue, what you
 tried, and your recommended resolution; the dispatching session answers
 and continues you. A spec that is wrong about the codebase in a way its
 intent still resolves is fixed in place — the statement rewritten — not
-escalated; where the spec names work that will bring the code in line with
-a changed rule, the code is what is behind and the spec stands.
+escalated.
 
 ## Closing
 
