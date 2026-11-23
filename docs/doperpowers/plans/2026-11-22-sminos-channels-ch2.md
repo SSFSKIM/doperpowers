@@ -79,7 +79,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M5 — The scene on a real engine. Run whole against `f775004d` (Claude Code 2.1.330, haiku, a scratch home): all four steps showed what they expect; no fault of M1 to M4, no code changed; the checker found nothing over the stand-in's frames and the store; every process stopped. Step 4's hand-off made as Surprises says.
 - [x] (2026-11-22) M6 — Across machines: asking, and carrying out off the consumer thread. `5af6ab8c`, fixes `e7742001`, `d5b03b63`, `15198aa9`, `52d5241d`; reviewed with M2 to M6 as one range (three reviews on the medium rung, the bound), the third's fix (`52d5241d`) made after it and named to the frontier panel. Gates GREEN on `52d5241d`; sminos-idle 32,216; sminos-channels 3m15s of its 6m timeout.
 - [ ] M7 — Held to MAWS's fixture, and what a channel costs. (Bench `7add7342`, fixes `0d093808`, `aacec34c`, `eaa53afb`; MAWS's fixture at `86c79d0a3` (blob `5aabcdec`) replays whole, 158 lines, `41e7573a`; gates GREEN; sminos-idle 32,230; sminos-channels 3m29s; in its last review.)
-- [ ] M8 — The lead, and whose words a post is. (Built `92382f49`; gates GREEN; sminos-idle 32,801; sminos-channels 3m17s; in review.)
+- [x] (2026-11-22) M8 — The lead, and whose words a post is. `92382f49`, fixes `9e5d57be`, `11e497ea`, `39873d8a`; three task reviews (the bound), the third's fix (`39873d8a`) made after it and named to the frontier panel. Gates GREEN on `39873d8a`; sminos-idle 32,792; sminos-channels 3m10s.
 - [ ] M9 — What reads a session's exchanges reads a channel's.
 - [ ] The review of M1 to M9 as one range (the holder's), and its fixes.
 - [ ] M10 — What sessions are taught, and its evaluation.
@@ -3889,6 +3889,24 @@ them today.
     the speaking scene runs S as a background job with no bridge, so the
     person's words go to a supervisor stand-in; the bridge's key is proved
     in Python, and a `peer` word's frame from `human` in the `Post` tests.
+  - *(As amended by its three reviews, `9e5d57be`, `11e497ea`,
+    `39873d8a`.)* The verb is refused in a session before the launcher's
+    migration. A torn row is refused before the prompt (`LEAD_TORN`, exit
+    4). After the answer the chosen thread is read again by its id, and a
+    removal, an end or a hand-off during the prompt refuses
+    (`LEAD_CHANGED`); the machine's name is read again from its files and
+    must be the one both writers were taken from (`LEAD_RENAMED`). A
+    private lead's plain reset is appended with `_append(queue=False)`,
+    whose one head check under the writer's lock raises `HeadWaits`
+    rather than queue, so the reset never enters the queue and a refusal
+    (`LEAD_WAITS`) writes nothing; a lead that is not private, and
+    `none`, may be queued whole. A rename between the reset and the private
+    append is said as it happened (`LEAD_RESET_ONLY`). `unsent` counts a
+    `channel-lead`, clears included, so a machine with no member keeps the
+    channel's log open until a lead edit has gone up. A clearing event
+    under an audience stream clears nothing. The suites share one PTY
+    driver (`T/pty_answer.py`), which kills and reaps its child at its
+    deadline and on an error.
 
 
 ## Outcomes & Retrospective
