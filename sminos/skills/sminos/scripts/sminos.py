@@ -19862,8 +19862,9 @@ def _roster_exchanges(session, projects, until=None):
 
     Then the logs of the channels the session's thread's own statements in
     those projects named, those it has left included (_roster_channels, each
-    read only while `until` has not passed), where two members' exchange leaves no copy in any
-    project (CH2's M9): there "mine" is by thread, a message whose `thread`
+    read only while `until` has not passed), where two members' exchange
+    leaves no copy in any project (CH2's M9): there "mine" is by thread, a
+    message whose `thread`
     is the session's thread or an entry of whose `to` names it, and a peer
     met there is keyed under the channel's id with its `thread`, which
     _roster_peer finds now. A copy whose recipient's project is a channel
