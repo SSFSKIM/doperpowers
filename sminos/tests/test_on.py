@@ -1904,9 +1904,10 @@ class VmSide(On):
         self.assertEqual(sminos.registration(LOBBY)["name"], "its-lobby", "its own registration kept")
         tag = "@%s/%s" % (p.id, self.SPAWNER[:8])
         self.assertIn('boss (%s, in %s on mac; sminos say "%s …" reaches it as it is now; once it has sent you a '
-                      "message, answer by that message's reply line, which follows it if it moves)"
+                      "message, answer by the reply line of its latest message)"
                       % (tag, p.name, tag), launched["task"])
-        self.assertIn('You are being placed in the channel "desk", as your spawner asked: `sminos list %s`' % DESK,
+        self.assertIn('You are being placed in the channel "desk", as your spawner asked: once that is recorded on '
+                      'your machine, `sminos list %s`' % DESK,
                       launched["task"])
         self.assertIn('You are being placed in the channel "its-lobby"', launched["task"], "as this machine knows it")
         self.assertNotIn("seat spawned", "\n".join(lines), "no placement line on the VM side")

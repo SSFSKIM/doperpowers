@@ -435,7 +435,7 @@ assert_equals "$(log_of "$VS" "$DESK")" "" "no request in desk's log on vm1"
 assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["name"])' "$VS/projects/$DESK/project.json")" \
   "desk" "vm1 registered desk under the name sent"
 LAUNCH="$(last_launch)"
-assert_contains "$LAUNCH" "You are being placed in the channel \\\"desk\\\", as your spawner asked: \`sminos list $DESK\`" "the preamble says it by the id"
+assert_contains "$LAUNCH" "You are being placed in the channel \\\"desk\\\", as your spawner asked: once that is recorded on your machine, \`sminos list $DESK\`" "the preamble says it by the id"
 PID_MAC="$(py "$WORK" <<'PY2'
 import sys
 sys.path.insert(0, sys.argv[1])

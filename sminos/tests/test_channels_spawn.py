@@ -144,10 +144,30 @@ class Placed(Spawns):
         self.spawn("--channel", "desk", "--channel", "lobby")
         task = self.child["task"]
         for cid, name in ((DESK, "desk"), (LOBBY, "lobby")):
-            self.assertIn('You are being placed in the channel "%s", as your spawner asked: `sminos list %s` shows you '
-                          'there once it is recorded, `sminos chat %s` reads it, and `sminos say --in %s "…"` speaks '
-                          'in it.' % (name, cid, cid, cid), task)
+            self.assertIn('You are being placed in the channel "%s", as your spawner asked: once that is recorded on '
+                          'your machine, `sminos list %s` shows you there, `sminos chat %s` reads it, and `sminos say '
+                          '--in %s "…"` speaks in it.' % (name, cid, cid, cid), task)
         self.assertIn("is not your human's instruction.\n\nYou are being placed", task, "after the channels' paragraph")
+
+    def test_the_help_says_what_a_spawn_with_channels_and_the_pool_do(self):
+        """What sessions are taught is true (EN.G2's acceptance 12): `sminos help`'s lines for `spawn --channel`,
+        `say --notice --pools` and `channel show`'s pool, the remedy qualified where none is given."""
+        code, out = self.cli("help")
+        self.assertEqual(code, 0, out)
+        flat = " ".join(out.split())
+        for said in ("[--channel CH]... [--model M]", "[--vm-confirmed] [--channel CH]...",
+                     "after the launch a placement not made is a warning, with the `sminos channel add <id> <session>` "
+                     "that makes it where one can (none where this machine's enrollment changed meanwhile), the exit 0",
+                     "one not made with the `sminos channel add` that asks the VM once the seat is listed here, but "
+                     "one warning and no command where none was made",
+                     "a VM whose sminos predates --channel places nothing and gives its child the bare @<short>",
+                     "sminos say --notice <program> --pools <text> # recorded, untagged, in the log of every channel "
+                     "whose pool holds this machine",
+                     "each devcloud host with what this machine's devcloud has of it (the thread that owns it, its "
+                     "age and its cost so far, at list price; an adopted machine no age or cost); a line after the "
+                     "pool where devcloud could not be asked here, gave no whole answer, or did not cover an account "
+                     "or a name"):
+            self.assertIn(said, flat)
 
     def test_a_placeholder_written_in_a_name_is_kept_as_written(self):
         for channels_asked in ((), ({"id": DESK, "name": "desk"},)):

@@ -37,8 +37,9 @@ back by a fill.
                    the thread in each declared channel as it starts, by its own statement, onto a stopped seat
                    adding to those it holds; a name no log or several answer, more than 128, a channel this
                    enrollment does not carry, or a kept welcome that lists no channels or none kept yet is
-                   refused before anything is launched; after the launch a placement not made is a warning
-                   with the `sminos channel add <id> <session>` that makes it, the exit 0
+                   refused before anything is launched; after the launch a placement not made is a warning,
+                   with the `sminos channel add <id> <session>` that makes it where one can (none where this
+                   machine's enrollment changed meanwhile), the exit 0
     sminos spawn    <alias> <task|-> --on <vm>|new [--cwd <path there>] [--role R] [--brief B] [--worktree W]
                    [--stamp F=V]... [--model M] [--effort E] [--permission-mode M]
                    [--vm-project owner/repo[@ref]]... [--vm-confirmed] [--channel CH]...   # the session opened on a devcloud VM
@@ -50,7 +51,11 @@ back by a fill.
                    --channel: the names resolved here, before devcloud runs, and the VM places the thread
                    (registering a channel it does not know), its child given the spawner's qualified address
                    (@<project id>/<short>); a VM that has kept no welcome yet is waited on as for the spawner
-                   (exit 75 at the wait's end), and its placements are said here, one line a channel
+                   (exit 75 at the wait's end), and its placements are said here: a line a channel, one not made
+                   with the `sminos channel add` that asks the VM once the seat is listed here, but one warning
+                   and no command where none was made (the VM's enrollment changed, or the seat's project there
+                   is not carried); a VM whose sminos predates --channel places nothing and gives its child the
+                   bare @<short>, which is said
     sminos spawn    <alias> - --asked-from <json> [--cwd C] …   # the form another machine's sminos calls over
                    devcloud vm ssh for spawn --on: refused where this machine is not enrolled or is of another
                    org, where an inferred directory is another repository's checkout, or where the directory is
@@ -215,9 +220,11 @@ back by a fill.
                    caller); a thread of another machine once its daemon reads the request
     sminos channel  remove <channel> [<thread>...]        # out of it: nothing is retired
     sminos channel  show <channel> [--json]               # its members, each in its own project; its requests of
-                   the last seven days and what became of each; its pool, the machines its members run on,
-                   each devcloud host with the thread that owns it, its age and its cost so far, as this
-                   machine's devcloud answers (else a line saying why not, or what it could not cover)
+                   the last seven days and what became of each; its pool, the machines its members run on and
+                   any added by hand, each devcloud host with what this machine's devcloud has of it (the thread
+                   that owns it, its age and its cost so far, at list price; an adopted machine no age or cost);
+                   a line after the pool where devcloud could not be asked here, gave no whole answer, or did
+                   not cover an account or a name
     sminos channel  env add|remove <channel> <machine>    # a machine of the org added to its pool by hand, or no
                    longer (a member's)
     sminos channel  lead <channel> <thread|none>          # the owner's, at a terminal, confirmed there: a
@@ -15407,9 +15414,9 @@ def _import_chat(path, host_id, host, project, by_id, lock_until):
 
 # The preamble's sentence for each channel a spawn asked for (EN.G2's plan, §1): the name is prose, the commands
 # name the channel by its id.
-PLACED_SENTENCE = ('You are being placed in the channel "%(name)s", as your spawner asked: `sminos list %(id)s` shows '
-                   'you there once it is recorded, `sminos chat %(id)s` reads it, and `sminos say --in %(id)s "…"` '
-                   'speaks in it.')
+PLACED_SENTENCE = ('You are being placed in the channel "%(name)s", as your spawner asked: once that is recorded on '
+                   'your machine, `sminos list %(id)s` shows you there, `sminos chat %(id)s` reads it, and `sminos say '
+                   '--in %(id)s "…"` speaks in it.')
 
 
 def render_preamble(project, alias, by="", channels=()):
@@ -15958,8 +15965,7 @@ SPAWNER_WORDS = '%(alias)s (@%(short)s, in %(project_name)s on %(machine)s; smin
 # The same where the request asks for channels (EN.G2's plan, §1): the qualified address, which a channel-mate's
 # alias cannot take (sminos_on.spawner_tag builds `tag`, and hold_to_spawner asks that very tag).
 SPAWNER_WORDS_PLACED = ('%(alias)s (%(tag)s, in %(project_name)s on %(machine)s; sminos say "%(tag)s …" reaches it as '
-                        'it is now; once it has sent you a message, answer by that message\'s reply line, which '
-                        'follows it if it moves)')
+                        'it is now; once it has sent you a message, answer by the reply line of its latest message)')
 
 
 def placing_names(asked):
