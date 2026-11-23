@@ -573,6 +573,29 @@ class Outsider(Say):
         self.assertEqual(sminos.project_kind(self.project_of(local)), "local")
         return local
 
+    def test_a_local_recipient_private_by_the_copy_keeps_no_copy_in_an_unfiltered_home(self):
+        """A local recipient listed when the say was split and private by the time its copy is weighed: its own
+        record, read at the copy, says so, and no copy is left in a home the hub does not filter (today's
+        warning); the say went through."""
+        self.au.keep_capabilities(["channels", "access"])
+        local = self.loose()
+        rtid, rsid, received = self.live("reader")
+        otid, osid, _ = self.open_here("outside", local)
+        for sid in (rsid, osid):
+            self.heard(sid)
+        real = sminos.record_copy
+
+        def private_then_copy(home, delivered):
+            self.private(rsid)   # after the delivery, before the copy
+            return real(home, delivered)
+        with mock.patch.object(sminos, "record_copy", private_then_copy):
+            code, out = self.as_session(osid, "say", "--in", "desk", "@reader listed when said", cwd=local)
+        self.assertEqual(code, 0, out)
+        self.assertIn("delivered; its copy is not kept in loose: the message is for a private session's audience "
+                      "alone, and loose's log is not filtered by audience", out)
+        self.assertEqual([c for _, c in self.project_says(self.project_of(local)) if c.get("copy")], [], "no copy")
+        self.assertEqual(len(self.got(received, "listed when said")), 1, "delivered")
+
     def test_in_an_unfiltered_home_no_copy_for_a_remote_recipient_whatever_its_word_and_a_projects_as_before(self):
         """A remote recipient's audience is the endpoint's to know, and what is kept of its word can be stale: a
         channel's copy for one is never left in a home the hub does not filter, whatever word is kept for it (none,
