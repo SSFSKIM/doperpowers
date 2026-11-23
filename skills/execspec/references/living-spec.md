@@ -263,10 +263,9 @@ The design sections carry their own reasoning. Where a decision is made,
 the section says why, and the reason is written against the choice a
 reader with the code in view would otherwise make. An alternative that was
 seriously weighed is named there with why it lost — a clause, not a
-ceremony — and no other. What your human partner settled as a preference
-or a product call is a requirement of the product, and the section states
-it as one, with what it is for, in the place where a derived decision
-states its reason.
+ceremony — and no other. A decision that rests on a preference or a
+product call has no derivation to give: the section states it as a
+requirement of the product and says what the requirement is for.
 
 ## Keeping the spec current
 
