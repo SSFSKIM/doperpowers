@@ -1078,10 +1078,17 @@ class Link:
         again by a later pass. A session that stopped while its words were
         asked about, and that this machine now holds (M3: queue_asks drops
         it), is asked nothing more: the event stays owed until a process of it
-        takes it."""
+        takes it. A channel's event of this machine's own writers is asked
+        about only once its position has gone up on this stream (HubLog.sent,
+        as ask_messages asks it first): after a resend rewound it, nothing
+        is asked now, and a later pass asks it again once its upload is on
+        the lane."""
         if self.session_lane.queued() >= UPLOAD_AHEAD:
             return
         e, project = held["event"], held["project"]
+        hl = self.logs.get(project.id) if held.get("channel") else None
+        if hl is not None and hl.own(e["writer"]) and e["seq"] > hl.sent.get(e["writer"], 0):
+            return
         ask = os.urandom(12).hex()
         if held.get("channel"):   # a channel's (CH2's M6): the thread, the session and the reach it was asked for
             whom, session = {"channel": True, "owing": held["owing"]}, held["owing"].session

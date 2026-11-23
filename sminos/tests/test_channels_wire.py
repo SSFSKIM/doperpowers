@@ -2201,6 +2201,34 @@ class Messages(Delivering):
         [up] = [n for n, f in enumerate(sent) if f.get("t") == "events" and f.get("project") == DESK]
         self.assertLess(up, sent.index(ask), "its upload first on the lane")
 
+    def test_the_reach_ask_after_a_peer_word_waits_for_an_own_events_upload_too(self):
+        """The second reading (G7): the `reach?` a `peer` word calls for is gated on the upload position as the
+        first ask is (F17): once a resend rewound it, the event is asked about only after its upload is on the lane
+        again, ahead of the ask."""
+        tid, sid, _ = self.live()
+        own = "%s/human" % sminos.host_name()
+        e = sminos.log_append(self.chan(DESK), own, "human", **{
+            "from": "human", "to": [{"session": sid, "alias": "a", "thread": tid}], "text": "words from here"})
+        sminos.forget_caches()
+        link = self.link()
+        hl = link.logs[DESK]
+        hl.have = {}
+        link.upload(hl)
+        self.ask_pass(link)
+        [words] = self.asks(link)
+        self.assertEqual(words["t"], "words?")
+        hl.on_resend({"t": "resend", "project": DESK, "writer": own, "from": e["seq"]})   # the hub lacks it again
+        self.answer(link, words, "peer")
+        self.assertEqual(self.asks(link, ("reach?",)), [], "no reach? before its event is up again")
+        link.upload(hl)
+        self.ask_pass(link)
+        [again] = [f for f in self.asks(link) if f["id"] != words["id"]]
+        self.answer(link, again, "peer")
+        [reach] = self.asks(link, ("reach?",))
+        sent = link.session_lane.sent
+        last_up = max(n for n, f in enumerate(sent) if f.get("t") == "events" and f.get("project") == DESK)
+        self.assertLess(last_up, sent.index(reach), "its upload again first on the lane")
+
     def test_a_reach_ask_waits_for_a_moved_senders_frame_under_its_project_now(self):
         """The frontier review (F18): the sending session of this machine is looked for under the project it is a
         member of now (member_project_now, as the upload path reads it), not under the plane's row from before its
