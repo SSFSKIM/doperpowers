@@ -2148,43 +2148,75 @@ class Messages(Delivering):
         self.assertEqual(len(self.got(received, "a late word")), 1, "delivered on the answer for the reach now")
 
     def test_a_change_of_access_while_the_receipts_are_planned_hands_nothing_over_on_that_word(self):
-        """Review rounds 1 and 2: the push may wait for the receipts' lock after the word was taken; the word's
-        binding (the reach among it) is checked under that lock, before a receipt is written, so a process that
-        activated receipts (`gate`) is left no prepared receipt carrying the stale verdict, and a later ordinary
-        pass hands nothing over on it: the message is asked about again, for the reach as it is now."""
+        """Review rounds 1 to 3: a push may wait, after its word was taken, for the receipts' lock (`while`
+        "planning") or, for a live process with no delivery mode yet, for that process's mode lock while the
+        handoff chooses `legacy` (`while` "choosing", the lock held by another real process). The word's binding
+        (the reach among it) is checked under the receipts' lock once the mode is chosen, before a legacy push
+        goes or a gate receipt is written: nothing is handed over on the stale word, no prepared receipt is left
+        for a later ordinary pass to hand over, and the message is asked about again, for the reach as it is now."""
         hd = sminos.holder_module()
-        real = hd.plan
-        for gate in (False, True):
-            for kind in ("say", "human"):
-                with self.subTest(gate=gate, kind=kind):
-                    tid, sid, proc, received = self.live_member(name="planned%d%s" % (gate, kind[0]))
-                    if gate:
-                        self.assertEqual(hd.activate(proc.pid, "launch-1", sid)["mode"], "gate")
-                    text = "planned meanwhile %s %s" % (gate, kind)
-                    writer = W1 if kind == "say" else "%s/human" % FAR
-                    self.message((sid, tid), writer=writer, kind=kind, text=text)
-                    link = self.link()
-                    self.ask_pass(link)
-                    [ask] = [f for f in self.asks(link) if f["event"].get("text") == text]
-                    self.assertEqual(ask["t"], "reach?" if kind == "say" else "words?")
-                    self.answer(link, ask, "deliver" if kind == "say" else "words")
+        cases = [(gate, kind, "planning") for gate in (False, True) for kind in ("say", "human")]
+        cases += [(False, kind, "choosing") for kind in ("say", "human")]
+        for gate, kind, during in cases:
+            with self.subTest(gate=gate, kind=kind, during=during):
+                tid, sid, proc, received = self.live_member(name="p%d%s%s" % (gate, kind[0], during[0]))
+                if gate:
+                    self.assertEqual(hd.activate(proc.pid, "launch-1", sid)["mode"], "gate")
+                text = "meanwhile %s %s %s" % (gate, kind, during)
+                writer = W1 if kind == "say" else "%s/human" % FAR
+                verdict = "deliver" if kind == "say" else "words"
+                self.message((sid, tid), writer=writer, kind=kind, text=text)
+                link = self.link()
+                self.ask_pass(link)
+                [ask] = [f for f in self.asks(link) if f["event"].get("text") == text]
+                self.assertEqual(ask["t"], "reach?" if kind == "say" else "words?")
+                self.answer(link, ask, verdict)
 
-                    def plan(*a, real=real, sid=sid, **k):
-                        records.set_policy(sid, lambda access, shares: ("private", []))
-                        sminos.forget_caches()
+                def narrow(sid=sid):
+                    records.set_policy(sid, lambda access, shares: ("private", []))
+                    sminos.forget_caches()
+                if during == "planning":
+                    def plan(*a, real=hd.plan, **k):
+                        narrow()
                         return real(*a, **k)
                     with mock.patch.object(hd, "plan", plan):
                         self.carry()
-                    self.assertEqual(self.got(received, text), [], "nothing handed over on that word")
-                    self.assertEqual(self.kept(), [])
-                    self.carry()   # an ordinary pass: no receipt the stopped attempt prepared stands for the word
-                    self.assertEqual(self.got(received, text), [], "nor by the next ordinary pass")
-                    self.assertEqual(self.owed_to(tid)[-1], (writer, self.owed_to(tid)[-1][1]), "still owed")
-                    self.ask_pass(link)
-                    [again] = [f for f in self.asks(link) if f["event"].get("text") == text and f["id"] != ask["id"]]
-                    self.answer(link, again, "deliver" if kind == "say" else "words")
-                    self.carry()
-                    self.assertEqual(len(self.got(received, text)), 1, "delivered on the answer for the reach now")
+                else:
+                    release = self.held_elsewhere(hd._mode_path(hd._process_of(proc.pid), ".lock"))
+                    waiting, failed = threading.Event(), []
+
+                    @contextlib.contextmanager
+                    def mode_lock(p, real=hd._mode_lock):
+                        waiting.set()   # the handoff is about to wait on the lock another process holds
+                        with real(p):
+                            yield
+
+                    def carry():
+                        try:
+                            self.carry()
+                        except BaseException as err:  # noqa: BLE001 — reported by the main thread
+                            failed.append(err)
+                    with mock.patch.object(hd, "_mode_lock", mode_lock):
+                        t = threading.Thread(target=carry)
+                        t.start()
+                        self.assertTrue(waiting.wait(30), "the handoff reached the mode lock")
+                        time.sleep(0.2)
+                        self.assertTrue(t.is_alive(), "and waits on it")
+                        narrow()
+                        release()
+                        t.join(60)
+                    self.assertFalse(t.is_alive())
+                    self.assertEqual(failed, [])
+                self.assertEqual(self.got(received, text), [], "nothing handed over on that word")
+                self.assertEqual(self.kept(), [])
+                self.carry()   # an ordinary pass: no receipt the stopped attempt prepared stands for the word
+                self.assertEqual(self.got(received, text), [], "nor by the next ordinary pass")
+                self.assertIn((writer, ask["event"]["seq"]), self.owed_to(tid), "still owed")
+                self.ask_pass(link)
+                [again] = [f for f in self.asks(link) if f["event"].get("text") == text and f["id"] != ask["id"]]
+                self.answer(link, again, verdict)
+                self.carry()
+                self.assertEqual(len(self.got(received, text)), 1, "delivered on the answer for the reach now")
 
     def test_a_word_released_after_a_hand_off_is_dropped_and_the_message_asked_for_the_job(self):
         handed = {}

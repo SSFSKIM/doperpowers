@@ -614,16 +614,21 @@ def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only
     by (key_hash) and kept in its key beside its session. `lock_until`:
     the receipts' lock is only tried until then (sminos.LockBusy past it),
     for a channel's choice of what to ask on the uplink's consumer thread
-    (CH2's M6); without it, waited for as always. `check`: called once the
-    lock is held, before anything is read or written, and raises to stop:
-    a channel's last check made after the wait for the lock, so a push
-    that fails it leaves no receipt prepared for its stale verdict and an
-    earlier one as it was (CH2's M6)."""
+    (CH2's M6); without it, waited for as always. `check`: called under
+    the receipts' lock once the process's mode is chosen (handoff, which
+    may wait on its mode lock), right before a plan that pushes is returned
+    (`legacy`, or `push` before its receipt is written), and raises to
+    stop: a channel's last check made after every wait the planning holds,
+    so a push that fails it leaves no receipt prepared for its stale
+    verdict and an earlier one as it was (CH2's M6)."""
+
+    def pushes(p):   # a plan that pushes, the caller's check made last
+        if check is not None:
+            check()
+        return p
     keyhash = key_hash(project_id, session, e["writer"], e["seq"], **_thread(thread))
     path = _receipt_path(keyhash)
     with _receipts_lock(lock_until):
-        if check is not None:
-            check()
         try:
             r = _read(path)
         except Unreadable as err:
@@ -637,14 +642,14 @@ def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only
         if r and r.get("admitted"):
             return Plan("settle", rid)
         if peer_pid is None:
-            return Plan("awaiting", rid) if r else Plan("legacy", words=words)
+            return Plan("awaiting", rid) if r else pushes(Plan("legacy", words=words))
         mode = handoff(peer_pid, session, choose=prepare)
         if mode == "wait":
             return Plan("awaiting", rid, why="its process may yet activate receipts")
         if mode.startswith("held:"):
             return Plan("held", rid, why=mode[len("held:"):])
         if mode == "legacy":
-            return Plan("legacy", rid, words=r.get("words") if r else words)
+            return pushes(Plan("legacy", rid, words=r.get("words") if r else words))
         try:
             proc = _process_of(peer_pid)
             rec = read_mode(proc)
@@ -658,7 +663,7 @@ def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only
                     and a.get("state") != "prepared" \
                     and (r.get("released") or {}).get("attempt") != a.get("n"):
                 return Plan("awaiting", rid)
-            return Plan("push", rid)
+            return pushes(Plan("push", rid))
         if r is None:
             r = {"v": 1, "id": "%s.%s" % (keyhash, secrets.token_hex(8)),
                  "key": dict({"project": project_id, "session": session, "writer": e["writer"], "seq": e["seq"]},
@@ -679,6 +684,7 @@ def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only
             body = "wake" if rid in (rec.get("retained") or ()) else "full"
             r["attempt"] = _attempt(int(a.get("n") or 0) + 1, proc, rec["launch"], body)
             r["released"] = None
+        pushes(None)   # before the receipt is written: a push stopped here leaves none prepared
         _write(path, r)
         a = r["attempt"]
         return Plan("push", r["id"], a["n"], a["body"] if a["body"] in BODIES else "full", r.get("words"))

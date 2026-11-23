@@ -8206,10 +8206,11 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
     With `owing` (a channel's log) the last check (sminos_channels.
     still_owed) is made first, for this event, again by the wake around
     its launch, and again with the session's reach under the receipts'
-    lock, once the planner has waited for it and before it writes a
-    receipt (a kept word's binding, CH2's M6), so a push stopped there
-    leaves no receipt carrying its stale verdict: one that fails raises
-    PassLost, nothing handed over; the
+    lock, once the planner has chosen the process's mode (every wait its
+    planning holds behind it) and before it returns a legacy push or
+    writes a gate receipt (a kept word's binding, CH2's M6), so a push
+    stopped there leaves no receipt carrying its stale verdict: one that
+    fails raises PassLost, nothing handed over; the
     session's membership is read in the thread's own project. A push that
     comes back `recorded` is that stop too, unless it is an event for the
     live alone whose thread is stopped (stopped_for_the_live) or it follows
