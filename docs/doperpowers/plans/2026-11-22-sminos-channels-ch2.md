@@ -3991,6 +3991,51 @@ them today.
   where the code already tells unreadable from empty and then drops the
   difference (F8, F24). `chat <channel>` reconciles as every view does
   (D2), and eight characters of a thread id in the reply line stand (D3).
+- 2026-11-23 — **The frontier review's first fix wave, as built**
+  (`e7ff8f0e` to the wave's head; F1 to F30 of the holder's triage, five
+  groups in parallel worktrees, cherry-picked onto the branch; one task
+  review of the wave, whose six findings were fixed in the same wave).
+  Decisions where the triage was silent, kept by the controller:
+  - Projects stay as they were (B11): the planned peer carried to the
+    legacy push (F2), the settling of a live-only event over a stopped
+    thread as `recorded` (F6) and the re-check at the launch boundary (F3)
+    apply to a channel's `owing` and a channel's wake alone; a project's
+    calls have their old arguments, pinned by `ProjectsAsBefore`. The
+    launch boundary runs the channel's whole last check, reach included,
+    and removes the wake line on refusal (F3, F4). F6 settles `recorded`
+    only on fresh thread and process evidence (`stopped_for_the_live`);
+    otherwise the pass is lost.
+  - A session whose project cannot be told and that holds no member's row
+    is refused (`NO_HOME`, exit 1) on the path that would append to the
+    channel, after the direct route, so a reply line to a thread that left
+    still goes directly (F22). This supersedes M4's reading that such a
+    post is recorded as a member's.
+  - In an unfiltered home a channel's copy for a remote recipient needs an
+    `audience` entry that says `members: null`; an unreadable cache, a
+    welcome without `access` or a partial entry is no knowledge: no copy,
+    today's warning (F25).
+  - A channel's refusal notice goes to the thread's current session only
+    while that session's own record names the thread; it waits out an open
+    entry and is dropped once the thread ends; an unstamped channel event
+    queues none (F10).
+  - "Gone up" for an own event's ask is `HubLog.sent`, the upload and the
+    ask sharing one FIFO lane (F17); the sender's current project for an
+    ask is `member_project_now` with `member_on_lane`, no view and no
+    reconciliation (F18); a channel's answer dispatched past its deadline
+    is none (F19).
+  - A lead whose history could not be read whole is no lead (F24); a lead
+    append rechecks the stream under the writer lock and refuses on any
+    change of writer or audience (F5); a torn row is refused on every
+    channel-derived route, verbs and bare tags (F9).
+  - A threadless session's chat cursor is `session-<id>` (F12); the
+    sender's stamp is taken after every sweep (F13).
+  - An outsider whose thread no project here holds is named untagged in
+    the roster (F15); `known_project` refuses an invalid id before any
+    path is built from it (F26).
+  - Two timing flakes seen during the wave were shown to predate it: the
+    relay setup of `test-channels-machines.sh` (one of two runs on
+    `e7ff8f0e`) and `test_wake_transitions`' back-off (not reproduced on
+    either tree).
 
 
 ## Outcomes & Retrospective
