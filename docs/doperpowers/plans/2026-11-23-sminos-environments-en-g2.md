@@ -72,7 +72,14 @@ owner's fleet at the end (M5), which is parent acceptance line 5.
 - [x] (2026-11-23) M2 — `channel show`: a VM's owner, age and cost.
   Commit 628f11876, fix 42a9e9f16; review clean. GREEN on 42a9e9f16:
   `sminos-idle` 32236, `sminos-channels` 4m08s.
-- [ ] M3 — A VM's notice in the timelines of the channels whose pool holds it.
+- [x] (2026-11-23) M3 — A VM's notice in the timelines of the channels
+  whose pool holds it. Commits 66868f287..cc30634a1, fixes 3fcc5e4b0 and
+  959533ca2; review clean. Built at O6's default (`CHANNEL_TEXT =
+  "short"`); the holder has confirmed the owner has not answered, and puts
+  it to them once more before the merge. GREEN on 3fcc5e4b0; on 959533ca2
+  every gate but `devcloud-host` (an `apt-get` install that failed in its
+  `devenv up`; no devcloud file changed, and it passed on its rerun):
+  `sminos-idle` 32858, `sminos-channels` 3m35s.
 - [ ] M4 — What sessions are taught, what sits beside the code, and the
   gates on the final head.
 - [ ] The whole range read once (Decision Log, "Verification"), its fix
@@ -1909,6 +1916,15 @@ Found while it was built.
   default, which takes `NaN`: a price can be `NaN`, which `vm ls` prints
   as `nan` (left as it is: not this child's; residue).
   Evidence: `T/test_vm_info.py` (`1e400`); `D/driver/provider.py`.
+- Observation: `speak` lets a channel that has left the machine through,
+  as `_refuse_uncarried` means it to; a writer "into each channel" must
+  test `has_left` itself, which `--pools` does.
+  Evidence: `sminos_channels.record_in_pools`.
+- Observation: a project's view, built to read a roster, reconciles the
+  project's log (a `joined` may be written). `--pools` reads no roster
+  when no channel is a candidate, so a host in no channel writes nothing;
+  with candidates it reconciles as `channel show` does.
+  Evidence: `T/test_channels_pools.py`, `Which`.
 
 ## Decision Log
 
@@ -2243,6 +2259,20 @@ above.
   a later devcloud that adds one does not blank an older sminos's pool;
   `ambiguous` lists the pool's spelling of the name; the stand-in's `vm
   info` answers an empty whole reply unless a test sets one.
+- 2026-11-23 — **Execution: M3.** The channels' record is made whenever
+  §5's condition holds (a sminos CLI found, the host cut over), even where
+  the chain itself called no sminos for want of a creator or a project.
+  The host's `--pools` call is guarded against any exception, so a
+  failure there can never make a lease tick send the notice again.
+  `say`'s `--in`, `--project` and `--machine` record that they were
+  given, and the `--pools` form refuses them by presence (`--in=` is
+  refused too); `say` without `--pools` reads them as before.
+  `--exit-held` beside `--pools` is not refused: nothing is tagged, so it
+  changes nothing. A channel's failure is said from `speak`'s own exit as
+  one warning naming the channel; channels are written in name order.
+  *Not taken, from the task review:* the `--pools` form's checks run
+  after the store's `migrate()`, which every command runs, a valid call
+  included; §4's "before anything is read" is of the logs.
 
 ## Outcomes & Retrospective
 
