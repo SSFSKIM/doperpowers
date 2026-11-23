@@ -61,3 +61,52 @@ def asked_again(asks, log, writer, seq):
     writer's position in another log (a channel's) is another event."""
     return [f["id"] for f in asks if f.get("project") == log and f["event"].get("writer") == writer
             and f["event"].get("seq") == seq]
+
+
+def _session_of(writer):
+    """The session template a writer `{{name}}/{{session:Sn}}` names, else None."""
+    tail = str(writer or "").rpartition("/")[2]
+    return tail if tail.startswith("{{session:") else None
+
+
+def order_edges(cases):
+    """{(case, step): [(case, step)]}: the lines a channel's line waits for,
+    read off the lines themselves in the fixture's order. An `events` up
+    waits for the latest member frame of its writer's session and of each
+    session it writes to; a words? or reach? waits for the latest member
+    frame of the session it asks about, and, for an own event (given inline),
+    for the upload that carried it. A line of no channel waits for none."""
+    member, uploaded, edges = {}, {}, {}
+    for ci, case in enumerate(cases):
+        for si, step in enumerate(case["steps"]):
+            line = step.get("up")
+            if not isinstance(line, dict):
+                continue
+            if line.get("t") == "member":
+                member[line.get("session")] = (ci, si)
+                continue
+            if not str(line.get("project") or "").startswith("{{channel:"):
+                continue
+            deps = set()
+            if line.get("t") == "events":
+                for e in line.get("events") or []:
+                    for s in [_session_of(e.get("writer"))] + [t.get("session") for t in e.get("to") or []]:
+                        if s in member:
+                            deps.add(member[s])
+                    uploaded[(line["project"], e.get("writer"), e.get("seq"))] = (ci, si)
+            elif line.get("t") in ("words?", "reach?"):
+                if line.get("session") in member:
+                    deps.add(member[line["session"]])
+                e = line.get("event")
+                if isinstance(e, dict) and (line["project"], e.get("writer"), e.get("seq")) in uploaded:
+                    deps.add(uploaded[(line["project"], e.get("writer"), e.get("seq"))])
+            if deps:
+                edges[(ci, si)] = sorted(deps)
+    return edges
+
+
+def after_index(deps, matched, conn):
+    """The index on connection `conn` a line is matched past: the latest of
+    its `deps`' matches there (`matched`: (case, step) → (connection,
+    index)); -1 where none of them was matched on it."""
+    return max((at[1] for at in (matched.get(d) for d in deps) if at is not None and at[0] == conn), default=-1)

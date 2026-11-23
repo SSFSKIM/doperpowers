@@ -353,7 +353,8 @@ if os.environ.get("BENCH_PROFILE") and sys.argv[1:3] == ["daemon", "uplink"]:
     # The upload window's (`<BENCH_PROFILE>.mode` reads "upload <log id>"): that log's turns of Link.upload_pass,
     # each under a cProfile of its own, [turns, Python calls, member_project_now's calls]. Installed for the window
     # alone, so no other window's count holds its frame, and closed at a turn's boundary: an end asked for while a
-    # turn is counted is carried out when that turn's count is in.
+    # turn is counted is carried out when that turn's count is in. `<BENCH_PROFILE>.ready` is written as the log's
+    # first counted turn begins: the turns run one after another, so no uncounted one of that log is still running.
     UPLOAD = {}
 
     def publish_upload():
@@ -373,6 +374,9 @@ if os.environ.get("BENCH_PROFILE") and sys.argv[1:3] == ["daemon", "uplink"]:
                 return real(self, hl, *args, **kwargs)
             import cProfile
             import pstats
+            if not UPLOAD.get("ready"):
+                UPLOAD["ready"] = True
+                open(os.environ["BENCH_PROFILE"] + ".ready", "w").close()
             UPLOAD["inflight"] = True
             pr = cProfile.Profile()
             try:
@@ -1372,7 +1376,8 @@ def cmd_run(a, env):
                        "%d, the first: %s" % (len(failed), failed[0].strip()) if failed else "none")]
         if "upload" in measures:
             checks.append(("the upload scenario measured whole", upload_ok,
-                           "every message gone up, each window with a counted turn" if upload_ok else
+                           "exactly its messages accepted inside each window, posted once a turn was counted"
+                           if upload_ok else
                            "an upload: line says what is missing"))
         for what, ok, said in checks:
             print("gate: %s: %s (%s)" % (what, "ok" if ok else "FAILED", said))
@@ -1447,33 +1452,48 @@ def channel_reads(env, ep, rows, pc, daemon_pid):
             "debt_reads": {"uplink": uplink_reads, "daemon run": daemon_reads}}
 
 
-def upload_window(env, pid, log, act, done, give_up=180.0, settle=3.0):
+def upload_window(env, pid, log, act, accepted=None, k=0, give_up=180.0, ready_by=60.0):
     """`log`'s turns of the uplink's upload pass counted (the hook's upload
-    mode, begun and ended by signal, closed at a turn's boundary) while
-    `act` runs and until `done()` holds, then `settle` seconds more:
-    {"from", "to", "log", "counted": [turns, Python calls,
-    member_project_now's calls]}, or None when no count came back."""
+    mode, begun and ended by signal, closed at a turn's boundary). `act`
+    runs once the first of them has begun, so every turn that can take what
+    it posts is counted; the window then stays open until `accepted()` (the
+    endpoint's count of what `act` posted) reaches `k`, or `give_up`
+    seconds (all of them, with no `accepted`). {"from", "to", "log",
+    "counted": [turns, Python calls, member_project_now's calls]}, or
+    {"failed": why}: no counted turn began, no count came back, or not
+    exactly `k` accepted when the close was asked for (what goes up after
+    is outside the count)."""
     out = env.env["BENCH_PROFILE"]
-    if os.path.exists(out + ".upload"):
-        os.unlink(out + ".upload")
+    for left in (".upload", ".ready"):
+        if os.path.exists(out + left):
+            os.unlink(out + left)
     with open(out + ".mode", "w") as f:
         f.write("upload %s" % log)
+    failed = None
     try:
         os.kill(pid, signal.SIGUSR1)
-        time.sleep(0.5)
-        act()
-        deadline = time.time() + give_up
-        while not done() and time.time() < deadline:
-            time.sleep(0.5)
-        time.sleep(settle)
+        deadline = time.time() + ready_by
+        while not os.path.exists(out + ".ready") and time.time() < deadline:
+            time.sleep(0.05)
+        if not os.path.exists(out + ".ready"):
+            failed = "no turn of the log's upload pass began in %.0f s" % ready_by
+        else:
+            act()
+            deadline = time.time() + give_up
+            while (accepted is None or accepted() < k) and time.time() < deadline:
+                time.sleep(0.2)
+            if accepted is not None and accepted() != k:
+                failed = "%d of %d accepted when the window closed" % (accepted(), k)
         os.kill(pid, signal.SIGUSR2)
         deadline = time.time() + 60
         while not os.path.exists(out + ".upload"):
             if time.time() > deadline:
-                return None
+                return {"failed": failed or "no count came back"}
             time.sleep(0.2)
     finally:
         os.unlink(out + ".mode")
+    if failed:
+        return {"failed": failed}
     with open(out + ".upload") as f:
         return json.load(f)
 
@@ -1501,11 +1521,10 @@ def upload_scenario(a, env, ep, up, rows):
                     raise RuntimeError("the upload scenario's say failed")
         return act
 
-    idle = upload_window(env, up, cid, lambda: None, lambda: False, give_up=UPLOAD_IDLE, settle=0)
-    turns, calls, _ = (idle or {}).get("counted") or [0, 0, 0]
+    idle = upload_window(env, up, cid, lambda: None, give_up=UPLOAD_IDLE)
+    turns, calls, _ = idle.get("counted") or [0, 0, 0]
     if not turns:
-        print("upload: FAILED: %s" % ("no count came back from the idle window" if idle is None else
-                                      "no turn of %s's upload pass in %.0f s idle" % (name, UPLOAD_IDLE)))
+        print("upload: FAILED: the idle window: %s" % idle.get("failed", "no turn of %s's upload pass" % name))
         return None
     per_turn = calls / turns
     print("upload: an idle turn of %s's upload pass, %.0f Python calls (%d turns in %.0f s)" % (
@@ -1513,15 +1532,12 @@ def upload_scenario(a, env, ep, up, rows):
     out = {"idle turn": per_turn}
     for label, who in (("from one sender", [sids[0]] * k), ("from %d senders" % k, sids[:k])):
         before = uploaded()
-        w = upload_window(env, up, cid, say_from(who), lambda before=before: uploaded() >= before + k)
-        got = uploaded() - before
-        turns, calls, mpn = (w or {}).get("counted") or [0, 0, 0]
-        if got < k or not turns:
-            print("upload: %d messages %s: FAILED: %s" % (
-                k, label, "no count came back" if w is None else
-                "%d of them gone up, %d turns of %s's upload pass counted: no cost is given for a window that did "
-                "not hold them all" % (got, turns, name)))
+        w = upload_window(env, up, cid, say_from(who), accepted=lambda before=before: uploaded() - before, k=k)
+        if "failed" in w:
+            print("upload: %d messages %s: FAILED: %s: no cost is given for a window that did not hold them all" % (
+                k, label, w["failed"]))
             return None
+        got, (turns, calls, mpn) = k, w["counted"]
         beyond = calls - turns * per_turn
         print("upload: %d messages %s, %d of them gone up: %d turns of %s's upload pass, %.0f Python calls beyond "
               "as many idle turns, %.0f a message; member_project_now %d calls, %.1f a message" % (

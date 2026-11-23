@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -1241,6 +1242,99 @@ class BenchUploadWindow(unittest.TestCase):
         self.Link().upload_pass(self.hl("ch"))
         self.ns["end"]()
         self.assertEqual(self.counted()["counted"][0], 1)
+
+
+class BenchUploadWindowParent(unittest.TestCase):
+    """The bench's side of an upload window, against the hook running in
+    this process (its signals sent here) and an upload pass on a thread of
+    its own, as the uplink's tick loop: a message is posted only once a turn
+    of the log is counted, and a window whose messages are not all accepted
+    when it closes gives no count, whatever goes up after."""
+
+    def setUp(self):
+        import bench_scale
+        self.bench = bench_scale
+        d = tempfile.mkdtemp(prefix="smw.", dir="/tmp")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        out = os.path.join(d, "uplink.prof")
+        self.env = types.SimpleNamespace(env={"BENCH_PROFILE": out})
+        ns = {"__name__": "bench_hook"}
+        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGUSR1, signal.SIGUSR2)}
+        meta = list(sys.meta_path)
+
+        def restore():
+            for sig, h in handlers.items():
+                signal.signal(sig, h)
+            sys.meta_path[:] = meta
+        self.addCleanup(restore)
+        with mock.patch.dict(os.environ, {"BENCH_PROFILE": out}), \
+                mock.patch.object(sys, "argv", ["sminos.py", "daemon", "uplink"]):
+            exec(bench_scale.HOOK, ns)
+        self.ns = ns
+        self.pending, self.accepted = [], []
+        self.posted, self.first, self.stop = threading.Event(), threading.Event(), threading.Event()
+        self.hold_last = False
+        t = self
+
+        def member_project_now():
+            return None
+
+        class Link:
+            calls = 0
+
+            def upload_pass(self, hl, live=None):
+                Link.calls += 1
+                if Link.calls == 1:   # a turn already running when the window opens
+                    t.first.set()
+                    t.posted.wait(3.0)
+                while t.pending and not (t.hold_last and len(t.pending) == 1):
+                    member_project_now()
+                    t.accepted.append(t.pending.pop(0))
+        patcher = mock.patch.dict(os.environ, {"BENCH_PROFILE": out})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        modules = mock.patch.dict(sys.modules, {"sminos_uplink": types.SimpleNamespace(Link=Link)})
+        modules.start()
+        self.addCleanup(modules.stop)
+        hl = types.SimpleNamespace(project=types.SimpleNamespace(id="ch"))
+
+        def turns():
+            link = Link()
+            while not self.stop.is_set():
+                link.upload_pass(hl)
+                time.sleep(0.02)
+        self.loop = threading.Thread(target=turns, daemon=True)
+        self.loop.start()
+        self.addCleanup(self.loop.join, 5)
+        self.addCleanup(self.stop.set)
+        self.assertTrue(self.first.wait(5))
+
+    def post(self, n):
+        def act():
+            self.pending.extend(range(n))
+            self.posted.set()
+        return act
+
+    def test_messages_are_posted_once_a_turn_of_the_log_is_counted(self):
+        w = self.bench.upload_window(self.env, os.getpid(), "ch", self.post(2), accepted=lambda: len(self.accepted),
+                                     k=2, give_up=10)
+        self.assertEqual(w["counted"][2], 2, "both messages drawn by counted turns: %r" % (w,))
+
+    def test_a_window_closed_short_of_its_messages_gives_no_count(self):
+        self.hold_last = True
+        close = signal.getsignal(signal.SIGUSR2)
+
+        def late(*a):   # a turn outside the window takes the last message as the close is asked for
+            self.hold_last = False
+            while self.pending:
+                self.accepted.append(self.pending.pop(0))
+            close(*a)
+        signal.signal(signal.SIGUSR2, late)
+        w = self.bench.upload_window(self.env, os.getpid(), "ch", self.post(2), accepted=lambda: len(self.accepted),
+                                     k=2, give_up=1.5)
+        self.assertEqual(len(self.accepted), 2, "the last message went up, after the window")
+        self.assertNotIn("counted", w)
+        self.assertIn("1 of 2", w["failed"])
 
 
 def processes():

@@ -1045,10 +1045,16 @@ PROBES = {
     (11, 37): ("the endpoint's answer to it", None),
 }
 
-# A line that says what sminos sent after another line was: matched only past
-# that one's. Case 13's frame with no channels key is S1's after its
-# removal, not one of the same shape it sent before it was placed.
-AFTER = {(13, 4): (13, 2)}
+# A line that says what sminos sent after other lines were: matched only past
+# the latest of theirs on its connection. Case 13's frame with no channels
+# key is S1's after its removal, not one of the same shape it sent before it
+# was placed. A channel's lines wait for what the fixture puts before them
+# (probes.order_edges): a session's member frame before an upload to or from
+# it and before an ask about it, an own event's upload before an ask about
+# it; read off the lines, so a line inserted between them leaves them.
+AFTER = {(13, 4): [(13, 2)]}
+for _at, _deps in probes.order_edges(CASES).items():
+    AFTER[_at] = sorted(set(AFTER.get(_at, [])) | set(_deps))
 
 # A step whose line comes on the next connection: none since the fixture
 # places the host resend on the reconnect, before its restated.
@@ -1129,8 +1135,7 @@ def up(ci, si, step, opts):
     want = subst(step["up"])
     vary = step.get("vary", [])
     pred = opts.get("pred") or (lambda f: f.get("t") == want["t"] and matches(want, f, vary))
-    since = STEPS.get(AFTER.get((ci, si)))
-    i = find(conn, pred, after=since[1] if since is not None and since[0] == conn.number else -1)
+    i = find(conn, pred, after=probes.after_index(AFTER.get((ci, si), []), STEPS, conn.number))
     if i is None:
         near = [f for f in conn.frames if f.get("t") == want["t"]]
         return False, "no such line on connection %d; expected %s; of its kind sminos sent %s" % (

@@ -87,5 +87,60 @@ class MachineEvent(unittest.TestCase):
         self.assertEqual(e["attest"]["owners"], ["m-b"])
 
 
+class Order(unittest.TestCase):
+    """A channel's line waits for the lines the fixture puts before it: a
+    session's member frame before an event that writes to it or from it
+    goes up and before an ask about it, and an own event's upload before
+    an ask about that event. The edges come from the lines themselves, so
+    a line MAWS inserts between them leaves them standing."""
+
+    CH, S8, S7 = "{{channel:C}}", "{{session:S8}}", "{{session:S7}}"
+
+    def member(self, session):
+        return {"up": {"t": "member", "session": session, "alias": "a", "project": "{{project:P}}"}}
+
+    def upload(self, writer, seq, to):
+        return {"up": {"t": "events", "project": self.CH, "events": [
+            {"writer": writer, "seq": seq, "kind": "say", "to": [{"session": s, "alias": "a"} for s in to]}]}}
+
+    def ask(self, session, event, t="words?"):
+        return {"up": {"t": t, "id": "w", "project": self.CH, "session": session, "event": event}, "vary": ["id"]}
+
+    def cases(self):
+        return [
+            {"steps": [self.member(self.S8), self.member(self.S7),
+                       self.upload("{{name}}/" + self.S7, 1, [self.S8]),
+                       {"down": {"t": "audience", "session": self.S8}},
+                       self.ask(self.S8, {"writer": "{{name}}/" + self.S7, "seq": 1, "kind": "say"})]},
+            {"steps": [self.member(self.S8),
+                       self.ask(self.S8, "{{say:M1}}", t="reach?"),
+                       {"up": {"t": "words?", "id": "w", "project": "{{project:P}}", "session": self.S8,
+                               "event": {"writer": "{{name}}/human", "seq": 3}}}]},
+        ]
+
+    def test_an_upload_waits_for_its_writer_s_and_its_recipients_member_frames(self):
+        self.assertEqual(sorted(probes.order_edges(self.cases())[(0, 2)]), [(0, 0), (0, 1)])
+
+    def test_an_ask_about_an_own_event_waits_for_its_member_frame_and_its_upload(self):
+        self.assertEqual(sorted(probes.order_edges(self.cases())[(0, 4)]), [(0, 0), (0, 2)])
+
+    def test_an_ask_waits_for_the_latest_member_frame_before_it(self):
+        self.assertEqual(probes.order_edges(self.cases())[(1, 1)], [(1, 0)])
+
+    def test_a_line_of_no_channel_is_given_no_edge(self):
+        self.assertNotIn((1, 2), probes.order_edges(self.cases()))
+
+    def test_an_earlier_matching_frame_does_not_satisfy_a_line(self):
+        ask = {"t": "words?", "event": "e"}
+        frames = [ask, {"t": "member"}, {"t": "events"}, ask]
+        matched = {(0, 1): (1, 1), (0, 2): (1, 2)}
+        after = probes.after_index([(0, 1), (0, 2)], matched, 1)
+        self.assertEqual(after, 2)
+        self.assertEqual(next(i for i, f in enumerate(frames) if i > after and f == ask), 3)
+
+    def test_a_line_matched_on_another_connection_or_not_at_all_does_not_hold_one_back(self):
+        self.assertEqual(probes.after_index([(0, 1), (0, 2)], {(0, 1): (0, 7)}, 1), -1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
