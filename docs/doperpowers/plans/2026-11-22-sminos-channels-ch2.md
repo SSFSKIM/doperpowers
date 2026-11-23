@@ -77,7 +77,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M3 — Pushing and waking from a channel's log. `af78de21`, `11482879`, fixes `b544d7f4`, `0c969840`, `dddf22b4`; three reviews at the high rung (the bound), the third's four fixes (`dddf22b4`) made after it and named to M6's review of M2 to M6. Gates GREEN on `dddf22b4`; sminos-idle 32,724; sminos-channels 2m08s.
 - [x] (2026-11-22) M4 — Saying into a channel: the doors, the reply, the read. `d5c345bc`, fixes `934afd76`, `b9fc61a4`; reviewed clean at the third review (one Minor on a draft sentence's wording left for open point 4). Gates GREEN on `b9fc61a4`; sminos-idle 32,663; sminos-channels 2m06s.
 - [x] (2026-11-22) M5 — The scene on a real engine. Run whole against `f775004d` (Claude Code 2.1.330, haiku, a scratch home): all four steps showed what they expect; no fault of M1 to M4, no code changed; the checker found nothing over the stand-in's frames and the store; every process stopped. Step 4's hand-off made as Surprises says.
-- [ ] M6 — Across machines: asking, and carrying out off the consumer thread. (Built `5af6ab8c`; gates GREEN; sminos-idle 32,837; sminos-channels 2m48s of its 4m timeout; in review as M2 to M6 in one range.)
+- [x] (2026-11-22) M6 — Across machines: asking, and carrying out off the consumer thread. `5af6ab8c`, fixes `e7742001`, `d5b03b63`, `15198aa9`, `52d5241d`; reviewed with M2 to M6 as one range (three reviews on the medium rung, the bound), the third's fix (`52d5241d`) made after it and named to the frontier panel. Gates GREEN on `52d5241d`; sminos-idle 32,216; sminos-channels 3m15s of its 6m timeout.
 - [ ] M7 — Held to MAWS's fixture, and what a channel costs.
 - [ ] M8 — The lead, and whose words a post is.
 - [ ] M9 — What reads a session's exchanges reads a channel's.
@@ -3805,6 +3805,17 @@ them today.
     session id another thread reuses), a writing machine's log kept open
     until its message has gone up (a follower leaves only after a day), and
     the read-only refusal after a launch.
+  - *(As amended by the range review of M2 to M6, `e7742001`, `d5b03b63`,
+    `52d5241d`.)* Every push from a channel reads the last check with the
+    reach once more inside the receipts' planner (`plan`'s `check=`), under
+    the receipts' lock, just before a plan that pushes is returned (a
+    `legacy` plan with no process running, a `legacy` plan after `handoff`
+    chose it, past any wait on the process's mode lock, a `push` plan
+    without `prepare`) and, for a `gate` process, just before its receipt
+    is written; a push it stops leaves no prepared receipt, and an earlier
+    receipt is left as it was. A kept word is dated from when the uplink's
+    reader took the answer's frame, not from its dispatch. `unsent` counts
+    an event only when its writer is exactly this machine's.
 - 2026-11-22 — **The holder's rulings on M6 and the range review of M2 to
   M6.** (1) The import of a relayed channel event on the uplink's consumer
   thread (`HubLog.take` → `append_verbatim`, a log's writer locks with no
