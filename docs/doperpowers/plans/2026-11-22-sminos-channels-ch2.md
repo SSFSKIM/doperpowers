@@ -3126,6 +3126,16 @@ them today.
   `conn` and `frame`) passes unchecked; the suites pass `ep.received`
   (tuples) and are unaffected. M6, which touches `published`, makes it
   refuse a shape it does not know.
+- Observation: what a channel costs (M7's bench, the MacBook's shape,
+  thirty channels). A thread in channels pays about half a second more a
+  command, flat in the number of channels: `list` 0.95 s against 0.35 s,
+  a tagged `say` 0.80 s against 0.32 s, `channel show` 1.25 s with thirty
+  known and 1.35 s with one. The idle uplink: 32,909 calls a second with
+  no channel, 39,033 with thirty followed and none held (no debt read),
+  41,504 with thirty held; the merge base reads 37,995 with thirty
+  followed. An upload costs 5,730 calls a message from one sender and
+  9,406 from ten.
+  Evidence: M7's report, §2.
 
 ## Decision Log
 
@@ -3832,6 +3842,26 @@ them today.
   message has gone up, and the read-only refusal after a launch are proved
   by unit tests; if M11's scene has a writing machine that holds no member,
   it shows that machine's log staying open until its message has gone up.
+- 2026-11-22 — **M7, ruled by the holder.** *The fixture:* MAWS's cases
+  16 to 19 at `5a88bcd83` (blob `5ffdd4a2`) do not replay: their `to`
+  entries carry no `thread` and the say none, two lines ask about
+  threads that are no members (S1, S9), one asks before the recipient's
+  member frame (17.2), and 15.2 expects a hello the log's state does not
+  send (M7's report, §1). The design does not move (owed by thread id,
+  nothing owed to a non-member, the member frame before an ask); the
+  cases predate the thread-key ruling, and the holder has asked MAWS's
+  architect to amend them on those four points, with a contract point
+  that a phone's words under a channel carry `thread` in each entry.
+  Until the amended commit arrives through the holder, the tree keeps
+  CH1's pin (`27e7208a`, blob `78282c78`) and nothing of the fixture is
+  committed; the harness defects the cases exposed (`probe_one_body`
+  keyed without the log; `probe_as_stored`, `probe_project` and
+  `probe_members` assuming P, Q and S1 to S5; `machine-event` without
+  `owners`) are fixed now; and if the commit has not come when M9
+  closes, the replay moves to M11, and the proof map's wire half of B1
+  and B2 stays unproved until then. *The bench (open point 7):* accepted,
+  the index of statements not promoted; the figures (Surprises) and what
+  would promote it are a TECH-DEBT row.
 
 
 ## Outcomes & Retrospective
