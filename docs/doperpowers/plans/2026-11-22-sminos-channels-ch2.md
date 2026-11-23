@@ -81,9 +81,9 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M7 — Held to MAWS's fixture, and what a channel costs. Bench `7add7342`, fixes `0d093808`, `aacec34c`, `eaa53afb`, `b1de80db`; MAWS's fixture at `86c79d0a3` (blob `5aabcdec`) replays whole, 158 lines, `41e7573a`; three task reviews (the bound), the third's fix (`b1de80db`: the pinned digests) made after it and named to the frontier panel. Gates GREEN on `b1de80db`; sminos-idle 32,280; sminos-channels 3m21s.
 - [x] (2026-11-22) M8 — The lead, and whose words a post is. `92382f49`, fixes `9e5d57be`, `11e497ea`, `39873d8a`; three task reviews (the bound), the third's fix (`39873d8a`) made after it and named to the frontier panel. Gates GREEN on `39873d8a`; sminos-idle 32,792; sminos-channels 3m10s.
 - [x] (2026-11-22) M9 — What reads a session's exchanges reads a channel's. Built `558faa90`, `ba129c3a`, `81d66f16`; fixes `82a7019d`, `a823a3f9`, `f12f0b65`; three task reviews (the bound), round 3's fixes (`f12f0b65`) made after it and named to the frontier panel. Gates GREEN on `f12f0b65`; sminos-idle 32,756; sminos-channels 2m39s.
-- [ ] The review of M1 to M9 as one range (the holder's), and its fixes.
+- [x] (2026-11-23) The holder's readings of the whole range, and their fixes. Three readings at level max (confirmed 54, 50, 32), answered by three fix waves (F1 to F30, G1 to G16, H1 to H10) built in parallel worktrees, each wave's diff given one review, the last's nine findings (R1 to R9) fixed (Decision Log, "first fix wave, as built", "second fix wave, as built", "The final reading, triaged; the last wave, as built"). Gates GREEN on `d4416afb` (sminos-idle 32,221) and on the final code, below.
 - [x] (2026-11-23) M10 — What sessions are taught, and its evaluation. `3a8d7fcd`, fixes `dd8fe8c4`, `afc06877`, `bf9b277f`; three task reviews (the bound), the third approving the texts, its one item the holder's exception below. Evaluated by doperpowers:writing-skills: E1 0/5 to 5/5, E2 strict 0/5 to 2/5 (E2P 2/5 to 5/5), E3 4/5 to 5/5, E4 5/5 (the reply line stays), E5 5/5; the manager's scenarios five of six, the sixth the merge base's.
-- [x] (2026-11-23) M11 — Older copies, what is written beside the code, the version, and the acceptance. Part A `bad65e43` to `2999c0d6` (the older-copy suite with a 1.54.1 arm, 470 passed; `scripts/CLAUDE.md` read whole; the public face; TECH-DEBT), three task reviews, clean at the third; Part B `86dbdbb9` (sminos 1.55.0), `f7475aae`: the scene `--speak --show` 83 passed, B11's exchange byte for byte the merge base's. Gates GREEN 10 of 10 on `f7475aae`; sminos-idle 32,192; sminos-channels 3m32s.
+- [x] (2026-11-23) M11 — Older copies, what is written beside the code, the version, and the acceptance. Part A `bad65e43` to `2999c0d6` (the older-copy suite with a 1.54.1 arm, 470 passed; `scripts/CLAUDE.md` read whole; the public face; TECH-DEBT), three task reviews, clean at the third; Part B `86dbdbb9` (sminos 1.55.0), `f7475aae`: the scene `--speak --show` 83 passed, B11's exchange byte for byte the merge base's. Gates GREEN 10 of 10 on `f7475aae`; sminos-idle 32,192; sminos-channels 3m32s. B9 on the final head, as Concrete Steps gives it (the delivery operation changed since M5): run twice on a real engine (Claude Code 2.1.330, haiku, scratch homes), on `a606bf68` (steps 2 to 4 and a staged `@all` whose recipient stops while its inbox refuses) and, after the last wave changed that path (H4), on `1ad0a040` (steps 2 and 3 and the staged `@all` again); every step passed on both, every process stopped.
 - [ ] The merge (the holder's).
 
 ## Words this document adds
@@ -4157,6 +4157,108 @@ them today.
   doperpowers only because `main` moved ahead of the merge base with
   doperpowers-only commits; measured from the merge base only sminos
   changed, and the `version-bump` gate passed.
+  B9 run again on the final code, twice. On `a606bf68` (the controller's
+  harness, a detached worktree, nothing committed): steps 2 to 4 as M5
+  ran them, and an added observation, a staged `@all` whose recipient's
+  process is stopped (SIGSTOP) with its inbox's accept queue full while
+  the peer is looked up: no push, no launch, the plain `@all` naming no
+  stopped member. On `1ad0a040`, after H4 changed that path: step 2 (the
+  frame's reply line run as written records in the channel, every `to`
+  entry carrying a thread, no `copy`, no project log written), step 3
+  (`sent (woken)`, one background job holding the session), and the
+  staged `@all`: while B ran with its inbox refusing, the `@all` stayed
+  owed with no hold mark, no attempt and no launch, for three daemon
+  ticks; after the kill it settled `recorded`, pushed to no one; the
+  writer's named message then woke B once (one `--resume` launch) and
+  arrived once, the `@all`'s text never reaching B; the delivery record
+  ended with no `held`. The engine's own supervisor restarted the killed
+  job nine seconds after the kill (sminos did not launch it; the
+  `a606bf68` run saw no such restart), after the `@all` had settled; it
+  was stopped again before the named message. The last-hop variant (the
+  peer seen, then the process gone at `bound_peer`) is a sub-second race
+  inside one `say`, not reached on a real process; the suite's
+  `LiveOnlyHeld` stages it.
+
+- 2026-11-23 — **The final reading, triaged; the last wave, as built.**
+  The holder's panel read the range a third time (merge base to
+  `a606bf68`, level max, two runs of four lenses and a sweep each): 15 and
+  17 confirmed findings (the three readings 54, 50 and 32). **The
+  holder's rulings.** H1: the copy rule had been found open three times
+  (F25, G1, the review of G1, and a `saidListed` entry kept from before
+  the sender went offline), so nothing is kept about a remote recipient:
+  in an unfiltered home a channel's copy for a recipient of another
+  machine is never left, the say goes through and the sender reads
+  today's warning; `known_listed` and the `saidListed` mark are removed
+  (`sminos_audience.py` is the merge base's again, the replay's check of
+  the mark goes with it) and a project's copy is the base's. Dismissed:
+  A:scalpel-4#2 (`daemon owed` over a malformed policy appends a
+  diagnostic to daemon.log: a line in a log is not a write to the store)
+  and B:sweep#2 (eight characters of a thread id in the reply line: D3
+  stands). Logged in TECH-DEBT (`3484c05a`): P1, a verb other than the
+  destructive ones named through a channel acts on the session it
+  resolved (`send`, access and shares, `charge`, `status`); P2, `reply
+  <channel>/<seat>` is refused; P3, a queued terminal post in a channel
+  promoted on the consumer thread under writer locks, the merge base's
+  path for a project's queued post (`release_heads` → `release_queued`
+  at the base), beside the import row; into N5, a recipient whose record
+  cannot be read is withdrawn with its `words?` outstanding; into N1, the
+  same-owner shortcut against the sender's owners changing while the wake
+  line is written.
+  **As built** (six groups in parallel worktrees, each fix from a test
+  that failed before it, merged onto the branch): H1 `b775a8dd`
+  (`record_copy` refuses a copy naming a recipient with no record here,
+  whatever its word; a local listed recipient's copy and a project's copy
+  kept, the B11 pin). H2 `c2e845a0`, reworked `74240c89` once H1 had
+  removed what it read: a lead whose remote target's row has arrived and
+  its audience has not (no kept entry) is refused before the prompt in a
+  new draft, `LEAD_AUDIENCE_UNKNOWN`, nothing written; the check under
+  the lock keeps `LEAD_AUDIENCE`; without `access` a remote lead stays
+  plain as at the base. H3 `b3ed163b`: every verb that resolved a
+  `ThreadSeat` acts on its thread; a bound seat whose record no longer
+  holds the seat's session is refused (exit 4), as `retire_member` does
+  for a bound member; a project's seat reads its session's canonical
+  thread as at the base. H4 `5bc980a3`: in a channel an event for the
+  live alone is never marked held; its hold leaves it owed for that pass
+  with no mark and the next pass settles it by G2/G4, and `held_owed`
+  ignores such a mark an earlier build left; projects keep their marks.
+  H5: `out` from `reach_in` ends the lead's selection (`LEAD_NOT_IN`).
+  H6 `bf6227cb`: "sent to it directly" is printed after the append that
+  carries it, and `--in` with a thread no row reaches gets
+  `CANNOT_REACH`. H7 `f26b59ba`: `early_match` follows an event's
+  identity (log, writer, seq) into a batch of another shape;
+  `up_after_frame` compares within the upload's connection; each shown
+  failing on planted harness input; the last change to those checks. H8
+  `9fc0b5d2`: `Link.upload` classifies only a channel's batches. H9
+  `a0032402`: the manager's window strips ` (not in <log>)` from a
+  sender. H10 `eda58b13`, `bb98f540`: seven taught sentences the code
+  contradicted corrected (`answer` and `decide` for a blocked seat; the
+  reply to an outsider's post names the sender's project; `channel
+  create` and the self-add hint withheld from a session that is no
+  thread; the untagged post's trigger; the boundary of a re-add; "asked;
+  pending"), each touched example re-run as written. Gates GREEN on
+  `d4416afb`; sminos-idle 32,221.
+  **The wave's review** (one `reviewer-high` on `3484c05a..d4416afb`, the
+  holder's last round) confirmed nine, all the wave's, all fixed, each
+  from a failing test where it was code: R1 (introduced by H1) the copy
+  boundary had lost its check of a *local* recipient's privacy, now read
+  against the recipient's own record (`ff7b71f9`; a remote recipient
+  still always refused); R2 `who --thread` built its answer from two
+  states and now refuses a channel seat whose binding changed, as
+  `seat_ending` does, a project's seat as at the base (`a23600a5`); R3
+  each "sent to it directly" printed only with its own recipient's
+  append (`cbe2afe1`); R4 a departed thread is given by its own project's
+  qualified address instead of "drop --in", which failed for an
+  intermediate id prefix (`4c6f0b5f`); R7 the self-add hint is offered
+  only where `channel add` would take the caller (`_self`, which
+  `_caller` now reads through too), the event keeping its stamp
+  (`c1f94712`); R5, R6, R8, R9 the skill no longer teaches dropping a
+  frame by its id, says a re-add skips only what the thread's machine
+  already held, that only creating and adding oneself need a thread, and
+  that a pending add suspends no membership (`cae1277e`). No further
+  round, as the holder ordered. Found beside it and logged, not fixed
+  (`1ad0a040`): a member removed while its audience change is pending
+  stays `in` the roster (CH1's fold, reproduced at the merge base; its own
+  machine still refuses delivery).
 
 
 ## Outcomes & Retrospective
@@ -4171,13 +4273,15 @@ out off the uplink's consumer thread; the readers of a session's exchanges
 read a channel's; and sessions are taught it. A session in no channel
 sends, reads and is taught what it was at the merge base where B11 holds it
 (its roster, its frames and reply lines, its project's calls), and the
-idle gate stayed under its limit throughout (32,192 on the final head).
+idle gate stayed under its limit throughout (32,221 on the last wave's head).
 
-What it took: eleven milestones, each to the review bound; two whole
-readings of the range by the holder's panel (about forty and about
-forty-two merged findings), answered by two fix waves of thirty and sixteen
-items run in parallel worktrees, each fix from a test that failed before
-it; and one high-rung review of the second wave. Most of what the second
+What it took: eleven milestones, each to the review bound; three whole
+readings of the range by the holder's panel (confirmed 54, 50 and 32),
+answered by three fix waves of thirty, sixteen and ten items run in
+parallel worktrees, each fix from a test that failed before it; and one
+high-rung review of each of the last two waves (three findings, then
+nine, all fixed). The scene on a real engine ran three times: at M5, and
+on the final code before and after the last wave. Most of what the second
 reading confirmed was one of three classes, of which only the first was
 fixed: defects of the first wave's own code; states that change during a
 wait later than the checks the plan names; files whose permission changes
@@ -4193,7 +4297,17 @@ until its fixture was made unsettleable, and then failed on both arms).
 Parallel worktrees made two thirty-item waves tractable at the cost of one
 hand-merged paragraph each time.
 
+Lessons from the last reading: a rule built on knowledge kept about a
+remote peer was found open three times before the holder ruled it out of
+existence (H1), and removing it then removed a check the local case still
+needed (R1): a rule's deletion is reviewed for what else it guarded.
+Taught sentences were the largest single class of the last wave (seven),
+and the review of their correction found four more: a sentence about
+delivery needs the same run-as-written check an example gets.
+
 Left: the manager's digest does not query when its window cannot settle an
-item (the merge base's; the holder's ruling, a ticket of its own); the
-TECH-DEBT rows of section "sminos channels"; the final panel's reading of
-the range, which is the holder's.
+item (the merge base's; the holder's ruling, a ticket of its own); a
+member removed while its audience change is pending stays listed (CH1's
+fold, found in the last wave, logged); `sminos reply` on a blocked
+human-opened session prints its latest reply, not the pending question;
+the TECH-DEBT rows of section "sminos channels".
