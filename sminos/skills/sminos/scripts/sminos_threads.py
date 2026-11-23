@@ -2630,7 +2630,8 @@ def vm_info(names):
     except ValueError:
         d = None
     if not info_reply(d, names):
-        return Info("failed", "devcloud vm info gave no whole answer: %s" % first[:300], None)
+        # Nothing of a reply that is not whole is printed (Interfaces §3): not even its first line.
+        return Info("failed", "devcloud vm info gave no whole answer", None)
     return Info("asked", "", d)
 
 
@@ -2643,13 +2644,19 @@ def info_reply(d, names):
     §3), what `channel show`'s renderers trust: never an exception."""
     try:
         return _info_whole(d, {n.lower() for n in names})
-    except (AttributeError, KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
         return False
 
 
 def _number(v):
-    """A finite number of 0 or more, never a boolean."""
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+    """A number of 0 or more the renderers can use, never a boolean: finite
+    as a float (an integer past a float's range is no such number)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(v)) and v >= 0
+    except OverflowError:
+        return False
 
 
 def _named(v):
@@ -2661,15 +2668,15 @@ def _info_whole(d, asked):
         return False
     for h in d["hosts"]:
         if not (isinstance(h, dict) and _named(h.get("name")) and h["name"].lower() in asked
-                and _named(h.get("account"))
-                and (h.get("creator") is None or isinstance(h["creator"], str) and h["creator"][:1] == "@"
+                and _named(h.get("account")) and "creator" in h and "provider" in h
+                and (h["creator"] is None or isinstance(h["creator"], str) and h["creator"][:1] == "@"
                      and _HEX.fullmatch(h["creator"][1:]) is not None)):
             return False
         if _named(h.get("provider")) and "adopted" not in h:
             if not (_number(h.get("created")) and "spent" in h and (h["spent"] is None or _number(h["spent"]))
                     and "currency" in h and (h["currency"] is None or isinstance(h["currency"], str))):
                 return False
-        elif not (h.get("provider", "") is None and h.get("adopted") is True
+        elif not (h["provider"] is None and h.get("adopted") is True
                   and all(k in h and h[k] is None for k in ("created", "spent", "currency"))):
             return False
     for u in d["unknown"]:

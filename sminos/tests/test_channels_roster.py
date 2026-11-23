@@ -865,6 +865,20 @@ class Vms(Roster):
         self.assertIn("  beta  1 live, 0 stopped  vm, up 0m, 0.00 EUR so far", self.pool_lines(self.show()),
                       "no owner where the host holds none; an age never below 0m")
 
+    def test_the_owner_s_thread_for_an_older_writer_whose_joined_names_a_seat_unstamped(self):
+        sid, seat = str(uuidlib.uuid4()), str(uuidlib.uuid4())
+        w = "beta/%s" % sid
+        sminos.log_append(self.app, w, "joined", session=sid, alias="elder", name_source="user", machine="beta",
+                          cwd="/w", worktree="", role="", seat=seat, by="", session_kind="interactive")
+        sminos.log_append(self.app, w, "state", session=sid, state="idle", machine="beta")
+        sminos.forget_caches()
+        self.answer([vm("beta", "@" + sid[:8], self.up, 1.0, "EUR")])
+        self.assertIn("  beta  1 live, 0 stopped  vm owned by elder#%s, up 3d4h, 1.00 EUR so far" % sid[:8],
+                      self.pool_lines(self.show()))
+        pool = {e["machine"]: e for e in json.loads(self.show("--json"))["pool"]}
+        self.assertEqual(pool["beta"]["vm"]["owner"], {"creator": "@" + sid[:8], "thread": seat, "session": sid,
+                                                       "alias": "elder"}, "the seat its joined names is its thread")
+
     def test_partial_coverage_one_line_for_each_cause(self):
         self.answer([vm("beta", "@" + self.sid[:8], self.up, 1.0, "EUR"), vm("GAMMA", None, self.up),
                      vm("gamma", None, self.up, account="spare")],
@@ -915,10 +929,18 @@ class Vms(Roster):
             ("another exit", None, {"exit": 1, "stderr": "boom\n"}, "failed",
              "(a VM's owner, age and cost are not shown: devcloud vm info exited 1: boom)"),
             ("not the answer", None, {"stdout": '{"hosts": [{"name": "beta"}]}'}, "failed",
-             "(a VM's owner, age and cost are not shown: devcloud vm info gave no whole answer"),
+             "(a VM's owner, age and cost are not shown: devcloud vm info gave no whole answer)"),
             ("NaN", None, {"stdout": json.dumps({"hosts": [vm("beta", None, self.up, float("nan"))], "unknown": [],
                                                  "listed": [], "unused": []})}, "failed",
-             "(a VM's owner, age and cost are not shown: devcloud vm info gave no whole answer"),
+             "(a VM's owner, age and cost are not shown: devcloud vm info gave no whole answer)"),
+            ("a host with no creator", None,
+             {"stdout": json.dumps({"hosts": [{k: v for k, v in vm("beta", "@abcd1234", self.up, 1.0).items()
+                                               if k != "creator"}], "unknown": [], "listed": [], "unused": []})},
+             "failed", "(a VM's owner, age and cost are not shown: devcloud vm info gave no whole answer)"),
+            ("an age past a float's range", None,
+             {"stdout": json.dumps({"hosts": [vm("beta", "@abcd1234", 10 ** 400, 1.0)], "unknown": [], "listed": [],
+                                    "unused": []})},
+             "failed", "(a VM's owner, age and cost are not shown: devcloud vm info gave no whole answer)"),
         ]
         for why, patch, info, state, line in cases:
             with self.subTest(why):

@@ -14,8 +14,10 @@ docs/doperpowers/plans/2026-11-23-sminos-environments-en-g2.md, Interfaces
   another exit, and each reply that is not whole (Interfaces §3): NaN or an
   infinity, a boolean or a string where a number goes, a provider's host
   with `created` null, an adopted host with a number there, a negative
-  number, an entry of `unknown` that is no object or lacks `account`, a
-  host whose name was not asked, output that is not JSON.
+  number, an integer past a float's range, a host without `creator` or
+  `provider`, an entry of `unknown` that is no object or lacks `account`,
+  a host whose name was not asked, output that is not JSON; nothing of
+  such a reply is said back.
 
 Hermetic: test_threads.Machine's temporary HOME and SMINOS_HOME, and the
 suite's stand-in for devcloud (devcloud_standin.py); the driver's module
@@ -208,13 +210,30 @@ class VmInfo(Machine):
             with self.subTest(case):
                 self.standin(stdout=self.reply(case))
                 got = self.ask()
-                self.assertEqual((got.state, got.reply), ("failed", None))
-                self.assertIn("devcloud vm info gave no whole answer", got.why)
+                self.assertEqual((got.state, got.reply, got.why),
+                                 ("failed", None, "devcloud vm info gave no whole answer"), "nothing of it said")
         for stdout in ("not json", "[]", '{"hosts": []}', json.dumps(dict(json.loads(self.reply("empty")), listed=[""])),
                        self.reply("empty").replace('"listed"', '"listed_"')):
             with self.subTest(stdout=stdout):
                 self.standin(stdout=stdout)
                 self.assertEqual(self.ask().state, "failed")
+        whole = json.loads(self.reply("whole"))
+        no_creator = json.loads(self.reply("whole"))
+        del no_creator["hosts"][0]["creator"]
+        no_provider = json.loads(self.reply("whole"))
+        del no_provider["hosts"][1]["provider"]
+        for why, d in (("a host with no creator", no_creator), ("an adopted host with no provider", no_provider)):
+            with self.subTest(why):
+                self.standin(stdout=json.dumps(d))
+                self.assertEqual(self.ask().state, "failed")
+        for key in ("created", "spent"):
+            with self.subTest("an integer past a float's range in " + key):
+                d = json.loads(self.reply("whole"))
+                d["hosts"][0][key] = 10 ** 400
+                self.standin(stdout=json.dumps(d))
+                got = self.ask()
+                self.assertEqual((got.state, got.why), ("failed", "devcloud vm info gave no whole answer"))
+        self.assertTrue(threads.info_reply(whole, NAMES), "the whole one, read the same way, is whole")
         big = json.loads(self.reply("whole"))
         big["hosts"][0]["spent"] = 1
         self.standin(stdout=json.dumps(big).replace('"spent": 1', '"spent": 1e400'))

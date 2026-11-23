@@ -127,6 +127,27 @@ class InfoTest(DriverBase):
                           ("dc-x-0003", NOW - 3600, None, None)])
         self.assertNotIn("NaN", self.out.getvalue())
 
+    def test_a_cost_that_cannot_be_represented_is_none_and_the_other_hosts_keep_theirs(self):
+        data = self.state()
+        data["types"] = {"here": [
+            {"type": "medium", "hourly_price": 0.1178, "currency": "EUR"},
+            {"type": "huge", "hourly_price": 10 ** 400, "currency": "EUR"},     # past a float's range
+            {"type": "dear", "hourly_price": 1e308, "currency": "EUR"},         # finite, its amount is not
+        ]}
+        self.state_file.write_text(json.dumps(data))
+        for name, type_ in (("dc-x-0001", "medium"), ("dc-x-0002", "huge"), ("dc-x-0003", "dear")):
+            self.add_server(name, vm_labels(), created=NOW - 7200)
+            data = self.state()
+            data["servers"][-1]["type"] = type_
+            self.state_file.write_text(json.dumps(data))
+        code, answer = self.ask("dc-x-0001", "dc-x-0002", "dc-x-0003")
+        self.assertEqual(code, 0)
+        self.assertEqual([(h["name"], h["spent"] is not None, h["currency"]) for h in answer["hosts"]],
+                         [("dc-x-0001", True, "EUR"), ("dc-x-0002", False, None), ("dc-x-0003", False, None)])
+        self.assertAlmostEqual(answer["hosts"][0]["spent"], 0.1178 * 2, places=9)
+        self.assertNotIn("Infinity", self.out.getvalue())
+        json.loads(self.out.getvalue(), parse_constant=lambda name: self.fail(name))
+
     def test_a_type_list_that_fails_leaves_the_host_with_no_cost(self):
         self.add_server("dc-x-0001", vm_labels(**{"devcloud-creator": "1a2b3c4d"}))
         self.behave(fail={"types": 1})
@@ -174,15 +195,20 @@ class InfoTest(DriverBase):
 
     def test_an_unusable_account_is_unknown_and_one_never_used_here_is_unused(self):
         self.add_account("spare")
-        self.add_account("never")
+        # An account another profile used: its provider passed there (that profile made dc-x-0001 in it), and
+        # never under this one, which holds no pass artifact of it.
+        never = self.add_account("never")
+        self.add_to(never, "dc-x-0001", vm_labels(**{"devcloud-creator": "1a2b3c4d"}))
         providers = self.profile_dir / "providers"
         (providers / "spare.pass.json").unlink()                 # a copy without its record: a sign of a pass
         (providers / ".pass" / "never").unlink()                  # no sign of any pass under this profile
         (providers / "never.pass.json").unlink()
         code, answer = self.ask("dc-x-0001")
         self.assertEqual(code, 0)
+        self.assertEqual(answer["hosts"], [], "the other profile's VM is not seen from here")
         self.assertEqual([(m["account"], m["failed"]) for m in answer["unknown"]], [("spare", "account")])
         self.assertEqual((answer["listed"], answer["unused"]), (["main"], ["never"]))
+        self.assertEqual(json.loads(never.read_text())["calls"], [], "nothing asked of it")
         self.assertIn("never", self.err.getvalue())
 
     def test_an_adoption_record_that_does_not_read_is_unknown(self):

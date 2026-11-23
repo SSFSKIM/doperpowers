@@ -89,12 +89,22 @@ def _fate(ctx, error):
 
 def _cost(type_, created, now):
     """(spent, currency) at the type's list price, or (None, None) where the
-    type holds no price that is a finite number of 0 or more."""
+    type holds no price that is a finite number of 0 or more, or the amount
+    it comes to is no finite number (a price or an age past a float's range,
+    a product that overflows): one host's cost not represented, never a
+    reply its reader must discard."""
     price = (type_ or {}).get("hourly_price")
-    if isinstance(price, bool) or not isinstance(price, (int, float)) or not math.isfinite(price) or price < 0:
+    if isinstance(price, bool) or not isinstance(price, (int, float)):
+        return None, None
+    try:
+        price = float(price)
+        spent = ops.spent({"hourly_price": price}, created, now)
+    except OverflowError:
+        return None, None
+    if not (math.isfinite(price) and price >= 0 and math.isfinite(spent)):
         return None, None
     currency = type_.get("currency")
-    return ops.spent(type_, created, now), currency if isinstance(currency, str) else None
+    return spent, currency if isinstance(currency, str) else None
 
 
 def run(ctx, names, within=None):

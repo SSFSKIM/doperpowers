@@ -2642,29 +2642,54 @@ def vms_of(held):
     for h in reply["hosts"]:
         found.setdefault(h["name"].lower(), []).append(h)
     ambiguous = [n for n in names if len(found.get(n.lower(), ())) > 1]
-    owners, hosts = {}, {}
-    for n in names:
-        if len(found.get(n.lower(), ())) == 1:
-            h = found[n.lower()][0]
-            if h["creator"] is not None and h["creator"] not in owners:
-                owners[h["creator"]] = _owner(h["creator"])
-            hosts[n.lower()] = dict(h, owner=owners.get(h["creator"]))
+    shown = [found[n.lower()][0] for n in names if len(found.get(n.lower(), ())) == 1]
+    owners = _owners({h["creator"] for h in shown if h["creator"] is not None})
+    hosts = {h["name"].lower(): dict(h, owner=owners.get(h["creator"])) for h in shown}
     notes = [(NOT_IN_TIME if u["failed"] == "time" else COULD_NOT_LIST) % u["account"] for u in reply["unknown"]]
     notes += [NEVER_USED % a for a in reply["unused"]] + [TWO_HOSTS % n for n in ambiguous]
     return Vms({"state": "asked", "why": "", "coverage": "partial" if notes else "whole",
                 "unknown": reply["unknown"], "unused": reply["unused"], "ambiguous": ambiguous}, hosts, notes)
 
 
-def _owner(creator):
-    """The thread a host's creator (`@<short>`) names, by the rule a
-    `@<short>` tag resolves by across the org (X2): {creator, thread,
-    session, alias}, the last three None where no one thread, or more than
-    one, answers to it."""
-    found = sminos.one_per_session(sminos.match_members(creator[1:], "", sminos.org_scope(), alias=False))
-    if len(found) != 1:
-        return {"creator": creator, "thread": None, "session": None, "alias": None}
-    p, m = found[0]
-    return {"creator": creator, "thread": row_thread(p, m) or None, "session": m.session, "alias": m.alias}
+def _owners(creators):
+    """{creator: {creator, thread, session, alias}} for hosts' creators
+    (`@<short>`), each the thread its short names by the rule a `@<short>`
+    tag resolves by across the org (X2: sminos.match_members with no alias,
+    a member's current id before another id of it, current_first; one
+    session once, one_per_session), the last three None where no one
+    thread, or more than one, answers to it. One pass over the org's
+    members for every creator at once: what it costs is one read of the
+    members of every project in org_scope, as one `@<short>` tag's lookup
+    reads them, whatever the number of creators. A member's `thread` is
+    its projection's (sminos.row_thread: its latest joined's stamp, else
+    the seat an unstamped one names)."""
+    if not creators:
+        return {}
+    shorts = {c[1:]: c for c in creators}
+    hits = {c: [] for c in creators}
+    for p in sminos.org_scope():
+        for m in sminos.members(p):
+            if m.state == "retired" or sminos.has_ended(m) or not m.session:
+                continue
+            ids = {}
+            for how, xs in (("id", (m.session,)), ("former-id", sminos.former_ids(m))):
+                for x in xs:
+                    if x:
+                        ids.setdefault(x, how)
+                        ids.setdefault(x[:8], how)
+            for short, creator in shorts.items():
+                if short in ids:
+                    hits[creator].append((p, m, ids[short]))
+    out = {}
+    for creator in creators:
+        found = sminos.one_per_session(sminos.current_first(hits[creator], creator[1:]))
+        if len(found) != 1:
+            out[creator] = {"creator": creator, "thread": None, "session": None, "alias": None}
+            continue
+        p, m = found[0]
+        out[creator] = {"creator": creator, "thread": sminos.row_thread(sminos.view_of(p).info.get(m.session)) or None,
+                        "session": m.session, "alias": m.alias}
+    return out
 
 
 def _age(created, now):
