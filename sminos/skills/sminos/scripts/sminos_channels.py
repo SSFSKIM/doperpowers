@@ -2524,6 +2524,8 @@ LEAD_RESET_ONLY = ("the lead of %s: its clearing event was written (%s has no le
 LEAD_AUDIENCE = "%s's audience changed while its lead was written: nothing was written. Run it again"
 LEAD_RESET_AUDIENCE = ("the lead of %s: its clearing event was written (%s has no lead now); the private lead was not, "
                        "because %s's audience changed while it was written. Run it again")
+LEAD_AUDIENCE_UNKNOWN = ("%s's audience is not known on this machine yet (its endpoint has not given its word for it): "
+                         "nothing was written. Run it again once it has")
 LEAD_UNMARKED = "this machine's name (%s) is no machine name a reader honours a lead under: nothing was written"
 
 
@@ -2598,6 +2600,10 @@ def _lead_row(channel, q):
             where, p, m = reach_in(channel, name, short)
             if where == "in":
                 return p, m
+            # A thread that was in the channel and is not now: the name is the channel's, never tried again
+            # outside it (where an id can be another thread's session).
+            sminos.die(LEAD_NOT_IN % (_label(m.alias, m.session) if m is not None else q, channel.name, channel.name),
+                       1)
     t = _target(q)
     for p, m in rows:
         got = thread_of_row(p, m)
@@ -2606,12 +2612,23 @@ def _lead_row(channel, q):
     sminos.die(LEAD_NOT_IN % (t.label, channel.name, channel.name), 1)
 
 
+def _plain_unknown(session, audience):
+    """Whether the plain writer was chosen for another machine's session whose audience this machine has no word
+    for, where its endpoint carries access: audience_of's None for it is no knowledge that it is listed
+    (sminos_audience.known_listed), and a plain lead would name it to every reader while the hub withholds it."""
+    au = sminos.audience_module()
+    return audience is None and not au.is_local(session) and au.capable() and not au.known_listed([session])
+
+
 def _lead_choice(channel, session, alias, label):
     """The one stream a lead naming that session goes under (sminos.stream_choice for that one recipient, from
-    the machine's human writer): (writer, audience); exit 1 in the choice's own words where it refuses."""
+    the machine's human writer): (writer, audience); exit 1 in the choice's own words where it refuses, and
+    LEAD_AUDIENCE_UNKNOWN for another machine's session whose audience is not known here (_plain_unknown)."""
     choice, refusal = sminos.stream_choice(channel, "", [{"session": session, "alias": alias}], "the lead %s" % label)
     if refusal:
         sminos.die(refusal[0], 1)
+    if _plain_unknown(session, choice[0][1]):
+        sminos.die(LEAD_AUDIENCE_UNKNOWN % label, 1)
     return choice[0][0], choice[0][1]
 
 
@@ -2682,7 +2699,8 @@ def lead(q, name):
         if not same_name(events):
             return False
         choice, refusal = sminos.stream_choice(channel, "", [{"session": session, "alias": row[1].alias}], label)
-        return not refusal and (choice[0][0], choice[0][1]) == (stream, audience)
+        return not refusal and (choice[0][0], choice[0][1]) == (stream, audience) \
+            and not _plain_unknown(session, audience)
 
     def append(w, fields, queue=True, guard=same_name):
         got = sminos._append(channel, w, [{"kind": "channel-lead", **fields}], guard=guard, queue=queue)

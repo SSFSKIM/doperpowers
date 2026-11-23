@@ -518,6 +518,77 @@ class Verb(Lead):
                       "reader#%s's audience changed while it was written" % rsid[:8], out)
         self.assertEqual([e["thread"] for e in self.leads()], [None], "the reset alone")
 
+    def test_h2_a_remote_thread_whose_audience_is_not_known_here_is_refused(self):
+        """Final reading H2: its row has come and its audience has not. audience_of's None for it is no knowledge
+        that it is listed: the plain writer would name it to every reader while the hub withholds it, and no
+        clearing event would go first."""
+        self.au.keep_capabilities(["channels", "access"])
+        atid, asid, _ = self.live("alder")
+        self.lead_event(atid, asid)
+        tid, sid = self.far("faraway")
+        before = self.logs()
+        code, out, asked = self.tty("y", "channel", "lead", "desk", "faraway")
+        self.refused((code, out), "faraway#%s's audience is not known on this machine yet" % sid[:8], 1, before)
+        self.assertFalse(asked, "refused before the prompt")
+        self.assertEqual(self.lead_now(), "alder")
+        # Once its machine's word says it is listed, the lead goes plain.
+        self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(
+            sid, ["m-far"], None, 1)}))
+        code, out, _ = self.tty("y", "channel", "lead", "desk", "faraway")
+        self.assertEqual(code, 0, out)
+        e = self.leads()[-1]
+        self.assertEqual((e["writer"], e["thread"]), (sminos.writer_id(), tid))
+
+    def test_h2_the_word_withdrawn_under_the_writers_lock_writes_nothing(self):
+        self.au.keep_capabilities(["channels", "access"])
+        tid, sid = self.far("faraway")
+        self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(
+            sid, ["m-far"], None, 1)}))
+        self.confirmed_in_process()
+        real = sminos._append
+
+        def append(project, writer, events, **kw):
+            if events and events[0].get("kind") == "channel-lead" and events[0].get("thread"):
+                with open(self.au.audiences_path()) as f:
+                    d = json.load(f)
+                d["sessions"].pop(sid)
+                sminos.write_json(self.au.audiences_path(), d, mode=0o600)
+            return real(project, writer, events, **kw)
+        before = self.logs()
+        with mock.patch.object(sminos, "_append", append):
+            code, out = self.at_terminal("channel", "lead", "desk", "faraway")
+        self.assertEqual(code, 1, out)
+        self.assertIn("faraway#%s's audience changed while its lead was written" % sid[:8], out)
+        self.assertEqual({k: v for k, v in self.logs().items() if v}, before)
+
+    def test_h5_a_former_member_named_by_an_id_a_current_members_session_holds_ends_the_selection(self):
+        """Final reading H5: the channel answers `out` for the departed thread; the name is not tried again
+        outside the channel, where it would reach the session's current occupant."""
+        x, old, y = (str(uuidlib.uuid4()) for _ in range(3))
+        w = "%s/%s" % (FAR, old)
+        for kind, fields in (("joined", dict(alias="leaver", name_source="user", machine=FAR, cwd="/w", worktree="",
+                                             role="", seat="", by="", session_kind="interactive", thread=x)),
+                             ("state", dict(state="idle", machine=FAR)),
+                             ("channels", dict(thread=x, op=os.urandom(8).hex(), channels=[DESK])),
+                             ("channels", dict(thread=x, op=os.urandom(8).hex(), channels=[]))):
+            time.sleep(0.002)
+            sminos.log_append(self.app, w, kind, session=old, **fields)
+        w = "%s/%s" % (FAR, x)
+        for kind, fields in (("joined", dict(alias="occupant", name_source="user", machine=FAR, cwd="/w",
+                                             worktree="", role="", seat="", by="", session_kind="interactive",
+                                             thread=y)),
+                             ("state", dict(state="idle", machine=FAR)),
+                             ("channels", dict(thread=y, op=os.urandom(8).hex(), channels=[DESK]))):
+            time.sleep(0.002)
+            sminos.log_append(self.app, w, kind, session=x, **fields)
+        sminos.forget_caches()
+        self.assertEqual(channels.reach_in(self.chan(DESK), x)[0], "out")
+        before = self.logs()
+        code, out, asked = self.tty("y", "channel", "lead", "desk", x)
+        self.assertFalse(asked, "the occupant is not offered")
+        self.refused((code, out), "is not in desk: sminos channel add desk <thread> places it first", 1, before)
+        self.assertNotIn("occupant", out)
+
     def test_f23_an_id_shaped_alias_is_named_through_the_channel_from_another_project(self):
         """Frontier F23: an alias in id form that no thread's or session's id begins with is looked up as an alias in
         the channel (M1's fallback), as a tag in it is."""
