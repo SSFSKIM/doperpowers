@@ -4036,6 +4036,22 @@ them today.
     relay setup of `test-channels-machines.sh` (one of two runs on
     `e7ff8f0e`) and `test_wake_transitions`' back-off (not reproduced on
     either tree).
+- 2026-11-23 — **A contract with MAWS: `channels` in a welcome implies
+  `reach` and `access`.** Every MAWS endpoint that welcomes `channels` also
+  welcomes `access` and `reach` (its `welcomeCapabilities` lists both
+  unconditionally, since before `channels` existed; MAWS's MW plan §J, its
+  master `aa5e549bd`, confirmed by its architect through the holder). So
+  the round-2 frontier finding B:scalpel-2#1 (a refilled seat handed a
+  private event where an endpoint lists `access` and not `reach`) cannot
+  occur: the holder dismissed it (N7), no row is written and nothing is
+  built. Should MAWS ever welcome `channels` without `reach`, that case
+  returns.
+- 2026-11-23 — **The frontier review's second reading, triaged by the
+  holder** (`frontier2-triage.md`): sixteen for a second wave (G1 to G16;
+  G15 the relay step's flake, G16 a TECH-DEBT row), one for M10 (`say`'s
+  help against the lead), N1 to N6 logged in TECH-DEBT (`625e1c82`), N7
+  dismissed (above). The wave gets one high-rung review of its own diff and
+  no third whole reading now; the final panel after M11 is the third.
 
 
 ## Outcomes & Retrospective
