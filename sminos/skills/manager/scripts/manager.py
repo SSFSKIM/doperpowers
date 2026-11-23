@@ -253,13 +253,25 @@ def _owner_logs(project):
     return [(p.name, p.id, S.log_read(p)) for p in ([project] if project is not None else []) + S.known_channels()]
 
 
-def _owner_threads(project, sessions):
-    """The threads the lineage's sessions are, as their rows in the project's log are stamped (sminos.info_thread):
-    whom a channel's message to this lineage names, whichever session it was addressed to."""
-    if project is None:
-        return set()
-    info = S._projection(S.log_read(project))
-    return {t for t in (S.info_thread(info.get(s)) for s in sessions) if t}
+def _owner_threads(events, sessions):
+    """The threads the lineage's sessions have been, as their own `joined`, `retired` and statements in the
+    project's log (`events`) stamp them: whom a channel's message to this lineage names, whichever session it was
+    addressed to. Every stamp, not the latest: a session reused by another thread is both, each in its own episode,
+    and a frame both could have received certifies neither (OwnerWords' exactly-one rule)."""
+    sessions = set(sessions)
+    return {e["thread"] for e in events
+            if e.get("kind") in ("joined", "retired", "channels") and e.get("session") in sessions
+            and isinstance(e.get("thread"), str) and e["thread"]
+            and S.writer_session(e.get("writer") or "") == e["session"]}
+
+
+def _owner_words(project, sessions):
+    """The OwnerWords a window's deliveries are corroborated by: the logs read once, and the lineage's threads
+    derived from its project's events only when a channel's log is among them."""
+    logs = _owner_logs(project)
+    channel = any(S.is_channel_id(log_id) for _, log_id, _ in logs)
+    threads = _owner_threads(logs[0][2], sessions) if channel and project is not None else set()
+    return W.OwnerWords(logs, sessions, threads)
 
 
 def cmd_transcript(a):
@@ -278,7 +290,7 @@ def cmd_transcript(a):
 
     def corroborate(text):
         if "words" not in owner:
-            owner["words"] = W.OwnerWords(_owner_logs(t.project), t.sessions, _owner_threads(t.project, t.sessions))
+            owner["words"] = _owner_words(t.project, t.sessions)
         return owner["words"].corroborates(text)
 
     try:

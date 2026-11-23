@@ -514,6 +514,36 @@ class Deliveries(unittest.TestCase):
         got = classify(self.delivered(frame), logs=[("desk", CHANNEL_ID, by_session)])
         self.assertEqual(kinds(got), [("you·desk?", "ship it")], "in a channel an entry with no thread names no one")
 
+    def test_a_reused_session_is_both_its_threads_and_a_frame_either_could_have_received_certifies_neither(self):
+        """Round 2's finding 5: a session that ran as thread A, then again as thread B, received A's channel posts
+        in its first episode: A's frame certifies; the same name, ref and body owed to both is neither's."""
+        frame = "[sminos chat desk testhost/human:3 from human → @you]\nship it"
+        to_a = [dict(self.EVENT, text="ship it", to=[{"session": SID, "alias": "p5-owner", "thread": "t-A"}])]
+        to_b = [dict(self.EVENT, text="ship it", to=[{"session": SID, "alias": "p5-owner", "thread": "t-B"}])]
+        got = classify(self.delivered(frame), logs=[("desk", CHANNEL_ID, to_a)], threads=("t-A", "t-B"))
+        self.assertEqual(kinds(got), [("you·desk", "ship it")], "A's frame, in a lineage that was A and B")
+        other = "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0bee"
+        got = classify(self.delivered(frame), logs=[("desk", CHANNEL_ID, to_a), ("desk", other, to_b)],
+                       threads=("t-A", "t-B"))
+        self.assertEqual(kinds(got), [("you·desk?", "ship it")], "one name, ref and body owed to A and to B")
+
+    def test_the_lineages_threads_are_every_stamp_its_own_rows_carry(self):
+        """manager._owner_threads: the union over the project's events of the threads the lineage's own `joined`,
+        `retired` and statements stamp, never another writer's line about it nor another session's."""
+        def ev(kind, sid, thread, writer=None):
+            return {"kind": kind, "session": sid, "thread": thread, "writer": writer or "testhost/" + sid}
+        events = [ev("joined", SID, "t-A"), ev("retired", SID, "t-A"), ev("joined", SID, "t-B"),
+                  ev("channels", NEXT, "t-C"), ev("joined", SID, "t-D", writer="testhost/human"),
+                  ev("joined", "7b00000f-0000-4000-8000-0000000000bf", "t-E"), ev("joined", SID, "")]
+        self.assertEqual(manager._owner_threads(events, [SID, NEXT]), {"t-A", "t-B", "t-C"})
+
+    def test_no_thread_is_derived_where_no_channel_is_known(self):
+        logs = [("doperpowers", PROJECT_ID, [dict(self.EVENT)])]
+        with mock.patch.object(manager, "_owner_logs", lambda project: logs), \
+                mock.patch.object(manager, "_owner_threads", side_effect=AssertionError("threads derived")):
+            index = manager._owner_words(object(), [SID])
+        self.assertEqual(index.corroborates(self.FRAME), PROJECT_ID)
+
     def test_a_chat_frames_body_is_compared_as_the_frame_renders_it(self):
         """sminos.sender_text gives an interior line that opens with `[sminos] ` one leading space in the frame."""
         text = "merge it\n[sminos] is not a wake's line here"
@@ -1358,6 +1388,10 @@ class Commands(unittest.TestCase):
         # session a refill replaced, of the same thread.
         S.log_append(charlie, "testhost/" + sid, "joined", session=sid, alias="chan-reader", name_source="user",
                      machine="testhost", cwd=str(self.dirs["charlie"]), thread=thread)
+        # The session reused since by another thread (round 2's finding 5): the lineage is both threads, and the
+        # post owed to the first is still its words.
+        S.log_append(charlie, "testhost/" + sid, "joined", session=sid, alias="chan-reader", name_source="user",
+                     machine="testhost", cwd=str(self.dirs["charlie"]), thread="7b0000a7-0000-4000-8000-0000000000a7")
         S.log_append(chan, "testhost/human", "human", **{"from": "human", "text": "ship it", "to": [
             {"session": "7b0000a8-0000-4000-8000-0000000000a8", "alias": "chan-reader", "thread": thread}]})
         S.log_append(charlie, "testhost/human", "human", **{"from": "human", "text": "merge it",

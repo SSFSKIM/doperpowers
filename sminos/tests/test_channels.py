@@ -924,7 +924,7 @@ class Roster(Machine):
 
     def reader(self, thread="7e000000-0000-4000-8000-0000000000aa", sid="7e000001-0000-4000-8000-0000000000a1"):
         """A session of app whose thread's statement names the channel, written as its own writer writes them:
-        its session."""
+        its session. A reader in a channel, so a tag it reads names the project, its own too."""
         self.joined(sid, "reader", thread, machine=MACHINE)
         sminos.log_append(self.p, "%s/%s" % (MACHINE, sid), "channels", session=sid, thread=thread, channels=[DESK],
                           op="add")
@@ -1005,7 +1005,7 @@ class Roster(Machine):
         self.retired(old, "replaced")
         self.joined(new, "peer-a", pt)
         said = self.roster(rsid)
-        self.assertIn("@peer-a  peer-a [%s], app on beta" % new[:8], said)
+        self.assertIn("@app/peer-a  peer-a [%s], app on beta" % new[:8], said)
         self.assertNotIn("ended", said)
 
     def test_a_peer_handed_off_whose_old_session_another_thread_reuses_is_the_session_it_continues_in(self):
@@ -1017,7 +1017,7 @@ class Roster(Machine):
         self.joined(new, "peer-h", pt)
         self.joined(old, "reuser", other)   # the old session runs again as another thread
         said = self.roster(rsid)
-        self.assertIn("@peer-h  peer-h [%s], app on beta" % new[:8], said)
+        self.assertIn("@app/peer-h  peer-h [%s], app on beta" % new[:8], said)
         self.assertNotIn("reuser", said)
 
     def test_a_peer_whose_move_reads_destination_first_is_tagged_in_the_project_it_moved_to(self):
@@ -1055,7 +1055,7 @@ class Roster(Machine):
         peer, pt = "7e0000f3-0000-4000-8000-0000000000f3", "7e0000f8-0000-4000-8000-0000000000f8"
         self.joined(peer, "peer-r", pt)
         self.said(peer, pt, "peer-r", [(old, rt)])
-        self.assertIn("@peer-r  peer-r [%s], app on beta" % peer[:8], self.roster(new))
+        self.assertIn("@app/peer-r  peer-r [%s], app on beta" % peer[:8], self.roster(new))
 
     def test_an_ended_peer_met_in_a_channel_is_named_as_its_message_named_it(self):
         rsid, rt = self.reader()
@@ -1068,22 +1068,137 @@ class Roster(Machine):
         self.assertIn("the-name-then [%s], app on beta: its session ended, no tag reaches it" % sid[:8], said)
         self.assertNotIn("renamed-since", said)
 
-    def test_past_the_deadline_no_channel_is_looked_for_and_no_project_read_for_a_thread(self):
-        rsid, rt = self.reader()
-        self.joined("7e000201-0000-4000-8000-000000000201", "in-app", "7e000209-0000-4000-8000-000000000209")
+    def clock(self, at=0.0):
+        """The roster's clock made a test's: `moved()` puts it past every deadline the roster read from it."""
+        now = [at]
+        patch = mock.patch.object(sminos, "roster_clock", lambda: now[0])
+        patch.start()
+        self.addCleanup(patch.stop)
+        return lambda: now.__setitem__(0, now[0] + 2 * sminos.ROSTER_BUDGET)
+
+    def moved_peer(self, rsid, rt):
+        """A project peer of app the reader wrote, and a peer met in the channel whose row moved to elsewhere,
+        its retirement in app not imported yet: its app row is stale. The peers' sessions."""
+        ordinary, sid, pt = ("7e0002%d1-0000-4000-8000-0000000002%d1" % (n, n) for n in (0, 1, 9))
+        self.joined(ordinary, "in-app", "7e000209-0000-4000-8000-000000000209")
         sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "say", **{
-            "from": "reader", "text": "hi", "to": [{"session": "7e000201-0000-4000-8000-000000000201",
-                                                   "alias": "in-app"}]})
+            "from": "reader", "text": "hi", "to": [{"session": ordinary, "alias": "in-app"}]})
+        dest = self.project("9f2e3d4c-5b6a-4789-8abc-def012345678", "elsewhere")
+        self.joined(sid, "channel-peer", pt)
+        self.said(sid, pt, "channel-peer", [(rsid, rt)])
+        time.sleep(0.002)
+        self.joined(sid, "channel-peer", pt, p=dest)
+        return ordinary, sid
+
+    def test_a_deadline_crossed_in_the_thread_scan_names_the_channel_peer_untagged_and_keeps_the_project_peer(self):
+        """Round 2's finding 1: a thread's row is never chosen from the projects read before the deadline, where
+        the one it moved to was not; a project's peer, looked for first, keeps its tag."""
+        rsid, rt = self.reader()
+        ordinary, sid = self.moved_peer(rsid, rt)
+        whole = self.roster(rsid)
+        self.assertIn("@elsewhere/channel-peer  channel-peer [%s]" % sid[:8], whole)
+        self.assertIn("@app/in-app  in-app [%s]" % ordinary[:8], whole)
+        move = self.clock()
+        real_index, real_known, scanning = sminos._roster_thread_index, sminos.known_project, []
+
+        def known(name, *a, **k):
+            p = real_known(name, *a, **k)
+            if scanning and name == PROJ:
+                move()   # app read; elsewhere, after it in the scan's order, is not begun
+            return p
+        with mock.patch.object(sminos, "_roster_thread_index", lambda *a, **k: scanning.append(1) or real_index(*a, **k)), \
+                mock.patch.object(sminos, "known_project", known):
+            said = self.roster(rsid)
+        self.assertTrue(scanning)
+        self.assertIn("@app/in-app  in-app [%s]" % ordinary[:8], said)
+        self.assertIn("channel-peer [%s], met in a channel: where its thread is now was not read in time, no tag"
+                      " given" % sid[:8], said)
+        self.assertNotIn("@channel-peer", said)
+        self.assertNotIn("@app/channel-peer", said)
+
+    def test_past_the_deadline_no_channel_is_looked_for_and_no_project_read_for_a_thread(self):
+        """Round 2's finding 2: no unit of work begins past the deadline: a statement log's replay, the
+        registrations, a channel's log, a project of the thread index."""
+        rsid, rt = self.reader()
         self.said("7e000202-0000-4000-8000-000000000202", "7e000208-0000-4000-8000-000000000208", "far",
                   [(rsid, rt)])
-        sminos.forget_caches()
-        with mock.patch.object(sminos, "known_channels", side_effect=AssertionError("no channel looked for")):
-            rows = sminos._roster_exchanges(rsid, [self.p], until=time.monotonic() - 1)
-        self.assertEqual([k[1] for k in rows], ["7e000201-0000-4000-8000-000000000201"], "the project's results stand")
-        index = {"read": set(), "rows": {}}
-        self.assertIsNone(sminos._roster_thread_row("7e000208-0000-4000-8000-000000000208", "", sminos.seats(),
-                                                    index, until=time.monotonic() - 1))
+        rows, context = sminos._roster_exchanges(rsid, [self.p])
+        self.assertTrue(context["stated"])
+        move = self.clock()
+        move()
+        with mock.patch.object(sminos, "known_channels", side_effect=AssertionError("no channel looked for")), \
+                mock.patch.object(sminos, "_roster_statements", side_effect=AssertionError("no log replayed")):
+            self.assertTrue(sminos._roster_channel_exchanges(rows, context, until=0.0),
+                            "a replay not finished qualifies tags")
+        self.assertEqual(rows, {})
+        index = {"read": set(), "rows": {}, "complete": False}
+        self.assertEqual(sminos._roster_thread_row("7e000208-0000-4000-8000-000000000208", sminos.seats(), index,
+                                                   until=0.0), (None, False))
         self.assertEqual(index["read"], set(), "no project read past the deadline")
+
+    def test_past_the_deadline_between_channels_the_next_channel_is_not_read(self):
+        rsid, rt = self.reader()
+        lobby = self.channel("0123abcd-4567-8abc-a123-456789abcdef", "lobby")
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "channels", session=rsid, thread=rt,
+                          channels=[DESK, lobby.id], op="add")
+        self.said("7e000301-0000-4000-8000-000000000301", "7e000309-0000-4000-8000-000000000309", "at-desk",
+                  [(rsid, rt)])
+        self.said("7e000302-0000-4000-8000-000000000302", "7e000308-0000-4000-8000-000000000308", "at-lobby",
+                  [(rsid, rt)], c=lobby)
+        move, read, real = self.clock(), [], sminos.log_read
+
+        def log_read(p, *a, **k):
+            if sminos.is_channel_id(p.id):
+                read.append(p.id)
+                move()
+            return real(p, *a, **k)
+        rows, context = sminos._roster_exchanges(rsid, [self.p])
+        with mock.patch.object(sminos, "log_read", log_read):
+            sminos._roster_channel_exchanges(rows, context, until=1.0)
+        self.assertEqual(len(read), 1, read)
+        self.assertEqual(len(rows), 1, rows)
+
+    def test_a_reader_in_no_channel_reads_no_thread_record_for_its_project_roster(self):
+        """Round 2's finding 3: whether the reader holds a channel is read from its project's statements, already
+        read; a reader with none never asks the thread records, and its project peer's tag is the bare one."""
+        rsid, peer = "7e000401-0000-4000-8000-000000000401", "7e000402-0000-4000-8000-000000000402"
+        self.joined(rsid, "reader", "7e000409-0000-4000-8000-000000000409", machine=MACHINE)
+        self.joined(peer, "in-app", "7e000408-0000-4000-8000-000000000408")
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "say", **{
+            "from": "reader", "text": "hi", "to": [{"session": peer, "alias": "in-app"}]})
+        threads, read, real = sminos.threads_module(), [], sminos.log_read
+        with mock.patch.object(sminos.channels_module(), "channels_of", side_effect=AssertionError("channels_of")), \
+                mock.patch.object(threads, "current_record", side_effect=AssertionError("a thread record read")), \
+                mock.patch.object(sminos, "known_channels", side_effect=AssertionError("a registration read")), \
+                mock.patch.object(sminos, "log_read", lambda p, *a, **k: read.append(p.id) or real(p, *a, **k)):
+            said = self.roster(rsid)
+        self.assertIn("@in-app  in-app [%s], app on beta" % peer[:8], said)
+        self.assertNotIn(DESK, read)
+
+    def test_a_reader_whose_statements_leave_every_channel_is_tagged_as_in_none(self):
+        rsid, rt = self.reader()
+        time.sleep(0.002)
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "channels", session=rsid, thread=rt, channels=[],
+                          op="remove")
+        peer = "7e000501-0000-4000-8000-000000000501"
+        self.joined(peer, "in-app", "7e000509-0000-4000-8000-000000000509")
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "say", **{
+            "from": "reader", "text": "hi", "to": [{"session": peer, "alias": "in-app"}]})
+        self.assertIn("@in-app  in-app [%s]" % peer[:8], self.roster(rsid))
+
+    def test_a_peer_whose_machine_the_org_retired_reads_as_ended_by_its_name(self):
+        """Round 2's finding 4: a `joined` on a machine the org retired is no live row (has_ended, as the resolver
+        reads it): the peer is ended, named as its message named it, and given no tag."""
+        rsid, rt = self.reader()
+        sid, pt = "7e000601-0000-4000-8000-000000000601", "7e000609-0000-4000-8000-000000000609"
+        self.joined(sid, "row-name", pt)
+        self.said(sid, pt, "said-name", [(rsid, rt)])
+        self.assertIn("@app/row-name  row-name [%s]" % sid[:8], self.roster(rsid))
+        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "org.json"), {
+            "projects": [], "machines": [{"name": "beta", "retired": True}], "at": sminos.now(ms=True)})
+        said = self.roster(rsid)
+        self.assertIn("said-name [%s], app on beta: its session ended, no tag reaches it" % sid[:8], said)
+        self.assertNotIn("@app/row-name", said)
 
 
 class Doors(Machine):

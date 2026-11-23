@@ -19850,45 +19850,42 @@ ROSTER_CHANNELS = 10   # channels' logs the roster reads beside its projects': t
 ROSTER_THREAD = "#thread"   # a key's first part for a peer met in a channel, the second its thread (no log id holds #)
 
 
-def _roster_exchanges(session, projects, until=None):
-    """{(project id, peer session): {"in", "out", "at", "alias", "session"}}:
-    when `session`, with the sessions it continues, last wrote each peer a
-    tagged sminos message (`out`) and last was written one by it (`in`), ""
-    for neither, as the logs of `projects` hold them; `alias` is the peer's
-    as the latest of them named it (`at`). A message into another project is
-    read off the copy its own project's log keeps (record_copy), whose
-    recipients name their project; one from another project names the
-    sender's (`from_project`). An untagged line or an @all names no one in
-    particular, and the engine's own SendMessage is in no log.
+def roster_clock():
+    """The roster's clock (time.monotonic()): its one deadline is read from it alone, so a test can move it."""
+    return time.monotonic()
 
-    Then the logs of the channels the session's thread's statements in
-    those projects named, those it has left included (_roster_statements,
-    _roster_channels), where two members' exchange leaves no copy in any
-    project (CH2's M9). There "mine" is by thread: a message whose `thread`
-    is the session's thread, or an entry of whose `to` names it. A peer
-    met there is keyed by its thread, (ROSTER_THREAD, thread), whatever
-    session or channel it was met in, `session` the one the latest exchange
-    named (the hint _roster_thread_row starts from); so is a copy's
-    recipient whose `project` is a channel and whose entry names its thread.
-    A message from outside a channel carries `from_project`, its sender's
-    own project, as one from another project does; an entry with no thread
-    (an older copy's) keeps the B3 path. No channel is looked for, and none
-    read, once `until` (a time.monotonic() deadline) has passed: what the
-    projects gave stands."""
+
+def _roster_past(until):
+    return until is not None and roster_clock() > until
+
+
+def _roster_note(out, key, way, ts, alias, sid=""):
+    """One exchange counted in a roster's rows: its time for its way, the latest's alias and session kept."""
+    row = out.setdefault(key, {"in": "", "out": "", "at": "", "alias": "", "session": ""})
+    row[way] = max(row[way], ts)
+    if ts >= row["at"]:
+        row["at"], row["alias"], row["session"] = ts, alias, sid or row["session"]
+
+
+def _roster_exchanges(session, projects):
+    """({(project id, peer session): {"in", "out", "at", "alias", "session"}}, what the channels' part reads on
+    from): when `session`, with the sessions it continues, last wrote each peer a tagged sminos message (`out`)
+    and last was written one by it (`in`), "" for neither, as the logs of `projects` hold them; `alias` is the
+    peer's as the latest of them named it (`at`). A message into another project is read off the copy its own
+    project's log keeps (record_copy), whose recipients name their project; one from another project names the
+    sender's (`from_project`). An untagged line or an @all names no one in particular, and the engine's own
+    SendMessage is in no log. A copy whose recipient's `project` is a channel and whose entry names its thread
+    is keyed by that thread, (ROSTER_THREAD, thread), as a peer met in a channel is (_roster_channel_exchanges);
+    one with no thread (an older copy's) keeps the B3 path. The second value: {"thread": the session's own
+    row's (info_thread), "stated": {project id: its events} for each log holding a `channels` event of that
+    thread, "seen": the refs counted}."""
     out, seen, logs, thread = {}, set(), [], ""
-
-    def note(key, way, ts, alias, sid=""):
-        row = out.setdefault(key, {"in": "", "out": "", "at": "", "alias": "", "session": ""})
-        row[way] = max(row[way], ts)
-        if ts >= row["at"]:
-            row["at"], row["alias"], row["session"] = ts, alias, sid or row["session"]
-
     for p in projects:
         events = log_read(p)
         info = _projection(events)
         logs.append((p, events, info))
         thread = thread or info_thread(info.get(session))
-    stated = {}   # project id → its events, for each log that holds a statement of the thread's
+    stated = {}
     for p, events, info in logs:
         mine = {session, *lineage(session, info)}
         for e in events:
@@ -19914,18 +19911,41 @@ def _roster_exchanges(session, projects, until=None):
                     if r["session"] not in mine:
                         where, peer = str(r.get("project") or p.id), _entry_thread(r)
                         key = (ROSTER_THREAD, peer) if peer and is_channel_id(where) else (where, r["session"])
-                        note(key, "out", e["ts"], str(r.get("alias") or ""), r["session"])
+                        _roster_note(out, key, "out", e["ts"], str(r.get("alias") or ""), r["session"])
             elif sender and any(r["session"] in mine for r in to):
                 seen.add(ref)
-                note((str(e.get("from_project") or p.id), sender), "in", e["ts"], str(e.get("from") or ""))
-    if not stated or (until is not None and time.monotonic() > until):
-        return out
-    named = {}
+                _roster_note(out, (str(e.get("from_project") or p.id), sender), "in", e["ts"], str(e.get("from") or ""))
+    return out, {"thread": thread, "stated": stated, "seen": seen}
+
+
+def _roster_channel_exchanges(rows, context, until=None):
+    """The channels' part of a roster's rows (CH2's M9), added to `rows`: the logs of the channels the session's
+    thread's statements in its projects named, those it has left included (_roster_statements,
+    _roster_channels), where two members' exchange leaves no copy in any project. There "mine" is by thread: a
+    message whose `thread` is the session's thread, or an entry of whose `to` names it. A peer met there is
+    keyed by its thread, (ROSTER_THREAD, thread), whatever session or channel it was met in, `session` the one
+    the latest exchange named; a message from outside a channel carries `from_project`, its sender's own
+    project, as one from another project does. No new unit of work starts once `until` has passed: before the
+    registrations are read, between the logs replayed for statements, between channels. Answers whether the
+    thread holds a channel now as its statements say (the latest that took effect names one): what decides,
+    for resolve_tag, whether a bare alias is matched in shared rosters too; True when they could not all be
+    replayed in time, since naming a tag's project where it was not needed costs nothing."""
+    thread, stated, seen = context["thread"], context["stated"], context["seen"]
+    if not stated:
+        return False
+    named, last = {}, ("", ())
     for events in stated.values():
-        for c, ts in _roster_statements(events, thread).items():
+        if _roster_past(until):
+            return True
+        got, latest = _roster_statements(events, thread)
+        last = max(last, latest)
+        for c, ts in got.items():
             named[c] = max(named.get(c, ""), ts)
+    holds = bool(last[1])
+    if not named or _roster_past(until):
+        return holds
     for c in _roster_channels(named):
-        if until is not None and time.monotonic() > until:
+        if _roster_past(until):
             break
         for e in log_read(c):
             to = e.get("to")
@@ -19941,13 +19961,14 @@ def _roster_exchanges(session, projects, until=None):
                 seen.add(ref)
                 for r in named_to:
                     if r["thread"] != thread:
-                        note((ROSTER_THREAD, r["thread"]), "out", e["ts"], str(r.get("alias") or ""), r["session"])
+                        _roster_note(rows, (ROSTER_THREAD, r["thread"]), "out", e["ts"], str(r.get("alias") or ""),
+                                     r["session"])
             elif sender and any(r["thread"] == thread for r in named_to):
                 seen.add(ref)
                 outside = str(e.get("from_project") or "")
                 key = (outside, sender) if outside else (ROSTER_THREAD, by) if by else (c.id, sender)
-                note(key, "in", e["ts"], str(e.get("from") or ""), sender)
-    return out
+                _roster_note(rows, key, "in", e["ts"], str(e.get("from") or ""), sender)
+    return holds
 
 
 def _entry_thread(d):
@@ -19968,12 +19989,13 @@ def info_thread(r):
 
 
 def _roster_statements(events, thread):
-    """{channel id: the ts of the latest statement naming it}: the thread's statements in one log that took
-    effect, by the fold's rules (sminos_threads.Fold: under its session's `joined` in effect, by that joined's
-    writer, past its seq), whichever session of the thread wrote them, where that `joined` is stamped with the
-    thread or with none (sminos_channels.once_in's rule). A hand-off's lineage decides nothing: a refill's
-    occupant is the same thread as the session it replaced, and continues none of it."""
-    threads, fold, named = threads_module(), threads_module().Fold(), {}
+    """({channel id: the ts of the latest statement naming it}, (ts, channels) of the latest of them): the
+    thread's statements in one log that took effect, by the fold's rules (sminos_threads.Fold: under its
+    session's `joined` in effect, by that joined's writer, past its seq), whichever session of the thread wrote
+    them, where that `joined` is stamped with the thread or with none (sminos_channels.once_in's rule). A
+    hand-off's lineage decides nothing: a refill's occupant is the same thread as the session it replaced, and
+    continues none of it."""
+    threads, fold, named, last = threads_module(), threads_module().Fold(), {}, ("", ())
     for e in events:
         sid, kind = e.get("session"), e.get("kind")
         if kind not in ("joined", "retired", "channels") or not isinstance(sid, str) or not sid \
@@ -19985,9 +20007,11 @@ def _roster_statements(events, thread):
         fold.state(sid, e)
         if fold.stated.get(sid) is e and e["thread"] == thread \
                 and _entry_thread(fold.joined.get(sid) or {}) in ("", thread):
-            for c in threads.stated_set(e):
-                named[c] = max(named.get(c, ""), str(e.get("ts") or ""))
-    return named
+            ts, chans = str(e.get("ts") or ""), threads.stated_set(e)
+            last = max(last, (ts, chans))
+            for c in chans:
+                named[c] = max(named.get(c, ""), ts)
+    return named, last
 
 
 def _roster_channels(named):
@@ -20030,31 +20054,23 @@ def _roster_peer(pid, sid, all_seats):
     return None
 
 
-def _roster_thread_row(thread, hint, all_seats, index, until=None):
-    """_roster_peer's answer for a peer met in a channel: the row of its thread now, found by its stamp
-    (info_thread) in the projections of the projects known here, read-only (no view, no reconciliation: the
-    guide must not write), never through the session a message once named. Of its rows whose membership in
-    effect is a `joined`, the one whose is newest (sminos_channels._newest_row's rule: two of one moment decide
-    for neither, and none is given); with none, its latest end (an END_REASONS retirement). A row the log shows
-    unlisted to this reader is none. `index` ({"read": {project ids}, "rows": {thread: [(project, session,
-    row, projection)]}}) is the roster's own, filled a project at a time, those holding a writer file of
-    `hint` (any machine's) first; no project is read once `until` (time.monotonic()) has passed."""
+def _roster_thread_index(index, until=None):
+    """Fills the roster's one thread index ({"read": {project dir names}, "rows": {thread: [(project, session,
+    row, projection)]}, "complete": bool}) from the projections of every project known here, read-only (no
+    view, no reconciliation: the guide must not write), a project at a time, in the directory's order, none
+    started once `until` has passed. A row the log shows unlisted to this reader is none. Whether every
+    project has been read: a thread's row is never chosen from a part of them."""
+    if index["complete"]:
+        return True
     try:
-        names = [n for n in sorted(os.listdir(projects_root()))
-                 if not n.startswith(".") and not is_channel_id(n) and n not in index["read"]]
+        names = sorted(n for n in os.listdir(projects_root()) if not n.startswith(".") and not is_channel_id(n))
     except OSError:
         names = []
-    suffix = "." + hint if hint else None
-
-    def holds(name):
-        listed = _log_listed(name) if suffix else None
-        return bool(listed) and (any(f.endswith(suffix + ".jsonl") for f in listed[0])
-                                 or any(b.endswith(suffix) for b in listed[1]))
-    if names and suffix and (until is None or time.monotonic() <= until):
-        names.sort(key=lambda n: not holds(n))
     for name in names:
-        if until is not None and time.monotonic() > until:
-            break
+        if name in index["read"]:
+            continue
+        if _roster_past(until):
+            return False
         index["read"].add(name)
         p = known_project(name)
         if p is None:
@@ -20064,24 +20080,39 @@ def _roster_thread_row(thread, hint, all_seats, index, until=None):
             t = info_thread(r)
             if t and not unlisted_here(sid, r):
                 index["rows"].setdefault(t, []).append((p, sid, r, info))
-    found = index["rows"].get(thread, [])
+    index["complete"] = True
+    return True
+
+
+def _roster_thread_row(thread, all_seats, index, until=None):
+    """(the row a peer met in a channel is now, as _roster_peer answers, or None; whether it was looked for in
+    every project): its thread's rows found by their stamp (info_thread, _roster_thread_index), never through
+    the session a message once named. Of the rows whose membership in effect is a `joined` and whose member
+    has not ended (has_ended: a machine the org retired ends it too), the one whose membership is newest
+    (sminos_channels._newest_row's rule: two of one moment decide for neither, and none is given); with none,
+    the latest of those that ended. None, with False, where the index could not be read whole in time."""
+    if not _roster_thread_index(index, until):
+        return None, False
 
     def at(x):
-        return str(((x[2] or {}).get("latest") or {}).get("ts") or "")
-    live = [x for x in found if ((x[2] or {}).get("latest") or {}).get("kind") == "joined"]
+        return str(((x[0][2] or {}).get("latest") or {}).get("ts") or "")
+    found = []
+    for p, sid, r, info in index["rows"].get(thread, []):
+        latest = (r or {}).get("latest") or {}
+        if latest.get("kind") == "joined" or (latest.get("kind") == "retired" and latest.get("reason") in END_REASONS):
+            found.append(((p, sid, r, info), _member(sid, r, seats_by_session(p, all_seats).get(sid), None, False,
+                                                     True, info)))
+    live = [x for x in found if ((x[0][2] or {}).get("latest") or {}).get("kind") == "joined" and not has_ended(x[1])]
     if live:
         newest = [x for x in live if at(x) == max(map(at, live))]
         if len(newest) != 1:
-            return None
-        chosen, ended = newest[0], False
-    else:
-        gone = [x for x in found if ((x[2] or {}).get("latest") or {}).get("kind") == "retired"
-                and x[2]["latest"].get("reason") in END_REASONS]
-        if not gone:
-            return None
-        chosen, ended = max(gone, key=at), True
-    p, sid, r, info = chosen
-    return p, _member(sid, r, seats_by_session(p, all_seats).get(sid), None, False, True, info), ended, info
+            return None, True
+        (p, _, _, info), m = newest[0]
+        return (p, m, False, info), True
+    if not found:
+        return None, True
+    (p, _, _, info), m = max(found, key=at)
+    return (p, m, True, info), True
 
 
 def _roster_tag(p, m, here, info, qualify=False):
@@ -20127,42 +20158,68 @@ def roster_text(session, launch):
     message is unanswered. Read from the logs, never the conversation: a
     summary keeps addresses (an engine socket, an alias) that have gone
     stale. The logs read are its project's and its launch directory's, and
-    the channels' its thread's statements there named (_roster_exchanges); a
-    peer reached only through the engine's SendMessage is in none. ""
-    when it exchanged none. Read-only, and bounded by ROSTER_BUDGET (one
-    time.monotonic() deadline through every stage): what does not fit is
-    left out."""
-    until = time.monotonic() + ROSTER_BUDGET
+    the channels' its thread's statements there named; a peer reached only
+    through the engine's SendMessage is in none. "" when it exchanged none.
+    Read-only, and bounded by ROSTER_BUDGET, one deadline on roster_clock
+    through every stage, checked before each unit of work (a single file
+    read is never cut short): what does not fit is left out. The project
+    logs' peers are found first, as a session in no channel's always were
+    (that roster is unchanged); what the budget leaves goes to the channels'
+    part (_roster_channel_exchanges) and the peers it adds or moves, and
+    the two are ranked together. A peer met in a channel whose thread could
+    not be looked for in every project in time is given by its message's
+    name with no tag: a tag chosen from a part of them may be a stale one."""
+    until = roster_clock() + ROSTER_BUDGET
     here = session_project(session, launch)
     if here is None:
         return ""
     home = resolve_project(launch)
-    rows = _roster_exchanges(session, [here] + ([home] if home is not None and home.id != here.id else []), until)
-    all_seats, index = seats(), {"read": set(), "rows": {}}
-    peers, lines = {}, []
-    for (pid, sid), row in sorted(rows.items(), key=lambda kv: max(kv[1]["in"], kv[1]["out"]), reverse=True):
-        if len(peers) >= ROSTER_CAP or time.monotonic() > until:
-            break
-        thread = sid if pid == ROSTER_THREAD else ""
-        sid = row["session"] if thread else sid
-        now = _roster_thread_row(thread, sid, all_seats, index, until) if thread else _roster_peer(pid, sid, all_seats)
-        if now is not None and now[1].session == session:
-            continue
-        key = (now[0].id, now[1].session) if now else (pid, thread or sid)
-        if key in peers:   # two sessions of one member, the newer exchange read first
-            held = peers[key][2]
-            held["in"], held["out"] = max(held["in"], row["in"]), max(held["out"], row["out"])
-            continue
-        peers[key] = (now, sid, dict(row), thread)
+    rows, context = _roster_exchanges(session, [here] + ([home] if home is not None and home.id != here.id else []))
+    all_seats, index = seats(), {"read": set(), "rows": {}, "complete": False}
+    peers, tried = {}, set()
+
+    def last(row):
+        return max(row["in"], row["out"])
+
+    def resolve(keys):
+        added = 0
+        for key in sorted(keys, key=lambda k: last(rows[k]), reverse=True):
+            if added >= ROSTER_CAP or _roster_past(until):
+                return
+            tried.add(key)
+            pid, sid = key
+            thread = sid if pid == ROSTER_THREAD else ""
+            sid = rows[key]["session"] if thread else sid
+            now, complete = _roster_thread_row(thread, all_seats, index, until) if thread \
+                else (_roster_peer(pid, sid, all_seats), True)
+            if now is not None and now[1].session == session:
+                continue
+            pkey = (now[0].id, now[1].session) if now else key
+            if pkey in peers:   # two sessions of one member
+                peers[pkey]["keys"].append(key)
+                continue
+            peers[pkey] = {"now": now, "sid": sid, "keys": [key], "thread": thread, "complete": complete}
+            added += 1
+
+    resolve([k for k in rows if k[0] != ROSTER_THREAD])
+    before = {k: last(r) for k, r in rows.items()}
+    holds = _roster_channel_exchanges(rows, context, until)
+    resolve([k for k in rows if k not in tried and (k[0] == ROSTER_THREAD or before.get(k) != last(rows[k]))])
     # A reader in a channel: resolve_tag matches its bare alias in the rosters it shares too (CH2's M1).
-    qualify = bool(peers) and bool(channels_module().channels_of(session))
-    for now, sid, row, thread in peers.values():
-        last = max(row["in"], row["out"])
-        way = "it wrote you" if row["in"] == last else "you wrote it"
-        tail = "last: %s %s%s" % (way, _roster_when(last), ", unanswered" if row["in"] > row["out"] else "")
+    qualify = bool(peers) and holds
+    ranked = sorted(peers.values(), key=lambda peer: max(last(rows[k]) for k in peer["keys"]), reverse=True)
+    lines = []
+    for peer in ranked[:ROSTER_CAP]:
+        now, sid, thread = peer["now"], peer["sid"], peer["thread"]
+        row = dict(max((rows[k] for k in peer["keys"]), key=last))
+        row["in"], row["out"] = max(rows[k]["in"] for k in peer["keys"]), max(rows[k]["out"] for k in peer["keys"])
+        when = last(row)
+        way = "it wrote you" if row["in"] == when else "you wrote it"
+        tail = "last: %s %s%s" % (way, _roster_when(when), ", unanswered" if row["in"] > row["out"] else "")
         if now is None and thread:
-            lines.append("  %s [%s], met in a channel: no project known here holds its thread now, no tag reaches"
-                         " it; %s" % (row["alias"] or sid[:8], sid[:8], tail))
+            where = "no project known here holds its thread now, no tag reaches it" if peer["complete"] \
+                else "where its thread is now was not read in time, no tag given"
+            lines.append("  %s [%s], met in a channel: %s; %s" % (row["alias"] or sid[:8], sid[:8], where, tail))
             continue
         if now is None:
             lines.append("  %s [%s], in no project known here; %s" % (row["alias"] or sid[:8], sid[:8], tail))
