@@ -253,6 +253,15 @@ def _owner_logs(project):
     return [(p.name, p.id, S.log_read(p)) for p in ([project] if project is not None else []) + S.known_channels()]
 
 
+def _owner_threads(project, sessions):
+    """The threads the lineage's sessions are, as their rows in the project's log are stamped (sminos.info_thread):
+    whom a channel's message to this lineage names, whichever session it was addressed to."""
+    if project is None:
+        return set()
+    info = S._projection(S.log_read(project))
+    return {t for t in (S.info_thread(info.get(s)) for s in sessions) if t}
+
+
 def cmd_transcript(a):
     t = resolve(a.member)
     refuse_remote(t)
@@ -269,7 +278,7 @@ def cmd_transcript(a):
 
     def corroborate(text):
         if "words" not in owner:
-            owner["words"] = W.OwnerWords(_owner_logs(t.project), t.sessions)
+            owner["words"] = W.OwnerWords(_owner_logs(t.project), t.sessions, _owner_threads(t.project, t.sessions))
         return owner["words"].corroborates(text)
 
     try:

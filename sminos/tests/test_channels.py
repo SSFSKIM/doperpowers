@@ -51,6 +51,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -884,6 +885,63 @@ class ChannelReconcile(Machine):
         self.assertNotIn("@desk-integration/", said)
         self.assertIn("@worker#6c000011  worker [6c000011], app on %s" % MACHINE, said, "the sender is a worker too")
 
+    def test_an_import_into_a_channel_delivers_nothing(self):
+        calls = []
+        with mock.patch.object(sminos, "view_of", lambda *a, **k: calls.append(a) or None), \
+                mock.patch.object(daemon, "deliver_owed", lambda *a, **k: calls.append(a) or (0, [])):
+            hublog.HubLog(self.c, CRED).deliver()
+        self.assertEqual(calls, [])
+
+
+class Roster(Machine):
+    """The exchanges a compaction or a resume lists, through a channel (CH2's M9): a peer met in a channel is its
+    thread, found now by its stamp wherever its session went; the reader's channels are its thread's statements,
+    whichever of its sessions wrote them; read-only, and inside the roster's one deadline."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = os.path.join(self.home, "app")
+        os.makedirs(self.root)
+        with open(os.path.join(self.root, ".smns"), "w") as f:
+            json.dump({"project": PROJ, "name": "app", "hub": {"org": ORG}}, f)
+        self.p = self.project(PROJ, "app", self.root)
+        self.c = self.channel(DESK, "desk-integration")
+
+    def live(self, sid, cwd, name="worker"):
+        return ChannelReconcile.live(self, sid, cwd, name)
+
+    def tick(self):
+        return ChannelReconcile.tick(self)
+
+    def joined(self, sid, alias, thread, p=None, machine="beta"):
+        sminos.log_append(p or self.p, "%s/%s" % (machine, sid), "joined", session=sid, alias=alias,
+                          name_source="user", machine=machine, cwd="/d", worktree="", role="", seat="", by="",
+                          thread=thread)
+
+    def retired(self, sid, reason, p=None, machine="beta", **fields):
+        sminos.log_append(p or self.p, "%s/%s" % (machine, sid), "retired", session=sid, by="", reason=reason,
+                          **fields)
+
+    def reader(self, thread="7e000000-0000-4000-8000-0000000000aa", sid="7e000001-0000-4000-8000-0000000000a1"):
+        """A session of app whose thread's statement names the channel, written as its own writer writes them:
+        its session."""
+        self.joined(sid, "reader", thread, machine=MACHINE)
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, sid), "channels", session=sid, thread=thread, channels=[DESK],
+                          op="add")
+        return sid, thread
+
+    def said(self, sid, thread, alias, to, c=None, text="hi"):
+        """A member's message in the channel's log from another machine's session, naming each (session, thread)
+        of `to`."""
+        sminos.log_append(c or self.c, "beta/%s" % sid, "say", **{
+            "from": alias, "thread": thread, "text": text,
+            "to": [{"session": s, "alias": "reader", "thread": t} for s, t in to]})
+        sminos.forget_caches()
+
+    def roster(self, sid):
+        sminos.forget_caches()
+        return sminos.roster_text(sid, self.root)
+
     def stated(self, sid):
         """The live session `sid` of app, made a thread by a tick, with a statement of its own naming the channel,
         as `channel add` leaves one: its thread."""
@@ -937,12 +995,95 @@ class ChannelReconcile(Machine):
             self.assertEqual(sminos.roster_text(sid, self.root), "")
         self.assertNotIn(DESK, read)
 
-    def test_an_import_into_a_channel_delivers_nothing(self):
-        calls = []
-        with mock.patch.object(sminos, "view_of", lambda *a, **k: calls.append(a) or None), \
-                mock.patch.object(daemon, "deliver_owed", lambda *a, **k: calls.append(a) or (0, [])):
-            hublog.HubLog(self.c, CRED).deliver()
-        self.assertEqual(calls, [])
+    def test_a_peer_refilled_in_its_project_is_its_new_session_and_live(self):
+        """A refill retires the session it replaces as `replaced`, naming no successor: the thread is found by its
+        stamp, never through the session its message named."""
+        rsid, rt = self.reader()
+        old, new, pt = ("7e0000b%d-0000-4000-8000-0000000000b%d" % (n, n) for n in (1, 2, 9))
+        self.joined(old, "peer-a", pt)
+        self.said(old, pt, "peer-a", [(rsid, rt)])
+        self.retired(old, "replaced")
+        self.joined(new, "peer-a", pt)
+        said = self.roster(rsid)
+        self.assertIn("@peer-a  peer-a [%s], app on beta" % new[:8], said)
+        self.assertNotIn("ended", said)
+
+    def test_a_peer_handed_off_whose_old_session_another_thread_reuses_is_the_session_it_continues_in(self):
+        rsid, rt = self.reader()
+        old, new, pt, other = ("7e0000c%d-0000-4000-8000-0000000000c%d" % (n, n) for n in (1, 2, 3, 4))
+        self.joined(old, "peer-h", pt)
+        self.said(old, pt, "peer-h", [(rsid, rt)])
+        self.retired(old, "continued", to=new)
+        self.joined(new, "peer-h", pt)
+        self.joined(old, "reuser", other)   # the old session runs again as another thread
+        said = self.roster(rsid)
+        self.assertIn("@peer-h  peer-h [%s], app on beta" % new[:8], said)
+        self.assertNotIn("reuser", said)
+
+    def test_a_peer_whose_move_reads_destination_first_is_tagged_in_the_project_it_moved_to(self):
+        rsid, rt = self.reader()
+        sid, pt = "7e0000d1-0000-4000-8000-0000000000d1", "7e0000d9-0000-4000-8000-0000000000d9"
+        dest = self.project("9f2e3d4c-5b6a-4789-8abc-def012345678", "elsewhere")
+        self.joined(sid, "peer-m", pt)
+        self.said(sid, pt, "peer-m", [(rsid, rt)])
+        time.sleep(0.002)
+        self.joined(sid, "peer-m", pt, p=dest)   # its retirement in app not imported yet
+        said = self.roster(rsid)
+        self.assertIn("@elsewhere/peer-m  peer-m [%s], elsewhere on beta" % sid[:8], said)
+
+    def test_one_thread_met_under_two_sessions_in_two_channels_is_one_row_named_as_it_was_last(self):
+        rsid, rt = self.reader()
+        lobby = self.channel("0123abcd-4567-8abc-a123-456789abcdef", "lobby")
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "channels", session=rsid, thread=rt,
+                          channels=[DESK, lobby.id], op="add")
+        a, b, pt = ("7e0000e%d-0000-4000-8000-0000000000e%d" % (n, n) for n in (1, 2, 9))
+        self.said(a, pt, "first-name", [(rsid, rt)])
+        time.sleep(0.002)
+        self.said(b, pt, "later-name", [(rsid, rt)], c=lobby)
+        said = self.roster(rsid)
+        self.assertEqual(said.count("met in a channel"), 1, said)
+        self.assertIn("later-name [%s], met in a channel" % b[:8], said)
+        self.assertNotIn("first-name", said)
+
+    def test_a_reader_refilled_after_its_old_session_named_the_channel_still_reads_it(self):
+        """Leave the seat, a refill in the same project, a resume: the statement naming the channel is the old
+        occupant's, of the same thread, and the new session continues none of it."""
+        old, new, rt = ("7e0000f%d-0000-4000-8000-0000000000f%d" % (n, n) for n in (1, 2, 9))
+        self.reader(rt, old)
+        self.retired(old, "replaced", machine=MACHINE)
+        self.joined(new, "reader", rt, machine=MACHINE)
+        peer, pt = "7e0000f3-0000-4000-8000-0000000000f3", "7e0000f8-0000-4000-8000-0000000000f8"
+        self.joined(peer, "peer-r", pt)
+        self.said(peer, pt, "peer-r", [(old, rt)])
+        self.assertIn("@peer-r  peer-r [%s], app on beta" % peer[:8], self.roster(new))
+
+    def test_an_ended_peer_met_in_a_channel_is_named_as_its_message_named_it(self):
+        rsid, rt = self.reader()
+        sid, pt = "7e000101-0000-4000-8000-000000000101", "7e000109-0000-4000-8000-000000000109"
+        self.joined(sid, "the-name-then", pt)
+        self.said(sid, pt, "the-name-then", [(rsid, rt)])
+        self.joined(sid, "renamed-since", pt)
+        self.retired(sid, "retire")
+        said = self.roster(rsid)
+        self.assertIn("the-name-then [%s], app on beta: its session ended, no tag reaches it" % sid[:8], said)
+        self.assertNotIn("renamed-since", said)
+
+    def test_past_the_deadline_no_channel_is_looked_for_and_no_project_read_for_a_thread(self):
+        rsid, rt = self.reader()
+        self.joined("7e000201-0000-4000-8000-000000000201", "in-app", "7e000209-0000-4000-8000-000000000209")
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "say", **{
+            "from": "reader", "text": "hi", "to": [{"session": "7e000201-0000-4000-8000-000000000201",
+                                                   "alias": "in-app"}]})
+        self.said("7e000202-0000-4000-8000-000000000202", "7e000208-0000-4000-8000-000000000208", "far",
+                  [(rsid, rt)])
+        sminos.forget_caches()
+        with mock.patch.object(sminos, "known_channels", side_effect=AssertionError("no channel looked for")):
+            rows = sminos._roster_exchanges(rsid, [self.p], until=time.monotonic() - 1)
+        self.assertEqual([k[1] for k in rows], ["7e000201-0000-4000-8000-000000000201"], "the project's results stand")
+        index = {"read": set(), "rows": {}}
+        self.assertIsNone(sminos._roster_thread_row("7e000208-0000-4000-8000-000000000208", "", sminos.seats(),
+                                                    index, until=time.monotonic() - 1))
+        self.assertEqual(index["read"], set(), "no project read past the deadline")
 
 
 class Doors(Machine):

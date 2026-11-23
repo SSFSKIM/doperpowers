@@ -716,7 +716,9 @@ class HostWords(Say):
     once as a running session on 1.54 has it loaded (the merge base's launcher, extracted from git) and once
     as this tree's, with bridge_standin.py as its mod. Every word to the human lands in the thread's own
     project, the second question is closed there, another session's question in another project stays open,
-    and nothing is written or queued under a channel's id or under the `#` scope as a log."""
+    and nothing is written or queued under a channel's id or under the `#` scope as a log. What is proved is
+    where things lie on disk, which is all an uplink frames host events from (Link.host_pass, which passes a
+    channel's log by); no uplink runs here."""
 
     WORDS = "the words the session sends its human after the channel's frame"
 
@@ -781,7 +783,9 @@ class HostWords(Say):
         o = channels.owing(self.chan(DESK), threads.get(tid), channels.own_row(threads.get(tid)))
         self.assertEqual(sminos.deliver_verdict(self.chan(DESK), o.member, e, "words", owing=o), "sent")
         self.assertEqual(len(standin.delivered), 1, "by the bridge")
-        self.assertIn("a person's words in the desk", standin.delivered[0])
+        head, _, body = standin.delivered[0].partition("\n")
+        self.assertTrue(head.startswith("[sminos chat desk %s from human" % sminos.event_ref(e)), head)
+        self.assertEqual(body, "a person's words in the desk", "the channel's frame, as the mod took it")
         bridge = sminos.sibling_module("sminos_bridge")
         mark = "%s#%s/%s" % (DESK, tid, e["writer"])
         self.assertTrue(wait_for(lambda: bridge.load_kept(sid)["delivered"].get(mark) == e["seq"]),

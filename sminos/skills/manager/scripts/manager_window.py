@@ -142,27 +142,34 @@ def frames(text):
 
 class OwnerWords:
     """The owner's words the logs given hold for one lineage (sminos.owner_event: `human` events of
-    `<machine>/human` or `hub/<member>`, addressed to one of `sessions` by sminos.addressed_to), to corroborate
-    what the bridge delivered to that session as the owner's. `logs`: [(the log's name, its id, its events)],
-    a project's and channels' (CH2's M9). A frame's header names its log by its display name alone, which a
-    channel and a project, or two channels, may share, and each log numbers a writer's events on its own: so
-    every candidate under (log name, ref) is kept, each with its log's id and its body, and a display name
+    `<machine>/human` or `hub/<member>`), to corroborate what the bridge delivered to that session as the
+    owner's. `logs`: [(the log's name, its id, its events)], a project's and channels' (CH2's M9). In a
+    project's log an event is the lineage's when it is addressed to one of `sessions` (sminos.addressed_to); in
+    a channel's, when an entry of its `to` names one of `threads` by its `thread`, since a channel's message is
+    owed to a thread whatever session holds it (a post addressed before a refill reaches the new occupant). A
+    frame's header names its log by its display name alone, which a channel and a project, or two channels,
+    may share, and each log numbers a writer's events on its own: so every candidate under (log name, ref) is
+    kept, each with its log's id and its body as a frame renders it (sminos.sender_text), and a display name
     alone never decides which log a frame came from."""
 
-    def __init__(self, logs, sessions):
+    def __init__(self, logs, sessions, threads=()):
         self.by_key, self.texts = {}, {}
         for name, log_id, events in logs:
+            in_channel = S.is_channel_id(log_id)
             for e in events:
-                if S.owner_event(e) and isinstance(e.get("text"), str) and any(S.addressed_to(e, s) for s in sessions):
-                    body = e["text"].strip()
-                    self.by_key.setdefault((name, S.event_ref(e)), []).append((log_id, body))
-                    self.texts.setdefault(body, log_id)
+                if not (S.owner_event(e) and isinstance(e.get("text"), str)):
+                    continue
+                if not (_names_a_thread(e, threads) if in_channel else any(S.addressed_to(e, s) for s in sessions)):
+                    continue
+                self.by_key.setdefault((name, S.event_ref(e)), []).append((log_id, S.sender_text(e["text"]).strip()))
+                self.texts.setdefault(e["text"].strip(), log_id)
 
     def corroborates(self, text):
         """The id of the log whose owner's words to this lineage one delivered frame from the owner, or a bare
         text, is; None when it is none. A chat frame is such an event of a log of the name its header gives,
-        under its ref and with exactly its body, and exactly one candidate under that name and ref may have
-        that body: none, or one in each of two logs of one name, certifies nothing. A message frame or a bare
+        under its ref and with exactly its body as rendered, and exactly one candidate under that name and ref
+        may have that body: none, or one in each of two logs of one name, certifies nothing (nor does a frame
+        delivered under a name its log has since given up: no ref alone decides). A message frame or a bare
         text (MAWS's RL10 send, which never logs) is such an event's whole text, in whichever log holds it
         first. A text of several frames is classified frame by frame, never corroborated whole."""
         fs = frames(text)
@@ -175,6 +182,14 @@ class OwnerWords:
             return self.texts.get(body.strip())
         found = [log_id for log_id, held in self.by_key.get((log, ref), ()) if held == body.strip()]
         return found[0] if len(found) == 1 else None
+
+
+def _names_a_thread(e, threads):
+    """Whether a channel's event names one of `threads` in an entry of its `to` (an entry with no thread names no
+    one); a copy is owed to no one."""
+    to = e.get("to")
+    return isinstance(to, list) and "copy" not in e and any(
+        isinstance(r, dict) and isinstance(r.get("thread"), str) and r["thread"] in threads for r in to)
 
 
 def _local(ts):

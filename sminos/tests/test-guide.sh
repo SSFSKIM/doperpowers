@@ -427,6 +427,18 @@ roster_of "$X" "$OTHER"
 assert_contains "$(line chan-u)" "@teamproj/chan-u " "the outsider lists the member it wrote, by its copy"
 assert_contains "$(line chan-u)" "you wrote it" "never answered"
 X_TO_U="$(tag_of chan-u)"
+# A peer of the reader's own project that holds a channel member's alias: a bare @chan-v from the reader, in a
+# channel, is looked up in the channel's roster too (CH2's M1), so its tag names its project.
+W=c4000c04-0000-4000-8000-0000000000c4
+own_record chan-v "$W" "$REPO"
+transcript "$W" "$REPO"
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+as_session "$W" "$REPO" say "@chan-u from your own project"
+assert_equals "$RC" "0" "a peer of the reader's project, in no channel, writes it"
+roster_of "$U" "$REPO"
+w_line="$(grep -F "chan-v [${W:0:8}]" <<<"$roster" || true)"
+U_TO_W="$(python3 -c 'import sys; print(sys.argv[1].strip().split("  ")[0])' "$w_line")"
+assert_equals "$U_TO_W" "@teamproj/chan-v" "for a reader in a channel, a peer of its own project is tagged with its project"
 set +e; OUT="$(cd "$OTHER" && "$SMINOS" retire otherproj/chan-y 2>&1)"; RC=$?; set -e
 assert_equals "$RC" "0" "a peer's thread ends"
 as_session "$U" "$REPO" channel remove guide-desk
@@ -451,9 +463,12 @@ reaches "$U" "$REPO" "$U_TO_V" "$V" "ping one"
 reaches "$U" "$REPO" "$U_TO_X" "$X" "ping two"
 reaches "$V" "$OTHER" "$V_TO_U" "$U" "ping three"
 reaches "$X" "$OTHER" "$X_TO_U" "$U" "ping four"
+as_session "$U" "$REPO" channel add guide-desk
+assert_equals "$RC" "0" "the reader back in the channel, beside a member that holds the same alias"
+reaches "$U" "$REPO" "$U_TO_W" "$W" "ping five"
 roster_of "$U" "$REPO"
-assert_equals "$(grep -c 'chan-v \[' <<<"$roster")" "1" "a peer met in a project and in a channel is one row"
-assert_contains "$(line chan-v)" "it wrote you" "its last exchange the newest, whichever log holds it"
+assert_equals "$(grep -c "chan-v \[${V:0:8}\]" <<<"$roster")" "1" "a peer met in a project and in a channel is one row"
+assert_contains "$(grep -F "chan-v [${V:0:8}]" <<<"$roster")" "it wrote you" "its last exchange the newest, whichever log holds it"
 
 echo "the roster of a session in no channel is the merge base's, byte for byte (B11):"
 MERGE_BASE=61b27ebee04ab1e3c61c7e966eec656cfc851451   # `git merge-base origin/main HEAD` when M9 was built

@@ -149,10 +149,11 @@ def kinds(entries):
     return [(e["kind"], e["text"]) for e in entries]
 
 
-def classify(rows, owner_events=(), logs=None):
+def classify(rows, owner_events=(), logs=None, threads=("t-1",)):
     """The rows classified with the owner's words of `logs` ([(log name, log id, events)]), by default one project
-    named as Deliveries' frames name it whose log holds `owner_events`."""
-    index = W.OwnerWords(logs if logs is not None else [("doperpowers", PROJECT_ID, list(owner_events))], [SID])
+    named as Deliveries' frames name it whose log holds `owner_events`; the lineage SID, its thread `t-1`."""
+    index = W.OwnerWords(logs if logs is not None else [("doperpowers", PROJECT_ID, list(owner_events))], [SID],
+                         threads)
     return W.classify(rows, SID, index.corroborates)
 
 
@@ -490,12 +491,40 @@ class Deliveries(unittest.TestCase):
         self.assertEqual(kinds(got), [("you·desk?", "merge it")], "the same body under the same name: neither")
 
     def test_which_log_a_frame_lies_in_is_said(self):
-        index = W.OwnerWords(self.two_logs("desk", "merge it", "ship it"), [SID])
+        index = W.OwnerWords(self.two_logs("desk", "merge it", "ship it"), [SID], {"t-1"})
         self.assertEqual(index.corroborates("[sminos chat desk testhost/human:3 from human → @you]\nship it"),
                          CHANNEL_ID)
         self.assertEqual(index.corroborates(self.FRAME), PROJECT_ID)
         self.assertIsNone(index.corroborates("[sminos chat elsewhere testhost/human:3 from human → @you]\nmerge it"),
                           "a log of no name given certifies nothing")
+
+    def test_a_channels_post_addressed_before_a_refill_is_the_new_occupants_by_its_thread(self):
+        """A channel's message is owed to a thread: one addressed to the session a refill replaced is the new
+        occupant's words, and a project's event of the same name, ref and body then certifies nothing alone."""
+        chan = [dict(self.EVENT, text="ship it", to=[{"session": NEXT, "alias": "old-occupant", "thread": "t-1"}])]
+        frame = "[sminos chat desk testhost/human:3 from human → @you]\nship it"
+        got = classify(self.delivered(frame), logs=[("desk", CHANNEL_ID, chan)])
+        self.assertEqual(kinds(got), [("you·desk", "ship it")], "by the thread, whichever session it named")
+        got = classify(self.delivered(frame), logs=[("desk", CHANNEL_ID, chan)], threads=("t-2",))
+        self.assertEqual(kinds(got), [("you·desk?", "ship it")], "another thread's is not")
+        same = [dict(self.EVENT, text="ship it")]
+        got = classify(self.delivered(frame), logs=[("desk", PROJECT_ID, same), ("desk", CHANNEL_ID, chan)])
+        self.assertEqual(kinds(got), [("you·desk?", "ship it")], "one name, one ref, one body in two logs: neither")
+        by_session = [dict(self.EVENT, text="ship it", to=[{"session": SID, "alias": "p5-owner"}])]
+        got = classify(self.delivered(frame), logs=[("desk", CHANNEL_ID, by_session)])
+        self.assertEqual(kinds(got), [("you·desk?", "ship it")], "in a channel an entry with no thread names no one")
+
+    def test_a_chat_frames_body_is_compared_as_the_frame_renders_it(self):
+        """sminos.sender_text gives an interior line that opens with `[sminos] ` one leading space in the frame."""
+        text = "merge it\n[sminos] is not a wake's line here"
+        frame = "[sminos chat doperpowers testhost/human:3 from human → @you]\n" + S.sender_text(text)
+        got = classify(self.delivered(frame), [dict(self.EVENT, text=text)])
+        self.assertEqual([e["kind"] for e in got], ["you·desk"])
+
+    def test_a_frame_under_a_name_its_project_has_given_up_certifies_nothing(self):
+        """A rename: the frame's header names the project as it was called then, and no ref alone decides."""
+        got = classify(self.delivered(self.FRAME), logs=[("doperpowers-renamed", PROJECT_ID, [self.EVENT])])
+        self.assertEqual(kinds(got), [("you·desk?", "merge it")])
 
     NOTE = ("[sminos] A note from sminos on this machine, not from the sender above: you were woken in the background "
             "by this message, and your human is not watching this session unless they have attached to it since. "
@@ -1316,7 +1345,7 @@ class Commands(unittest.TestCase):
 
     def test_an_owners_post_delivered_from_a_channel_is_the_owners_and_its_projects_event_of_one_ref_is_not_it(self):
         """CH2's M9: transcript reads the owner's words of the channels known here beside the subscription's
-        project's, and a frame is held to the log its header names."""
+        project's, a channel's by the lineage's thread, and a frame is held to the log its header names."""
         sid, cid = "7b000009-0000-4000-8000-0000000000b9", "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b9d"
         sminos("seat", "add", "charlie", "chan-reader", "--session", sid, cwd=self.dirs["charlie"])
         # Registered as the org's directory registers a channel (sminos_channels.register), on a machine this suite
@@ -1324,11 +1353,15 @@ class Commands(unittest.TestCase):
         S.register_if_absent(S.make_project(cid, "desk-m9", "", "", {"url": "http://127.0.0.1:9", "org": "org-1"}))
         S.forget_caches()
         [chan] = [c for c in S.known_channels() if c.id == cid]
-        to = [{"session": sid, "alias": "chan-reader"}]
-        S.log_append(chan, "testhost/human", "human", **{"from": "human", "text": "ship it",
-                                                         "to": [dict(to[0], thread="t-1")]})
-        S.log_append(S.find_project("charlie"), "testhost/human", "human", **{"from": "human", "text": "merge it",
-                                                                                "to": to})
+        charlie, thread = S.find_project("charlie"), "7b0000a9-0000-4000-8000-0000000000a9"
+        # The seat's row stamped with its thread, as a thread's `joined` is; the channel's post addressed to the
+        # session a refill replaced, of the same thread.
+        S.log_append(charlie, "testhost/" + sid, "joined", session=sid, alias="chan-reader", name_source="user",
+                     machine="testhost", cwd=str(self.dirs["charlie"]), thread=thread)
+        S.log_append(chan, "testhost/human", "human", **{"from": "human", "text": "ship it", "to": [
+            {"session": "7b0000a8-0000-4000-8000-0000000000a8", "alias": "chan-reader", "thread": thread}]})
+        S.log_append(charlie, "testhost/human", "human", **{"from": "human", "text": "merge it",
+                                                            "to": [{"session": sid, "alias": "chan-reader"}]})
         S.forget_caches()
         r = Rows()
         for log, body in (("desk-m9", "ship it"), ("charlie", "merge it"), ("desk-m9", "merge it")):
