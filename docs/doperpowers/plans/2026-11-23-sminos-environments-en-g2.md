@@ -59,6 +59,9 @@ owner's fleet at the end (M5), which is parent acceptance line 5.
   1.55.1: eight globs escaped in `S/sminos.py`, one TECH-DEBT row closed);
   the plan's first review (thirteen findings), the holder's rulings on
   four of them, and this revision (Decision Log, "The plan's review").
+- [x] (2026-11-23) The plan's second review (ten findings), the holder's
+  rulings on what the first revision had opened, and this revision, the
+  last before the build (Decision Log, "The plan's second review").
 - [ ] The owner's answers to O1 to O6 (Decisions that are the owner's).
   The plan builds the default of each unless an answer changes it. M3
   does not merge before the holder has confirmed O6's state.
@@ -100,14 +103,20 @@ item is proved where Concrete Steps' proof map says.
    channel leaves it in both, and its statement is written under the
    refill's new writer.
 3. **The new thread can reach its spawner and its channels by what it was
-   told.** Spawned with `--on … --channel`, its preamble gives the
-   spawner's address as `@<the spawner's project id>/<the spawner's
-   short>`, and that tag, run on the VM, reaches the spawner's current
-   session whatever a member of `desk` is called there (a channel-mate in
-   another project whose alias is the spawner's short included). Every
-   command the preamble and the Mac's lines give for a channel names it by
-   its id, and run as printed it reads or writes that channel's log, on a
-   machine where another log answers to the name `desk` too.
+   told,** on a VM whose sminos is this change's. Spawned with `--on …
+   --channel`, its preamble gives the spawner's address as `@<the
+   spawner's project id>/<the spawner's short>`, and that tag, run on the
+   VM when the thread starts, reaches the spawner's session whatever a
+   member of `desk` in another project is called (one whose alias is the
+   spawner's short included). The address is checked when the thread is
+   admitted and is kept apart from other projects' aliases; it is not
+   bound to the spawner afterwards, and the preamble says to answer by
+   the reply line of the spawner's latest message once there is one.
+   Every command the preamble and the Mac's lines give names a channel by
+   its id and a thread by its session's whole id, and run as printed it
+   reads or writes that channel's log and names that thread, on a machine
+   where another log answers to the name `desk` and a local member's
+   alias is the remote session's short.
 4. **Refused before anything is made or launched,** each saying why: a
    `--channel` name that no log answers, that several answer, or that is a
    project's (exit 4, in the words `sminos channel add` gives for it);
@@ -138,18 +147,26 @@ item is proved where Concrete Steps' proof map says.
    an unfinished operation; the thread is at 128 channels; the channel's
    log is there and cannot be read; the channel's registration on the
    placing machine is missing, retired or not carried when the placement
-   reads it again; the time for placing ran out (all of a spawn's
-   placements share 30 seconds, a lock that another process holds
-   included); and, under `--worktree`, the seat landed in a project the
-   VM's enrollment does not carry, where no placement is made at all and
-   the Mac says the thread is in none of the channels asked and will not
-   be listed here. A VM whose sminos predates this change opens the
-   thread, and the Mac says that the VM did not carry out the placements
-   asked for, without saying which channels the thread is in. Where the
-   call to the VM is lost after the launch, the Mac says, as G1 does,
-   that the outcome is not known and that nothing should be spawned
-   again, and names the commands that show the seat and its channels.
-   Exactly one session was launched in every one of these cases.
+   reads it again, or the machine's own enrollment is no longer the
+   request's; the time for placing ran out (on the placing machine all of
+   a spawn's placements wait 30 seconds together at most, a lock that
+   another process holds included); and, under `--worktree`, the seat
+   landed in a project the VM's enrollment does not carry, where no
+   placement is made at all and the Mac says that none of the placements
+   asked for was made and that this project's memberships will not be
+   seen from here, without saying which channels the thread is in (a
+   refilled seat keeps what it held). A VM whose sminos predates this
+   change opens the thread, and the Mac says that the VM did not carry
+   out the placements asked for, again without saying which channels the
+   thread is in. Where the call to the VM is lost after the launch (the
+   Mac's own wait for the call can end while a healthy VM is still
+   placing), the Mac says, as G1 does, that the outcome is not known and
+   that nothing should be spawned again, and gives one command that lists
+   every seat on the VM whatever its project, run from the VM's login
+   directory, and one for the engine's jobs, and says that a channel
+   which does not list the thread shows nothing about whether it was
+   launched. Exactly one session was launched in every one of these
+   cases.
 7. **`channel show` on a Mac.** For a pool that holds a VM, the VM's line
    reads `<vm>  1 live, 0 stopped  vm owned by <alias>#<short>, up 3d4h,
    12.34 EUR so far`: the thread that owns it by devcloud's own word, its
@@ -204,7 +221,10 @@ item is proved where Concrete Steps' proof map says.
     it sends a VM and the outcome line it reads), a `say` without
     `--pools`, and `channel show` of a channel whose pool holds only the
     machine it is run on print and exit as before, byte for byte against
-    the merge base. Nothing is added to the daemon or the uplink, and the
+    the merge base, in every spelling the help documents. Two undocumented
+    ones stop working: `--c` for `spawn`'s `--cwd` and `--p` for `say`'s
+    `--project`, which the parser took as unique prefixes and now refuses
+    as ambiguous. Nothing is added to the daemon or the uplink, and the
     `sminos-idle` gate reads what it read.
 12. **What sessions are taught is true** (X6): `sminos help`, the two
     skills and the spawn preamble say what the tree does, and the changes
@@ -319,19 +339,37 @@ hash; they mean the same here. Added:
   returned a job, a placement that fails is said and the spawn stands
   (acceptance 6): the session runs, and a refusal would leave it running
   under a line that says nothing was spawned.
-- **One deadline after a launch.** Everything a spawn does once its
-  session runs (registering a channel, each placement, the outcome line)
-  shares one bound, taken from what the asking machine said it waits, and
-  no wait inside it is without that bound: a lock that another process
-  holds costs a placement, never the report of the others or of the
-  launch. A call to a VM that is lost after the launch is G1's outcome
-  that is not known, and its words say to look and not to spawn again.
+- **One deadline for what a spawn waits on after its launch, on the
+  machine that places.** Registering a channel and every placement share
+  one bound there, and no wait inside the placement is without it: a
+  lock that another process holds costs that placement, never the others
+  or the outcome line. The guarantee is of the placing machine's own
+  waits and of nothing else: the asking Mac's wait for the call counts
+  from before devcloud found the host and ssh connected, and the VM
+  cannot know how much of it is left. A call that the Mac gives up on
+  while the VM still works is G1's outcome that is not known, and its
+  words say to look, where to look, and not to spawn again.
+- **What is placed is decided from what the files say then.** At the
+  placement the machine's identity, the org's directory and each
+  registration are read afresh (`sminos.forget_caches`, the read a long
+  process already makes), never from what the process read before the
+  launch.
 - **What a thread or a person is told to run resolves where it is run.**
   A command this child prints or renders names a channel by its id and a
-  thread by the first eight characters of its session's id, never by a
-  name another log on that machine may answer to, and never by the
-  outcome's `short`. A name appears in prose.
-- **Byte for byte without the new flags** (acceptance 11). `--channel` and
+  thread by its session's whole id, never by a name or a short that
+  another log or another member on that machine may answer to. A name,
+  and `<alias>#<the session's first eight characters>` (never the
+  outcome's `short`), appear in prose and in a line's label. One address
+  keeps a short on purpose: the spawner's, which is the reply line's
+  form, checked at admission (R17).
+- **Byte for byte without the new flags, in the documented spellings**
+  (acceptance 11; the holder's ruling of 2026-11-23). The parser takes a
+  unique prefix of a long flag, and two prefixes that were unique are not
+  any more: `spawn --c` (`--cwd`, beside `--channel`) and `say --p`
+  (`--project`, beside `--pools`). Both become argparse's ambiguity
+  error, exit 2; no alias keeps them, and the comparison with the merge
+  base's parser lists them as its two known differences and finds no
+  third. `--channel` and
   `--pools` are read only where given. A request, an outcome line, a
   preamble and a banner gain a key, a sentence or a line only where a
   channel was asked, never an empty one; and `channel show` prints
@@ -423,8 +461,15 @@ hash; they mean the same here. Added:
   channel afterwards keeps the bare short of its spawner in its preamble,
   which a channel-mate's alias of the same text takes (CH2's order of a
   bare name: an alias before an id); the qualified address a placed
-  thread is given stops answering when its spawner moves to another
-  project, and is then refused, not sent elsewhere; an account the
+  thread is given is good for the spawner as it was at the spawn: once
+  the spawner has moved to another project or handed off to another
+  session, a member of that project who has taken the short as an alias
+  is who the address reaches, alone and with no error; a 1.55 VM asked
+  for channels checks and gives the bare short as before, also on a
+  refill of a seat that already has channel-mates; without `--channel`
+  the lost-call words keep G1's inspection (`sminos list` over ssh),
+  which reads one project from the login directory and can miss the
+  seat; an account the
   asking Mac's profile never used is coverage `channel show` does not
   have, and says so.
 
@@ -486,8 +531,8 @@ them. And G1's request, its preflight and its outcome line, crossed by
 suite starts no daemon, so what it shows of the placement is what the
 VM's own store holds).
 
-**Decisions:** R1 to R6 and R17 to R21 of the Decision Log, and O5. And,
-seen in the code:
+**Decisions:** R1 to R6, R17 to R21 and R24 of the Decision Log, and O5.
+And, seen in the code:
 
 - **The thread's id is the seat's, the session the launch's.** A spawned
   thread's record is its seat's (`spawn_fresh` returns `seat` and
@@ -504,12 +549,21 @@ seen in the code:
   unlock and the placement is answered by `change` itself (`moved`,
   `vacant`) and said as acceptance 6 says.
 - **One deadline for all of a spawn's placements** (R18). It is fixed
-  before the first channel is touched and every wait inside the placement
-  takes what is left of it: the registration's lock (`register`'s new
-  argument, down to `flocked`'s `lock_until`) and `change`'s `lock_until`.
-  A channel whose turn comes after the deadline is not tried and is
-  reported `time`; one whose lock was busy past it likewise. Nothing in
-  the placement waits without that bound.
+  when the placement begins, `PLACE_BUDGET` from then, and every wait
+  inside takes what is left of it: the registration's lock (`register`'s
+  new argument, down to `flocked`'s `lock_until`) and `change`'s
+  `lock_until`. A channel whose turn comes after the deadline is not
+  tried and is reported `time`; one whose lock was busy past it likewise.
+  It bounds the placing machine's waits and promises nothing about the
+  Mac's: the request carries no time, since the Mac's figure would count
+  from before the driver found the host.
+- **Read afresh at the placement** (R21). The placement opens with
+  `sminos.forget_caches()`, which drops the invocation's enrollment, the
+  org's directory and every registration read (it is what `remote`
+  already calls before each try), then holds this machine's enrollment to
+  the request's org and reads the seat's project and each channel again.
+  No new machinery: the window left is between those reads and `change`'s
+  write, which is `change`'s own.
 - **The VM side prints no placement line.** Its standard output is passed
   through to the Mac, which prints its own from the outcome line. A
   placement on the VM side raises nothing past `Answering`: every way it
@@ -527,7 +581,9 @@ seen in the code:
 - **The address a child placed in channels is given is the one a frame's
   reply line gives** (R17): `@<the spawner's project id>/<short>`, which
   `_resolve_tag` reads in that one project, by id before alias, and never
-  through a roster. `hold_to_spawner` asks the resolver that same tag,
+  through a roster. That is a check at admission and a wall against other
+  projects' aliases, and no more (R17). `hold_to_spawner` asks the
+  resolver that same tag,
   built by the one function that builds the preamble's, so what is checked
   is what the child will run. Without `--channel` both stay G1's bare
   short, byte for byte.
@@ -569,28 +625,49 @@ fails without the behaviour it names:
 - *The commands as printed.* On a VM that knows `<desk>` as `ops` and
   another channel as `desk`, and on a Mac where two channels answer to
   `desk`: each command of the rendered preamble and of each of the Mac's
-  lines is run as printed and reads or writes `<desk>`'s log; and the
-  thread's address in them is the session's first eight characters where
-  the outcome's `short` is another value (the fixture's `spawned`
-  already gives two).
+  lines is run as printed and reads or writes `<desk>`'s log. The Mac's
+  `channel add` for a thread not placed on the VM, run as printed on a
+  Mac that holds a local member whose alias is the remote session's
+  first eight characters: the request written names the remote thread
+  and its session, and the local member is not asked. A line's label
+  shows the session's first eight characters where the outcome's `short`
+  is another value (the fixture's `spawned` already gives two).
 - *The welcome.* No kept welcome on the VM: `welcome-unknown`, waited on
   and spawned once the file is there; a welcome with a capabilities list
   that lacks `channels`: refused at once; the wait's end: exit 75, no
   launch. The same two states for a spawn without `--on`, each with its
   own words.
-- *Time.* A lock held by another process on the second of two channels:
-  the first is `applied`, the second `time`, the outcome line is whole,
-  one launch. A last try whose time ends after the launch (the stand-in
-  holds the VM side's output past the Mac's bound): the Mac says not
-  known, names the seat's and the channels' commands, exits non-zero, and
-  one launch was made.
+- *Time.* With the stand-in holding the call for a while before the VM
+  side starts, and a lock held by another process on the second of two
+  channels: the placement ends `PLACE_BUDGET` after it began whatever
+  came before it, the first is `applied`, the second `time`, the outcome
+  line is whole, one launch. The same with a Mac's bound that ends while
+  the VM side still waits on that lock: the Mac says not known and exits
+  non-zero, the VM's own store holds the seat and the first statement,
+  and one launch was made. No test withholds an outcome line to stand
+  for a reserve: none is claimed.
+- *Looking after a lost call.* The inspection command the Mac printed is
+  run as printed from the VM's login directory, outside the seat's
+  repository, and lists the seat; the words hold the engine's command
+  and the sentence that a channel which does not list the thread shows
+  nothing about the launch.
 - *Carriage.* A registration without a hub made between the pre-launch
   check and the placement: `not-carried` for that channel, the others
-  placed. A `--worktree` seat in a project the VM does not carry: no
-  statement written, each channel `project-not-carried`, and the Mac's
-  lines hold neither "once it is listed here" nor a `channel add`.
+  placed. A channel the VM already knew, retired in the org's directory
+  between the two (the directory's file rewritten while the stand-in
+  engine launches): `not-carried`. The VM's identity gone, or of another
+  org, by then: every channel `identity`, no statement written. A
+  `--worktree` spawn onto a stopped seat that is already in one of the
+  requested channels, landing in a project the VM does not carry: no
+  statement written, each channel `project-not-carried`, the seat's
+  record still holds the channel it held, and the Mac's lines say that
+  no placement asked for was made, name no channel the thread is or is
+  not in, and hold neither "once it is listed here" nor a `channel
+  add`.
 - *The shapes.* A request without `--channel` and its outcome are byte
-  for byte G1's. A request's `channels` or `within` outside §1's shape
+  for byte G1's, and the merge base's parser and this one agree on every
+  spelling of every flag of `spawn` but `--c`. A request's `channels`
+  outside §1's shape
   ends the VM side with exit 2 and no outcome line; an outcome's
   `channels` outside it is an outcome that is not known. Each try of the
   Mac's wait sends the same channels. A VM that does not know the channel
@@ -654,13 +731,14 @@ its new cases stage another machine's thread as that file does (`far`).
   current session, resolved by the rule a `@<short>` tag resolves by
   (X2), over the org's scope and without ending the command where nothing
   or more than one answers: then it prints the `@<short>` devcloud holds.
-- **The driver answers inside its own time** (R22). `vm info` runs its
-  listing and its price reads under `Context.bounded`, with the seconds
-  sminos gives it, which leave five of sminos's own bound: an account it
-  did not reach is reported as not asked in time, a price it did not read
-  is no price, and the hosts already read are in the reply. sminos's
-  cutoff is the backstop for a driver that does not answer at all, and
-  loses nothing a driver that keeps its time had read.
+- **The providers work inside a budget, and the report has a margin
+  beyond it** (R22). `--within` bounds the providers' calls
+  (`Context.bounded`); sminos's cutoff is that budget and a fixed five
+  seconds for the driver to start and to print. `info.py` walks the
+  accounts itself, as `Context.census` does, because the census records a
+  call that the budget cut short as an ordinary failed listing and goes
+  on: which account ran out of time is recorded at that account, from
+  the error and the time left there, never judged after the walk.
 - **What X9 may leave unasked, an inventory may not call whole** (R22).
   X9's `unused` is sound for its question (a thread of this Mac owns no
   host in an account this profile never used) and says nothing of a VM
@@ -689,9 +767,11 @@ each of which fails without the behaviour it names:
 - *The driver.* `vm info` asks no host, runs no reaper and writes nothing
   (the fixtures' call records). A host in an account that could not be
   listed is absent and the account is in `unknown`, never a host with
-  invented facts. A provider that stalls on its list, with another
-  account already read: the reply comes inside the time given, holds the
-  hosts read, and names the stalled account in `unknown`. A type list
+  invented facts. Four accounts in order, the first listed, the second
+  failing at once, the third stalled on its list (the fixture's `gate`),
+  the fourth never started: the reply holds the first's hosts, `listing`
+  for the second, `time` for the third and for the fourth, and comes
+  within the budget and the margin. A type list
   that stalls: the host is reported with no cost. An account whose
   provider never passed is under `unused`. A name of another case finds
   its host; two hosts of one name are both reported.
@@ -754,7 +834,8 @@ channel on `alpha`, which holds both from `devcloud@beta` and
 every call and asserts none was made. With CH2: its tests of a notice in
 a channel (acceptance 9's last sentences on delivery) run unchanged.
 
-**Decisions:** R11 to R14 and R23 of the Decision Log, and O2, O3 and O6.
+**Decisions:** R11 to R14, R23 and R24 of the Decision Log, and O2, O3 and
+O6.
 And:
 
 - **The pool is the host's own copy's** (the holder's ruling, R23). The
@@ -804,7 +885,9 @@ which fails without the behaviour it names:
 
 - *The form.* `--pools` without `--notice`, inside a session, beside
   `--in`, beside a selector and before a text that opens with a tag, each
-  refused before anything is written.
+  refused before anything is written. The merge base's parser and this
+  one agree on every spelling of every flag of `say` but `--p`, which is
+  now refused as ambiguous.
 - *Which channels.* A machine in no pool (exit 0, nothing recorded); a
   pool held by hand alone and by a stopped thread alone; two channels
   written and a third passed over; the same text recorded once a channel
@@ -870,15 +953,22 @@ show` or a VM's notice became false, `docs/doperpowers/TECH-DEBT.md`.
   what it has cost. `vm info` stays out, as `vm owned-by` does.
 - **What the skills must not promise:** a notice recorded in a channel
   is delivered to no one, so it is no substitute for the notice to the
-  owning thread, and it is the short text: what is unpushed is told to
-  the owning thread alone; it is recorded only by a VM made from now on,
+  owning thread, and the repositories' names are left out of this
+  additional record and of nothing else: the notice itself keeps its
+  full text wherever today's delivery takes it, which is the owning
+  thread and, when that thread is held, ended or no member, its
+  project's live members and then its project's log. No sentence says
+  the full text reaches the owning thread alone. A kept address for a
+  spawner is not taught as safe to reuse after the spawner moved or went
+  on in another session: the reply line of its latest message is. The
+  record is made only by a VM made from now on,
   whose own sminos is updated ("a VM made from now on", as G1's text says
   it), and in the channels whose pool that VM reads itself in then; the
   cost is the list price times the age; and `channel show` shows a VM
   only where the Mac it runs on can list the VM's account, and says when
   it could not.
 - **The evaluation is small and aimed at what a wrong reading costs.**
-  Four scenarios, run as doperpowers:writing-skills prescribes, against
+  Five scenarios, run as doperpowers:writing-skills prescribes, against
   the changed text and against the text before it: a session that
   coordinates work in a channel and needs a heavy job on a VM (it spawns
   with `--on new --channel`, in the background, and does not spawn and
@@ -889,7 +979,13 @@ show` or a VM's notice became false, `docs/doperpowers/TECH-DEBT.md`.
   take it for its human's instruction and does not down the VM; at most
   it tells the owning thread); a session asked what a channel's VMs cost,
   once on a Mac (it reads `channel show`) and once on a VM (it reports
-  that the facts are not shown there, and invents none). The report says
+  that the facts are not shown there, and invents none); and a live
+  member of a project whose thread owns a VM and is held, which receives
+  the VM's full idle notice gone on from the owner while the channel it
+  is in holds the short one (it reads the two as one notice, treats the
+  full one as the machine's and not its human's, tells the owner's
+  thread or its human as the vm skill says, and neither downs the VM nor
+  repeats the repositories' names into the channel). The report says
   what each run did under each text.
 - **TECH-DEBT rows,** in the section "sminos environments", each with
   what would promote it: those of Constraints' "Accepted, and not
@@ -929,16 +1025,19 @@ classed by the stage it reached; the VM is made under devcloud's caps and
 without `--vm-confirmed`, and a cap is a "not run"; scratch seats, never
 a working one. Added for this scene:
 
-- **A disposable thread makes the VM** (the holder's ruling on the
-  review's thirteenth finding). Parent acceptance line 5 asks that the
-  thread which made the VM is refused its retire while it owns it, and
-  retired after the VM is handed on or downed. So the spawner is a
-  scratch seat A, never the session that runs the check: `spawn --on new`
-  is run with A's session id as the calling session, which is how both
-  sminos and devcloud read who calls (`CLAUDE_CODE_SESSION_ID`), while
-  A's own process idles. A's retire is tried before the handover and
-  made after it, and the second scratch seat B is refused and then
-  retired as in G1's scene. It needs no second VM.
+- **A disposable thread makes the VM, by running the spawn as its own
+  task** (the holder's rulings on the first review's thirteenth finding
+  and on how it is done). Parent acceptance line 5 asks that the thread
+  which made the VM is refused its retire while it owns it, and retired
+  after the VM is handed on or downed. So the spawner is a scratch seat
+  A, never the session that runs the check, and no session id is set
+  from outside its session: A is spawned with a task whose text is the
+  one command to run and what to report back, as G1's live threads were
+  given theirs. The checking session reads what was made from the run's
+  marks (the stamp on the seat, the VM's label and its owner), and A's
+  report only for the lines the command printed. A's retire is tried
+  before the handover and made after it, and the second scratch seat B
+  is refused and then retired as in G1's scene. It needs no second VM.
 - **Kept to what the stand-ins cannot show.** Three things: a VM enrolled
   moments ago placing its thread (its welcome kept, the channel
   registered from the request, the child's first message by the address
@@ -1011,15 +1110,15 @@ its timeout in `.github/ci-kit.yml`.
 |---|---|
 | 1 a thread opened on a VM is placed | M1: `test-on.sh` (the VM side for real on a second home: the lines, the record and the statement there, two channels, a terminal's spawn), `test_on.py` (what the request carries; `--on new`'s order against the stand-in), `test-channels-machines.sh` (a thread spawned with `--channel` on one machine, in the roster and the pool as another reads them); M5, the one place the three are seen in one run |
 | 2 a thread spawned here is placed | M1: `test_channels_spawn.py` (a new seat, a refill and its statement's writer, `--wait`, the statement's shape, no request) |
-| 3 what the thread was told works | M1: `test-on.sh` (the preamble's tag run as the child beside a channel-mate named for the spawner's short; every printed command run under conflicting registrations on both machines), `test_on.py` (the address from `session`, not `short`); M5 (the child's first message) |
+| 3 what the thread was told works | M1: `test-on.sh` (the preamble's tag run as the child beside a channel-mate named for the spawner's short; every printed command run under conflicting registrations on both machines; the `channel add` run on a Mac with a local member named for the remote short), `test_on.py` (the label from `session`, not `short`; the whole session id in every command); M5 (the child's first message) |
 | 4 refused before anything is made | M1: `test_on.py` (the names, 129 channels, a set that folds to a valid one, the uncarried channel and the project id, with devcloud's stand-in recording no call), `test-on.sh` (the VM's refusals: a welcome without `channels`, a channel it does not carry, `spawner-shadowed` in the qualified form; the kept VM's words), `test_channels_spawn.py` (the same refusals here, no launch) |
 | 5 no welcome kept yet | M1: `test-on.sh` (waited on, spawned once the welcome is kept; the wait's end, exit 75, no launch), `test_channels_spawn.py` (the refusal without `--on`, in its own words) |
-| 6 after the launch nothing is a refusal | M1: `test_channels_spawn.py` (each `failed` word, the limit, a lock held on the second channel), `test-on.sh` (the outcome's `channels` with each failed entry; the registration made uncarried meanwhile; the `--worktree` seat; the merge base's sminos as the VM side onto a seat already in channels; a last try that ends after the launch), each asserting one launch |
+| 6 after the launch nothing is a refusal | M1: `test_channels_spawn.py` (each `failed` word, the limit, a lock held on the second channel), `test-on.sh` (the outcome's `channels` with each failed entry; a registration made uncarried, a known channel retired and the identity changed between the check and the placement; the `--worktree` refill of a seat that holds a requested channel; the merge base's sminos as the VM side onto a seat already in channels; a delay before the VM side starts, then the held lock, with a Mac's bound that outlasts it and one that does not; the inspection run from the login directory), each asserting one launch |
 | 7 `channel show` on a Mac | M2: `test_driver_info.py` (the reply for a VM, an adopted machine, a host with no price, a handed-on host), `test_vm_info.py` (sminos's reading of the driver's own replies), `test_channels_roster.py` (the lines and `--json`), `test-channels-machines.sh` (the suffix for a machine a spawned thread put in the pool); M5 |
-| 8 `channel show`, missing or partial | M2: `test_vm_info.py` (no CLI, an older devcloud, exit 6, no answer in time, another exit, each reply that is not whole), `test_driver_info.py` (a stalled list and a stalled type list answered inside the time given; the second profile's account), `test_channels_roster.py` (both renderers on each: the line, `coverage`, the roster and the exit unchanged) |
+| 8 `channel show`, missing or partial | M2: `test_vm_info.py` (no CLI, an older devcloud, exit 6, no answer in time, another exit, each reply that is not whole), `test_driver_info.py` (four accounts: listed, failed, stalled, not started; a stalled type list; the second profile's account), `test_channels_roster.py` (both renderers on each: the line, `coverage`, the roster and the exit unchanged) |
 | 9 a notice in the timeline | M3: `test_channels_pools.py` (which channels, the event, nothing delivered, the removal not yet read and the hand-add not readable), `test_idle.py` and `test_lease.py` (the short text), `test-channels-machines.sh` (written on one machine, read by another's `chat`); built by CH2 and run unchanged: `test_channels_say.Words`, `test_channels_lead` (the lead rule, a tagged notice, the manager's classifier); M5 |
 | 10 the notice's own delivery is unchanged | M3: `test_idle.py`, `test_lease.py` (the chain's calls as before, the fourth call, exit 2, exit 0 with a waiting line), `test_channels_pools.py` (the queued event, once, after its release), the `devcloud-host` gate (the host's services against the sminos stand-in) |
-| 11 nothing else changed | M1 to M3: a comparison with the merge base's sminos, extracted from git, in each milestone's suite (the banner, the preamble, the request and the outcome of a spawn with no channel; a `say`; `channel show` of a pool of one); M4: every gate on the final head |
+| 11 nothing else changed | M1 to M3: a comparison with the merge base's sminos, extracted from git, in each milestone's suite (the banner, the preamble, the request and the outcome of a spawn with no channel; a `say`; `channel show` of a pool of one; the two parsers, flag by flag and prefix by prefix, differing in `spawn --c` and `say --p` and nowhere else); M4: every gate on the final head |
 | 12 what sessions are taught is true | M4: the evaluation's report; the tests that pin the preamble's lines and `sminos help` |
 | 13 on the fleet | M5 |
 
@@ -1027,9 +1126,9 @@ its timeout in `.github/ci-kit.yml`.
 devcloud's driver runs, after this child's pull request is merged, as one
 script it writes in a scratch directory outside the repository, under
 G1's M5 rules (the ledger of intents, the stamps, one cleanup, three
-states). `<run>` is four hex digits drawn for the run. The script runs in
-a worktree whose branch origin holds at its commit. "As A" means with A's
-session id in `CLAUDE_CODE_SESSION_ID`.
+states). `<run>` is four hex digits drawn for the run. `<W>` is a
+worktree whose branch origin holds at its commit, and `<me>` the checking
+session's own short id.
 
 0. Before anything is made: this Mac's marketplace clone and its daemon
    run sminos 1.56.0 or later and devcloud 0.19.0 or later, and
@@ -1039,31 +1138,43 @@ session id in `CLAUDE_CODE_SESSION_ID`.
    check. Expect it placed, and `sminos list en-live-<run>` listing it
    alone. `<C>` is the channel's id, from `sminos channel show
    en-live-<run> --json`.
-2. Two local scratch seats, each `sminos spawn en-live-a-<run> "Say
-   ready, then stop and wait." --stamp en_live_run=<run>` (and `-b-`).
-   `<A>` is the first's session id, read with `sminos who --thread
-   en-live-a-<run>`; wait until `sminos list` shows it idle, so that its
-   record is settled.
-3. The spawn, as A, with `DEVCLOUD_TEST_RUN=en-live-<run>` in its
-   environment:
+2. The second scratch seat: `sminos spawn en-live-b-<run> "Say ready,
+   then stop and wait." --stamp en_live_run=<run>`.
+3. The intent is written to the ledger (a VM labelled `en-live-<run>`, a
+   seat `en-live-<run>` on it), and then the scratch thread that makes
+   them is spawned, its task the command:
 
-       sminos spawn en-live-<run> - --on new --channel en-live-<run> \
-           --stamp en_live_run=<run> <<'EOF'
-       Say where you run, to your spawner, then stop and wait.
+       sminos spawn en-live-a-<run> - --cwd <W> --stamp en_live_run=<run> <<'EOF'
+       Run exactly this one command, as a background command, from the
+       directory you are in, and change nothing in it:
+
+           DEVCLOUD_TEST_RUN=en-live-<run> sminos spawn en-live-<run> "Say where you run, to your spawner, then stop and wait." --on new --channel <C> --stamp en_live_run=<run>
+
+       When it ends, send everything it printed and its exit status with
+       sminos say "@<me> …", then stop and wait. If it is refused or
+       fails, send that the same way and do nothing else: do not run it
+       again and do not change it.
        EOF
 
-   Expect: devcloud's lines, perhaps the notes that it waits (for the
-   VM's enrollment, for its reading of A, for its welcome), then `seat
-   spawned on <vm>: …`, `en-live-<run>#<sid>: in en-live-<run>`, the note
-   that the VM is kept and A's thread owns it, exit 0.
+   `<A>` is this seat's session id, read with `sminos who --thread
+   en-live-a-<run>`. Expect, within twenty-five minutes, A's message to
+   the checking session holding: devcloud's lines, perhaps the notes that
+   it waits (for the VM's enrollment, for its reading of A, for its
+   welcome), then `seat spawned on <vm>: …`, `en-live-<run>#<sid>: in
+   en-live-<run>`, the note that the VM is kept and its thread owns it,
+   and exit 0. Whatever A reports, `devcloud vm ls` is read for a VM
+   whose name holds `en-live-<run>`: one that exists is the run's, with
+   A's short as its owner. No message and no VM by then: not run, with
+   A's transcript's last lines; a message that the command was refused:
+   not run, with the refusal.
 4. The VM's sminos, before anything is attributed to this release: its
    plugin manifest on the host names 1.56.0 or later (G1's step 3). A host
    whose declared source is pinned elsewhere shows another: the report
    then says which copy the steps ran on and claims none for this release.
 5. Within two minutes `sminos list <C>` lists two threads, the second on
    `<vm>`, and A's project log holds a `say` under a writer of `<vm>`
-   whose `to` names `<A>`: the child reached its spawner by the address
-   its preamble gave. `sminos channel show <C>` prints, in its pool,
+   whose `to` names `<A>`: the child reached its spawner, the scratch
+   thread, by the address its preamble gave. `sminos channel show <C>` prints, in its pool,
    `<vm>  1 live, 0 stopped  vm owned by en-live-a-<run>#<A's first
    eight>, up <minutes>m, <a small amount> <currency> so far`, and no
    line of partial coverage that names the VM's account. The command is
@@ -1154,33 +1265,33 @@ the kept welcome's capabilities list holds it, `False` where that list is
 there without it, and `None` where there is no file, it cannot be read,
 or it holds no capabilities list. `advertised` is unchanged.
 
-**The request** (the Mac side to the VM side) gains two keys, present
-only when `--channel` was given:
+**The request** (the Mac side to the VM side) gains one key, present
+only when `--channel` was given, the same on every try of one command:
 
-    "channels": [{"id": "<the channel's id>", "name": "<its name on the asking machine>"}, …],
-    "within": 480
+    "channels": [{"id": "<the channel's id>", "name": "<its name on the asking machine>"}, …]
 
-`within` is the whole seconds the Mac gives this try before it stops it
-(the `given` of `remote`, rounded down, at least 1), so it can differ
-between the tries of one command; `channels` cannot. `read_request` takes the two only
-whole and together: `channels` a list of 1 to 128 objects, each `id` a
-channel's id (`is_channel_id`) and each `name` a name (`valid_name`), no
-id twice; `within` an integer of 1 or more. Either present and anything
-else: exit 2 and no outcome line, as for any request this version does
-not read.
+`read_request` takes it only whole: a list of 1 to 128 objects, each `id`
+a channel's id (`is_channel_id`) and each `name` a name (`valid_name`),
+no id twice. Present and anything else: exit 2 and no outcome line, as
+for any request this version does not read. The request carries no time
+(R18).
 
 **The spawner's address.** Where the request carries `channels` and names
 a spawner's session, the preamble's `{{BY}}` gives the address as
 
-    <alias> (@<project id>/<short>, in <project name> on <machine>; sminos say "@<project id>/<short> …" reaches it)
+    <alias> (@<project id>/<short>, in <project name> on <machine>; sminos say "@<project id>/<short> …" reaches it as it is now; once it has sent you a message, answer by that message's reply line, which follows it if it moves)
 
 and `hold_to_spawner` asks the resolver that tag in place of `@<short>`:
 resolved to the spawner's session in the request's project, the launch
 goes on; a refusal that opens `ambiguous`, or any other member,
 `spawner-shadowed`; anything else, `spawner-unknown`, waited on as today.
 One function in `S/sminos_on.py`, `spawner_tag(by, qualified)` (new),
-builds the tag for both. Without
-`channels` the words and the check are G1's.
+builds the tag for both. Without `channels` the words and the check are
+G1's. What the check gives: at admission the tag reaches the spawner, and
+no alias in another project can take it. What it does not: the tag is
+read in the spawner's project, an id before an alias only among current
+names, so after the spawner has moved away or gone on in another session,
+a member of that project whose alias is the short is who it reaches.
 
 **The VM side, before its launch,** after `hold_to_spawner`:
 
@@ -1191,39 +1302,46 @@ builds the tag for both. Without
 | a channel it already knows whose log its enrollment does not carry, against the request's `org` | `why` `other`, exit 1, naming the channel and the reason; nothing was spawned |
 
 `WHYS` gains `"welcome-unknown": (1,)` and `WAITED_ON` gains it: the Mac
-waits it out as it waits out `spawner-unknown`, for a named VM too,
-inside the one wait counted from the first waited-on answer. At the
-wait's end no thread was opened, the exit is 75 (`EXIT_LATER`), and the
-words say that the VM's sminos had kept no welcome within the wait, that
-`devcloud vm ssh <vm> -- sminos daemon status` shows its uplink, and that
-the same command with `--on <vm>` opens the thread once it has. Only a
-Mac that sent `channels` can be answered so. The VM side registers
-nothing and writes nothing before the launch.
+waits it out as it waits out `spawner-unknown`, for a named VM as for a
+new one (the holder's ruling), inside the one wait counted from the first
+waited-on answer. At the wait's end no thread was opened, the exit is 75
+(`EXIT_LATER`), and the words say that the VM's sminos had kept no
+welcome within the wait, that `devcloud vm ssh <vm> -- sminos daemon
+status` shows its uplink, and that the same command with `--on <vm>`
+opens the thread once it has. Only a Mac that sent `channels` can be
+answered so. The VM side registers nothing and writes nothing before the
+launch.
 
 **The placement,** on the placing machine, once the launcher has returned
 the session. One function, `sminos_channels.place_spawned(thread_id,
-session, asked, org, until)` (new), which never exits and never raises,
-and returns one entry a channel in the order asked. `until` is one
-deadline for all of it: `PLACE_BUDGET` (30 seconds;
-`SMINOS_PLACE_BUDGET`) from its start and, on the VM side, no later than
-`within` less `PLACE_REPORT` (10 seconds) counted from when the request
-was read. For each channel, while time is left:
+session, project, asked, org)` (new), which never exits and never raises,
+and returns one entry a channel in the order asked. It opens with
+`sminos.forget_caches()` and fixes one deadline, `PLACE_BUDGET` (30
+seconds; `SMINOS_PLACE_BUDGET`) from then, for every wait in it. `org` is
+the request's on a VM, and on a spawn without `--on` the org this machine
+was enrolled in when the command began. Then:
 
-1. on the VM side, where the seat's project is one that machine's
-   enrollment does not carry (the outcome's `not_carried`): no channel
-   is tried, each is `failed`, `project-not-carried` (a spawn without
-   `--on` places as `sminos channel add` would there, and makes no such
-   test);
-2. where the machine does not know the channel: `register(id, name,
-   lock_until=until)` (`register` gains the argument; a lock not had by
-   then is `time`);
-3. the registration read again: none, `unregistered`; `not_carried(channel,
-   org)` anything but "" or the word for a channel that has left this
-   machine, `not-carried`;
-4. `change(thread_id, channel, "add", session, lock_until=until)`.
+1. this machine's enrollment, read now: none, or of another org than
+   `org`: no channel is tried, each is `failed`, `identity`;
+2. on the VM side, the seat's project, read now: one that machine's
+   enrollment does not carry (`not_carried(project, org)`): no channel is
+   tried, each is `failed`, `project-not-carried` (a spawn without `--on`
+   places as `sminos channel add` would there, and makes no such test);
+
+and for each channel, while time is left:
+
+3. where the machine does not know the channel: `register(id, name,
+   lock_until=<the deadline>)` (`register` gains the argument; a lock not
+   had by then is `time`);
+4. the registration and the org's directory as they are now: no
+   registration, `unregistered`; `not_carried(channel, org)` anything but
+   "" or the word for a channel that has left this machine,
+   `not-carried`;
+5. `change(thread_id, channel, "add", session, lock_until=<the deadline>)`.
 
 A channel whose turn comes with no time left is `failed`, `time`, and is
-not tried.
+not tried. The outcome's own `not_carried` (G1's) is computed after the
+placement, from the same fresh reads.
 
 **The outcome line** gains one key on a success, present exactly when the
 request carried `channels`, one entry a channel in the request's order:
@@ -1231,23 +1349,27 @@ request carried `channels`, one entry a channel in the request's order:
     "channels": [{"id": "<id>", "state": "applied" | "refused" | "failed", "why": "<word>"}, …]
 
 `why` is `""` or `unchanged` for `applied`; `limit` for `refused`; for
-`failed`, `change`'s word (a key of `OWN_FAILED`), `unregistered`,
-`not-carried`, `project-not-carried`, `time`, or `error` (anything else,
-said on the VM's standard error). `outcome_whole` takes the key, where
-present, only as such a list; a Mac that sent no channel ignores it. The
-Mac holds it to its call as it holds the alias: a list that does not name
-exactly the ids asked, in order, is an outcome that is not known.
+`failed`, `change`'s word (a key of `OWN_FAILED`), `identity`,
+`unregistered`, `not-carried`, `project-not-carried`, `time`, or `error`
+(anything else, said on the VM's standard error). `outcome_whole` takes
+the key, where present, only as such a list; a Mac that sent no channel
+ignores it. The Mac holds it to its call as it holds the alias: a list
+that does not name exactly the ids asked, in order, is an outcome that is
+not known.
 
-**What is printed,** after the seat's line, one line a channel (`<name>`
-the channel's name on the printing machine, in prose only):
+**What is printed,** after the seat's line, one line a channel. `<name>`
+is the channel's name on the printing machine and `<sid>` the session's
+first eight characters, both for reading only; `<session>` is the new
+session's whole id, which is what a command names the thread by:
 
 | Case | Line |
 |---|---|
 | placed | `<alias>#<sid>: in <name>` (`already in <name>` where the thread held it), on standard output |
-| not placed, here | warning: `spawn completed, but <alias>#<sid> was not placed in <name> (<why>): sminos channel add <id> <alias>#<sid> places it` |
-| not placed, on a VM | warning: `spawn completed, but <alias>#<sid> was not placed in <name> on <machine> (<why>): sminos channel add <id> <sid> asks its machine, once sminos list --machine <machine> shows it here` |
-| `project-not-carried` | after G1's note that the seat will not be listed or reached from here, one warning: `it is in none of the channels asked (<names>): its project on <machine> is not carried, so no other machine would read its membership`; no command |
-| a success line with no `channels` when some were asked | warning: `spawn completed, but <machine>'s sminos did not carry out the placements asked for (it predates spawn --channel). Which channels <alias>#<sid> is in is not known here: sminos list <id> shows, once its events arrive, and sminos channel add <id> <sid> asks its machine`, the two commands given for each channel asked |
+| not placed, here | warning: `spawn completed, but <alias>#<sid> was not placed in <name> (<why>): sminos channel add <id> <session> places it` |
+| not placed, on a VM | warning: `spawn completed, but <alias>#<sid> was not placed in <name> on <machine> (<why>): sminos channel add <id> <session> asks its machine, once sminos list --machine <machine> shows it here` |
+| `identity` | one warning for the spawn: `spawn completed, but none of the placements asked for was made: <machine> is no longer enrolled in this org`; no command |
+| `project-not-carried` | after G1's note that the seat will not be listed or reached from here, one warning: `none of the placements asked for (<names>) was made: its project on <machine> is not carried, and this project's memberships will not be seen from here`; no command, and nothing said of which channels the thread is in |
+| a success line with no `channels` when some were asked | warning: `spawn completed, but <machine>'s sminos did not carry out the placements asked for (it predates spawn --channel). Which channels <alias>#<sid> is in is not known here: sminos list <id> shows, once its events arrive, and sminos channel add <id> <session> asks its machine. It was told to reach you as @<short>, which a member of a channel it is already in can answer to if that is its alias` (the last sentence only where a spawner was named), the two commands given for each channel asked |
 
 `<why>` in words: `OWN_FAILED`'s sentence for its word, `LIMIT_REFUSAL`'s
 reason for `limit`, and for the new words: "its registration there is
@@ -1256,11 +1378,20 @@ placing ran out". A word the Mac does not know is printed as itself. The
 exit is 0 in all of these.
 
 **Where the call to the VM is lost after the request was sent** (no
-outcome line in time, output that never ended, an outcome that is not
-whole), G1's line stands, and where channels were asked it ends: `Do not
-spawn it again before looking: devcloud vm ssh <vm> -- sminos list shows
-whether the seat runs, and devcloud vm ssh <vm> -- sminos list <id> who
-is in <name> there`, the second command given for each channel.
+outcome line within the Mac's own bound, output that never ended, an
+outcome that is not whole) and channels were asked, the line that says
+the outcome is not known names this inspection in place of G1's bare
+`sminos list`, which reads one project from the login directory:
+
+> Do not spawn it again before looking: `devcloud vm ssh <vm> -- sminos
+> list --here --all` lists every seat on <vm>, in any project, and
+> `devcloud vm ssh <vm> -- claude agents` the engine's jobs there, if a
+> session started and no seat was recorded. `devcloud vm ssh <vm> --
+> sminos list <id>` shows who is in <name> there; a channel that does not
+> list it shows nothing about whether it was launched.
+
+(the third command for each channel). Without `--channel` every such line
+is G1's, unchanged.
 
 **The preamble** gains one sentence, rendered only where channels were
 asked, after the paragraph that explains channels. The name is prose, as
@@ -1307,12 +1438,18 @@ One JSON object on one line of standard output, exit 0:
   SPENT with; both null for an adopted machine, for a type with no price
   and where the provider's type list could not be read, in time or at
   all.
-- **Its time.** The listing and every price read run under
-  `Context.bounded(<seconds>)`, `--within`'s value, 12 where it is not
-  given. An account whose client or list did not start or did not finish
-  in what was left is an entry of `unknown` with `failed` `"time"`; the
-  hosts of accounts already listed are in `hosts`. The reply is printed
-  before the time is up.
+- **Its time.** `--within` is the budget for the providers' work, 12
+  seconds where it is not given: the accounts are walked one after
+  another under `Context.bounded(<seconds>)`, and after them the price
+  reads. What became of an account is decided at that account, as it is
+  walked, and is one of: listed; an ordinary failure (`account` where
+  its client could not be made, `listing` where its list failed with
+  time left); `time`, where its call was not started because the budget
+  was spent (`Spent`), or was started and ended only when the budget
+  did. One stalled account can take everything that is left: the
+  accounts after it are `time`, the hosts of those before it are in
+  `hosts`, and a price not read is no price. The reply is composed and
+  printed after the budget, in what its caller leaves for that.
 - `unknown` (but for `"time"`), `listed`, `unused`: X9's shapes, computed
   as `vm owned-by` computes them. What `unused` means to this verb's
   reader is §3's, not X9's.
@@ -1326,9 +1463,10 @@ sminos asks it through one function beside `owned_by` in
 `S/sminos_threads.py` (`vm_info(names)`, new), found and stopped as
 `owned_by`'s question is, and run only from a devcloud of
 `DEVCLOUD_INFO_MIN = (0, 19, 0)` or later (the copy `SMINOS_DEVCLOUD`
-names is taken at its word). Its bound is the smaller of 20 seconds and
-`devcloud_timeout()`, and it passes `--within` that bound less 5, at
-least 1.
+names is taken at its word). Its cutoff is the smaller of 20 seconds and
+`devcloud_timeout()`, and it passes `--within` that cutoff less
+`DEVCLOUD_INFO_MARGIN` (5 seconds, fixed), at least 1: the margin is the
+driver's start and its report, and the budget is the providers'.
 
 ### §3. `channel show`'s pool (M2)
 
@@ -1476,8 +1614,9 @@ does not take.
 
 | What is new | The older copy | What happens |
 |---|---|---|
-| the request's `channels` and `within` | a VM's sminos 1.53.0 to 1.55.x | It reads the fields it knows and opens the thread, changing no membership; its outcome has no `channels`; the Mac says the VM did not carry out the placements, and claims nothing of what the thread is in (§1). |
-| the qualified address in `{{BY}}` and in the preflight | a VM's sminos 1.53.0 to 1.55.x | It renders and checks the bare `@<short>`, as it does today. Its thread is placed in no channel by this spawn, so the hazard the qualified form closes does not arise from it. |
+| the request's `channels` | a VM's sminos 1.53.0 to 1.55.x | It reads the fields it knows and opens the thread, changing no membership; its outcome has no `channels`; the Mac says the VM did not carry out the placements, and claims nothing of what the thread is in (§1). |
+| the qualified address in `{{BY}}` and in the preflight | a VM's sminos 1.53.1 to 1.55.x | It gives the child the bare `@<short>` and checks that tag from a process with no session, so through no roster. This spawn places its thread in nothing, but a spawn onto a stopped seat that already holds channels opens a child that reads its channel-mates' aliases first (1.55.x), and one named for the short takes the child's reply. Accepted: the Mac's line for such a VM says which address the child was given and what can answer to it (§1). |
+| the same | a VM's sminos 1.53.0 | It has no check of the spawner's address at all and launches at once, as G1 records; the same line is printed. |
 | the `why` `welcome-unknown` | a Mac's sminos up to 1.55.x | It is never sent: a VM answers so only to a request that carries `channels`. |
 | the outcome's `channels` | a Mac's sminos up to 1.55.x | It sent none, so none comes back. |
 | a host's `--pools` call | the host's sminos up to 1.55.x | A usage error, exit 2: the host says its line and calls nothing again; the chain is as it was. |
@@ -1592,54 +1731,37 @@ later.
 
 1. **How long `channel show` takes on the fleet** once it asks devcloud
    (O4). Not measurable from the tree; M5's step 5 measures it. Its upper
-   end is fixed: 20 seconds, of which the driver takes at most 15.
-2. **A named VM is waited on for its welcome, as a new one is.** The
-   holder's wording was "on a VM just made". The Mac cannot tell a VM made
-   by hand a minute ago from an old one, and G1 already waits a named VM
-   out for `spawner-unknown` for that reason, so `welcome-unknown` is
-   waited on for both. What it costs: a named VM whose kept welcome is
-   unreadable for good holds the command for eleven minutes before the
-   exit 75 that says where to look. The holder's to confirm.
-3. **The qualified address is given only with `--channel`.** A thread
-   spawned with `--on` and no channel keeps G1's bare short, so that its
-   preamble stays byte for byte; added to a channel later, it has the
-   hazard this revision closes for a thread placed at its spawn (a
-   TECH-DEBT row, M4). Giving every `spawn --on` the qualified address
-   closes that too and changes a line parent acceptance line 8 covers.
-   The holder's call; the row's trigger is the first reply seen to go to
-   a channel-mate.
-4. **A thread whose project the VM does not carry is placed nowhere.**
-   Under `--worktree` the project is known only after the launch. Its
-   statement would lie in a log that never leaves the VM, read by no
-   roster, so this plan writes none and says so. The other reading,
-   placing it on the VM alone, would make `sminos list` there and
-   everywhere else disagree.
-5. **M5 runs its spawn in a scratch thread's name** by setting
-   `CLAUDE_CODE_SESSION_ID` to that seat's session for the one command.
-   That is what both programs read to know who calls, and the seat's own
-   process is idle meanwhile; but it is a session id used from outside
-   its session, on the owner's real store. The alternative is to ask the
-   scratch session to run the command as its task, which leaves the
-   command's arguments to a model. The holder's to confirm before M5.
-6. **A host's `human` event under a channel's id through the real endpoint
+   end is fixed: 20 seconds, 15 of them the providers'.
+2. **G1's own words after a lost call name an inspection that can miss
+   the seat.** Without `--channel` this plan leaves them as they are
+   (`devcloud vm ssh <vm> -- sminos list`, which reads the login
+   directory's project). The better command is one line of
+   `S/sminos_on.py` and changes what every `spawn --on` prints when a
+   call is lost; it is G1's to patch, or this child's with the holder's
+   word, and until then a TECH-DEBT row (M4).
+3. **The scratch thread may not run the command it is given.** M5's VM
+   is made by a real session whose task is the spawn command. If it
+   declines, asks, or changes the command, the scene is "not run" with
+   what it said; the checking session finds what was made by the run's
+   marks, never by that session's report alone.
+4. **A host's `human` event under a channel's id through the real endpoint
    and hub.** CH2 proved it against MAWS's fixture and a stand-in and says
    it was not yet read from a real endpoint. M5's step 7 is the first real
    reading; a failure there is the wire's, and goes to the holder.
-7. **An adopted machine whose own name differs from its devcloud name**
+5. **An adopted machine whose own name differs from its devcloud name**
    shows no owner in `channel show`, since the two are matched by name.
    No such machine is known; a row if one is seen.
-8. **Who runs M5.** As in G1, the plan's executor, in a session on a Mac
-   where the driver runs; it need not be a thread itself now that a
-   scratch thread makes the VM, but it creates the scratch channel, so it
-   is one or the holder runs the scene from one.
-9. **The `sminos-channels` gate's room.** Two new files and three new
+6. **Who runs M5.** As in G1, the plan's executor, in a session on a Mac
+   where the driver runs. It creates the scratch channel, so it is a
+   thread or the holder runs the scene from one.
+7. **The `sminos-channels` gate's room.** Two new files and three new
    scenes of `test-channels-machines.sh` join a part that took up to
    3m38s against 8 minutes. Each milestone reports it, and a part past
    six minutes has its timeout set again in the same change.
-10. **A machine added to a pool by hand and since retired by the org**
-    stays in `channel show` with no thread and, being no host any more,
-    with no suffix. CH1 built that, and O3's default leaves it; a
-    TECH-DEBT row records it.
+8. **A machine added to a pool by hand and since retired by the org**
+   stays in `channel show` with no thread and, being no host any more,
+   with no suffix. CH1 built that, and O3's default leaves it; a
+   TECH-DEBT row records it.
 
 ## Surprises & Discoveries
 
@@ -1732,7 +1854,7 @@ Found while this plan was written, by reading the code at the parent pin.
 
 ## Decision Log
 
-The entries R1 to R23 are the residue decisions made while this plan was
+The entries R1 to R24 are the residue decisions made while this plan was
 written, each with the alternative it beat; a milestone's Decisions slot
 points at them. The owner's decisions are not here: they are O1 to O6,
 above.
@@ -1741,9 +1863,10 @@ above.
   built, by the `doperpowers:adversarial-reviewer` agent, on buildability:
   the milestones against the code, the shapes and sentences of Interfaces
   against the composite, and §6's table against what each older copy
-  really does. The first review returned thirteen findings (the entry
-  "The plan's review"); whether its revision is read again is the
-  holder's call. The build runs under `doperpowers:plan-executor`, a fresh
+  really does. The first review returned thirteen findings and the
+  second, of the revision, ten (the entries "The plan's review" and "The
+  plan's second review"); there is no third before the build. The build
+  runs under `doperpowers:plan-executor`, a fresh
   executor a milestone, each milestone reviewed at its close by the
   execution loop's reviewer. After M4 the composite's holder reads the
   whole range once, through doperpowers:review-code at the panel rung
@@ -1877,30 +2000,44 @@ above.
   of 0.19.0.
 - 2026-11-23 — **R17. A thread placed at its spawn is given its spawner's
   qualified address, and that same tag is what the preflight asks** (the
-  review's first finding; the holder ruled for extending G1's check to
-  the requested channels' rosters, and for a form the resolver takes
-  without a roster's aliases where one exists). One exists and is the
-  one sminos already gives every reply: `@<project id>/<short>`
-  (`reply_line`), read in that project alone, an id before an alias, two
-  answers refused. *Alternative rejected:* the roster-extended check of
-  the bare short. It can only see the rosters the VM holds when it
-  checks, so a channel not downloaded yet and a member renamed later
-  would stay limits, and the child would still run a tag that the next
-  channel it is added to can take. *What stays a limit:* the qualified
-  address is refused once the spawner has moved to another project (a
-  frame from the spawner carries its current reply line); a member of
-  the spawner's own project who later takes the short as an alias makes
-  it ambiguous, which is refused; and a thread spawned without
-  `--channel` keeps the bare short (Open point 3).
-- 2026-11-23 — **R18. One deadline for a spawn's placements, which the
-  asking machine's own wait sets** (the review's second finding). The
-  request says how long this try is given (`within`), and the VM side
-  ends its placements ten seconds before that, thirty seconds after they
-  began at most. *Alternatives rejected:* a fixed budget alone, which a
-  last try of the Mac's wait, given only what is left of eleven minutes,
-  can be shorter than; no key and the Mac's "not known" for every lock
-  that is slow, which loses the report of a launch that succeeded and of
-  placements already made.
+  first review's first finding; the holder ruled for extending G1's check
+  to the requested channels' rosters, and for a form the resolver takes
+  without a roster's aliases where one exists; reworded after the second
+  review's seventh). One exists and is the one sminos already gives every
+  reply: `@<project id>/<short>` (`reply_line`), read in that project
+  alone. *What it guarantees, and no more:* at admission the tag reaches
+  the spawner, and no alias in another project, a channel-mate's
+  included, can take it. It is not bound to the spawner afterwards: in
+  that project a current alias comes before another id of a member
+  (`current_first`), so once the spawner has moved away or gone on in
+  another session, a member who has taken the short as an alias is who
+  the kept address reaches, alone. Nothing taught calls a kept address
+  safe to reuse then; the preamble says to answer by the reply line of
+  the spawner's latest message. Given only with `--channel` (the
+  holder's ruling: a spawn with no channel stays byte for byte), and
+  `--on --channel` is refused on the Mac where the spawner's project id
+  fits no qualifier (the holder's ruling). *Alternative rejected:* the
+  roster-extended check of the bare short. It can only see the rosters
+  the VM holds when it checks, and the child would still run a tag that
+  the next channel it is added to can take. *Noted, not taken in this
+  revision:* the spawner's whole session id after the qualifier, which
+  no alias would plausibly equal and which would shrink the limit above
+  to nearly nothing; it departs from the reply line's form and was not
+  before either review, so it is the holder's to take or leave.
+- 2026-11-23 — **R18. One deadline for a spawn's placements, on the
+  placing machine, and no promise about the Mac's wait** (the first
+  review's second finding; rewritten after the second review's third,
+  which offered two ways and this is the second). Thirty seconds from the
+  placement's start cover every wait in it. This plan first sent the
+  Mac's remaining time in the request (`within`) and reserved ten seconds
+  of it for the report. That figure counts from before `devcloud vm ssh`
+  found the host, read its lifecycle and connected, none of which is
+  bounded, so the VM would have aged it by a guess, and the reserve would
+  have been a claim no test could hold. The key is gone. *What is
+  accepted:* on a last try that the Mac's wait has cut short, a healthy
+  VM can still be placing when the Mac gives up, which is G1's outcome
+  that is not known, as it already is when the launch itself outlasts
+  that try. The outcome's HEAD read stays G1's, with its own bound.
 - 2026-11-23 — **R19. A kept welcome is read as one of three: it lists
   channels, it does not, or it is not known; the third is waited on** (the
   review's eighth finding, which closes this plan's own open point
@@ -1911,22 +2048,35 @@ above.
   membership leave the machine at all, so a thread would be opened that
   no placement can then fix.
 - 2026-11-23 — **R20. Commands name a channel by its id and a thread by
-  its session's first eight characters** (the review's fourth finding).
-  *Alternative rejected:* a name checked to be the only one on the
-  machine that prints it. The preamble is rendered before the VM has
-  registered the channel, and the check would be true of the moment it
-  was made.
-- 2026-11-23 — **R21. Carriage is read again at the placement, and what
-  it finds then is a failure for that channel** (the review's fifth
-  finding). A thread whose own project the VM does not carry is placed
-  in nothing (Open point 4).
+  its session's whole id** (the first review's fourth finding, and the
+  second's first: a short is looked up as an alias in the caller's
+  project before it is read as an id, `find_target`, so a local member
+  named for a remote session's short would be the one asked). The short
+  and the names are for reading. *Alternative rejected:* a name checked
+  to be the only one on the machine that prints it. The preamble is
+  rendered before the VM has registered the channel, and the check would
+  be true of the moment it was made.
+- 2026-11-23 — **R21. What is placed is decided from fresh reads at the
+  placement, and what they find then is a failure, not a refusal** (the
+  first review's fifth finding, and the second's second). The cheapest
+  form the code offers is the one it already uses between tries of
+  `spawn --on`: `forget_caches`, which drops the cached enrollment and
+  directory with the registrations. A thread whose own project the VM
+  does not carry gets no placement (the holder's ruling), and the Mac
+  says what was not done, never which channels the thread is in.
 - 2026-11-23 — **R22. For an inventory, an account not asked is coverage
-  not had; and the driver answers inside its own time** (the review's
-  tenth finding). X9 and `vm owned-by` are unchanged: the narrowing of
-  2026-11-22 is about what this Mac's threads can own. *Alternative
-  rejected:* asking every account for `vm info`, never-passed ones
-  included: such an account has no usable provider under this profile,
-  so there is nothing to ask it with.
+  not had; the providers work inside a budget, and the report has a
+  margin beyond it** (the first review's tenth finding, and the second's
+  eighth). X9 and `vm owned-by` are unchanged: the narrowing of
+  2026-11-22 is about what this Mac's threads can own. A stalled provider
+  call ends only when the budget does and then raises as any failed
+  listing does, so an answer "inside" the budget was not buildable:
+  `--within` is the providers' budget, the caller's cutoff a fixed five
+  seconds more, and each account's fate is recorded as it is walked.
+  *Alternatives rejected:* asking every account for `vm info`,
+  never-passed ones included (such an account has no usable provider
+  under this profile); a share of the budget for each account, which
+  the driver has no seam for and one command does not need.
 - 2026-11-23 — **R23. The pool a host tests is its own copy's, and what
   it records there is the short text** (the holder's rulings on the
   review's sixth finding; O6). *Alternative rejected for the pool:* a
@@ -1939,9 +2089,9 @@ above.
   and each finding was read again in the code before its fix was
   written; all thirteen held. What moved:
   1. *The child's reply address* (R17; acceptance 3; §1; M1).
-  2. *Time after the launch* (R18; the constraint "One deadline after a
-     launch"; acceptance 6; §1's `within`, `PLACE_BUDGET` and the line
-     for a call that is lost).
+  2. *Time after the launch* (R18, as first written: a `within` key and
+     a reserve, both withdrawn at the second review; `PLACE_BUDGET` and
+     the line for a call that is lost stayed).
   3. *A refill* (R1's reason; acceptance 2; the test of the statement's
      writer). Ruled by the holder.
   4. *Names in commands* (R20; the constraint "What a thread or a person
@@ -1966,6 +2116,45 @@ above.
   550 in sminos's scripts, 220 in devcloud, 1,450 of tests and 180 of
   what is taught and what sits beside the code. M1 still carries the
   risk, and more of it than before.
+- 2026-11-23 — **R24. Two prefixes the parser took stop working, and no
+  alias keeps them** (the holder's ruling on the second review's ninth
+  finding). `spawn --c` and `say --p` were never documented and are now
+  argparse's ambiguity error. The promise of "byte for byte" is of the
+  documented spellings. *Alternative rejected:* hidden aliases for the
+  two, which would keep alive two spellings nobody was taught, each one
+  prefix away from the next flag added.
+- 2026-11-23 — **The plan's second review** (ten findings; the holder
+  ruled on the points the first revision opened and on the ninth, and
+  this is the last revision before the build). Each was read again in
+  the code; all ten held. The rulings on what was open: a named VM is
+  waited on for `welcome-unknown`; the qualified address only with
+  `--channel`; no placement for a seat in a project the VM does not
+  carry; `--on --channel` refused where the spawner's project id fits no
+  qualifier; in M5 no session id is set from outside its session; the
+  short text as written is O6's default. What moved:
+  1. *The recovery command's thread* (R20; §1's lines; M1's test with a
+     local alias equal to the remote short).
+  2. *Fresh reads at the placement* (R21; the constraint "What is placed
+     is decided from what the files say then"; §1's steps 1, 2 and 4 and
+     the word `identity`).
+  3. *The deadline* (R18: the placing machine's waits alone; `within`
+     and the reserve removed from §1, §6 and the tests).
+  4. *Looking after a lost call* (§1's inspection, run from the login
+     directory in M1's test; acceptance 6).
+  5. *The `--worktree` warning* (§1; acceptance 6; the refilled seat's
+     test).
+  6. *Acceptance 3's scope and the older VMs* (§6's two rows; §1's line
+     for a VM that predates the change).
+  7. *What the qualified address guarantees* (R17; §1; the `{{BY}}`
+     words; M4).
+  8. *The driver's time* (R22; §2; M2's four-account test).
+  9. *The two prefixes* (R24; the constraint; acceptance 11; the parser
+     comparisons in M1 and M3). Ruled by the holder.
+  10. *What the skills say of the full text* (M4, and its fifth
+      scenario).
+  And M5: the scratch thread runs the spawn as its own task.
+  The size is as restated above; M1 gains two tests and loses the
+  request's second key.
 
 ## Outcomes & Retrospective
 
@@ -1976,7 +2165,7 @@ Pending — written at finish.
 What this plan found against the composite's text, and what its review
 changed for the parent, each with its evidence and the clause it bears
 on. Nothing here is edited by this child. Items 8 to 14 are the
-revision's.
+revision's, 15 and 16 its second's, which also reworded 9, 13 and 14.
 
 1. **X9, "Consumers: … EN (the handover, `channel show`)".** X9's command
    cannot serve `channel show`: it answers by owner, with no age and no
@@ -2028,11 +2217,16 @@ revision's.
    once", and CH2's rule for a bare name.** G1's check asks the resolver
    from a process in no channel, and a bare `@<short>` from a thread in
    channels is read as a channel-mate's alias before it is read as an id
-   (`_resolve_tag`). With `--channel`, the address given and checked
-   becomes `@<project id>/<short>` (R17). Two things stay true of the
-   text and are limits: the check is of the moment it is made, and a
-   thread spawned with `--on` and no channel, added to one later, keeps
-   the bare short (Open point 3).
+   (`_resolve_tag`). With `--channel`, on a VM that has this change, the
+   address given and checked becomes `@<project id>/<short>` (R17). What
+   D4's sentence can claim is narrower than it reads: the check is of
+   the moment of admission and isolates the address from other
+   projects' aliases; after the spawner moves or hands off, a member of
+   its old project named for the short is who the address reaches. A
+   thread spawned with `--on` and no channel, and added to one later,
+   keeps the bare short, and so does every child of a 1.55 VM, a refill
+   of a seat that already holds channels included (§6); a 1.53.0 VM
+   makes no check at all.
 10. **D4's wait: "while the VM answers that it is not enrolled yet or
     that it has not yet read the spawner".** A third answer is waited on
     when channels were asked: the VM has kept no welcome of its endpoint
@@ -2053,9 +2247,22 @@ revision's.
     unchanged.
 13. **D4's second paragraph, on `--worktree`: "the Mac prints the launch
     with a note that the thread will not be listed or reached from
-    here".** With `--channel`, that thread is also placed in none of the
-    channels asked, and the Mac says so (R21, Open point 4).
+    here".** With `--channel`, none of the placements asked for is made
+    for that thread, and the Mac says that and that the project's
+    memberships will not be seen from here; it does not say which
+    channels the thread is in, since a refilled seat keeps what it held
+    (R21, the holder's ruling).
 14. **Parent acceptance line 5, its retires.** M5 observes them on the
-    thread that made the VM by having a scratch thread make it (the
-    holder's ruling); the line is otherwise as G1's live run saw it for a
-    thread a VM was handed to.
+    thread that made the VM by having a scratch thread make it, running
+    the spawn as its own task (the holder's rulings); the line is
+    otherwise as G1's live run saw it for a thread a VM was handed to.
+15. **D4's "the words say to look before asking again", as G1 built
+    them.** The command G1's lines name, `devcloud vm ssh <vm> -- sminos
+    list`, runs in the VM's login directory and lists that directory's
+    project, so it can miss the seat it is offered to find. With
+    `--channel` this plan's lines name `sminos list --here --all` and the
+    engine's job list; without it G1's line stands (Open point 2).
+16. **Parent acceptance line 8, "behave as they did".** Two flag
+    prefixes argparse accepted, `spawn --c` and `say --p`, become
+    ambiguous with `--channel` and `--pools` (the holder's ruling, R24):
+    the line holds for the documented spellings.
