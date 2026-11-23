@@ -13267,6 +13267,20 @@ def find_target(q):
     return ("seat", m.seat, m.session if bound else "") if m.seat else ("member", project, m)
 
 
+class ThreadTarget(Member):
+    """A member find_target answers for a name through a channel
+    (_through_channel): its `thread` is the thread the name resolved, which
+    a verb that acts on a thread's record (retire, remove, and _target's
+    readers: channel add, remove, lead) acts on, never the thread its
+    session is read to be in again."""
+
+
+def resolved_thread(m):
+    """The thread a verb's member target is bound to: a name through a channel's (ThreadTarget), else None (a
+    project's name: its session's thread, read where the verb acts)."""
+    return m.thread if isinstance(m, ThreadTarget) else None
+
+
 def _through_channel(q, channel, name, short, scope):
     """find_target's answer for `<channel>/<name>` (CH2's M1): the thread
     the channel's roster reaches (sminos_channels.reach_in), ("seat", seat,
@@ -13291,7 +13305,8 @@ def _through_channel(q, channel, name, short, scope):
     # A name that matched the session, not the seat (its short, a session's id, an alias the session held before),
     # binds that session, as the lookup below binds one; a thread's id (a seat's is its own) does not.
     bound = how in ("short", "session", "former")
-    return ("seat", m.seat, m.session if bound else "") if m.seat else ("member", project, m._replace(thread=got[0]))
+    return ("seat", m.seat, m.session if bound else "") if m.seat else \
+        ("member", project, ThreadTarget(*m._replace(thread=got[0])))
 
 
 def ambiguous_seat(q, hits):
@@ -18400,7 +18415,7 @@ def cmd_retire(a):
     project, m = target[1], target[2]
     if not m.local:
         die("%s is on %s" % (m.alias, m.machine), EXIT_UNKNOWN)
-    retire_member(project, m, a.purge, how=how, thread_id=bound)
+    retire_member(project, m, a.purge, how=how, thread_id=bound or resolved_thread(m))
 
 
 def ended_target(q):
@@ -18485,9 +18500,10 @@ def retire_member(project, m, purge, verb="retired", how=None, thread_id=None):
     interactive session has none, and runs on in its human's terminal. The
     end names the process it saw and holds for that process's life: only
     another process, or one started after it, returns it (its human
-    reopening it). `thread_id`: the thread the name named (ended_target),
-    whose record alone is acted on, refused when it is gone or no longer
-    has this session current."""
+    reopening it). `thread_id`: the thread the name named (ended_target,
+    or a name through a channel: resolved_thread), whose record alone is
+    acted on, refused when it is gone or no longer has this session
+    current."""
     threads = threads_module()
     thread = threads.thread_of(m.session) if thread_id is None else threads.get(thread_id)
     if thread_id is not None and (thread is None or thread["current"] != m.session):
@@ -18959,7 +18975,7 @@ def cmd_remove(a):
         return
     s0, bound, opened = resolve_seat_or_opened(a.seat, "remove it", found=found)
     if opened is not None:
-        retire_member(opened[0], opened[1], True, verb="removed", how=how)
+        retire_member(opened[0], opened[1], True, verb="removed", how=how, thread_id=resolved_thread(opened[1]))
         return
     if found[0] == "seat" and replayed_purge(purging, s0, "removed"):
         return

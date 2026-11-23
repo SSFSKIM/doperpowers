@@ -661,5 +661,80 @@ class Frontier(Names):
         self.assertEqual((t.thread, t.session, t.refusal), (tid, sid, ""), "channel add takes it as a thread")
 
 
+class Frontier2(Names):
+    """The frontier review's second reading, on wave 1's routes through a channel (G5, G6)."""
+
+    def swapped(self, t1, s1, t2, s2):
+        """S1 becomes T2's current session and S2 T1's: the session the name came to is another thread's now."""
+        for tid, cur in ((t1, s2), (t2, s1)):
+            def mutate(view, raw, cur=cur):
+                raw["current"] = cur
+                raw["sessions"] = list(dict.fromkeys(raw["sessions"] + [cur]))
+                return True
+            self.assertTrue(threads._change(tid, mutate))
+        sminos.forget_caches()
+
+    def test_g5_retire_purge_through_a_channel_acts_on_the_thread_the_name_resolved(self):
+        t1, s1 = self.named(None, alias="victim")
+        self.placed(t1, s1, DESK)
+        t2, s2 = self.named(None, alias="bystander")
+        real = sminos.find_target
+
+        def found_then_moved(q):
+            got = real(q)
+            if q == "desk/victim":
+                self.swapped(t1, s1, t2, s2)   # between the lookup and the verb
+            return got
+        with mock.patch.object(sminos, "find_target", found_then_moved):
+            code, out = self.cli("retire", "desk/victim", "--purge")
+        self.assertEqual(code, sminos.EXIT_UNKNOWN, out)
+        self.assertIn("thread %s has no record of this machine with session %s any more" % (t1[:8], s1[:8]), out)
+        self.assertIsNotNone(threads.get(t2), "the other thread's record is not purged")
+        self.assertIsNotNone(threads.get(t1))
+
+    def test_g5_remove_through_a_channel_acts_on_the_thread_the_name_resolved(self):
+        t1, s1 = self.named(None, alias="victim")
+        self.placed(t1, s1, DESK)
+        t2, s2 = self.named(None, alias="bystander")
+        real = sminos.find_target
+
+        def found_then_moved(q):
+            got = real(q)
+            if q == "desk/victim":
+                self.swapped(t1, s1, t2, s2)
+            return got
+        with mock.patch.object(sminos, "find_target", found_then_moved):
+            code, out = self.cli("remove", "desk/victim")
+        self.assertEqual(code, sminos.EXIT_UNKNOWN, out)
+        self.assertIsNotNone(threads.get(t2), "the other thread's record is not removed")
+
+    def test_g5_channel_add_through_a_channel_names_the_thread_the_name_resolved(self):
+        """The same re-resolution in `_target`, which `channel add`, `channel remove` and `channel lead` read."""
+        t1, s1 = self.named(None, alias="victim")
+        self.placed(t1, s1, DESK)
+        t2, s2 = self.named(None, alias="bystander")
+        real = sminos.find_target
+
+        def found_then_moved(q):
+            got = real(q)
+            self.swapped(t1, s1, t2, s2)
+            return got
+        with mock.patch.object(sminos, "find_target", found_then_moved):
+            t = channels._target("desk/victim")
+        self.assertEqual((t.thread, t.session), (t1, s2), "the thread named, as its record stands now")
+        t = channels._target("victim#%s" % s1[:8])
+        self.assertEqual(t.thread, t2, "a project's name is its session's thread now, as at the merge base")
+
+    def test_g5_a_name_in_its_own_project_is_resolved_by_its_session_as_at_the_merge_base(self):
+        """B11: the binding is the channel route's; a project's name hands retire_member no thread."""
+        t1, s1 = self.named(None, alias="victim")
+        self.placed(t1, s1, DESK)
+        seen = []
+        with mock.patch.object(sminos, "retire_member", lambda *a, **k: seen.append((a[0].id, k.get("thread_id")))):
+            self.assertEqual(self.cli("retire", "victim")[0], 0)
+            self.assertEqual(self.cli("retire", "desk/victim")[0], 0)
+        self.assertEqual(seen, [(self.p.id, None), (self.p.id, t1)])
+
+
 if __name__ == "__main__":
     unittest.main()

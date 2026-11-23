@@ -1049,6 +1049,9 @@ def _target(q):
         record = threads.current_record(session, fresh=True) if session else None
         return _local(record if record is not None else threads.get(s["seat_id"]), session, s["alias"])
     m = found[2]
+    if m.local and sminos.resolved_thread(m):
+        # Named through a channel: the thread the name resolved, never the one its session is read to be in now.
+        return _local(threads.get(m.thread), m.session, m.alias)
     if m.local:
         record = threads.current_record(m.session, fresh=True)
         if record is None:
