@@ -20034,8 +20034,8 @@ def guide_text(session, launch, source="", title=""):
     # A lane A member is a thread (sminos_records.lane_of); one MAWS launched (lane B) is told nothing of it.
     thread = (" You are a thread: a member still when this process ends, woken by a message addressed to you."
               if threads_module().lane_a(session) else "")
-    # Making a channel and placing threads in it are a thread's (`channel create` and `add` refuse a caller that is
-    # none); a session that is no thread may still say into one, as a session not in it.
+    # Making a channel is a thread's (`channel create` refuses a caller that is none), so the guide's create-then-add
+    # is offered to a thread only; a session that is no thread may still say into one, as a session not in it.
     make = (" A channel holds sessions of several projects on one piece of work: `%s channel create <name>`, then"
             " `%s channel add <name> <thread>...`, each thread as <project>/<alias> or its short" % (cli, cli)
             if thread else "")
