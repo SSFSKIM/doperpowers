@@ -1081,6 +1081,62 @@ class BenchOpensOnRl10(unittest.TestCase):
         self.assertEqual(env.env["SMINOS_RL10"], host.ep.rl10_path(), "the machine was pointed at it")
 
 
+class BenchChannels(unittest.TestCase):
+    """bench_scale.py's channel shapes (CH2's M7) on a small synthetic
+    machine: --channels N registers N channels, --held H of them with
+    members drawn from the live threads across their projects, placed by
+    their own change as `channel add` places one; `verbs` reads from the
+    senders' records that they hold the memberships, then times its matched
+    pairs, each line a command that succeeded."""
+
+    SMALL = ["--dirs", "3", "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "2", "--mini", "1",
+             "--says", "2", "--own", "2", "--live", "5", "--rooted", "4"]
+
+    def verbs(self, *flags):
+        # The scripts named as Concrete Steps names them, relative to where the bench is run from.
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_scale.py"), "verbs",
+                            os.path.relpath(SCRIPTS, PLUGIN_ROOT), *self.SMALL, *flags], capture_output=True,
+                           text=True, timeout=600, cwd=PLUGIN_ROOT,
+                           env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")})
+        self.assertEqual(r.returncode, 0, r.stdout[-3000:] + r.stderr[-3000:])
+        self.assertNotIn("FAILED", r.stdout, r.stdout)
+        return r.stdout
+
+    def test_the_pairs_with_channels(self):
+        out = self.verbs("--channels", "3")
+        self.assertIn("channels: 3 registered, 3 held; the sender's record holds 3 of them, the other's none", out)
+        for label in ("channel show, a machine that knows 1 channel", "channel show, a machine that knows 3 channels",
+                      "list, by a thread in 3 channels", "list, by the same thread in none",
+                      "say @<alias>, by a thread in 3 channels", "say @<alias>, by a thread in none"):
+            self.assertRegex(out, r"(?m)^%s +[0-9.]+ s wall, [0-9.]+ s CPU$" % label.replace("@", "@"))
+        self.assertIn("the sender's record holds none of them now", out)
+
+    def test_no_channel(self):
+        out = self.verbs("--channels", "0")
+        self.assertIn("channels: none on this machine", out)
+        for label in ("list, by a thread in none", "say @<alias>, by a thread in none"):
+            self.assertRegex(out, r"(?m)^%s +[0-9.]+ s wall, [0-9.]+ s CPU$" % label)
+        self.assertNotIn("channel show", out)
+
+    def test_the_plan_of_memberships(self):
+        """Who is placed where: the sender in every held channel, the other
+        sender in none, the first channel holding every live thread but the
+        other sender, each other held channel two more; the rest registered
+        with no member."""
+        import bench_scale
+        live = ["s%d" % i for i in range(6)]
+        plan = bench_scale.channel_plan(["c%d" % i for i in range(5)], 3, live)
+        self.assertEqual([c for c, _ in plan], ["c0", "c1", "c2", "c3", "c4"])
+        held = dict(plan)
+        self.assertEqual(held["c0"], ["s0", "s2", "s3", "s4", "s5"])
+        for c in ("c1", "c2"):
+            self.assertEqual(len(held[c]), 3)
+            self.assertEqual(held[c][0], "s0")
+            self.assertNotIn("s1", held[c])
+        self.assertEqual(held["c3"], [])
+        self.assertEqual(held["c4"], [])
+
+
 def processes():
     """{pid: (ppid, command)} of every live process on the machine (zombies left out)."""
     out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,stat=,command="], capture_output=True, text=True).stdout
