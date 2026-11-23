@@ -80,8 +80,10 @@ owner's fleet at the end (M5), which is parent acceptance line 5.
   every gate but `devcloud-host` (an `apt-get` install that failed in its
   `devenv up`; no devcloud file changed, and it passed on its rerun):
   `sminos-idle` 32858, `sminos-channels` 3m35s.
-- [ ] M4 — What sessions are taught, what sits beside the code, and the
-  gates on the final head.
+- [x] (2026-11-23) M4 — What sessions are taught, what sits beside the
+  code, and the gates on the final head. Commits 24c394442 and a8bd68be0,
+  fix b554a06bb; review clean. GREEN on b554a06bb: `sminos-idle` 32105,
+  `sminos-channels` 3m18s, `sminos-suites-c` 13m06s.
 - [ ] The whole range read once (Decision Log, "Verification"), its fix
   wave, and the merge.
 - [ ] M5 — The live check, on the merged change.
@@ -2283,7 +2285,54 @@ above.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+2026-11-23, at the frontier before the whole-range reading (M1 to M4
+built and reviewed clean; the reading, its fix wave, the merge and M5
+remain).
+
+**What exists.** `sminos spawn … --channel <channel>` places the new
+thread by its own statement on the machine it runs on, here or on a VM
+(acceptance 1 to 6), with every refusal before devcloud is called or a
+session launched and nothing after the launch a refusal; a spawn's
+placements share one deadline on the placing machine, carried to every
+wait however deep (`waits_until`). `devcloud vm info` answers a program
+what named hosts are without touching a host, and `channel show` prints a
+VM's owner, age and cost where devcloud has them and says, in one line a
+cause, what it could not show (acceptance 7, 8). A devcloud host built
+from this change records its idle notice and lease warning, in the short
+text (O6's default), in the log of every channel whose pool its own copy
+holds it in, through `say --notice devcloud --pools`, after its delivery
+chain and never instead of a step (acceptance 9, 10). The two skills, the
+preamble and `sminos help` teach it, evaluated against the text before
+(acceptance 12). sminos 1.56.0, devcloud 0.19.0. Every gate GREEN on the
+final head; `sminos-idle` read 32105 to 32858 calls a second across the
+milestones against 33570, `sminos-channels` 3m18s to 4m11s against 8
+minutes. Acceptance 13 (M5) is not claimed: it runs after the merge.
+
+**What the reviews found.** Each milestone's review sent it back once or
+twice; nothing reached a design decision but two wordings this plan
+prescribed. M1, twice: the placement's deadline did not reach the
+project's registration lock, the replay's cursor lock or a purge's
+process checks; the Mac's banner named the child by a short a local alias
+could take; the outcome's carriage note came from a read older than the
+placement's. M2: a malformed reply could abort `channel show`, an older
+writer's thread was lost from the owner, a cost could overflow to
+`Infinity` and blank the reply, and the owner was resolved once per
+creator. M3: `--pools` refused its forbidden flags by value rather than
+by presence, and a sweep of the rosters, moved earlier for speed, wrote
+reconciliations on a host in no channel. M4: five taught sentences said
+more than the code does (the owner "was told", a reply line that
+"follows" a move, three facts for every VM, "in none" for a refill,
+recovery that places at once); the evaluation's first scenario allowed a
+leased VM and was re-run with a fixture that calls for a kept one.
+
+**Lessons.** The plan's one risk was named rightly: every M1 finding was
+in the path after the launch, and a wait list written into the ledger
+after the first fix let the second review check a list instead of
+rediscovering one. A deadline passed by argument reaches only the waits
+written to take one; a scoped deadline (`waits_until`) reaches the rest.
+A plan's sentences given in full are still claims about code that does
+not exist yet; two of them were wrong in ways only the built code showed,
+and the taught text is where such a claim does harm.
 
 ## For the composite's writer
 
