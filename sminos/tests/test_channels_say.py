@@ -148,6 +148,19 @@ class Say(Channel):
         self.assertEqual(channels.change(tid, DESK, "remove", sid).state, "applied")
         sminos.forget_caches()
 
+    def far(self, alias, tid=None):
+        """Another machine's live thread, a member of `app` and of the channel by its own writer's events there, as
+        an import leaves them: (thread, session)."""
+        sid, tid = str(uuidlib.uuid4()), tid or str(uuidlib.uuid4())
+        w = "%s/%s" % (FAR, sid)
+        sminos.log_append(self.app, w, "joined", session=sid, alias=alias, name_source="user", machine=FAR,
+                          cwd="/w", worktree="", role="", seat="", by="", session_kind="interactive", thread=tid,
+                          owners=["m-far"])
+        sminos.log_append(self.app, w, "state", session=sid, state="idle", machine=FAR)
+        sminos.log_append(self.app, w, "channels", session=sid, thread=tid, op=os.urandom(8).hex(), channels=[DESK])
+        sminos.forget_caches()
+        return tid, sid
+
 
 # ------------------------------------------------------------ a member says (B1)
 
@@ -462,6 +475,35 @@ class Outsider(Say):
             self.assertEqual(self.got(oreceived, text), [], text)
         self.assertEqual(self.got(areceived, "a note from outside"), [])
         self.assertIsNone(channels.debt(self.chan(DESK), threads.get(otid)), "it is owed nothing there")
+
+    def loose(self):
+        """A local project, whose log is not filtered by audience."""
+        local = os.path.join(self.home, "loose")
+        os.makedirs(local)
+        with open(os.path.join(local, ".smns"), "w") as f:
+            json.dump({"project": "local-loose", "name": "loose"}, f)
+        self.assertEqual(sminos.project_kind(self.project_of(local)), "local")
+        return local
+
+    def test_to_a_remote_member_whose_audience_is_not_known_no_copy_in_an_unfiltered_home_and_its_warning(self):
+        self.au.keep_capabilities(["channels", "access"])
+        local = self.loose()
+        ftid, fsid = self.far("faraway")
+        otid, osid, _ = self.open_here("outside", local)
+        self.heard(osid)
+        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway unknown audience", cwd=local)
+        self.assertEqual(code, 0, out)
+        [e] = self.says()
+        self.assertEqual(e["to"], [{"session": fsid, "alias": "faraway", "thread": ftid}])
+        self.assertIn("delivered; its copy is not kept in loose: the message is for a private session's audience "
+                      "alone, and loose's log is not filtered by audience", out)
+        self.assertEqual([c for _, c in self.project_says(self.project_of(local)) if c.get("copy")], [], "no copy")
+        self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(fsid, ["m-far"])}))
+        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway listed now", cwd=local)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("its copy is not kept", out)
+        [c] = [c for _, c in self.project_says(self.project_of(local)) if c.get("copy")]
+        self.assertTrue(c["text"].endswith("listed now"), "known listed: its copy kept")
 
     def private(self, sid):
         """The session private, its audience as the endpoint gave it at its record's policyRev."""

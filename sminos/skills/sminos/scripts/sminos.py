@@ -10378,6 +10378,14 @@ UNHELD_LIVE = "live"
 # ------------------------------------------------------------------ say / chat
 
 
+def _copy_known_listed(delivered):
+    """Whether every recipient the delivering events name is known to be
+    listed (sminos_audience.known_listed)."""
+    au = audience_module()
+    return all(au.known_listed(r.get("session")) for _, e in delivered
+               if isinstance(e.get("to"), list) for r in e["to"] if isinstance(r, dict))
+
+
 def record_copy(home, delivered):
     """A message a session spoke into other projects, copied into the
     session's own project's log `home` (§6 of the org directory design;
@@ -10391,7 +10399,9 @@ def record_copy(home, delivered):
     written is a warning, since the message was delivered. A copy under an
     audience stream has the stream's audience kept in `home` first, and goes
     into a hub project's home alone (streams_here): elsewhere the log is
-    published whole, so none is written, and a warning says so."""
+    published whole, so none is written, and a warning says so; nor is a
+    channel's there unless every recipient is known to be listed
+    (sminos_audience.known_listed: a remote one by the endpoint's word)."""
     groups = {}
     for dest, e in delivered:
         groups.setdefault(e["writer"], []).append((dest, e))
@@ -10399,13 +10409,14 @@ def record_copy(home, delivered):
         # One copy per audience among the delivering events (P5 O18 D4): each under its own stream, as theirs.
         return [c for group in groups.values() for c in [record_copy(home, group)] if c is not None]
     first = delivered[0][1]
-    if is_stream(first["writer"]):
-        if not streams_here(home):
-            # A git-mirrored or local home publishes its whole log (the mirror stages everything): an audience
-            # stream's body goes nowhere the hub does not filter it.
-            warn("delivered; its copy is not kept in %s: the message is for a private session's audience alone, "
-                 "and %s's log is not filtered by audience" % (home.name, home.name))
-            return None
+    if not streams_here(home) and (is_stream(first["writer"]) or (
+            any(is_channel_id(dest.id) for dest, _ in delivered) and not _copy_known_listed(delivered))):
+        # A git-mirrored or local home publishes its whole log (the mirror stages everything): an audience
+        # stream's body goes nowhere the hub does not filter it, nor, from a channel, one whose recipients'
+        # audiences are not known to be listed (CH2: no word for a remote session is no knowledge).
+        warn("delivered; its copy is not kept in %s: the message is for a private session's audience alone, "
+             "and %s's log is not filtered by audience" % (home.name, home.name))
+        return None
     fields = {k: v for k, v in first.items() if k not in ("writer", "seq", "kind", "from_project")}
     fields["to"] = [dict(r, project=dest.id) for dest, e in delivered for r in e["to"] if isinstance(r, dict)]
     refs = ["%s:%s:%d" % (dest.id, e["writer"], e["seq"]) for dest, e in delivered]

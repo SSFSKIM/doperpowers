@@ -341,6 +341,22 @@ def audience_of(sid, held=None):
     return list(entry["members"]) if entry and entry.get("members") else None
 
 
+def known_listed(sid, held=None):
+    """Whether a session is known to be listed (or org-wide): a local one's
+    by its record (audience_of; one that cannot be told is not known), a
+    remote one's by the endpoint's word for it alone. audience_of's None
+    for a remote session with no word is not that knowledge: a channel's
+    copy in a log the hub does not filter asks for it (sminos.record_copy)."""
+    held = held if held is not None else _read_audiences()
+    if is_local(sid):
+        try:
+            return audience_of(sid, held) is None
+        except StreamUnknown:
+            return False
+    entry = entry_of(sid, held)
+    return entry is not None and entry.get("members") is None
+
+
 def owners_of(sid, held=None):
     """A session's owners, as member ids, as the endpoint resolved them; a
     local one's record when its owners name members and the endpoint gave
