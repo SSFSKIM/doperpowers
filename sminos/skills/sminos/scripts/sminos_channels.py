@@ -2613,11 +2613,12 @@ def _lead_row(channel, q):
 
 
 def _plain_unknown(session, audience):
-    """Whether the plain writer was chosen for another machine's session whose audience this machine has no word
-    for, where its endpoint carries access: audience_of's None for it is no knowledge that it is listed
-    (sminos_audience.known_listed), and a plain lead would name it to every reader while the hub withholds it."""
+    """Whether the plain writer was chosen for another machine's session for which no audience word has come here
+    (no entry for it in the kept audiences, sminos_audience.entry_of), where its endpoint carries access:
+    audience_of's None for it then says nothing of its audience, and a plain lead would name it to every reader
+    while the hub withholds it. An entry with no members (listed) takes the plain lead."""
     au = sminos.audience_module()
-    return audience is None and not au.is_local(session) and au.capable() and not au.known_listed([session])
+    return audience is None and not au.is_local(session) and au.capable() and au.entry_of(session) is None
 
 
 def _lead_choice(channel, session, alias, label):
