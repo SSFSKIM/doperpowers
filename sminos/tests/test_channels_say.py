@@ -490,11 +490,11 @@ class Outsider(Say):
         """A live session not yet a thread when it says: the roster's sweep over its project makes it one, and
         the event carries that thread."""
         rtid, rsid, received = self.live("reader")
-        osid = str(uuidlib.uuid4())
-        _, oproc = self.session(root=self.app_root, sid=osid, kind="interactive", name="fresh")
-        self.inbox(osid, oproc, "fre")
-        self.assertEqual(threads.stamp(osid), "", "no thread yet")
-        for argv in (("--in", "desk", "@reader named"), ("--in", "desk", "@all to all")):
+        for i, argv in enumerate((("--in", "desk", "@reader named"), ("--in", "desk", "@all to all"))):
+            osid = str(uuidlib.uuid4())   # a fresh sender per route: each route's own sweep makes it a thread
+            _, oproc = self.session(root=self.app_root, sid=osid, kind="interactive", name="fresh%d" % i)
+            self.inbox(osid, oproc, "fr%d" % i)
+            self.assertEqual(threads.stamp(osid), "", "no thread yet")
             code, out = self.as_session(osid, "say", *argv, cwd=self.app_root)
             self.assertEqual(code, 0, out)
             otid = threads.stamp(osid)
