@@ -28,6 +28,13 @@ and not `reach`:
   (`Read`, `Words`).
 - A store with no channel prints and writes what the merge base's code does
   (B11, `SameAsBase`), its launcher extracted from git.
+- No word to a human under a channel's id (B7, CH2's M9, `HostWords`): a
+  thread in two channels given a frame by its inbox and a person's words by
+  a real bridge child (1.54's and this tree's) under `<channel>#<thread>`,
+  then its words to its human, two questions and an answer through that
+  bridge, a stop and the sweep: all in the thread's own project, the second
+  question closed there, another project's question open, nothing under a
+  channel's id or the `#` scope.
 
 Hermetic: test_channels_delivery's Channel (test_wake's Engine, HOME,
 SMINOS_HOME and the engine's state temporary; the engine first on PATH),
@@ -40,6 +47,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -52,8 +60,9 @@ sys.path.insert(0, HERE)
 
 import test_threads as T1  # noqa: E402
 import endpoint_standin  # noqa: E402
-from test_channels_delivery import Channel, reply_of  # noqa: E402
-from test_channels_life import DESK, HUB  # noqa: E402
+import bridge_standin  # noqa: E402
+from test_channels_delivery import FAR, Channel, reply_of  # noqa: E402
+from test_channels_life import DESK, HUB, LOBBY  # noqa: E402
 from test_threads import BASE, SCRIPTS, records, sminos, threads  # noqa: E402
 from test_wake import wait_for  # noqa: E402
 from test_wake_delivery import line as held_line  # noqa: E402
@@ -694,6 +703,138 @@ class Words(Say):
         code, out = self.at_terminal("chat", "desk", "-n", "5")
         self.assertEqual(code, 0, out)
         self.assertIn("devcloud@%s → *  lease ends" % sminos.host_name(), out)
+
+
+# ------------------------------------------------------------ no word to a human under a channel's id (B7)
+
+
+class HostWords(Say):
+    """B7, proved and not built (CH2's M9): a session whose thread is in two channels is given a peer's frame
+    from one by its inbox and a person's words in the other by its bridge, which keys them under
+    `<channel>#<thread>`; then, through that bridge, it says something to its human, opens two questions and
+    is answered the first; it stops, and the sweep runs. A real bridge child takes the frame and the export,
+    once as a running session on 1.54 has it loaded (the merge base's launcher, extracted from git) and once
+    as this tree's, with bridge_standin.py as its mod. Every word to the human lands in the thread's own
+    project, the second question is closed there, another session's question in another project stays open,
+    and nothing is written or queued under a channel's id or under the `#` scope as a log."""
+
+    WORDS = "the words the session sends its human after the channel's frame"
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.tmp = tempfile.mkdtemp(dir=BASE)
+        cls.base = extracted(MERGE_BASE, cls.tmp)
+
+    def bridge(self, launcher, sid):
+        """The session's bridge: `launcher`'s child with the stand-in as its mod. Its socket is named through a
+        short link to SMINOS_HOME, since a Unix socket's path is bounded (104 bytes on macOS) and the suite's
+        home under the system's temporary directory can pass it; the same files either way."""
+        link = os.path.join(tempfile.mkdtemp(prefix="smb.", dir="/tmp"), "s")
+        os.symlink(os.environ["SMINOS_HOME"], link)
+        self.addCleanup(shutil.rmtree, os.path.dirname(link))
+        bridge = sminos.sibling_module("sminos_bridge")
+        patcher = mock.patch.object(bridge, "bridge_dir", lambda: os.path.join(link, "bridge"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        standin = bridge_standin.StandIn(launcher, sid, ops=["deliver"], cwd=self.root,
+                                         env=dict(os.environ, SMINOS_HOME=link))
+        self.addCleanup(standin.stop)
+        return standin
+
+    def turn(self):
+        """A turn's rows as the mod exports them: a message to the human, two async questions, and the human's
+        answer to the first."""
+        def call(cid, name, inp, result):
+            return [{"type": "assistant", "uuid": "a-" + cid, "message": {"role": "assistant", "content": [
+                        {"type": "tool_use", "id": cid, "name": name, "input": inp}]}},
+                    {"type": "user", "uuid": "r-" + cid, "message": {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": cid, "content": result}]}}]
+
+        def ask(cid, q):
+            return call(cid, sminos.ASK_TOOLS[0], {"questions": [{"question": q, "options": [{"label": "yes"}]}]},
+                        sminos.ASYNC_RESULT)
+        answer = {"type": "attachment", "uuid": "att-q1", "attachment": {"type": "hook_additional_context", "content": [
+            "The human responded to your async AskUserQuestion (call toolu_q1): yes"]}}
+        return call("toolu_m1", sminos.MESSAGE_TOOLS[0], {"text": self.WORDS}, "sent") + ask("toolu_q1", "first?") \
+            + ask("toolu_q2", "second?") + [answer]
+
+    def host_of(self, p, sid):
+        sminos.forget_caches()
+        return [e for e in sminos.host_read(p) if sminos.writer_session(e["writer"]) == sid]
+
+    def scene(self, launcher):
+        sid = str(uuidlib.uuid4())
+        _, proc = self.session(sid=sid, kind="interactive", name="speaker")
+        received = self.inbox(sid, proc, "spk")
+        self.reconcile()
+        tid = threads.stamp(sid)
+        self.add(tid, sid, DESK, LOBBY)
+        home = sminos.last_project(sid)
+        self.assertEqual(home.id, self.p.id, "the thread's own project")
+        standin = self.bridge(launcher, sid)
+        self.message((sid, tid), cid=LOBBY, text="a peer's frame from the lobby")
+        self.deliver(LOBBY)
+        self.assertEqual(len(self.got(received, "a peer's frame from the lobby")), 1, "by the inbox")
+        e = self.message((sid, tid), writer="%s/human" % FAR, kind="human", text="a person's words in the desk")
+        sminos.forget_caches()
+        o = channels.owing(self.chan(DESK), threads.get(tid), channels.own_row(threads.get(tid)))
+        self.assertEqual(sminos.deliver_verdict(self.chan(DESK), o.member, e, "words", owing=o), "sent")
+        self.assertEqual(len(standin.delivered), 1, "by the bridge")
+        self.assertIn("a person's words in the desk", standin.delivered[0])
+        bridge = sminos.sibling_module("sminos_bridge")
+        mark = "%s#%s/%s" % (DESK, tid, e["writer"])
+        self.assertTrue(wait_for(lambda: bridge.load_kept(sid)["delivered"].get(mark) == e["seq"]),
+                        "the bridge took it under the thread's scope, and keeps that mark")
+        standin.post({"type": "export", "records": self.turn()})
+        self.assertTrue(wait_for(lambda: len(self.host_of(home, sid)) == 4), self.host_of(home, sid))
+        _, osid, _ = self.outsider("control")
+        sminos.append_host(self.app, osid, [{"kind": "question", "from": "control", "to": "host",
+                                             "text": ["still open?"], "choices": [], "src": "toolu_c1"}])
+        standin.stop()
+        self.end(proc)
+        for _ in range(2):
+            sminos.forget_caches()
+            sminos.sibling_module("sminos_daemon").sweep_threads()
+        got = [(e["kind"], e.get("src"), e.get("text"), e.get("closed")) for e in self.host_of(home, sid)]
+        self.assertEqual(got, [("message", "toolu_m1", self.WORDS, None),
+                               ("question", "toolu_q1", ["first?"], None),
+                               ("question", "toolu_q2", ["second?"], None),
+                               ("answered", "toolu_q1", "yes", None),
+                               ("answered", "toolu_q2", sminos.QUESTION_CLOSED, "stopped")],
+                         "the words, both questions and both answers in the thread's own project, the second closed")
+        self.assertEqual([e["kind"] for e in self.host_of(self.app, osid)], ["question"],
+                         "another session's question in another project stays open")
+        for p in sminos.known_projects():
+            for e in sminos.log_read(p) + sminos.host_read(p):
+                if e["kind"] in ("message", "question", "answered"):
+                    self.assertNotIn(DESK, json.dumps(e))
+                    self.assertNotIn(LOBBY, json.dumps(e))
+        for cid in (DESK, LOBBY):
+            c = self.chan(cid)
+            self.assertFalse({e["kind"] for e in sminos.log_read(c)} & {"message", "question", "answered"}, cid)
+            for store in (sminos.HOST_STORE, sminos.QUEUED, "outbox"):
+                self.assertFalse(os.path.exists(os.path.join(c.home, store)), (cid, store))
+        root = os.path.realpath(os.environ["SMINOS_HOME"])
+        kept = os.path.realpath(bridge.kept_path(sid))
+        for d, dirs, names in os.walk(root):
+            for n in dirs + names:
+                self.assertNotIn("#", n, "no file or directory under the # scope: %s" % os.path.join(d, n))
+            for n in names:
+                path = os.path.join(d, n)
+                if path == kept or not os.path.isfile(path):
+                    continue
+                with open(path, "rb") as f:
+                    body = f.read()
+                for cid in (DESK, LOBBY):
+                    self.assertNotIn(("%s#%s" % (cid, tid)).encode(), body, "the scope written nowhere but the "
+                                     "bridge's own marks: %s" % path)
+
+    def test_through_a_bridge_on_1_54(self):
+        self.scene(self.base)
+
+    def test_through_this_trees_bridge(self):
+        self.scene(os.path.join(SCRIPTS, "sminos"))
 
 
 # ------------------------------------------------------------ reading a channel: chat and list

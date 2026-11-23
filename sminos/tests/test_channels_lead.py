@@ -759,7 +759,7 @@ class Post(Lead):
                 self.assertNotIn("To reply", frame, "no reply line")
                 self.assertEqual(keys, [], "the bridge handed nothing")
                 sminos.forget_caches()
-                owner = manager_window.OwnerWords(sminos.log_read(self.chan(DESK)), [rsid])
+                owner = manager_window.OwnerWords([("desk", DESK, sminos.log_read(self.chan(DESK)))], [rsid])
                 self.assertFalse(owner.corroborates(frame), "the manager's classifier does not mark it the owner's")
 
 
