@@ -446,6 +446,15 @@ def session(p, sid, alias):
     STAGED.append(sid)
 
 
+def inbox_texts(sid):
+    """What a staged session's inbox took, one line a frame, as it took them."""
+    try:
+        with open(os.path.join(BASE, "in-%s.sock.received" % sid[:8]), encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines()
+    except OSError:
+        return []
+
+
 def end_session(sid):
     procs, path = SESSIONS.pop(sid)
     for proc in procs:
@@ -731,7 +740,7 @@ print(sminos.channels_module().carry_words(sminos.known_project(sys.argv[2])))
 """
 
 
-def stage_carried(ask):
+def stage_carried(ask, verdict, session, text):
     """The word the uplink kept for the channel's message the fixture's ask
     `ask` was about carried out, as the daemon's channel pass carries it
     (sminos_channels.carry_words), in a process of its own: the replay runs
@@ -739,7 +748,10 @@ def stage_carried(ask):
     only once its last is settled. The answer's line is only written to the
     socket, so the word is waited for until the uplink has kept it; the pass
     must then carry words out, that one taken among them (the words kept on
-    the earlier cases' answers, which no pass has carried yet, go too)."""
+    the earlier cases' answers, which no pass has carried yet, go too). The
+    word must be the fixture's `verdict` on that ask, and carrying it must
+    hand the message's `text` to `session`'s inbox (a word kept as another
+    verdict, settled without a delivery, is the defect this is here for)."""
     words = os.path.join(sminos.root(), "projects", B["channel:C"], sminos.channels_module().WORDS_DIR)
 
     def kept():
@@ -749,12 +761,19 @@ def stage_carried(ask):
             return []
     if not wait_for(kept, timeout=10):
         raise RuntimeError("the uplink kept no word on %s's answer (%s)" % (ask, IDS.get(ask)))
+    with open(os.path.join(words, kept()[0])) as f:
+        word = json.load(f)
+    if word.get("verdict") != verdict:
+        raise RuntimeError("the uplink kept %r on %s's answer, not %r" % (word.get("verdict"), ask, verdict))
+    before = len(inbox_texts(B["session:" + session]))
     r = subprocess.run([sys.executable, "-B", "-c", CARRY, SCRIPTS, B["channel:C"]], capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError("carrying out the channel's kept words: %s" % r.stderr.strip())
     if not r.stdout.strip().isdigit() or int(r.stdout) < 1 or kept():
         raise RuntimeError("the channel's pass carried out %s kept words, %s's %s" % (
             r.stdout.strip(), ask, "left behind" if kept() else "taken"))
+    if not wait_for(lambda: any(text in t for t in inbox_texts(B["session:" + session])[before:]), timeout=10):
+        raise RuntimeError("carrying %s's word handed %s nothing carrying %r" % (ask, session, text))
 
 
 def stage_both(*stages):
@@ -776,7 +795,7 @@ STAGE = {(0, 3): stage_open_main, (2, 0): stage_read_only(True), (2, 2): stage_r
          (17, 0): stage_member("S9", "review", access="private", share=(B["member:B"], "converse")),
          (17, 10): lambda: say_at("2026-10-27T18:11:00.000Z",
                                  ["--in", "desk-integration", "@integrator pick up the channel's review"]),
-         (18, 0): stage_both(lambda: stage_carried("w-ch-3"),
+         (18, 0): stage_both(lambda: stage_carried("w-ch-3", "words", "S8", "pick up the channel's review"),
                              lambda: say_at("2026-10-27T18:12:00.000Z",
                                             ["--notice", "ci-watch", "--in", "desk-integration",
                                              "@integrator the integration build failed"]))}
@@ -1150,11 +1169,19 @@ def up(ci, si, step, opts):
     want = subst(step["up"])
     vary = step.get("vary", [])
     pred = opts.get("pred") or (lambda f: f.get("t") == want["t"] and matches(want, f, vary))
-    i = find(conn, pred, after=probes.after_index(AFTER.get((ci, si), []), STEPS, conn.number))
+    after = probes.after_index(AFTER.get((ci, si), []), STEPS, conn.number)
+    i = find(conn, pred, after=after)
     if i is None:
         near = [f for f in conn.frames if f.get("t") == want["t"]]
         return False, "no such line on connection %d; expected %s; of its kind sminos sent %s" % (
             conn.number, json.dumps(want)[:600], json.dumps(near[-3:])[:900])
+    with EP.cv:
+        early = probes.early_match(conn.frames, pred, after, {j for n, j in MATCHED if n == conn.number})
+    if early is not None:
+        # The line's first transmission is the one the endpoint saw first: one before what it waits for is the
+        # ordering broken, whatever was sent again after it.
+        return False, "sent first at %d on connection %d, before what it waits for (matched up to %d)" % (
+            early, conn.number, after)
     MATCHED.add((conn.number, i))
     if "id" in vary and isinstance(step["up"].get("id"), str):
         IDS[step["up"]["id"]] = conn.frames[i]["id"]
@@ -1175,25 +1202,48 @@ STEPS = {}   # (case, step) → (connection, index) of the line it matched
 def down(step):
     conn = conn_of(step)
     frame = subst(step["down"])
+    since = len(AUDIENCES_TAKEN)
     conn.write(frame)
     if frame.get("t") == "audience":
-        return audience_kept(frame)
+        return audience_kept(frame, since)
     return True, ""
 
 
-def audience_kept(frame):
-    """An `audience` line is the uplink's once it keeps it: the session's
-    entry in daemon/audiences.json is the frame's owners, members and
-    policyRev (and what it withdrew), as the fixture pins them; one the
-    uplink refused (a digest that is not its members') leaves none."""
+AUDIENCES_TAKEN = []   # each `audience` frame the uplink handed to keep_audience, in order, and its answer
+
+
+def record_audiences():
+    """keep_audience, as the uplink in this process calls it, recording each
+    frame and whether it was taken: a line the fixture sends again as it
+    was (case 11's, after case 3's) leaves the kept file as it was, so the
+    file alone cannot show that the uplink took the line sent now."""
+    import sminos_audience as audience
+    real = audience.keep_audience
+
+    def keep(frame):
+        taken = real(frame)
+        AUDIENCES_TAKEN.append((copy.deepcopy(frame), taken))
+        return taken
+    mock.patch.object(audience, "keep_audience", keep).start()
+
+
+def audience_kept(frame, since):
+    """An `audience` line is the uplink's once it takes it: the uplink
+    handed this frame to keep_audience after it was written (`since`, the
+    record's length before) and it was taken, and the session's entry in
+    daemon/audiences.json is the frame's owners, members and policyRev
+    (and what it withdrew), as the fixture pins them; one the uplink
+    refused (a digest that is not its members') leaves none."""
     import sminos_audience as audience
     members = frame.get("members")
     want = {"owners": sorted(set(frame["owners"])), "members": sorted(set(members)) if members is not None else None,
             "policyRev": frame["policyRev"], **({"withdrawn": sorted(set(frame["withdrawn"]))}
                                                 if frame.get("withdrawn") else {})}
-    got = wait_for(lambda: (lambda x: x if x == want else None)(audience.entry_of(frame["session"])), timeout=10)
-    return got is not None, "the uplink kept %r for session %s, not %r" % (
-        audience.entry_of(frame["session"]), frame["session"][:8], want)
+    took = wait_for(lambda: any(f == frame and taken for f, taken in AUDIENCES_TAKEN[since:]), timeout=10)
+    got = took and wait_for(lambda: (lambda x: x if x == want else None)(audience.entry_of(frame["session"])),
+                            timeout=10)
+    return bool(got), "the uplink %s the line; it keeps %r for session %s, not %r" % (
+        "took" if took else "did not take", audience.entry_of(frame["session"]), frame["session"][:8], want)
 
 
 def open_(step):
@@ -1240,6 +1290,7 @@ def replay():
     for name, word in (("warn", "warning"), ("note", "note")):
         mock.patch.object(sminos, name,
                           lambda msg, word=word: sminos.daemon_log("sminos: %s: %s" % (word, msg))).start()
+    record_audiences()
     threading.Thread(target=lambda: box.update(kept=uplink.run_rl10(halt.is_set, halt)), daemon=True).start()
     try:
         for ci, case in enumerate(CASES):

@@ -107,6 +107,14 @@ def order_edges(cases):
     return edges
 
 
+def early_match(frames, pred, after, taken):
+    """The index of a frame at or before `after` (the line's edges' latest
+    match) that `pred` holds of and no other line was matched to (`taken`,
+    a set of indexes): the line sent before what it waits for. None when
+    there is none."""
+    return next((j for j, f in enumerate(frames[:after + 1]) if j not in taken and pred(f)), None)
+
+
 def after_index(deps, matched, conn):
     """The index on connection `conn` a line is matched past: the latest of
     its `deps`' matches there (`matched`: (case, step) → (connection,

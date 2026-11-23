@@ -136,13 +136,18 @@ class Order(unittest.TestCase):
     def test_a_line_of_no_channel_is_given_no_edge(self):
         self.assertNotIn((1, 2), probes.order_edges(self.cases()))
 
-    def test_an_earlier_matching_frame_does_not_satisfy_a_line(self):
+    def test_a_line_sent_before_what_it_waits_for_fails_though_it_is_sent_again_after(self):
+        """The second reading (G13): `ask, predecessor, ask` is the ordering broken, whatever a retry does after:
+        the line's first transmission not matched to another line is the one held to its edges."""
         ask = {"t": "words?", "event": "e"}
         frames = [ask, {"t": "member"}, {"t": "events"}, ask]
         matched = {(0, 1): (1, 1), (0, 2): (1, 2)}
         after = probes.after_index([(0, 1), (0, 2)], matched, 1)
         self.assertEqual(after, 2)
-        self.assertEqual(next(i for i, f in enumerate(frames) if i > after and f == ask), 3)
+        self.assertEqual(probes.early_match(frames, lambda f: f == ask, after, set()), 0)
+        self.assertIsNone(probes.early_match(frames[1:], lambda f: f == ask, after - 1, set()), "in order")
+        self.assertIsNone(probes.early_match(frames, lambda f: f == ask, after, {0}),
+                          "an earlier frame matched to another line is that line's")
 
     def test_a_line_matched_on_another_connection_or_not_at_all_does_not_hold_one_back(self):
         self.assertEqual(probes.after_index([(0, 1), (0, 2)], {(0, 1): (0, 7)}, 1), -1)
