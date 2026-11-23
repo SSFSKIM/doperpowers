@@ -1310,12 +1310,16 @@ waited-on answer. At the wait's end no thread was opened, the exit is 75
 welcome within the wait, that `devcloud vm ssh <vm> -- sminos daemon
 status` shows its uplink, and that the same command with `--on <vm>`
 opens the thread once it has. Only a Mac that sent `channels` can be
-answered so. The VM side registers nothing and writes nothing before the
-launch.
+answered so. The VM side registers no channel and writes nothing of the
+channels before the launch; G1's preflight before these checks
+(`hold_to_spawner`) may register the seat's project and reconcile the
+spawner's, as it does for every `spawn --on` (Decision Log, "Execution:
+M1 and M2").
 
 **The placement,** on the placing machine, once the launcher has returned
 the session. One function, `sminos_channels.place_spawned(thread_id,
-session, project, asked, org)` (new), which never exits and never raises,
+session, seat, asked, org)` (new; `seat` is the seat's `{cwd, group}` on
+a VM, from which step 2 reads the project afresh, and `None` here), which never exits and never raises,
 and returns one entry a channel in the order asked. It opens with
 `sminos.forget_caches()` and fixes one deadline, `PLACE_BUDGET` (30
 seconds; `SMINOS_PLACE_BUDGET`) from then, for every wait in it. `org` is
@@ -1412,7 +1416,10 @@ byte.
 A program's verb, like `vm owned-by`: out of the vm skill, in
 `devcloud/CLAUDE.md` and the driver's synopsis.
 
-    devcloud vm info [--within <seconds>] <name>...
+    devcloud vm info [--within <seconds>] [--] <name>...
+
+(sminos always passes the names after `--`: a pool's names come from other
+machines' events, and one that opens with `-` stays a name.)
 
 One JSON object on one line of standard output, exit 0:
 
@@ -1509,10 +1516,13 @@ Anything else is `failed`, and nothing of it is printed.
 | two or more of `hosts` answer to one machine's name | `(devcloud holds more than one host named <name>: neither is shown)` |
 
 A pool line for a machine that exactly one host answers for gains a
-suffix:
+suffix, after two spaces; the lines keep today's form and are not
+aligned in columns (aligning would change today's lines for every pool of
+two machines or more), and the notes of the table above are printed after
+the pool, unindented:
 
     dc-x-0001  1 live, 0 stopped  vm owned by coord#1a2b3c4d, up 3d4h, 12.34 EUR so far
-    box-1      0 live, 1 stopped, added by hand  adopted, owned by coord#5e6f7a8b
+    box-1  0 live, 1 stopped, added by hand  adopted, owned by coord#5e6f7a8b
 
 `up` is the age as `vm ls` prints one (`3d4h`, `5h10m`, `12m`), from
 `created` and this machine's clock, never less than `0m`; the amount has
@@ -1853,6 +1863,23 @@ Found while this plan was written, by reading the code at the parent pin.
   Evidence: `devcloud/driver/owned.py`'s docstring on `unused`;
   `provider.SHORT`; `Context.census`; `Context.bounded`.
 
+Found while it was built.
+
+- Observation: `change` takes no lock of the channel's own; the waits a
+  placement can meet are the registration's lock, the thread's lifecycle
+  path and the project's store. So `time` from a busy lock is made, in
+  the tests, by holding the registration's lock of a channel the machine
+  does not know yet.
+  Evidence: `sminos_channels.change`; `T/test_channels_spawn.py`,
+  `Deadline`.
+- Observation: `json.loads` reads `1e400` as infinity with no `Infinity`
+  literal, so refusing the three constants does not refuse every number
+  that is not finite; sminos's reading of `vm info` tests each number.
+  And devcloud's provider client reads a provider's JSON with Python's
+  default, which takes `NaN`: a price can be `NaN`, which `vm ls` prints
+  as `nan` (left as it is: not this child's; residue).
+  Evidence: `T/test_vm_info.py` (`1e400`); `D/driver/provider.py`.
+
 ## Decision Log
 
 The entries R1 to R24 are the residue decisions made while this plan was
@@ -2156,6 +2183,36 @@ above.
   And M5: the scratch thread runs the spawn as its own task.
   The size is as restated above; M1 gains two tests and loses the
   request's second key.
+- 2026-11-23 — **Execution: M1 and M2.** What the builders decided where
+  the plan left room, kept here for the readers that follow.
+  M1: `place_spawned` takes the seat, not its project, so the project is
+  read after the launch (§1). The qualified tag's own check that the
+  spawner's short is no other member's alias applies where the seat's
+  project is the spawner's; elsewhere the tag is read in the spawner's
+  project alone. A spawn here keeps its caller's alias in `{{BY}}` (the
+  qualified address is the request's). A welcome that cannot be read is
+  not known (`None`), never "serves no channels". Several channels'
+  sentences in the preamble are one paragraph. An `error` placement
+  reads "it failed, as said above", its cause on standard error. The
+  inspection words after a lost call, with channels, are said at each of
+  G1's four sites. *The VM side's writes before its launch* (the task
+  review's fourth finding, dismissed with the holder's word):
+  `hold_to_spawner`, G1's, may register the seat's project and reconcile
+  the spawner's before the channels' refusals; G1 calls for it, a
+  refusal then leaves no seat and no channel registration, and §1's
+  sentence now says "registers no channel". D4's "refused before
+  anything is made or launched" is of the VM and the session, and holds.
+  M2: the names follow `--` (§2); `ops._spent` is shared as `ops.spent`;
+  a type's price that is no finite number of 0 or more is no price, so
+  one bad entry costs one host its cost and not the reply; `currency` is
+  null wherever `spent` is; the pool's lines keep today's form, the
+  suffix after two spaces, with no alignment (§3, corrected to what was
+  built); the owner is resolved by the org-wide id step of
+  `_resolve_tag`, `@<short>` where none or several answer; the reading
+  of a reply takes keys it does not know and needs every one of §2's, so
+  a later devcloud that adds one does not blank an older sminos's pool;
+  `ambiguous` lists the pool's spelling of the name; the stand-in's `vm
+  info` answers an empty whole reply unless a test sets one.
 
 ## Outcomes & Retrospective
 
