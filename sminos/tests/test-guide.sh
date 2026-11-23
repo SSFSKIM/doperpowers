@@ -153,6 +153,9 @@ PY
 guide "$(payload "$S1" "$STRAY" "$TX")"
 assert_contains "$(head -1 <<<"$OUT")" "new-7e [1a000001]" "a lane B session is still guided"
 assert_not_contains "$OUT" "You are a thread" "and is not told it is a thread"
+assert_contains "$OUT" '  sminos say --in <channel> "@<alias> ..."' "it may still say into a channel, as one not in it"
+assert_not_contains "$OUT" "channel create" "and is not offered to make one, which needs a thread (H10)"
+assert_not_contains "$OUT" "channel add" "nor to place threads in one"
 if [ -e "$T/rec.kept" ]; then mv "$T/rec.kept" "$REC"; else rm "$REC"; fi
 
 echo "a session in a hub project, launched there, its shell since moved:"
@@ -440,8 +443,10 @@ tag_of() { { line "$1" || true; } | python3 -c 'import sys; print(sys.stdin.read
 roster_of "$U" "$REPO"
 assert_contains "$OUT" "Your thread is in the channel guide-desk, with sessions of other projects" \
   "a thread in a channel is told its name (CH2's M10)"
-assert_contains "$OUT" "a reply line whose tag keeps your answer in that channel: run it as given" \
-  "and that a frame's reply line keeps an answer there"
+assert_contains "$OUT" "A message from a member there ends with a reply line whose tag keeps your answer in that channel" \
+  "and that a member's frame's reply line keeps an answer there"
+assert_contains "$OUT" "one from a session not in it, marked (not in <channel>) after its sender, ends with a reply line to that session's own project: run each as given" \
+  "and that an outsider's reply line goes to its own project (CH2's final reading, H10)"
 assert_contains "$(line chan-v)" "@otherproj/chan-v " "a peer met only in a channel is listed, tagged in its own project"
 assert_contains "$(line chan-v)" "otherproj on alpha" "with where it is"
 assert_contains "$(line chan-v)" "it wrote you" "and the exchange's last direction"

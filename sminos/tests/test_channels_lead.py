@@ -804,6 +804,18 @@ class Post(Lead):
         self.assertNotIn("wake", e)
         self.assertEqual(self.line_for(out, "reader"), [sminos.WORDS_RECORDED], "left for the endpoint's word")
 
+    def test_the_help_names_the_trigger_a_post_with_no_session_and_no_notice(self):
+        """The lead's post is chosen by no tag, no session and no --notice; nothing reads a terminal, so a script's
+        or a schedule's untagged post reaches the lead too, and the help says so (CH2's final reading, H10)."""
+        code, out = self.cli("help")
+        self.assertEqual(code, 0, out)
+        flat = " ".join(out.split())
+        self.assertIn("untagged a record nobody is prompted for (but one sent with no session and no --notice, a "
+                      "person's at a terminal or a script's, which goes to the channel's lead when it has one)", flat)
+        self.assertNotIn("typed at a terminal", flat)
+        self.assertIn("with no tag, no session and no --notice (the owner's at a terminal, or a script's) is "
+                      "addressed to that thread", flat, "the lead verb's help says the same")
+
     def test_a_sessions_post_a_notice_and_a_tagged_post_are_not_the_leads(self):
         rtid, rsid, _ = self.live("reader")
         otid, osid, _ = self.live("other")

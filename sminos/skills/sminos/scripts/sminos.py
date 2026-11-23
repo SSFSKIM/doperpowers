@@ -75,9 +75,9 @@ back by a fill.
     sminos say      [--in <project>] <text>                # untagged: recorded; @alias / @"a b" / @alias#short /
                    @short / @project/alias / @channel/alias: delivered; @all: every live member
     sminos say      --in <channel> <text>                 # said in a channel: its members' tags (@alias, @short,
-                   @alias#short), @all its live members, untagged a record nobody is prompted for (but a person's,
-                   typed at a terminal without --notice, which goes to the channel's lead when it has one); the
-                   same as @channel/alias without --in. A thread that is not in the channel may say into it too: its
+                   @alias#short), @all its live members, untagged a record nobody is prompted for (but one sent
+                   with no session and no --notice, a person's at a terminal or a script's, which goes to the
+                   channel's lead when it has one); the same as @channel/alias without --in. A thread that is not in the channel may say into it too: its
                    replies come to it directly, in its own project
     sminos say      [--org] [--project P,..] [--machine M,..] [--here] [--state W,..] <text>   # list's filters:
                    every live session of that scope but you (`list` with the same flags shows them), each woken
@@ -207,8 +207,8 @@ back by a fill.
     sminos channel  env add|remove <channel> <machine>    # a machine of the org added to its pool by hand, or no
                    longer (a member's)
     sminos channel  lead <channel> <thread|none>          # the owner's, at a terminal, confirmed there: a
-                   message the owner then types into the channel on this machine with no tag is addressed
-                   to that thread; none clears it
+                   message then said into the channel on this machine with no tag, no session and no
+                   --notice (the owner's at a terminal, or a script's) is addressed to that thread; none clears it
     sminos find     <words..>                             # list --org <words>: every session they match
     sminos who      [<commit|PR>] [--session S]           # the session a commit (its Sminos-Session trailer)
                    or a PR (its body's last line, else its commits' trailers; a number or URL, through gh)
@@ -20019,11 +20019,18 @@ def guide_text(session, launch, source="", title=""):
     # A lane A member is a thread (sminos_records.lane_of); one MAWS launched (lane B) is told nothing of it.
     thread = (" You are a thread: a member still when this process ends, woken by a message addressed to you."
               if threads_module().lane_a(session) else "")
+    # Making a channel and placing threads in it are a thread's (`channel create` and `add` refuse a caller that is
+    # none); a session that is no thread may still say into one, as a session not in it.
+    make = (" A channel holds sessions of several projects on one piece of work: `%s channel create <name>`, then"
+            " `%s channel add <name> <thread>...`, each thread as <project>/<alias> or its short" % (cli, cli)
+            if thread else "")
     # The channels the session's thread is in, by name (CH2's M10): a line only for a thread in any.
     channels = [(known_project(c) or make_project(c, c, "", "", None)).name
                 for c in channels_module().channels_of(session)]
-    inside = ["Your thread is in the channel%s %s, with sessions of other projects: `%s list` shows them, and a"
-              " message from one ends with a reply line whose tag keeps your answer in that channel: run it as given"
+    inside = ["Your thread is in the channel%s %s, with sessions of other projects: `%s list` shows them. A message"
+              " from a member there ends with a reply line whose tag keeps your answer in that channel; one from a"
+              " session not in it, marked (not in <channel>) after its sender, ends with a reply line to that"
+              " session's own project: run each as given"
               % ("s" if len(channels) > 1 else "", ", ".join(sorted(channels)), cli)] if channels else []
     return "\n".join([
         "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project.%s%s"
@@ -20040,9 +20047,7 @@ def guide_text(session, launch, source="", title=""):
         '  %s say "@<short> ..."   reaches that session wherever it runs, as does "@<project>/<alias> ...";'
         " a bare @alias reaches your project and the channels you are in" % cli,
         '  %s say --in <channel> "@<alias> ..."   said in a channel, as is "@<channel>/<alias> ...";'
-        " there @all reaches its live members, and untagged prompts no one. A channel holds sessions of several"
-        " projects on one piece of work: `%s channel create <name>`, then `%s channel add <name> <thread>...`,"
-        " each thread as <project>/<alias> or its short" % (cli, cli, cli),
+        " there @all reaches its live members, and untagged prompts no one.%s" % (cli, make),
         '  %s say --org|--project P|--machine M|--here "..."   wakes every live session list shows with the'
         " same flags (they combine) but you" % cli,
         "  %s say - <<'EOF'   the text on stdin, as written: for text with backticks, quotes, $ or several lines"

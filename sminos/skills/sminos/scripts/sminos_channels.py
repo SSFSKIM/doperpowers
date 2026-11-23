@@ -2043,7 +2043,8 @@ def speak(channel, a, session, tags):
             return
         raws = held
     if not tags and not session and a.notice is None:
-        # An untagged post the person types at a terminal of this machine is addressed to the lead (CH2's M8, §5),
+        # An untagged post with no session and no --notice (a person's at a terminal of this machine, or a script's)
+        # is addressed to the lead (CH2's M8, §5),
         # read here, where it is written; a session's, and a machine's notice, stay untagged.
         leader = lead_of(channel)
         if leader is not None and (r := _entry_of(channel, *leader)) is not None:
