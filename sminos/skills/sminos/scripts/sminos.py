@@ -8219,12 +8219,14 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
     `due` as deliver_next's. The caller holds the session's delivery lock.
     With `owing` (a channel's log) the last check (sminos_channels.
     still_owed) is made first, for this event, again by the wake around
-    its launch, and again with the session's reach under the receipts'
-    lock, once the planner has chosen the process's mode (every wait its
-    planning holds behind it) and before it returns a legacy push or
-    writes a gate receipt (a kept word's binding, CH2's M6), so a push
-    stopped there leaves no receipt carrying its stale verdict: one that
-    fails raises PassLost, nothing handed over; the
+    its launch, and again under the receipts' lock, reading what the check
+    after a launch reads (_planned_check: the session's reach, the signer's
+    revocation, the read-only policy), once the planner has chosen the
+    process's mode (every wait its planning holds behind it) and before it
+    returns a legacy push or writes a gate receipt (a kept word's binding,
+    CH2's M6), so a push stopped there leaves no receipt carrying its stale
+    verdict: one that fails raises PassLost, nothing handed over, and a
+    refusal found there is its outcome (_after_launch's); the
     session's membership is read in the thread's own project. A push that
     comes back `recorded` is that stop too, unless it is an event for the
     live alone whose thread is stopped (stopped_for_the_live) or it follows
@@ -8257,9 +8259,17 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
         else:
             # A retry's process may have ended since holder_owed saw it: no pid,
             # and plan() leaves the receipt owed for a later launch.
-            plan = holder_module().plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None,
-                                        words=words, **_th(owing),
-                                        **({} if owing is None else {"check": lambda: _still_owed_or_lost(owing, e)}))
+            try:
+                plan = holder_module().plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None,
+                                            words=words, **_th(owing),
+                                            **({} if owing is None else {"check": lambda: _planned_check(owing, e)}))
+            except _PlannedRefusal:
+                # A refusal of the operation's own the planner's check found: decided here, outside the receipts'
+                # lock, as after a launch (its mark written then); one gone again since is the pass lost.
+                refused = _after_launch(owing, e, session)
+                if refused is None:
+                    raise PassLost()
+                return refused
             outcome = holder_carry(plan, project, member, session, e, events, cursor, peer, **_kw(owing))
         if locks is None and owing is not None and outcome == "recorded" \
                 and not stopped_for_the_live(owing, e, session):
@@ -8280,11 +8290,30 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
         unlock(locks or [])
 
 
-def _still_owed_or_lost(owing, e):
-    """The receipts' planner's check for a channel's push (holder_push):
-    the last check with the session's reach, raising PassLost when it fails."""
-    if not channels_module().still_owed(owing, e, reach=True):
+class _PlannedRefusal(Exception):
+    """What the receipts' planner's check (_planned_check) raises for a
+    refusal of the operation's own: nothing planned or written."""
+
+
+def _planned_check(owing, e):
+    """The receipts' planner's check for a channel's push (holder_push),
+    made under the receipts' lock past every wait the planning holds: what
+    the check after a launch reads (_after_launch), read only. The last
+    check with the session's reach, raising PassLost when it fails; then,
+    on a cut-over machine, the event's signer revoked or the revocation set
+    unreadable, and, for an event this machine did not append, the
+    read-only policy, either raising _PlannedRefusal for holder_push to
+    decide outside the lock."""
+    channels = channels_module()
+    if not channels.still_owed(owing, e, reach=True):
         raise PassLost()
+    if sibling_module("sminos_rl10").cut_over() and isinstance(e.get("verified"), dict):
+        gate = WordsGate(owing.channel)
+        revoked = gate.revoked()
+        if revoked is None or gate.rl10.event_revoked(e, revoked):
+            raise _PlannedRefusal()
+    if not channels.appended_here(owing.channel, e) and sibling_module("sminos_policy").read_only():
+        raise _PlannedRefusal()
 
 
 def woken_unpushed(session, outcome="recorded", owing=None, e=None):
@@ -8334,7 +8363,8 @@ def holder_carry(plan, project, member, session, e, events, cursor, peer, owing=
             daemon_log("delivery: what is owed to %s waits: %s" % (session, plan.why))
         return "held:%s" % plan.why
     if plan.kind == "legacy":
-        return push_event(project, member, session, e, events, cursor, words=plan.words, **_kw(owing))
+        # To the process the plan chose its mode for (and the last check was made for), never one found afresh.
+        return push_event(project, member, session, e, events, cursor, words=plan.words, looked=peer, **_kw(owing))
     text = frame_of(project, e, events, session, cursor, **_th(owing)) if plan.body == "full" \
         else holder_wake(project, e)
     try:
@@ -9084,7 +9114,7 @@ def frame_of(project, e, events, session, cursor, thread=None):
                               target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""), label)
 
 
-def push_event(project, member, session, e, events, cursor, words=None, owing=None):
+def push_event(project, member, session, e, events, cursor, words=None, owing=None, looked=None):
     """Push one event to one member. An addressed event resumes a stopped
     member; an @all (`wake`) reaches only the live. A seat-less member's
     membership is read again from its own file first: `member` may be a
@@ -9096,7 +9126,8 @@ def push_event(project, member, session, e, events, cursor, words=None, owing=No
     a session retired there (a move among the reasons) is the last check
     failing (PassLost), never `recorded` (what a push that comes back
     `recorded` is in a channel is holder_push's to decide). The bridge's
-    key names the thread (push_member's `thread`)."""
+    key names the thread (push_member's `thread`). `looked` as
+    push_member's."""
     if owing is not None:
         if member.seat is None and latest_membership(_own_events(owing.project, session)) == "retired":
             raise PassLost()
@@ -9104,7 +9135,7 @@ def push_event(project, member, session, e, events, cursor, words=None, owing=No
         return "recorded"
     verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
     return push_member(member, frame_of(project, e, events, session, cursor, **_th(owing)), not e.get("wake"),
-                       session=session, event=e, project=project.id, **verdict, **_th(owing))
+                       session=session, event=e, project=project.id, looked=looked, **verdict, **_th(owing))
 
 
 def stopped_for_the_live(owing, e, session):
@@ -10146,7 +10177,7 @@ def remote_held_wait(project, m, text, sender, via):
         m.alias, m.machine, "refuses" if why_of(m) == "read-only" else "holds"), EXIT_UNKNOWN)
 
 
-def push_member(member, text, tagged, session=None, event=None, project=None, words=None, thread=None):
+def push_member(member, text, tagged, session=None, event=None, project=None, words=None, thread=None, looked=None):
     """Push one frame to a member that runs: to the live session (push_live:
     an owner's event through its bridge, keyed by `event`, the log event the
     frame carries, and `project`, the id of the project whose log holds it,
@@ -10162,7 +10193,10 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
     push_live takes in place of the writer on a cut-over machine. A push the
     reach gate holds (ReachHeld, inside push_live) is `held:reach …`, owed
     with no attempt counted. `thread`: a channel's event's thread (CH2's
-    M3), which the bridge's key names."""
+    M3), which the bridge's key names. `looked`: the process a receipt's
+    plan chose the mode for (holder_carry), the one pushed to: another
+    holding the session now is, in a channel, the pass lost (PassLost),
+    else held as bound_peer holds it."""
     session = session or member.session
     verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
     keyed = {} if thread is None else {"thread": thread}   # a project's push as it always was
@@ -10185,6 +10219,10 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
     peer = None if hold else peer_for_session(session)
     if not peer:
         return hold_outcome(hold) if hold and tagged else "recorded"
+    if looked is not None:
+        if thread is not None and not one_peer(peer, looked):
+            raise PassLost()   # the check and the mode's choice were made for a process that holds it no more
+        peer = looked
     try:
         control_module().push_live(peer, session, text, event, project, **verdict, **keyed)
         return "sent"
@@ -10196,7 +10234,8 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
 
 def _after_launch(owing, e, session):
     """A channel's last check once a wake's launch has returned and before its
-    text is handed over (CH2's M3), under the wake's hold: still_owed with
+    text is handed over (CH2's M3), under the wake's hold, and the decision on
+    a refusal the receipts' planner's check found (_planned_check): still_owed with
     the session's reach, then the two refusals the operation makes on its own
     evidence read again, as before a push: the event's signer's revocation
     (REFUSED_REVOKED, marked as the check before a push marks it) and, for an
@@ -13891,11 +13930,15 @@ def bound_peer(peer, session):
         if hold:
             raise PushHeld("session %s is held: %s" % (session[:8], hold), hold=hold)
         raise SendFailed("before", "session %s runs in no process that answers now" % session[:8])
-    if peer is not None and (str(now.get("pid")), socket_path_of(now)) != (str(peer.get("pid")),
-                                                                        socket_path_of(peer)):
+    if peer is not None and not one_peer(now, peer):
         raise PushHeld("session %s runs in another process than the one looked at: pushed at its next pass"
                        % session[:8])
     return now
+
+
+def one_peer(a, b):
+    """Whether two peer records name one process: its pid and its socket."""
+    return (str(a.get("pid")), socket_path_of(a)) == (str(b.get("pid")), socket_path_of(b))
 
 
 def peer_for_session(session_id):

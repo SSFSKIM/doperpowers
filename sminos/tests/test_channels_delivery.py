@@ -188,6 +188,31 @@ def failing(text, why="failed:refused"):
                              lambda m, frame, *a, **k: why if text in frame else real(m, frame, *a, **k))
 
 
+def turn_read_only():
+    """The machine's policy turned read-only, as its owner turns it."""
+    path = sminos_policy.policy_path()
+    with open(path) as f:
+        pol = json.load(f)
+    pol["read_only"] = True
+    with open(path, "w") as f:
+        json.dump(pol, f)
+
+
+def cut_over_to_an_endpoint():
+    """This machine cut over to an endpoint that decides no reach: a signer's revocation binds its deliveries."""
+    sminos.write_json(sminos.sibling_module("sminos_rl10").identity_path(), {
+        "org": "org-1", "hub": "http://127.0.0.1:9", "name": sminos.host_name(), "former": {},
+        "ref": "machine-ref-1", "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z",
+        "build": "b"}, mode=0o600)
+    sminos.audience_module().keep_capabilities([])
+    sminos.forget_caches()
+
+
+def revoke_the_signer():
+    sminos.sibling_module("sminos_rl10").keep_revoked({"version": 2, "devices": [], "members": [],
+                                                       "keys": [SIGNER["keyId"]]}, True)
+
+
 def reply_of(frame):
     """The reply line a frame closes with: the tag it names, or None."""
     import re
@@ -863,31 +888,16 @@ class Launch(Channel):
     def test_the_machine_turned_read_only_across_the_launch_refuses_an_outside_event(self):
         tid, sid = self.stopped()
         e = self.message((sid, tid), text="read-only meanwhile")
-
-        def read_only():
-            path = sminos_policy.policy_path()
-            with open(path) as f:
-                pol = json.load(f)
-            pol["read_only"] = True
-            with open(path, "w") as f:
-                json.dump(pol, f)
-        self.stalled(tid, sid, read_only)
+        self.stalled(tid, sid, turn_read_only)
         self.assertEqual(self.woken_got(sid, "read-only meanwhile"), [], "no text")
         self.assertEqual(self.settled(tid, W1), e["seq"], "refused as the check before a push refuses it")
         self.assertEqual(self.owed_to(tid), [])
 
     def test_a_signer_revoked_across_the_launch_hands_nothing_over_and_its_event_is_marked(self):
         tid, sid = self.stopped()
-        sminos.write_json(sminos.sibling_module("sminos_rl10").identity_path(), {
-            "org": "org-1", "hub": "http://127.0.0.1:9", "name": sminos.host_name(), "former": {},
-            "ref": "machine-ref-1", "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z",
-            "build": "b"}, mode=0o600)
-        sminos.audience_module().keep_capabilities([])
-        sminos.forget_caches()
+        cut_over_to_an_endpoint()
         e = self.message((sid, tid), text="revoked meanwhile")
-        rl10 = sminos.sibling_module("sminos_rl10")
-        self.stalled(tid, sid, lambda: rl10.keep_revoked({"version": 2, "devices": [], "members": [],
-                                                          "keys": [SIGNER["keyId"]]}, True))
+        self.stalled(tid, sid, revoke_the_signer)
         self.assertEqual(self.woken_got(sid, "revoked meanwhile"), [], "no text")
         self.assertEqual(self.record_of(tid)[W1].get("revoked"), None, "passed by the prefix in order")
         self.assertEqual(self.settled(tid, W1), e["seq"], "marked, never delivered")
@@ -997,6 +1007,70 @@ class Launch(Channel):
         self.assertEqual(self.got(got["received"], "ended at the look"), [], "nothing pushed to its session")
         self.assertEqual(self.settled(tid, W1), 0, "nothing settled for the ended thread")
         self.assertEqual(self.resumes(sid), [])
+
+
+# ------------------------------------------------------------ the last check after receipt planning
+
+
+class Planned(Channel):
+    """holder_push's last check made by the receipts' planner, after every wait the planning holds: it reads what
+    the check after a launch reads, and the push goes to the process it was made for."""
+
+    def at_the_planners_check(self, meanwhile):
+        """meanwhile() runs once, as the planner, past its waits, makes the last check with the session's reach."""
+        real, done = channels.still_owed, []
+
+        def still_owed(o, e=None, reach=False):
+            if reach and e is not None and not done:
+                done.append(e)
+                meanwhile()
+            return real(o, e, reach)
+        return mock.patch.object(channels, "still_owed", still_owed), done
+
+    def test_the_machine_turned_read_only_during_receipt_planning_refuses_an_outside_event(self):
+        tid, sid, received = self.live()
+        e = self.message((sid, tid), text="read-only while planned")
+        patch, done = self.at_the_planners_check(turn_read_only)
+        with patch:
+            self.deliver()
+        self.assertEqual(len(done), 1, "the planner made its check")
+        self.assertEqual(self.got(received, "read-only while planned"), [], "nothing handed over")
+        self.assertEqual(self.settled(tid, W1), e["seq"], "refused as the check after a launch refuses it")
+        self.assertEqual(self.owed_to(tid), [])
+
+    def test_a_signer_revoked_during_receipt_planning_hands_nothing_over_and_its_event_is_marked(self):
+        tid, sid, received = self.live()
+        cut_over_to_an_endpoint()
+        e = self.message((sid, tid), text="revoked while planned")
+        patch, done = self.at_the_planners_check(revoke_the_signer)
+        with patch:
+            self.deliver()
+        self.assertEqual(len(done), 1, "the planner made its check")
+        self.assertEqual(self.got(received, "revoked while planned"), [], "nothing handed over")
+        self.assertEqual(self.settled(tid, W1), e["seq"], "marked, never delivered")
+        self.assertEqual(self.owed_to(tid), [])
+
+    def test_a_legacy_push_goes_to_the_process_the_planner_checked_and_never_to_its_replacement(self):
+        tid, sid, proc, received = self.live_member()
+        e = self.message((sid, tid), text="to the process checked")
+        got = {}
+
+        def restarted():
+            # Past the mode's choice for the process looked at: it ends, and another process holds the session.
+            self.end(proc)
+            _, again = self.session(sid=sid)
+            got["received"] = self.inbox(sid, again, "again")
+        patch, done = self.at_the_planners_check(restarted)
+        with patch:
+            self.deliver()
+        self.assertEqual(len(done), 1, "the planner made its check")
+        self.assertEqual(self.got(got["received"], "to the process checked"), [],
+                         "nothing to a process no check was made for")
+        self.assertEqual(self.owed_to(tid), [(W1, e["seq"])], "still owed")
+        self.assertEqual((self.record_of(tid).get(W1) or {}).get("attempts", 0), 0, "no attempt counted")
+        self.deliver()
+        self.assertEqual(len(self.got(got["received"], "to the process checked")), 1, "the next pass, once")
+        self.assertEqual(self.settled(tid, W1), e["seq"])
 
 
 # ------------------------------------------------------------ a receipt and the thread it was for
