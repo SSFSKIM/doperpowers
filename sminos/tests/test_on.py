@@ -58,6 +58,19 @@ SEAT = "6f0e9d8c-7b6a-4594-8382-716253443526"
 JOB = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 DROP = object()   # a key taken out of a request
 DEVCLOUD = os.path.join(os.path.dirname(os.path.dirname(HERE)), "devcloud")
+# spawn --on --channel (EN.G2's M1): channels' ids (version 8), registered as the org's directory registers one
+DESK = "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c"
+LOBBY = "0123abcd-4567-8abc-a123-456789abcdef"
+HUB = {"url": "http://127.0.0.1:9", "org": "org-1"}
+
+
+def register(cid, name, hub=None):
+    sminos.register_if_absent(sminos.make_project(cid, name, "", "", hub or HUB))
+    sminos.forget_caches()
+
+
+def ids(n):
+    return ["%08x-0000-8000-8000-000000000000" % i for i in range(1, n + 1)]
 
 
 def devcloud_python():
@@ -828,11 +841,12 @@ class New(On):
         self.assertEqual(code, 0, err)
         self.assertIn(said, out.splitlines())
 
-    def waited(self, *answers, wait="60", poll="30", bound="480", reach_takes=0, on_="new", spawned=False):
+    def waited(self, *answers, wait="60", poll="30", bound="480", reach_takes=0, on_="new", spawned=False, argv=()):
         """`--on new` under a clock that only sleeping and each read of the reach rule (`reach_takes` seconds)
         move, devcloud answering `up` with a host and each `vm ssh` with the next of `answers` ((exit, lines,
         timed out)): (exit, stderr, each try's (start, bound))."""
         clock, tries, left = [1000.0], [], list(answers)
+        self.ssh_args = []
         reach = on.reach
 
         def slow_reach(c):
@@ -844,13 +858,14 @@ class New(On):
                 c.ready.append("dc-x-0001")   # as run_devcloud's reading of the ready line records it
                 return 0, ["dc-x-0001  ready in 0m01s"], "", False, True
             tries.append((clock[0], timeout))
+            self.ssh_args.append(args)
             code, lines, timed_out = left.pop(0)
             return code, lines, "", timed_out, True
         fake = mock.Mock(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
         env = {"SMINOS_ON_ENROLL_WAIT": wait, "SMINOS_ON_ENROLL_POLL": poll, "SMINOS_ON_TIMEOUT": bound}
         with mock.patch.object(on, "run_devcloud", side_effect=run), mock.patch.object(on, "time", fake), \
                 mock.patch.object(on, "reach", slow_reach), mock.patch.dict(os.environ, env):
-            code, out, err = self.spawn("--on", on_)
+            code, out, err = self.spawn("--on", on_, *argv)
         self.assertEqual("seat spawned on" in out, spawned, out + err)
         return code, err, tries
 
@@ -1100,6 +1115,31 @@ class New(On):
                 self.assertNotIn("nothing was spawned", err)
                 if vm == "dc-x-0001":
                     self.assertIn(". The VM dc-x-0001 is kept and", err)
+
+    # EN.G2's §1: a VM that has kept no welcome yet, asked for channels.
+    WELCOME = (1, [on.outcome_line(NONCE, {"ok": False, "exit": 1, "why": "welcome-unknown"})], False)
+
+    def test_a_vm_that_has_kept_no_welcome_is_waited_on_named_or_new_and_each_try_sends_the_same_channels(self):
+        register(DESK, "desk")
+        for on_ in ("vm1", "new"):
+            with self.subTest(on=on_):
+                line = self.spawned(machine=on_ if on_ != "new" else "dc-x-0001",
+                                    channels=[{"id": DESK, "state": "applied", "why": ""}])
+                code, err, tries = self.waited(self.WELCOME, self.NOT_READ, (0, [line], False), wait="90",
+                                               on_=on_, spawned=True, argv=("--channel", "desk"))
+                self.assertEqual((code, len(tries)), (0, 3), err)
+                self.assertIn("has kept no welcome of its endpoint yet (a machine enrolled moments ago keeps it once "
+                              "its uplink connects): waiting up to 2 minutes for it, then spawning", err)
+                sent = {json.dumps(json.loads(vm_side(a).asked_from)["channels"]) for a in self.ssh_args}
+                self.assertEqual(sent, {json.dumps([{"id": DESK, "name": "desk"}])})
+
+    def test_at_the_wait_s_end_nothing_was_opened_exit_75_and_the_way_on(self):
+        register(DESK, "desk")
+        code, err, tries = self.waited(self.WELCOME, self.WELCOME, self.WELCOME, on_="vm1", argv=("--channel", "desk"))
+        self.assertEqual(code, on.EXIT_LATER, err)
+        self.assertIn("spawn --on: vm1's sminos had kept no welcome of its endpoint within 1 minutes, so whether it "
+                      "serves channels is not known: no thread was opened there. devcloud vm ssh vm1 -- sminos daemon "
+                      "status shows its uplink; once it is connected, sminos spawn --on vm1 opens it", err)
 
 
 class Bound(On):
@@ -1798,6 +1838,249 @@ class VmSide(On):
         sminos.forget_caches()
         self.assertTrue(out.getvalue().startswith("seat spawned: repo/w  [a1b2c3d4 / %s]" % JOB), out.getvalue())
 
+    # --channel's VM side (EN.G2's §1): the request's shape, its checks before the launch, the qualified address,
+    # the outcome's `channels`. The kept welcome lists channels unless a case says otherwise.
+
+    CHANNELS = [{"id": DESK, "name": "desk"}]
+
+    def welcomed(self):
+        sminos.audience_module().keep_capabilities(["channels"])
+
+    def test_a_request_whose_channels_are_not_whole_prints_no_line(self):
+        self.welcomed()
+        bad = [[], [{"id": DESK}], [{"id": "x", "name": "desk"}], [{"id": DESK, "name": "has space"}],
+               [{"id": DESK, "name": "desk"}, {"id": DESK, "name": "again"}], {"id": DESK, "name": "desk"},
+               [{"id": cid, "name": "c"} for cid in ids(129)], [{"id": DESK, "name": 5}]]
+        for chans in bad:
+            with self.subTest(chans=str(chans)[:60]):
+                code, lines, err, launched = self.asked(channels=chans)
+                self.assertEqual(code, 2, err)
+                self.assertNotIn("sminos-spawn", "\n".join(lines))
+                self.assertEqual(launched, {})
+        code, lines, err, _ = self.asked(channels=[{"id": cid, "name": "c"} for cid in ids(128)])
+        self.assertEqual(code, 0, err + " — 128 is whole")
+
+    def test_no_welcome_kept_a_welcome_without_channels_and_an_uncarried_channel_launch_nothing(self):
+        self.welcomed()
+        os.unlink(sminos.audience_module().audiences_path())
+        code, lines, err, launched = self.asked(channels=self.CHANNELS)
+        self.assertEqual(on.judge(lines, NONCE, "w", code), ("refused", {"ok": False, "exit": 1,
+                                                                         "why": "welcome-unknown"}), err)
+        self.assertIn("this machine has kept no welcome of its endpoint yet", err)
+        self.assertEqual((launched, sminos.seats()), ({}, []))
+        sminos.audience_module().keep_capabilities(["access"])
+        code, lines, err, launched = self.asked(channels=self.CHANNELS)
+        self.assertEqual(on.judge(lines, NONCE, "w", code)[1]["why"], "other", err)
+        self.assertIn("this machine's endpoint serves no channels", err)
+        sminos.audience_module().keep_capabilities(["channels"])
+        register(DESK, "here-desk", hub={"url": HUB["url"], "org": "org-2"})
+        code, lines, err, launched = self.asked(channels=self.CHANNELS)
+        self.assertEqual(on.judge(lines, NONCE, "w", code)[1]["why"], "other", err)
+        self.assertIn("does not carry the log of channel here-desk (%s)" % DESK, err)
+        self.assertEqual((launched, sminos.seats()), ({}, []))
+        self.assertEqual(sminos.registration(LOBBY), {}, "nothing registered before a launch")
+
+    def test_without_channels_nothing_of_it_is_read_and_the_outcome_has_no_key(self):
+        self.welcomed()
+        os.unlink(sminos.audience_module().audiences_path())
+        code, lines, err, launched = self.asked()
+        verdict, d = on.judge(lines, NONCE, "w", code)
+        self.assertEqual(verdict, "ok", err)
+        self.assertNotIn("channels", d)
+        self.assertNotIn("You are being placed", launched["task"])
+
+    def test_a_placed_spawn_reports_its_channels_registers_one_it_did_not_know_and_says_the_qualified_address(self):
+        self.welcomed()
+        self.remote_joined(self.SPAWNER)
+        p = sminos.resolve_project(self.work)
+        register(LOBBY, "its-lobby")
+        code, lines, err, launched = self.asked(by=self.by(), channels=[{"id": DESK, "name": "desk"},
+                                                                        {"id": LOBBY, "name": "lobby"}])
+        verdict, d = on.judge(lines, NONCE, "w", code, [DESK, LOBBY])
+        self.assertEqual(verdict, "ok", err)
+        self.assertEqual(d["channels"], [{"id": DESK, "state": "applied", "why": ""},
+                                         {"id": LOBBY, "state": "applied", "why": ""}])
+        self.assertEqual(sminos.registration(DESK)["name"], "desk", "registered under the name sent")
+        self.assertEqual(sminos.registration(LOBBY)["name"], "its-lobby", "its own registration kept")
+        tag = "@%s/%s" % (p.id, self.SPAWNER[:8])
+        self.assertIn('boss (%s, in %s on mac; sminos say "%s …" reaches it as it is now; once it has sent you a '
+                      "message, answer by that message's reply line, which follows it if it moves)"
+                      % (tag, p.name, tag), launched["task"])
+        self.assertIn('You are being placed in the channel "desk", as your spawner asked: `sminos list %s`' % DESK,
+                      launched["task"])
+        self.assertIn('You are being placed in the channel "its-lobby"', launched["task"], "as this machine knows it")
+        self.assertNotIn("seat spawned", "\n".join(lines), "no placement line on the VM side")
+
+    def test_the_qualified_tag_passes_beside_another_project_s_alias_and_is_shadowed_in_the_spawner_s_own(self):
+        self.welcomed()
+        self.remote_joined(self.SPAWNER)
+        other = os.path.join(self.home, "other")
+        os.makedirs(other)
+        with open(os.path.join(other, ".smns"), "w") as f:
+            json.dump({"project": str(uuidlib.uuid4()), "name": "other", "remote": "", "hub": {"org": "org-1"}}, f)
+        self.remote_joined("eeee0000-5678-4abc-8def-0123456789ab", alias=self.SPAWNER[:8],
+                           project=self.project_of(other))
+        code, lines, err, launched = self.asked(by=self.by(), channels=self.CHANNELS)
+        self.assertEqual(on.judge(lines, NONCE, "w", code)[0], "ok", err)
+
+    def test_the_qualified_tag_is_shadowed_by_an_alias_in_the_spawner_s_own_project(self):
+        self.welcomed()
+        self.remote_joined(self.SPAWNER)
+        self.remote_joined("eeee1111-5678-4abc-8def-0123456789ab", alias=self.SPAWNER[:8])
+        code, lines, err, launched = self.asked(by=self.by(), channels=self.CHANNELS)
+        self.shadowed(code, lines, err, launched)
+        p = sminos.resolve_project(self.work)
+        self.assertIn("spawn: the spawner's address, @%s/%s, names" % (p.id, self.SPAWNER[:8]), err)
+
+
+
+# ------------------------------------------------------------ spawn --on --channel (EN.G2's M1, Interfaces §1)
+
+class OnChannels(On):
+    """The Mac's side of --channel: decided before devcloud, the request, the outcome's `channels` and its lines."""
+
+    def setUp(self):
+        super().setUp()
+        register(DESK, "desk")
+        register(LOBBY, "lobby")
+
+    def request_sent(self, n=-1):
+        return json.loads(vm_side([c for c in self.calls() if c[1] == "ssh"][n]).asked_from)
+
+    def placed(self, *entries, **over):
+        return self.spawned(channels=[{"id": cid, "state": state, "why": why} for cid, state, why in entries], **over)
+
+    def test_a_name_refused_on_the_mac_calls_no_devcloud(self):
+        self.refused(4, "no channel 'nowhere' is known on this machine", "--on", "vm1", "--channel", "nowhere")
+        self.refused(4, "no channel 'nowhere' is known on this machine", "--on", "new", "--channel", "nowhere")
+        register(ids(1)[0], "desk")
+        self.refused(4, "ambiguous name 'desk'", "--on", "vm1", "--channel", "desk")
+        self.refused(4, "is a project, not a channel", "--on", "vm1", "--channel", sminos.resolve_project(self.work).id)
+
+    def test_129_channels_are_refused_on_the_mac_and_more_values_folding_to_128_are_sent_folded(self):
+        many = ids(129)
+        for cid in many:
+            register(cid, "c" + cid[:8])
+        argv = [w for cid in many for w in ("--channel", cid)]
+        self.refused(1, "--channel names 129 channels, and a thread is in at most 128: nothing was spawned",
+                     "--on", "new", *argv)
+        folded = many[:128]
+        self.answers("vm1", self.placed(*[(cid, "applied", "") for cid in folded]))
+        code, out, err = self.spawn("--on", "vm1", *[w for cid in folded + folded[:5] for w in ("--channel", cid)])
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["id"] for c in self.request_sent()["channels"]], folded)
+
+    def test_a_channel_this_enrollment_does_not_carry_is_refused_before_devcloud(self):
+        register(ids(1)[0], "far", hub={"url": HUB["url"], "org": "org-2"})
+        self.refused(1, "cannot spawn a thread into far: this machine's enrollment does not carry its log (its "
+                        "registration on this machine names another org): nothing was spawned",
+                     "--on", "new", "--channel", "far")
+
+    def test_a_spawner_whose_project_id_fits_no_qualifier_is_refused_before_devcloud(self):
+        real = on.route_back
+
+        def odd(c, enrolled):
+            return {**real(c, enrolled), "project": "an id with spaces"}
+        with mock.patch.object(on, "route_back", side_effect=odd):
+            self.refused(1, "this session's project id is not one a tag's qualifier takes", "--on", "new",
+                         "--channel", "desk")
+            self.answers("vm1", self.spawned())
+            code, out, err = self.spawn("--on", "vm1")
+            self.assertEqual(code, 0, err + " — without --channel it is G1's spawn")
+
+    def test_the_request_carries_the_channels_by_id_and_name_and_none_without_the_flag(self):
+        self.answers("vm1", self.spawned())
+        code, out, err = self.spawn("--on", "vm1")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("channels", self.request_sent(), "byte for byte G1's request")
+        self.forget_calls()
+        self.answers("vm1", self.placed((LOBBY, "applied", ""), (DESK, "applied", "unchanged")))
+        code, out, err = self.spawn("--on", "vm1", "--channel", "lobby", "--channel", DESK)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.request_sent()["channels"], [{"id": LOBBY, "name": "lobby"}, {"id": DESK, "name": "desk"}])
+        label = "w#%s" % JOB[:8]   # the session's first eight, never the outcome's short (a1b2c3d4)
+        self.assertEqual(out.splitlines()[1:], ["%s: in lobby" % label, "%s: already in desk" % label])
+
+    def test_each_failed_word_on_the_vm_is_a_warning_naming_the_channel_by_id_and_the_thread_by_its_session(self):
+        words = sorted(sminos.channels_module().OWN_FAILED) + ["unregistered", "not-carried", "time", "error",
+                                                              "a-word-of-a-later-copy"]
+        for word in words:
+            with self.subTest(word=word):
+                self.answers("vm1", self.placed((DESK, "failed", word), (LOBBY, "refused", "limit")))
+                code, out, err = self.spawn("--on", "vm1", "--channel", "desk", "--channel", "lobby")
+                self.assertEqual(code, 0, err)
+                said = sminos.channels_module().placement_words("failed", word)
+                self.assertIn("sminos: warning: spawn completed, but w#%s was not placed in desk on vm1 (%s): sminos "
+                              "channel add %s %s asks its machine, once sminos list --machine vm1 shows it here"
+                              % (JOB[:8], said, DESK, JOB), err)
+                self.assertIn("was not placed in lobby on vm1 (it is in 128 channels, the limit)", err)
+        self.assertEqual(sminos.channels_module().placement_words("failed", "a-word-of-a-later-copy"),
+                         "a-word-of-a-later-copy")
+
+    def test_identity_and_a_project_not_carried_are_one_warning_that_names_no_membership(self):
+        self.answers("vm1", self.placed((DESK, "failed", "identity"), (LOBBY, "failed", "identity")))
+        code, out, err = self.spawn("--on", "vm1", "--channel", "desk", "--channel", "lobby")
+        self.assertEqual(code, 0, err)
+        self.assertIn("spawn completed, but none of the placements asked for was made: vm1 is no longer enrolled in "
+                      "this org", err)
+        self.assertNotIn("channel add", err)
+        self.answers("vm1", self.placed((DESK, "failed", "project-not-carried"), (LOBBY, "failed", "project-not-carried"),
+                                        not_carried="it syncs through no hub", project={"id": "p-u", "name": "u"}))
+        code, out, err = self.spawn("--on", "vm1", "--channel", "desk", "--channel", "lobby")
+        self.assertEqual(code, 0, err)
+        self.assertIn("filed this seat in its project u, which its enrollment does not carry", err)
+        self.assertIn("none of the placements asked for (desk, lobby) was made: its project on vm1 is not carried, "
+                      "and this project's memberships will not be seen from here", err)
+        for absent in ("channel add", "once it is listed here", ": in desk", "not placed in"):
+            self.assertNotIn(absent, out + err)
+
+    def test_an_older_vm_that_reports_no_channels_is_said_so_naming_no_membership(self):
+        self.answers("vm1", self.spawned())
+        code, out, err = self.spawn("--on", "vm1", "--channel", "desk")
+        self.assertEqual(code, 0, err)
+        self.assertIn("spawn completed, but vm1's sminos did not carry out the placements asked for (it predates "
+                      "spawn --channel). Which channels w#%s is in is not known here: sminos list %s shows, once its "
+                      "events arrive, and sminos channel add %s %s asks its machine. It was told to reach you as @%s, "
+                      "which a member of a channel it is already in can answer to if that is its alias"
+                      % (JOB[:8], DESK, DESK, JOB, self.sid[:8]), err)
+        self.assertNotIn(": in desk", out)
+
+    def test_an_outcome_whose_channels_are_not_the_ones_asked_or_not_whole_is_not_known(self):
+        cases = [
+            ("the outcome line's channels are not the ones asked", self.placed((LOBBY, "applied", ""))),
+            ("the outcome line's channels are not the ones asked", self.placed((DESK, "applied", ""), (LOBBY, "applied", ""))),
+            ("the outcome line does not read as one", self.placed((DESK, "applied", "limit"))),
+            ("the outcome line does not read as one", self.placed((DESK, "refused", "time"))),
+            ("the outcome line does not read as one", self.placed((DESK, "failed", ""))),
+            ("the outcome line does not read as one", self.placed((DESK, "pending", "x"))),
+            ("the outcome line does not read as one", self.placed(("not-an-id", "applied", ""))),
+            ("the outcome line does not read as one", self.spawned(channels={"id": DESK})),
+        ]
+        for reason, line in cases:
+            with self.subTest(line=line[-120:]):
+                self.answers("vm1", line)
+                code, out, err = self.spawn("--on", "vm1", "--channel", "desk")
+                self.assertEqual(code, 1, err)
+                self.assertIn("the outcome on vm1 is not known (%s)" % reason, err)
+        self.answers("vm1", self.placed((DESK, "failed", "x")))
+        code, out, err = self.spawn("--on", "vm1")
+        self.assertEqual(code, 0, err + " — a Mac that sent no channel ignores a whole list")
+
+    def test_a_lost_call_names_every_seat_the_engines_jobs_and_each_channel_and_g1_s_line_without_channels(self):
+        self.answers("vm1", "nothing whole", code=0)
+        code, out, err = self.spawn("--on", "vm1", "--channel", "desk", "--channel", "lobby")
+        self.assertEqual(code, 1, err)
+        self.assertIn("the outcome on vm1 is not known (no outcome line came back): a session may or may not have "
+                      "started there. Do not spawn it again before looking: devcloud vm ssh vm1 -- sminos list --here "
+                      "--all lists every seat on vm1, in any project, and devcloud vm ssh vm1 -- claude agents the "
+                      "engine's jobs there, if a session started and no seat was recorded. devcloud vm ssh vm1 -- "
+                      "sminos list %s shows who is in desk there. devcloud vm ssh vm1 -- sminos list %s shows who is "
+                      "in lobby there; a channel that does not list it shows nothing about whether it was launched"
+                      % (DESK, LOBBY), err)
+        code, out, err = self.spawn("--on", "vm1")
+        self.assertIn("a session may or may not have started there, and devcloud vm ssh vm1 -- sminos list shows",
+                      err)
+        self.assertNotIn("--here --all", err)
 
 if __name__ == "__main__":
     unittest.main()

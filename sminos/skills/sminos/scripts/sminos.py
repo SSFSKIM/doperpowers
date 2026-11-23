@@ -29,19 +29,28 @@ stopped instead); what was held for it is then settled, and a message to it
 is refused. Its human reopening it brings it back as itself; a seat comes
 back by a fill.
 
-    sminos spawn    <alias> <task> [--role R] [--brief B] [--cwd C] [--worktree W]
+    sminos spawn    <alias> <task> [--role R] [--brief B] [--cwd C] [--worktree W] [--channel CH]...
                    [--model M] [--settings S] [--effort E] [--wait]   # a background session in a seat
                    of this project (--cwd's); --brief is its in-charge line until its first derived one; --wait prints the reply.
                    --wait only watches, for DAEMON_TIMEOUT (default 18000 s): the seat works on after,
-                   and `reply` reads its live transcript
+                   and `reply` reads its live transcript. --channel (repeatable: a name, name#short or id) places
+                   the thread in each declared channel as it starts, by its own statement, onto a stopped seat
+                   adding to those it holds; a name no log or several answer, more than 128, a channel this
+                   enrollment does not carry, or a kept welcome that lists no channels or none kept yet is
+                   refused before anything is launched; after the launch a placement not made is a warning
+                   with the `sminos channel add <id> <session>` that makes it, the exit 0
     sminos spawn    <alias> <task|-> --on <vm>|new [--cwd <path there>] [--role R] [--brief B] [--worktree W]
                    [--stamp F=V]... [--model M] [--effort E] [--permission-mode M]
-                   [--vm-project owner/repo[@ref]]... [--vm-confirmed]   # the session opened on a devcloud VM
+                   [--vm-project owner/repo[@ref]]... [--vm-confirmed] [--channel CH]...   # the session opened on a devcloud VM
                    (one that exists, adopted machines included, or `new`, which devcloud vm up makes, enrolled
                    and kept, with this worktree's pushed branch or the --vm-project projects; --vm-confirmed is
                    up's --confirmed, after the person's yes). Run from a Mac enrolled in the org, by a session
                    whose project the enrollment carries and whose reach is this machine's default; the new
-                   session is told its spawner's address. --wait and --settings are refused with it
+                   session is told its spawner's address. --wait and --settings are refused with it.
+                   --channel: the names resolved here, before devcloud runs, and the VM places the thread
+                   (registering a channel it does not know), its child given the spawner's qualified address
+                   (@<project id>/<short>); a VM that has kept no welcome yet is waited on as for the spawner
+                   (exit 75 at the wait's end), and its placements are said here, one line a channel
     sminos spawn    <alias> - --asked-from <json> [--cwd C] …   # the form another machine's sminos calls over
                    devcloud vm ssh for spawn --on: refused where this machine is not enrolled or is of another
                    org, where an inferred directory is another repository's checkout, or where the directory is
@@ -2433,14 +2442,15 @@ def _ensure_dir(d):
         os.makedirs(d, mode=0o700, exist_ok=True)
 
 
-def register_if_absent(project):
+def register_if_absent(project, lock_until=None):
     """Register a project known here without a checkout (the org's
     directory names it): project.json written only when there is none,
     checked and written under the lock project_path takes, so a registration
-    a CLI or hook makes meanwhile — with its real root — is kept."""
+    a CLI or hook makes meanwhile — with its real root — is kept. With
+    `lock_until`, LockBusy where that lock is not had by then."""
     path = os.path.join(project.home, "project.json")
     os.makedirs(os.path.join(project.home, "log"), mode=0o700, exist_ok=True)
-    with flocked(path + ".lock"):
+    with flocked(path + ".lock", lock_until=lock_until):
         if registration(project.id):
             return
         info = {"project": project.id, "name": project.name, "remote": project.remote, "root": project.root}
@@ -15329,17 +15339,27 @@ def _import_chat(path, host_id, host, project, by_id, lock_until):
 # --------------------------------------------------------------- spawn / fill
 
 
-def render_preamble(project, alias, by=""):
+# The preamble's sentence for each channel a spawn asked for (EN.G2's plan, §1): the name is prose, the commands
+# name the channel by its id.
+PLACED_SENTENCE = ('You are being placed in the channel "%(name)s", as your spawner asked: `sminos list %(id)s` shows '
+                   'you there once it is recorded, `sminos chat %(id)s` reads it, and `sminos say --in %(id)s "…"` '
+                   'speaks in it.')
+
+
+def render_preamble(project, alias, by="", channels=()):
     """The spawn preamble every spawn renders (§6), with {{PROJECT}},
-    {{ALIAS}} and {{BY}} (the spawner, or "the operator") filled. It names
-    the CLI `sminos`, which the plugin's bin/ puts on the seat's PATH."""
+    {{ALIAS}} and {{BY}} (the spawner, or "the operator") filled, and
+    {{CHANNELS}} with a paragraph of PLACED_SENTENCE for each channel asked
+    (`channels`, [{"id", "name"}]), nothing where none was. It names the CLI
+    `sminos`, which the plugin's bin/ puts on the seat's PATH."""
     try:
         with open(PREAMBLE_PATH) as f:
             t = f.read()
     except OSError:
         die("preamble template missing: %s" % PREAMBLE_PATH, 1)
+    placed = "\n\n" + " ".join(PLACED_SENTENCE % c for c in channels) if channels else ""
     return (t.replace("{{PROJECT}}", project).replace("{{ALIAS}}", alias)
-             .replace("{{BY}}", by or "the operator"))
+             .replace("{{BY}}", by or "the operator").replace("{{CHANNELS}}", placed))
 
 
 def compose_task(task, brief, preamble):
@@ -15490,7 +15510,8 @@ def parse_stamps(items):
 
 
 def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
-                model, settings, effort, wait, locks, verb, stamp=None, permission_mode="auto", asked=None):
+                model, settings, effort, wait, locks, verb, stamp=None, permission_mode="auto", asked=None,
+                placing=None):
     """Launch a fresh background session for a seat and register it.
 
     seat_id None → a brand-new seat: a provisional record exists during the
@@ -15521,7 +15542,16 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
 
     The new session's record (spawn_provenance) is fixed before it exists:
     left pending under a launch id its settings carry, claimed by its own
-    first SessionStart, else by this spawn once the harness names it."""
+    first SessionStart, else by this spawn once the harness names it.
+
+    `placing`, for `spawn --channel` (EN.G2's plan, §1): {"channels":
+    [{"id", "name"}], "org"}. The preamble says each placement is asked for
+    (and, under `asked`, gives the spawner's qualified address); once the
+    seat's lifecycle lock is released and before --wait watches, the thread
+    is placed (sminos_channels.place_spawned), and nothing that comes of it
+    is a refusal: here its lines follow the banner, a placement not made a
+    warning with the command that makes it; under `asked` the entries are
+    the returned `channels`, for the outcome line."""
     if seat_id and not finish_thread(seat_id):
         # As every transition does before its own begin: the seat's open entry first, and nothing launched over it.
         die("seat %s has an operation that could not be finished yet (%s); nothing was launched — try again once "
@@ -15542,12 +15572,15 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     if asked is not None:
         spawner = asked.get("by")
         by = spawner["alias"] if spawner else ""
-        named = SPAWNER_WORDS % spawner if spawner else ""
+        if spawner and asked.get("channels"):
+            named = SPAWNER_WORDS_PLACED % {**spawner, "tag": sibling_module("sminos_on").spawner_tag(spawner, True)}
+        else:
+            named = SPAWNER_WORDS % spawner if spawner else ""
     else:
         by = caller_alias()
         # A desk member is the human, whom the preamble calls "the operator".
         named = "" if desk_member() else by
-    preamble = render_preamble(project.name, alias, named)
+    preamble = render_preamble(project.name, alias, named, placing_names(placing["channels"]) if placing else ())
     task_text = compose_task(task, brief or "", preamble)
     records = records_module()
     launch_id = records.new_launch()
@@ -15785,20 +15818,32 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     # lock is still held, right after our own writes; never re-read after the wait.
     guard = same_gen(current_gen(rec_id))
     unlock(locks)
+    placed = None
+    if placing is not None:
+        # After the launch nothing is a refusal (EN.G2's §1): every way a placement ends is one entry, said below.
+        placed = channels_module().place_spawned(rec_id, uuid, {"cwd": runcwd or cwd, "group": group}
+                                                 if asked is not None else None, placing["channels"], placing["org"])
     if wait:
         status = finish_turn(rec_id, short, alias, uuid, guard)
     wt = ("  worktree=%s (branch worktree-%s)" % (runcwd, re.sub(r"[^a-zA-Z0-9._-]", "-", worktree))) if worktree else ""
     if verb == "spawned" and seat_id is not None:
         verb = "re-filled"
+    placed_warnings = []
     if asked is None:
         print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: sminos reply %s)" % (
             verb, group, alias, short, rec_id, status, wt, short), flush=True)
+        if placed is not None:
+            lines, placed_warnings = channels_module().spawned_lines(alias, uuid, placing["channels"], placed)
+            for line in lines:
+                print(line, flush=True)
     if wait:
         print_reply_block(rec_id)
     for failure in log_failed:
         warn("%s completed, but %s" % ("fill" if verb == "filled" else "spawn", failure))
+    for words in placed_warnings:
+        warn(words)
     return {"verb": verb, "group": group, "alias": alias, "short": short, "seat": rec_id, "session": uuid,
-            "status": status, "cwd": runcwd or cwd, "project": project}
+            "status": status, "cwd": runcwd or cwd, "project": project, "channels": placed}
 
 
 def spawn_provenance(settings, merged, terminal=False):
@@ -15841,6 +15886,20 @@ def spawn_provenance(settings, merged, terminal=False):
 
 # The spawner a spawn another machine asked for names (`--asked-from`'s `by`), as its preamble's {{BY}}.
 SPAWNER_WORDS = '%(alias)s (@%(short)s, in %(project_name)s on %(machine)s; sminos say "@%(short)s …" reaches it)'
+# The same where the request asks for channels (EN.G2's plan, §1): the qualified address, which a channel-mate's
+# alias cannot take (sminos_on.spawner_tag builds `tag`, and hold_to_spawner asks that very tag).
+SPAWNER_WORDS_PLACED = ('%(alias)s (%(tag)s, in %(project_name)s on %(machine)s; sminos say "%(tag)s …" reaches it as '
+                        'it is now; once it has sent you a message, answer by that message\'s reply line, which '
+                        'follows it if it moves)')
+
+
+def placing_names(asked):
+    """The channels asked, each named as this machine knows it, else by the name the request carried."""
+    out = []
+    for c in asked:
+        known = known_project(c["id"])
+        out.append({"id": c["id"], "name": known.name if known is not None else c["name"]})
+    return out
 
 
 def cmd_spawn(a):
@@ -15867,6 +15926,7 @@ def cmd_spawn(a):
         on.hold_to_origin(req, cwd, answer)
         on.hold_to_org(req, cwd, answer)
         on.hold_to_spawner(req, cwd, a.alias, answer)
+        on.hold_to_channels(req, answer)
         a.cwd = cwd
         answer.ok(spawn_here(a, asked=req))
 
@@ -15878,6 +15938,14 @@ def spawn_here(a, asked=None):
         die("bad alias: %s" % alias)
     if alias in ("human", "all"):
         die("the alias '%s' is reserved" % alias)
+    # --channel (EN.G2's plan, §1): decided before anything is launched here; under --asked-from, the request's
+    # channels, already held to the VM side's checks (sminos_on.hold_to_channels).
+    placing = None
+    if asked is not None:
+        if asked.get("channels"):
+            placing = {"channels": asked["channels"], "org": asked["org"]}
+    elif getattr(a, "channel", None):
+        placing = {"channels": channels_module().for_spawn(a.channel, here=True), "org": enrollment()["org"]}
     cwd = cwd_or_die(a.cwd, "spawn")
     # The group is the seat's namespace on this machine: its alias is unique in
     # it and its lifecycle lock is keyed by it. It derives from the cwd's
@@ -15925,7 +15993,7 @@ def spawn_here(a, asked=None):
         role, brief = a.role or "", a.brief or ""
     return spawn_fresh(existing["seat_id"] if existing else None, alias, group, role, brief,
                        a.task, cwd, a.worktree or "", a.model or "", settings, effort, a.wait, locks, "spawned",
-                       stamp=parse_stamps(a.stamp), permission_mode=a.permission_mode, asked=asked)
+                       stamp=parse_stamps(a.stamp), permission_mode=a.permission_mode, asked=asked, placing=placing)
 
 
 def cmd_seat_add(a):
@@ -21092,6 +21160,8 @@ def build_parser():
     sp.add_argument("--vm-project", action="append", default=None, metavar="owner/repo[@ref]")
     sp.add_argument("--vm-confirmed", action="store_true")
     sp.add_argument("--asked-from", default=None, metavar="JSON")
+    # Placed in declared channels as it starts (EN.G2's plan, §1), here or with --on.
+    sp.add_argument("--channel", action="append", default=None, metavar="CHANNEL")
     route_flags(sp)
     sp.set_defaults(fn=cmd_spawn)
 

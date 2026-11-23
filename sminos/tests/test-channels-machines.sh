@@ -45,7 +45,9 @@
 # cases on the same machines: a writer on a machine that holds no member (its
 # member frame first, its log opened with `follow`), what beta held at a
 # removal and a return, and the outcomes the
-# checker reads after beta uploaded again. `--speak` runs the scene alone.
+# checker reads after beta uploaded again. Last, a thread spawned on beta with
+# `--channel` (EN.G2's M1) is in the roster and the pool as alpha reads them.
+# `--speak` runs the scene alone.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub (the test engine in the speaking scene); the sessions are `sleep`s with engine records the suite writes;
 # nothing listens beyond Unix sockets there.
@@ -977,6 +979,24 @@ speak_cases() {
   assert_equals "$(received_n alder "b4, from B")" 1 "beta uploaded since its pushes were settled"
   assert_equals "$(checked_spoken "$DESK_SPOKEN $ops_ch" "$EPA $T/pa/s alpha" "$EPB $T/pb/s beta" "$EPC $T/pc/s gamma")" clean \
     "the checker over both channels: no delivery frame names one, no outbox under one"
+  spawn_placed "$ops_ch"
+}
+spawn_placed() { # channel-id — EN.G2's M1: a thread spawned with --channel on beta, as alpha reads the channel
+  echo "a spawn placed in a channel (EN.G2's M1): spawned on beta with --channel, read on alpha:"
+  local placed sid
+  on pb beta
+  run_in "$T/pb/web" in_session "$SB" "$SMINOS" spawn wren "a task" --channel desk-ops
+  assert_rc 0 "$RC" "B spawns a thread on beta, placed in desk-ops"
+  sid="$(sed -n 's/^wren#\([0-9a-f]\{8\}\): in desk-ops$/\1/p' <<<"$OUT")"
+  assert_equals "${#sid}" 8 "its line says it is in desk-ops"
+  on pa alpha
+  placed="${SA:0:8} ${SB:0:8} $sid"
+  placed="$(tr ' ' '\n' <<<"$placed" | sort | tr '\n' ' ')"
+  placed="${placed% }"
+  speak_pass shown_is "$T/pa/app" "$SA" desk-ops "members()" "$placed" || true
+  assert_equals "$(shown "$T/pa/app" "$SA" desk-ops "members()")" "$placed" "alpha's roster of desk-ops holds it"
+  assert_equals "$(shown "$T/pa/app" "$SA" desk-ops "[(e['machine'], e['live']) for e in d['pool'] if e['machine'] == 'beta']")" \
+    "[('beta', 2)]" "and alpha's pool lists beta with its two live threads"
 }
 
 if [ "$SCENE_ONLY" = 0 ] && [ "$SPEAK_ONLY" = 0 ]; then

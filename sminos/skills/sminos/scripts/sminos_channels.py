@@ -71,6 +71,12 @@ project. What is here:
 - The lead (CH2's M8, §5): which `channel-lead` a reader honours (is_lead),
   the lead in effect for this reader (lead_of, read where a person's
   untagged post is written: speak), and the verb (`channel lead`, lead).
+- A spawned thread placed (EN.G2's M1, its plan
+  docs/doperpowers/plans/2026-11-23-sminos-environments-en-g2.md,
+  Interfaces §1): `spawn --channel`'s values decided before a launch
+  (for_spawn), the placement once the launcher has returned the session,
+  the thread's own add under one deadline, never a refusal (place_spawned),
+  and what a spawn here prints of it (spawned_lines, placement_words).
 """
 import glob
 import json
@@ -105,17 +111,19 @@ def find_channel(q, required=True):
     return out[0]
 
 
-def register(channel_id, name):
+def register(channel_id, name, lock_until=None):
     """The channel registered here as the org's directory registers a log
     (sminos.register_if_absent: no root, the enrollment's hub), a
     registration already there kept. ValueError for an id that is no
-    channel's, or on a machine not enrolled at a hub."""
+    channel's, or on a machine not enrolled at a hub; with `lock_until`,
+    LockBusy where the registration's lock is not had by then."""
     if not sminos.is_channel_id(channel_id):
         raise ValueError("%r is no channel's id" % (channel_id,))
     e = sminos.enrollment()
     if e is None:
         raise ValueError("this machine is not enrolled at a desk hub: a channel's log syncs through one")
-    sminos.register_if_absent(sminos.make_project(channel_id, name, "", "", {"url": e["url"], "org": e["org"]}))
+    sminos.register_if_absent(sminos.make_project(channel_id, name, "", "", {"url": e["url"], "org": e["org"]}),
+                              lock_until=lock_until)
     sminos.forget_caches()
     return sminos.known_project(channel_id)
 
@@ -1262,7 +1270,7 @@ def _memberless(channel):
     return channel.id not in held_channels() and channel.id not in listed
 
 
-def _refuse_uncarried(channel, doing):
+def _refuse_uncarried(channel, doing, then="nothing was written"):
     """A channel write refused, before anything is written, where this
     machine's enrollment does not carry the channel's log (sminos.not_carried,
     the test the uplink makes of every log it opens: a registration of no
@@ -1279,8 +1287,8 @@ def _refuse_uncarried(channel, doing):
         # not_carried's reason, told of a channel: it has a registration on this machine, never a .smns.
         said = {sminos.NO_HUB: "its registration on this machine names no hub",
                 sminos.OTHER_ORG: "its registration on this machine names another org"}.get(why, why)
-        sminos.die("cannot %s %s: this machine's enrollment does not carry its log (%s): nothing was written"
-                   % (doing, channel.name, said), 1)
+        sminos.die("cannot %s %s: this machine's enrollment does not carry its log (%s): %s"
+                   % (doing, channel.name, said, then), 1)
 
 
 def _print_rows(rows):
@@ -1389,6 +1397,167 @@ def _create(name, thread, session):
     if not done:
         print("%s: %s" % (t.label, line))
     return 1 if bad else 0
+
+
+# ------------------------------------------------------------ a spawned thread placed (EN.G2's M1)
+# docs/doperpowers/plans/2026-11-23-sminos-environments-en-g2.md, Interfaces §1: `spawn --channel`, here or on a VM.
+
+PLACE_BUDGET = 30   # seconds all of one spawn's placements wait together at most, on the placing machine
+PLACED = ("applied", "refused", "failed")   # a placement's states, the outcome line's `channels` entries
+# Why a placement was not made, beyond OWN_FAILED's words (change's) and WORDS["limit"] (refused): the placing
+# machine's own reads after the launch (§1's steps 1 to 4) and the deadline.
+PLACE_WORDS = {
+    "identity": "its machine is no longer enrolled in this org",
+    "project-not-carried": "its project there is not carried",
+    "unregistered": "its registration there is missing",
+    "not-carried": "its machine's enrollment does not carry it now",
+    "time": "the time for placing ran out",
+    "error": "it failed, as said above",
+}
+
+
+def place_budget():
+    try:
+        v = float(os.environ.get("SMINOS_PLACE_BUDGET") or PLACE_BUDGET)
+    except ValueError:
+        return float(PLACE_BUDGET)
+    return v if v > 0 else float(PLACE_BUDGET)
+
+
+def placement_words(state, why):
+    """A placement's `why` in words: OWN_FAILED's, the limit's, PLACE_WORDS', a word this copy does not know as
+    itself."""
+    if state == "refused" and why == "limit":
+        return WORDS["limit"]
+    return OWN_FAILED.get(why) or PLACE_WORDS.get(why) or why
+
+
+def for_spawn(values, here):
+    """`spawn --channel`'s values as decided before a launch, on the machine
+    `spawn` is typed on (§1's first table): each a channel find_channel names
+    (exit 4 in its words), values that name one channel counted once;
+    refused, exit 1 with nothing spawned, past the 128 a thread can be in, or
+    for a channel whose log this machine's enrollment does not carry
+    (_refuse_uncarried's reason; one that has left this machine is not
+    refused: a placement brings it back). With `here` (no --on, so this
+    machine places): refused where its kept welcome lists no `channels`, or
+    where no welcome is kept or it cannot be read (not known: never said as
+    an endpoint that serves none). [{"id", "name"}] in the order first
+    named, the name this machine's."""
+    found = []
+    for q in values:
+        c = find_channel(q)
+        if all(f.id != c.id for f in found):
+            found.append(c)
+    limit = sminos.threads_module().CHANNEL_LIMIT
+    if len(found) > limit:
+        sminos.die("spawn: --channel names %d channels, and a thread is in at most %d: nothing was spawned"
+                   % (len(found), limit), 1)
+    for c in found:
+        _refuse_uncarried(c, "spawn a thread into", "nothing was spawned")
+    if here:
+        kept = sminos.audience_module().kept_capability("channels")
+        if kept is False:
+            sminos.die("spawn: this machine's endpoint does not serve channels (its welcome listed no channels), so "
+                       "the thread could be placed in none: nothing was spawned. Without --channel it is spawned in no "
+                       "channel", 1)
+        if kept is None:
+            sminos.die("spawn: this machine has kept no welcome of its endpoint yet, so whether it serves channels is "
+                       "not known: nothing was spawned. Run it again once sminos daemon status shows the uplink "
+                       "connected", 1)
+    return [{"id": c.id, "name": c.name} for c in found]
+
+
+def place_spawned(thread_id, session, seat, asked, org):
+    """A spawned thread placed in the channels asked (§1's placement), once
+    the launcher has returned its session: never exits, never raises, and
+    returns one entry a channel in the order asked, {"id", "state", "why"}
+    as the outcome line carries it. The caches are dropped first, so the
+    enrollment, the org's directory and each registration are read as they
+    are now; one deadline, PLACE_BUDGET from then (SMINOS_PLACE_BUDGET),
+    bounds every wait in it. `org` is the request's on a VM, else the org
+    this machine was enrolled in when the command began; `seat`, on a VM
+    only, the seat's {cwd, group}, whose project is read again and tested
+    (a spawn here places as `channel add` would, and makes no such test).
+
+    1. this machine's enrollment none, or of another org: every channel
+       `identity`, none tried; 2. the seat's project not carried: every
+       channel `project-not-carried`, none tried; then for each channel while
+       time is left (else `time`, not tried): 3. registered from the request
+       where this machine does not know it (a lock not had in time: `time`);
+       4. its registration and the directory read now: none, `unregistered`;
+       not carried (but for one that has left this machine), `not-carried`;
+       5. the thread's own add (change), its outcome as it is. Anything else
+       is `error`, said on standard error."""
+    deadline = time.time() + place_budget()
+
+    def every(why):
+        return [{"id": c["id"], "state": "failed", "why": why} for c in asked]
+    try:
+        sminos.forget_caches()
+        mine = sminos.enrollment()
+        if mine is None or mine.get("org") != org:
+            return every("identity")
+        if seat is not None:
+            project = sminos.seat_project(seat, fresh=True)
+            if project is not None and sminos.not_carried(project, org):
+                return every("project-not-carried")
+    except (Exception, SystemExit) as e:
+        _said(e)
+        return every("error")
+    out = []
+    for c in asked:
+        if time.time() >= deadline:
+            out.append({"id": c["id"], "state": "failed", "why": "time"})
+            continue
+        try:
+            state, why = _place_one(thread_id, session, c, org, deadline)
+        except sminos.LockBusy:
+            state, why = "failed", "time"
+        except (Exception, SystemExit) as e:
+            _said(e)
+            state, why = "failed", "error"
+        out.append({"id": c["id"], "state": state, "why": why})
+    return out
+
+
+def _place_one(thread_id, session, c, org, deadline):
+    """§1's steps 3 to 5 for one channel: (state, why)."""
+    if not sminos.registration(c["id"]):
+        register(c["id"], c["name"], lock_until=deadline)
+    channel = sminos.known_project(c["id"])
+    if channel is None:
+        return "failed", "unregistered"
+    why = sminos.not_carried(channel, org)
+    if why and why != sminos.LEFT_HERE:
+        return "failed", "not-carried"
+    got = change(thread_id, channel, "add", session, lock_until=deadline)
+    return got.state, got.why or ""
+
+
+def _said(e):
+    what = ("it ended with exit %s" % e.code) if isinstance(e, SystemExit) else ("%s: %s" % (type(e).__name__, e))
+    sys.stderr.write("sminos: placing the spawned thread failed: %s\n" % what)
+
+
+def spawned_lines(alias, session, asked, placed):
+    """What a spawn here prints of its placements (§1's lines): (lines for
+    standard output, warnings). `asked` the channels with this machine's
+    names, `placed` place_spawned's entries."""
+    label = "%s#%s" % (alias, session[:8])
+    if placed and all(p["state"] == "failed" and p["why"] == "identity" for p in placed):
+        return [], ["spawn completed, but none of the placements asked for was made: %s is no longer enrolled in "
+                    "this org" % sminos.host_name()]
+    names = {c["id"]: c["name"] for c in asked}
+    out, warnings = [], []
+    for p in placed:
+        name = names.get(p["id"], p["id"])
+        if p["state"] == "applied":
+            out.append("%s: %s %s" % (label, "already in" if p["why"] == "unchanged" else "in", name))
+        else:
+            warnings.append("spawn completed, but %s was not placed in %s (%s): sminos channel add %s %s places it"
+                            % (label, name, placement_words(p["state"], p["why"]), p["id"], session))
+    return out, warnings
 
 
 # ------------------------------------------------------------ the roster, what became of a request, the pool (§5, §8)

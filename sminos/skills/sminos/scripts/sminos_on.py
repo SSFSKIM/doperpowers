@@ -21,7 +21,19 @@ directory, would put the session in a project its enrollment does not
 carry, or has not read the spawner the request names from its log yet
 (which the Mac waits out), and ending, for
 every way it ends after the request was read, with the outcome line. The
-line's shape is one, printed here and accepted here (outcome_whole)."""
+line's shape is one, printed here and accepted here (outcome_whole).
+
+`--channel` (EN.G2's plan, docs/doperpowers/plans/2026-11-23-sminos-
+environments-en-g2.md, Interfaces §1): the Mac resolves and checks the
+channels before devcloud runs (channels_asked) and sends them in the
+request; the VM side holds them to its kept welcome and its enrollment
+before the launch (hold_to_channels; `welcome-unknown` the Mac waits out),
+gives and asks the spawner's qualified address (spawner_tag), places the
+thread after the launch (sminos_channels.place_spawned) and reports each
+placement in the outcome's `channels` (placed_whole), which the Mac holds
+to its call (judge) and says, one line a channel (said_placements); a call
+lost after the request names every seat on the VM, its engine's jobs and
+each channel's roster (Call.look)."""
 import contextlib
 import io
 import json
@@ -63,8 +75,10 @@ SHORT_RE = re.compile(r"[0-9a-f]{8}")
 HEAD_RE = re.compile(r"[0-9a-f]{40}")
 # §8's table: each `why` the VM side says, with the exits it says it with.
 WHYS = {"not-enrolled": (1,), "other-org": (1,), "other-repository": (1,), "spawner-unknown": (1,),
-        "spawner-shadowed": (1,), "other": (1, 2, 4)}
-WAITED_ON = ("not-enrolled", "spawner-unknown")   # the VM side's refusals the Mac waits out (row 26, 26a)
+        "spawner-shadowed": (1,), "welcome-unknown": (1,), "other": (1, 2, 4)}
+# The VM side's refusals the Mac waits out (row 26, 26a; `welcome-unknown`, EN.G2's §1, answered only to a request
+# that carries channels).
+WAITED_ON = ("not-enrolled", "spawner-unknown", "welcome-unknown")
 EXIT_LATER = 75   # row 27a: the VM had not read the spawner by the wait's end; sysexits' EX_TEMPFAIL, try again later
 BY_KEYS = ("alias", "short", "project", "project_name", "machine")
 
@@ -102,6 +116,8 @@ def outcome_whole(d):
     this Mac does not know included); a key beyond these is ignored."""
     if not isinstance(d, dict) or not isinstance(d.get("not_carried", ""), str):
         return False
+    if d.get("ok") is True and "channels" in d and not placed_whole(d["channels"]):
+        return False
     if d.get("ok") is True:
         p = d.get("project")
         return ("head" in d and isinstance(d.get("refilled"), bool)
@@ -115,15 +131,33 @@ def outcome_whole(d):
     return False
 
 
+def placed_whole(v):
+    """Whether a success's `channels` reads as EN.G2's §1 has it: a list of
+    {id, state, why}, each id a channel's, `applied` with why "" or
+    `unchanged`, `refused` with `limit`, `failed` with a word (one this copy
+    does not know included: it is printed as itself)."""
+    if not isinstance(v, list):
+        return False
+    for e in v:
+        if not (isinstance(e, dict) and sminos.is_channel_id(e.get("id")) and isinstance(e.get("why"), str)):
+            return False
+        state, why = e.get("state"), e["why"]
+        if not (state == "applied" and why in ("", "unchanged") or state == "refused" and why == "limit"
+                or state == "failed" and why):
+            return False
+    return True
+
+
 def outcome_line(nonce, d):
     return "%s %s %s" % (OUTCOME, nonce, json.dumps(d, separators=(",", ":"), ensure_ascii=False))
 
 
-def judge(lines, nonce, alias, code):
+def judge(lines, nonce, alias, code, channels=None):
     """What the Mac reads in the VM side's standard output (§8): ("ok", d)
     or ("refused", d) for one whole outcome line it holds to its call (the
-    alias asked, `devcloud vm ssh`'s exit), else ("unknown", the reason, as
-    row 29 words it)."""
+    alias asked, `devcloud vm ssh`'s exit, and where `channels` were asked,
+    a success's `channels` naming exactly their ids in order, or none at
+    all: an older VM's), else ("unknown", the reason, as row 29 words it)."""
     mark = "%s %s " % (OUTCOME, nonce)
     hits = [i for i, line in enumerate(lines) if line.startswith(mark)]
     if not hits:
@@ -142,27 +176,47 @@ def judge(lines, nonce, alias, code):
         return "unknown", "the outcome line names another alias than the one asked"
     if (d["ok"] and code != 0) or (not d["ok"] and d["exit"] != code):
         return "unknown", "the outcome line and the exit status disagree"
+    if d["ok"] and channels and "channels" in d and [e["id"] for e in d["channels"]] != list(channels):
+        return "unknown", "the outcome line's channels are not the ones asked"
     return ("ok" if d["ok"] else "refused"), d
 
 
 # ------------------------------------------------------------------ the VM side (cmd_spawn under --asked-from)
 
 
+def request_whole(d):
+    """Whether `d` is a request of §8's shape, and where it carries
+    `channels` (EN.G2's §1), a list of 1 to 128 {id, name}, each id a
+    channel's, each name a name, no id twice: the VM side's test, which the
+    Mac runs on the request it will send before it calls devcloud."""
+    by = d.get("by") if isinstance(d, dict) else None
+    return bool(isinstance(d, dict) and type(d.get("v")) is int and d["v"] == 1 and isinstance(d.get("nonce"), str)
+                and NONCE_RE.fullmatch(d["nonce"]) and _text(d.get("org"))
+                and "origin" in d and (d["origin"] is None or isinstance(d["origin"], str))
+                and "by" in d and (by is None or isinstance(by, dict)
+                                   and all(isinstance(by.get(k), str) for k in BY_KEYS)
+                                   and SHORT_RE.fullmatch(by["short"]))
+                and ("channels" not in d or channels_whole(d["channels"])))
+
+
+def channels_whole(v):
+    return (isinstance(v, list) and 1 <= len(v) <= sminos.threads_module().CHANNEL_LIMIT
+            and all(isinstance(c, dict) and sminos.is_channel_id(c.get("id")) and isinstance(c.get("name"), str)
+                    and sminos.valid_name(c["name"]) for c in v)
+            and len({c["id"] for c in v}) == len(v))
+
+
 def read_request(a):
-    """`--asked-from`'s value, held to §8's shape; exit 2 with no outcome
-    line for anything else. `--wait` beside it is a usage error, answered."""
+    """`--asked-from`'s value, held to §8's shape (request_whole); exit 2
+    with no outcome line for anything else. `--wait` beside it is a usage
+    error, answered."""
     try:
         d = json.loads(a.asked_from)
     except ValueError:
         d = None
-    by = d.get("by") if isinstance(d, dict) else None
-    whole = (isinstance(d, dict) and type(d.get("v")) is int and d["v"] == 1 and isinstance(d.get("nonce"), str)
-             and NONCE_RE.fullmatch(d["nonce"]) and _text(d.get("org"))
-             and "origin" in d and (d["origin"] is None or isinstance(d["origin"], str))
-             and "by" in d and (by is None or isinstance(by, dict) and all(isinstance(by.get(k), str) for k in BY_KEYS)
-                  and SHORT_RE.fullmatch(by["short"])))
-    if not whole:
+    if not request_whole(d):
         sminos.die("spawn: --asked-from is not a request this version reads", sminos.EXIT_USAGE)
+    by = d["by"]
     if a.wait:
         with Answering(d["nonce"]):
             sminos.die("spawn: --asked-from with --wait: the machine that asked watches nothing here")
@@ -172,8 +226,11 @@ def read_request(a):
     # VM side can hold the launch until its own log answers for that session (hold_to_spawner).
     session = by.get("session") if by is not None else None
     whole_id = isinstance(session, str) and sminos.UUID_RE.fullmatch(session) and session[:8] == by["short"]
-    return {"v": d["v"], "nonce": d["nonce"], "org": d["org"], "origin": d["origin"],
-            "by": None if by is None else {**{k: by[k] for k in BY_KEYS}, **({"session": session} if whole_id else {})}}
+    req = {"v": d["v"], "nonce": d["nonce"], "org": d["org"], "origin": d["origin"],
+           "by": None if by is None else {**{k: by[k] for k in BY_KEYS}, **({"session": session} if whole_id else {})}}
+    if "channels" in d:
+        req["channels"] = [{"id": c["id"], "name": c["name"]} for c in d["channels"]]
+    return req
 
 
 class Answering:
@@ -213,6 +270,8 @@ class Answering:
         why = sminos.not_carried(project, self.request["org"]) if project is not None and self.request else ""
         if why:
             d["not_carried"] = why
+        if self.request.get("channels"):
+            d["channels"] = spawned.get("channels") or []   # one entry a channel asked (place_spawned)
         if not outcome_whole(d):
             sminos.die("spawn: seat %s/%s was spawned here (session %s), and its result could not be reported in the "
                        "outcome line's shape (%s): sminos list here shows it"
@@ -330,19 +389,28 @@ def hold_to_spawner(req, cwd, alias, answer):
     the spawner's row in another project: `spawner-shadowed`, at once,
     never waited on. A request without the session (an older Mac's) asks
     nothing of the log; a `--worktree` checkout the engine has not made
-    yet is checked as the directory asked for (§10)."""
+    yet is checked as the directory asked for (§10).
+
+    Where the request asks for channels (EN.G2's §1), the tag asked is the
+    one the preamble then gives, the spawner's qualified address
+    (spawner_tag): read in the spawner's project alone, never through a
+    channel's roster, so no alias in another project can take it."""
     by = req["by"]
     if by is None or "session" not in by:
         return
     project = sminos.seat_project({"cwd": cwd, "group": sminos.derive_group(cwd)})
     short = by["short"]
+    qualified = bool(req.get("channels"))
+    tag = spawner_tag(by, qualified)
+    what = "address" if qualified else "short"
 
     def shadowed(whom, advice=""):
-        answer.refuse("spawner-shadowed", "spawn: the spawner's short, @%s, names %s on this machine, so the "
+        answer.refuse("spawner-shadowed", "spawn: the spawner's %s, %s, names %s on this machine, so the "
                                           "session's first message to its spawner, %s, would reach it instead: "
-                                          "nothing was spawned%s" % (short, whom, by["alias"], advice))
-    if alias == short:
-        # Its alias answers the tag before any id does, in the project its seat is filed in (_resolve_tag).
+                                          "nothing was spawned%s" % (what, tag, whom, by["alias"], advice))
+    # Its alias answers the tag before any id does, in the project its seat is filed in (_resolve_tag); a qualified
+    # tag is read in the spawner's project alone.
+    if alias == short and (not qualified or project is not None and project.id == by["project"]):
         shadowed("the session asked for itself (its alias %s)" % alias, ". Name the session otherwise: spawn it "
                  "under another alias")
     if project is not None:
@@ -350,7 +418,7 @@ def hold_to_spawner(req, cwd, alias, answer):
     said = io.StringIO()
     try:
         with contextlib.redirect_stderr(said):
-            p, m = sminos._resolve_tag(project, sminos.leading_tags("@" + short)[0])
+            p, m = sminos._resolve_tag(project, sminos.leading_tags(tag)[0])
     except SystemExit:
         # The resolver's own answer is its die, the last thing it writes; what a read printed before it (a warning,
         # a note) is passed on as it was.
@@ -358,10 +426,10 @@ def hold_to_spawner(req, cwd, alias, answer):
         sys.stderr.write(diagnostics)
         if words.startswith("ambiguous"):
             shadowed("more than one member (%s)" % words)
-        answer.refuse("spawner-unknown", "spawn: this machine has not read the spawner, %s (@%s), from the project's "
+        answer.refuse("spawner-unknown", "spawn: this machine has not read the spawner, %s (%s), from the project's "
                                          "log yet (a machine enrolled moments ago downloads it first), so the "
                                          "session's first message to it would reach no one: nothing was spawned"
-                      % (by["alias"], short))
+                      % (by["alias"], tag))
     sys.stderr.write(said.getvalue())
     if not (m.session == by["session"] and p.id == by["project"]):
         shadowed("%s (@%s, in %s)" % (m.alias, m.short, p.name))
@@ -369,10 +437,45 @@ def hold_to_spawner(req, cwd, alias, answer):
     if why:
         # Where the tag reaches is a project whose registration here this enrollment does not carry (a stale
         # checkout's .smns naming another org, say): the reply would be written to a log the uplink never sends.
-        answer.refuse("other", "spawn: the spawner's short, @%s, reaches %s in project %s, whose registration on this "
+        answer.refuse("other", "spawn: the spawner's %s, %s, reaches %s in project %s, whose registration on this "
                                "machine its enrollment does not carry (%s), so the session's first message to its "
                                "spawner would be written to a log that never leaves this machine: nothing was "
-                               "spawned" % (short, m.alias, p.name, why))
+                               "spawned" % (what, tag, m.alias, p.name, why))
+
+
+def spawner_tag(by, qualified):
+    """The tag the new thread is given for its spawner, and the one
+    hold_to_spawner asks: `@<short>` (G1's), or, for a thread placed in
+    channels, which reads a bare name through its channels' rosters first
+    (CH2), `@<project id>/<short>`, the form a frame's reply line gives
+    (sminos.reply_line), read in that one project (EN.G2's §1, R17)."""
+    return "@%s/%s" % (by["project"], by["short"]) if qualified else "@" + by["short"]
+
+
+def hold_to_channels(req, answer):
+    """The VM side's checks of the channels a request asks for (EN.G2's §1),
+    after hold_to_spawner and before the launch, writing nothing: this
+    machine's kept welcome not known yet, `welcome-unknown` (waited out by
+    the Mac); one that lists no `channels`, `other`; a channel this machine
+    knows whose log its enrollment does not carry against the request's org
+    (but for one that has left this machine, which a placement brings back),
+    `other`. A channel it does not know is registered when it is placed."""
+    asked = req.get("channels")
+    if not asked:
+        return
+    kept = sminos.audience_module().kept_capability("channels")
+    if kept is None:
+        answer.refuse("welcome-unknown", "spawn: this machine has kept no welcome of its endpoint yet, so whether it "
+                                         "serves channels is not known: nothing was spawned")
+    if kept is False:
+        answer.refuse("other", "spawn: this machine's endpoint serves no channels (its welcome listed none), so the "
+                               "session could be placed in none: nothing was spawned")
+    for c in asked:
+        known = sminos.known_project(c["id"])
+        why = sminos.not_carried(known, req["org"]) if known is not None else ""
+        if why and why != sminos.LEFT_HERE:
+            answer.refuse("other", "spawn: this machine's enrollment does not carry the log of channel %s (%s) as it "
+                                   "registers it (%s): nothing was spawned" % (known.name, c["id"], why))
 
 
 def said_last(text):
@@ -435,6 +538,7 @@ class Call:
         self.devcloud = ""
         self.checked = None       # (branch, commit, the checkout derived for it) of a derived project, for row 33
         self.reaching = None      # the VM a run of the VM side was started on whose outcome is not yet read
+        self.channels = None      # --channel's channels, [{"id", "name"}] with this machine's names (EN.G2's §1)
 
     def vm(self):
         """The VM made: the one `vm up` was seen to name, once one was: its
@@ -463,6 +567,20 @@ class Call:
             return ""
         return KEPT % {"vm": vm, "owner": self.owner()}
 
+    def look(self, vm):
+        """Where to look after a call to `vm` whose outcome is not known:
+        G1's `sminos list` there, or, where channels were asked (EN.G2's §1),
+        every seat on the VM in any project, the engine's jobs there, and
+        each channel's roster, which shows nothing about the launch."""
+        if not self.channels:
+            return ", and devcloud vm ssh %s -- sminos list shows" % vm
+        each = ". ".join("devcloud vm ssh %s -- sminos list %s shows who is in %s there" % (vm, ch["id"], ch["name"])
+                         for ch in self.channels)
+        return (". Do not spawn it again before looking: devcloud vm ssh %s -- sminos list --here --all lists every "
+                "seat on %s, in any project, and devcloud vm ssh %s -- claude agents the engine's jobs there, if a "
+                "session started and no seat was recorded. %s; a channel that does not list it shows nothing about "
+                "whether it was launched" % (vm, vm, vm, each))
+
     def refuse(self, words, code=1):
         """Every refusal or unknown outcome after usage, `vm up`'s failure, a
         stop and an unusable `ready` output among them, says what may exist:
@@ -485,7 +603,7 @@ def spawn_on(a):
         # Outside a run of devcloud (run_devcloud says its own): between two tries of the wait, mostly.
         if c.reaching is not None:
             c.refuse("spawn --on: stopped before the outcome on %s was read: a session may or may not have started "
-                     "there, and devcloud vm ssh %s -- sminos list shows" % (c.reaching, c.reaching))
+                     "there%s" % (c.reaching, c.look(c.reaching)))
         c.refuse("spawn --on: stopped: nothing was spawned")
     finally:
         signal.signal(signal.SIGTERM, previous)
@@ -505,6 +623,7 @@ def checked_and_run(c):
     if not c.new and a.on.lower() == sminos.host_name().lower():
         c.refuse("spawn --on: %s is this machine: drop --on" % a.on, sminos.EXIT_USAGE)
     by = route_back(c, enrolled) if c.session else None
+    c.channels = channels_asked(c, enrolled, by)
     devcloud(c)
     cwd, projects = os.getcwd(), None
     if c.new:
@@ -515,7 +634,32 @@ def checked_and_run(c):
     directory, origin = where(c, cwd, projects)
     vm = make_vm(c, projects) if c.new else a.on
     request = {"v": 1, "nonce": secrets.token_hex(8), "org": enrolled["org"], "origin": origin, "by": by}
+    if c.channels:
+        request["channels"] = c.channels   # the same on every try (remote)
     remote(c, vm, request, directory, enrolled)
+
+
+def channels_asked(c, enrolled, by):
+    """--channel on the Mac (EN.G2's §1), after this machine is known to be
+    enrolled and the spawner's route back is read, before devcloud is looked
+    for: the names resolved and folded here, refused as a spawn here refuses
+    them (sminos_channels.for_spawn, but for the welcome, which is the VM's
+    to read); a spawner whose project id no tag's qualifier takes refused,
+    since the thread could be given no address a channel-mate's name cannot
+    take; and the request it will send held to the VM side's own test. None
+    without --channel."""
+    if not c.a.channel:
+        return None
+    asked = sminos.channels_module().for_spawn(c.a.channel, here=False)
+    if by is not None and not sminos.valid_name(by["project"]):
+        c.refuse("spawn --on: this session's project id is not one a tag's qualifier takes, so the thread placed in "
+                 "channels could be given no address for its spawner that a channel-mate's name cannot take: nothing "
+                 "was spawned. Spawn it without --channel and add it after")
+    probe = {"v": 1, "nonce": "0" * 16, "org": enrolled["org"], "origin": None, "by": by, "channels": asked}
+    if not request_whole(probe):
+        c.refuse("spawn --on: the request this sminos would send does not read as one (the channels %s), which is "
+                 "this sminos's fault: nothing was spawned" % json.dumps(asked, ensure_ascii=False))
+    return asked
 
 
 def usage(c):
@@ -751,7 +895,7 @@ def run_devcloud(c, args, stdin=None, timeout=None, keep_err=False, vm=None, non
             drained([(t, f) for t, f in pumps if t.ident is not None], PIPE_GRACE)
         if vm is not None:
             c.refuse("spawn --on: stopped while devcloud vm ssh ran, and devcloud was stopped with it: a session may "
-                     "or may not have started there, and devcloud vm ssh %s -- sminos list shows" % vm)
+                     "or may not have started there%s" % c.look(vm))
         c.refuse("spawn --on: stopped while devcloud ran; devcloud was stopped with it, and its own lines above say "
                  "what became of anything it made")
     finally:
@@ -836,6 +980,11 @@ def remote(c, vm, request, directory, enrolled):
         """The wait's end, by its last refusal (rows 27a and 27), once `left` (one read of the clock) is none."""
         if left > 0:
             return
+        if waited_on[-1] == "welcome-unknown":
+            c.refuse("spawn --on: %s's sminos had kept no welcome of its endpoint within %d minutes, so whether it "
+                     "serves channels is not known: no thread was opened there. devcloud vm ssh %s -- sminos daemon "
+                     "status shows its uplink; once it is connected, sminos spawn --on %s opens it"
+                     % (vm, round(wait / 60), vm, vm), EXIT_LATER)
         if waited_on[-1] == "spawner-unknown":
             c.refuse("spawn --on: %s had not read this session from the project's log within %d minutes (it is "
                      "still downloading the log): no thread was opened there. Once it has, sminos spawn --on %s "
@@ -874,10 +1023,10 @@ def remote(c, vm, request, directory, enrolled):
                                                           vm=vm, nonce=request["nonce"])
         if timed_out:
             c.refuse("spawn --on: %s gave no outcome within %d minutes, and the call was stopped: a session may or may "
-                     "not have started there, and devcloud vm ssh %s -- sminos list shows"
-                     % (vm, math.ceil(given / 60), vm))
+                     "not have started there%s" % (vm, math.ceil(given / 60), c.look(vm)))
         # Output that never ended may hold more after what was read: no line read is the last one.
-        verdict, d = judge(lines, request["nonce"], a.alias, code) if ended else (
+        verdict, d = judge(lines, request["nonce"], a.alias, code,
+                           [ch["id"] for ch in c.channels] if c.channels else None) if ended else (
             "unknown", "its output did not end: something it started still holds it open")
         if verdict == "unknown":
             unknown(c, vm, d, code, err)
@@ -897,6 +1046,10 @@ def remote(c, vm, request, directory, enrolled):
             if d["why"] == "not-enrolled":
                 sminos.note("%s is up and not enrolled in the org yet: waiting up to %d minutes for its endpoint (the "
                             "host tries again every 5), then spawning" % (vm, round(wait / 60)))
+            elif d["why"] == "welcome-unknown":
+                sminos.note("%s's sminos has kept no welcome of its endpoint yet (a machine enrolled moments ago "
+                            "keeps it once its uplink connects): waiting up to %d minutes for it, then spawning"
+                            % (vm, round(wait / 60)))
             else:
                 sminos.note("%s has not read this session from the project's log yet (a machine enrolled moments ago "
                             "downloads it first): waiting up to %d minutes for it, then spawning" % (vm, round(wait / 60)))
@@ -904,6 +1057,9 @@ def remote(c, vm, request, directory, enrolled):
             sminos.note("%s has not read this session from the project's log yet (a machine enrolled moments ago "
                         "downloads it first): waiting for it, within the same %d minutes, then spawning"
                         % (vm, round(wait / 60)))
+        elif d["why"] == "welcome-unknown" and "welcome-unknown" not in waited_on:
+            sminos.note("%s's sminos has kept no welcome of its endpoint yet: waiting for it, within the same %d "
+                        "minutes, then spawning" % (vm, round(wait / 60)))
         waited_on.append(d["why"])
         time.sleep(min(seconds("SMINOS_ON_ENROLL_POLL", ENROLL_POLL), max(0.0, deadline - time.monotonic())))
     line = "seat %s on %s: %s/%s  [%s / %s]  status=%s" % ("re-filled" if d["refilled"] else "spawned", d["machine"],
@@ -919,6 +1075,8 @@ def remote(c, vm, request, directory, enrolled):
     else:
         print("%s  (message it: sminos say \"@%s …\"; it is listed here once %s's events arrive)"
               % (line, d["session"][:8], d["machine"]), flush=True)
+    if c.channels:
+        said_placements(c, d)
     if c.made is not None:
         sminos.note(c.kept()[len(". The VM "):] + ", and it sends a notice after three idle days")
         # Only where the session runs in the checkout the branch was derived for, which an explicit --cwd or a
@@ -928,6 +1086,45 @@ def remote(c, vm, request, directory, enrolled):
             sminos.note("the VM's checkout is at %s, not at %s, the commit origin's %s was at when it was checked"
                         % (d["head"], c.checked[1], c.checked[0]))
     sys.exit(0)
+
+
+def said_placements(c, d):
+    """The Mac's lines for the placements a success reports (EN.G2's §1):
+    one a channel, the name this machine's and the commands by the
+    channel's id and the session's whole id; one warning where none was made
+    (`identity`, `project-not-carried`, saying nothing of which channels the
+    thread is in, since a refilled seat keeps what it held), or where the
+    VM's sminos predates the flag and reported none."""
+    alias, session, machine = d["alias"], d["session"], d["machine"]
+    label = "%s#%s" % (alias, session[:8])
+    names = {ch["id"]: ch["name"] for ch in c.channels}
+    placed = d.get("channels")
+    if placed is None:
+        cmds = "; ".join("sminos list %s shows, once its events arrive, and sminos channel add %s %s asks its machine"
+                         % (ch["id"], ch["id"], session) for ch in c.channels)
+        told = (". It was told to reach you as @%s, which a member of a channel it is already in can answer to if "
+                "that is its alias" % c.session[:8]) if c.session else ""
+        sminos.warn("spawn completed, but %s's sminos did not carry out the placements asked for (it predates spawn "
+                    "--channel). Which channels %s is in is not known here: %s%s" % (machine, label, cmds, told))
+        return
+    words = sminos.channels_module().placement_words
+    if placed and all(p["state"] == "failed" and p["why"] == "identity" for p in placed):
+        sminos.warn("spawn completed, but none of the placements asked for was made: %s is no longer enrolled in this "
+                    "org" % machine)
+        return
+    if placed and all(p["state"] == "failed" and p["why"] == "project-not-carried" for p in placed):
+        sminos.warn("none of the placements asked for (%s) was made: its project on %s is not carried, and this "
+                    "project's memberships will not be seen from here"
+                    % (", ".join(names[p["id"]] for p in placed), machine))
+        return
+    for p in placed:
+        name = names[p["id"]]
+        if p["state"] == "applied":
+            print("%s: %s %s" % (label, "already in" if p["why"] == "unchanged" else "in", name), flush=True)
+        else:
+            sminos.warn("spawn completed, but %s was not placed in %s on %s (%s): sminos channel add %s %s asks its "
+                        "machine, once sminos list --machine %s shows it here"
+                        % (label, name, machine, words(p["state"], p["why"]), p["id"], session, machine))
 
 
 def in_checkout(cwd, checkout):
@@ -940,8 +1137,8 @@ def in_checkout(cwd, checkout):
 
 def unknown(c, vm, reason, code, err):
     """Row 29, with row 24's note after it; exits."""
-    words = ("spawn --on: the outcome on %s is not known (%s): a session may or may not have started there, and "
-             "devcloud vm ssh %s -- sminos list shows" % (vm, reason, vm))
+    words = ("spawn --on: the outcome on %s is not known (%s): a session may or may not have started there%s"
+             % (vm, reason, c.look(vm)))
     if reason == "no outcome line came back":
         words += ". What devcloud or the host printed above may say why"
         if code == 2:

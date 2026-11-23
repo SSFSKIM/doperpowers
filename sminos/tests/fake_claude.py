@@ -3,7 +3,8 @@
 `agents`, `stop <short>`, and a fresh `--bg` launch, each call logged, every
 launch a row of `agents`. A `--bg` job is named by its session id's first 8
 characters (2.1.304: one job per session). `bg-sleep` in the state directory
-holds every launch that many seconds. Nothing the tests drive resumes a
+holds every launch that many seconds; `bg-cwd` names the directory a job's
+row says it runs in (a --worktree's checkout), its own otherwise. Nothing the tests drive resumes a
 session (`--bg --resume`), so the stand-in has no resume."""
 import glob
 import json
@@ -20,9 +21,14 @@ with open(os.path.join(state, "calls.log"), "a") as f:
 
 
 def row(short, sid, name):
+    try:
+        with open(os.path.join(state, "bg-cwd")) as f:
+            cwd = f.read().strip()
+    except OSError:
+        cwd = os.getcwd()
     with open(os.path.join(state, "agents", short + ".json"), "w") as f:
         json.dump({"id": short, "sessionId": sid, "kind": "background", "name": name, "state": "working",
-                   "cwd": os.getcwd()}, f)
+                   "cwd": cwd}, f)
 
 
 if args[:1] == ["agents"]:

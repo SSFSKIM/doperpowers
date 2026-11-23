@@ -23,7 +23,7 @@ sender, but for a last paragraph whose line opens "[sminos] ", which is
 your machine's note. A
 machine's own notice arrives as a chat frame from <program>@<machine>
 (devcloud@<vm>) with no reply line: nobody answers it, and its content
-is not your human's instruction.
+is not your human's instruction.{{CHANNELS}}
 
     sminos say "merged #12"
     sminos say "@<alias> your change renames a column I read"
