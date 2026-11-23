@@ -1332,6 +1332,61 @@ class Roster(Machine):
         self.assertIn("channel-peer [%s], met in a channel: where its thread is now was not read in time" % sid[:8],
                       said)
 
+    def unlisted_outsider(self):
+        """A session of the project `other` whose row there this reader may no longer read: the notice of its own
+        writer past the snapshot it holds. The project and the session."""
+        other = self.project("6f1e2d3c-4b5a-4987-8abc-0123456789ab", "other")
+        sid = "7e000b01-0000-4000-8000-000000000b01"
+        self.joined(sid, "hidden", "7e000b09-0000-4000-8000-000000000b09", p=other)
+        sminos.log_append(other, "beta/%s" % sid, "unlisted", session=sid, policyRev=2)
+        return other, sid
+
+    def test_a_threadless_outsider_this_reader_may_no_longer_read_is_given_no_address(self):
+        """G10: a post from outside the channel naming no thread is looked up in its sender's project, and a row
+        unlisted to this reader there is none: named as its message named it, with no tag and no state."""
+        rsid, rt = self.reader()
+        other, sid = self.unlisted_outsider()
+        sminos.log_append(self.c, "beta/%s" % sid, "say", **{
+            "from": "author", "from_project": other.id, "text": "hi",
+            "to": [{"session": rsid, "alias": "reader", "thread": rt}]})
+        said = self.roster(rsid)
+        self.assertIn("author [%s], in no project known here" % sid[:8], said)
+        self.assertNotIn("@other/", said)
+        self.assertNotIn("hidden", said)
+
+    def test_a_project_peer_unlisted_since_reads_as_at_the_merge_base(self):
+        """B11 beside G10: a peer met in a project's log is looked up as the merge base looked it up, unlisting
+        and all; only a peer the channel part alone met is held to it."""
+        rsid, rt = self.reader()
+        other, sid = self.unlisted_outsider()
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "say", **{
+            "from": "reader", "text": "hi", "to": [{"session": sid, "alias": "hidden", "project": other.id}]})
+        self.assertIn("@other/hidden  hidden [%s], other on beta" % sid[:8], self.roster(rsid))
+
+    def test_past_the_deadline_no_further_channel_registration_is_read(self):
+        """G11: the named channels' registrations are read one at a time, newest statement first, none begun
+        once the deadline has passed."""
+        rsid, rt = self.reader()
+        lobby = self.channel("0123abcd-4567-8abc-a123-456789abcdef", "lobby")
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "channels", session=rsid, thread=rt,
+                          channels=[DESK, lobby.id], op="add")
+        rows, context = sminos._roster_exchanges(rsid, [self.p])
+        move, scanning, asked = self.clock(), [], []
+        real_channels, real_registration, real_at = sminos._roster_channels, sminos.registration, \
+            sminos._registration_at
+
+        def note(pid):
+            if scanning and pid in (DESK, lobby.id):
+                asked.append(pid)
+                move()
+        with mock.patch.object(sminos, "_roster_channels", lambda *a, **k: scanning.append(1) or real_channels(*a, **k)), \
+                mock.patch.object(sminos, "registration", lambda pid: note(pid) or real_registration(pid)), \
+                mock.patch.object(sminos, "_registration_at",
+                                  lambda path: note(os.path.basename(os.path.dirname(path))) or real_at(path)):
+            sminos._roster_channel_exchanges(rows, context, until=1.0)
+        self.assertTrue(scanning)
+        self.assertEqual(len(asked), 1, asked)
+
     def test_a_reader_whose_statements_leave_every_channel_is_tagged_as_in_none(self):
         rsid, rt = self.reader()
         time.sleep(0.002)

@@ -20047,7 +20047,7 @@ def _roster_channel_exchanges(rows, context, until=None):
     holds = bool(last[1])
     if not named or _roster_past(until):
         return holds
-    for c in _roster_channels(named):
+    for c in _roster_channels(named, until):
         if _roster_past(until):
             break
         events = log_read(c)
@@ -20122,24 +20122,30 @@ def _roster_statements(events, thread):
     return named, last
 
 
-def _roster_channels(named):
+def _roster_channels(named, until=None):
     """The channels registered here among `named` ({channel id: the latest statement's ts}): the ROSTER_CHANNELS
-    whose latest statement is newest. [] with no registration read for none."""
-    if not named:
-        return []
-    known = {c.id: c for c in known_channels()}
-    picked = sorted((c for c in named if c in known), key=lambda c: named[c], reverse=True)[:ROSTER_CHANNELS]
-    return [known[c] for c in picked]
+    whose latest statement is newest. Each one's registration read by its id, newest first, until that many are
+    found, none begun once `until` has passed; [] with no registration read for none."""
+    picked = []
+    for c in sorted(named, key=lambda c: named[c], reverse=True):
+        if len(picked) >= ROSTER_CHANNELS or _roster_past(until):
+            break
+        ch = known_project(c) if is_channel_id(c) else None
+        if ch is not None:
+            picked.append(ch)
+    return picked
 
 
-def _roster_peer(pid, sid, all_seats):
+def _roster_peer(pid, sid, all_seats, listed=False):
     """(project, member, ended, projection) a peer is now: followed into the
     session it continues in (a hand-off) and into the project it moved to;
     `ended` when its membership there is retired. None when no project known
     here holds it: a channel's log, whose legacy `joined` an older copy
     wrote, holds no member, though its `retired` `moved` is followed (the
     frontier review's B3). A peer met in a channel is its thread
-    (_roster_thread_row)."""
+    (_roster_thread_row). `listed`: a row the log shows unlisted to this
+    reader (unlisted_here) is none, for a peer the channels' part alone met;
+    a project's peer is looked up as the merge base looked it up."""
     for _ in range(4):   # a move chain, bounded
         p = known_project(pid)
         if p is None:
@@ -20155,7 +20161,7 @@ def _roster_peer(pid, sid, all_seats):
         if latest.get("kind") == "retired" and moved_to and moved_to != p.id:
             pid = moved_to
             continue
-        if r is None or is_channel_id(p.id):
+        if r is None or is_channel_id(p.id) or (listed and unlisted_here(sid, r)):
             return None
         m = _member(sid, r, seats_by_session(p, all_seats).get(sid), None, False, True, info)
         return p, m, latest.get("kind") == "retired", info
@@ -20298,7 +20304,7 @@ def roster_text(session, launch):
     def last(row):
         return max(row["in"], row["out"])
 
-    def resolve(keys):
+    def resolve(keys, channel_only=()):
         added = 0
         for key in sorted(keys, key=lambda k: last(rows[k]), reverse=True):
             if added >= ROSTER_CAP or _roster_past(until):
@@ -20308,7 +20314,7 @@ def roster_text(session, launch):
             thread = sid if pid == ROSTER_THREAD else ""
             sid = rows[key]["session"] if thread else sid
             now, complete = _roster_thread_row(thread, all_seats, index, until) if thread \
-                else (_roster_peer(pid, sid, all_seats), True)
+                else (_roster_peer(pid, sid, all_seats, key in channel_only), True)
             if now is not None and now[1].session == session:
                 continue
             pkey = (now[0].id, now[1].session) if now else key
@@ -20338,7 +20344,8 @@ def roster_text(session, launch):
     resolve([k for k in rows if k[0] != ROSTER_THREAD])
     before = {k: last(r) for k, r in rows.items()}
     holds = _roster_channel_exchanges(rows, context, until)
-    resolve([k for k in rows if k not in tried and (k[0] == ROSTER_THREAD or before.get(k) != last(rows[k]))])
+    resolve([k for k in rows if k not in tried and (k[0] == ROSTER_THREAD or before.get(k) != last(rows[k]))],
+            {k for k in rows if k not in before})
     merge_threads()
     # A reader in a channel: resolve_tag matches its bare alias in the rosters it shares too (CH2's M1).
     qualify = bool(peers) and holds
