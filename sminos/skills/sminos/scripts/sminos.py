@@ -8179,11 +8179,14 @@ def holder_owed(project, member, session, e, events, cursor, owing=None):
                    prepare=False, **_th(owing))
     if plan is None:
         return None
-    if holder_due(session, plan, peer, e):
+    if holder_due(session, plan, peer, e if owing is not None else None):
         return HOLDER_RETRY
-    if e.get("wake") and _receipt_orphaned(session, plan, peer):
-        # An event for the live alone, its receipt's process gone and its thread stopped: settled `recorded`, as it
-        # is for any stopped member (holder_due), never left first owed ahead of its writer's next message.
+    if owing is not None and e.get("wake") and _receipt_orphaned(session, plan, peer):
+        # A channel's event for the live alone, its receipt's process gone and its thread stopped: settled
+        # `recorded`, as it is for any stopped member (holder_due), never left first owed ahead of its writer's next
+        # message; the stop read afresh past the receipt's read (stopped_for_the_live), else a fresh pass decides.
+        if not stopped_for_the_live(owing, e, session):
+            raise PassLost()
         return "recorded"
     return holder_carry(plan, project, member, session, e, events, cursor, peer, **_kw(owing))
 
@@ -8204,9 +8207,10 @@ def holder_due(session, plan, peer, e=None):
     process's, the session since reopened as lane A and closed): its next
     step is a push to the process a wake starts, as for any event owed to a
     stopped thread (T1's limit: at most one copy more), never a wait that
-    keeps the thread from being woken. An event for the live alone (`e`'s
-    `wake`) is never pushed there: no wake is made for it, and holder_owed
-    settles it `recorded`. Reads only. holder_owed's
+    keeps the thread from being woken. A channel's event for the live alone
+    (`e`, given for a channel's log alone, and its `wake`) is never pushed
+    there: no wake is made for it, and holder_owed settles it `recorded`
+    while the thread reads stopped afresh. Reads only. holder_owed's
     HOLDER_RETRY is this, for every log; a channel's reach_due chooses by it
     (CH2's M6), so its ask goes where the push would retry. A project's
     reach_due keeps its own test (push or legacy): its asks are today's."""
@@ -8375,8 +8379,10 @@ def holder_carry(plan, project, member, session, e, events, cursor, peer, owing=
             daemon_log("delivery: what is owed to %s waits: %s" % (session, plan.why))
         return "held:%s" % plan.why
     if plan.kind == "legacy":
-        # To the process the plan chose its mode for (and the last check was made for), never one found afresh.
-        return push_event(project, member, session, e, events, cursor, words=plan.words, looked=peer, **_kw(owing))
+        # In a channel, to the process the plan chose its mode for (and the last check was made for), never one
+        # found afresh; a project's push is as it was.
+        return push_event(project, member, session, e, events, cursor, words=plan.words,
+                          **({} if owing is None else {"looked": peer}), **_kw(owing))
     text = frame_of(project, e, events, session, cursor, **_th(owing)) if plan.body == "full" \
         else holder_wake(project, e)
     try:
@@ -9147,7 +9153,8 @@ def push_event(project, member, session, e, events, cursor, words=None, owing=No
         return "recorded"
     verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
     return push_member(member, frame_of(project, e, events, session, cursor, **_th(owing)), not e.get("wake"),
-                       session=session, event=e, project=project.id, looked=looked, **verdict, **_th(owing))
+                       session=session, event=e, project=project.id, **verdict, **_th(owing),
+                       **({} if looked is None else {"looked": looked}))
 
 
 def stopped_for_the_live(owing, e, session):
@@ -10205,10 +10212,10 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
     push_live takes in place of the writer on a cut-over machine. A push the
     reach gate holds (ReachHeld, inside push_live) is `held:reach …`, owed
     with no attempt counted. `thread`: a channel's event's thread (CH2's
-    M3), which the bridge's key names. `looked`: the process a receipt's
-    plan chose the mode for (holder_carry), the one pushed to: another
-    holding the session now is, in a channel, the pass lost (PassLost),
-    else held as bound_peer holds it."""
+    M3), which the bridge's key names. `looked` (a channel's push alone):
+    the process a receipt's plan chose the mode for (holder_carry), the one
+    pushed to: another holding the session now is the pass lost
+    (PassLost)."""
     session = session or member.session
     verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
     keyed = {} if thread is None else {"thread": thread}   # a project's push as it always was
@@ -10232,7 +10239,7 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
     if not peer:
         return hold_outcome(hold) if hold and tagged else "recorded"
     if looked is not None:
-        if thread is not None and not one_peer(peer, looked):
+        if not one_peer(peer, looked):
             raise PassLost()   # the check and the mode's choice were made for a process that holds it no more
         peer = looked
     try:
@@ -10287,8 +10294,9 @@ def wake_member(project, member, session, e, words=None, due=False, owing=None):
     it. `due` as deliver_next's.
     With `owing` (a channel's log, CH2's M3) membership and the end are read
     in the thread's own project, the mark in the thread's record, and the
-    last check is made once the wake's hold is taken and before a process is
-    started, and again after the launch returns (_after_launch): one that
+    last check is made, with the reach, once the wake's hold is taken, again
+    at the launch boundary past the wake's last wait (wake's `check`), and
+    again after the launch returns (_after_launch): one that
     fails raises PassLost; a refusal found after the launch is its outcome,
     nothing handed over. In a channel no current thread, or a session
     retired in the thread's own project, is that stop too (never the
@@ -10320,6 +10328,9 @@ def wake_member(project, member, session, e, words=None, due=False, owing=None):
         # change while the wake waited for its lock launches nothing on the answer it made stale.
         if owing is not None and not channels_module().still_owed(owing, e, reach=True):
             raise PassLost()
+
+    # A channel's last check made again at the launch boundary itself, past the line's write (wake's `check`).
+    launch_check = {} if owing is None else {"check": checked}
 
     def gone(outcome="recorded"):
         # What would settle `recorded` here (a stale mark, a seat vacated, the session another thread's or ended,
@@ -10375,7 +10386,8 @@ def wake_member(project, member, session, e, words=None, due=False, owing=None):
                 return gone(wake_outcome(busy, t["thread"]))
             checked()
             try:
-                woke = resume_session(s, locks, quiet=True, event=e, project=project.id, words=words, due=due)
+                woke = resume_session(s, locks, quiet=True, event=e, project=project.id, words=words, due=due,
+                                      **launch_check)
             except ResumeRefused:
                 return gone()   # vacant or vanished since it was read
         else:
@@ -10384,7 +10396,7 @@ def wake_member(project, member, session, e, words=None, due=False, owing=None):
             if busy:
                 return gone(wake_outcome(busy, t["thread"]))
             checked()
-            woke = wake(t, session, due=due)
+            woke = wake(t, session, due=due, **launch_check)
         if not woke.live:
             return gone(wake_outcome(woke.why, t["thread"]))
         if owing is not None and (refused := _after_launch(owing, e, session)):
@@ -16377,7 +16389,7 @@ def own_failed_row(session):
         and str(row.get("detail") or "").startswith("exit 1 before init")
 
 
-def wake(record, session, due=False, returns=False, on_live=None):
+def wake(record, session, due=False, returns=False, on_live=None, check=None):
     """The wake (D2, the plan's §3): the one function that starts a process
     for a stopped thread, either kind of record, and hands it nothing. Its
     steps W1 to W8 under the thread's wake lock; what it found, as §3's
@@ -16389,14 +16401,16 @@ def wake(record, session, due=False, returns=False, on_live=None):
     for which an ended record is woken, a spawned thread's alone;
     `on_live(short)`: called at W8, under the lock and with its hold, for
     what the caller writes once the process is live (a seat's fields, a
-    retired seat's return)."""
+    retired seat's return). `check()`: called at the launch boundary, past
+    the wait of the line's write and right before the launch, raising to
+    stop it (a channel's last check, wake_member's), the line taken back."""
     tid = record["thread"]
     mine = wake_held(tid) is None   # a hold this thread has already (its caller's) is its caller's to end
     hold, why = launch_hold(tid)
     if hold is None:
         return WakeResult(True) if live_now(session) else WakeResult(False, why)   # rows 1 and 2
     try:
-        return _wake_held(tid, session, due, returns, on_live)
+        return _wake_held(tid, session, due, returns, on_live, check)
     finally:
         if mine:
             hold.release()
@@ -16471,7 +16485,7 @@ def _wake_found(tid, session, due, returns, flagless):
     return t, ""
 
 
-def _wake_held(tid, session, due, returns, on_live):
+def _wake_held(tid, session, due, returns, on_live, check=None):
     threads, wm = threads_module(), wake_module()
     flagless = saved = False
     while True:
@@ -16524,12 +16538,15 @@ def _wake_held(tid, session, due, returns, on_live):
             return WakeResult(why == "live", "" if why == "live" else why or "unknown")
         seat = reload_seat(tid) if t["opened"] == "spawned" else None
         settings = seat["settings"] if seat is not None else wm.option(flags, "--settings")
-        # The launch boundary, past the last wait (the record's lock the line was written under): W2's reads of the
-        # record, its session and the lane made again, so what changed while it waited launches nothing.
-        _, why = _wake_thread(tid, session, returns)
-        if why:
-            wake_line_dropped(tid, session, note["id"])
-            return WakeResult(False, why)
+        if check is not None:
+            # The launch boundary, past the last wait (the record's lock the line was written under): the caller's
+            # check (a channel's whole last check, its reach in it), so what changed while it waited launches
+            # nothing, the line this wake wrote taken back.
+            try:
+                check()
+            except BaseException:
+                wake_line_dropped(tid, session, note["id"])
+                raise
         short, banner = run_claude_bg(wm.wake_argv(session, flags), wm.thread_cwd(t), settings)   # W5, W6
         if isinstance(banner, NoLaunchDir):
             # Gone since W2 read it, as the launch boundary found it: the hold not_woken answers for it, never an
@@ -16698,7 +16715,7 @@ def wake_lapsed(tid, session):
 
 
 def resume_session(s, locks=None, quiet=False, event=None, project=None, carried=None, words=None, returns=False,
-                   stop_turn=False, due=True):
+                   stop_turn=False, due=True, check=None):
     """A seat's wake (T2's M2): the seat's own steps ahead of it, then the
     wake of its record (wake), which starts its session's process under the
     same id and hands it nothing. The WakeResult; the caller pushes what it
@@ -16726,7 +16743,7 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
     delivery, and its record's verb_delivered, from a verb): checked under
     the seat's lock, before any gate, nothing stopped or launched —
     ResumeHeld (ResumeRefused for an ended one). `due` is the deliverer's
-    (deliver_next) from delivery (`quiet`)."""
+    (deliver_next) from delivery (`quiet`); `check` as wake's."""
     if locks is not None and not quiet and opened_by_human(s["current"]):
         if canonical_end(s["current"], seat_project(s)):
             # Ended (opened_by_human reads the records set aside too): nothing is recorded or held for it, since
@@ -16810,7 +16827,7 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
 
     try:
         woke = wake(threads_module().get(seat_id) or {"thread": seat_id}, s["current"], due=due, returns=returns,
-                    on_live=on_live)
+                    on_live=on_live, **({} if check is None else {"check": check}))
     finally:
         if took is not None:
             took.release()

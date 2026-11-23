@@ -1057,6 +1057,27 @@ class Launch(Channel):
         self.assertEqual(self.launches(), 1)
         self.assertEqual(len(self.woken_got(sid, "reach changed at the lock")), 1, "the next pass wakes it, once")
 
+    def test_a_change_of_reach_while_the_wake_writes_its_line_launches_nothing(self):
+        tid, sid = self.stopped()
+        e = self.message((sid, tid), text="reach changed at the line")
+        real, once = threads.wake_line, []
+
+        def wake_line(*a, **k):
+            # The wake waits on the record's lock to write its line; meanwhile the session's access changes.
+            if not once:
+                once.append(True)
+                records.set_policy(sid, lambda access, shares: ("private", []))
+            return real(*a, **k)
+        with mock.patch.object(threads, "wake_line", wake_line):
+            self.deliver()
+        self.assertEqual(once, [True])
+        self.assertEqual(self.launches(), 0, "the channel's whole check, the reach in it, at the launch boundary")
+        self.assertEqual(self.owed_to(tid), [(W1, e["seq"])], "still owed")
+        self.assertIsNone((self.waking(tid, sid) or {}).get("line"), "its line taken back")
+        self.deliver()
+        self.assertEqual(self.launches(), 1)
+        self.assertEqual(len(self.woken_got(sid, "reach changed at the line")), 1, "the next pass wakes it, once")
+
     def test_a_session_turned_lane_b_while_the_wake_writes_its_line_launches_nothing(self):
         tid, sid = self.stopped()
         e = self.message((sid, tid), text="lane b at the line")
@@ -1202,6 +1223,78 @@ class Planned(Channel):
         self.assertEqual(self.settled(tid, W1), e["seq"])
 
 
+# ------------------------------------------------------------ a project's delivery as it was (B11)
+
+
+class ProjectsAsBefore(Channel):
+    """What the channels' fixes to the push and the wake changed in a channel and nowhere else: a project's log is
+    delivered as it was."""
+
+    def to_member(self, sid, text, wake=False):
+        """An event of the project's log addressed to the session (an @all's `wake` with `wake`)."""
+        writer = "testhost/%s" % uuidlib.uuid4()
+        fields = {"from": "k", "to": [{"session": sid, "alias": "x"}], "text": text}
+        if wake:
+            fields["wake"] = True
+        e = sminos.log_append(self.p, writer, "say", **fields)
+        sminos.forget_caches()
+        return e
+
+    def project_member(self, sid):
+        sminos.forget_caches()
+        return next(m for m in sminos.view_of(self.p).members if m.session == sid)
+
+    def test_a_projects_legacy_push_goes_to_the_process_that_holds_the_session_at_the_push(self):
+        tid, sid, proc, received = self.live_member()
+        self.to_member(sid, "to whoever holds it")
+        hd, got = sminos.holder_module(), {}
+        real = hd.plan
+
+        def plan(*a, **k):
+            out = real(*a, **k)
+            if out is not None and out.kind == "legacy" and "received" not in got:
+                # Past the mode's choice for the process looked at: it ends, and another holds the session.
+                self.end(proc)
+                _, again = self.session(sid=sid)
+                got["received"] = self.inbox(sid, again, "again")
+            return out
+        with mock.patch.object(hd, "plan", plan):
+            sminos.deliver_next(self.p, self.project_member(sid))
+        self.assertIn("received", got)
+        self.assertEqual(len(self.got(got["received"], "to whoever holds it")), 1, "pushed on this pass, as before")
+
+    def test_a_projects_event_for_the_live_alone_whose_receipt_was_never_admitted_stays_owed(self):
+        tid, sid = self.stopped()
+        e = self.to_member(sid, "to whoever runs", wake=True)
+        hd = sminos.holder_module()
+        keyhash = hd.key_hash(self.p.id, sid, e["writer"], e["seq"])
+        with open(hd._receipt_path(keyhash), "w") as f:   # handed to a process that is gone, never admitted
+            json.dump({"v": 1, "id": "%s.%s" % (keyhash, "0" * 16),
+                       "key": {"project": self.p.id, "session": sid, "writer": e["writer"], "seq": e["seq"]},
+                       "hash": sminos.event_hash(e), "words": None, "created": sminos.now(ms=True),
+                       "attempt": {"n": 1, "pid": 1, "start": 1, "launch": "l", "body": "full", "state": "pushed",
+                                   "at": sminos.now(ms=True)},
+                       "released": None, "admitted": None, "handed": True}, f)
+        sminos.deliver_next(self.p, self.project_member(sid))
+        self.assertTrue(hd.exists(self.p.id, sid, e), "its receipt kept, as before")
+        self.assertIn(e["seq"], [x["seq"] for x in sminos.owed(self.p, self.project_member(sid))], "still owed")
+        self.assertEqual(self.resumes(sid), [])
+
+    def test_a_projects_wake_reads_nothing_again_at_the_launch_boundary(self):
+        tid, sid = self.stopped()
+        real, once = threads.wake_line, []
+
+        def wake_line(*a, **k):
+            if not once:
+                once.append(True)
+                records.set_controller(sid, "B")
+            return real(*a, **k)
+        with mock.patch.object(threads, "wake_line", wake_line):
+            sminos.wake(threads.get(tid), sid, due=True)
+        self.assertEqual(once, [True])
+        self.assertEqual(self.launches(), 1, "launched as before: no channel's check to make")
+
+
 # ------------------------------------------------------------ a receipt and the thread it was for
 
 
@@ -1258,6 +1351,28 @@ class Receipts(Channel):
         self.assertEqual(len(self.woken_got(sid, "named after it")), 1)
         self.assertEqual(self.settled(tid, W1), named["seq"], "neither stays first owed")
         self.assertFalse(sminos.holder_module().exists(DESK, sid, everyone, tid), "its receipt settled with it")
+
+    def test_an_event_for_the_live_alone_is_not_settled_on_a_process_that_went_live_while_its_receipt_was_read(self):
+        tid, sid = self.stopped()
+        everyone = self.message((sid, tid), text="to whoever runs now", wake=True)
+        self.receipt(DESK, sid, everyone, tid)   # handed to a process that is gone, never admitted
+        hd, got = sminos.holder_module(), {}
+        real = hd.plan
+
+        def plan(*a, **k):
+            # The receipt read for the pass (no process seen before it); meanwhile a process of the session starts.
+            out = real(*a, **k)
+            if k.get("existing_only") and "received" not in got:
+                got["received"] = self.terminal(sid)
+            return out
+        with mock.patch.object(hd, "plan", plan):
+            self.deliver()
+        self.assertIn("received", got)
+        self.assertEqual(self.owed_to(tid), [(W1, everyone["seq"])], "still owed: the thread is not stopped")
+        self.assertTrue(hd.exists(DESK, sid, everyone, tid), "its receipt kept")
+        self.deliver()
+        self.assertEqual(len(self.got(got["received"], "to whoever runs now")), 1, "pushed to the live process, once")
+        self.assertEqual(self.settled(tid, W1), everyone["seq"])
 
     def test_a_channels_receipt_is_swept_on_the_record_of_its_thread_never_on_a_seats_by_its_session(self):
         seat = str(uuidlib.uuid4())              # a seat's thread id: its first session's
