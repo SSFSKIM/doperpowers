@@ -34,12 +34,13 @@ copy the ledger out first.
 
 **At finish.** Write the spec's `## Outcomes & Retrospective` entry and
 commit it on the branch, then integrate the way the human partner wants —
-merge, PR, or leave the branch. A branch whose spec, Decision Log, or
-ledger cite commit SHAs as evidence merges — the base branch into it while
-it runs, itself with `--no-ff` at the end — rather than rebases: a rebase
-rewrites every cited SHA and leaves intermediate commits that may not
-build. Rebase a branch whose record cites nothing, or record the old-to-new
-mapping for every cited range when you must. Remove only a worktree you created (one
+merge, PR, or leave the branch. A branch that carries a spec's commits, or
+whose spec or ledger cites commit SHAs, merges — the base branch into it
+while it runs, itself with `--no-ff` at the end — rather than rebases or
+squashes: the spec's history is its commits and other documents pin them,
+and a rebase rewrites every one and leaves intermediate commits that may
+not build. Rebase a branch that carries no spec and cites nothing, or
+record the old-to-new mapping for every cited range when you must. Remove only a worktree you created (one
 under `.claude/worktrees/`, `.worktrees/` or `worktrees/`), from outside it, and only after the
 merge is confirmed; a harness-owned workspace is left in place or exited
 through the harness's own tool. A removal refused for

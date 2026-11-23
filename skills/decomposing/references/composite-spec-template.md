@@ -48,7 +48,8 @@ approved design carried whole; the children below are derived from it.
 Grade the content: mark **[binding — <joint-view reason>]** on
 decisions the whole picture settled — children never re-litigate
 these. Everything unmarked is advisory inheritance a child may
-overturn with evidence via a dated Decision Log entry on this spec. Empirical unknowns
+overturn with evidence, stating its choice in its own document and listing
+the sentence for this spec's writer. Empirical unknowns
 the design could not answer are named here as delegated unknowns and
 assigned to the child or spike that will answer them.]
 
@@ -95,11 +96,16 @@ closing-time action recorded in Outcomes.]
 [The edges in one view — which children can run in parallel, which
 sequence is forced, and why.]
 
+## Verification
+
+[Which independent reviews this document, each child's plan and each
+child's branch get, and what the recomposition is reviewed by.]
+
 ## Risks & Mitigations *(optional — delete if none identified)*
 
-[Anticipated failure modes at unit level and the mitigation each child or
-contract carries. Not Surprises — those are discovered; these are
-foreseen.]
+[Failure modes at unit level and the mitigation each child or contract
+carries: those foreseen at the cut, and a lesson from a landed child that
+its siblings need before the close.]
 
 ## Deferred / Out of Scope
 
@@ -113,24 +119,11 @@ one is also an invariant, cross-reference its contract id.]
 ## Tracking Map
 
 [child id → ledger (or ticket #), plus its plan / findings / composite
-spec where one exists, and status. This map plus the children's Status
-fields IS this unit's progress record — there is no separate Progress
-section. Keep it current as children land; a landed child's row carries
+spec where one exists, and status. Its first line names the commit your
+human partner approved. This map plus the children's Status fields IS
+this unit's progress record — there is no separate Progress section. Keep it current as children land; a landed child's row carries
 its closing evidence and points at the ledger whose outcome section is
 the child's retrospective.]
-
-## Surprises & Discoveries
-
-[Evidence-backed surprises from grounding and from children's flow-back.]
-
-## Decision Log
-
-[Dated. The verification call, every decision made after v1 with its
-rationale and the alternative rejected then — children's residue rulings
-under their child id included — and a dated line for any revision that
-changed no decision. v1's reasoning lives inline in the sections above,
-each decision naming the alternative it beat. An entry that touches an
-in-flight child's contract flags that child.]
 
 ## Outcomes & Retrospective
 

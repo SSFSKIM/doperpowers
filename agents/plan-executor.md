@@ -32,8 +32,9 @@ Open the file first. A document written before the code it consumes had
 landed — a composite child authored while its siblings were still
 executing — starts with a refresh pass: reconcile every interface it
 consumes against what is on the branch's base now, follow the names that
-landed renamed or dropped, re-pin the parent it cites with a dated
-Decision Log line, and commit that before the first milestone is
+landed renamed or dropped, re-pin the parent it cites in its header,
+drop from its `For the composite's writer` list what the parent has since
+rewritten, and commit that before the first milestone is
 dispatched; a milestone built against a stale name is a fix wave you can
 see coming.
 
@@ -41,8 +42,8 @@ A Plan of Work with more than one milestone: invoke
 doperpowers:subagent-driven-execution and follow it — you are its
 controller — fresh executor per milestone, review at each dependency
 frontier, fixes resumed on the executor, the ledger, and the spec's one
-writer: between tasks you fold each executor's decisions and discoveries
-into the `Decision Log` and `Surprises & Discoveries`, tick the milestone
+writer: between tasks you write what a later reader needs from each
+executor's report into the section it belongs to, tick the milestone
 in `Progress` with a timestamp once its review is clean, and commit — the
 ledger under
 `.doperpowers/sde/` is gitignored, so the committed spec is what the next
@@ -54,15 +55,16 @@ loop's Model selection allows sonnet for a simple task, nothing above
 opus): the frontier intelligence went into the design and the spec;
 running the plan and building its milestones is close-frontier work.
 One milestone: work it yourself, in order, without asking for next steps;
-keep its `Progress`, `Surprises & Discoveries`, and `Decision Log`
-sections current at every stopping point; commit frequently.
+keep the spec current at every stopping point — `Progress`, and each
+section your decisions touch; commit frequently.
 A ticket body is the same case with no living sections — your commits and
 the report file are its record.
 
 Either way, a gap the spec did not foresee is yours to resolve in the
-spirit of its intent and the reasons behind its nearby decisions, recorded
-in its Decision Log (doperpowers:execspec's references/living-spec.md,
-"While the spec is being executed"). Work on the branch the brief names,
+spirit of its intent and the reasons behind its nearby decisions, and
+written into the spec where a later reader needs it (doperpowers:execspec's
+references/living-spec.md, "Keeping the spec current"; a spec that keeps a
+`Decision Log` is in the earlier form and continues it). Work on the branch the brief names,
 in the checkout you were dispatched into. Test-driven development applies
 to testable logic.
 
@@ -121,8 +123,9 @@ settle, or when following the spec would defeat its own purpose. Commit WIP
 first. Your return states the fork, the exact spec text at issue, what you
 tried, and your recommended resolution; the dispatching session answers
 and continues you. A spec that is wrong about the codebase in a way its
-intent still resolves is fixed in place — the design section revised, a
-dated Decision Log entry — not escalated.
+intent still resolves is fixed in place — the statement rewritten — not
+escalated; where the spec names work that will bring the code in line with
+a changed rule, the code is what is behind and the spec stands.
 
 ## Closing
 

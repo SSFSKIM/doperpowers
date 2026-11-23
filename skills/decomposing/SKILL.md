@@ -26,8 +26,8 @@ here; what it adds are execution artifacts — its brief or plan, and the
 ledger that records its run — a spike's findings, or its own composite
 spec when it is a composite in turn. The composite spec carries the
 matured design where one exists; children with purpose, observable acceptance, and dependency
-edges; the contracts that cross them; and a record — Surprises, Decision
-Log, Outcomes — that tracks the unit to its retrospective.
+edges; the contracts that cross them; and a tracking map that follows the
+unit to its retrospective.
 
 This is the deliberate sibling of doperpowers:organizing-sprints. That
 skill turns raw *testimony* (an ideadump that may misread the code) into a
@@ -87,8 +87,8 @@ references/living-spec.md is this list applied there.
   standing root spec routes to it from that line. Every new goal enters
   the tree by being situated against the root or an existing node —
   brainstorming's job, not this skill's.
-- No OR-branches: the tree records the chosen division; alternatives live
-  in the Decision Log.
+- No OR-branches: the tree records the chosen division; a cut that was
+  seriously weighed and lost is named with the division's reason.
 - NO NEW SUBSTRATE: the tree is not a registry file. It IS the citation
   chain (each child's artifact — brief, plan, ledger, PR body, ticket,
   or a composite child's own spec — opens by citing its parent), the
@@ -107,8 +107,8 @@ the depth it was produced, as advisory inheritance (see the Derivation
 Contract): expected to be revised by the time the branch nears dispatch,
 and cheap to revise precisely because it was written down. A composite
 spec is BINDING near the frontier and advisory in the distance;
-staleness in advisory content costs a Decision Log entry, while an
-uncaptured insight is unrecoverable.
+staleness in advisory content costs a rewrite, while an uncaptured
+insight is unrecoverable.
 
 ## Recomposition
 
@@ -143,17 +143,18 @@ stamps `parent-pin:` (the parent, plus a hash of the parent's
 body as the child received it) into the child
 so "what contract did this child execute" is always answerable. A child
 revises its own means freely — and overturning advisory inheritance is
-revising means: the child records the overturn itself as a dated
-Decision Log entry on the parent (evidence in a line) and moves on, no
-reconciliation. Discovery that touches a parent-owned end — purpose,
+revising means: the child states what it chose in its own document, lists
+the inherited sentence with its replacement for the parent's writer
+(evidence in a line), and moves on, no reconciliation. Discovery that touches a parent-owned end — purpose,
 acceptance, a cross-child contract, an edge, a BINDING design decision,
 the division itself — goes back to the session holding this composite,
 in the child's escalation or report (evidence + affected clauses;
 binding content the child never edits). That session judges
-materiality, updates the parent's record, and flags affected in-flight
+materiality, rewrites the parent, and tells affected in-flight
 children. Purpose changes and material acceptance reductions go to the
 human. At final recomposition it runs the lineage check:
-every child's pin against the final parent revision — incorporated,
+every child's pin against the final parent revision (`git diff <pin> --
+<composite>`, read against what the child built) — incorporated,
 explicitly irrelevant, or a corrective child.
 
 ## The Pipeline
@@ -191,14 +192,14 @@ share no design surface, so there was nothing to mature jointly; phases
    piece's purpose and acceptance grilled here.
 4. **Author the composite spec** — per `references/composite-spec-template.md`,
    born landed: v1 already carries the design and the grill's decisions,
-   with the record of [../execspec/references/living-spec.md](../execspec/references/living-spec.md). For matured intake,
+   and is kept current as [../execspec/references/living-spec.md](../execspec/references/living-spec.md) says. For matured intake,
    extend the approved design spec in place rather than opening a
    second document.
 5. **Self-review, then the human gate** — scan for placeholders and
    contradictions, and run the traceability check: every load-bearing
-   declaration in the Decision Log has a counterpart slot in the children,
+   declaration in the design has a counterpart slot in the children,
    contracts, or acceptance sections. Commit the spec; the human's
-   approval opens phase 6. (A design already approved in brainstorming
+   approval opens phase 6, and the Tracking Map names the commit approved. (A design already approved in brainstorming
    needs their eyes only on what this run added — the cut, the grades,
    the contracts.)
 6. **Materialize onto the board (optional)** — when the project keeps its
@@ -223,10 +224,10 @@ share no design surface, so there was nothing to mature jointly; phases
    parent pin), carries the brief verbatim, and then Progress as
    deliverables land, in-flight Decisions with their rationale, Surprises,
    and the flow-back raised; its outcome section, written at close, is
-   the child's retrospective and the Tracking Map points at it. Residue rulings a
-   leaf makes land in this Decision Log under the child's id — by the
-   parent's one writer when siblings run at once (below). As children
-   land, the tracking map, Decision Log, and Surprises stay current; when
+   the child's retrospective and the Tracking Map points at it. What a
+   leaf's residue rulings change in this document, its one writer rewrites
+   into the child's section (below). As children land, the tracking map
+   and the sections their work touched stay current; when
    the children are all in, close the parent by RECOMPOSITION — verify the
    parent's own acceptance, then write the retrospective; the Deferred
    section seeds the next cut.
@@ -272,8 +273,8 @@ grades:
   local to one child: approach sketches, sequencing suggestions,
   anticipated pitfalls. The child inherits it as pre-landed grill
   input — it starts there instead of from a blank page — and may
-  overturn it with evidence; the overturn lands as a dated Decision
-  Log entry on the parent, written by the child, not a reconciliation event.
+  overturn it with evidence; the overturn is stated in the child's own
+  document and listed for the parent's writer, not a reconciliation event.
 
 Advisory is the default grade; content is binding because the composite
 spec marks it so, with the joint-view reason attached. Capture is not
@@ -295,16 +296,16 @@ composite spec instead. The child's artifacts — its brief or plan, its
 ledger, its PR or ticket — open by citing this composite spec (path +
 child id + parent pin); that citation is what keeps the flow-back channel
 alive when there is no board. Children read the parent document's
-*current* state at dispatch, never a frozen snapshot; when a Decision
-Log entry lands that touches an in-flight child's contract, flag that child.
-When a child's work contradicts the parent, the discovery flows back into
-the parent's Decision Log — never silent
+*current* state at dispatch, never a frozen snapshot; when a rewrite
+touches an in-flight child's contract, tell that child.
+When a child's work contradicts the parent, the discovery flows back to
+the parent's writer — never silent
 divergence. This is the living-spec discipline one level up.
 
 Siblings authored or executed at the same time share this document, so it
 has one writer — the session running this skill. A child's author records
-its residue in the child's own document, and that writer folds it into
-the child's section and the Decision Log under the child's id; parallel
+its residue in the child's own document, and that writer rewrites what it
+changes here into the child's section; parallel
 authors editing one file drop each other's commits. When more than one
 child extends a contract before any of them lands, open an interface
 ledger beside the execution documents — every added name with its owner
@@ -329,5 +330,5 @@ several that disagree.
 | Closing a parent by bookkeeping | Recomposition is verification against the parent's own acceptance, not a status flip. |
 | Inventing a tree registry | The tree is citations + edges + tracking maps. No new substrate. |
 | Materializing before spec approval | Outward-facing batch action; hard-gated on the human's review. |
-| Child quietly diverging from the parent | Contradictions flow back into the parent's Decision Log; flagged, not silent. |
+| Child quietly diverging from the parent | Contradictions flow back to the parent's writer, who rewrites the parent; flagged, not silent. |
 | Writing a spec for a leaf child | Its section is its spec — not a spec of its own, and not one carrying its own execution either: the composite is shared by parallel siblings, so the child's record is its brief or plan and its ledger. A leaf whose residue trips the split signals is a composite in disguise — cut it. |
