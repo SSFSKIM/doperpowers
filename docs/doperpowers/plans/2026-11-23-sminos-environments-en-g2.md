@@ -948,21 +948,27 @@ show` or a VM's notice became false, `docs/doperpowers/TECH-DEBT.md`.
 
 - **What changes in `sminos/skills/sminos/SKILL.md`:** the two `spawn`
   usages gain `[--channel <channel>]...`, with one sentence: the new
-  thread is placed in each as it starts, it is in none of its spawner's
-  otherwise, and a placement that failed is said with the command that
-  places it; a spawn whose outcome is not known is looked at, with the
-  commands its line gives, and never run again. The Channels section's `channel show` line says what the
+  thread is placed in each as it starts (the flag adds memberships, and
+  without it none is added; a refilled seat keeps what it held), and a
+  placement that failed is said, with the command that places it where
+  one can; a spawn whose outcome is not known is looked at, with the
+  commands its line gives, and not run again because a look found
+  nothing. The Channels section's `channel show` line says what the
   pool shows of a VM and where, and one sentence says that a line in a
   channel's chat from `devcloud@<vm>` is that machine's notice, recorded
-  for the channel and addressed to no one: the thread that owns the VM
-  was told separately, and nobody answers the line. `--pools` is a
+  for the channel and addressed to no one: the notice to the thread that
+  owns the VM is delivered separately, which the record stands in for in
+  no way, and nobody answers the line. (M4's review: "was told
+  separately" claimed a delivery the chain may not have made.) `--pools` is a
   program's and stays out of the skill, as `--notice` does; `sminos help`
   lists it.
 - **What changes in `D/skills/vm/SKILL.md`:** "Its end" says that each
-  notice is also recorded in the channels whose pool holds the VM, read
-  with `sminos chat <channel>`, and that `sminos channel show <channel>`
-  on a Mac shows who owns each VM of the channel, how long it has run and
-  what it has cost. `vm info` stays out, as `vm owned-by` does.
+  notice is also recorded, where it can be, in the channels whose pool
+  holds the VM, read with `sminos chat <channel>`, and that `sminos
+  channel show <channel>` on a Mac shows who owns each VM of the channel,
+  how long it has run and what it has cost, where devcloud has them, with
+  a note after the pool where devcloud could not be asked or did not
+  cover an account. `vm info` stays out, as `vm owned-by` does.
 - **What the skills must not promise:** a notice recorded in a channel
   is delivered to no one, so it is no substitute for the notice to the
   owning thread, and the repositories' names are left out of this
@@ -1291,7 +1297,7 @@ for any request this version does not read. The request carries no time
 **The spawner's address.** Where the request carries `channels` and names
 a spawner's session, the preamble's `{{BY}}` gives the address as
 
-    <alias> (@<project id>/<short>, in <project name> on <machine>; sminos say "@<project id>/<short> …" reaches it as it is now; once it has sent you a message, answer by that message's reply line, which follows it if it moves)
+    <alias> (@<project id>/<short>, in <project name> on <machine>; sminos say "@<project id>/<short> …" reaches it as it is now; once it has sent you a message, answer by the reply line of its latest message)
 
 and `hold_to_spawner` asks the resolver that tag in place of `@<short>`:
 resolved to the spawner's session in the request's project, the launch
@@ -1441,8 +1447,9 @@ the placing machine knows the channel (the asking machine's, from the
 request, where it does not know it yet); the commands carry the id:
 
 > You are being placed in the channel "desk", as your spawner asked:
-> `sminos list 0f3c…` shows you there once it is recorded, `sminos chat
-> 0f3c…` reads it, and `sminos say --in 0f3c… "…"` speaks in it.
+> once that is recorded on your machine, `sminos list 0f3c…` shows you
+> there, `sminos chat 0f3c…` reads it, and `sminos say --in 0f3c… "…"`
+> speaks in it.
 
 (the id written whole; for several channels the sentence is said once for
 each). Without `--channel` the rendered preamble is today's, byte for
