@@ -46,7 +46,9 @@ sessions of P, each but S7 placed in the channel by its own change and S10
 and S9 given their reach in one change of the record; the three writes made
 through sminos's own `say`, its clock held at the fixture's `ts`; a thread id
 the fixture names for a session of this machine bound to the one sminos
-minted for it, bind_threads), and nothing is amended here. What is checked
+minted for it, bind_threads), and the endpoint's `audience` for each local
+session, sent down after the member frame that states it (its members and
+digest of this run's members), and nothing is amended here. What is checked
 over the whole conversation in place of the probes is rl10_probes.py's,
 built for a conversation of several logs.
 
@@ -170,6 +172,12 @@ CASES = CONVERSATION["cases"]
 B = dict(CONVERSATION["bindings"])   # the sample values; this run's replace them where they are its own
 B.update(token=os.urandom(32).hex(), wrongToken=os.urandom(32).hex(),
          legacyKey=codes.b64url(os.urandom(32)))
+# An audience's members and digest, of this run's members: in id order, as the endpoint sends them.
+for _who in ("A", "B", "AB"):
+    _members = sorted(B["member:" + m] for m in _who)
+    B["digest:" + _who] = sminos.audience_digest(_members)
+    if len(_who) > 1:
+        B["members:" + _who] = _members
 # An RPC's time (`created:<as>`): its own when it goes down.
 LAZY = tuple(sorted({k for k in B if k.startswith("created:")} |
                     {m.decode() for m in re.findall(rb"\{\{(created:[^}]+)\}\}", RAW)}))
@@ -747,14 +755,14 @@ STAGE = {(0, 3): stage_open_main, (2, 0): stage_read_only(True), (2, 2): stage_r
          (11, 3): stage_restart, (12, 0): stage_ask("req-3"), (12, 2): stage_ask("req-4"),
          (12, 4): stage_answer("req-3"), (12, 6): stage_answer("req-4"),
          (13, 0): stage_channel("add"), (13, 4): stage_channel("remove"),
-         (14, 3): stage_private("S2"), (14, 8): stage_private("S1"),
+         (14, 3): stage_private("S2"), (14, 9): stage_private("S1"),
          (15, 0): stage_both(stage_member("S8", "integrator"), stage_member("S7", "scout", placed=False)),
-         (15, 2): lambda: say_at("2026-10-27T18:10:00.000Z",
+         (15, 4): lambda: say_at("2026-10-27T18:10:00.000Z",
                                  ["--in", "desk-integration", "@integrator the fixture case is ready for review"],
                                  B["session:S7"]),
          (16, 4): stage_member("S10", "solo", access="private"),
          (17, 0): stage_member("S9", "review", access="private", share=(B["member:B"], "converse")),
-         (17, 9): lambda: say_at("2026-10-27T18:11:00.000Z",
+         (17, 10): lambda: say_at("2026-10-27T18:11:00.000Z",
                                  ["--in", "desk-integration", "@integrator pick up the channel's review"]),
          (18, 0): stage_both(stage_carried,
                              lambda: say_at("2026-10-27T18:12:00.000Z",
@@ -943,10 +951,10 @@ def check_request(name, binding, placed):
 CHECK = {(0, 2): check_no_identity, (0, 5): check_identity, (0, 6): check_revoked(3), (0, 7): check_org,
          (2, 1): check_policy(True), (2, 3): check_policy(False), (5, 1): check_present,
          (6, 1): check_delivered("S1", "run the tests"), (6, 7): check_delivered("S1", "asked while RL1 is down"),
-         (7, 13): check_delivered("S2", "from b1"), (11, 39): check_delivered("S2", "from b2"),
-         (11, 7): check_revoked(3), (11, 29): check_revoked(4),
-         (11, 32): check_revoked(5, ["b1"]), (9, 13): check_send_entered, (14, 1): check_revoked(6, ["b1"]),
-         (14, 6): check_request("S2", "request:R1", True), (14, 11): check_request("S1", "request:R2", False)}
+         (7, 13): check_delivered("S2", "from b1"), (11, 42): check_delivered("S2", "from b2"),
+         (11, 7): check_revoked(3), (11, 32): check_revoked(4),
+         (11, 35): check_revoked(5, ["b1"]), (9, 13): check_send_entered, (14, 1): check_revoked(6, ["b1"]),
+         (14, 7): check_request("S2", "request:R1", True), (14, 13): check_request("S1", "request:R2", False)}
 
 
 def late_checks(P):
@@ -954,8 +962,8 @@ def late_checks(P):
     CHECK.update({(5, 3): check_spent(P, own("human"), 7), (5, 7): check_spent(P, own("human"), 8),
                   (7, 1): check_stored(hub_b, 1, "device"), (7, 3): check_spent(P, hub_b, 2),
                   (7, 7): check_stored("old-mini/human", 1, "legacy"), (7, 9): check_spent(P, hub_b, 3),
-                  (9, 10): check_spawn, (11, 22): check_vector(hub_b, 5),
-                  (11, 30): check_stored(hub_b, 6, "device"), (11, 34): check_spent(P, hub_b, 7)})
+                  (9, 10): check_spawn, (11, 25): check_vector(hub_b, 5),
+                  (11, 33): check_stored(hub_b, 6, "device"), (11, 37): check_spent(P, hub_b, 7)})
 
 
 # ------------------------------------------------------------- probes
@@ -1041,8 +1049,8 @@ PROBES = {
     (6, 11): ("the endpoint's answer to it", None),
     (7, 16): ("a words? for a session with no member here", probe_members),
     (7, 17): ("the endpoint's answer to it", None),
-    (11, 36): ("a revoked signer's words asked again", probe_revoked),
-    (11, 37): ("the endpoint's answer to it", None),
+    (11, 39): ("a revoked signer's words asked again", probe_revoked),
+    (11, 40): ("the endpoint's answer to it", None),
 }
 
 # A line that says what sminos sent after other lines were: matched only past
@@ -1194,7 +1202,7 @@ def run_deferred(conn_name):
         ok, why2 = up(ci, si, step, opts)
         if ok:
             n, i = STEPS[(ci, si)]
-            restated = STEPS.get((11, 14))
+            restated = STEPS.get((11, 17))
             ok = restated is not None and restated[0] == n and i < restated[1]
             why2 = "" if ok else "not before the restated of connection %d" % n
         say("ok" if ok else "FAIL", "%s (%s)%s" % (name_of(ci, si, step), why, "" if ok else " — " + why2))
