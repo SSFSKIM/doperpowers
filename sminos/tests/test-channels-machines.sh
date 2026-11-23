@@ -995,8 +995,11 @@ spawn_placed() { # channel-id — EN.G2's M1: a thread spawned with --channel on
   placed="${placed% }"
   speak_pass shown_is "$T/pa/app" "$SA" desk-ops "members()" "$placed" || true
   assert_equals "$(shown "$T/pa/app" "$SA" desk-ops "members()")" "$placed" "alpha's roster of desk-ops holds it"
-  assert_equals "$(shown "$T/pa/app" "$SA" desk-ops "[(e['machine'], e['live']) for e in d['pool'] if e['machine'] == 'beta']")" \
-    "[('beta', 2)]" "and alpha's pool lists beta with its two live threads"
+  # wren counts as live or as stopped by when alpha reads it, as its fake session's turn has ended on beta or not.
+  local beta_pool="[(e['machine'], e['live'] + e['stopped']) for e in d['pool'] if e['machine'] == 'beta']"
+  speak_pass shown_is "$T/pa/app" "$SA" desk-ops "$beta_pool" "[('beta', 2)]" || true
+  assert_equals "$(shown "$T/pa/app" "$SA" desk-ops "$beta_pool")" "[('beta', 2)]" \
+    "and alpha's pool counts beta's two threads there"
 }
 
 if [ "$SCENE_ONLY" = 0 ] && [ "$SPEAK_ONLY" = 0 ]; then
