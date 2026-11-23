@@ -2297,8 +2297,9 @@ above.
 
 ## Outcomes & Retrospective
 
-2026-11-23, at the frontier before the whole-range reading (M1 to M4
-built and reviewed clean; the reading, its fix wave, the merge and M5
+2026-11-23, written at the frontier before the whole-range reading and
+brought up to date after its fix wave (M1 to M4 and the wave built and
+reviewed clean; the holder's reading of the wave, the merge and M5
 remain).
 
 **What exists.** `sminos spawn … --channel <channel>` places the new
@@ -2310,8 +2311,8 @@ wait however deep (`waits_until`). `devcloud vm info` answers a program
 what named hosts are without touching a host, and `channel show` prints a
 VM's owner, age and cost where devcloud has them and says, in one line a
 cause, what it could not show (acceptance 7, 8). A devcloud host built
-from this change records its idle notice and lease warning, in the short
-text (O6's default), in the log of every channel whose pool its own copy
+from this change records its idle notice and lease warning, in the
+notice's own full text (the owner's answer to O6), in the log of every channel whose pool its own copy
 holds it in, through `say --notice devcloud --pools`, after its delivery
 chain and never instead of a step (acceptance 9, 10). The two skills, the
 preamble and `sminos help` teach it, evaluated against the text before
@@ -2336,6 +2337,19 @@ more than the code does (the owner "was told", a reply line that
 "follows" a move, three facts for every VM, "in none" for a refill,
 recovery that places at once); the evaluation's first scenario allowed a
 leased VM and was re-run with a fixture that calls for a kept one.
+
+**The whole-range reading** (the holder's, at the panel rung) confirmed
+22 findings; the holder sent 15 to one wave as eleven items (W1 to W11),
+logged three as TECH-DEBT rows and dismissed four. The wave's own task
+review sent three back (an expired watcher whose status write fails
+hid the result; an enrollment lost mid-placement still promised reach;
+the owner's row could come from a project outside the lookup's scope),
+fixed in a second commit. The owner's answer to O6 landed in the same
+stretch as its own commit: the constant became `"full"`, and what is
+taught and written beside the code now says plainly that a channel holds
+the repositories' names. Of the eleven items, two (W4, W7) were in the
+path after a launch, the place the Verification entry named; the rest
+were at the edges of the inventory's reply and of the wordings.
 
 **Lessons.** The plan's one risk was named rightly: every M1 finding was
 in the path after the launch, and a wait list written into the ledger
