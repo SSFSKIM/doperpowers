@@ -46,7 +46,9 @@
 # member frame first, its log opened with `follow`), what beta held at a
 # removal and a return, and the outcomes the
 # checker reads after beta uploaded again. Last, a thread spawned on beta with
-# `--channel` (EN.G2's M1) is in the roster and the pool as alpha reads them.
+# `--channel` (EN.G2's M1) is in the roster and the pool as alpha reads them,
+# and `channel show` on alpha prints beta's line with the VM's owner, age and
+# cost as alpha's devcloud (its stand-in) answers `vm info` (EN.G2's M2).
 # `--speak` runs the scene alone.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub (the test engine in the speaking scene); the sessions are `sleep`s with engine records the suite writes;
@@ -1000,6 +1002,21 @@ spawn_placed() { # channel-id — EN.G2's M1: a thread spawned with --channel on
   speak_pass shown_is "$T/pa/app" "$SA" desk-ops "$beta_pool" "[('beta', 2)]" || true
   assert_equals "$(shown "$T/pa/app" "$SA" desk-ops "$beta_pool")" "[('beta', 2)]" \
     "and alpha's pool counts beta's two threads there"
+  # EN.G2's M2: the machine the spawned thread put in the pool is a VM to alpha's devcloud (its stand-in here).
+  echo "the pool's VM (EN.G2's M2): channel show on alpha, its devcloud answering vm info for beta:"
+  local created
+  created=$(( $(date +%s) - 3630 ))
+  printf '{"info": {"stdout": "{\\"hosts\\": [{\\"name\\": \\"beta\\", \\"account\\": \\"main\\", \\"provider\\": \\"hetzner\\", \\"creator\\": \\"@%s\\", \\"created\\": %s, \\"spent\\": 0.1178, \\"currency\\": \\"EUR\\"}], \\"unknown\\": [], \\"listed\\": [\\"main\\"], \\"unused\\": []}"}}\n' \
+    "${SB:0:8}" "$created" > "$HOME/devcloud-standin.json"
+  run_in "$T/pa/app" in_session "$SA" "$SMINOS" channel show desk-ops
+  assert_rc 0 "$RC" "channel show desk-ops on alpha"
+  if grep -Eq "^  beta  [0-9]+ live, [0-9]+ stopped  vm owned by [^ ]+#${SB:0:8}, up 1h0m, 0\.12 EUR so far$" <<<"$OUT"; then
+    pass "beta's line names the thread that owns it, its age and its cost"
+  else fail "beta's line names the thread that owns it, its age and its cost"; echo "    in: ${OUT:0:900}"; fi
+  assert_equals "$(grep -c '^  alpha  [0-9]* live, [0-9]* stopped$' <<<"$OUT")" "1" "alpha's own line as it was"
+  assert_equals "$(tail -1 "$HOME/devcloud-standin.calls" | python3 -c 'import json, sys; a = json.load(sys.stdin)["argv"]; print(" ".join(a[:2] + a[4:]))')" \
+    "vm info -- beta" "devcloud asked once, about beta and not about alpha"
+  rm -f "$HOME/devcloud-standin.json"
 }
 
 if [ "$SCENE_ONLY" = 0 ] && [ "$SPEAK_ONLY" = 0 ]; then

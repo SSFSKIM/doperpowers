@@ -614,6 +614,7 @@ refuses with exit 6: hosts never drive. A session learns it from
                    [--enroll] [--expect-creator <short>]
     devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
     devcloud vm ls [--json]
+    devcloud vm info [--within <seconds>] <name>...
     devcloud vm ssh <name> [--root] [-- command...]
     devcloud vm lease <name> <duration|keep>
     devcloud vm owner <name> <thread>
@@ -654,6 +655,22 @@ refusals itself, so a caller's `PATH` without one does not turn a non-driver
 into an unknown; it answers 6 only on confirmed evidence (a seed it cannot
 look up, or one named through a symlink, is not a missing one) and exit 1
 otherwise. The driver too reads a seed it cannot look up as a failure, exit 1.
+
+    devcloud vm info [--within <seconds>] <name>...
+
+answers a program too (sminos's `channel show`, for the machines of a
+channel's pool): what each named host is, matched by name without regard to
+case, as one JSON object of `hosts` (each with its account and provider, or
+`adopted`; its `creator`, the owning session's short id; `created`; and
+`spent` with its `currency`, the type's hourly list price times its age, as
+`ls` prints SPENT, absent for an adopted machine, a type with no price and a
+type list it could not read), `unknown` (an account it could not use, one
+whose list failed, and `time`: one it did not reach within the budget),
+`listed` and `unused` (as `owned-by` computes them; for an inventory, an
+account another Mac made hosts in). `--within` (12 seconds unless given)
+bounds the providers' work: the accounts are walked one after another, and
+one that stalls takes what is left. It asks no host, runs no reaper and
+writes nothing; the shape is in `driver/info.py`.
 
 **What it needs.** The profile's `driver.toml` (beside the host profile in
 `~/.claude/devcloud/`, or `$DEVCLOUD_PROFILE`): the caps, the default

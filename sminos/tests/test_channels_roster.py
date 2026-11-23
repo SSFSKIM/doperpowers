@@ -29,6 +29,15 @@ listing and `channel show`).
   another thread's and one with none, each ignored; `channel env` refused
   before anything is written without the capability, from a terminal, from
   a thread not in the channel and for a machine the org does not list.
+- A VM in the pool (EN.G2's M2: docs/doperpowers/plans/2026-11-23-sminos-environments-en-g2.md,
+  Interfaces §3): devcloud asked once, for every machine but this one, and
+  not at all for a pool of one, whose text and `--json` are the merge base's
+  byte for byte; a VM's line with its owner, age and cost, an adopted
+  machine's, a Mac's unchanged; the owner after a handover, one no thread
+  answers to, none; the lines of partial coverage (an account not listed,
+  not reached in time, never used by this profile; two hosts of one name);
+  and for devcloud unavailable or failed, one line, with the members, the
+  requests, the counts and the exit what they were, in both renderers.
 
 The same verbs through the launcher are test-channels.sh's.
 Hermetic: test_channels_requests.Requests (test_threads.Machine, the machine
@@ -42,7 +51,10 @@ runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devclo
 import glob
 import json
 import os
+import re
+import subprocess
 import sys
+import tempfile
 import time
 import unittest
 import uuid as uuidlib
@@ -52,7 +64,8 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
 from test_channels_requests import O, Requests  # noqa: E402
-from test_channels_store import DESK, HUB, LOBBY, ROOM, sminos, threads  # noqa: E402
+from test_channels_say import extracted  # noqa: E402
+from test_channels_store import DESK, HUB, LOBBY, ROOM, SCRIPTS, sminos, threads  # noqa: E402
 import sminos_audience as audience  # noqa: E402
 import sminos_channels as channels  # noqa: E402
 
@@ -738,6 +751,215 @@ class Round2(TwoHubs):
         code, out = self.cli("channel", "show", "desk", "--json")
         self.assertEqual([(r["machine"], r["target"].split("#")[0]) for r in json.loads(out)["requests"]],
                          [("gamma", "later")], "the latest visible end, not the first project's")
+
+
+# ------------------------------------------------------------ a VM in the pool (EN.G2's M2)
+
+
+BASE_DIR = os.path.realpath(tempfile.mkdtemp(prefix="smro."))
+MERGE_BASE = "1b5b56f977cde0d79c9b42ba9ef5d5c2d6e9ba58"   # `git merge-base origin/main HEAD` when EN.G2 was built
+
+
+def vm(name, creator, created, spent=None, currency=None, account="main", provider="hetzner"):
+    return {"name": name, "account": account, "provider": provider, "creator": creator, "created": created,
+            "spent": spent, "currency": currency}
+
+
+def box(name, creator):
+    return {"name": name, "account": "adopted", "provider": None, "adopted": True, "creator": creator,
+            "created": None, "spent": None, "currency": None}
+
+
+class Vms(Roster):
+    """A pool of four: this machine (a thread here), beta (a VM, a thread of it), box-1 (an adopted machine a
+    member added by hand) and gamma (a Mac, a thread of it)."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ.pop("SMINOS_DEVCLOUD_TIMEOUT", None)
+        self.addCleanup(os.environ.pop, "SMINOS_DEVCLOUD_TIMEOUT", None)
+        self.org(sminos.host_name(), "beta", "gamma", "box-1")
+        self.tid, self.sid, _ = self.human(root=self.app_root)
+        self.placed(self.tid, self.sid, DESK)
+        self.far_t, self.far_s, _ = self.far("faraway", machine="beta")
+        self.far("macside", machine="gamma")
+        code, out = self.as_session(self.sid, "channel", "env", "add", "desk", "box-1", cwd=self.app_root)
+        self.assertEqual(code, 0, out)
+        self.me = "%s#%s" % (channels._alias_of(self.sid), self.sid[:8])
+        self.up = time.time() - (3 * 86400 + 4 * 3600 + 30)
+
+    def answer(self, hosts=(), unknown=(), unused=(), listed=("main",)):
+        self.standin(stdout=json.dumps({"hosts": list(hosts), "unknown": list(unknown), "listed": list(listed),
+                                        "unused": list(unused)}))
+
+    def standin(self, **info):
+        with open(os.path.join(os.environ["HOME"], "devcloud-standin.json"), "w") as f:
+            json.dump({"info": info}, f)
+
+    def asked(self):
+        try:
+            with open(os.path.join(os.environ["HOME"], "devcloud-standin.calls")) as f:
+                return [json.loads(line)["argv"] for line in f if line.strip()]
+        except OSError:
+            return []
+
+    def show(self, *more):
+        code, out = self.cli("channel", "show", "desk", *more, cwd=self.app_root)
+        self.assertEqual(code, 0, out)
+        return out
+
+    def steady(self, out):
+        """`channel show`'s output less what moves with the clock: a member's age (its last activity)."""
+        if out.startswith("{"):
+            shown = json.loads(out)
+            for m in shown["members"]:
+                for k in [k for k in m if k.endswith("age")]:
+                    del m[k]
+            return shown
+        return re.sub(r"· active \S+", "· active <age>", out)
+
+    def pool_lines(self, out):
+        lines = out.splitlines()
+        return lines[lines.index("pool") + 1:]
+
+    def test_each_machine_s_line_and_its_json(self):
+        self.answer([vm("beta", "@" + self.sid[:8], self.up, 12.344, "EUR"), box("Box-1", "@" + self.far_s[:8])])
+        out = self.show()
+        host = sminos.host_name()
+        self.assertEqual(self.pool_lines(out), sorted([
+            "  beta  1 live, 0 stopped  vm owned by %s, up 3d4h, 12.34 EUR so far" % self.me,
+            "  box-1  0 live, 0 stopped, added by hand  adopted, owned by faraway#%s" % self.far_s[:8],
+            "  gamma  1 live, 0 stopped",
+            "  %s  1 live, 0 stopped" % host], key=lambda l: l.split()[0].lower()), out)
+        self.assertEqual(self.asked(), [["vm", "info", "--within", "15", "--", "beta", "box-1", "gamma"]],
+                         "asked once, for every machine but this one")
+        shown = json.loads(self.show("--json"))
+        pool = {e["machine"]: e for e in shown["pool"]}
+        self.assertEqual(pool["beta"]["vm"], {
+            "adopted": False, "account": "main", "provider": "hetzner",
+            "owner": {"creator": "@" + self.sid[:8], "thread": self.tid, "session": self.sid,
+                      "alias": channels._alias_of(self.sid)},
+            "created": self.up, "spent": 12.344, "currency": "EUR"})
+        self.assertEqual(pool["box-1"]["vm"]["owner"], {"creator": "@" + self.far_s[:8], "thread": self.far_t,
+                                                        "session": self.far_s, "alias": "faraway"})
+        self.assertEqual((pool["box-1"]["vm"]["adopted"], pool["box-1"]["vm"]["created"]), (True, None))
+        self.assertNotIn("vm", pool["gamma"])
+        self.assertNotIn("vm", pool[host])
+        self.assertEqual(set(pool["gamma"]), {"machine", "live", "stopped", "by_hand"}, "pool's own four keys")
+        self.assertEqual(shown["devcloud"], {"state": "asked", "why": "", "coverage": "whole", "unknown": [],
+                                             "unused": [], "ambiguous": []})
+
+    def test_the_owner_after_a_handover_one_no_thread_answers_to_and_none(self):
+        self.answer([vm("beta", "@" + self.far_s[:8], self.up, None, None), vm("gamma", "@deadbeef", self.up, 0.47),
+                     box("box-1", None)])
+        lines = self.pool_lines(self.show())
+        self.assertIn("  beta  1 live, 0 stopped  vm owned by faraway#%s, up 3d4h" % self.far_s[:8], lines,
+                      "the thread the host was handed to; no cost where devcloud read no price")
+        self.assertIn("  gamma  1 live, 0 stopped  vm owned by @deadbeef, up 3d4h, 0.47 so far", lines)
+        self.assertIn("  box-1  0 live, 0 stopped, added by hand  adopted", lines)
+        pool = {e["machine"]: e for e in json.loads(self.show("--json"))["pool"]}
+        self.assertEqual(pool["gamma"]["vm"]["owner"], {"creator": "@deadbeef", "thread": None, "session": None,
+                                                        "alias": None})
+        self.assertIsNone(pool["box-1"]["vm"]["owner"])
+        self.answer([vm("beta", None, time.time() + 600, 0.0, "EUR")])
+        self.assertIn("  beta  1 live, 0 stopped  vm, up 0m, 0.00 EUR so far", self.pool_lines(self.show()),
+                      "no owner where the host holds none; an age never below 0m")
+
+    def test_partial_coverage_one_line_for_each_cause(self):
+        self.answer([vm("beta", "@" + self.sid[:8], self.up, 1.0, "EUR"), vm("GAMMA", None, self.up),
+                     vm("gamma", None, self.up, account="spare")],
+                    unknown=[{"account": "spare", "provider": "gce", "failed": "listing", "reason": "list failed"},
+                             {"account": "lab", "provider": "gce", "failed": "account", "reason": "no copy"},
+                             {"account": "slow", "provider": "hetzner", "failed": "time", "reason": "timed out"}],
+                    unused=["far"])
+        out = self.show()
+        pool = self.pool_lines(out)
+        self.assertEqual(pool[-5:], [
+            "(devcloud could not list spare: a VM there shows no owner, age or cost)",
+            "(devcloud could not list lab: a VM there shows no owner, age or cost)",
+            "(devcloud did not reach slow in time: a VM there shows no owner, age or cost)",
+            "(devcloud did not ask far: this Mac's profile has never used it, so a VM another Mac made there shows "
+            "no owner, age or cost)",
+            "(devcloud holds more than one host named gamma: neither is shown)"], out)
+        self.assertIn("  gamma  1 live, 0 stopped", pool, "neither host is shown")
+        self.assertTrue(any(l.startswith("  beta  1 live, 0 stopped  vm owned by") for l in pool), "beta keeps it")
+        shown = json.loads(self.show("--json"))
+        self.assertEqual({k: shown["devcloud"][k] for k in ("state", "coverage", "unused", "ambiguous")},
+                         {"state": "asked", "coverage": "partial", "unused": ["far"], "ambiguous": ["gamma"]})
+        self.assertEqual([u["account"] for u in shown["devcloud"]["unknown"]], ["spare", "lab", "slow"])
+        self.assertNotIn("vm", {e["machine"]: e for e in shown["pool"]}["gamma"])
+
+    def test_unavailable_or_failed_one_line_and_nothing_else_changed(self):
+        self.answer()
+        whole, whole_json = self.steady(self.show()), self.steady(self.show("--json"))
+        self.assertEqual(whole_json["devcloud"]["coverage"], "whole")
+        del whole_json["devcloud"]
+        older = os.path.join(self.home, "older", "bin", "devcloud")
+        os.makedirs(os.path.dirname(older))
+        with open(older, "w") as f:
+            f.write("#!/bin/sh\ntouch %s\nexit 0\n" % os.path.join(self.home, "older-ran"))
+        os.chmod(older, 0o755)
+        os.makedirs(os.path.join(self.home, "older", ".claude-plugin"))
+        with open(os.path.join(self.home, "older", ".claude-plugin", "plugin.json"), "w") as f:
+            json.dump({"name": "devcloud", "version": "0.18.1"}, f)
+        cases = [
+            ("no CLI", lambda: mock.patch.object(threads, "find_devcloud", return_value=(None, "PATH (none)")), {},
+             "unavailable", "(a VM's owner, age and cost are not shown here: no devcloud CLI was found here)"),
+            ("0.18.1", lambda: mock.patch.object(threads, "find_devcloud", return_value=("PATH", older)), {},
+             "unavailable", "(a VM's owner, age and cost are not shown here: the devcloud at %s is 0.18.1, older "
+                            "than 0.19.0" % older),
+            ("a devcloud host", None, {"exit": 6}, "unavailable",
+             "(a VM's owner, age and cost are not shown here: devcloud's driver does not run on this machine"),
+            ("no answer in time", None, {"hang": True}, "failed",
+             "(a VM's owner, age and cost are not shown: devcloud vm info gave no answer within 1s, and was stopped)"),
+            ("another exit", None, {"exit": 1, "stderr": "boom\n"}, "failed",
+             "(a VM's owner, age and cost are not shown: devcloud vm info exited 1: boom)"),
+            ("not the answer", None, {"stdout": '{"hosts": [{"name": "beta"}]}'}, "failed",
+             "(a VM's owner, age and cost are not shown: devcloud vm info gave no whole answer"),
+            ("NaN", None, {"stdout": json.dumps({"hosts": [vm("beta", None, self.up, float("nan"))], "unknown": [],
+                                                 "listed": [], "unused": []})}, "failed",
+             "(a VM's owner, age and cost are not shown: devcloud vm info gave no whole answer"),
+        ]
+        for why, patch, info, state, line in cases:
+            with self.subTest(why):
+                self.standin(**info)
+                with mock.patch.dict(os.environ, {"SMINOS_DEVCLOUD_TIMEOUT": "1"}), \
+                        (patch() if patch else mock.patch.dict(os.environ, {})):
+                    out = self.steady(self.show())
+                    shown = self.steady(self.show("--json"))
+                self.assertEqual(out.splitlines()[:-1], whole.splitlines(), "the rest as it was")
+                self.assertTrue(out.splitlines()[-1].startswith(line), out)
+                got = shown.pop("devcloud")
+                self.assertEqual(shown, whole_json, "the members, the requests and the pool as they were")
+                self.assertEqual((got["state"], got["coverage"], got["unknown"], got["unused"], got["ambiguous"]),
+                                 (state, "none", [], [], []))
+                self.assertTrue(line.split(": ", 1)[1].startswith(got["why"][:20]), (line, got["why"]))
+        self.assertFalse(os.path.exists(os.path.join(self.home, "older-ran")), "an older devcloud is not run")
+
+
+class PoolOfOne(Roster):
+    """A pool that holds this machine alone: devcloud never asked, and `channel show` as the merge base prints it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(dir=BASE_DIR)
+        cls.base = extracted(MERGE_BASE, cls.tmp)
+
+    def test_text_and_json_are_the_merge_base_s_and_devcloud_is_not_asked(self):
+        tid, sid, _ = self.human(root=self.app_root)
+        self.placed(tid, sid, DESK)
+        here = os.path.join(SCRIPTS, "sminos")
+        for argv in (["channel", "show", "desk"], ["channel", "show", "desk", "--json"]):
+            with self.subTest(argv=argv):
+                mine, base = [subprocess.run([launcher] + argv, cwd=self.app_root, capture_output=True, text=True,
+                                             timeout=120, env={k: v for k, v in os.environ.items()
+                                                               if k != "CLAUDE_CODE_SESSION_ID"})
+                              for launcher in (here, self.base)]
+                self.assertEqual((mine.returncode, mine.stdout, mine.stderr),
+                                 (base.returncode, base.stdout, base.stderr))
+                self.assertIn(sid[:8], mine.stdout)
+        self.assertFalse(os.path.exists(os.path.join(os.environ["HOME"], "devcloud-standin.calls")),
+                         "devcloud never asked")
 
 
 if __name__ == "__main__":

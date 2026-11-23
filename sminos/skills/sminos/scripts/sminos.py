@@ -212,7 +212,9 @@ back by a fill.
                    caller); a thread of another machine once its daemon reads the request
     sminos channel  remove <channel> [<thread>...]        # out of it: nothing is retired
     sminos channel  show <channel> [--json]               # its members, each in its own project; its requests of
-                   the last seven days and what became of each; its pool, the machines its members run on
+                   the last seven days and what became of each; its pool, the machines its members run on,
+                   each devcloud host with the thread that owns it, its age and its cost so far, as this
+                   machine's devcloud answers (else a line saying why not, or what it could not cover)
     sminos channel  env add|remove <channel> <machine>    # a machine of the org added to its pool by hand, or no
                    longer (a member's)
     sminos channel  lead <channel> <thread|none>          # the owner's, at a terminal, confirmed there: a

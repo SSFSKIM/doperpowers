@@ -589,6 +589,10 @@ run_suites_c() {
   if "$SCRIPT_DIR/test-on.sh"; then
     pass "spawn --on between two machines: the VM side for real, its refusals, the wait, what is not known (test-on.sh)"
   else fail "spawn --on between two machines: the VM side for real, its refusals, the wait, what is not known (test-on.sh)"; fi
+  # EN.G2's M2: the question channel show asks devcloud (its rendering is test_channels_roster.py's, in channels).
+  if python3 -B "$SCRIPT_DIR/test_vm_info.py"; then
+    pass "devcloud vm info asked for channel show: its bound, devcloud's own replies read, unavailable, failed, each reply not whole (test_vm_info.py)"
+  else fail "devcloud vm info asked for channel show: its bound, devcloud's own replies read, unavailable, failed, each reply not whole (test_vm_info.py)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 # The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a

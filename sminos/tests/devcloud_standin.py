@@ -50,6 +50,13 @@ file:
                call; 255: a host that does not answer). Any other name:
                devcloud's `no VM named`, exit 1.
 
+One more, for `sminos channel show` (EN.G2's M2, Interfaces §2), set in the
+same file:
+
+  info         `vm info --within <s> -- <name>...`: {stdout (what it prints;
+               by default a whole reply with no host), stderr, exit (0),
+               hang (never answer)}
+
 Each call appends a line to $HOME/devcloud-standin.calls: its arguments, its
 pid, the PATH it was given, and its child's pid."""
 import json
@@ -166,8 +173,14 @@ if sys.argv[1:3] == ["vm", "up"]:
     up(sys.argv[3:])
 if sys.argv[1:3] == ["vm", "ssh"]:
     ssh(sys.argv[3:])
+if sys.argv[1:3] == ["vm", "info"]:
+    i = cfg.get("info") or {}
+    waiting(lambda: not i.get("hang"), "an answer (hang)")
+    sys.stdout.write(i.get("stdout", json.dumps({"hosts": [], "unknown": [], "listed": ["main"], "unused": []})))
+    sys.stderr.write(i.get("stderr", ""))
+    sys.exit(i.get("exit", 0))
 if sys.argv[1:3] != ["vm", "owned-by"] or len(sys.argv) < 4:
-    sys.stderr.write("devcloud stand-in: only vm owned-by <short>..., vm up and vm ssh\n")
+    sys.stderr.write("devcloud stand-in: only vm owned-by <short>..., vm info, vm up and vm ssh\n")
     sys.exit(2)
 waiting(lambda: not cfg.get("gate") or os.path.exists(cfg["gate"]), "the gate (%s)" % cfg.get("gate"))
 waiting(lambda: not cfg.get("hang"), "an answer (hang)")

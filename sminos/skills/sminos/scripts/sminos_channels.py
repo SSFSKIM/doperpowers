@@ -2577,9 +2577,98 @@ def pool(channel, rows=None):
             for key, (name, live, stopped) in sorted(counts.items())]
 
 
-def _pool_line(e):
-    return ["%s  %d live, %d stopped%s" % (e["machine"], e["live"], e["stopped"],
-                                            ", added by hand" if e["by_hand"] else "")]
+def _pool_line(e, vm=""):
+    return ["%s  %d live, %d stopped%s%s" % (e["machine"], e["live"], e["stopped"],
+                                              ", added by hand" if e["by_hand"] else "", "  " + vm if vm else "")]
+
+
+# What `channel show` says of a VM in the pool (EN.G2's M2: its plan's Interfaces §3), after the pool's lines.
+NOT_SHOWN_HERE = "(a VM's owner, age and cost are not shown here: %s)"
+NOT_SHOWN = "(a VM's owner, age and cost are not shown: %s)"
+COULD_NOT_LIST = "(devcloud could not list %s: a VM there shows no owner, age or cost)"
+NOT_IN_TIME = "(devcloud did not reach %s in time: a VM there shows no owner, age or cost)"
+NEVER_USED = ("(devcloud did not ask %s: this Mac's profile has never used it, so a VM another Mac made there shows "
+              "no owner, age or cost)")
+TWO_HOSTS = "(devcloud holds more than one host named %s: neither is shown)"
+
+
+class Vms(NamedTuple):
+    """What devcloud said of a pool's machines: `devcloud` the answer's
+    object of that name, `hosts` {machine, lower-cased: its one host, with
+    `owner`}, `notes` the lines printed after the pool."""
+    devcloud: dict
+    hosts: dict
+    notes: list
+
+
+def vms_of(held):
+    """devcloud's word on the machines of a pool (`pool`'s entries) but this
+    one, asked once (sminos_threads.vm_info); None, unasked, for a pool of
+    this machine alone. A machine's name is a host's, compared without
+    regard to case; a name two hosts answer to shows neither, and an owner
+    is never chosen between them."""
+    here = sminos.host_name().lower()
+    names = [e["machine"] for e in held if e["machine"].lower() != here]
+    if not names:
+        return None
+    got = sminos.threads_module().vm_info(names)
+    if got.state != "asked":
+        return Vms({"state": got.state, "why": got.why, "coverage": "none", "unknown": [], "unused": [],
+                    "ambiguous": []}, {}, [(NOT_SHOWN_HERE if got.state == "unavailable" else NOT_SHOWN) % got.why])
+    reply = got.reply
+    found = {}
+    for h in reply["hosts"]:
+        found.setdefault(h["name"].lower(), []).append(h)
+    ambiguous = [n for n in names if len(found.get(n.lower(), ())) > 1]
+    owners, hosts = {}, {}
+    for n in names:
+        if len(found.get(n.lower(), ())) == 1:
+            h = found[n.lower()][0]
+            if h["creator"] is not None and h["creator"] not in owners:
+                owners[h["creator"]] = _owner(h["creator"])
+            hosts[n.lower()] = dict(h, owner=owners.get(h["creator"]))
+    notes = [(NOT_IN_TIME if u["failed"] == "time" else COULD_NOT_LIST) % u["account"] for u in reply["unknown"]]
+    notes += [NEVER_USED % a for a in reply["unused"]] + [TWO_HOSTS % n for n in ambiguous]
+    return Vms({"state": "asked", "why": "", "coverage": "partial" if notes else "whole",
+                "unknown": reply["unknown"], "unused": reply["unused"], "ambiguous": ambiguous}, hosts, notes)
+
+
+def _owner(creator):
+    """The thread a host's creator (`@<short>`) names, by the rule a
+    `@<short>` tag resolves by across the org (X2): {creator, thread,
+    session, alias}, the last three None where no one thread, or more than
+    one, answers to it."""
+    found = sminos.one_per_session(sminos.match_members(creator[1:], "", sminos.org_scope(), alias=False))
+    if len(found) != 1:
+        return {"creator": creator, "thread": None, "session": None, "alias": None}
+    p, m = found[0]
+    return {"creator": creator, "thread": row_thread(p, m) or None, "session": m.session, "alias": m.alias}
+
+
+def _age(created, now):
+    """`3d4h`, `5h10m` or `12m`, as `devcloud vm ls` prints a VM's age; never below `0m`."""
+    minutes = max(0, int(now - created)) // 60
+    days, rest = divmod(minutes, 1440)
+    hours, minutes = divmod(rest, 60)
+    return "%dd%dh" % (days, hours) if days else "%dh%dm" % (hours, minutes) if hours else "%dm" % minutes
+
+
+def _vm_words(h, now):
+    """A host's suffix to its machine's pool line."""
+    o = h["owner"]
+    who = "owned by " + (_label(o["alias"], o["session"]) if o and o["session"] else h["creator"]) \
+        if h["creator"] is not None else ""
+    if h.get("adopted") is True:
+        return "adopted" + (", " + who if who else "")
+    parts = ["vm" + (" " + who if who else ""), "up " + _age(h["created"], now)]
+    if h["spent"] is not None:
+        parts.append("%.2f%s so far" % (h["spent"], " " + h["currency"] if h["currency"] else ""))
+    return ", ".join(parts)
+
+
+def _vm_json(h):
+    return {"adopted": h.get("adopted") is True, "account": h["account"], "provider": h["provider"],
+            "owner": h["owner"], "created": h["created"], "spent": h["spent"], "currency": h["currency"]}
 
 
 def section(rows):
@@ -2597,28 +2686,42 @@ def show(channel, as_json=False):
     is in effect for this reader (CH2's M8: a line after the heading, the key
     `lead` its thread id; neither without one), its members (the roster, each
     row with its project), its requests of the last seven days with what
-    became of each, and its pool."""
+    became of each, and its pool; for a pool that holds another machine,
+    what devcloud says of each (EN.G2's M2, vms_of): a VM's owner, age and
+    cost after its machine's line and `vm` on its entry, then a line for
+    each cause of partial coverage, or the one line that says why none is
+    shown, and the answer's `devcloud`."""
     rows = roster(channel)
     shown = requests_shown(channel)
     held = pool(channel, rows)
     leader = lead_of(channel, rows)
+    vms = vms_of(held)
+    hosts = vms.hosts if vms is not None else {}
     if as_json:
         print(json.dumps({"id": channel.id, "name": channel.name,
                           **({"lead": thread_of_row(*leader)[0]} if leader is not None else {}),
                           "members": [sminos.member_json(m, p) for p, m in rows],
-                          "requests": shown, "pool": held}, indent=2))
+                          "requests": shown,
+                          "pool": [dict(e, vm=_vm_json(hosts[e["machine"].lower()]))
+                                   if e["machine"].lower() in hosts else e for e in held],
+                          **({"devcloud": vms.devcloud} if vms is not None else {})}, indent=2))
         return
     print("# %s  %s" % (channel.name, channel.id))
     if leader is not None:
         print("lead  %s" % _label(leader[1].alias, leader[1].session))
     print("members")
     section(rows)
-    for title, lines in (("requests", [_request_line(r) for r in shown]), ("pool", [_pool_line(e) for e in held])):
+    now = time.time()
+    pool_lines = [_pool_line(e, _vm_words(hosts[e["machine"].lower()], now) if e["machine"].lower() in hosts else "")
+                  for e in held]
+    for title, lines in (("requests", [_request_line(r) for r in shown]), ("pool", pool_lines)):
         print(title)
         if lines:
             sminos.print_table_rows(lines)
         else:
             print("  (none)")
+    for line in vms.notes if vms is not None else ():
+        print(line)
 
 
 def _states(channel, record, session):

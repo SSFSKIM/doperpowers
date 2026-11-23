@@ -68,10 +68,11 @@ gates:
     paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   # The other direction of the same pair: sminos/tests/test_on.py imports devcloud's `vm` parser from this tree
-  # (devcloud/driver/cli.py). A devcloud change alone runs that one file (about 15 s), not the 10-minute part it
-  # belongs to, which every sminos change runs.
+  # (devcloud/driver/cli.py), and sminos/tests/test_vm_info.py reads the replies devcloud's `vm info` module
+  # (devcloud/driver/info.py) builds. A devcloud change alone runs those two files (about 20 s), not the 10-minute
+  # part they belong to, which every sminos change runs.
   - name: sminos-on-devcloud
-    run: python3 -B sminos/tests/test_on.py
+    run: python3 -B sminos/tests/test_on.py && python3 -B sminos/tests/test_vm_info.py
     timeout: 5
     paths: ["devcloud/driver/**"]
 
