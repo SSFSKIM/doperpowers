@@ -260,16 +260,23 @@ class Answering:
         does not read as one, the spawn is said here and the line is a
         refusal, so that nothing short of a whole success is taken for one."""
         project = spawned["project"]
+        # Where channels were placed, the seat's project and its carriage as the placement's own fresh reads found
+        # them (§1), one result: a project it read is the one named; none read, the launch's, with a word that
+        # promises no reach. A spawn without channels reads its carriage here, as G1 does.
+        carriage = spawned.get("carriage") if self.request.get("channels") else None
+        if carriage is not None and carriage["project"] is not None:
+            project = carriage["project"]
         d = {"ok": True, "refilled": spawned["verb"] == "re-filled", "group": spawned["group"],
              "alias": spawned["alias"], "short": spawned["short"], "seat": spawned["seat"],
              "session": spawned["session"], "status": spawned["status"],
              "project": {"id": project.id, "name": project.name} if project is not None else None,
              "machine": sminos.host_name(), "cwd": spawned["cwd"], "head": head_of(spawned["cwd"])}
         # The project the seat was filed in (the engine's directory, a --worktree's included), when this machine's
-        # enrollment does not carry it: one of sminos.NOT_CARRIED_WORDS, which an older Mac ignores. Where channels
-        # were placed, as the placement's own fresh reads found it (§1), else read here.
-        why = spawned.get("not_carried")
-        if why is None:
+        # enrollment does not carry it: one of sminos.NOT_CARRIED_WORDS, which an older Mac ignores, or
+        # sminos_channels.CARRIAGE_UNREAD.
+        if carriage is not None:
+            why = carriage["not_carried"]
+        else:
             why = sminos.not_carried(project, self.request["org"]) if project is not None and self.request else ""
         if why:
             d["not_carried"] = why
@@ -1068,7 +1075,12 @@ def remote(c, vm, request, directory, enrolled):
     line = "seat %s on %s: %s/%s  [%s / %s]  status=%s" % ("re-filled" if d["refilled"] else "spawned", d["machine"],
                                                           d["group"], d["alias"], d["short"], d["seat"], d["status"])
     why = d.get("not_carried")
-    if why is not None:   # a string (outcome_whole): present at all, the seat is not carried
+    if why == sminos.channels_module().CARRIAGE_UNREAD:
+        print(line, flush=True)
+        sminos.note("%s filed this seat in its project %s, and whether its enrollment carries that project could not "
+                    "be read once it was placed: it may not be listed here, and what is said from here may not reach "
+                    "it" % (d["machine"], d["project"]["name"]))
+    elif why is not None:   # a string (outcome_whole): present at all, the seat is not carried
         # Launched in a project its machine's enrollment does not carry (a --worktree's checkout, say): no promise.
         print(line, flush=True)
         sminos.note("%s filed this seat in its project %s, which its enrollment does not carry%s: it will not be "

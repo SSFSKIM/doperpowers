@@ -392,7 +392,8 @@ class Deadline(Spawns):
         fresh = channel_ids(1)[0]
         got, carried = channels.place_spawned(seat["seat_id"], sid, {"cwd": self.root, "group": seat["group"]},
                                      [{"id": fresh, "name": "fresh"}, {"id": DESK, "name": "elsewhere"}], HUB["org"])
-        self.assertEqual(([g["state"] for g in got], carried), (["applied", "applied"], ""), "carried: no word")
+        self.assertEqual([g["state"] for g in got], ["applied", "applied"])
+        self.assertEqual((carried["project"].id, carried["not_carried"]), (self.p.id, ""), "carried: no word")
         reg = sminos.registration(fresh)
         self.assertEqual((reg["name"], reg["root"], reg["hub"]["org"]), ("fresh", "", HUB["org"]))
         self.assertEqual(sminos.registration(DESK)["name"], "desk", "its own registration kept")
@@ -403,9 +404,34 @@ class Deadline(Spawns):
         with mock.patch.object(sminos, "not_carried", side_effect=lambda p, org: "x" if p.id == self.p.id else ""):
             got, carried = channels.place_spawned(seat["seat_id"], sid, {"cwd": self.root, "group": seat["group"]},
                                          [{"id": DESK, "name": "desk"}], HUB["org"])
-        self.assertEqual((got, carried), ([{"id": DESK, "state": "failed", "why": "project-not-carried"}], "x"),
-                         "the carriage word the outcome's not_carried takes, from the same read")
+        self.assertEqual(got, [{"id": DESK, "state": "failed", "why": "project-not-carried"}])
+        self.assertEqual((carried["project"].id, carried["not_carried"]), (self.p.id, "x"),
+                         "the project and its carriage the outcome takes, from the same read")
         self.assertEqual(threads.get(seat["seat_id"])["channels"], [LOBBY], "what it held is kept")
+
+    def test_a_seat_read_the_deadline_cuts_short_places_nothing_and_promises_no_reach(self):
+        code, out, err, sid = self.spawn()
+        seat = self.seat_of()
+
+        def slow(seat, fresh=False):
+            time.sleep(0.4)
+            return self.p
+        with mock.patch.object(sminos, "seat_project", side_effect=slow), \
+                mock.patch.dict(os.environ, {"SMINOS_PLACE_BUDGET": "0.2"}):
+            got, carried = channels.place_spawned(seat["seat_id"], sid, {"cwd": self.root, "group": seat["group"]},
+                                                  [{"id": DESK, "name": "desk"}], HUB["org"])
+        self.assertEqual(got, [{"id": DESK, "state": "failed", "why": "time"}])
+        self.assertEqual(carried, {"project": None, "not_carried": channels.CARRIAGE_UNREAD})
+
+    def test_a_purge_met_under_the_deadline_is_left_open_for_the_next_finisher(self):
+        record = {"thread": "t", "current": "s", "opened": "spawned", "ended": {"pid": 123}}
+        with mock.patch.object(sminos, "running_now", side_effect=AssertionError("no check under a deadline")):
+            with sminos.waits_until(time.time() + 30):
+                with self.assertRaises(sminos.LockBusy):
+                    sminos.purge_stop(record, {"settle": "s"})
+        with mock.patch.object(sminos, "running_now", return_value=None) as checked:
+            sminos.purge_stop(record, {"settle": "s"})
+        checked.assert_called_once_with("s")
 
     def test_anything_else_is_error_said_and_never_raised(self):
         code, out, err, sid = self.spawn()

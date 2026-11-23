@@ -614,6 +614,28 @@ assert_not_contains "$OUT" "it is listed here once" "and no promise"
 assert_equals "$(stated "$C4B")" "" "no statement"
 rm -f "$VS/daemon/org.json"
 
+echo "== the seat's directory mapped to another project, one vm1 does not carry, by the placement: that one is named"
+# At the launch the seat's checkout is in the project its remote derives (repo); a .smns written there meanwhile
+# files it in another, of another org. The outcome names the project the placement read, with its reason.
+during_launch "printf '{\"project\": \"5e000000-0000-4000-8000-0000000000b2\", \"name\": \"elsewhere\", \"remote\": \"\", \"hub\": {\"org\": \"org-2\"}}' > '$VH/Developer/GitHub/repo/.smns'"
+standin
+on c4c --on vm1 --channel "$DESK"
+settled
+rm -f "$VH/Developer/GitHub/repo/.smns"
+assert_rc 0 "$RC" "the spawn stands"
+assert_contains "$OUT" "vm1 filed this seat in its project elsewhere, which its enrollment does not carry (its .smns names another org)" \
+  "the project the placement read, named with its reason"
+assert_not_contains "$OUT" "its project repo" "never the launch's project beside it"
+assert_not_contains "$OUT" "it is listed here once" "and no promise"
+
+echo "== the seat's carriage not read within the placement's deadline: no promise"
+standin '{"vm1_env": {"SMINOS_PLACE_BUDGET": "0.000001"}}'
+on c4d --on vm1 --channel "$DESK"
+assert_rc 0 "$RC" "the spawn stands"
+assert_contains "$OUT" "whether its enrollment carries that project could not be read once it was placed" "said so"
+assert_not_contains "$OUT" "it is listed here once" "and no promise"
+assert_contains "$OUT" "the time for placing ran out" "its placement: time"
+
 echo "== --worktree onto a seat already in desk, landing in a project vm1 does not carry: no placement at all"
 mkdir -p "$VH/work/stale"   # the engine's checkout: a stale .smns naming another org, a project vm1 does not carry
 printf '{"project": "5e000000-0000-4000-8000-00000000057a", "name": "stale", "remote": "", "hub": {"org": "org-2"}}' \
@@ -705,8 +727,12 @@ assert_contains "$OUTS" ": in desk" "and placed"
 rm "$VS/daemon/audiences.json"
 standin
 BEFORE="$(launches)"
-SMINOS_ON_ENROLL_POLL=0.2 SMINOS_ON_ENROLL_WAIT=0.6 on c8 --on vm1 --channel "$DESK"
+CALLS="$(ssh_calls)"
+# Coarse here (test_on.py proves the exact end on a fake clock): one whole try, its refusal, a poll as long as the
+# wait, and the end, so no try is begun with a fraction of a second left (one too short for ssh times out, exit 1).
+SMINOS_ON_ENROLL_POLL=1 SMINOS_ON_ENROLL_WAIT=1 on c8 --on vm1 --channel "$DESK"
 assert_rc 75 "$RC" "the wait's end"
+assert_equals "$(( $(ssh_calls) - CALLS ))" "1" "after one whole try"
 assert_contains "$OUT" "vm1's sminos had kept no welcome of its endpoint within 0 minutes" "its words"
 assert_contains "$OUT" "sminos spawn --on vm1 opens it" "and the way on"
 assert_equals "$(launches)" "$BEFORE" "no launch"

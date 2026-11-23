@@ -5362,6 +5362,11 @@ def purge_stop(record, entry):
     sid, ended = entry.get("settle"), record.get("ended") or {}
     if not sid or record.get("current") != sid or not ended.get("pid"):
         return
+    if _WAITS_UNTIL is not None:
+        # Under a deadline (a spawn's placement, waits_until), the stop's checks (a process table read, the boot's
+        # id, the harness's rows) could be cut short, and a check cut short is no stop made: the purge is left
+        # open for the next finisher, which waits as long as they take.
+        raise LockBusy()
     seen = running_now(sid)
     if not seen or str(seen.get("pid")) != str(ended["pid"]) or threads.returns(record, seen, known=True):
         return
@@ -15860,10 +15865,10 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     # lock is still held, right after our own writes; never re-read after the wait.
     guard = same_gen(current_gen(rec_id))
     unlock(locks)
-    placed = carried = None
+    placed = carriage = None
     if placing is not None:
         # After the launch nothing is a refusal (EN.G2's §1): every way a placement ends is one entry, said below.
-        placed, carried = channels_module().place_spawned(
+        placed, carriage = channels_module().place_spawned(
             rec_id, uuid, {"cwd": runcwd or cwd, "group": group} if asked is not None else None,
             placing["channels"], placing["org"])
     if wait:
@@ -15887,7 +15892,7 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         warn(words)
     return {"verb": verb, "group": group, "alias": alias, "short": short, "seat": rec_id, "session": uuid,
             "status": status, "cwd": runcwd or cwd, "project": project, "channels": placed,
-            "not_carried": carried}
+            "carriage": carriage}
 
 
 def spawn_provenance(settings, merged, terminal=False):

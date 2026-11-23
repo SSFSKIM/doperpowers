@@ -2017,6 +2017,16 @@ class OnChannels(On):
         self.assertEqual(sminos.channels_module().placement_words("failed", "a-word-of-a-later-copy"),
                          "a-word-of-a-later-copy")
 
+    def test_a_carriage_the_vm_could_not_read_makes_no_promise(self):
+        self.answers("vm1", self.placed((DESK, "failed", "time"),
+                                        not_carried=sminos.channels_module().CARRIAGE_UNREAD))
+        code, out, err = self.spawn("--on", "vm1", "--channel", "desk")
+        self.assertEqual(code, 0, err)
+        self.assertIn("whether its enrollment carries that project could not be read once it was placed: it may not "
+                      "be listed here, and what is said from here may not reach it", err)
+        self.assertNotIn("it is listed here once", out + err)
+        self.assertNotIn("which its enrollment does not carry", err)
+
     def test_identity_and_a_project_not_carried_are_one_warning_that_names_no_membership(self):
         self.answers("vm1", self.placed((DESK, "failed", "identity"), (LOBBY, "failed", "identity")))
         code, out, err = self.spawn("--on", "vm1", "--channel", "desk", "--channel", "lobby")
