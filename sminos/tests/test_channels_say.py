@@ -267,6 +267,16 @@ class Member(Say):
         for received in (areceived, breceived, wreceived):
             self.assertEqual(self.got(received, "a note"), [], "prompts no one")
 
+    def test_all_reaches_a_row_whose_thread_id_is_the_senders_session_id(self):
+        """A seat's thread id is its first session's; that session, back as a thread of its own, sends `@all`: the
+        seat is another thread, and is reached (sessions are compared with sessions, threads with threads)."""
+        wtid, wsid, _ = self.live("writer")
+        stid, ssid = self.far("seat", tid=wsid)
+        code, out = self.as_session(wsid, "say", "--in", "desk", "@all everyone")
+        self.assertEqual(code, 0, out)
+        [e] = self.says()
+        self.assertEqual([r["thread"] for r in e["to"]], [stid], "the seat, not left out")
+
     def test_the_reply_line_lands_in_the_channel_and_reaches_the_first_senders_thread(self):
         rtid, rsid, received = self.live("reader")
         stid, ssid, sreceived = self.live("writer")
@@ -476,6 +486,21 @@ class Outsider(Say):
         self.assertEqual(self.got(areceived, "a note from outside"), [])
         self.assertIsNone(channels.debt(self.chan(DESK), threads.get(otid)), "it is owed nothing there")
 
+    def test_its_event_carries_the_thread_the_rosters_sweep_gave_it(self):
+        """A live session not yet a thread when it says: the roster's sweep over its project makes it one, and
+        the event carries that thread."""
+        rtid, rsid, received = self.live("reader")
+        osid = str(uuidlib.uuid4())
+        _, oproc = self.session(root=self.app_root, sid=osid, kind="interactive", name="fresh")
+        self.inbox(osid, oproc, "fre")
+        self.assertEqual(threads.stamp(osid), "", "no thread yet")
+        for argv in (("--in", "desk", "@reader named"), ("--in", "desk", "@all to all")):
+            code, out = self.as_session(osid, "say", *argv, cwd=self.app_root)
+            self.assertEqual(code, 0, out)
+            otid = threads.stamp(osid)
+            self.assertTrue(otid, "a thread now")
+            self.assertEqual(self.says()[-1].get("thread"), otid, argv)
+
     def loose(self):
         """A local project, whose log is not filtered by audience."""
         local = os.path.join(self.home, "loose")
@@ -678,6 +703,29 @@ class Refused(Say):
         self.refused(*self.at_terminal("say", "--in", "nowhere", "hi"), "no project 'nowhere'", 4, before)
         other = "9e000001-0000-8000-8000-0000000000e1"
         self.refused(*say("--in", other, "hi"), "no channel '%s' is known on this machine" % other, 4, before)
+
+    def test_a_session_that_is_no_member_and_whose_project_cannot_be_told(self):
+        """No project to name in `from_project`, to keep a copy in, to tell the sender of, or for a reply to reach:
+        refused whole, whether the session is a thread (its reply would go to the channel, where it is not) or not
+        (no reply line at all); a member whose project cannot be told writes as a member."""
+        rtid, rsid, received = self.live("reader")
+        otid, osid, _ = self.outsider()
+        stid, ssid, _ = self.live("writer")
+        bare = str(uuidlib.uuid4())
+        self.assertEqual(threads.stamp(bare), "")
+        before = self.logs()
+        with mock.patch.object(sminos, "session_project", return_value=None):
+            for sid in (osid, bare):
+                for argv in (("--in", "desk", "@reader hi"), ("@desk/reader hi",), ("--in", "desk", "@all hi"),
+                             ("--in", "desk", "untagged")):
+                    self.refused(*self.as_session(sid, "say", *argv, cwd=self.app_root),
+                                 channels.NO_HOME % "desk", 1, before)
+            code, out = self.as_session(ssid, "say", "--in", "desk", "@reader as a member")
+        self.assertEqual(code, 0, out)
+        [e] = self.says()
+        self.assertNotIn("from_project", e)
+        self.assertEqual(e["thread"], stid)
+        self.assertEqual(len(self.got(received, "as a member")), 1)
 
     def test_a_tag_that_names_a_thread_once_in_the_channel_with_no_row_now(self):
         stid, ssid, _ = self.live("writer")
