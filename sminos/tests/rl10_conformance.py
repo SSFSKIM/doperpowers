@@ -727,18 +727,34 @@ CARRY = r"""
 import sys
 sys.path.insert(0, sys.argv[1])
 import sminos
-sminos.channels_module().carry_words(sminos.known_project(sys.argv[2]))
+print(sminos.channels_module().carry_words(sminos.known_project(sys.argv[2])))
 """
 
 
-def stage_carried():
-    """The words the uplink kept for the channel's messages carried out, as
-    the daemon's channel pass carries them (sminos_channels.carry_words), in
-    a process of its own: the replay runs the uplink alone, and a writer's
-    next message to a thread is asked about only once its last is settled."""
+def stage_carried(ask):
+    """The word the uplink kept for the channel's message the fixture's ask
+    `ask` was about carried out, as the daemon's channel pass carries it
+    (sminos_channels.carry_words), in a process of its own: the replay runs
+    the uplink alone, and a writer's next message to a thread is asked about
+    only once its last is settled. The answer's line is only written to the
+    socket, so the word is waited for until the uplink has kept it; the pass
+    must then carry words out, that one taken among them (the words kept on
+    the earlier cases' answers, which no pass has carried yet, go too)."""
+    words = os.path.join(sminos.root(), "projects", B["channel:C"], sminos.channels_module().WORDS_DIR)
+
+    def kept():
+        try:
+            return [n for n in os.listdir(words) if n.endswith(".%s.json" % IDS.get(ask))]
+        except OSError:
+            return []
+    if not wait_for(kept, timeout=10):
+        raise RuntimeError("the uplink kept no word on %s's answer (%s)" % (ask, IDS.get(ask)))
     r = subprocess.run([sys.executable, "-B", "-c", CARRY, SCRIPTS, B["channel:C"]], capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError("carrying out the channel's kept words: %s" % r.stderr.strip())
+    if not r.stdout.strip().isdigit() or int(r.stdout) < 1 or kept():
+        raise RuntimeError("the channel's pass carried out %s kept words, %s's %s" % (
+            r.stdout.strip(), ask, "left behind" if kept() else "taken"))
 
 
 def stage_both(*stages):
@@ -760,7 +776,7 @@ STAGE = {(0, 3): stage_open_main, (2, 0): stage_read_only(True), (2, 2): stage_r
          (17, 0): stage_member("S9", "review", access="private", share=(B["member:B"], "converse")),
          (17, 10): lambda: say_at("2026-10-27T18:11:00.000Z",
                                  ["--in", "desk-integration", "@integrator pick up the channel's review"]),
-         (18, 0): stage_both(stage_carried,
+         (18, 0): stage_both(lambda: stage_carried("w-ch-3"),
                              lambda: say_at("2026-10-27T18:12:00.000Z",
                                             ["--notice", "ci-watch", "--in", "desk-integration",
                                              "@integrator the integration build failed"]))}
@@ -1158,8 +1174,26 @@ STEPS = {}   # (case, step) → (connection, index) of the line it matched
 
 def down(step):
     conn = conn_of(step)
-    conn.write(subst(step["down"]))
+    frame = subst(step["down"])
+    conn.write(frame)
+    if frame.get("t") == "audience":
+        return audience_kept(frame)
     return True, ""
+
+
+def audience_kept(frame):
+    """An `audience` line is the uplink's once it keeps it: the session's
+    entry in daemon/audiences.json is the frame's owners, members and
+    policyRev (and what it withdrew), as the fixture pins them; one the
+    uplink refused (a digest that is not its members') leaves none."""
+    import sminos_audience as audience
+    members = frame.get("members")
+    want = {"owners": sorted(set(frame["owners"])), "members": sorted(set(members)) if members is not None else None,
+            "policyRev": frame["policyRev"], **({"withdrawn": sorted(set(frame["withdrawn"]))}
+                                                if frame.get("withdrawn") else {})}
+    got = wait_for(lambda: (lambda x: x if x == want else None)(audience.entry_of(frame["session"])), timeout=10)
+    return got is not None, "the uplink kept %r for session %s, not %r" % (
+        audience.entry_of(frame["session"]), frame["session"][:8], want)
 
 
 def open_(step):
