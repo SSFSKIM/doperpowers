@@ -4,7 +4,12 @@ The project family as a Claude Code plugin: every session working in a
 project is a member that sees the others, messages them (a stopped one is
 woken in the background to read it) and its human, hands work between them,
 and spans machines through a git mirror or a desk hub (reached through the
-machine's MAWS endpoint).
+machine's MAWS endpoint). A channel gathers threads of several projects: a
+session speaks in it (`sminos say --in <channel>`, or `@<channel>/<alias>`
+and `@all`), a message from it carries a reply line back through the channel,
+`list` shows each channel's members beside the project's, and the owner may
+name a lead (`sminos channel lead`), the thread a person's untagged post
+there goes to.
 The plugin carries the `sminos` CLI (on every session's PATH, from its `bin/`) and skill, the shell hooks that join a
 session to its project and record what it sent its human, and the function
 hooks (mods) that make a session reachable from outside it: the bridge, the
@@ -37,7 +42,8 @@ The mods load only where `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set.
 ## Where things are
 
 - [`skills/sminos/SKILL.md`](skills/sminos/SKILL.md) — what a member does:
-  find, message and reach the other sessions, spawn and retire them.
+  find, message and reach the other sessions, in its project and its
+  channels, spawn and retire them.
 - [`skills/sminos/references/setup.md`](skills/sminos/references/setup.md) —
   a machine's one-time work: a project and its mirror, its place at the desk
   hub, the daemon, the policy.
