@@ -1234,15 +1234,12 @@ def audience_kept(frame, since):
     record's length before) and it was taken, and the session's entry in
     daemon/audiences.json is the frame's owners, members and policyRev
     (and what it withdrew), as the fixture pins them; one the uplink
-    refused (a digest that is not its members') leaves none. A frame that
-    said `members: null` is kept with `saidListed`, and no other is."""
+    refused (a digest that is not its members') leaves none."""
     import sminos_audience as audience
     members = frame.get("members")
     want = {"owners": sorted(set(frame["owners"])), "members": sorted(set(members)) if members is not None else None,
             "policyRev": frame["policyRev"], **({"withdrawn": sorted(set(frame["withdrawn"]))}
-                                                if frame.get("withdrawn") else {}),
-            # The entry's mark of a frame that said `members: null` (the copy check asks for it), there exactly then.
-            **({"saidListed": True} if "members" in frame and members is None else {})}
+                                                if frame.get("withdrawn") else {})}
     took = wait_for(lambda: any(f == frame and taken for f, taken in AUDIENCES_TAKEN[since:]), timeout=10)
     got = took and wait_for(lambda: (lambda x: x if x == want else None)(audience.entry_of(frame["session"])),
                             timeout=10)

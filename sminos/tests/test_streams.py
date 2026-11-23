@@ -237,8 +237,8 @@ class Streams(tw.Machine):
 
     def test_a_listed_entry_reads_for_a_project_as_before_whoever_wrote_it_and_whatever_its_frame_said(self):
         """An entry an older writer kept, one from a frame that said nothing of `members`, and one from a frame
-        that said `members: null`: every reader of a project reads each as before (the whole org, its owners, a
-        say to it plain); only the last carries the mark a channel's copy asks for (CH2)."""
+        that said `members: null`: one entry, as the merge base keeps it, and every reader of a project reads it as
+        before (the whole org, its owners, a say to it plain)."""
         self.capable()
         said = lambda: (au.audience_of(R), au.owners_of(R), [(w, a) for w, a, _, _ in au.stream_for(  # noqa: E731
             self.p, None, [{"session": R, "alias": "r"}])])
@@ -252,9 +252,7 @@ class Streams(tw.Machine):
         self.assertEqual(said(), before, "a frame that said nothing of members")
         self.audience(R, [B], None, 2)
         self.assertEqual(said(), before, "a frame that said members: null")
-        self.assertEqual({k: v for k, v in au.entry_of(R).items() if k != au.SAID_LISTED},
-                         {"owners": [B], "members": None, "policyRev": 2}, "the same entry, and the mark")
-        self.assertIs(au.entry_of(R)[au.SAID_LISTED], True)
+        self.assertEqual(au.entry_of(R), {"owners": [B], "members": None, "policyRev": 2}, "the same entry")
 
     def test_the_hello_advertises_audience(self):
         import sminos_rl10 as rl10

@@ -10482,11 +10482,13 @@ UNHELD_LIVE = "live"
 # ------------------------------------------------------------------ say / chat
 
 
-def _copy_known_listed(delivered):
-    """Whether every recipient the delivering events name is known to be
-    listed (sminos_audience.known_listed)."""
-    return audience_module().known_listed([r.get("session") for _, e in delivered if isinstance(e.get("to"), list)
-                                           for r in e["to"] if isinstance(r, dict)])
+def _names_a_remote(delivered):
+    """Whether a delivering event names a recipient that is not this
+    machine's (sminos_audience.is_local): its audience is the endpoint's to
+    know, and nothing kept of it here is."""
+    au = audience_module()
+    return any(not au.is_local(r.get("session")) for _, e in delivered if isinstance(e.get("to"), list)
+               for r in e["to"] if isinstance(r, dict))
 
 
 def record_copy(home, delivered):
@@ -10503,8 +10505,8 @@ def record_copy(home, delivered):
     audience stream has the stream's audience kept in `home` first, and goes
     into a hub project's home alone (streams_here): elsewhere the log is
     published whole, so none is written, and a warning says so; nor is a
-    channel's there unless every recipient is known to be listed
-    (sminos_audience.known_listed: a remote one by the endpoint's word)."""
+    channel's there that names a recipient of another machine, whatever is
+    kept of its audience (CH2's ruling: it may be stale)."""
     groups = {}
     for dest, e in delivered:
         groups.setdefault(e["writer"], []).append((dest, e))
@@ -10513,10 +10515,10 @@ def record_copy(home, delivered):
         return [c for group in groups.values() for c in [record_copy(home, group)] if c is not None]
     first = delivered[0][1]
     if not streams_here(home) and (is_stream(first["writer"]) or (
-            any(is_channel_id(dest.id) for dest, _ in delivered) and not _copy_known_listed(delivered))):
+            any(is_channel_id(dest.id) for dest, _ in delivered) and _names_a_remote(delivered))):
         # A git-mirrored or local home publishes its whole log (the mirror stages everything): an audience
-        # stream's body goes nowhere the hub does not filter it, nor, from a channel, one whose recipients'
-        # audiences are not known to be listed (CH2: no word for a remote session is no knowledge).
+        # stream's body goes nowhere the hub does not filter it, nor, from a channel, one that names a remote
+        # recipient, whose audience this machine cannot know is still listed (CH2).
         warn("delivered; its copy is not kept in %s: the message is for a private session's audience alone, "
              "and %s's log is not filtered by audience" % (home.name, home.name))
         return None

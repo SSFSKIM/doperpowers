@@ -557,135 +557,38 @@ class Outsider(Say):
         self.assertEqual(sminos.project_kind(self.project_of(local)), "local")
         return local
 
-    def test_to_a_remote_member_whose_audience_is_not_known_no_copy_in_an_unfiltered_home_and_its_warning(self):
-        self.au.keep_capabilities(["channels", "access"])
-        local = self.loose()
-        ftid, fsid = self.far("faraway")
-        otid, osid, _ = self.open_here("outside", local)
-        self.heard(osid)
-        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway unknown audience", cwd=local)
-        self.assertEqual(code, 0, out)
-        [e] = self.says()
-        self.assertEqual(e["to"], [{"session": fsid, "alias": "faraway", "thread": ftid}])
-        self.assertIn("delivered; its copy is not kept in loose: the message is for a private session's audience "
-                      "alone, and loose's log is not filtered by audience", out)
-        self.assertEqual([c for _, c in self.project_says(self.project_of(local)) if c.get("copy")], [], "no copy")
-        self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(fsid, ["m-far"])}))
-        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway listed now", cwd=local)
-        self.assertEqual(code, 0, out)
-        self.assertNotIn("its copy is not kept", out)
-        [c] = [c for _, c in self.project_says(self.project_of(local)) if c.get("copy")]
-        self.assertTrue(c["text"].endswith("listed now"), "known listed: its copy kept")
-
-    def test_a_listed_entry_an_older_writer_kept_is_no_knowledge_until_a_frame_says_members_here(self):
-        """The kept file outlives an upgrade and an older uplink writes it: its `members: null` is written for a
-        frame that said `members` and for one that did not alike, so it proves nothing. Such an entry, under a
-        welcome with `access`, keeps no copy (today's warning); the same word taken by this tree's uplink does."""
+    def test_in_an_unfiltered_home_no_copy_for_a_remote_recipient_whatever_its_word_and_a_projects_as_before(self):
+        """A remote recipient's audience is the endpoint's to know, and what is kept of its word can be stale: a
+        channel's copy for one is never left in a home the hub does not filter, whatever word is kept for it (none,
+        or its listing under a welcome with `access`), the say going through with today's warning. A local
+        recipient's listing is its record's: its copy is kept. A project's say from the same home keeps its copy as
+        the base does (B11)."""
         warning = ("delivered; its copy is not kept in loose: the message is for a private session's audience alone, "
                    "and loose's log is not filtered by audience")
         self.au.keep_capabilities(["channels", "access"])
         local = self.loose()
         ftid, fsid = self.far("faraway")
+        rtid, rsid, received = self.live("reader")
         otid, osid, _ = self.open_here("outside", local)
         self.heard(osid)
-        copies = lambda: [c for _, c in self.project_says(self.project_of(local)) if c.get("copy")]  # noqa: E731
-        path = self.au.audiences_path()
-        with open(path) as f:
-            d = json.load(f)
-        d["sessions"][fsid] = {"owners": ["m-far"], "members": None, "policyRev": 0}   # as an older writer keeps it
-        with open(path, "w") as f:
-            json.dump(d, f)
-        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway an older entry", cwd=local)
-        self.assertEqual(code, 0, out)
-        self.assertIn(warning, out)
-        self.assertEqual(copies(), [], "an older writer's entry: no copy")
+        copies = lambda: [c["text"] for _, c in self.project_says(self.project_of(local)) if c.get("copy")]  # noqa
+        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway no word", cwd=local)
+        self.assertEqual((code, warning in out), (0, True), out)
         self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(fsid, ["m-far"])}))
-        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway said here", cwd=local)
+        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway a listed word", cwd=local)
+        self.assertEqual((code, warning in out), (0, True), out)
+        self.assertEqual([e["text"] for e in self.says()], ["@faraway no word", "@faraway a listed word"], "recorded")
+        self.assertEqual(copies(), [], "no copy for a remote recipient")
+        self.heard(rsid)
+        code, out = self.as_session(osid, "say", "--in", "desk", "@reader to a local one", cwd=local)
         self.assertEqual(code, 0, out)
         self.assertNotIn("its copy is not kept", out)
-        self.assertEqual([c["text"] for c in copies()], ["@faraway said here"], "the word taken here: its copy")
-
-    def test_a_listed_word_is_knowledge_only_under_a_welcome_with_access_and_from_a_frame_that_said_members(self):
-        """A remote recipient's `members: null` kept from before a welcome that no longer lists `access` is no
-        knowledge, nor is a frame that carried no `members` at all: no copy, today's warning, each; the listed
-        word under a welcome with `access` keeps it, read once for the copy."""
-        warning = ("delivered; its copy is not kept in loose: the message is for a private session's audience alone, "
-                   "and loose's log is not filtered by audience")
-        self.au.keep_capabilities(["channels", "access"])
-        local = self.loose()
-        ftid, fsid = self.far("faraway")
-        otid, osid, _ = self.open_here("outside", local)
-        self.heard(osid)
-        copies = lambda: [c for _, c in self.project_says(self.project_of(local)) if c.get("copy")]  # noqa: E731
-        self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(fsid, ["m-far"])}))
-        self.au.keep_capabilities(["channels"])   # a later welcome without `access`
-        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway old word", cwd=local)
-        self.assertEqual(code, 0, out)
-        self.assertIn(warning, out)
-        self.assertEqual(copies(), [], "an old word under a welcome without access: no copy")
-        self.au.keep_capabilities(["channels", "access"])
-        self.assertTrue(self.au.keep_audience({"t": "audience", "session": fsid, "owners": ["m-far"],
-                                               "policyRev": 1}))   # said nothing of `members`
-        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway no members said", cwd=local)
-        self.assertEqual(code, 0, out)
-        self.assertIn(warning, out)
-        self.assertEqual(copies(), [], "a frame that said no members: no copy")
-        self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(
-            fsid, ["m-far"], None, 2)}))
-        real, reads = self.au._read_audiences, []
-
-        def counted():
-            reads.append(None)
-            return real()
-        btid, bsid = self.far("farther")
-        self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(bsid, ["m-far"])}))
-        record_copy = sminos.record_copy
-
-        def copy_counted(home, delivered):
-            reads.clear()
-            with mock.patch.object(self.au, "_read_audiences", counted):
-                return record_copy(home, delivered)
-        with mock.patch.object(sminos, "record_copy", copy_counted):
-            code, out = self.as_session(osid, "say", "--in", "desk", "@faraway @farther said listed", cwd=local)
+        self.assertEqual(copies(), ["@reader to a local one"], "a local listed recipient's copy kept")
+        self.assertEqual(len(self.got(received, "to a local one")), 1)
+        code, out = self.as_session(osid, "say", "@app/faraway in its project", cwd=local)
         self.assertEqual(code, 0, out)
         self.assertNotIn("its copy is not kept", out)
-        self.assertEqual([c["text"] for c in copies()], ["@faraway @farther said listed"])
-        self.assertEqual(len(reads), 1, "the cache read once for the copy")
-
-    def test_an_audience_cache_unreadable_at_the_copy_or_an_entry_without_members_keeps_no_copy(self):
-        """An audiences file that cannot be read when the copy is weighed (the event recorded and delivered) is no
-        knowledge: no copy, today's warning, the say a success; nor is an entry that does not say `members`."""
-        self.au.keep_capabilities(["channels", "access"])
-        local = self.loose()
-        ftid, fsid = self.far("faraway")
-        otid, osid, _ = self.open_here("outside", local)
-        self.heard(osid)
-        self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(fsid, ["m-far"])}))
-        path = self.au.audiences_path()
-        with open(path) as f:
-            kept = f.read()
-        real = sminos.record_copy
-
-        def unreadable_then_copy(home, delivered):
-            with open(path, "w") as f:
-                f.write("{not json")
-            return real(home, delivered)
-        warning = ("delivered; its copy is not kept in loose: the message is for a private session's audience alone, "
-                   "and loose's log is not filtered by audience")
-        with mock.patch.object(sminos, "record_copy", unreadable_then_copy):
-            code, out = self.as_session(osid, "say", "--in", "desk", "@faraway cache gone", cwd=local)
-        self.assertEqual(code, 0, out)
-        self.assertIn(warning, out)
-        self.assertEqual(len([e for e in self.says() if e["text"].endswith("cache gone")]), 1, "recorded once")
-        self.assertEqual([c for _, c in self.project_says(self.project_of(local)) if c.get("copy")], [], "no copy")
-        d = json.loads(kept)
-        del d["sessions"][fsid]["members"]
-        with open(path, "w") as f:
-            json.dump(d, f)
-        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway partial entry", cwd=local)
-        self.assertEqual(code, 0, out)
-        self.assertIn(warning, out)
-        self.assertEqual([c for _, c in self.project_says(self.project_of(local)) if c.get("copy")], [], "no copy")
+        self.assertEqual(copies(), ["@reader to a local one", "@app/faraway in its project"], "a project's: as before")
 
     def private(self, sid):
         """The session private, its audience as the endpoint gave it at its record's policyRev."""
