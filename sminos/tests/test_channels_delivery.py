@@ -166,6 +166,38 @@ class Channel(Life, Deliveries, T1.Sessions):
             return real(o, e, reach)
         return mock.patch.object(channels, "still_owed", still_owed)
 
+    def no_peer_at_the_look(self, sid):
+        """holder_push's first look for the session's peer, in the first push only, finds none (the decision), as
+        if its process appeared right after it; every later look reads as it is."""
+        real_push, real_look, pushes = sminos.holder_push, sminos.peer_for_session, []
+
+        def holder_push(*a, **k):
+            pushes.append(True)
+            if len(pushes) > 1:
+                return real_push(*a, **k)
+            looks = []
+
+            def peer_for_session(session):
+                if session == sid and not looks:
+                    looks.append(True)
+                    return None
+                return real_look(session)
+            with mock.patch.object(sminos, "peer_for_session", peer_for_session):
+                return real_push(*a, **k)
+        return mock.patch.object(sminos, "holder_push", holder_push)
+
+    def wake_left_starting(self, text):
+        """The first push of a frame carrying `text` reaches no process (the woken one not answering yet): what
+        push_member answers then, `recorded`, so the wake's outcome is `held:starting`."""
+        real, once = sminos.push_member, []
+
+        def push_member(m, frame, *a, **k):
+            if text in frame and not once:
+                once.append(True)
+                return "recorded"
+            return real(m, frame, *a, **k)
+        return mock.patch.object(sminos, "push_member", push_member)
+
     def project_files(self):
         """Every file under every project's home here but the channels': what delivery must leave alone."""
         out = {}
@@ -1303,6 +1335,50 @@ class Planned(Channel):
         self.assertEqual(self.settled(tid, W1), e["seq"])
 
 
+# ------------------------------------------------------------ what the pass saw at its decision
+
+
+class Decided(Channel):
+    """A channel's push goes as the pass decided it for the event, on what it read then and no later look: no peer
+    at the decision is no push in this pass, a hold is the event's own, and a stopped thread is one no process
+    runs."""
+
+    def test_a_broadcast_with_no_peer_at_the_decision_is_pushed_to_no_process_found_after_it(self):
+        tid, sid = self.stopped()
+        received = self.terminal(sid)   # a process with an inbox holds the session; the decision's look missed it
+        e = self.message((sid, tid), text="to whoever runs then", wake=True)
+        with self.no_peer_at_the_look(sid):
+            self.deliver()
+        self.assertEqual(self.got(received, "to whoever runs then"), [], "no push on a look past the decision")
+        self.assertEqual(self.owed_to(tid), [(W1, e["seq"])], "still owed: a process runs, so not stopped")
+        self.deliver()
+        self.assertEqual(len(self.got(received, "to whoever runs then")), 1, "the next pass pushes it, once")
+        self.assertEqual(self.settled(tid, W1), e["seq"])
+
+    def test_one_writers_hold_never_settles_another_writers_broadcast(self):
+        tid, sid = self.stopped()
+        self.message((sid, tid), text="woken then slow")
+        everyone = self.message((sid, tid), writer=W2, text="to all after it", wake=True)
+        with self.wake_left_starting("woken then slow"):
+            self.deliver()
+        self.assertEqual(len(self.resumes(sid)), 1)
+        self.assertEqual(len(self.woken_got(sid, "to all after it")), 1, "its inbox answers: pushed, not recorded")
+        self.assertEqual(self.settled(tid, W2), everyone["seq"])
+
+    def test_a_broadcast_whose_receipt_was_never_admitted_stays_owed_while_a_process_runs_with_no_inbox(self):
+        tid, sid = self.stopped()
+        everyone = self.message((sid, tid), text="to the one that runs", wake=True)
+        Receipts.receipt(self, DESK, sid, everyone, tid)   # handed to a process that is gone, never admitted
+        _, proc = self.session(sid=sid)   # a process runs the session, its inbox not answering yet
+        self.deliver()
+        self.assertEqual(self.owed_to(tid), [(W1, everyone["seq"])], "not stopped: still owed")
+        self.assertTrue(sminos.holder_module().exists(DESK, sid, everyone, tid), "its receipt kept")
+        received = self.inbox(sid, proc)
+        self.deliver()
+        self.assertEqual(len(self.got(received, "to the one that runs")), 1, "pushed once its inbox answers")
+        self.assertEqual(self.settled(tid, W1), everyone["seq"])
+
+
 # ------------------------------------------------------------ a project's delivery as it was (B11)
 
 
@@ -1359,6 +1435,24 @@ class ProjectsAsBefore(Channel):
         self.assertTrue(hd.exists(self.p.id, sid, e), "its receipt kept, as before")
         self.assertIn(e["seq"], [x["seq"] for x in sminos.owed(self.p, self.project_member(sid))], "still owed")
         self.assertEqual(self.resumes(sid), [])
+
+    def test_a_projects_broadcast_with_no_peer_at_the_decision_goes_to_the_process_found_at_the_push(self):
+        tid, sid = self.stopped()
+        received = self.terminal(sid)
+        self.to_member(sid, "to whoever runs at the push", wake=True)
+        with self.no_peer_at_the_look(sid):
+            sminos.deliver_next(self.p, self.project_member(sid))
+        self.assertEqual(len(self.got(received, "to whoever runs at the push")), 1, "pushed on this pass, as before")
+
+    def test_a_projects_writer_hold_settles_a_later_writers_broadcast_as_before(self):
+        tid, sid = self.stopped()
+        self.to_member(sid, "woken then slow")
+        everyone = self.to_member(sid, "to all after it", wake=True)
+        with self.wake_left_starting("woken then slow"):
+            got = sminos.deliver_next(self.p, self.project_member(sid))
+        self.assertEqual(self.woken_got(sid, "to all after it"), [], "pushed nothing")
+        self.assertEqual([o for e, o in got["outcomes"] if e["writer"] == everyone["writer"]], ["recorded"],
+                         "decided on the call's hold, as before")
 
     def test_a_projects_wake_reads_nothing_again_at_the_launch_boundary(self):
         tid, sid = self.stopped()

@@ -8057,9 +8057,12 @@ def deliver_next(project, member, due=False, owing=None):
                             outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
                         elif o is None and (unknown := held_unreadable(record, e)):
                             outcome = hold_outcome("unknown", unknown)   # no binding known: deferred, pushed nothing
-                        elif hold or hold is None and (hold := held_now(session, due)):
+                        elif (held_now(session, due) if o is not None and e.get("wake")
+                              else hold or hold is None and (hold := held_now(session, due))):
                             # Held (T2's §4): pushed nothing and asked nothing. An event for the live alone (an
-                            # @all, a broadcast) settles as for a stopped member; an addressed one stays owed.
+                            # @all, a broadcast) settles as for a stopped member; an addressed one stays owed. In a
+                            # channel the hold that settles an event for the live alone is its own, asked afresh,
+                            # never one an earlier event of the call left (an addressed one's still holds the rest).
                             outcome = "recorded" if e.get("wake") else hold_outcome(hold)
                         elif gate is not None and owed is None and gate.gated(e) or reach is not None \
                                 and reach.needs(e, session, push_words(project, session, e, gate, owed, **_th(o))):
@@ -8277,8 +8280,14 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
         if locks is not None and peer is None:
             # Its inbox went between the wake's look and this one.
             return woken_unpushed(session, **_kw(owing), **({} if owing is None else {"e": e}))
-        if not retry and (peer is None or peer.get("pid") is None
-                          or (member.seat is None and latest_membership(_own_events(home, session)) == "retired")):
+        if owing is not None and not retry and locks is None and peer is None:
+            # In a channel no peer at the decision is no push in this pass (an event for the live alone, which wakes
+            # nothing; a live fallback whose look found none): push_member's look of its own would hand it to a
+            # process found after it, which no planned check was made for. `recorded`, which stands only for a
+            # thread stopped now (stopped_for_the_live, below).
+            outcome = "recorded"
+        elif not retry and (peer is None or peer.get("pid") is None
+                            or (member.seat is None and latest_membership(_own_events(home, session)) == "retired")):
             outcome = push_event(project, member, session, e, events, cursor, words=words, **_kw(owing))
         else:
             # A retry's process may have ended since holder_owed saw it: no pid,
@@ -9168,11 +9177,13 @@ def push_event(project, member, session, e, events, cursor, words=None, owing=No
 def stopped_for_the_live(owing, e, session):
     """Whether a channel's `recorded` push stands (CH2's M3): an event for
     the live alone whose thread is stopped, read now (still_owed, and no
-    process holding the session). Any other `recorded` is a push that
+    process running the session, by the engine's records read afresh,
+    running_now: a process whose inbox does not answer yet is not
+    stopped). Any other `recorded` is a push that
     reached no one the thread is (a seat vacated or holding another
     session, a hand-off between the last check and the push's own read):
     the last check failing, nothing settled."""
-    return bool(e.get("wake")) and channels_module().still_owed(owing, e) and not live_now(session)
+    return bool(e.get("wake")) and channels_module().still_owed(owing, e) and running_now(session) is None
 
 
 # What the line after a wake opens with at a line's start (sminos_wake.LINE_HEAD, T2's §2): sminos's alone, so a
