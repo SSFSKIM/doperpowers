@@ -1292,6 +1292,27 @@ class Roster(Machine):
         self.assertIn("channel-peer [%s], met in a channel: where its thread is now was not read in time" % sid[:8],
                       said)
 
+    def test_the_thread_index_starts_no_log_read_once_the_registration_read_crossed_the_deadline(self):
+        """F28: the deadline is checked again between a project's registration and its log read."""
+        rsid, rt = self.reader()
+        ordinary, sid = self.moved_peer(rsid, rt)
+        move, scanning, reads = self.clock(), [], []
+        real_index, real_registration, real_read = sminos._roster_thread_index, sminos.registration, sminos.log_read
+
+        def registration(pid):
+            if scanning and pid == PROJ:
+                move()
+            return real_registration(pid)
+        with mock.patch.object(sminos, "_roster_thread_index", lambda *a, **k: scanning.append(1) or real_index(*a, **k)), \
+                mock.patch.object(sminos, "registration", registration), \
+                mock.patch.object(sminos, "log_read", lambda p, *a, **k: (reads.append(p.id) if scanning else None)
+                                  or real_read(p, *a, **k)):
+            said = self.roster(rsid)
+        self.assertTrue(scanning)
+        self.assertNotIn(PROJ, reads, "no log read once the registration's read returned past the deadline")
+        self.assertIn("channel-peer [%s], met in a channel: where its thread is now was not read in time" % sid[:8],
+                      said)
+
     def test_no_candidate_member_is_built_past_the_deadline(self):
         """F28: each candidate member of a thread's rows is built only while the deadline holds."""
         rsid, rt = self.reader()
