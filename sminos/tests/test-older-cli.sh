@@ -946,18 +946,46 @@ daemon_until() { # this|older text... — that copy's daemon run until keeper's 
   for t in "$@"; do
     until [ "$(took "$t")" -gt 0 ] || [ "$SECONDS" -ge "$end" ]; do sleep 0.2; done
   done
-  sleep 3   # what its next passes would push again
+  ticks_after 2 || fail "the daemon's passes are seen ticking"   # what its next whole pass would push again
   daemon_stop
 }
-relayed() { # text — a message to keeper's thread from beta's member, handed down the stand-in's live connection as
-  # the relay hands another machine's event (signed by beta, in the endpoint's echo form), once the running daemon's
-  # uplink has opened the channel there; then until this machine's copy of the channel's log holds it (30 s)
+tick_mark() { # the daemon's tick mark (daemon/ticked's mtime, which each pass of its loop moves at its end), in ns
+  py 'import os, sys
+try:
+    print(os.stat(sys.argv[1]).st_mtime_ns)
+except OSError:
+    print(0)' "$SMINOS_HOME/daemon/ticked"
+}
+ticks_after() { # n — until the running daemon's tick mark has moved n times from now (30 s; false at the bound): with
+  # n 2, a whole pass began after this point and ended
+  local n=$1 last now end=$((SECONDS + 30))
+  last="$(tick_mark)"
+  while [ "$n" -gt 0 ]; do
+    now="$(tick_mark)"
+    if [ "$now" != "$last" ]; then
+      n=$((n - 1)) last="$now"
+      continue
+    fi
+    [ "$SECONDS" -ge "$end" ] && return 1
+    sleep 0.1
+  done
+}
+conn_now() { # the number of the last connection the stand-in took a frame on (0 for none)
+  python3 -B -c 'import json, sys; sys.path.insert(0, sys.argv[1]); import endpoint_standin as es
+print(max([r["conn"] for r in json.loads(es.ctl_call(sys.argv[2], "state", {}))["received"]] or [0]))' "$SCRIPT_DIR" "$EP"
+}
+relayed() { # text [after] — a message to keeper's thread from beta's member, handed down the stand-in's live
+  # connection as the relay hands another machine's event (signed by beta, in the endpoint's echo form), once the
+  # running daemon's uplink has opened the channel there on a connection numbered above `after` (any, by default);
+  # then until this machine's copy of the channel's log holds it (30 s), checked stored as it was sent: one event at
+  # its writer's position, of its kind and text, its `to` naming keeper's session and thread. False, saying why,
+  # otherwise.
   python3 -B - "$SCRIPT_DIR" "$EP" "$CHANNEL" "$SID" "$THREAD" "$SENDER" "$SENDER_THREAD" "$1" \
-    "$SMINOS_HOME/projects/$CHANNEL/log" <<'PY_RELAY'
+    "$SMINOS_HOME/projects/$CHANNEL/log" "${2:-0}" <<'PY_RELAY'
 import glob, json, os, sys, time
 sys.path.insert(0, sys.argv[1])
 import endpoint_standin as es
-ep, cid, sid, tid, sender, sthread, text, logs = sys.argv[2:10]
+ep, cid, sid, tid, sender, sthread, text, logs, after = sys.argv[2:11]
 served = es.Served(ep)
 writer = "beta/" + sender
 
@@ -971,9 +999,12 @@ def held():
 
 
 end = time.time() + 30
-while cid not in (served.opened().get("projects") or {}):
+while True:
+    opened = served.opened()
+    if (opened.get("conn") or 0) > int(after) and cid in (opened.get("projects") or {}):
+        break
     if time.time() > end:
-        sys.exit("the uplink never opened the channel at the stand-in")
+        sys.exit("the uplink never opened the channel at the stand-in on a connection after %s" % after)
     time.sleep(0.1)
 seq = 1 + max([e["seq"] for e in held() if e.get("writer") == writer] or [0])
 body = {"ts": es.iso(), "writer": writer, "seq": seq, "kind": "say", "from": "birch", "thread": sthread, "text": text,
@@ -986,6 +1017,11 @@ while not any(e.get("text") == text for e in held()):
     if time.time() > end:
         sys.exit("this machine never stored the message relayed")
     time.sleep(0.1)
+stored = [e for e in held() if e.get("text") == text]
+at = [e for e in held() if e.get("writer") == writer and e.get("seq") == seq]
+if len(stored) != 1 or at != stored or stored[0].get("kind") != "say" \
+        or [(t.get("session"), t.get("thread")) for t in stored[0].get("to") or []] != [(sid, tid)]:
+    sys.exit("stored otherwise than sent: %s" % json.dumps(stored + at))
 PY_RELAY
 }
 channel_settled() { # writer — that writer's settled prefix in keeper's thread's delivery record in the channel
@@ -1064,18 +1100,14 @@ case_1_54() {
   assert_equals "$(logs_digest)" "$logs" "no log gained anything"
   echo " 1.54's daemon, its uplink to the stand-in, a message to the thread relayed to it meanwhile:"
   daemon_start older
-  if relayed "@keeper three from beta in the channel"; then pass "1.54's uplink stored the message the relay brought, in the channel's log"; else fail "1.54's uplink stored the message the relay brought, in the channel's log"; fi
   local end=$((SECONDS + 30))
-  until [ "$(took "a send from the older copy")" -gt 0 ] || [ "$SECONDS" -ge "$end" ]; do sleep 0.2; done
-  sleep 3   # what its next passes would push
+  until { [ "$(took "hello from the older say")" -gt 0 ] && [ "$(took "a send from the older copy")" -gt 0 ]; } \
+      || [ "$SECONDS" -ge "$end" ]; do sleep 0.2; done   # its wake done, the thread live, before the relay
+  if relayed "@keeper three from beta in the channel"; then
+    pass "1.54's uplink stored the message the relay brought as it was sent, its thread address whole"
+  else fail "1.54's uplink stored the message the relay brought as it was sent, its thread address whole"; fi
+  ticks_after 2 || fail "1.54's daemon is seen passing after the import"   # a whole pass after it
   daemon_stop
-  assert_equals "$(here_py 'import json, glob, os
-for p in glob.glob(os.path.join(sys.argv[2], "*.jsonl")):
-    for line in open(p):
-        e = json.loads(line)
-        if e.get("text") == "@keeper three from beta in the channel":
-            print(e["kind"], [(t.get("session"), t.get("thread")) for t in e.get("to") or []] == [(sys.argv[3], sys.argv[4])])' \
-    "$SMINOS_HOME/projects/$CHANNEL/log" "$SID" "$THREAD")" "say True" "stored as it came, its thread address whole"
   local fate
   fate="$(normal "$(delivery)")"
   assert_equals "$(grep '^pushed\|^delivered' <<<"$fate")" "$(printf '%s\n' \
@@ -1089,14 +1121,26 @@ for p in glob.glob(os.path.join(sys.argv[2], "*.jsonl")):
   SMINOS_SCRIPTS="$SCRIPTS" python3 -B "$SCRIPT_DIR/older_channel_wire.py" baseline "$T/baseline-$1-said" "$CHANNEL"
   echo " this code after 1.54:"
   run "$SMINOS" projects
-  assert_not_contains "$OUT" "desk-integration" "this code lists the channel as no project either"
+  assert_equals "$RC" 0 "this code's projects runs"
+  assert_contains "$OUT" "olderproj" "listing the project"
+  assert_not_contains "$OUT" "desk-integration" "and the channel as no project either"
   daemon_until this "three from beta in the channel" "two from beta in the channel"
   assert_equals "$(took "three from beta in the channel") $(took "two from beta in the channel") $(took "one from beta in the channel")" \
     "1 1 0" "it pushes the message that arrived while 1.54 ran once, the other owed one once, the settled one never"
   assert_equals "$(channel_settled "beta/$SENDER")" 3 "and settles both in the thread's record"
-  daemon_until this
-  assert_equals "$(took "three from beta in the channel") $(took "two from beta in the channel")" "1 1" \
-    "a fresh daemon and uplink push neither again"
+  local before
+  before="$(conn_now)"
+  daemon_start this
+  if relayed "@keeper ten from beta in the channel" "$before"; then
+    pass "a fresh daemon's uplink opens the channel again and stores a message relayed then"
+  else fail "a fresh daemon's uplink opens the channel again and stores a message relayed then"; fi
+  end=$((SECONDS + 30))
+  until [ "$(took "ten from beta in the channel")" -gt 0 ] || [ "$SECONDS" -ge "$end" ]; do sleep 0.2; done
+  ticks_after 2 || fail "the fresh daemon is seen passing"
+  daemon_stop
+  assert_equals "$(took "ten from beta in the channel") $(took "three from beta in the channel") $(took "two from beta in the channel")" \
+    "1 1 1" "it pushes that one once, and neither of the two settled before again"
+  assert_equals "$(channel_settled "beta/$SENDER")" 4 "settling it in the thread's record"
   uplink_check "$1-said" "$(printf 'human channel-request channel-lead\nbreaches 0')"
   unenroll
 
@@ -1106,8 +1150,10 @@ for p in glob.glob(os.path.join(sys.argv[2], "*.jsonl")):
   stopped_thread auto
   created
   daemon_start older
-  if relayed "@keeper seven from beta in the channel"; then pass "1.54's uplink stored a message the relay brought"; else fail "1.54's uplink stored a message the relay brought"; fi
-  sleep 3   # what its passes would push
+  if relayed "@keeper seven from beta in the channel"; then
+    pass "1.54's uplink stored a message the relay brought as it was sent, its thread address whole"
+  else fail "1.54's uplink stored a message the relay brought as it was sent, its thread address whole"; fi
+  ticks_after 2 || fail "1.54's daemon is seen passing after the import"   # a whole pass after it
   daemon_stop
   assert_equals "$(took "seven from beta in the channel")" 0 "1.54 pushed nothing of it"
   older channel remove desk-integration keeper
