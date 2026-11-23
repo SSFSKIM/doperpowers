@@ -2463,8 +2463,10 @@ NO_LEAD = "%s has no lead"
 LEAD_TORN = "%s: its membership of %s names two threads (its stamp and its statement disagree): nothing was written"
 LEAD_CHANGED = ("%s changed while you answered (it left %s, ended, or went on in another session): nothing was written. "
                 "Run it again")
-LEAD_WAITS = ("the lead of %s was not written: its clearing event waits for this machine's head after its enrolment, "
-              "and goes first: the lead stays as it was until it goes up, and is none after. Run it again then")
+LEAD_WAITS = ("the lead of %s was not written: this machine's writer waits for its head after its enrolment, so the "
+              "clearing event a private lead goes behind cannot go first: nothing was written. Run it again once its "
+              "daemon has caught up")
+LEAD_RENAMED = "this machine's name changed while you answered (%s, now %s): nothing was written. Run it again"
 LEAD_UNMARKED = "this machine's name (%s) is no machine name a reader honours a lead under: nothing was written"
 
 
@@ -2550,6 +2552,10 @@ def _lead_choice(channel, session, alias, label):
     return choice[0][0], choice[0][1]
 
 
+class _NotWritten(Exception):
+    """An append of the lead's that its guard refused (lead): nothing written, the reason kept by the caller."""
+
+
 def lead(q, name):
     """`channel lead <channel> <thread|none>` (§5): refused inside a session
     before anything is read; without the capability; where the enrollment
@@ -2557,9 +2563,13 @@ def lead(q, name):
     would honour a lead under; for a thread that has no row in the roster;
     where the stream choice refuses; then the owner's typed yes at the
     terminal (sminos_visibility.confirmed, which refuses where there is
-    none). The event goes under the machine's human writer, plain for a
-    thread that is not private, under that writer's audience stream after a
-    plain clearing event for one that is. The exit code."""
+    none). After the answer the thread is read again by its id, and the
+    machine's name as its files say. The event goes under the machine's
+    human writer, plain for a thread that is not private, under that
+    writer's audience stream after a plain clearing event for one that is,
+    which must land first (refused, nothing queued, while the plain writer
+    waits for its head). Each append checks the name again under its
+    writer's lock. The exit code."""
     if os.environ.get("CLAUDE_CODE_SESSION_ID"):
         sminos.die(LEAD_IN_SESSION, 1)
     if not sminos.audience_module().advertised("channels"):
@@ -2591,21 +2601,48 @@ def lead(q, name):
                     and got[0] == thread), None)
         if row is None or thread_of_row(*row)[1] != session:
             sminos.die(LEAD_CHANGED % (label, channel.name), 1)
+    # Both writers come from the machine's name as its files say now, and each append checks it again under the
+    # writer's own lock (_append's guard): a rename while the prompt was read writes nothing under either name.
+    machine = sminos.writer_base(writer).rpartition("/")[0]
+    if sminos.machine_name_now() != machine:
+        sminos.die(LEAD_RENAMED % (machine, sminos.machine_name_now()), 1)
+    why = []
+
+    def guard(waits):
+        def check(_events):
+            if sminos.machine_name_now() != machine:
+                why.append(LEAD_RENAMED % (machine, sminos.machine_name_now()))
+            elif waits and sminos.waits_for_head(channel, writer):
+                why.append(LEAD_WAITS % channel.name)
+            return not why
+        return check
+
+    def append(w, fields, waits=False):
+        got = sminos._append(channel, w, [{"kind": "channel-lead", **fields}], guard=guard(waits))
+        if not got:
+            raise _NotWritten()
+        return got[0]
     cleared = False
     try:
         if row is None:
-            e = sminos.log_append(channel, writer, "channel-lead", thread=None)
+            e = append(writer, {"thread": None})
         else:
             # Chosen again at the append: the person may have taken a while at the prompt.
             stream, audience = _lead_choice(channel, session, row[1].alias, label)
+            if sminos.writer_base(stream) != writer:
+                sminos.die(LEAD_RENAMED % (machine, sminos.writer_base(stream).rpartition("/")[0]), 1)
             if audience is not None:
-                # The private event goes only behind a plain clearing event that has landed: a writer waits for its
-                # head on its own, so one queued would let the private event go up first.
-                if sminos.log_append(channel, writer, "channel-lead", thread=None)["seq"] is None:
-                    sminos.die(LEAD_WAITS % channel.name, 1)
+                # The private event goes only behind a plain clearing event that has landed. A writer waits for its
+                # head on its own, so the reset is refused, before anything is queued, while the plain writer
+                # waits: a reset left queued would clear the earlier lead with no `none` run, and the private event
+                # would go up ahead of it.
+                append(writer, {"thread": None}, waits=True)
                 cleared = True
             sminos.keep_stream(channel, stream, audience)
-            e = sminos.log_append(channel, stream, "channel-lead", thread=thread, session=session)
+            e = append(stream, {"thread": thread, "session": session})
+    except _NotWritten:
+        sminos.die(("the lead of %s was not written (a clearing event was: it has no lead now): %s" % (
+            channel.name, why[0])) if cleared else why[0], 1)
     except (OSError, sminos.audience_module().StreamUnknown) as err:
         sminos.die("the lead of %s was not written%s: %s" % (
             channel.name, " (a clearing event was: it has no lead now)" if cleared else "", err), 1)

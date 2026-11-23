@@ -326,11 +326,14 @@ class Verb(Lead):
         self.assertEqual(code, 1, out)
         self.assertIn(channels.LEAD_IN_SESSION, out)
 
-    def test_a_private_lead_waits_for_its_plain_clearing_event_to_land(self):
-        """Review round 1: a writer waits for its head on its own (sminos.waits_for_head is per writer), so where
-        the plain clearing event is queued the private event is not written ahead of it: refused, saying the
-        clearing event is queued and the lead unchanged until it goes up."""
+    def test_a_private_lead_is_refused_before_anything_is_queued_where_the_plain_writer_waits_for_its_head(self):
+        """Review rounds 1 and 2: a writer waits for its head on its own (sminos.waits_for_head is per writer), so
+        the private event never goes behind a reset still queued; and the refusal queues nothing either (a reset
+        left queued would clear the earlier lead once released, with no `none` run). The earlier lead survives
+        the queue's release."""
         self.au.keep_capabilities(["channels", "access"])
+        atid, asid, _ = self.live("alder")
+        self.lead_event(atid, asid)
         rtid, rsid, _ = self.live("reader")
         self.private(rsid)
         plain = sminos.writer_id()
@@ -340,14 +343,33 @@ class Verb(Lead):
         sminos.keep_headed(self.chan(DESK), [plain])
         sminos.forget_caches()
         self.assertTrue(sminos.waits_for_head(self.chan(DESK), plain))
+        before = self.logs()
         code, out, asked = self.tty("y", "channel", "lead", "desk", "reader")
         self.assertEqual(code, 1, out)
-        self.assertIn("its clearing event waits for this machine's head", out)
+        self.assertIn("this machine's writer waits for its head", out)
         self.assertNotIn("leads desk", out)
-        self.assertEqual(self.leads(), [], "nothing in the log: the private event was not written ahead of it")
-        queued = [e for path in glob.glob(os.path.join(self.chan(DESK).home, sminos.QUEUED, "*.jsonl"))
-                  for e in sminos.queued_events(path)]
-        self.assertEqual([(e["kind"], e.get("thread")) for e in queued], [("channel-lead", None)], "only the reset")
+        self.assertEqual(self.logs(), before, "nothing in the log")
+        self.assertEqual(glob.glob(os.path.join(self.chan(DESK).home, sminos.QUEUED, "*.jsonl")), [], "nor queued")
+        sminos.release_queued(self.chan(DESK), plain)
+        self.assertEqual(self.lead_now(), "alder", "the earlier lead survives the queue's release")
+
+    def test_a_rename_while_the_prompt_is_read_writes_nothing(self):
+        """Review round 2: both writers come from the machine's name as its files say after the answer; a rename
+        meanwhile refuses, with nothing written under the old name or the new."""
+        rtid, rsid, _ = self.live("reader")
+        rl10 = sminos.sibling_module("sminos_rl10")
+
+        def renamed():
+            ident = json.load(open(rl10.identity_path()))
+            ident["name"] = "renamed-host"
+            sminos.write_json(rl10.identity_path(), ident, mode=0o600)
+        before = self.logs()
+        code, out, asked = self.tty("y", "channel", "lead", "desk", "reader", meanwhile=renamed)
+        self.assertTrue(asked)
+        self.assertEqual(code, 1, out)
+        self.assertIn("this machine's name changed while you answered", out)
+        self.assertEqual(self.logs(), before)
+        self.assertEqual(glob.glob(os.path.join(self.chan(DESK).home, sminos.QUEUED, "*.jsonl")), [])
 
     def test_a_thread_that_leaves_or_ends_while_the_prompt_is_read_is_not_named(self):
         """Review round 1: after the answer the chosen thread is read again by its id, its row and its current
@@ -715,6 +737,13 @@ class Driver(unittest.TestCase):
                 code, out, _ = pty_answer.run(argv, "y", deadline=1)
                 self.assertIsNone(code)
                 self.assertLess(time.monotonic() - at, 10)
+        def boom():
+            raise RuntimeError("meanwhile failed")
+        with self.assertRaises(RuntimeError):
+            pty_answer.run([sys.executable, "-c", "print('[y/N] '); import time; time.sleep(30)"], "y",
+                           meanwhile=boom)
+        with self.assertRaises(ChildProcessError, msg="the child killed and reaped when meanwhile raises"):
+            os.waitpid(pty_answer.LAST_PID, os.WNOHANG)
         code, out, prompted = pty_answer.run([sys.executable, "-c", "print(input('Go? [y/N] '))"], "y")
         self.assertEqual((code, prompted), (0, True))
         self.assertIn("Go? [y/N] y", out)

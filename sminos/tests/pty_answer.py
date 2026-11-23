@@ -6,8 +6,9 @@ its `[y/N]` prompt: what drives `confirmed` (sminos_visibility), which reads
 As a module: run(argv, answer, cwd=None, env=None, deadline=60,
 meanwhile=None) → (exit code, what it printed, whether it prompted).
 `meanwhile()` runs once the prompt is shown and before the answer is
-typed (what changes while a person reads it). At the deadline the child is
-killed and reaped, and the exit code is None: a prompt that never comes,
+typed (what changes while a person reads it). At the deadline, or when
+anything raises meanwhile, the child is killed and reaped, and at the
+deadline the exit code is None: a prompt that never comes,
 or a command that never ends, fails its test instead of hanging it.
 
 As a script: pty_answer.py <answer> <command> [args...] prints what the
@@ -22,7 +23,11 @@ import sys
 import time
 
 
+LAST_PID = None   # the child the last run started (for a test that it was reaped)
+
+
 def run(argv, answer, cwd=None, env=None, deadline=60, meanwhile=None):
+    global LAST_PID
     pid, fd = pty.fork()
     if pid == 0:
         try:
@@ -31,7 +36,8 @@ def run(argv, answer, cwd=None, env=None, deadline=60, meanwhile=None):
             os.execvpe(argv[0], argv, os.environ if env is None else env)
         finally:
             os._exit(127)
-    out, prompted, end, code = b"", False, time.monotonic() + deadline, None
+    LAST_PID = pid
+    out, prompted, end, code, reaped = b"", False, time.monotonic() + deadline, None, False
     try:
         while time.monotonic() < end:
             if not select.select([fd], [], [], 0.2)[0]:
@@ -48,23 +54,21 @@ def run(argv, answer, cwd=None, env=None, deadline=60, meanwhile=None):
                 if meanwhile is not None:
                     meanwhile()
                 os.write(fd, answer.encode() + b"\n")
-        else:
-            os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
-            pid = None
-        if pid is not None:
-            left = end - time.monotonic()
-            while left > 0:
-                done, status = os.waitpid(pid, os.WNOHANG)
-                if done:
-                    code = os.waitstatus_to_exitcode(status)
-                    break
-                time.sleep(0.05)
-                left = end - time.monotonic()
-            else:
-                os.kill(pid, signal.SIGKILL)
-                os.waitpid(pid, 0)
+        while time.monotonic() < end:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                code, reaped = os.waitstatus_to_exitcode(status), True
+                break
+            time.sleep(0.05)
     finally:
+        # Whatever ended the wait (the deadline, or an exception: meanwhile's, a read's), the child is not left
+        # running or unreaped.
+        if not reaped:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
         os.close(fd)
     return code, out.decode("utf-8", "replace").replace("\r\n", "\n"), prompted
 
