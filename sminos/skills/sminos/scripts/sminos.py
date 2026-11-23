@@ -9601,7 +9601,10 @@ def _with_shared(name, project, rows):
     chans = channels_module()
     open_ = {p.id for p in org_scope()}
     pairs, seen = [], set()
-    for p, m in [(p, m) for p, m in rows if p.id in open_] + [(project, m) for m in members(project)]:
+    # A roster's row that is addressed as no thread (its stamp and statement disagree) is not in the channel (M1):
+    # no channel-mate's name reaches it, and its own project's members still do.
+    shared = [(p, m) for p, m in rows if p.id in open_ and chans.thread_of_row(p, m) is not None]
+    for p, m in shared + [(project, m) for m in members(project)]:
         key = chans.row_thread(p, m) or m.session
         if key not in seen:
             seen.add(key)
@@ -13193,18 +13196,27 @@ def _through_channel(q, channel, name, short, scope):
     """find_target's answer for `<channel>/<name>` (CH2's M1): the thread
     the channel's roster reaches (sminos_channels.reach_in), ("seat", seat,
     session) for a seat of this machine, else ("member", its own project,
-    member); exit 4, saying how to name it, for a thread that was in the
-    channel and is not now."""
+    member), the member's `thread` the one its row is addressed as
+    (sminos_channels.thread_of_row); exit 4, saying how to name it, for a
+    thread that was in the channel and is not now, and exit 4, offering no
+    one, for a row whose stamp and statement disagree."""
     where, project, m, how = channels_module().reach_in(channel, name, short, how=True)
     if where == "out":
         own = "%s#%s or %s" % (m.alias, m.short, m.short) if m is not None else "<alias>#<short> or <short>"
         die("'%s' names a thread through %s, which it is not in now: name it by its own name (%s)"
             % (q, channel.name, own), EXIT_UNKNOWN)
+    # A row whose stamp and statement name two threads is neither in the channel nor out of it (M1): no verb's
+    # target, and no recipient offered. Any other is the thread its row is addressed as, an older copy's unstamped
+    # row its statement's thread.
+    got = channels_module().thread_of_row(project, m)
+    if got is None:
+        die("'%s' is not reached through %s: its row's membership names two threads (its stamp and its statement "
+            "disagree)" % (q, channel.name), EXIT_UNKNOWN)
     note_former(name, short, project, m, scope)
     # A name that matched the session, not the seat (its short, a session's id, an alias the session held before),
     # binds that session, as the lookup below binds one; a thread's id (a seat's is its own) does not.
     bound = how in ("short", "session", "former")
-    return ("seat", m.seat, m.session if bound else "") if m.seat else ("member", project, m)
+    return ("seat", m.seat, m.session if bound else "") if m.seat else ("member", project, m._replace(thread=got[0]))
 
 
 def ambiguous_seat(q, hits):

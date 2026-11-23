@@ -39,6 +39,7 @@ runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devclo
 import contextlib
 import glob
 import io
+import json
 import os
 import sys
 import time
@@ -595,6 +596,69 @@ class Review2(Names):
         self.assertEqual(n, 3, "the projection folds each joined by the step")
         self.assertEqual(len(calls), 6, "and so does the channels' fold")
         self.assertEqual([mark for mark, _ in folded["episodes"][sid]], [ep[1] for ep in info[sid]["episodes"]])
+
+
+class Frontier(Names):
+    """The frontier review's findings on a verb's and a tag's routes through a channel."""
+
+    def torn(self, alias="torn", p=None):
+        """A row of another machine in DESK whose `joined` is stamped with one thread and whose statement in effect
+        names another: its session."""
+        sid, tid, other = (str(uuidlib.uuid4()) for _ in range(3))
+        w = "beta/" + sid
+        self.joined(p or self.app, w, sid, alias, tid)
+        self.stated(p or self.app, w, sid, other, [DESK])
+        return sid
+
+    def charges(self, p, sid):
+        sminos.forget_caches()
+        return [e for e in sminos.log_read(p) if e["kind"] == "in-charge" and e["session"] == sid]
+
+    def test_f9_a_torn_row_named_through_the_channel_by_its_alias_is_no_verbs_target(self):
+        sid = self.torn()
+        for q in ("desk/torn", "desk/torn#%s" % sid[:8], "%s/torn" % DESK):
+            code, out = self.cli("charge", q, "x")
+            self.assertEqual(code, sminos.EXIT_UNKNOWN, (q, out))
+            self.assertIn("names two threads", out, q)
+            self.assertNotIn("name it by its own name", out, "no recipient offered")
+            code, out = self.cli("who", "--thread", q)
+            self.assertEqual(code, sminos.EXIT_UNKNOWN, (q, out))
+        self.assertEqual(self.charges(self.app, sid), [], "nothing written in its project")
+
+    def test_f9_a_bare_tag_reaches_no_torn_row_through_a_shared_channel(self):
+        tid, ssid = self.named(None, alias="sender")
+        self.placed(tid, ssid, DESK)
+        self.torn()
+        code, out = self.as_session(ssid, "say", "@torn hello")
+        self.assertEqual(code, sminos.EXIT_UNKNOWN, out)
+        self.assertIn("no member @torn in project", out)
+        sminos.forget_caches()
+        self.assertEqual([e for e in sminos.log_read(self.app) if e["kind"] == "say"], [], "nothing recorded")
+
+    def test_f9_a_torn_row_of_the_senders_own_project_is_still_its_project_member(self):
+        """Not a route through the channel: the sender's own project's member, as a sender in no channel reaches
+        it."""
+        tid, ssid = self.named(None, alias="sender")
+        self.placed(tid, ssid, DESK)
+        sid = self.torn(p=self.p)
+        code, out = self.as_session(ssid, "say", "@torn hello")
+        self.assertEqual(code, 0, out)
+        sminos.forget_caches()
+        e, = [e for e in sminos.log_read(self.p) if e["kind"] == "say"]
+        self.assertEqual([r["session"] for r in e["to"]], [sid])
+
+    def test_f14_an_older_copys_unstamped_row_is_its_statements_thread_at_a_verb(self):
+        sid, tid = str(uuidlib.uuid4()), str(uuidlib.uuid4())
+        w = "beta/" + sid
+        self.joined(self.app, w, sid, "older")
+        self.stated(self.app, w, sid, tid, [DESK])
+        kind, p, m = sminos.find_target("desk/older")
+        self.assertEqual((kind, p.id, m.session, m.thread), ("member", APP, sid, tid))
+        code, out = self.cli("who", "--thread", "desk/older")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out.strip().splitlines()[-1])["thread"], tid)
+        t = channels._target("desk/older")
+        self.assertEqual((t.thread, t.session, t.refusal), (tid, sid, ""), "channel add takes it as a thread")
 
 
 if __name__ == "__main__":
