@@ -372,7 +372,10 @@ scene() {
     until_true caps_kept || true
   done
   on sa alpha
-  sees_b() { (cd "$T/sa/app" && "$SMINOS" list --org 2>/dev/null) | grep -q "birch"; }
+  # B ended after beta's first tick: alpha may first read the row that tick wrote (idle), then the one beta's
+  # daemon writes once it sees B gone (stopped), which `list --org` folds into its hidden tail. The step waits
+  # on that last row, shown by --all.
+  sees_b() { (cd "$T/sa/app" && "$SMINOS" list --org --all 2>/dev/null) | grep -Eq "birch \[${SB:0:8}\].* stopped +@beta "; }
   relay_until sees_b || true
   assert_equals "$(sees_b && echo yes)" yes "alpha reads beta's thread B, relayed"
 
