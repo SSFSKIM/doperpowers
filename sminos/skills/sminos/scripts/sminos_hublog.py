@@ -1181,9 +1181,10 @@ class HubLog:
         notice. A channel's notice (CH2) is its sending thread's: pushed to
         that thread's current session only while that session's own fresh
         record (current_record) is the thread's, kept while the thread's
-        record holds an open entry or the session is another thread's for
-        now (an absorption's cut), and dropped once the thread has ended or
-        is gone; one that names no thread is dropped, never shown by a
+        record holds an open entry (as first read or as the fresh record
+        shows it), while a seat is vacant between occupants, or while the
+        session is another thread's for now (an absorption's cut), and
+        dropped once the thread has ended or is gone; one that names no thread is dropped, never shown by a
         session id alone. Run on the uplink's upload pass; uplink.json is
         read only while it holds some."""
         if self.notices_owed is False:
@@ -1206,17 +1207,20 @@ class HubLog:
                     continue
                 threads = sminos.threads_module()
                 t = threads.get(thread)
-                if t is None or threads.record_ended(t) or not t.get("current"):
+                if t is None or threads.record_ended(t):
                     if threads.unreadable(thread):
                         left.append(n)
                         continue
-                    log("the notice of %s:%d of %s was not shown: its thread %s holds no session here any more"
+                    log("the notice of %s:%d of %s was not shown: its thread %s is no thread here any more"
                         % (n["writer"], n["seq"], self.project.name, thread[:8]))
                     continue
                 session = t["current"]
-                now = threads.current_record(session, fresh=True) if not t.get("pending") else None
-                if now is None or now["thread"] != thread:
-                    left.append(n)   # an open entry, or the session another thread's for now: a later pass
+                now = threads.current_record(session, fresh=True) if session and not t.get("pending") else None
+                if now is None or now["thread"] != thread or now.get("pending"):
+                    # A seat vacant between occupants (`current` empty until its next session is known), an open
+                    # entry (read first or on the fresh record), or the session another thread's for now: kept
+                    # for a later pass, until the thread ends or NOTICE_KEPT passes.
+                    left.append(n)
                     continue
             peer = sminos.peer_for_session(session)
             if not peer:

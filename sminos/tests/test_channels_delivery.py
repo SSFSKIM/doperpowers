@@ -873,6 +873,39 @@ class OpenEntry(Channel, T1.LateHandOff):
         self.assertEqual(self.shown(jreceived), [], "nor once the absorption is done")
         self.assertEqual(self.queued_notices(hl), [], "dropped with the thread it was for")
 
+    def test_a_notice_waits_out_an_entry_opened_on_the_fresh_record(self):
+        """The second reading (G9): an entry opened on the thread's record after the notice's first read of it,
+        as the fresh record (current_record) shows it, defers the notice too."""
+        old, job, tid, theirs = self.late()
+        self.add(tid, old, DESK)
+        jreceived = self.inbox(job, self.proc_of(job), "j")
+        hl = self.withheld_say(old, tid)
+        with self.kill_after_begin(), self.assertRaises(Killed):
+            self.reconcile()
+        sminos.forget_caches()
+        opened = threads.get(tid)
+        self.assertEqual((opened["pending"]["op"], opened["current"]), ("absorb", job))
+        real = threads.get
+        before = {k: v for k, v in opened.items() if k != "pending"}   # the record as read before the entry opened
+        with mock.patch.object(threads, "get", lambda t: before if t == tid else real(t)):
+            hl.show_notices()
+        self.assertEqual(self.shown(jreceived), [], "not while the fresh record holds the entry")
+        self.assertEqual(len(self.queued_notices(hl)), 1, "kept for a later pass")
+
+    def test_a_notice_is_kept_while_its_seat_is_vacant_between_occupants(self):
+        """The second reading (G9): a seat being refilled holds no session (`current` empty) and has not ended:
+        its notice waits for the next occupant, never dropped."""
+        sid, proc, tid = self.member(name="seated")
+        self.add(tid, sid, DESK)
+        received = self.inbox(sid, proc)
+        hl = self.withheld_say(sid, tid)
+        real = threads.get
+        with mock.patch.object(threads, "get", lambda t: dict(real(t), current="") if t == tid else real(t)):
+            hl.show_notices()
+        self.assertEqual(len(self.queued_notices(hl)), 1, "kept while the seat is vacant")
+        hl.show_notices()
+        self.assertEqual(len(self.shown(received)), 1, "shown to its occupant")
+
     def test_an_unstamped_say_into_a_channel_tells_no_session(self):
         sid, proc, _ = self.member(name="loose")
         received = self.inbox(sid, proc)
