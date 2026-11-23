@@ -594,7 +594,7 @@ def meta_get(seat_id, field):
 
 
 def record_files():
-    for p in sorted(glob.glob(os.path.join(root(), "*.json"))):
+    for p in sorted(glob.glob(os.path.join(glob.escape(root()), "*.json"))):
         if p.endswith(".reply.json"):
             continue
         yield p
@@ -2056,7 +2056,7 @@ def _registered_at(root):
     with no checkout registered)."""
     if not _ROOTS:
         roots = {}
-        for path in sorted(glob.glob(os.path.join(projects_root(), "*", "project.json"))):
+        for path in sorted(glob.glob(os.path.join(glob.escape(projects_root()), "*", "project.json"))):
             pid = os.path.basename(os.path.dirname(path))
             roots.setdefault(str(registration(pid).get("root") or ""), []).append(pid)
         _ROOTS.append(roots)
@@ -3043,7 +3043,7 @@ def _membership_in_effect(session):
     `session`'s own, of this machine, across every project's files as they
     are now (last_project's scan); None for none."""
     best, at = None, ""
-    for path in glob.glob(os.path.join(projects_root(), "*", "project.json")):
+    for path in glob.glob(os.path.join(glob.escape(projects_root()), "*", "project.json")):
         pid = os.path.basename(os.path.dirname(path))
         # A channel is no session's project (CH1): an older copy's `join` into one is a move to read past.
         p = known_project(pid) if not is_channel_id(pid) else None
@@ -14900,9 +14900,9 @@ def convert_v2_nodes(r, lock_until=None):
     converted = 0
     # Sorted, so a session v2 seeded in two groups converts the same way on
     # every machine: the first group by name keeps the session's seat id.
-    for nodes_dir in sorted(glob.glob(os.path.join(r, "groups", "*", "nodes"))):
+    for nodes_dir in sorted(glob.glob(os.path.join(glob.escape(r), "groups", "*", "nodes"))):
         g = os.path.basename(os.path.dirname(nodes_dir))
-        for nf in sorted(glob.glob(os.path.join(nodes_dir, "*.json"))):
+        for nf in sorted(glob.glob(os.path.join(glob.escape(nodes_dir), "*.json"))):
             try:
                 with open(nf) as f:
                     n = json.load(f)
@@ -15003,7 +15003,7 @@ def merge_asides(r):
     in place and named on stderr on every run until a human resolves it.
     Returns (asides_removed, warnings)."""
     merged, warnings = 0, []
-    for aside in sorted(glob.glob(r + ".v2-*")):
+    for aside in sorted(glob.glob(glob.escape(r) + ".v2-*")):
         if not os.path.isdir(aside) or os.path.islink(aside):
             continue
         ag = os.path.join(aside, "groups")
@@ -15177,7 +15177,7 @@ def migrate(quiet=False, lock_until=None):
                     os.chmod(r, 0o700)
                     did.append("tightened the root to 0700")
                 tight = 0
-                for p in glob.glob(os.path.join(r, "*")):
+                for p in glob.glob(os.path.join(glob.escape(r), "*")):
                     if os.path.isfile(p) and (p.endswith(".json") or p.endswith(".reply.txt") or p.endswith(".err")):
                         if os.stat(p).st_mode & 0o077:
                             os.chmod(p, 0o600)
@@ -15267,7 +15267,7 @@ def import_chats(lock_until=None):
     A chat whose host record is gone stays, its project unknown. With
     lock_until, a chat whose own lock or log lock cannot be had by then is
     left as it is, for a later call."""
-    files = sorted(glob.glob(os.path.join(root(), "chats", "*.jsonl")))
+    files = sorted(glob.glob(os.path.join(glob.escape(root()), "chats", "*.jsonl")))
     if not files:
         return 0
     by_id = {s["seat_id"]: s for s in seats()}
