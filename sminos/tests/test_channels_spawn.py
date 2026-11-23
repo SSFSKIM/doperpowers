@@ -8,21 +8,28 @@ docs/doperpowers/plans/2026-11-23-sminos-environments-en-g2.md, acceptance
   log; the banner, then a line a channel; two values naming one channel
   counted once; a refill of a stopped seat already in another channel keeps
   both, its statement under the refill's new writer; with --wait the thread
-  is placed before the wait begins.
+  is placed before the wait begins, and a first turn that outlasts the
+  watcher still says the launch and each placement before its exit 1.
 - Refused before anything is launched: a name no log answers, several
   answer, or a project's (exit 4, find_channel's words); 129 channels; a
   channel this enrollment does not carry; a kept welcome that lists no
   `channels`, and one not kept yet, each in its own words.
 - After the launch nothing is a refusal: each word a placement can fail
   with is a warning with the command that places it, exit 0, one launch;
-  the limit; the machine's enrollment gone to another org meanwhile (one
-  warning, no command); a registration made uncarried meanwhile.
+  the limit (the removal it needs said first); the machine's enrollment
+  gone to another org meanwhile (one warning, no command); a registration
+  made uncarried meanwhile; the directory and the enrollment read again
+  before each channel (the second retired, or the org left, once the first
+  was placed).
 - The placement itself (sminos_channels.place_spawned, as a VM runs it): one
   deadline for all of it, a registration's lock another process holds on
-  the second channel costing that channel alone (`time`), the first applied.
+  the second channel costing that channel alone (`time`), the first applied;
+  the budget's override a finite positive number or the default.
 - Nothing else changed: the merge base's parser and this one agree on every
   spelling of every flag of `spawn` but `--c`; a spawn without --channel
-  prints, launches and writes what the merge base's does, but for ids.
+  prints, launches and writes what the merge base's does, but for ids; its
+  preamble is the merge base's whatever the names hold (the order of
+  filling included).
 
 Hermetic: test_channels_requests.Requests (test_threads.Machine, cut over to
 an endpoint never run, its kept welcome listing `channels`); the launcher is
@@ -169,11 +176,11 @@ class Placed(Spawns):
                      "or a name"):
             self.assertIn(said, flat)
 
-    def test_a_placeholder_written_in_a_name_is_kept_as_written(self):
-        for channels_asked in ((), ({"id": DESK, "name": "desk"},)):
-            text = sminos.render_preamble("p{{CHANNELS}}q", "a{{BY}}b", "c{{PROJECT}}d", channels_asked)
-            for literal in ("p{{CHANNELS}}q", "a{{BY}}b", "c{{PROJECT}}d"):
-                self.assertIn(literal, text, (literal, channels_asked))
+    def test_a_placeholder_written_in_a_name_is_kept_as_written_where_channels_are_asked(self):
+        # Without a channel the preamble is the merge base's, its order of filling included (SameAsBase).
+        text = sminos.render_preamble("p{{CHANNELS}}q", "a{{BY}}b", "c{{PROJECT}}d", ({"id": DESK, "name": "desk"},))
+        for literal in ("p{{CHANNELS}}q", "a{{BY}}b", "c{{PROJECT}}d"):
+            self.assertIn(literal, text, literal)
 
     def test_a_refill_of_a_stopped_seat_keeps_its_channel_and_states_under_the_new_writer(self):
         code, out, err, first = self.spawn("--channel", "lobby")
@@ -195,7 +202,7 @@ class Placed(Spawns):
     def test_with_wait_the_thread_is_placed_before_the_wait_begins(self):
         seen = {}
 
-        def watched(seat_id, short, alias, uuid_hint, guard):
+        def watched(seat_id, short, alias, uuid_hint, guard, said=None):
             seen["channels"] = list(threads.get(seat_id)["channels"])
             return "idle"
         with mock.patch.object(sminos, "finish_turn", side_effect=watched):
@@ -203,6 +210,21 @@ class Placed(Spawns):
         self.assertEqual(code, 0, out + err)
         self.assertEqual(seen["channels"], [DESK])
         self.assertEqual(out.splitlines()[1], "w#%s: in desk" % sid[:8])
+
+
+    def test_with_wait_a_first_turn_that_outlasts_the_watcher_still_says_the_launch_and_each_placement(self):
+        with mock.patch.object(sminos, "poll_until_done", return_value=("", "timeout", "", False)):
+            code, out, err, sid = self.spawn("--channel", "desk", "--channel", "lobby", "--wait", meanwhile=lambda _: (
+                sminos.write_json(os.path.join(sminos.projects_root(), LOBBY, "project.json"),
+                                  {"project": LOBBY, "name": "lobby", "remote": "", "root": ""})))
+        self.assertEqual(code, 1, "the watcher's exit, as without --channel")
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith("seat spawned: ") and "status=working" in lines[0], out)
+        self.assertEqual(lines[1:], ["w#%s: in desk" % sid[:8]], "each placement's line, and no reply block")
+        said = err.splitlines()
+        self.assertIn("was not placed in lobby", said[0], err)
+        self.assertIn("watcher expired", said[-1], "then the watcher's own words, and its exit")
+        self.assertEqual(threads.get(self.seat_of()["seat_id"])["channels"], [DESK])
 
 
 # ------------------------------------------------------------ refused before anything is launched (acceptance 4, 5)
@@ -301,8 +323,8 @@ class AfterLaunch(Spawns):
         with mock.patch.object(threads, "CHANNEL_LIMIT", 1):
             code, out, err, sid = self.spawn("--channel", "desk")
         self.assertEqual(code, 0, err)
-        self.assertIn("was not placed in desk (it is in 128 channels, the limit): sminos channel add %s %s places it"
-                      % (DESK, sid), err)
+        self.assertIn("was not placed in desk (it is in 128 channels, the limit): one of its memberships must be "
+                      "removed first (sminos channel remove), then sminos channel add %s %s places it" % (DESK, sid), err)
         self.assertEqual(threads.get(self.seat_of()["seat_id"])["channels"], [LOBBY])
 
     def test_an_enrollment_gone_to_another_org_meanwhile_is_one_warning_and_no_command(self):
@@ -331,6 +353,42 @@ class AfterLaunch(Spawns):
         self.assertEqual(out.splitlines()[1:], ["w#%s: in desk" % sid[:8]])
 
 
+    def test_the_directory_and_the_enrollment_are_read_again_before_each_channel(self):
+        real = channels.change
+        org = os.path.join(os.environ["SMINOS_HOME"], "daemon", "org.json")
+
+        def retire_lobby_once_desk_is_placed(thread_id, channel, *args, **kw):
+            got = real(thread_id, channel, *args, **kw)
+            if channel.id == DESK:
+                sminos.write_json(org, {"projects": [{"id": LOBBY, "name": "lobby", "retired": True}],
+                                        "machines": [], "at": sminos.now(ms=True)})
+                sminos.org_retired(LOBBY)   # read now, as a long process holds it
+            return got
+        with mock.patch.object(channels, "change", side_effect=retire_lobby_once_desk_is_placed):
+            code, out, err, sid = self.spawn("--channel", "desk", "--channel", "lobby")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines()[1:], ["w#%s: in desk" % sid[:8]])
+        self.assertIn("was not placed in lobby (its machine's enrollment does not carry it now): sminos channel add "
+                      "%s %s places it" % (LOBBY, sid), err)
+        self.assertEqual(threads.get(self.seat_of()["seat_id"])["channels"], [DESK])
+
+        def leave_the_org_once_desk_is_placed(thread_id, channel, *args, **kw):
+            got = real(thread_id, channel, *args, **kw)
+            if channel.id == DESK:
+                path = os.path.join(os.environ["SMINOS_HOME"], "daemon", "identity.json")
+                with open(path) as f:
+                    d = json.load(f)
+                sminos.enrollment()
+                sminos.write_json(path, dict(d, org="org-2"), mode=0o600)
+            return got
+        os.unlink(org)
+        with mock.patch.object(channels, "change", side_effect=leave_the_org_once_desk_is_placed):
+            code, out, err, sid = self.spawn("--channel", "desk", "--channel", "lobby", alias="v")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines()[1:], ["v#%s: in desk" % sid[:8]])
+        self.assertIn("was not placed in lobby (its machine is no longer enrolled in this org)", err)
+
+
 class Deadline(Spawns):
     """place_spawned as a VM runs it, onto a seat of this machine."""
 
@@ -357,6 +415,13 @@ class Deadline(Spawns):
         self.assertLess(took, 3.0, "one deadline for all of them")
         self.assertGreaterEqual(took, 1.4)
         self.assertEqual(sminos.registration(unknown), {}, "nothing registered without its lock")
+
+    def test_the_budget_s_override_is_a_finite_positive_number_or_the_default(self):
+        for given, budget in (("1.5", 1.5), ("1e309", channels.PLACE_BUDGET), ("inf", channels.PLACE_BUDGET),
+                              ("nan", channels.PLACE_BUDGET), ("0", channels.PLACE_BUDGET),
+                              ("-2", channels.PLACE_BUDGET), ("soon", channels.PLACE_BUDGET)):
+            with self.subTest(given=given), mock.patch.dict(os.environ, {"SMINOS_PLACE_BUDGET": given}):
+                self.assertEqual(channels.place_budget(), budget)
 
     def hold(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -536,6 +601,21 @@ class SameAsBase(unittest.TestCase):
         norm = lambda t: re.sub(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|\b[0-9a-f]{8,16}\b", "<id>",  # noqa: E731
                                 t.replace(home, "<home>"))
         return done.returncode, norm(done.stdout), norm(done.stderr), norm(json.dumps(launches))
+
+    def test_a_preamble_without_channel_is_the_merge_base_s_whatever_the_names_hold(self):
+        render = ("import json, sys\nsys.path.insert(0, sys.argv[1])\nimport sminos\n"
+                  "print(json.dumps([sminos.render_preamble(*a) for a in json.loads(sys.argv[2])]))")
+        names = [["Docs {{ALIAS}}", "writer", "coord"], ["p{{CHANNELS}}q", "a{{BY}}b", "c{{PROJECT}}d"],
+                 ["repo", "w", ""], ["{{BY}}", "{{PROJECT}}", "{{ALIAS}}"]]
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        got = []
+        for scripts in (os.path.dirname(self.base), SCRIPTS):
+            done = subprocess.run([sys.executable, "-B", "-c", render, scripts, json.dumps(names)],
+                                  capture_output=True, text=True, env=env, timeout=120)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            got.append(json.loads(done.stdout))
+        self.assertEqual(got[1], got[0])
+        self.assertIn('a member of the project "Docs writer"', got[1][0], "PROJECT filled before ALIAS, as before")
 
     def test_a_spawn_without_channel_prints_and_launches_what_the_merge_base_does(self):
         base = self.scene(self.base)

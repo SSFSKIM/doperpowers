@@ -17,8 +17,12 @@ docs/doperpowers/plans/2026-11-21-sminos-environments-en-g1.md, Interfaces
   reading another creator; the checkout at another commit; the reach
   narrowed while the VM is made and between two tries of the wait.
 - The outcome line: one whole line, last, held to the call; every other
-  shape is an outcome that is not known, never tried again; and the VM
-  side's own line, for each way it ends, read by the same check.
+  shape is an outcome that is not known, never tried again (a `channels`
+  key a Mac that asked none ignores, whatever it holds: EN.G2's §1); and
+  the VM side's own line, for each way it ends, read by the same check.
+- --channel's VM side (EN.G2's §1), among the rest: a channel the org's
+  directory retired is refused before the launch though no registration
+  of it is here.
 
 Hermetic: test_threads.Machine's temporary HOME and SMINOS_HOME, cut over
 as an endpoint's welcome leaves a machine (daemon/identity.json); origins
@@ -1139,7 +1143,7 @@ class New(On):
         self.assertEqual(code, on.EXIT_LATER, err)
         self.assertIn("spawn --on: vm1's sminos had kept no welcome of its endpoint within 1 minutes, so whether it "
                       "serves channels is not known: no thread was opened there. devcloud vm ssh vm1 -- sminos daemon "
-                      "status shows its uplink; once it is connected, sminos spawn --on vm1 opens it", err)
+                      "status shows its uplink; once it is connected, the same command with --on vm1 opens it", err)
 
 
 class Bound(On):
@@ -1242,6 +1246,12 @@ class Outcome(On):
         self.answers("vm1", self.spawned(refilled=True, extra="a key beyond the shape"))
         code, out, _ = self.spawn("--on", "vm1")
         self.assertEqual((code, out.split(":")[0]), (0, "seat re-filled on vm1"))
+        # `channels` on a success to a Mac that asked for none is a key beyond the shape too (EN.G2's §1).
+        for placed in ({}, [], "x", [{"id": "not-a-channel"}]):
+            with self.subTest(channels=placed):
+                self.answers("vm1", self.spawned(channels=placed))
+                code, out, err = self.spawn("--on", "vm1")
+                self.assertEqual((code, out.split(":")[0]), (0, "seat spawned on vm1"), err)
 
     def test_every_other_shape_is_not_known_and_spawns_nothing(self):
         line = self.spawned()
@@ -1880,6 +1890,18 @@ class VmSide(On):
         self.assertEqual((launched, sminos.seats()), ({}, []))
         self.assertEqual(sminos.registration(LOBBY), {}, "nothing registered before a launch")
 
+    def test_a_channel_the_directory_retired_is_refused_though_no_registration_is_here(self):
+        self.welcomed()
+        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "org.json"), {
+            "projects": [{"id": LOBBY, "name": "lobby", "retired": True}], "machines": [], "at": sminos.now(ms=True)})
+        sminos.forget_caches()
+        self.assertEqual(sminos.registration(LOBBY), {}, "the uplink registers no retired entry")
+        code, lines, err, launched = self.asked(channels=[{"id": DESK, "name": "desk"}, {"id": LOBBY, "name": "lobby"}])
+        self.assertEqual(on.judge(lines, NONCE, "w", code)[1]["why"], "other", err)
+        self.assertIn("the org's directory has retired channel lobby (%s)" % LOBBY, err)
+        self.assertEqual((launched, sminos.seats()), ({}, []))
+        self.assertEqual((sminos.registration(DESK), sminos.registration(LOBBY)), ({}, {}), "nothing registered")
+
     def test_without_channels_nothing_of_it_is_read_and_the_outcome_has_no_key(self):
         self.welcomed()
         os.unlink(sminos.audience_module().audiences_path())
@@ -2085,8 +2107,9 @@ class OnChannels(On):
                       "started there. Do not spawn it again before looking: devcloud vm ssh vm1 -- sminos list --here "
                       "--all lists every seat on vm1, in any project, and devcloud vm ssh vm1 -- claude agents the "
                       "engine's jobs there, if a session started and no seat was recorded. devcloud vm ssh vm1 -- "
-                      "sminos list %s shows who is in desk there. devcloud vm ssh vm1 -- sminos list %s shows who is "
-                      "in lobby there; a channel that does not list it shows nothing about whether it was launched"
+                      "sminos list %s shows who is in desk there, once vm1 has registered it. devcloud vm ssh vm1 -- "
+                      "sminos list %s shows who is in lobby there, once vm1 has registered it; a channel that does not "
+                      "list it shows nothing about whether it was launched"
                       % (DESK, LOBBY), err)
         code, out, err = self.spawn("--on", "vm1")
         self.assertIn("a session may or may not have started there, and devcloud vm ssh vm1 -- sminos list shows",

@@ -10799,7 +10799,8 @@ def cmd_say(a):
     <program> --pools` is a host's form (EN.G2's M3): the untagged text
     recorded in every channel whose pool holds this machine
     (sminos_channels.record_in_pools), refused as a usage error beside
-    `--in`, a selector or an opening tag, and without `--notice`."""
+    `--in`, a selector or an opening tag, and without `--notice`, and as
+    ordinary say refuses the `@<name#short>/<alias>` that opens no tag."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if a.notice is not None and not NOTICE_PROGRAM_RE.fullmatch(a.notice):
         die("--notice names the program that speaks, as a lower-case word of letters, digits and hyphens (32 at "
@@ -10825,6 +10826,8 @@ def cmd_say(a):
             die("--pools records in every channel whose pool holds this machine: drop the selector")
         if leading_tags(a.text):
             die("--pools records an untagged notice, and this text opens with a tag: drop it")
+        if (q := shortened_channel_qualifier(a.text)):
+            die(chans.OPENS_NO_TAG % (q[0], q[1]), 1)   # as ordinary say refuses it (C7), before anything is written
         chans.record_in_pools(a)
         return
     spoken = names_channel(a.in_) if a.in_ else None
@@ -15423,15 +15426,22 @@ def render_preamble(project, alias, by="", channels=()):
     """The spawn preamble every spawn renders (§6), with {{PROJECT}},
     {{ALIAS}} and {{BY}} (the spawner, or "the operator") filled, and
     {{CHANNELS}} with a paragraph of PLACED_SENTENCE for each channel asked
-    (`channels`, [{"id", "name"}]), nothing where none was. It names the CLI
+    (`channels`, [{"id", "name"}]), nothing where none was: then filled as
+    before channels, a placeholder a value holds filled by those after it;
+    with channels in one pass, a value's kept as written. It names the CLI
     `sminos`, which the plugin's bin/ puts on the seat's PATH."""
     try:
         with open(PREAMBLE_PATH) as f:
             t = f.read()
     except OSError:
         die("preamble template missing: %s" % PREAMBLE_PATH, 1)
+    if not channels:
+        # The merge base's filling, byte for byte (EN.G2's acceptance 11): PROJECT, then ALIAS, then BY, each over
+        # what the one before it wrote.
+        return (t.replace("{{CHANNELS}}", "").replace("{{PROJECT}}", project).replace("{{ALIAS}}", alias)
+                .replace("{{BY}}", by or "the operator"))
     values = {"PROJECT": project, "ALIAS": alias, "BY": by or "the operator",
-              "CHANNELS": "\n\n" + " ".join(PLACED_SENTENCE % c for c in channels) if channels else ""}
+              "CHANNELS": "\n\n" + " ".join(PLACED_SENTENCE % c for c in channels)}
     # One pass over the template: a placeholder written in a value (a project's name, say) is kept as written.
     return re.sub(r"\{\{(PROJECT|ALIAS|BY|CHANNELS)\}\}", lambda m: values[m.group(1)], t)
 
@@ -15517,7 +15527,7 @@ def env_default(value, env_name):
     return value if value is not None else os.environ.get(env_name, "")
 
 
-def finish_turn(seat_id, short, alias, uuid_hint, guard):
+def finish_turn(seat_id, short, alias, uuid_hint, guard, said=None):
     """--wait: watch a turn to its end, record the reply, return the status.
 
     The final write is CONDITIONAL on `guard`: minutes may pass in the watcher,
@@ -15526,10 +15536,14 @@ def finish_turn(seat_id, short, alias, uuid_hint, guard):
     exists and the guard (same session, and same launch when we know its short)
     still holds — never resurrecting a purged record nor clobbering a newer
     session. A watcher timeout is not a finished turn: status stays working
-    (also conditionally) and the reply is readable later with `sminos reply`."""
+    (also conditionally) and the reply is readable later with `sminos reply`;
+    `said`, given, is called first: what the spawn says of its launch before
+    this exit (a spawn placed in channels, EN.G2's §1)."""
     uuid, state, _cwd, finished = poll_until_done(short, watcher_iterations())
     if not finished:
         meta_set_if(seat_id, {"status": "working", "updated": now()}, guard)
+        if said is not None:
+            said()
         sys.stderr.write("sminos: watcher expired; turn %s of %s is still running (status=working). "
                          "Read it later with: sminos reply %s\n" % (short, alias, alias))
         sys.exit(1)
@@ -15898,25 +15912,35 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         placed, carriage = channels_module().place_spawned(
             rec_id, uuid, {"cwd": runcwd or cwd, "group": group} if asked is not None else None,
             placing["channels"], placing["org"])
-    if wait:
-        status = finish_turn(rec_id, short, alias, uuid, guard)
     wt = ("  worktree=%s (branch worktree-%s)" % (runcwd, re.sub(r"[^a-zA-Z0-9._-]", "-", worktree))) if worktree else ""
     if verb == "spawned" and seat_id is not None:
         verb = "re-filled"
     placed_warnings = []
-    if asked is None:
-        print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: sminos reply %s)" % (
-            verb, group, alias, short, rec_id, status, wt, short), flush=True)
-        if placed is not None:
-            lines, placed_warnings = channels_module().spawned_lines(alias, uuid, placing["channels"], placed)
-            for line in lines:
-                print(line, flush=True)
+
+    def announce(status):
+        if asked is None:
+            print("seat %s: %s/%s  [%s / %s]  status=%s%s  (reply: sminos reply %s)" % (
+                verb, group, alias, short, rec_id, status, wt, short), flush=True)
+            if placed is not None:
+                lines, warnings = channels_module().spawned_lines(alias, uuid, placing["channels"], placed)
+                placed_warnings.extend(warnings)
+                for line in lines:
+                    print(line, flush=True)
+
+    def warn_after():
+        for failure in log_failed:
+            warn("%s completed, but %s" % ("fill" if verb == "filled" else "spawn", failure))
+        for words in placed_warnings:
+            warn(words)
+    if wait:
+        # A first turn that outlasts the watcher ends this command with exit 1; a spawn placed in channels says its
+        # launch and each placement first (after the launch nothing is a refusal), one without says what it said.
+        status = finish_turn(rec_id, short, alias, uuid, guard,
+                             said=(lambda: (announce("working"), warn_after())) if placing is not None else None)
+    announce(status)
     if wait:
         print_reply_block(rec_id)
-    for failure in log_failed:
-        warn("%s completed, but %s" % ("fill" if verb == "filled" else "spawn", failure))
-    for words in placed_warnings:
-        warn(words)
+    warn_after()
     return {"verb": verb, "group": group, "alias": alias, "short": short, "seat": rec_id, "session": uuid,
             "status": status, "cwd": runcwd or cwd, "project": project, "channels": placed,
             "carriage": carriage}

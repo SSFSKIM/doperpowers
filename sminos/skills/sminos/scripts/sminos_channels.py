@@ -86,6 +86,7 @@ import contextlib
 import glob
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -1426,11 +1427,13 @@ CARRIAGE_UNREAD = "whether its enrollment carries it could not be read"
 
 
 def place_budget():
+    """PLACE_BUDGET, or SMINOS_PLACE_BUDGET where it is a finite positive number of seconds (an infinity would be
+    a deadline never reached)."""
     try:
         v = float(os.environ.get("SMINOS_PLACE_BUDGET") or PLACE_BUDGET)
     except ValueError:
         return float(PLACE_BUDGET)
-    return v if v > 0 else float(PLACE_BUDGET)
+    return v if math.isfinite(v) and v > 0 else float(PLACE_BUDGET)
 
 
 def placement_words(state, why):
@@ -1490,7 +1493,8 @@ def place_spawned(thread_id, session, seat, asked, org):
     project and CARRIAGE_UNREAD where the reads did not get that far (the
     deadline, an error, a directory in no project). None without a seat.
     The caches are dropped first, so the enrollment, the org's directory
-    and each registration are read as they are now, and again at the end; one deadline, PLACE_BUDGET from then
+    and each registration are read as they are now, again before each
+    channel, and again at the end; one deadline, PLACE_BUDGET from then
     (SMINOS_PLACE_BUDGET), bounds every wait in it, however deep
     (sminos.waits_until: each lock, each child process). `org` is the
     request's on a VM, else the org this machine was enrolled in when the
@@ -1501,7 +1505,8 @@ def place_spawned(thread_id, session, seat, asked, org):
     1. this machine's enrollment none, or of another org: every channel
        `identity`, none tried; 2. the seat's project not carried: every
        channel `project-not-carried`, none tried; then for each channel while
-       time is left (else `time`, not tried): 3. registered from the request
+       time is left (else `time`, not tried), the enrollment read again (gone
+       or of another org: that channel `identity`): 3. registered from the request
        where this machine does not know it (a lock not had in time: `time`);
        4. its registration and the directory read now: none, `unregistered`;
        not carried (but for one that has left this machine), `not-carried`;
@@ -1562,7 +1567,15 @@ def _place_all(thread_id, session, seat, asked, org, deadline):
 
 
 def _place_one(thread_id, session, c, org, deadline):
-    """§1's steps 3 to 5 for one channel: (state, why)."""
+    """§1's steps 3 to 5 for one channel, (state, why), from the files as
+    they are when its turn comes: the caches dropped again, and this
+    machine's enrollment read again first (none, or of another org:
+    `identity`), so a channel retired or an enrollment changed while an
+    earlier channel was placed is seen."""
+    sminos.forget_caches()
+    mine = sminos.enrollment()
+    if mine is None or mine.get("org") != org:
+        return "failed", "identity"
     if not sminos.registration(c["id"]):
         register(c["id"], c["name"], lock_until=deadline)
     channel = sminos.known_project(c["id"])
@@ -1594,6 +1607,11 @@ def spawned_lines(alias, session, asked, placed):
         name = names.get(p["id"], p["id"])
         if p["state"] == "applied":
             out.append("%s: %s %s" % (label, "already in" if p["why"] == "unchanged" else "in", name))
+        elif p["state"] == "refused" and p["why"] == "limit":
+            # The same add meets the same limit until the thread has left a channel (CH2's limit, a refill's set).
+            warnings.append("spawn completed, but %s was not placed in %s (%s): one of its memberships must be removed "
+                            "first (sminos channel remove), then sminos channel add %s %s places it"
+                            % (label, name, placement_words(p["state"], p["why"]), p["id"], session))
         else:
             warnings.append("spawn completed, but %s was not placed in %s (%s): sminos channel add %s %s places it"
                             % (label, name, placement_words(p["state"], p["why"]), p["id"], session))
@@ -2715,21 +2733,28 @@ def vms_of(held):
                 "unknown": reply["unknown"], "unused": reply["unused"], "ambiguous": ambiguous}, hosts, notes)
 
 
+_SHORT_ID = re.compile(r"[0-9a-f]+")
+
+
 def _owners(creators):
     """{creator: {creator, thread, session, alias}} for hosts' creators
     (`@<short>`), each the thread its short names by the rule a `@<short>`
     tag resolves by across the org (X2: sminos.match_members with no alias,
     a member's current id before another id of it, current_first; one
     session once, one_per_session), the last three None where no one
-    thread, or more than one, answers to it. One pass over the org's
-    members for every creator at once: what it costs is one read of the
-    members of every project in org_scope, as one `@<short>` tag's lookup
-    reads them, whatever the number of creators. A member's `thread` is
-    its projection's (sminos.row_thread: its latest joined's stamp, else
-    the seat an unstamped one names)."""
+    thread, or more than one, answers to it, and for a creator that is no
+    short id (a label word the driver allows, `@retired-worker`). The short
+    names the thread; who is shown is the thread's row as the rosters keep
+    it (_sweep: after a refill across projects whose two halves are both
+    seen, its newest occupant's, never the session that made the host).
+    One pass over the org's members for every creator at once: what it
+    costs is one read of the members of every project in org_scope, as one
+    `@<short>` tag's lookup reads them, whatever the number of creators. A
+    member's `thread` is its projection's (sminos.row_thread: its latest
+    joined's stamp, else the seat an unstamped one names)."""
     if not creators:
         return {}
-    shorts = {c[1:]: c for c in creators}
+    shorts = {c[1:]: c for c in creators if _SHORT_ID.fullmatch(c[1:])}
     hits = {c: [] for c in creators}
     for p in sminos.org_scope():
         for m in sminos.members(p):
@@ -2744,6 +2769,9 @@ def _owners(creators):
             for short, creator in shorts.items():
                 if short in ids:
                     hits[creator].append((p, m, ids[short]))
+    kept = {}
+    for p, m in _sweep()["rows"].values():
+        kept.setdefault(_thread_read(m.swept), (p, m))
     out = {}
     for creator in creators:
         found = sminos.one_per_session(sminos.current_first(hits[creator], creator[1:]))
@@ -2751,8 +2779,11 @@ def _owners(creators):
             out[creator] = {"creator": creator, "thread": None, "session": None, "alias": None}
             continue
         p, m = found[0]
-        out[creator] = {"creator": creator, "thread": sminos.row_thread(sminos.view_of(p).info.get(m.session)) or None,
-                        "session": m.session, "alias": m.alias}
+        thread = sminos.row_thread(sminos.view_of(p).info.get(m.session)) or None
+        by_roster = row_thread(p, m)
+        if by_roster and by_roster in kept:
+            p, m = kept[by_roster]
+        out[creator] = {"creator": creator, "thread": thread, "session": m.session, "alias": m.alias}
     return out
 
 

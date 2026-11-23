@@ -7,7 +7,8 @@ docs/doperpowers/plans/2026-11-23-sminos-environments-en-g2.md, Interfaces
   -- <names>`, the cutoff the smaller of 20 seconds and devcloud_timeout();
   the replies its stand-in plays are built by devcloud's own `info` module
   from this tree (driver/info.py), so a change of the reply on either side
-  fails here; a whole reply is read as asked, with what it holds.
+  fails here; a whole reply is read as asked, with what it holds, a
+  creator that is a label word and no short id among it.
 - Unavailable, devcloud not run: no CLI, a copy older than 0.19.0 or of no
   readable version; and exit 6.
 - Failed: a copy that cannot be run, no answer within the bound (stopped),
@@ -55,6 +56,8 @@ def bad(**over):
     return info.reply([dict(vm, **over)], [], ["main"], [])
 print(json.dumps({
     "whole": info.reply([vm, box, nobody], [time_], ["main"], ["far"]),
+    "a label": info.reply([info.provider_host("dc-x-0001", "main", "hetzner", "retired-worker", 1763850000, 0.47,
+                                              "EUR"), box], [], ["main"], []),
     "empty": info.reply([], [], ["main"], []),
     "unused": unused,
     "nan": info.reply([info.provider_host("dc-x-0001", "main", "hetzner", None, 1763850000, float("nan"), "EUR")],
@@ -134,6 +137,19 @@ class VmInfo(Machine):
         self.assertEqual(got.reply, json.loads(self.reply("whole")))
         self.assertEqual([h["name"] for h in got.reply["hosts"]], ["dc-x-0001", "Box-1", "box-2"],
                          "a name of another case is a name asked")
+
+    def test_a_creator_label_that_is_no_short_id_is_whole(self):
+        # The driver takes any label word for `devcloud-creator`, and says it as `@<label>`: the reply stays whole,
+        # and the host keeps its age and cost (channel show names no thread for it).
+        self.standin(stdout=self.reply("a label"))
+        got = self.ask()
+        self.assertEqual(got.state, "asked")
+        self.assertEqual([h["creator"] for h in got.reply["hosts"]], ["@retired-worker", "@5e6f7a8b"])
+        for creator in ("@", "@two words", "@line\nbreak", "@\x1b[2J", "retired-worker", 7):
+            with self.subTest(creator=creator):
+                d = json.loads(self.reply("a label"))
+                d["hosts"][0]["creator"] = creator
+                self.assertFalse(threads.info_reply(d, NAMES), "no word a line can print")
 
     def test_the_copy_sminos_devcloud_names_is_taken_at_its_word(self):
         cli = os.path.join(self.home, "bare", "devcloud")

@@ -7,7 +7,8 @@ of the logs holds that pool when it is called.
 
 - The form: `--pools` without `--notice`, inside a session, beside `--in`,
   beside a selector and before a text that opens with a tag, each refused as
-  a usage error before anything is written; the merge base's parser and this
+  a usage error before anything is written, and the `@<name#short>/<alias>`
+  that opens no tag refused as ordinary say refuses it; the merge base's parser and this
   one agree on every spelling of every flag of `say` but `--p`, now refused
   as ambiguous.
 - Which channels: a machine in no pool (exit 0, nothing recorded); a pool
@@ -153,6 +154,18 @@ class Form(Pools):
                 code, out, err = self.notice(text=text)
                 self.assertEqual(code, 2, out + err)
                 self.assertIn("opens with a tag", err)
+        self.assertEqual(self.logs(), before, "nothing was written")
+
+    def test_an_address_whose_qualifier_is_a_channel_s_short_form_is_refused_as_ordinary_say_refuses_it(self):
+        self.live("reader")
+        self.assertTrue(self.in_pool(DESK))
+        before = self.logs()
+        for q in ("desk#%s" % DESK[:8], "desk#%s" % DESK):
+            with self.subTest(q=q):
+                code, out, err = self.notice(text="@%s/reader %s" % (q, TEXT))
+                self.assertEqual(code, 1, out + err)
+                self.assertIn("@%s/reader opens no tag (a tag's qualifier takes no #): nothing was recorded" % q, err)
+                self.assertEqual(out, "")
         self.assertEqual(self.logs(), before, "nothing was written")
 
 

@@ -2568,7 +2568,6 @@ def owned_among(reply, shorts):
 DEVCLOUD_INFO_MIN = (0, 19, 0)   # the first devcloud that answers `vm info`
 DEVCLOUD_INFO_BOUND = 20         # seconds `channel show` waits for it at most
 DEVCLOUD_INFO_MARGIN = 5         # of those, the driver's start and its report; the rest is the providers' budget
-_HEX = re.compile(r"[0-9a-fA-F]+")
 
 
 class Info(NamedTuple):
@@ -2663,14 +2662,22 @@ def _named(v):
     return isinstance(v, str) and bool(v)
 
 
+def _creator_word(v):
+    """A host's `creator` a line can print: `@` and a word of printable
+    characters with no space. The short id a host holds, mostly; the driver
+    takes any label word there (`@retired-worker`), which names no thread
+    and is shown as it is, never a reason to read the reply as not whole."""
+    return isinstance(v, str) and v[:1] == "@" and len(v) > 1 and v.isprintable() and not any(
+        c.isspace() for c in v)
+
+
 def _info_whole(d, asked):
     if not (isinstance(d, dict) and all(isinstance(d.get(k), list) for k in ("hosts", "unknown", "listed", "unused"))):
         return False
     for h in d["hosts"]:
         if not (isinstance(h, dict) and _named(h.get("name")) and h["name"].lower() in asked
                 and _named(h.get("account")) and "creator" in h and "provider" in h
-                and (h["creator"] is None or isinstance(h["creator"], str) and h["creator"][:1] == "@"
-                     and _HEX.fullmatch(h["creator"][1:]) is not None)):
+                and (h["creator"] is None or _creator_word(h["creator"]))):
             return False
         if _named(h.get("provider")) and "adopted" not in h:
             if not (_number(h.get("created")) and "spent" in h and (h["spent"] is None or _number(h["spent"]))

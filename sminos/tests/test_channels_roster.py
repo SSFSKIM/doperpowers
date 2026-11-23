@@ -34,7 +34,8 @@ listing and `channel show`).
   not at all for a pool of one, whose text and `--json` are the merge base's
   byte for byte; a VM's line with its owner, age and cost, an adopted
   machine's, a Mac's unchanged; the owner after a handover, one no thread
-  answers to, none; the lines of partial coverage (an account not listed,
+  answers to, none, a creator label that is no short id, and after a
+  refill across projects the thread's row the roster keeps; the lines of partial coverage (an account not listed,
   not reached in time, never used by this profile; two hosts of one name);
   and for devcloud unavailable or failed, one line, with the members, the
   requests, the counts and the exit what they were, in both renderers.
@@ -865,6 +866,17 @@ class Vms(Roster):
         self.assertIn("  beta  1 live, 0 stopped  vm, up 0m, 0.00 EUR so far", self.pool_lines(self.show()),
                       "no owner where the host holds none; an age never below 0m")
 
+    def test_a_creator_label_that_is_no_short_id_is_the_owner_and_the_host_keeps_its_age_and_cost(self):
+        self.answer([vm("beta", "@retired-worker", self.up, 1.0, "EUR"),
+                     vm("gamma", "@" + self.far_s[:8], self.up, 0.5, "EUR")])
+        lines = self.pool_lines(self.show())
+        self.assertIn("  beta  1 live, 0 stopped  vm owned by @retired-worker, up 3d4h, 1.00 EUR so far", lines)
+        self.assertIn("  gamma  1 live, 0 stopped  vm owned by faraway#%s, up 3d4h, 0.50 EUR so far"
+                      % self.far_s[:8], lines, "the other hosts keep theirs")
+        pool = {e["machine"]: e for e in json.loads(self.show("--json"))["pool"]}
+        self.assertEqual(pool["beta"]["vm"]["owner"], {"creator": "@retired-worker", "thread": None,
+                                                       "session": None, "alias": None})
+
     def test_the_owner_s_thread_for_an_older_writer_whose_joined_names_a_seat_unstamped(self):
         sid, seat = str(uuidlib.uuid4()), str(uuidlib.uuid4())
         w = "beta/%s" % sid
@@ -957,6 +969,30 @@ class Vms(Roster):
                                  (state, "none", [], [], []))
                 self.assertTrue(line.split(": ", 1)[1].startswith(got["why"][:20]), (line, got["why"]))
         self.assertFalse(os.path.exists(os.path.join(self.home, "older-ran")), "an older devcloud is not run")
+
+    def test_the_owner_is_the_thread_s_row_in_the_roster_after_a_refill_across_projects(self):
+        # beta's thread `faraway` refilled in a second hub project, web: its replacement joined there, stamped with
+        # the thread; its displacement in app not seen yet, so both rows are there. The roster keeps the newer, and
+        # the host's creator, the session that made it, is still a member's current id in app.
+        sminos.register_if_absent(sminos.make_project(WEB, "web", "", "", HUB))
+        sminos.forget_caches()
+        self.web = sminos.known_project(WEB)
+        new = str(uuidlib.uuid4())
+        nw = "beta/" + new
+        time.sleep(0.005)
+        sminos.log_append(self.web, nw, "joined", session=new, alias="refill", name_source="seat", machine="beta",
+                          cwd="/w", worktree="", role="", seat="", by="fill", session_kind="bg", thread=self.far_t)
+        sminos.log_append(self.web, nw, "state", session=new, state="idle", machine="beta")
+        self.state(self.web, nw, new, self.far_t, [DESK])
+        self.assertIn(self.far_s, [m.session for m in sminos.members(self.app)], "the old row is seen too")
+        self.assertIn((WEB, new), self.sessions_of(DESK))
+        self.assertNotIn((APP, self.far_s), self.sessions_of(DESK))
+        self.answer([vm("beta", "@" + self.far_s[:8], self.up, 1.0, "EUR")])
+        self.assertIn("  beta  1 live, 0 stopped  vm owned by refill#%s, up 3d4h, 1.00 EUR so far" % new[:8],
+                      self.pool_lines(self.show()))
+        pool = {e["machine"]: e for e in json.loads(self.show("--json"))["pool"]}
+        self.assertEqual(pool["beta"]["vm"]["owner"], {"creator": "@" + self.far_s[:8], "thread": self.far_t,
+                                                       "session": new, "alias": "refill"})
 
 
 class PoolOfOne(Roster):

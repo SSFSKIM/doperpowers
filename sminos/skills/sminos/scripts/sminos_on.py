@@ -157,7 +157,8 @@ def judge(lines, nonce, alias, code, channels=None):
     or ("refused", d) for one whole outcome line it holds to its call (the
     alias asked, `devcloud vm ssh`'s exit, and where `channels` were asked,
     a success's `channels` naming exactly their ids in order, or none at
-    all: an older VM's), else ("unknown", the reason, as row 29 words it)."""
+    all: an older VM's; where none were asked, the key is ignored, whatever
+    it holds), else ("unknown", the reason, as row 29 words it)."""
     mark = "%s %s " % (OUTCOME, nonce)
     hits = [i for i, line in enumerate(lines) if line.startswith(mark)]
     if not hits:
@@ -170,6 +171,8 @@ def judge(lines, nonce, alias, code, channels=None):
         d = json.loads(lines[hits[0]][len(mark):])
     except ValueError:
         d = None
+    if not channels and isinstance(d, dict):
+        d.pop("channels", None)
     if not outcome_whole(d):
         return "unknown", "the outcome line does not read as one"
     if d["ok"] and d["alias"] != alias:
@@ -469,7 +472,9 @@ def hold_to_channels(req, answer):
     the Mac); one that lists no `channels`, `other`; a channel this machine
     knows whose log its enrollment does not carry against the request's org
     (but for one that has left this machine, which a placement brings back),
-    `other`. A channel it does not know is registered when it is placed."""
+    or one it does not know that the org's directory has retired (the uplink
+    registers no retired entry), `other`. A channel it does not know is
+    registered when it is placed."""
     asked = req.get("channels")
     if not asked:
         return
@@ -482,6 +487,9 @@ def hold_to_channels(req, answer):
                                "session could be placed in none: nothing was spawned")
     for c in asked:
         known = sminos.known_project(c["id"])
+        if known is None and sminos.org_retired(c["id"]):
+            answer.refuse("other", "spawn: the org's directory has retired channel %s (%s): nothing was spawned"
+                          % (c["name"], c["id"]))
         why = sminos.not_carried(known, req["org"]) if known is not None else ""
         if why and why != sminos.LEFT_HERE:
             answer.refuse("other", "spawn: this machine's enrollment does not carry the log of channel %s (%s) as it "
@@ -581,11 +589,13 @@ class Call:
         """Where to look after a call to `vm` whose outcome is not known:
         G1's `sminos list` there, or, where channels were asked (EN.G2's §1),
         every seat on the VM in any project, the engine's jobs there, and
-        each channel's roster, which shows nothing about the launch."""
+        each channel's roster once the VM has registered the channel (a call
+        lost before it did leaves its id no log there), which shows nothing
+        about the launch."""
         if not self.channels:
             return ", and devcloud vm ssh %s -- sminos list shows" % vm
-        each = ". ".join("devcloud vm ssh %s -- sminos list %s shows who is in %s there" % (vm, ch["id"], ch["name"])
-                         for ch in self.channels)
+        each = ". ".join("devcloud vm ssh %s -- sminos list %s shows who is in %s there, once %s has registered it"
+                         % (vm, ch["id"], ch["name"], vm) for ch in self.channels)
         return (". Do not spawn it again before looking: devcloud vm ssh %s -- sminos list --here --all lists every "
                 "seat on %s, in any project, and devcloud vm ssh %s -- claude agents the engine's jobs there, if a "
                 "session started and no seat was recorded. %s; a channel that does not list it shows nothing about "
@@ -993,7 +1003,7 @@ def remote(c, vm, request, directory, enrolled):
         if waited_on[-1] == "welcome-unknown":
             c.refuse("spawn --on: %s's sminos had kept no welcome of its endpoint within %d minutes, so whether it "
                      "serves channels is not known: no thread was opened there. devcloud vm ssh %s -- sminos daemon "
-                     "status shows its uplink; once it is connected, sminos spawn --on %s opens it"
+                     "status shows its uplink; once it is connected, the same command with --on %s opens it"
                      % (vm, round(wait / 60), vm, vm), EXIT_LATER)
         if waited_on[-1] == "spawner-unknown":
             c.refuse("spawn --on: %s had not read this session from the project's log within %d minutes (it is "
