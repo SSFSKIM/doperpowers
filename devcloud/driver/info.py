@@ -107,6 +107,19 @@ def _cost(type_, created, now):
     return spent, currency if isinstance(currency, str) else None
 
 
+def _prices(client, location):
+    """The location's types by name, or none where the list could not be
+    read: a failed call, a provider that cannot be started, or a row whose
+    `type` is not a name (the client takes any value under the key)."""
+    try:
+        rows = client.types(location)
+    except (DriverError, OSError):
+        return {}
+    if not all(isinstance(t["type"], str) for t in rows):
+        return {}
+    return {t["type"]: t for t in rows}
+
+
 def run(ctx, names, within=None):
     budget = _budget(within)
     if not names:
@@ -117,7 +130,7 @@ def run(ctx, names, within=None):
         for account in ctx.profile.accounts.values():
             try:
                 client = ctx.client(account)
-            except DriverError as error:
+            except (DriverError, OSError) as error:     # an OSError: a pass record or a copy that cannot be read
                 if provider.never_passed(ctx.paths.profile, account, ctx.profile.accounts):
                     unused.append(account.name)
                     ctx.warn(f"devcloud vm info: account {account.name} not asked: its provider never passed "
@@ -127,7 +140,7 @@ def run(ctx, names, within=None):
                 continue
             try:
                 entries = ctx.fleet_of(account, client, kinds=None)
-            except DriverError as error:
+            except (DriverError, OSError) as error:     # an OSError: a provider that cannot be started
                 unknown.append(missing(account.name, account.provider, _fate(ctx, error), error))
                 continue
             listed.append(account.name)
@@ -137,10 +150,7 @@ def run(ctx, names, within=None):
         for e in found:
             key = (e.account.name, e.vm["location"])
             if key not in types:
-                try:
-                    types[key] = {t["type"]: t for t in e.client.types(e.vm["location"])}
-                except DriverError:
-                    types[key] = {}
+                types[key] = _prices(e.client, e.vm["location"])
             spent, currency = _cost(types[key].get(e.vm["type"]), e.vm["created"], now)
             hosts.append(provider_host(e.vm["name"], e.account.name, e.account.provider,
                                        e.vm["labels"].get("devcloud-creator"), e.vm["created"], spent, currency))

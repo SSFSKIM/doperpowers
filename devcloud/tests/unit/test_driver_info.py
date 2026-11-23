@@ -4,7 +4,9 @@ shape, pinned for its reader; a VM, an adopted machine, a host with no price,
 a handed-on host; names compared without regard to case, two hosts of one
 name both reported; a read that asks no host, runs no reaper and writes
 nothing; and the providers' budget, each account's fate recorded as it is
-walked: listed, failed at once, stalled, never started."""
+walked: listed, failed at once, stalled, never started; an account whose
+provider cannot be opened or started, and a type list with a malformed row,
+each costing what it touches alone."""
 import json
 import shutil
 import time
@@ -210,6 +212,42 @@ class InfoTest(DriverBase):
         self.assertEqual((answer["listed"], answer["unused"]), (["main"], ["never"]))
         self.assertEqual(json.loads(never.read_text())["calls"], [], "nothing asked of it")
         self.assertIn("never", self.err.getvalue())
+
+    def test_a_pass_record_that_cannot_be_read_is_that_account_s_failure_and_the_others_keep_their_rows(self):
+        self.add_account("spare")
+        record = self.profile_dir / "providers" / "spare.pass.json"
+        record.unlink()
+        record.mkdir()                                  # a read raises an OSError, as an unreadable file does
+        self.add_server("dc-x-0001", vm_labels(**{"devcloud-creator": "1a2b3c4d"}))
+        code, answer = self.ask("dc-x-0001")
+        self.assertEqual(code, 0)
+        self.assertEqual([h["name"] for h in answer["hosts"]], ["dc-x-0001"])
+        self.assertEqual([(m["account"], m["failed"]) for m in answer["unknown"]], [("spare", "account")])
+        self.assertEqual((answer["listed"], answer["unused"]), (["main"], []))
+
+    def test_a_provider_that_cannot_be_started_is_that_account_s_failure_and_the_others_keep_their_rows(self):
+        spare = self.add_account("spare")
+        self.add_to(spare, "dc-x-0002", vm_labels())
+        (self.profile_dir / "providers" / ".pass" / "spare").chmod(0o644)    # its hash holds; it cannot run
+        self.add_server("dc-x-0001", vm_labels(**{"devcloud-creator": "1a2b3c4d"}))
+        code, answer = self.ask("dc-x-0001", "dc-x-0002")
+        self.assertEqual(code, 0)
+        self.assertEqual([h["name"] for h in answer["hosts"]], ["dc-x-0001"])
+        self.assertEqual([(m["account"], m["failed"]) for m in answer["unknown"]], [("spare", "listing")])
+        self.assertEqual(answer["listed"], ["main"])
+
+    def test_a_type_list_with_a_malformed_row_leaves_costs_unknown(self):
+        self.add_server("dc-x-0001", vm_labels(**{"devcloud-creator": "1a2b3c4d"}))
+        data = self.state()
+        data["types"] = {"here": [{"type": "medium", "hourly_price": 0.1178, "currency": "EUR"},
+                                  {"type": [], "hourly_price": 1, "currency": "EUR"}]}
+        self.state_file.write_text(json.dumps(data))
+        code, answer = self.ask("dc-x-0001")
+        self.assertEqual(code, 0)
+        [host] = answer["hosts"]
+        self.assertEqual((host["name"], host["creator"], host["spent"], host["currency"]),
+                         ("dc-x-0001", "@1a2b3c4d", None, None))
+        self.assertEqual(answer["unknown"], [], "the host was listed: its cost alone is missing")
 
     def test_an_adoption_record_that_does_not_read_is_unknown(self):
         self.paths.adopted.mkdir(parents=True)
