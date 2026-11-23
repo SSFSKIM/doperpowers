@@ -78,7 +78,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M4 — Saying into a channel: the doors, the reply, the read. `d5c345bc`, fixes `934afd76`, `b9fc61a4`; reviewed clean at the third review (one Minor on a draft sentence's wording left for open point 4). Gates GREEN on `b9fc61a4`; sminos-idle 32,663; sminos-channels 2m06s.
 - [x] (2026-11-22) M5 — The scene on a real engine. Run whole against `f775004d` (Claude Code 2.1.330, haiku, a scratch home): all four steps showed what they expect; no fault of M1 to M4, no code changed; the checker found nothing over the stand-in's frames and the store; every process stopped. Step 4's hand-off made as Surprises says.
 - [x] (2026-11-22) M6 — Across machines: asking, and carrying out off the consumer thread. `5af6ab8c`, fixes `e7742001`, `d5b03b63`, `15198aa9`, `52d5241d`; reviewed with M2 to M6 as one range (three reviews on the medium rung, the bound), the third's fix (`52d5241d`) made after it and named to the frontier panel. Gates GREEN on `52d5241d`; sminos-idle 32,216; sminos-channels 3m15s of its 6m timeout.
-- [ ] M7 — Held to MAWS's fixture, and what a channel costs.
+- [ ] M7 — Held to MAWS's fixture, and what a channel costs. (Bench `7add7342`, fixes `0d093808`, `aacec34c`, `eaa53afb`; MAWS's fixture at `86c79d0a3` (blob `5aabcdec`) replays whole, 158 lines, `41e7573a`; gates GREEN; sminos-idle 32,230; sminos-channels 3m29s; in its last review.)
 - [ ] M8 — The lead, and whose words a post is. (Built `92382f49`; gates GREEN; sminos-idle 32,801; sminos-channels 3m17s; in review.)
 - [ ] M9 — What reads a session's exchanges reads a channel's.
 - [ ] The review of M1 to M9 as one range (the holder's), and its fixes.
@@ -3133,8 +3133,14 @@ them today.
   known and 1.35 s with one. The idle uplink: 32,909 calls a second with
   no channel, 39,033 with thirty followed and none held (no debt read),
   41,504 with thirty held; the merge base reads 37,995 with thirty
-  followed. An upload costs 5,730 calls a message from one sender and
-  9,406 from ten.
+  followed. An upload costs 7,628 calls a message from one sender and
+  9,381 from ten (M7's second review made the bench post only at a
+  counted turn; the first figures, 5,730 and 9,406, counted part of an
+  upload outside the window). With `channels` and `reach` advertised and
+  no channel, the idle uplink reads 34,165 here, 34,299 at `main`'s merge
+  base and 34,092 at CH1's (medians of three interleaved runs): the
+  capability's cost over the gate's shape predates CH1, and this child
+  adds none (a TECH-DEBT row, "sminos uplink idle cost").
   Evidence: M7's report, §2.
 
 ## Decision Log
