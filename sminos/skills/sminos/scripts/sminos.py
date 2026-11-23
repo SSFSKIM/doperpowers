@@ -8179,12 +8179,23 @@ def holder_owed(project, member, session, e, events, cursor, owing=None):
                    prepare=False, **_th(owing))
     if plan is None:
         return None
-    if holder_due(session, plan, peer):
+    if holder_due(session, plan, peer, e):
         return HOLDER_RETRY
+    if e.get("wake") and _receipt_orphaned(session, plan, peer):
+        # An event for the live alone, its receipt's process gone and its thread stopped: settled `recorded`, as it
+        # is for any stopped member (holder_due), never left first owed ahead of its writer's next message.
+        return "recorded"
     return holder_carry(plan, project, member, session, e, events, cursor, peer, **_kw(owing))
 
 
-def holder_due(session, plan, peer):
+def _receipt_orphaned(session, plan, peer):
+    """holder_due's last case: a receipt `awaiting` while no process runs
+    and the session is the current one of a lane A thread."""
+    return plan.kind == "awaiting" and peer is None and threads_module().lane_a(session) \
+        and threads_module().current_record(session, fresh=True) is not None
+
+
+def holder_due(session, plan, peer, e=None):
     """Whether an event whose held receipt `plan` describes (hd.plan(...,
     existing_only=True, prepare=False)) is next pushed: the plan says `push`
     or `legacy`, or it says `awaiting` while no process runs (`peer` None)
@@ -8193,14 +8204,15 @@ def holder_due(session, plan, peer):
     process's, the session since reopened as lane A and closed): its next
     step is a push to the process a wake starts, as for any event owed to a
     stopped thread (T1's limit: at most one copy more), never a wait that
-    keeps the thread from being woken. Reads only. holder_owed's
+    keeps the thread from being woken. An event for the live alone (`e`'s
+    `wake`) is never pushed there: no wake is made for it, and holder_owed
+    settles it `recorded`. Reads only. holder_owed's
     HOLDER_RETRY is this, for every log; a channel's reach_due chooses by it
     (CH2's M6), so its ask goes where the push would retry. A project's
     reach_due keeps its own test (push or legacy): its asks are today's."""
     if plan.kind in ("push", "legacy"):
         return True
-    return plan.kind == "awaiting" and peer is None and threads_module().lane_a(session) \
-        and threads_module().current_record(session, fresh=True) is not None
+    return not (e is not None and e.get("wake")) and _receipt_orphaned(session, plan, peer)
 
 
 def holder_push(project, member, session, e, events, cursor, words=None, retry=False, due=False, owing=None):
@@ -8963,7 +8975,7 @@ def reach_due(project, members, owing=None):
                                        existing_only=True, prepare=False, thread=o.thread, lock_until=time.time())
                 except LockBusy:
                     return False
-                if plan is None or not holder_due(o.session, plan, peer):
+                if plan is None or not holder_due(o.session, plan, peer, e):
                     return False
                 verdict = holder.words_of(project.id, o.session, e, o.thread)
             elif words_route(project, e) == "ask":

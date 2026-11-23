@@ -1159,6 +1159,18 @@ class Receipts(Channel):
                 self.assertEqual(self.settled(again, W1), e["seq"], "settled on its own push")
                 self.assertEqual(self.settled(tid, W1), e["seq"])
 
+    def test_an_event_for_the_live_alone_whose_receipt_was_never_admitted_settles_for_a_stopped_thread(self):
+        tid, sid = self.stopped()
+        everyone = self.message((sid, tid), text="to whoever runs", wake=True)
+        named = self.message((sid, tid), text="named after it")
+        self.receipt(DESK, sid, everyone, tid)   # handed to a process that is gone, never admitted
+        self.deliver()
+        self.assertEqual(self.woken_got(sid, "to whoever runs"), [], "nothing for the live alone to a stopped thread")
+        self.assertEqual(len(self.resumes(sid)), 1, "the named message that follows wakes it")
+        self.assertEqual(len(self.woken_got(sid, "named after it")), 1)
+        self.assertEqual(self.settled(tid, W1), named["seq"], "neither stays first owed")
+        self.assertFalse(sminos.holder_module().exists(DESK, sid, everyone, tid), "its receipt settled with it")
+
     def test_a_channels_receipt_is_swept_on_the_record_of_its_thread_never_on_a_seats_by_its_session(self):
         seat = str(uuidlib.uuid4())              # a seat's thread id: its first session's
         other = str(uuidlib.uuid4())             # the thread the receipt was for, that session's now
