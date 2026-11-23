@@ -80,7 +80,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M6 — Across machines: asking, and carrying out off the consumer thread. `5af6ab8c`, fixes `e7742001`, `d5b03b63`, `15198aa9`, `52d5241d`; reviewed with M2 to M6 as one range (three reviews on the medium rung, the bound), the third's fix (`52d5241d`) made after it and named to the frontier panel. Gates GREEN on `52d5241d`; sminos-idle 32,216; sminos-channels 3m15s of its 6m timeout.
 - [x] (2026-11-22) M7 — Held to MAWS's fixture, and what a channel costs. Bench `7add7342`, fixes `0d093808`, `aacec34c`, `eaa53afb`, `b1de80db`; MAWS's fixture at `86c79d0a3` (blob `5aabcdec`) replays whole, 158 lines, `41e7573a`; three task reviews (the bound), the third's fix (`b1de80db`: the pinned digests) made after it and named to the frontier panel. Gates GREEN on `b1de80db`; sminos-idle 32,280; sminos-channels 3m21s.
 - [x] (2026-11-22) M8 — The lead, and whose words a post is. `92382f49`, fixes `9e5d57be`, `11e497ea`, `39873d8a`; three task reviews (the bound), the third's fix (`39873d8a`) made after it and named to the frontier panel. Gates GREEN on `39873d8a`; sminos-idle 32,792; sminos-channels 3m10s.
-- [ ] M9 — What reads a session's exchanges reads a channel's.
+- [x] (2026-11-22) M9 — What reads a session's exchanges reads a channel's. Built `558faa90`, `ba129c3a`, `81d66f16`; fixes `82a7019d`, `a823a3f9`, `f12f0b65`; three task reviews (the bound), round 3's fixes (`f12f0b65`) made after it and named to the frontier panel. Gates GREEN on `f12f0b65`; sminos-idle 32,756; sminos-channels 2m39s.
 - [ ] The review of M1 to M9 as one range (the holder's), and its fixes.
 - [ ] M10 — What sessions are taught, and its evaluation.
 - [ ] M11 — Older copies, what is written beside the code, the version, and the acceptance.
@@ -3936,6 +3936,49 @@ them today.
   them; its conversation at `86c79d0a3` holds both, and this tree's replay
   rests on them. The composite's holder records the contract on the
   composite (X-contracts); this plan only names where CH2 depends on it.
+- 2026-11-22 — **M9 as built** (`558faa90` to `f12f0b65`). Where the plan
+  was silent or the reviews moved it, kept by the controller:
+  - A peer met in a channel is resolved by its thread stamp over every
+    project's projection, read-only (no view, no sweep; rows unlisted to
+    the reader skipped), newest live row by `_newest_row`'s rule, a tie
+    giving none; a `joined` row whose member has ended (an org-retired
+    machine) is not live. The index is trusted only when every project was
+    read: a peer whose lookup the budget cut is named by its message,
+    untagged ("not read in time").
+  - Exchanges are keyed by thread from the start; the session is a lookup
+    hint and the displayed short id. Unstamped (older) entries keep B3's
+    path. At render the name, how it was met and the session come from the
+    key with the latest exchange; an ordinary project row stamped with a
+    thread whose channel lookup completed is merged into it (one row for a
+    moved peer).
+  - The reader's channels come from the statement fold
+    (`sminos_threads.Fold`) of its two prescribed project logs, any of its
+    thread's sessions, not hand-off lineage. "Holds a channel now" (every
+    tag then names the peer's project, as `resolve_tag` then matches in
+    shared rosters) is the latest effective statement, so a reader in no
+    channel reads no thread record (B11 byte for byte, and no new store
+    read). Where the record and the statement disagree for a moment the
+    guide can print a bare tag the resolver finds ambiguous: logged.
+  - The roster runs in two phases on one monotonic clock: the project
+    logs' ordinary keys as before, then the channel work with what the
+    budget leaves, ranked together by latest exchange; the deadline is
+    checked before each log, each channel, each project of the index, and
+    after a read before its scan or its members are built.
+  - The manager's `OwnerWords(logs, sessions, threads)`: in a channel's
+    log an event counts when an entry's `thread` is one of the lineage's
+    threads, the union of the stamps its own rows carry in the
+    subscription's project (exactly-one makes a collision certify neither);
+    project events still match by session; threads are derived only when a
+    channel log is known. Chat candidates compare in rendered form
+    (`sender_text`). A frame under a project's former name certifies
+    nothing (pinned; logged).
+  - B7's tests reach the bridge through a short link to `SMINOS_HOME` (the
+    socket path limit, logged at M5); they prove placement on disk and the
+    frame the stand-in captured, not the wire, which the uplink's host
+    pass (skipping channel logs) makes sufficient.
+  - Logged in TECH-DEBT rather than fixed (`66fb95b8`): the pending
+    statement's bare tag; the manager's union across projects; the former
+    name; the thread index's cost.
 
 
 ## Outcomes & Retrospective
