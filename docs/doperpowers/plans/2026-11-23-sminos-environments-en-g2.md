@@ -1627,7 +1627,7 @@ devcloud host calls (§5), and `sminos help` lists it under `say`.
 - The exit: 0, or 1 when a channel was passed over for a failure. Never
   2 for anything but a usage error: a host reads 2 as a sminos that does
   not know the flag.
-- It writes into no project's log, delivers nothing and wakes no one.
+- It writes no notice into a project's log, delivers nothing and wakes no one.
 
 ### §5. A host's delivery (`D/boot/devcloudlib/notices.py`, M3)
 
