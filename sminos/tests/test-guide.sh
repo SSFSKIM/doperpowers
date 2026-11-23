@@ -127,6 +127,31 @@ for verb in "list" "--here" "--org" "list --subagents" "--done N" "replace ListA
   assert_contains "$OUT" "$verb" "it names $verb"
 done
 assert_equals "$(cat "$T/err")" "" "nothing on stderr"
+assert_contains "$first" "You are a thread: a member still when this process ends" "it is told it is a thread"
+assert_contains "$OUT" "a bare @alias reaches your project and the channels you are in" \
+  "a bare tag is said to reach the project and the channels the session is in (CH2's M10)"
+assert_not_contains "$OUT" "reaches only your project" "never that a bare tag reaches only the project"
+assert_contains "$OUT" '  sminos say --in <channel> "@<alias>|@all ..."   said in a channel, as is "@<channel>/<alias> ..."' \
+  "it names the two ways to speak in a channel"
+assert_contains "$OUT" "untagged there prompts no one" "and that an untagged post there prompts no one"
+assert_contains "$OUT" '`sminos channel create <name>`, then `channel add <name> <project>/<alias>|<short>...`' \
+  "and how one is made"
+assert_not_contains "$OUT" "Your thread is in the channel" "a thread in no channel is given no channel line"
+# A session MAWS launched (lane B: its record's origin) is a member and no thread: it is not told it is one.
+REC="$SMINOS_HOME/session-records/$S1.json"
+if [ -e "$REC" ]; then cp "$REC" "$T/rec.kept"; fi
+python3 - "$REC" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+rec = json.load(open(path)) if os.path.exists(path) else {"owners": ["@machine"], "source": "launch"}
+rec["origin"] = {"kind": "maws"}
+os.makedirs(os.path.dirname(path), exist_ok=True)
+json.dump(rec, open(path, "w"))
+PY
+guide "$(payload "$S1" "$STRAY" "$TX")"
+assert_contains "$(head -1 <<<"$OUT")" "new-7e [1a000001]" "a lane B session is still guided"
+assert_not_contains "$OUT" "You are a thread" "and is not told it is a thread"
+if [ -e "$T/rec.kept" ]; then mv "$T/rec.kept" "$REC"; else rm "$REC"; fi
 
 echo "a session in a hub project, launched there, its shell since moved:"
 REPO="$T/repo"
@@ -411,6 +436,10 @@ roster_of() { # session dir — the roster its compaction's guidance ends with
 }
 tag_of() { { line "$1" || true; } | python3 -c 'import sys; print(sys.stdin.read().strip().split("  ")[0])'; }
 roster_of "$U" "$REPO"
+assert_contains "$OUT" "Your thread is in the channel guide-desk, with sessions of other projects" \
+  "a thread in a channel is told its name (CH2's M10)"
+assert_contains "$OUT" "a reply line whose tag keeps your answer in that channel: run it as given" \
+  "and that a frame's reply line keeps an answer there"
 assert_contains "$(line chan-v)" "@otherproj/chan-v " "a peer met only in a channel is listed, tagged in its own project"
 assert_contains "$(line chan-v)" "otherproj on alpha" "with where it is"
 assert_contains "$(line chan-v)" "it wrote you" "and the exchange's last direction"

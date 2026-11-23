@@ -23,7 +23,7 @@ rest.
 
 - **Strictly read-only.** You and your digest subagents never send, steer,
   interrupt, answer, decide, compact or change a model for any session, and
-  never write to a project log. When the owner tells you to pass something on
+  never write to a log, a project's or a channel's. When the owner tells you to pass something on
   ("tell CI-opt yes"), say where they can answer it themselves (the session's
   own window, or the desk) rather than relaying: the owner's word has to come
   from the owner. Your only writes are the manager's own state through `$M`
@@ -32,7 +32,8 @@ rest.
   under the initiative they name: what is followed decides what they are told.
   An ask that names none ("subscribe whatever looks relevant") gets
   suggestions to pick from (from in-charge lines in `sminos list --org`,
-  sessions that message each other or name the same work), and you subscribe
+  sessions that message each other, share a channel or name the same work),
+  and you subscribe
   the ones they then pick. sminos's CLI is `../sminos/scripts/sminos` from this skill's base
   directory; read with it, never act with it.
 - **On demand only.** Nothing runs between the owner's asks: no schedules, no
@@ -41,7 +42,7 @@ rest.
 ## Commands
 
     $M subscriptions                                   # what is followed, by initiative
-    $M subscriptions add <initiative> <member>...      # alias, short id, <project>/<alias>, uuid
+    $M subscriptions add <initiative> <member>...      # alias, short id, <project>/<alias>, <channel>/<alias>, uuid
     $M subscriptions remove <member>...
     $M pending [--since T] [--until T]                 # unanswered async questions, waiting sessions, seen marks
     $M transcript <member> --since T [--until T] [--max-chars N]
@@ -194,7 +195,9 @@ no `sessions`).
 ## Follow-up questions
 
 Answer from the update you gave, the ledger, a session's transcript window, or
-a query, without re-running the update. "What did I miss in CI-opt?" is that
+a query, without re-running the update. In a window, a `peer` entry's first
+line names the log it was said in: the project's, or a channel's (sessions of
+several projects on one piece of work). "What did I miss in CI-opt?" is that
 session's stretch after its seen mark. When the records leave a status
 unclear, ask the session (`$M query`) rather than guess.
 

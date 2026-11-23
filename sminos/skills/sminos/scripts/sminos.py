@@ -75,8 +75,9 @@ back by a fill.
     sminos say      [--in <project>] <text>                # untagged: recorded; @alias / @"a b" / @alias#short /
                    @short / @project/alias / @channel/alias: delivered; @all: every live member
     sminos say      --in <channel> <text>                 # said in a channel: its members' tags (@alias, @short,
-                   @alias#short), @all its live members, untagged a record nobody is prompted for; the same as
-                   @channel/alias without --in. A thread that is not in the channel may say into it too: its
+                   @alias#short), @all its live members, untagged a record nobody is prompted for (but a person's,
+                   typed at a terminal without --notice, which goes to the channel's lead when it has one); the
+                   same as @channel/alias without --in. A thread that is not in the channel may say into it too: its
                    replies come to it directly, in its own project
     sminos say      [--org] [--project P,..] [--machine M,..] [--here] [--state W,..] <text>   # list's filters:
                    every live session of that scope but you (`list` with the same flags shows them), each woken
@@ -19977,9 +19978,18 @@ def guide_text(session, launch, source="", title=""):
     fork = (" You are a fork of another session: a copy, with a session id and a name of your own. Every sminos"
             " line above this one was written for the session you were copied from, and messages addressed to it"
             " are not for you; you are its peer.") if source == "fork" else ""
+    # A lane A member is a thread (sminos_records.lane_of); one MAWS launched (lane B) is told nothing of it.
+    thread = (" You are a thread: a member still when this process ends, woken by a message addressed to you."
+              if threads_module().lane_a(session) else "")
+    # The channels the session's thread is in, by name (CH2's M10): a line only for a thread in any.
+    channels = [(known_project(c) or make_project(c, c, "", "", None)).name
+                for c in channels_module().channels_of(session)]
+    inside = ["Your thread is in the channel%s %s, with sessions of other projects: `%s list` shows them, and a"
+              " message from one ends with a reply line whose tag keeps your answer in that channel: run it as given"
+              % ("s" if len(channels) > 1 else "", ", ".join(sorted(channels)), cli)] if channels else []
     return "\n".join([
-        "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project.%s"
-        % (who, project.name, enrollment()["machine"], where, fork),
+        "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project.%s%s"
+        % (who, project.name, enrollment()["machine"], where, thread, fork)] + inside + [
         "Other Claude sessions work in this org, on every enrolled machine and in every repository. "
         "To find one or tell it something, run sminos in Bash:",
         "  %s list            peer sessions in your project; --here sessions on this machine, --org every connected"
@@ -19990,7 +20000,10 @@ def guide_text(session, launch, source="", title=""):
         '  %s say "..."       recorded in your project\'s log, read at its sessions\' next chat; wakes no one:'
         " status nobody must act on goes here" % cli,
         '  %s say "@<short> ..."   reaches that session wherever it runs, as does "@<project>/<alias> ...";'
-        " a bare @alias reaches only your project" % cli,
+        " a bare @alias reaches your project and the channels you are in" % cli,
+        '  %s say --in <channel> "@<alias>|@all ..."   said in a channel, as is "@<channel>/<alias> ...";'
+        " untagged there prompts no one. A channel holds sessions of several projects on one piece of work:"
+        " `%s channel create <name>`, then `channel add <name> <project>/<alias>|<short>...`" % (cli, cli),
         '  %s say --org|--project P|--machine M|--here "..."   wakes every live session list shows with the'
         " same flags (they combine) but you" % cli,
         "  %s say - <<'EOF'   the text on stdin, as written: for text with backticks, quotes, $ or several lines"
