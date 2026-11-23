@@ -149,6 +149,24 @@ class Order(unittest.TestCase):
         self.assertIsNone(probes.early_match(frames, lambda f: f == ask, after, {0}),
                           "an earlier frame matched to another line is that line's")
 
+    def test_an_upload_sent_first_in_a_batch_of_another_shape_is_sent_before_what_it_waits_for(self):
+        """The final reading (H7): an upload line is followed by its events' identity (log, writer, seq), not the
+        batch's shape: its event gone up at 0 beside another, ahead of the member frame it waits for, is early,
+        though the frame the fixture names (the event alone) comes after."""
+        e1 = {"writer": "h/s7", "seq": 1, "kind": "say", "text": "a"}
+        e2 = {"writer": "h/s7", "seq": 2, "kind": "say", "text": "b"}
+        want = {"t": "events", "project": "C", "events": [e1]}
+        frames = [{"t": "events", "project": "C", "events": [e1, e2]}, {"t": "member"},
+                  {"t": "events", "project": "C", "events": [e1]}]
+        exact = lambda f: f == want  # noqa: E731
+        self.assertEqual(probes.early_match(frames, probes.sent_as(want, exact), 1, set()), 0)
+        self.assertIsNone(probes.early_match(frames, probes.sent_as(want, exact), 1, {0}),
+                          "a batch matched to another line is that line's")
+        other = [{"t": "events", "project": "Q", "events": [e1]}, {"t": "events", "project": "C", "events": [e2]}]
+        self.assertIsNone(probes.early_match(other, probes.sent_as(want, exact), 1, set()),
+                          "the same position in another log, or another position, is another event")
+        self.assertIs(probes.sent_as({"t": "member"}, exact), exact, "a line that is no upload: as matched")
+
     def test_a_line_matched_on_another_connection_or_not_at_all_does_not_hold_one_back(self):
         self.assertEqual(probes.after_index([(0, 1), (0, 2)], {(0, 1): (0, 7)}, 1), -1)
 

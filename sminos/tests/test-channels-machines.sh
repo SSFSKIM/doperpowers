@@ -922,8 +922,8 @@ speak_cases() {
   run_in "$T/pc/ops" in_session "$SG" "$SMINOS" say --in desk-ops "@all g1, from gamma"
   assert_rc 0 "$RC" "on gamma, which holds no member, G says into desk-ops"
   assert_contains "$OUT" "you are not in desk-ops" "told it is no member"
-  up_after_frame() { # gamma's stand-in took G's member frame under ops before the events frame carrying the text
-    rl10_q "$EPC" "(lambda m, u: m is not None and u is not None and m < u)(next((n for n, (c, f) in enumerate(F) if f.get('t') == 'member' and f.get('session') == '$SG' and f.get('project') == '$OPS'), None), next((n for n, (c, f) in enumerate(F) if f.get('t') == 'events' and f.get('project') == '$ops_ch' and any('$1' in str(e.get('text')) for e in f.get('events', []))), None))"
+  up_after_frame() { # the first events frame carrying the text went after G's member frame under ops, on its connection
+    rl10_q "$EPC" "(lambda u: u is not None and any(n < u[0] and c == u[1] and f.get('t') == 'member' and f.get('session') == '$SG' and f.get('project') == '$OPS' for n, (c, f) in enumerate(F)))(next(((n, c) for n, (c, f) in enumerate(F) if f.get('t') == 'events' and f.get('project') == '$ops_ch' and any('$1' in str(e.get('text')) for e in f.get('events', []))), None))"
   }
   went_up() { [ "$(up_after_frame g1)" = true ]; }
   until_true went_up || true

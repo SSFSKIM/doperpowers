@@ -115,6 +115,21 @@ def early_match(frames, pred, after, taken):
     return next((j for j, f in enumerate(frames[:after + 1]) if j not in taken and pred(f)), None)
 
 
+def sent_as(want, pred):
+    """What sends the line `want` as its matcher `pred` reads it: an upload
+    (`events`) is sent by any frame of its log that carries one of its
+    events by identity (writer and seq), whatever else the batch held."""
+    if not isinstance(want, dict) or want.get("t") != "events":
+        return pred
+    ids = {(e.get("writer"), e.get("seq")) for e in want.get("events") or [] if isinstance(e, dict)}
+
+    def sent(f):
+        return pred(f) or (f.get("t") == "events" and f.get("project") == want.get("project")
+                           and any(isinstance(e, dict) and (e.get("writer"), e.get("seq")) in ids
+                                   for e in f.get("events") or []))
+    return sent
+
+
 def after_index(deps, matched, conn):
     """The index on connection `conn` a line is matched past: the latest of
     its `deps`' matches there (`matched`: (case, step) → (connection,

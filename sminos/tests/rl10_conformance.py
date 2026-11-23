@@ -1176,7 +1176,8 @@ def up(ci, si, step, opts):
         return False, "no such line on connection %d; expected %s; of its kind sminos sent %s" % (
             conn.number, json.dumps(want)[:600], json.dumps(near[-3:])[:900])
     with EP.cv:
-        early = probes.early_match(conn.frames, pred, after, {j for n, j in MATCHED if n == conn.number})
+        early = probes.early_match(conn.frames, probes.sent_as(want, pred), after,
+                                   {j for n, j in MATCHED if n == conn.number})
     if early is not None:
         # The line's first transmission is the one the endpoint saw first: one before what it waits for is the
         # ordering broken, whatever was sent again after it.
