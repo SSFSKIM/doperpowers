@@ -524,6 +524,25 @@ boot library marked its notices keeps that library for its life: it sends
 them unmarked, and goes on only for an ended thread or no member. `devcloud vm ls`
 reads the host's idle clock over the tailnet; an unavailable clock shows `-`.
 
+**A notice in the channels.** After that delivery, whichever way it ended,
+a host whose sminos is found and cut over records the notice once more with
+`sminos say --notice devcloud --pools <text>`: sminos writes it, untagged and
+prompting no one, into the log of every declared channel whose pool holds
+the host (a thread of it is in the channel, or a member added the machine
+by hand), and `sminos chat <channel>` shows it from `devcloud@<name>`. The
+text there is the short one: the VM, its idle time and last activity (or
+its lease end), its lifetime and estimated cost, and neither the checkouts
+with unpushed work nor the `down` instruction, which stay the owning
+thread's (one constant in `boot/devcloudlib/notices.py`, `CHANNEL_TEXT`,
+chooses the short text or the full one). The pool is the host's own copy
+of the logs: a host that has not yet read a removal from a pool (it was
+cut off when the member removed it, or a thread of it left) still records
+there, and a hand-add by a member whose row the host may not read records
+nothing. A host's sminos that does not know `--pools` (exit 2) is said in
+the journal and the text is not sent again; any other failure is said and
+changes nothing of the delivery. A host built before this keeps its boot
+library for its life and records in no channel.
+
 **sminos.** Step 11 first links `/usr/local/bin/sminos` to the launcher in
 the doperpowers marketplace clone, at every boot and reconcile, so any shell
 on the host finds it (the profile's `sminos` is an interactive zsh alias,

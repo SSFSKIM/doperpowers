@@ -78,7 +78,9 @@ project. What is here:
   the thread's own add under one deadline, never a refusal (place_spawned),
   and what a spawn here prints of it (spawned_lines, placement_words).
 """
+import contextlib
 import glob
+import io
 import json
 import os
 import re
@@ -2609,6 +2611,51 @@ def pool(channel, rows=None):
             counts.setdefault(key, [name, 0, 0])
     return [{"machine": name, "live": live, "stopped": stopped, "by_hand": hand.get(key, ("", False))[1]}
             for key, (name, live, stopped) in sorted(counts.items())]
+
+
+POOLS_NONE = "no channel's pool holds this machine: nothing was recorded"
+POOLS_PASSED = "the notice was not recorded in %s: %s"
+
+
+def record_in_pools(a):
+    """`say --notice <program> --pools <text>` (EN.G2's M3, its plan's
+    Interfaces §4): the text, untagged, as this machine's notice in the log
+    of every channel whose pool holds this machine, read here once (one
+    sweep of the rosters) before anything is written, and never asking
+    devcloud. The pool is this machine's own copy's: a removal it has not
+    read yet still records there, and a hand-add whose writer's row it may
+    not read (_by_hand) records nothing. Each channel is written by the door
+    a terminal's untagged post takes (speak, which reads no lead for a
+    notice), so a writer that waits for its upstream head queues the event
+    and says so, a success. A channel that has left this machine is passed
+    over without a word; one speak refuses (its log not carried here) or
+    whose append fails is said on standard error and passed over, the rest
+    written, and the exit is then 1."""
+    here = sminos.host_name().lower()
+    held = [c for c in sorted(sminos.known_channels(), key=lambda c: (c.name, c.id))
+            if not sminos.has_left(c) and any(e["machine"].lower() == here for e in pool(c))]
+    if not held:
+        print(POOLS_NONE)
+        return
+    passed = False
+    for channel in held:
+        said = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(said):
+                speak(channel, a, "", [])
+        except SystemExit as stop:
+            if stop.code in (0, None):
+                sys.stderr.write(said.getvalue())
+                continue
+            passed = True
+            before, words = sminos.sibling_module("sminos_on").said_last(said.getvalue())
+            sys.stderr.write(before)
+            sminos.warn(POOLS_PASSED % (channel.name, words))
+            continue
+        sys.stderr.write(said.getvalue())
+    if passed:
+        sys.exit(1)
+
 
 
 def _pool_line(e, vm=""):

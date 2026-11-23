@@ -48,7 +48,10 @@
 # checker reads after beta uploaded again. Last, a thread spawned on beta with
 # `--channel` (EN.G2's M1) is in the roster and the pool as alpha reads them,
 # and `channel show` on alpha prints beta's line with the VM's owner, age and
-# cost as alpha's devcloud (its stand-in) answers `vm info` (EN.G2's M2).
+# cost as alpha's devcloud (its stand-in) answers `vm info` (EN.G2's M2);
+# then beta, whose threads are in desk-ops, and gamma, added to its pool by
+# hand, each record a notice there with `say --notice devcloud --pools`, and
+# `sminos chat` on alpha shows both from `devcloud@<machine>` (EN.G2's M3).
 # `--speak` runs the scene alone.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per machine; `claude`
 # is a stub (the test engine in the speaking scene); the sessions are `sleep`s with engine records the suite writes;
@@ -982,6 +985,7 @@ speak_cases() {
   assert_equals "$(checked_spoken "$DESK_SPOKEN $ops_ch" "$EPA $T/pa/s alpha" "$EPB $T/pb/s beta" "$EPC $T/pc/s gamma")" clean \
     "the checker over both channels: no delivery frame names one, no outbox under one"
   spawn_placed "$ops_ch"
+  pools_notice
 }
 spawn_placed() { # channel-id — EN.G2's M1: a thread spawned with --channel on beta, as alpha reads the channel
   echo "a spawn placed in a channel (EN.G2's M1): spawned on beta with --channel, read on alpha:"
@@ -1017,6 +1021,35 @@ spawn_placed() { # channel-id — EN.G2's M1: a thread spawned with --channel on
   assert_equals "$(tail -1 "$HOME/devcloud-standin.calls" | python3 -c 'import json, sys; a = json.load(sys.stdin)["argv"]; print(" ".join(a[:2] + a[4:]))')" \
     "vm info -- beta" "devcloud asked once, about beta and not about alpha"
   rm -f "$HOME/devcloud-standin.json"
+}
+pools_notice() { # — EN.G2's M3: a machine's notice recorded in each channel whose pool holds it, read on alpha
+  echo "a VM's notice in its pools' channels (EN.G2's M3): beta (its threads) and gamma (added by hand) say it:"
+  on pa alpha
+  run_in "$T/pa/app" in_session "$SA" "$SMINOS" channel env add desk-ops gamma
+  assert_rc 0 "$RC" "A adds gamma to desk-ops's pool by hand"
+  on pc gamma
+  local by_hand="[e['machine'] for e in d['pool'] if e['by_hand']]"
+  speak_pass shown_is "$T/pc/ops" "$SG" desk-ops "$by_hand" "['gamma']" || true
+  assert_equals "$(shown "$T/pc/ops" "$SG" desk-ops "$by_hand")" "['gamma']" "gamma's own copy holds it in the pool"
+  run_in "$T/pc/ops" "$SMINOS" say --notice devcloud --pools "gamma idles 3d"
+  assert_rc 0 "$RC" "gamma's notice, at a terminal there"
+  assert_contains "$OUT" "in desk-ops" "recorded in desk-ops"
+  on pb beta
+  run_in "$T/pb/web" "$SMINOS" say --notice devcloud --pools "beta idles 3d"
+  assert_rc 0 "$RC" "beta's notice, at a terminal there"
+  assert_contains "$OUT" "in desk-ops" "recorded in desk-ops"
+  on pa alpha
+  both_shown() {
+    local out
+    out="$(cd "$T/pa/app" && "$SMINOS" chat desk-ops -n 30 2>/dev/null)" || true
+    grep -F "beta idles 3d" <<<"$out" | grep -qF "devcloud@beta" && grep -F "gamma idles 3d" <<<"$out" | grep -qF "devcloud@gamma"
+  }
+  speak_pass both_shown || true
+  run_in "$T/pa/app" "$SMINOS" chat desk-ops -n 30
+  assert_contains "$(grep -F "beta idles 3d" <<<"$OUT")" "devcloud@beta" "sminos chat on alpha shows beta's from devcloud@beta"
+  assert_contains "$(grep -F "gamma idles 3d" <<<"$OUT")" "devcloud@gamma" "and gamma's from devcloud@gamma"
+  assert_equals "$(grep -F "idles 3d" <<<"$OUT" | grep -c " → \*  " || true)" 2 "each addressed to no one"
+  assert_equals "$(received_n alder "idles 3d") $(on pb beta; inputs_n "$SB" "idles 3d")" "0 0" "no session was prompted"
 }
 
 if [ "$SCENE_ONLY" = 0 ] && [ "$SPEAK_ONLY" = 0 ]; then

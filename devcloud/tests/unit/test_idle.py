@@ -260,5 +260,121 @@ class DeliveryTest(IdleBase):
         self.assertIn("app", send.call_args.args[2])
 
 
+class ChannelsTest(IdleBase):
+    """EN.G2's M3 (docs/doperpowers/plans/2026-11-23-sminos-environments-en-g2.md, Interfaces §5): after the
+    chain, whichever way it ended, one call records the notice in every channel whose pool holds this host."""
+
+    POOLS = ["say", "--notice", "devcloud", "--pools", "short notice"]
+
+    def deliver(self, results, creator="@abcd1234", project="example", short="short notice", cli=True,
+                cut_over=True):
+        """(calls, said) of one delivery; `results` (exit, stdout, stderr) a call, in order."""
+        from devcloudlib import notices
+        calls, said = [], []
+        identity = self.user.home / ".claude/sminos/daemon/identity.json"
+        identity.parent.mkdir(parents=True, exist_ok=True)
+        identity.write_text("{}") if cut_over else identity.unlink(missing_ok=True)
+        d = dataclasses.replace(self.d, creator=creator, creator_project=project)
+
+        def call(argv, **kw):
+            calls.append((argv, kw))
+            got = results.pop(0)
+            if isinstance(got, Exception):
+                raise got
+            return got
+        with mock.patch.object(notices.sminos_host, "cli", return_value=pathlib.Path("/opt/sminos.py") if cli
+                               else None):
+            notices.deliver(self.user, d, "idle notice", call=call, say=said.append, short=short)
+        return calls, said
+
+    def test_the_fourth_call_carries_the_short_text_as_the_chains_steps_are_called(self):
+        calls, said = self.deliver([(0, "", ""), (0, "recorded beta:1 in desk\nrecorded beta:2 in ops\n", "")])
+        (first, first_kw), (channels, kw) = calls
+        self.assertEqual(first[-1], "@abcd1234 idle notice", "the chain's step keeps the full text")
+        self.assertEqual(channels, ["/usr/bin/python3", "/opt/sminos.py", *self.POOLS])
+        self.assertEqual({k: kw[k] for k in ("user", "env", "log", "cwd", "timeout")},
+                         {k: first_kw[k] for k in ("user", "env", "log", "cwd", "timeout")}, "as the chain calls")
+        self.assertEqual(said, ["devcloud notice: sent: idle notice", "devcloud notice: channels: recorded beta:1 in desk",
+                                "devcloud notice: channels: recorded beta:2 in ops"])
+
+    def test_it_follows_each_way_the_chain_ends(self):
+        ok = (0, "recorded beta:1 in desk\n", "")
+        for why, results, chain in (
+                ("sent at the first step", [(0, "", "")], ["--exit-held"]),
+                ("gone on", [(3, "", ""), (0, "", "")], ["--exit-held", "--project"]),
+                ("fallen to the journal", [(4, "", ""), (4, "", ""), (1, "", "x"), (0, "", "")],
+                 ["--exit-held", "--project", "--in", "wall"])):
+            with self.subTest(why):
+                calls, said = self.deliver(results + [ok])
+                self.assertEqual([argv[0] if argv[0] == "wall" else argv[5] for argv, _ in calls[:-1]], chain)
+                self.assertEqual(calls[-1][0][2:], self.POOLS, "last, after the chain")
+                self.assertEqual(said[-1], "devcloud notice: channels: recorded beta:1 in desk")
+
+    def test_no_creator_and_no_project_still_records_in_the_channels(self):
+        calls, _ = self.deliver([(0, "", ""), (0, "", "")], creator=None, project=None)
+        self.assertEqual([argv[0] if argv[0] == "wall" else argv[2:] for argv, _ in calls], ["wall", self.POOLS])
+
+    def test_exit_2_says_its_line_and_calls_nothing_again(self):
+        calls, said = self.deliver([(0, "", ""), (2, "", "unrecognized arguments: --pools")])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(said[-1], "devcloud notice: this host's sminos does not know --pools; no channel's timeline "
+                                   "was written")
+
+    def test_exit_0_with_a_waiting_line_calls_nothing_again(self):
+        line = ("it waits in desk for the upstream's head of beta (this machine's enrolment is new): it is recorded, "
+                "and delivered, once the uplink has seen it")
+        calls, said = self.deliver([(0, "", ""), (0, line + "\n", "")])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(said[-1], "devcloud notice: channels: " + line)
+
+    def test_another_exit_or_a_call_that_raises_is_said_and_changes_nothing_else(self):
+        calls, said = self.deliver([(0, "", ""), (1, "recorded beta:1 in desk\n", "cannot say into ops")])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(said[-1], "devcloud notice: the channels' record failed (exit 1): cannot say into ops")
+        calls, said = self.deliver([(0, "", ""), OSError("no log")])
+        self.assertEqual(said[-1], "devcloud notice: the channels' record failed: no log")
+
+    def test_no_sminos_or_not_cut_over_makes_no_call(self):
+        for kwargs in ({"cli": False}, {"cut_over": False}):
+            with self.subTest(**kwargs):
+                calls, _ = self.deliver([(0, "", "")], **kwargs)
+                self.assertEqual([argv for argv, _ in calls], [["wall", "devcloud: idle notice"]])
+
+    def test_the_short_text_never_falls_back_to_the_full_one(self):
+        calls, _ = self.deliver([(0, "", "")], short=None)
+        self.assertEqual(len(calls), 1, "no short text given: no call")
+
+    def test_set_to_the_full_text_the_fourth_call_carries_it(self):
+        from devcloudlib import notices
+        self.assertEqual(notices.CHANNEL_TEXT, "short", "O6's default, while the owner has not answered")
+        with mock.patch.object(notices, "CHANNEL_TEXT", "full"):
+            calls, _ = self.deliver([(0, "", ""), (0, "", "")])
+            self.assertEqual(calls[-1][0][2:], [*self.POOLS[:-1], "idle notice"])
+            calls, _ = self.deliver([(0, "", ""), (0, "", "")], short=None)
+            self.assertEqual(calls[-1][0][2:], [*self.POOLS[:-1], "idle notice"])
+
+    def test_the_short_idle_text_names_the_machine_its_idleness_and_lifetime_and_no_repository(self):
+        d = descriptor.parse(BASE + f"DEVCLOUD_CREATED={NOW}\nDEVCLOUD_HOURLY_PRICE=0.25\nDEVCLOUD_CURRENCY=USD\n"
+                             f"DEVCLOUD_EXPIRES={NOW + 5 * DAY}\n")
+        from devcloudlib import idle
+        state, current, found = {"active_at": NOW}, NOW + 3 * DAY + 4 * 3600, [("app", "2 unpushed commits")]
+        full = idle.text(d, state, current, found)
+        short = idle.text(d, state, current, found, short=True)
+        self.assertEqual(short, f"devcloud on {d.name}: idle 3d 4h; last active {lease.iso(NOW)}; lease ends at "
+                                f"{lease.iso(NOW + 5 * DAY)}; estimated cost so far 19.00 USD")
+        self.assertEqual(full, short + f"; unpushed: app (2 unpushed commits); end it with devcloud vm down {d.name}")
+        self.assertNotIn("app", short)
+
+    def test_each_notice_hands_delivery_its_short_text(self):
+        from devcloudlib import idle, notices
+        with mock.patch.object(notices, "deliver") as send:
+            idle.send(self.user, self.d, ({"active_at": NOW}, NOW + 3 * DAY), scan=lambda: [("app", "x")])
+            lease.warn_creator(self.user, dataclasses.replace(self.d, expires=NOW), scan=lambda: [("app", "x")])
+        (idle_call, warning_call) = send.call_args_list
+        self.assertEqual(idle_call.kwargs["short"],
+                         idle.text(self.d, {"active_at": NOW}, NOW + 3 * DAY, [], short=True))
+        self.assertEqual(warning_call.kwargs["short"], lease.warning_text(self.d.name, NOW, [], short=True))
+
+
 if __name__ == "__main__":
     unittest.main()

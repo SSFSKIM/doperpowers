@@ -94,6 +94,9 @@ back by a fill.
     sminos say      --notice <program> …                  # a machine's own program speaking (devcloud's hosts:
                    devcloud), refused in a session, and (exit 1) on a machine whose name the mark does not
                    take: each event marked, shown from <program>@<machine>, never delivered as a person's words
+    sminos say      --notice <program> --pools <text>     # recorded, untagged, in the log of every channel whose
+                   pool holds this machine (as this machine's copy of the logs holds it), prompting no one: a
+                   devcloud host's idle notice and lease warning; exit 1 when a channel was passed over
     sminos say      --exit-held …                         # exit 3 when a tagged recipient's line says it is held
                    and not woken; the message is recorded as without it
     sminos chat     [<project>|<channel>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing
@@ -10785,7 +10788,11 @@ def cmd_say(a):
     or a tag qualified by one) is said into the channel's log
     (sminos_channels.speak, CH2's M4), entered before a selector is read; a
     selector that names a channel, and the unquoted `@<name#short>/<alias>`
-    that opens no tag, are refused before anything is appended."""
+    that opens no tag, are refused before anything is appended. `--notice
+    <program> --pools` is a host's form (EN.G2's M3): the untagged text
+    recorded in every channel whose pool holds this machine
+    (sminos_channels.record_in_pools), refused as a usage error beside
+    `--in`, a selector or an opening tag, and without `--notice`."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if a.notice is not None and not NOTICE_PROGRAM_RE.fullmatch(a.notice):
         die("--notice names the program that speaks, as a lower-case word of letters, digits and hyphens (32 at "
@@ -10800,6 +10807,18 @@ def cmd_say(a):
             "'_' and '-', 63 at most, opening with a letter or a digit, and neither hub nor legacy), so the notice "
             "would be read as a person's words: nothing was recorded" % host_name(), 1)
     chans = channels_module()
+    if a.pools:
+        # A host's form (EN.G2's M3): usage errors, exit 2, before anything is read.
+        if a.notice is None:
+            die("--pools records a machine's own notice: give --notice <program>")
+        if a.in_:
+            die("--pools records in every channel whose pool holds this machine: drop --in")
+        if selector_given(a):
+            die("--pools records in every channel whose pool holds this machine: drop the selector")
+        if leading_tags(a.text):
+            die("--pools records an untagged notice, and this text opens with a tag: drop it")
+        chans.record_in_pools(a)
+        return
     spoken = names_channel(a.in_) if a.in_ else None
     for q in a.projects:
         if names_channel(q) is not None:
@@ -21263,6 +21282,7 @@ def build_parser():
     say.add_argument("--in", dest="in_", default="")
     say.add_argument("--notice", default=None)
     say.add_argument("--exit-held", action="store_true")
+    say.add_argument("--pools", action="store_true")
     scope_flags(say)
     say.set_defaults(fn=cmd_say, args=[])
 

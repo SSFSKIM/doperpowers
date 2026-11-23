@@ -298,9 +298,13 @@ def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, stat
 
 # --- the warning -----------------------------------------------------------------
 
-def warning_text(name, expires, found):
+def warning_text(name, expires, found, short=False):
+    """The lease warning; `short`, the form a channel's log records (EN.G2's M3), names no repository."""
+    said = f"devcloud on {name}: lease ends at {iso(expires)}"
+    if short:
+        return said
     unpushed = ", ".join(f"{repo} ({what})" for repo, what in found) if found else "none"
-    return f"devcloud on {name}: lease ends at {iso(expires)}; unpushed: {unpushed}"
+    return f"{said}; unpushed: {unpushed}"
 
 
 def warn_creator(user, d, call=proc.call, say=print, scan=None):
@@ -308,7 +312,8 @@ def warn_creator(user, d, call=proc.call, say=print, scan=None):
     to the thread that owns the host (the descriptor's tag), marked as this
     host's notice, then on to that thread's project."""
     found = (scan or (lambda: unpushed(user)))()
-    notices.deliver(user, d, warning_text(d.name, d.expires, found), call=call, say=say)
+    notices.deliver(user, d, warning_text(d.name, d.expires, found), call=call, say=say,
+                    short=warning_text(d.name, d.expires, found, short=True))
 
 
 # --- unpushed work ----------------------------------------------------------------

@@ -634,6 +634,9 @@ run_channels() {
   if python3 -B "$SCRIPT_DIR/test_channels_spawn.py"; then
     pass "spawn --channel here: its statement, its refusals before a launch, its warnings after one, the deadline, the merge base's spawn (test_channels_spawn.py)"
   else fail "spawn --channel here: its statement, its refusals before a launch, its warnings after one, the deadline, the merge base's spawn (test_channels_spawn.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_pools.py"; then
+    pass "a machine's notice in its pools' channels: the form, which channels, the event, the copy's two errors, queued (test_channels_pools.py)"
+  else fail "a machine's notice in its pools' channels: the form, which channels, the event, the copy's two errors, queued (test_channels_pools.py)"; fi
   echo
   if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: join, .smns, a verb's fact, create, add, remove, the listing, what is said into one (test-channels.sh)"; else
     fail "channels through the launcher: join, .smns, a verb's fact, create, add, remove, the listing, what is said into one (test-channels.sh)"; fi
