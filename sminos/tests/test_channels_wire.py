@@ -1955,6 +1955,27 @@ class Messages(Delivering):
         self.assertEqual(self.settled(tid, "%s/human" % FAR), words["seq"])
         self.assertEqual(link.session_lane.sent[before:], [], "nothing goes back")
 
+    def test_a_kept_word_is_kept_while_its_threads_delivery_record_cannot_be_read(self):
+        tid, sid, received = self.live()
+        e = self.message((sid, tid), text="past an unreadable record")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.answer(link, ask, "deliver")
+        [name] = self.kept()
+        record = os.path.join(self.chan(DESK).home, "delivered", tid + ".json")
+        os.makedirs(os.path.dirname(record), exist_ok=True)
+        with open(record, "w") as f:
+            f.write("{not a record")
+        self.assertEqual(self.carry(), 0)
+        self.assertEqual(self.kept(), [name], "unreadable is not stale: the word is kept")
+        self.assertEqual(self.got(received, "past an unreadable record"), [])
+        os.unlink(record)
+        self.assertEqual(self.carry(), 1, "carried out once the record reads")
+        self.assertEqual(len(self.got(received, "past an unreadable record")), 1)
+        self.assertEqual(self.settled(tid, W1), e["seq"])
+        self.assertEqual(self.kept(), [])
+
     def test_a_held_recipient_and_a_thread_whose_record_holds_an_open_entry_are_asked_nothing(self):
         tid, sid = self.stopped(mode="plan")   # not woken: held for its mode
         self.message((sid, tid), text="to a held thread")

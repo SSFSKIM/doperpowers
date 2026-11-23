@@ -3194,7 +3194,9 @@ def carry_words(channel):
     with kept words, oldest first: one older than WORD_KEPT, one whose
     thread has no owing() now (with own_row(); an open entry, an end, a
     removal, a lane that defers), and one whose event is no longer its
-    writer's first owed with that body, are removed where they lie; each
+    writer's first owed with that body, are removed where they lie; one
+    whose thread's delivery record cannot be read now is left for a later
+    pass (unreadable is not stale); each
     other is handed to sminos.deliver_reach or deliver_verdict with the
     Owing and its path, which takes the thread's lock once and there reads
     the word again, checks it and removes it (take_word). How many were
@@ -3226,7 +3228,10 @@ def carry_words(channel):
             if o is None or not 0 <= time.time() - at < WORD_KEPT:
                 _drop(path)
                 continue
-            e = first_owed(o, w["writer"], events)
+            chosen = owed(o, events)
+            if chosen is None:
+                continue   # its delivery record cannot be read now: no evidence the word is stale, so it is kept
+            e = next((x for x in chosen if x["writer"] == w["writer"]), None)
             if e is None or e["seq"] != w["seq"] or sminos.event_hash(e) != w.get("hash"):
                 _drop(path)
                 continue
