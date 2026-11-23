@@ -2542,6 +2542,8 @@ class WireSameAsBase(unittest.TestCase):
         text = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
                       lambda m: m.group(0) if m.group(0) in keep else "<id>", text)
         text = re.sub(r"\b[0-9a-f]{16,64}\b", "<hex>", text)
+        # The plugin's version, which a frame names (a machine's `sminos`), is each tree's own: 1.55.0 is CH2's.
+        text = re.sub(r'("sminos":\s*)"\d+\.\d+\.\d+"', r'\1"<version>"', text)
         return json.loads(text)
 
     def test_the_frames_of_a_machine_with_no_channel_are_the_merge_bases(self):
