@@ -82,7 +82,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M8 — The lead, and whose words a post is. `92382f49`, fixes `9e5d57be`, `11e497ea`, `39873d8a`; three task reviews (the bound), the third's fix (`39873d8a`) made after it and named to the frontier panel. Gates GREEN on `39873d8a`; sminos-idle 32,792; sminos-channels 3m10s.
 - [x] (2026-11-22) M9 — What reads a session's exchanges reads a channel's. Built `558faa90`, `ba129c3a`, `81d66f16`; fixes `82a7019d`, `a823a3f9`, `f12f0b65`; three task reviews (the bound), round 3's fixes (`f12f0b65`) made after it and named to the frontier panel. Gates GREEN on `f12f0b65`; sminos-idle 32,756; sminos-channels 2m39s.
 - [ ] The review of M1 to M9 as one range (the holder's), and its fixes.
-- [ ] M10 — What sessions are taught, and its evaluation.
+- [x] (2026-11-23) M10 — What sessions are taught, and its evaluation. `3a8d7fcd`, fixes `dd8fe8c4`, `afc06877`, `bf9b277f`; three task reviews (the bound), the third approving the texts, its one item the holder's exception below. Evaluated by doperpowers:writing-skills: E1 0/5 to 5/5, E2 strict 0/5 to 2/5 (E2P 2/5 to 5/5), E3 4/5 to 5/5, E4 5/5 (the reply line stays), E5 5/5; the manager's scenarios five of six, the sixth the merge base's.
 - [ ] M11 — Older copies, what is written beside the code, the version, and the acceptance.
 - [ ] The merge (the holder's).
 
@@ -4096,6 +4096,50 @@ them today.
     step passed only while alpha held B's brief `idle` row; it now waits on
     `list --org --all` for `stopped @beta` (3 of 5 failing before, 6 of 6
     passing after).
+- 2026-11-23 — **M10 as built** (`3a8d7fcd` to `bf9b277f`, built in its own
+  worktree beside the second fix wave and merged onto it). The texts: the
+  guide tells a lane A session it is a thread, adds a channel line only
+  for a thread in one, says a bare `@alias` reaches the project and the
+  channels it shares, and shows `say --in <channel> "@<alias> …"` with one
+  valid tag in the quoted body (`@all` and untagged described outside it);
+  the skill defines thread and channel (MAWS-launched members are not
+  threads, D1), teaches the channel verbs, the reply line's tag against a
+  direct `@<short>`, saying into a channel from outside it, that adding
+  wakes no one, that a channel is never joined, and that membership decides
+  deliveries, not who may read the log (`chat <channel>`); `send` survives
+  as the scripts' `--wait` verb; the preamble gains the two channel forms;
+  the manager's skill names a subscription `<channel>/<alias>` and a window
+  entry's log; the digest brief only "never write to a log (a project's or
+  a channel's)". `say`'s help says an untagged post typed at a terminal
+  goes to the channel's lead (the frontier's A:sweep#4); `BARE_NAME` gives
+  a channel caller its real scope, the no-channel wording byte for byte.
+  Every channel example the texts show was run as written on scratch state.
+- The evaluation, five samples an arm, one executable, read by hand
+  (prompts and answers kept outside the repository): E1 0/5 on the merge
+  base's texts (each asked its peers to `join` its project) to 5/5; E2 on
+  its strict measure (the reply line unchanged but for its text) 0/5 to
+  2/5, on destination 0/5 to 5/5, the three strict misses each the stdin
+  form with the line's exact tag, which records in the channel (its text
+  held quotes and backticks); E2P (a plain-words answer) 2/5 to 5/5 strict;
+  E3 4/5 to 5/5 (all `@all`); E4 5/5 on both arms, no baseline sample
+  putting a live backtick, quote or `$` into the double-quoted form, so the
+  reply line stays for every frame and its TECH-DEBT row is answered as
+  measured; E5 5/5 on both. No message of any live sample, on any arm,
+  lies in a log its scenario does not expect (read from the stores; a
+  bare `@pb` for a peer elsewhere was refused and recorded nowhere).
+- The manager's pressure scenarios: five of six pass on the rewritten
+  skill. The sixth ("cannot settle": the digest itself queries when its
+  window cannot settle an item) fails the same way on the merge base's
+  texts, with a fixture checked unsettleable before each run: the digest
+  recorded the question pending and did not query. **The holder's
+  ruling:** the acceptance line is there to show the rewrite into thread
+  and channel broke nothing, and a scenario failing identically on the
+  base, in a passage M10 left unchanged, shows that; it does not hold the
+  pull request, and the manager's behaviour is residue for its own ticket.
+  The replay update is one frozen update over three of the four sessions
+  (the fourth's window no longer resolves; the controller accepted the
+  narrowing): blocking items found 22 of 22 as in the recorded run, all
+  items 62 of 72 against 63 of 72; one run, no equivalence claimed.
 
 
 ## Outcomes & Retrospective
