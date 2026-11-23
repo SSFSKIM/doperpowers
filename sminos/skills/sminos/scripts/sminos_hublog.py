@@ -1120,9 +1120,10 @@ class HubLog:
         left as it is: an upload of it again, a `resend` from before it, is
         withheld again for the same body). The sending session's notice is
         queued (show_notices), in a channel's log with the sending thread
-        the event names (CH2), whose notice it is; the operator's writer
-        has no session, so its
-        notice is the daemon.log line alone. The session's own `joined` or
+        the event names (CH2), whose notice it is; a channel's event that
+        names no thread queues none (a session id alone may be another
+        thread's by the time it is shown), and the operator's writer has
+        no session: for each, the notice is the daemon.log line alone. The session's own `joined` or
         `state` is owed a restatement (sminos_daemon.owe_restatement: the
         hub's registry moves only on those), unless it was the restatement,
         which owes nothing more: owed before the position is settled, and
@@ -1144,11 +1145,12 @@ class HubLog:
             told = "; the operator's message to %s was not delivered" % to
         elif at is None or time.time() - at > NOTICE_KEPT:
             told = "; the message is too old for its session %s to be told" % session[:8]
+        elif sminos.is_channel_id(self.project.id) and not (isinstance(e.get("thread"), str) and e["thread"]):
+            told = "; the message to %s names no sending thread, so no session is told" % to
         else:
             thread = e.get("thread") if sminos.is_channel_id(self.project.id) else None
             d["notices"] = notices_in(d) + [{"writer": writer, "seq": seq, "session": session, "to": to,
-                                             "ts": e["ts"], **({"thread": thread} if isinstance(thread, str)
-                                                               and thread else {})}]
+                                             "ts": e["ts"], **({"thread": thread} if thread else {})}]
             self.notices_owed = True
             told = "; its session %s is told" % session[:8]
         # The debt before the settlement: a settled position returns early above, so a debt recorded after it
@@ -1177,10 +1179,13 @@ class HubLog:
         pushed, once a push may have reached it, or NOTICE_KEPT past its
         message's ts (said in daemon.log); a session not live keeps its
         notice. A channel's notice (CH2) is its sending thread's: pushed to
-        that thread's current session, and dropped once the thread has ended
-        or is gone, so a session that is another thread's now is told
-        nothing. Run on the uplink's upload pass; uplink.json is read only
-        while it holds some."""
+        that thread's current session only while that session's own fresh
+        record (current_record) is the thread's, kept while the thread's
+        record holds an open entry or the session is another thread's for
+        now (an absorption's cut), and dropped once the thread has ended or
+        is gone; one that names no thread is dropped, never shown by a
+        session id alone. Run on the uplink's upload pass; uplink.json is
+        read only while it holds some."""
         if self.notices_owed is False:
             return
         d = self.state()
@@ -1193,17 +1198,26 @@ class HubLog:
                     "message" % (n["writer"], n["seq"], self.project.name, n["session"][:8], NOTICE_KEPT // 3600))
                 continue
             session = n["session"]
-            if isinstance(n.get("thread"), str):
+            if sminos.is_channel_id(self.project.id):
+                thread = n.get("thread") if isinstance(n.get("thread"), str) and n.get("thread") else None
+                if thread is None:
+                    log("the notice of %s:%d of %s was not shown: it names no sending thread" % (
+                        n["writer"], n["seq"], self.project.name))
+                    continue
                 threads = sminos.threads_module()
-                t = threads.get(n["thread"])
+                t = threads.get(thread)
                 if t is None or threads.record_ended(t) or not t.get("current"):
-                    if threads.unreadable(n["thread"]):
+                    if threads.unreadable(thread):
                         left.append(n)
                         continue
                     log("the notice of %s:%d of %s was not shown: its thread %s holds no session here any more"
-                        % (n["writer"], n["seq"], self.project.name, n["thread"][:8]))
+                        % (n["writer"], n["seq"], self.project.name, thread[:8]))
                     continue
                 session = t["current"]
+                now = threads.current_record(session, fresh=True) if not t.get("pending") else None
+                if now is None or now["thread"] != thread:
+                    left.append(n)   # an open entry, or the session another thread's for now: a later pass
+                    continue
             peer = sminos.peer_for_session(session)
             if not peer:
                 left.append(n)

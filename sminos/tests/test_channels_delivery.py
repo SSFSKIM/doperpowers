@@ -812,6 +812,80 @@ class OpenEntry(Channel, T1.LateHandOff):
         self.assertEqual(self.settled(stid, W1), e["seq"])
         self.assertEqual(self.got(jreceived, "over the open entry"), [])
 
+    # -- the notice of a say the hub withheld (the frontier review's F10, and its wave review)
+
+    NOTICE = "your message to ghost was not delivered"
+
+    def withheld_say(self, sid, thread=None):
+        """A say of `sid` into the channel, stamped with `thread` (none: unstamped), that the hub withheld: the
+        channel's HubLog that settled it."""
+        import sminos_hublog as hublog
+        w = sminos.writer_id(sid)
+        e = sminos.log_append(self.chan(DESK), w, "say", **{
+            "from": "s", "to": [{"session": str(uuidlib.uuid4()), "alias": "ghost", "thread": str(uuidlib.uuid4())}],
+            "text": "the secret words", **({"thread": thread} if thread else {})})
+        sminos.forget_caches()
+        hl = hublog.HubLog(self.chan(DESK), {"key": None, "machine": sminos.host_name()})
+        self.assertTrue(hl.withhold_own(w, e["seq"]))
+        return hl
+
+    def queued_notices(self, hl):
+        return hl.state().get("notices") or []
+
+    def shown(self, received):
+        time.sleep(0.3)   # the inbox appends what it took on its own thread
+        return [f for f in self.received(received) if self.NOTICE in f]
+
+    def test_a_notice_waits_out_an_unsettled_hand_off_and_goes_to_the_session_that_goes_on(self):
+        old, job, tid, theirs = self.late()
+        self.add(tid, old, DESK)
+        jreceived = self.inbox(job, self.proc_of(job), "j")
+        hl = self.withheld_say(old, tid)
+        with self.kill_after_begin(), self.assertRaises(Killed):
+            self.reconcile()
+        sminos.forget_caches()
+        self.assertEqual(threads.get(tid)["pending"]["op"], "absorb")
+        hl.show_notices()
+        self.assertEqual(self.shown(jreceived), [], "not while the entry is open")
+        self.assertEqual(len(self.queued_notices(hl)), 1, "kept for a later pass")
+        self.reconcile()
+        sminos.forget_caches()
+        hl.show_notices()
+        self.assertEqual(len(self.shown(jreceived)), 1, "the session that goes on with the thread")
+        self.assertEqual(self.queued_notices(hl), [])
+
+    def test_a_notice_of_the_absorbed_thread_never_goes_to_the_absorbers_session(self):
+        old, job, tid, theirs = self.late()
+        self.add(theirs, job, DESK)
+        jreceived = self.inbox(job, self.proc_of(job), "j")
+        hl = self.withheld_say(job, theirs)
+        with self.kill_after_begin(), self.assertRaises(Killed):
+            self.reconcile()
+        sminos.forget_caches()
+        self.assertEqual((threads.get(theirs)["current"], threads.get(theirs).get("pending")), (job, None),
+                         "its own file still names the session")
+        self.assertEqual(threads.current_record(job, fresh=True)["thread"], tid, "the session is the absorber's now")
+        hl.show_notices()
+        self.assertEqual(self.shown(jreceived), [], "not the absorber's session")
+        self.reconcile()
+        sminos.forget_caches()
+        hl.show_notices()
+        self.assertEqual(self.shown(jreceived), [], "nor once the absorption is done")
+        self.assertEqual(self.queued_notices(hl), [], "dropped with the thread it was for")
+
+    def test_an_unstamped_say_into_a_channel_tells_no_session(self):
+        sid, proc, _ = self.member(name="loose")
+        received = self.inbox(sid, proc)
+        hl = self.withheld_say(sid)
+        self.assertEqual(self.queued_notices(hl), [], "no thread to tell: nothing queued")
+        d = hl.state()
+        hl.save({**d, "notices": [{"writer": sminos.writer_id(sid), "seq": 1, "session": sid, "to": "ghost",
+                                   "ts": sminos.now(ms=True)}]})   # one queued by an earlier copy
+        hl.notices_owed = None
+        hl.show_notices()
+        self.assertEqual(self.shown(received), [], "never by a session id alone")
+        self.assertEqual(self.queued_notices(hl), [])
+
     def test_d7_after_an_absorption_what_names_the_thread_is_pushed_and_what_named_the_absorbed_one_is_not(self):
         old, job, tid, theirs = self.late()
         self.add(tid, old, DESK)
