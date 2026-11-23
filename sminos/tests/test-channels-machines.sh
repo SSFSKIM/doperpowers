@@ -36,7 +36,12 @@
 # stopped thread on its own machine; a thread in no channel says into it and is
 # answered directly; a member that left is sent to directly and one that came
 # back through the channel; a notice from a machine of the channel's
-# environment; and the checker over the three stand-ins and stores. Then M6's
+# environment; the lead (CH2's M8), named at alpha's terminal with a typed yes
+# on a pty, its person's untagged post asked about (`words?`) and handed to
+# the lead as a person's words (the engine supervisor's reply, a stand-in of
+# it serving alpha's config dir), a notice tagged to it an inbox frame
+# whatever the word, and the verb refused to a session; and the checker over
+# the three stand-ins and stores. Then M6's
 # cases on the same machines: a writer on a machine that holds no member (its
 # member frame first, its log opened with `follow`), what beta held at a
 # removal and a return, and the outcomes the
@@ -78,6 +83,7 @@ cleanup() {
   for pid in ${PIDS[@]+"${PIDS[@]}"}; do wait "$pid" 2>/dev/null || true; done
   for _ in $(seq 1 60); do pgrep -f "$T/" >/dev/null 2>&1 || break; sleep 0.05; done
   rm -rf "$T"
+  if [ -n "${SUPDIR:-}" ]; then rm -rf "$SUPDIR"; fi   # the supervisor stand-in's, outside $T (where the engine's is)
 }
 trap cleanup EXIT
 
@@ -641,6 +647,81 @@ print(" | ".join(sorted(json.loads(line).get("text", "") for p in glob.glob(os.p
 PY
 }
 
+tty_cmd() { # label dir answer args... — sminos run there on a controlling pty of its own, the answer typed at its
+  local label=$1 dir=$2 answer=$3   # prompt: OUT and RC; printed with --show
+  shift 3
+  set +e
+  OUT="$(cd "$dir" && python3 - "$answer" "$SMINOS" "$@" <<'PY'
+import os, pty, select, sys, time
+answer, argv = sys.argv[1], sys.argv[2:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+    os.execvp(argv[0], argv)
+out, sent, end = b"", False, time.monotonic() + 60
+while time.monotonic() < end:
+    if not select.select([fd], [], [], 1)[0]:
+        continue
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    out += chunk
+    if not sent and b"[y/N]" in out:
+        os.write(fd, answer.encode() + b"\n")
+        sent = True
+sys.stdout.write(out.decode("utf-8", "replace").replace("\r\n", "\n"))
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
+PY
+)"; RC=$?; set -e
+  if [ "$SHOW" = 1 ]; then
+    printf '\n  [%s] $ sminos %s   (typed: %s)\n' "$label" "$*" "$answer"
+    [ -n "$OUT" ] && sed 's/^/    /' <<<"$OUT"
+    printf '    (exit %s)\n' "$RC"
+  fi
+}
+supervisor_standin() { # out — the engine supervisor's control socket for this machine's config dir: each `reply`
+  # it takes appended to `out` and answered ok, as the engine's supervisor takes a person's words for a --bg job
+  local sup
+  sup="$(python3 -c 'import hashlib, os, sys; print(os.path.join("/tmp", "cc-daemon-%d" % os.getuid(), hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8], "control.sock"))' "$HOME/.claude")"
+  SUPDIR="$(dirname "$sup")"
+  case "$SUPDIR" in /tmp/cc-daemon-*/????????) ;; *) echo "refusing an unexpected supervisor path: $SUPDIR"; exit 1 ;; esac
+  [ -d "$(dirname "$SUPDIR")" ] || mkdir -m 700 "$(dirname "$SUPDIR")"
+  [ -d "$SUPDIR" ] || mkdir -m 700 "$SUPDIR"
+  mkdir -p "$HOME/.claude/daemon"
+  printf '0123456789abcdef0123456789abcdef' > "$HOME/.claude/daemon/control.key"
+  python3 - "$sup" "$1" <<'PY' & PIDS+=("$!")
+import json, os, socketserver, sys
+path, out = sys.argv[1], sys.argv[2]
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+class H(socketserver.StreamRequestHandler):
+    def handle(self):
+        line = self.rfile.readline()
+        if not line.strip():
+            return
+        with open(out, "a") as f:
+            f.write(line.decode().rstrip("\n") + "\n")
+        self.wfile.write((json.dumps({"ok": True, "op": json.loads(line).get("op")}) + "\n").encode())
+socketserver.UnixStreamServer(path, H).serve_forever()
+PY
+  until_true test -S "$sup"
+}
+lead_post_to() { # channel-id text — the threads the `to` of this machine's event carrying the text names
+  python3 - "$SMINOS_HOME/projects/$1/log" "$2" <<'PY'
+import glob, json, os, sys
+for p in sorted(glob.glob(os.path.join(sys.argv[1], "*.jsonl"))):
+    for line in open(p):
+        e = json.loads(line)
+        if sys.argv[2] in str(e.get("text") or ""):
+            print(e["kind"], " ".join(r.get("thread", "-") for r in e["to"]) if isinstance(e["to"], list) else e["to"])
+PY
+}
+
 speak_scene() {
   echo "the speaking scene (CH2's M6):"
   speak_machines
@@ -801,6 +882,34 @@ speak_scene() {
   scene_cmd "alpha, a terminal" "$T/pa/app" - chat desk-integration -n 5
   assert_contains "$(grep -F "lease ends" <<<"$OUT")" "devcloud@gamma" "sminos chat on alpha shows it from devcloud@gamma"
   assert_equals "$(received_n alder "lease ends") $(on pb beta; inputs_n "$SB" "lease ends")" "0 0" "no session was prompted"
+
+  echo " 8. at a terminal on alpha, S the lead: the person's untagged post reaches it as its human's words:"
+  on pa alpha
+  set_ep "$EPA" '{"verdict": "words", "notice_words": true}'   # this machine's own human writer; a notice too
+  supervisor_standin "$T/sup-in"   # S runs as the --bg job its wake started, with no bridge: its supervisor's reply
+  tty_cmd "alpha, a terminal" "$T/pa/app" y channel lead desk-integration sable
+  assert_rc 0 "$RC" "the lead named with a typed yes"
+  assert_contains "$OUT" "sable#${SS:0:8} leads desk-integration" "S leads the channel"
+  scene_cmd "alpha, a terminal" "$T/pa/app" - say --in desk-integration "do it"
+  assert_rc 0 "$RC" "the person's untagged post recorded"
+  assert_equals "$(lead_post_to "$desk" "do it")" "human $(thread_of "$SS")" "its event names S's thread in to"
+  sup_has() { grep -qF -- "$1" "$T/sup-in" 2>/dev/null; }
+  speak_pass sup_has "do it" || true
+  assert_equals "$(asked_about "$EPA" "do it")" "[\"words? $desk\"]" \
+    "alpha's endpoint was asked one words? under the channel's id (and answered words)"
+  assert_equals "$(grep -cF "do it" "$T/sup-in" 2>/dev/null || true)" 1 "S was handed it as a person's words"
+  assert_equals "$(inputs_n "$SS" "do it")" 0 "never as a peer's frame"
+  scene_cmd "alpha, a terminal" "$T/pa/app" - say --notice devcloud --in desk-integration "@sable lease ends, S"
+  assert_rc 0 "$RC" "a notice tagged to the lead recorded"
+  until_true input_has "$SS" "lease ends, S" || true
+  frame="$(content_with "$WAKE_ENGINE_STATE/inputs/$SS" "lease ends, S")"
+  assert_contains "$(sed -n 2p <<<"$frame")" "from devcloud@alpha" "S receives an inbox frame from devcloud@alpha"
+  assert_equals "$(grep -c "To reply" <<<"$frame" || true)" 0 "with no reply line"
+  assert_equals "$(asked_about "$EPA" "lease ends, S")" "[\"words? $desk\"]" "though the stand-in's word for it was words"
+  assert_equals "$(grep -cF "lease ends, S" "$T/sup-in" 2>/dev/null || true)" 0 "and nothing of it was handed as words"
+  scene_cmd "alpha, as A" "$T/pa/app" "$SA" channel lead desk-integration sable
+  assert_rc 1 "$RC" "the lead verb run as A is refused"
+  assert_contains "$OUT" "channel lead is for a person at a terminal" "saying it is the person's"
 
   echo " 9. the checker over the three stand-ins and stores:"
   assert_equals "$(checked_spoken "$desk" "$EPA $T/pa/s alpha" "$EPB $T/pb/s beta" "$EPC $T/pc/s gamma")" clean \

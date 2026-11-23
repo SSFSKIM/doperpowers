@@ -624,6 +624,9 @@ run_channels() {
   echo
   if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: join, .smns, a verb's fact, create, add, remove, the listing, what is said into one (test-channels.sh)"; else
     fail "channels through the launcher: join, .smns, a verb's fact, create, add, remove, the listing, what is said into one (test-channels.sh)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_lead.py"; then
+    pass "the lead: the verb at a terminal and its refusals, whose lead is in effect, the post as its human's words, a notice, channel show (test_channels_lead.py)"
+  else fail "the lead: the verb at a terminal and its refusals, whose lead is in effect, the post as its human's words, a notice, channel show (test_channels_lead.py)"; fi
   if "$SCRIPT_DIR/test-channels-machines.sh"; then pass "channels across three machines: known for two holders and not a follower, a removal, a return, the last member (test-channels-machines.sh)"; else
     fail "channels across three machines: known for two holders and not a follower, a removal, a return, the last member (test-channels-machines.sh)"; fi
 }

@@ -202,6 +202,9 @@ class Checker(unittest.TestCase):
             "a lead's from_project": ev(human, 3, "channel-lead", thread=S2, session=S1, from_project=APP),
             "no thread": ev(W, 6, "say", to=[{"session": S1, "alias": "w"}], text="x"),
             "a thread of no string": ev(human, 4, "human", to=[{"session": S1, "alias": "w", "thread": 7}], text="x"),
+            "a lead's to": ev(human, 5, "channel-lead", thread=S2, session=S1, to=to),   # CH2's M8: never to
+            "a lead's session with no thread": ev(human, 6, "channel-lead", thread=None, session=S1),
+            "a lead's session and no thread at all": ev(human, 7, "channel-lead", session=S1),
         }
         for why, e in breaches.items():
             got = wire.published([self.events(DESK, e)], [DESK], {}, allowed=wire.ALLOWED_SPOKEN)
@@ -214,6 +217,14 @@ class Checker(unittest.TestCase):
                 f.write(json.dumps(e) + "\n")
             got = wire.written(home, [DESK], MACHINE, {}, allowed=wire.ALLOWED_SPOKEN, deliveries=False)
             self.assertEqual(len(got), 1, (why, got))
+
+    def test_a_lead_naming_a_thread_and_one_clearing_it_are_allowed(self):
+        """CH2's M8 (its §5): `thread` and that thread's `session`, plain or under a stream of the machine's human
+        writer; `thread: null` with no `session`."""
+        human = "%s/human" % MACHINE
+        leads = [ev(human, 2, "channel-lead", thread=None), ev(human, 3, "channel-lead", thread=S2, session=S1),
+                 ev(human + "~" + "0" * 16, 1, "channel-lead", thread=S2, session=S1)]
+        self.assertEqual(wire.published([self.events(DESK, *leads)], [DESK], {}, allowed=wire.ALLOWED_SPOKEN), [])
 
     def test_the_older_copy_suites_upload_order_is_first_receipt(self):
         """older_channel_wire.first_received (test-older-cli.sh's wire check) reads the order the stand-in first

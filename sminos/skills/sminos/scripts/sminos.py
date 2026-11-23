@@ -205,6 +205,9 @@ back by a fill.
                    the last seven days and what became of each; its pool, the machines its members run on
     sminos channel  env add|remove <channel> <machine>    # a machine of the org added to its pool by hand, or no
                    longer (a member's)
+    sminos channel  lead <channel> <thread|none>          # the owner's, at a terminal, confirmed there: a
+                   message the owner then types into the channel on this machine with no tag is addressed
+                   to that thread; none clears it
     sminos find     <words..>                             # list --org <words>: every session they match
     sminos who      [<commit|PR>] [--session S]           # the session a commit (its Sminos-Session trailer)
                    or a PR (its body's last line, else its commits' trailers; a number or URL, through gh)
@@ -20710,6 +20713,10 @@ def build_parser():
     ce.add_argument("channel")
     ce.add_argument("machine")
     ce.set_defaults(fn=cmd_channel)
+    cl = chsub.add_parser("lead", add_help=False)
+    cl.add_argument("channel")
+    cl.add_argument("thread")
+    cl.set_defaults(fn=cmd_channel)
 
     hb = sub.add_parser("hub", add_help=False, prefix_chars="\0")
     hb.add_argument("words", nargs="*")
@@ -20967,7 +20974,8 @@ def main(argv=None):
             die("usage: sminos project init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]")
         if a.cmd == "channel":
             die("usage: sminos channel create <name> [<thread>] | add <channel> [<thread>...] | remove <channel> "
-                "[<thread>...] | show <channel> [--json] | env add|remove <channel> <machine>")
+                "[<thread>...] | show <channel> [--json] | env add|remove <channel> <machine> | lead <channel> "
+                "<thread|none>")
         die("unknown command: %s (try: sminos help)" % argv[0])
     if a.cmd == "spawn" and a.asked_from is not None and a.on is None and os.environ.get("CLAUDE_CODE_SESSION_ID"):
         # The transport's flag: the record it gives the new session is a terminal spawn's (spawn_provenance), so

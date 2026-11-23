@@ -28,7 +28,11 @@
 # untagged note, a session in no channel saying into it (its project in
 # `from_project`, its copy, its line), the refusals of a name no member
 # answers, a selector and the unquoted `name#short` qualifier with every
-# log unchanged, `chat <channel>` and `list <channel>`. The first channel is
+# log unchanged, `chat <channel>` and `list <channel>`. The lead (CH2's
+# M8): `channel lead` refused inside a session, with no terminal and without
+# a typed yes, every log unchanged; a typed yes on a controlling pty names
+# it, `channel show` prints it, the person's untagged post is addressed to
+# it and a session's is not, and `none` clears it. The first channel is
 # registered as the org's directory registers one (sminos_channels.register).
 # One machine cut over to its endpoint (daemon/identity.json); no endpoint
 # runs. Hermetic: HOME and SMINOS_HOME are temporary; `claude` is a stub;
@@ -372,6 +376,67 @@ assert_contains "$OUT" "helper [${S2:0:8}]" "with its member"
 run_in "$APPDIR" "$SMINOS" say "@helper the plain tag"
 assert_rc 0 "$RC" "the plain tag still reaches the thread"
 assert_contains "$OUT" "in app" "in its own project"
+
+echo "the lead (CH2's M8):"
+at_tty() { # answer command... — OUT and RC of the command on a controlling pty of its own, the answer typed at its prompt
+  set +e
+  OUT="$(python3 - "$@" <<'PY'
+import os, pty, select, sys, time
+answer, argv = sys.argv[1], sys.argv[2:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(argv[0], argv)
+out, sent, end = b"", False, time.monotonic() + 60
+while time.monotonic() < end:
+    if not select.select([fd], [], [], 1)[0]:
+        continue
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    out += chunk
+    if not sent and b"[y/N]" in out:
+        os.write(fd, answer.encode() + b"\n")
+        sent = True
+sys.stdout.write(out.decode("utf-8", "replace").replace("\r\n", "\n"))
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
+PY
+)"; RC=$?; set -e
+}
+no_tty() { # command... — OUT and RC of the command with no controlling terminal (a new session)
+  set +e
+  OUT="$(python3 -c 'import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:], start_new_session=True).returncode)' "$@" 2>&1)"
+  RC=$?; set -e
+}
+BEFORE="$(logs_sum)"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel lead desk-three helper
+assert_rc 1 "$RC" "channel lead inside a session is refused"
+assert_contains "$OUT" "channel lead is for a person at a terminal, and this runs inside a session: nothing was written" "saying it is the person's"
+no_tty "$SMINOS" channel lead desk-three helper
+assert_rc 1 "$RC" "and where there is no terminal"
+assert_contains "$OUT" "needs its owner at a terminal to confirm it, and this has none: nothing was written" "saying so"
+at_tty n "$SMINOS" channel lead desk-three helper
+assert_rc 1 "$RC" "a person who does not type yes"
+assert_contains "$OUT" "not confirmed: nothing was written" "is told nothing was written"
+assert_equals "$(logs_sum)" "$BEFORE" "no log file changed by a refusal"
+at_tty y "$SMINOS" channel lead desk-three helper
+assert_rc 0 "$RC" "a typed yes at a terminal names the lead"
+assert_contains "$OUT" "Make helper#${S2:0:8} the lead of desk-three?" "after asking"
+assert_contains "$OUT" "helper#${S2:0:8} leads desk-three" "and says so"
+run_in "$T" "$SMINOS" channel show desk-three
+assert_equals "$(grep -A1 "^# desk-three " <<<"$OUT" | sed -n 2p)" "lead  helper#${S2:0:8}" "channel show prints the lead after its heading"
+run_in "$T" "$SMINOS" say --in desk-three "do it"
+assert_rc 0 "$RC" "the person's untagged post"
+assert_equals "$(said_in "$THREE" | tail -1)" "human helper+thread - -" "is addressed to the lead"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" say --in desk-three "a session's note"
+assert_equals "$(said_in "$THREE" | tail -1)" "say * from_project -" "a session's untagged post is not the lead's"
+at_tty y "$SMINOS" channel lead desk-three none
+assert_rc 0 "$RC" "none clears it"
+assert_contains "$OUT" "desk-three has no lead" "saying so"
+run_in "$T" "$SMINOS" channel show desk-three
+assert_equals "$(grep -c '^lead ' <<<"$OUT" || true)" 0 "and channel show prints no lead"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

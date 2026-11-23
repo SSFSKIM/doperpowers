@@ -68,6 +68,9 @@ project. What is here:
   each kept word handed to the delivery operation, which takes it under
   the thread's lock: take_word); and what holds a channel's log open on a
   machine that only wrote into it (unsent).
+- The lead (CH2's M8, §5): which `channel-lead` a reader honours (is_lead),
+  the lead in effect for this reader (lead_of, read where a person's
+  untagged post is written: speak), and the verb (`channel lead`, lead).
 """
 import glob
 import json
@@ -1270,12 +1273,14 @@ def _print_rows(rows):
 
 
 def cmd_channel(a):
-    """`sminos channel create|add|remove|show|env` (§8): every verb that
-    writes refused before anything is written where the kept welcome lists
-    no `channels`; `show` is a read, and needs none."""
+    """`sminos channel create|add|remove|show|env|lead` (§8; `lead` CH2's
+    M8): every verb that writes refused before anything is written where the
+    kept welcome lists no `channels`; `show` is a read, and needs none."""
     if a.channel_op == "show":
         show(find_channel(a.channel), a.json)
         return
+    if a.channel_op == "lead":
+        sys.exit(lead(a.channel, a.thread))   # its refusal inside a session comes before anything is read
     if not sminos.audience_module().advertised("channels"):
         sminos.die(CAPABILITY_REFUSAL, 1)
     session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
@@ -1895,7 +1900,9 @@ def speak(channel, a, session, tags):
     where record_copy keeps one, and one line. A tag qualified by the channel
     that names a thread that was in it and is not now (an old frame's reply
     line) goes to that thread directly, in its own project, by a project's
-    say. Then it appends and delivers as a project's say does
+    say. An untagged post a person types at a terminal (no session, no
+    `--notice`) is addressed to the lead in effect here (lead_of), if any.
+    Then it appends and delivers as a project's say does
     (sminos.say_into)."""
     via_in = bool(a.in_) and sminos.names_channel(a.in_) is not None
     if sminos.selector_given(a):
@@ -2000,6 +2007,12 @@ def speak(channel, a, session, tags):
             sminos.say_into(a, dest, home, session, sender, writer, kind, direct, False, draws)
             return
         raws = held
+    if not tags and not session and a.notice is None:
+        # An untagged post the person types at a terminal of this machine is addressed to the lead (CH2's M8, §5),
+        # read here, where it is written; a session's, and a machine's notice, stay untagged.
+        leader = lead_of(channel)
+        if leader is not None and (r := _entry_of(channel, *leader)) is not None:
+            recipients, rows, raws = [r], {r["thread"]: leader}, [[]]
     fields = {"thread": thread} if kind == "say" and thread else {}
     if outsider:
         fields["from_project"] = home.id   # the sender's own project, where a reply finds it (C5)
@@ -2342,18 +2355,24 @@ def section(rows):
 
 
 def show(channel, as_json=False):
-    """`channel show <channel> [--json]` (§8): its heading, its members (the
-    roster, each row with its project), its requests of the last seven days
-    with what became of each, and its pool."""
+    """`channel show <channel> [--json]` (§8): its heading, its lead while one
+    is in effect for this reader (CH2's M8: a line after the heading, the key
+    `lead` its thread id; neither without one), its members (the roster, each
+    row with its project), its requests of the last seven days with what
+    became of each, and its pool."""
     rows = roster(channel)
     shown = requests_shown(channel)
     held = pool(channel, rows)
+    leader = lead_of(channel, rows)
     if as_json:
         print(json.dumps({"id": channel.id, "name": channel.name,
+                          **({"lead": thread_of_row(*leader)[0]} if leader is not None else {}),
                           "members": [sminos.member_json(m, p) for p, m in rows],
                           "requests": shown, "pool": held}, indent=2))
         return
     print("# %s  %s" % (channel.name, channel.id))
+    if leader is not None:
+        print("lead  %s" % _label(leader[1].alias, leader[1].session))
     print("members")
     section(rows)
     for title, lines in (("requests", [_request_line(r) for r in shown]), ("pool", [_pool_line(e) for e in held])):
@@ -2417,6 +2436,171 @@ def env(channel, op, machine, session):
            "%s is no longer in the pool of %s by hand") % (name, channel.name))
     return 0
 
+
+
+# ------------------------------------------------------------ the lead (CH2's M8, its §5)
+#
+# A `channel-lead` in the channel's log, honoured only under a machine's human writer (plain, or under that writer's
+# audience stream), names the thread an untagged message the owner types into the channel at a terminal of the
+# writing machine is addressed to. It is read where a post is written (speak); the receiving side reads no lead, it
+# delivers an addressed event. The event takes the audience of the thread it names, as a request does, and a plain
+# `{"thread": null}` goes before one that goes under a stream: a reader that may not read the lead reads none.
+
+# The sentences of §5 that are decisions (the plan's open point 4).
+LEAD_IN_SESSION = ("channel lead is for a person at a terminal, and this runs inside a session: nothing was written. "
+                   "Report it to your human instead")
+LEAD_NO_TERMINAL = ("naming a channel's lead needs its owner at a terminal to confirm it, and this has none: nothing "
+                    "was written")
+LEAD_PROMPT = ("Make %s the lead of %s? A message you type into %s with no tag, on this machine, is then addressed to "
+               "it. Confirm? [y/N] ")
+LEAD_CLEAR_PROMPT = "Clear the lead of %s? Confirm? [y/N] "
+NOT_CONFIRMED = "not confirmed: nothing was written"
+LEAD_NOT_IN = "%s is not in %s: sminos channel add %s <thread> places it first"
+LEADS = "%s leads %s"
+LEAD_ELSEWHERE = "(on %s: a message you type here reaches it as a peer's, not as its human's words)"
+LEAD_PRIVATE = "(private: only machines that may read it see that it leads)"
+NO_LEAD = "%s has no lead"
+LEAD_UNMARKED = "this machine's name (%s) is no machine name a reader honours a lead under: nothing was written"
+
+
+def is_lead(e):
+    """Whether an event is a lead a reader honours (§5): kind `channel-lead`;
+    its plain writer `<machine>/human` with a machine's name by the notice's
+    grammar (sminos.NOTICE_MACHINE_RE, never `hub` or `legacy`), an audience
+    stream of it included; no `notice` and no `to`; and `thread` a non-empty
+    string with a non-empty string `session`, or None with no `session`."""
+    if not isinstance(e, dict) or e.get("kind") != "channel-lead" or "thread" not in e or "notice" in e or "to" in e:
+        return False
+    machine, _, last = sminos.writer_base(str(e.get("writer") or "")).rpartition("/")
+    if last != "human" or not sminos.NOTICE_MACHINE_RE.fullmatch(machine) or machine.lower() in sminos.NOT_MACHINES:
+        return False
+    thread = e.get("thread")
+    if thread is None:
+        return "session" not in e
+    return isinstance(thread, str) and bool(thread) and isinstance(e.get("session"), str) and bool(e["session"])
+
+
+def lead_of(channel, rows=None):
+    """(Project, Member) of the channel's lead in effect for this reader, or
+    None (§5): the last is_lead event of the merged log this machine holds
+    decides, whoever wrote the ones before it; None for a `thread` of None;
+    else the roster's row (`rows`, the roster by default) addressed as that
+    thread (thread_of_row); None when no row is (it ended, left, or this
+    reader may not read it). An earlier lead never comes back in its place."""
+    last = None
+    for e in sminos._store_whole(channel, "log", shared=True)[1]:
+        if is_lead(e):
+            last = e
+    if last is None or last["thread"] is None:
+        return None
+    for p, m in (roster(channel) if rows is None else rows):
+        got = thread_of_row(p, m)
+        if got is not None and got[0] == last["thread"]:
+            return p, m
+    return None
+
+
+def _in_roster(rows, name, short):
+    """Whether a name, as a tag would take it, answers a row of the roster (reach_in's forms), so the channel's
+    own resolution decides it."""
+    for p, m in rows:
+        if short:
+            if m.alias == name and m.session.startswith(short):
+                return True
+        elif id_form(name):
+            got = thread_of_row(p, m)
+            if m.session.startswith(name) or (got is not None and got[0].startswith(name)):
+                return True
+        elif sminos.alias_reach(m, name):
+            return True
+    return False
+
+
+def _lead_row(channel, q):
+    """The roster's row a name for the lead reaches: through the channel's roster (reach_in) when it answers a
+    row there, so a member is named from any directory; else as any verb names a thread (_target: exit 4 for a
+    name unknown or ambiguous), refused with exit 1 when that thread has no row in the roster."""
+    rows = roster(channel)
+    if "/" not in q:
+        name, _, short = q.partition("#")
+        if _in_roster(rows, name, short):
+            where, p, m = reach_in(channel, name, short)
+            if where == "in":
+                return p, m
+    t = _target(q)
+    for p, m in rows:
+        got = thread_of_row(p, m)
+        if t.thread and got is not None and got[0] == t.thread:
+            return p, m
+    sminos.die(LEAD_NOT_IN % (t.label, channel.name, channel.name), 1)
+
+
+def _lead_choice(channel, session, alias, label):
+    """The one stream a lead naming that session goes under (sminos.stream_choice for that one recipient, from
+    the machine's human writer): (writer, audience); exit 1 in the choice's own words where it refuses."""
+    choice, refusal = sminos.stream_choice(channel, "", [{"session": session, "alias": alias}], "the lead %s" % label)
+    if refusal:
+        sminos.die(refusal[0], 1)
+    return choice[0][0], choice[0][1]
+
+
+def lead(q, name):
+    """`channel lead <channel> <thread|none>` (§5): refused inside a session
+    before anything is read; without the capability; where the enrollment
+    does not carry the channel's log; on a machine whose name no reader
+    would honour a lead under; for a thread that has no row in the roster;
+    where the stream choice refuses; then the owner's typed yes at the
+    terminal (sminos_visibility.confirmed, which refuses where there is
+    none). The event goes under the machine's human writer, plain for a
+    thread that is not private, under that writer's audience stream after a
+    plain clearing event for one that is. The exit code."""
+    if os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        sminos.die(LEAD_IN_SESSION, 1)
+    if not sminos.audience_module().advertised("channels"):
+        sminos.die(CAPABILITY_REFUSAL, 1)
+    channel = find_channel(q)
+    _refuse_uncarried(channel, "name the lead of")
+    writer = sminos.writer_id()
+    if not is_lead({"kind": "channel-lead", "writer": writer, "thread": None}):
+        sminos.die(LEAD_UNMARKED % sminos.writer_base(writer).rpartition("/")[0], 1)
+    row = None
+    if name == "none":
+        prompt = LEAD_CLEAR_PROMPT % channel.name
+    else:
+        row = _lead_row(channel, name)
+        thread, session = thread_of_row(*row)
+        label = _label(row[1].alias, session)
+        _lead_choice(channel, session, row[1].alias, label)
+        prompt = LEAD_PROMPT % (label, channel.name, channel.name)
+    if not sminos.sibling_module("sminos_visibility").confirmed("", None, prompt=prompt, none=LEAD_NO_TERMINAL):
+        sminos.die(NOT_CONFIRMED, 1)
+    cleared = False
+    try:
+        if row is None:
+            e = sminos.log_append(channel, writer, "channel-lead", thread=None)
+        else:
+            # Chosen again at the append: the person may have taken a while at the prompt.
+            stream, audience = _lead_choice(channel, session, row[1].alias, label)
+            if audience is not None:
+                cleared = sminos.log_append(channel, writer, "channel-lead", thread=None) is not None
+            sminos.keep_stream(channel, stream, audience)
+            e = sminos.log_append(channel, stream, "channel-lead", thread=thread, session=session)
+    except (OSError, sminos.audience_module().StreamUnknown) as err:
+        sminos.die("the lead of %s was not written%s: %s" % (
+            channel.name, " (a clearing event was: it has no lead now)" if cleared else "", err), 1)
+    sminos.nudge_daemon()
+    if e["seq"] is None:
+        print(sminos.waits_line(channel, e["writer"]))
+        return 0
+    if row is None:
+        print(NO_LEAD % channel.name)
+        return 0
+    print(LEADS % (label, channel.name))
+    if not row[1].local:
+        print(LEAD_ELSEWHERE % row[1].machine)
+    if audience is not None:
+        print(LEAD_PRIVATE)
+    return 0
 
 
 # ------------------------------------------------------------ what a channel owes a thread (CH2's M2; its §3)

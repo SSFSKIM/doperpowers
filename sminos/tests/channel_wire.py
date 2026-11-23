@@ -36,7 +36,8 @@ From CH2's M4 on, under a channel's id on the wire or on disk, besides a
 kind outside `allowed` (CH2 passes ALLOWED_SPOKEN): an event that carries
 `copy`; a `human` or a `channel-lead` that carries `from_project` (a `say`
 may: its sender is no member); and a `say` or a `human` whose `to` is a
-list with an entry that carries no `thread`.
+list with an entry that carries no `thread`. From CH2's M8 on, a
+`channel-lead` there that carries `to`, or a `session` with no `thread`.
 And on disk, for this machine's writers (`machine`: its name, or its names
 now and former): an event in a channel's log at a position the baseline
 does not hold with that event, of a kind outside `allowed`, and the
@@ -126,6 +127,8 @@ def _event_breach(cid, e, before, allowed, where):
     if kind in ("say", "human") and isinstance(e.get("to"), list) \
             and any(not (isinstance(r, dict) and isinstance(r.get("thread"), str) and r["thread"]) for r in e["to"]):
         return "%s: a %r whose to has an entry that names no thread %s" % (where, kind, at)
+    if kind == "channel-lead" and ("to" in e or ("session" in e and not e.get("thread"))):
+        return "%s: a channel-lead that carries %s %s" % (where, "to" if "to" in e else "a session with no thread", at)
     return None
 
 
