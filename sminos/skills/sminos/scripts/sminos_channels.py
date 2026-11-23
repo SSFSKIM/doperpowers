@@ -1837,7 +1837,8 @@ DROP_IN = "Drop --in to reach it in its own project"
 SENT_DIRECTLY = "%s is not in %s now: sent to it directly, in %s"
 CANNOT_REACH = ("%s was in %s and cannot be reached now (it has ended, or this machine may not read it): nothing was "
                 "recorded")
-LEFT_WITH_IN = ("%s is not in %s now (it left the channel, or its thread ended): nothing was recorded. " + DROP_IN)
+LEFT_WITH_IN = ("%s is not in %s now (it left the channel, or its thread ended): nothing was recorded. It is %s in its "
+                "own project")
 ONE_LOG = "one message, one log: the tags name %s"
 RESOLVES_OUTSIDE = "; %s resolves outside %s"   # an unqualified tag beside a channel's, no log claimed for it
 RESOLVE_OUTSIDE = "; %s resolve outside %s"
@@ -2002,7 +2003,10 @@ def speak(channel, a, session, tags):
                     # without --in (dropping it would reach nothing either).
                     sminos.die(CANNOT_REACH % (t["raw"], channel.name), sminos.EXIT_UNKNOWN)
                 if via_in:
-                    sminos.die(LEFT_WITH_IN % (t["raw"], channel.name), sminos.EXIT_UNKNOWN)
+                    # The address of the row resolved here, qualified by its project: a project's lookup takes
+                    # neither the channel's thread-id prefixes nor its bare tags.
+                    sminos.die(LEFT_WITH_IN % (t["raw"], channel.name, sminos.candidate_labels([(p, m)], True, "@")),
+                               sminos.EXIT_UNKNOWN)
                 outs.setdefault(p.id, (p, []))[1].append((t, m, (i, raw)))
                 continue
             r = _entry_of(channel, p, m)

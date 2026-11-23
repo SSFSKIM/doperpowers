@@ -414,10 +414,16 @@ class Member(Say):
         self.assertEqual(e["to"], [{"session": ssid, "alias": "writer"}], "a project's message, as today")
         self.assertEqual(self.says(), chan_before, "nothing in the channel's log")
         self.assertEqual(len(self.got(sreceived, "answer after it left")), 1)
-        code, out = self.as_session(rsid, "say", "--in", "desk", "@%s again" % stid)
-        self.assertEqual(code, 4, out)
-        self.assertIn("%s is not in desk now (it left the channel, or its thread ended): nothing was recorded. "
-                      "Drop --in to reach it in its own project" % ("@" + stid), out)
+        for name in (stid, stid[:12]):   # its id, and a prefix a channel takes and a project does not
+            code, out = self.as_session(rsid, "say", "--in", "desk", "@%s again" % name)
+            self.assertEqual(code, 4, out)
+            address = "@%s/writer#%s" % (sminos.tag_project(self.p), ssid[:8])
+            self.assertIn("@%s is not in desk now (it left the channel, or its thread ended): nothing was recorded. "
+                          "It is %s in its own project" % (name, address), out)
+            self.assertNotIn(channels.DROP_IN, out)
+        code, out = self.as_session(rsid, "say", "%s by the address given" % address)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.got(sreceived, "by the address given")), 1, "the address reaches it")
 
 
     def test_the_reply_line_to_a_sender_whose_project_has_left_or_is_retired_is_refused_as_the_short_tag_is(self):
