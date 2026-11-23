@@ -78,7 +78,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M4 — Saying into a channel: the doors, the reply, the read. `d5c345bc`, fixes `934afd76`, `b9fc61a4`; reviewed clean at the third review (one Minor on a draft sentence's wording left for open point 4). Gates GREEN on `b9fc61a4`; sminos-idle 32,663; sminos-channels 2m06s.
 - [x] (2026-11-22) M5 — The scene on a real engine. Run whole against `f775004d` (Claude Code 2.1.330, haiku, a scratch home): all four steps showed what they expect; no fault of M1 to M4, no code changed; the checker found nothing over the stand-in's frames and the store; every process stopped. Step 4's hand-off made as Surprises says.
 - [x] (2026-11-22) M6 — Across machines: asking, and carrying out off the consumer thread. `5af6ab8c`, fixes `e7742001`, `d5b03b63`, `15198aa9`, `52d5241d`; reviewed with M2 to M6 as one range (three reviews on the medium rung, the bound), the third's fix (`52d5241d`) made after it and named to the frontier panel. Gates GREEN on `52d5241d`; sminos-idle 32,216; sminos-channels 3m15s of its 6m timeout.
-- [ ] M7 — Held to MAWS's fixture, and what a channel costs. (Bench `7add7342`, fixes `0d093808`, `aacec34c`, `eaa53afb`; MAWS's fixture at `86c79d0a3` (blob `5aabcdec`) replays whole, 158 lines, `41e7573a`; gates GREEN; sminos-idle 32,230; sminos-channels 3m29s; in its last review.)
+- [x] (2026-11-22) M7 — Held to MAWS's fixture, and what a channel costs. Bench `7add7342`, fixes `0d093808`, `aacec34c`, `eaa53afb`, `b1de80db`; MAWS's fixture at `86c79d0a3` (blob `5aabcdec`) replays whole, 158 lines, `41e7573a`; three task reviews (the bound), the third's fix (`b1de80db`: the pinned digests) made after it and named to the frontier panel. Gates GREEN on `b1de80db`; sminos-idle 32,280; sminos-channels 3m21s.
 - [x] (2026-11-22) M8 — The lead, and whose words a post is. `92382f49`, fixes `9e5d57be`, `11e497ea`, `39873d8a`; three task reviews (the bound), the third's fix (`39873d8a`) made after it and named to the frontier panel. Gates GREEN on `39873d8a`; sminos-idle 32,792; sminos-channels 3m10s.
 - [ ] M9 — What reads a session's exchanges reads a channel's.
 - [ ] The review of M1 to M9 as one range (the holder's), and its fixes.
@@ -3907,6 +3907,29 @@ them today.
     under an audience stream clears nothing. The suites share one PTY
     driver (`T/pty_answer.py`), which kills and reaps its child at its
     deadline and on an error.
+- 2026-11-22 — **M7 as built** (`7add7342` to `b1de80db`). Decisions the
+  executor made where the plan is silent, kept by the controller:
+  - The fixture's thread literals are bound to the threads sminos mints
+    (`bind_threads`); the audiences' digests and members are sent as the
+    fixture pins them, never computed with the function sminos checks them
+    by. Kept words are carried out in the replay by calling `carry_words`,
+    since the replay runs no daemon. The ordering edges a channel's lines
+    need (a member frame before an upload, a member frame before an ask, an
+    upload before an ask) are read off the fixture's lines
+    (`order_edges`), so they survive inserted frames; a `to` of everyone
+    gives no recipient edge. The probes are keyed by the log and by the
+    sessions a case stages; a `machine-event` with no `owners` is
+    unattested. The harness is keyed to the pinned copy's numbering, so
+    CH1's copy no longer replays with it.
+  - The bench posts an upload only at a counted turn of the target log's
+    pass, which alone is profiled, requires exactly K accepted before the
+    window closes, and fails visibly on an incomplete sample; the
+    follower's debt-read count tells "not observed" from zero. A control
+    with `channels` and `reach` and no channel (`--channels 0`) stands
+    beside the gate's shape; the gate is untouched.
+  - The replay does not prove the endpoint's policy-cache gate for a
+    recipient it does not know: the pinned case uses a listed local
+    recipient (the proof map keeps that limit).
 
 
 ## Outcomes & Retrospective
