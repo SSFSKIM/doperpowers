@@ -10304,8 +10304,9 @@ def wake_member(project, member, session, e, words=None, due=False, owing=None):
     locks, hold = [], []
 
     def checked():
-        # A channel's last check, the wake's hold taken and no process started yet.
-        if owing is not None and not channels_module().still_owed(owing, e):
+        # A channel's last check, the wake's hold taken and no process started yet: with the reach, so an access
+        # change while the wake waited for its lock launches nothing on the answer it made stale.
+        if owing is not None and not channels_module().still_owed(owing, e, reach=True):
             raise PassLost()
 
     def gone(outcome="recorded"):
@@ -16511,6 +16512,12 @@ def _wake_held(tid, session, due, returns, on_live):
             return WakeResult(why == "live", "" if why == "live" else why or "unknown")
         seat = reload_seat(tid) if t["opened"] == "spawned" else None
         settings = seat["settings"] if seat is not None else wm.option(flags, "--settings")
+        # The launch boundary, past the last wait (the record's lock the line was written under): W2's reads of the
+        # record, its session and the lane made again, so what changed while it waited launches nothing.
+        _, why = _wake_thread(tid, session, returns)
+        if why:
+            wake_line_dropped(tid, session, note["id"])
+            return WakeResult(False, why)
         short, banner = run_claude_bg(wm.wake_argv(session, flags), wm.thread_cwd(t), settings)   # W5, W6
         if isinstance(banner, NoLaunchDir):
             # Gone since W2 read it, as the launch boundary found it: the hold not_woken answers for it, never an

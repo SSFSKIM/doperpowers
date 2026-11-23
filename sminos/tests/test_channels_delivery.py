@@ -948,6 +948,47 @@ class Launch(Channel):
         self.assertEqual(len(self.woken_got(sid, "no hold, no launch")), 1, "the next pass wakes it")
 
 
+    def test_a_change_of_reach_while_the_wake_waits_for_its_lock_launches_nothing(self):
+        tid, sid = self.stopped()
+        e = self.message((sid, tid), text="reach changed at the lock")
+        real, once = sminos.launch_hold, []
+
+        def launch_hold(thread_id):
+            # The wake waits for its lock; meanwhile the session's access changes (its lane and thread as they were).
+            if not once:
+                once.append(True)
+                records.set_policy(sid, lambda access, shares: ("private", []))
+            return real(thread_id)
+        with mock.patch.object(sminos, "launch_hold", launch_hold):
+            self.deliver()
+        self.assertEqual(once, [True])
+        self.assertEqual(self.launches(), 0, "nothing launched on the answer the access change made stale")
+        self.assertEqual(self.owed_to(tid), [(W1, e["seq"])], "still owed")
+        self.assertEqual(self.record_of(tid).get(W1, {}).get("attempts", 0), 0)
+        self.deliver()
+        self.assertEqual(self.launches(), 1)
+        self.assertEqual(len(self.woken_got(sid, "reach changed at the lock")), 1, "the next pass wakes it, once")
+
+    def test_a_session_turned_lane_b_while_the_wake_writes_its_line_launches_nothing(self):
+        tid, sid = self.stopped()
+        e = self.message((sid, tid), text="lane b at the line")
+        real, once = threads.wake_line, []
+
+        def wake_line(*a, **k):
+            # The wake waits on the record's lock to write its line; meanwhile the session turns lane B.
+            if not once:
+                once.append(True)
+                records.set_controller(sid, "B")
+            return real(*a, **k)
+        with mock.patch.object(threads, "wake_line", wake_line):
+            self.deliver()
+        self.assertEqual(once, [True])
+        self.assertEqual(self.launches(), 0, "the lane read at the launch boundary")
+        self.assertEqual(self.settled(tid, W1), 0, "nothing settled")
+        self.assertEqual((self.record_of(tid).get(W1) or {}).get("attempts", 0), 0, "no attempt counted")
+        self.assertIsNone((self.waking(tid, sid) or {}).get("line"), "its line taken back")
+        self.assertGreater(e["seq"], 0)
+
     def test_a_removal_and_a_reopening_while_the_wakes_lock_is_busy_push_nothing(self):
         tid, sid = self.stopped()
         self.message((sid, tid), text="removed while busy")
