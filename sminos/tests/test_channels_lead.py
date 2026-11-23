@@ -655,15 +655,19 @@ class Post(Lead):
         link.log_lane = link.session_lane = Lane()
         link.reach, link.serves_channels = reach, True
         link.logs[DESK] = hublog.HubLog(self.chan(DESK), link.cred)
+        link.logs[DESK].on_have({"t": "have", "project": DESK, "have": {}})
         link.opened.add(DESK)
         link.channels.add(DESK)
         return link
 
     def ask_pass(self, link):
+        """One tick's passes as Link.tick runs them: the members the plane reads, the upload pass (an own post is
+        asked about only once it has gone up), then the words pass."""
         sminos.forget_caches()
         link.next_member_read = 0.0
         link.members(time.monotonic())
         sminos.forget_caches()
+        link.upload(link.logs[DESK])
         link.ask_words({})
 
     def asks(self, link, t=("words?", "reach?")):
