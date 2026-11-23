@@ -5,11 +5,13 @@ project is a member that sees the others, messages them (a stopped one is
 woken in the background to read it) and its human, hands work between them,
 and spans machines through a git mirror or a desk hub (reached through the
 machine's MAWS endpoint). A channel gathers threads of several projects: a
-session speaks in it (`sminos say --in <channel>`, or `@<channel>/<alias>`
-and `@all`), a message from it carries a reply line back through the channel,
-`list` shows each channel's members beside the project's, and the owner may
-name a lead (`sminos channel lead`), the thread a person's untagged post
-there goes to.
+session speaks in it (`sminos say --in <channel>`, or `@<channel>/<alias>`;
+`sminos say --in <channel> "@all …"` reaches its live members), a member
+session's message carries a reply line back through the channel (a
+non-member's names its own project; a person's post or a machine notice has
+none), a bare `list` adds the channels the caller belongs to, with their
+members, and the owner may name a lead (`sminos channel lead`), the thread a
+person's untagged post there goes to.
 The plugin carries the `sminos` CLI (on every session's PATH, from its `bin/`) and skill, the shell hooks that join a
 session to its project and record what it sent its human, and the function
 hooks (mods) that make a session reachable from outside it: the bridge, the
