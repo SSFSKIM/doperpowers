@@ -542,8 +542,9 @@ owner's choice, or a short one without the repositories and the
 instruction). The pool is the host's own copy
 of the logs: a host that has not yet read a removal from a pool (it was
 cut off when the member removed it, or a thread of it left) still records
-there, so a channel it has left gets one more notice, naming the host's
-repositories with unpushed work, before the host reads the removal; and
+there, so a channel it has left gets every notice the host sends, each naming
+the host's repositories with unpushed work as they are then, until the host
+reads the removal; and
 a hand-add by a member whose row the host may not read records
 nothing. A host's sminos that does not know `--pools` (exit 2) is said in
 the journal and the text is not sent again; any other failure is said and

@@ -1143,7 +1143,9 @@ class New(On):
         self.assertEqual(code, on.EXIT_LATER, err)
         self.assertIn("spawn --on: vm1's sminos had kept no welcome of its endpoint within 1 minutes, so whether it "
                       "serves channels is not known: no thread was opened there. devcloud vm ssh vm1 -- sminos daemon "
-                      "status shows its uplink; once it is connected, the same command with --on vm1 opens it", err)
+                      "status shows its uplink; once it is connected, spawn the seat again with --on vm1 (keep the "
+                      "alias, the task and each --channel; leave out --vm-project and --vm-confirmed, which only a "
+                      "new VM takes) and it opens it", err)
 
 
 class Bound(On):

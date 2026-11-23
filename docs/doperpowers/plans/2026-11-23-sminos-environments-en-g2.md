@@ -870,7 +870,8 @@ And:
   keeps the function that composes its short form (§5), so the other
   answer stays one constant and its tests. Every reader of the channel's
   log reads the repositories' names, and a host that has not read its
-  removal from a pool records one more notice there, names included.
+  removal from a pool records every notice it sends there until it reads
+  the removal, names included, as they are at that moment.
 - **One channel's trouble is that channel's.** The writer goes through
   every channel whose pool holds the machine: one it cannot write to (a
   registration its enrollment does not carry, a log that cannot be

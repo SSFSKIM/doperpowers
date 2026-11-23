@@ -734,7 +734,7 @@ SMINOS_ON_ENROLL_POLL=1 SMINOS_ON_ENROLL_WAIT=1 on c8 --on vm1 --channel "$DESK"
 assert_rc 75 "$RC" "the wait's end"
 assert_equals "$(( $(ssh_calls) - CALLS ))" "1" "after one whole try"
 assert_contains "$OUT" "vm1's sminos had kept no welcome of its endpoint within 0 minutes" "its words"
-assert_contains "$OUT" "the same command with --on vm1 opens it" "and the way on"
+assert_contains "$OUT" "spawn the seat again with --on vm1 (keep the alias, the task and each --channel; leave out --vm-project and --vm-confirmed" "and the way on"
 assert_equals "$(launches)" "$BEFORE" "no launch"
 
 echo "== the VM's refusals: an endpoint that serves no channels, a channel it does not carry, the spawner shadowed"

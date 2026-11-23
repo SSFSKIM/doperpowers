@@ -1003,8 +1003,9 @@ def remote(c, vm, request, directory, enrolled):
         if waited_on[-1] == "welcome-unknown":
             c.refuse("spawn --on: %s's sminos had kept no welcome of its endpoint within %d minutes, so whether it "
                      "serves channels is not known: no thread was opened there. devcloud vm ssh %s -- sminos daemon "
-                     "status shows its uplink; once it is connected, the same command with --on %s opens it"
-                     % (vm, round(wait / 60), vm, vm), EXIT_LATER)
+                     "status shows its uplink; once it is connected, spawn the seat again with --on %s (keep the "
+                     "alias, the task and each --channel; leave out --vm-project and --vm-confirmed, which only a "
+                     "new VM takes) and it opens it" % (vm, round(wait / 60), vm, vm), EXIT_LATER)
         if waited_on[-1] == "spawner-unknown":
             c.refuse("spawn --on: %s had not read this session from the project's log within %d minutes (it is "
                      "still downloading the log): no thread was opened there. Once it has, sminos spawn --on %s "
