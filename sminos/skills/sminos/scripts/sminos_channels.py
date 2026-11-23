@@ -2617,7 +2617,7 @@ def lead(q, name):
     machine = sminos.writer_base(writer).rpartition("/")[0]
     if sminos.machine_name_now() != machine:
         sminos.die(LEAD_RENAMED % (machine, sminos.machine_name_now()), 1)
-    renamed, moved = [], []
+    renamed = []
 
     def same_name(_events):
         if sminos.machine_name_now() != machine:
@@ -2630,9 +2630,7 @@ def lead(q, name):
         if not same_name(events):
             return False
         choice, refusal = sminos.stream_choice(channel, "", [{"session": session, "alias": row[1].alias}], label)
-        if refusal or (choice[0][0], choice[0][1]) != (stream, audience):
-            moved.append(True)
-        return not moved
+        return not refusal and (choice[0][0], choice[0][1]) == (stream, audience)
 
     def append(w, fields, queue=True, guard=same_name):
         got = sminos._append(channel, w, [{"kind": "channel-lead", **fields}], guard=guard, queue=queue)
