@@ -866,6 +866,41 @@ class Frontier3(Names):
         got = json.loads(out.strip().splitlines()[-1])
         self.assertEqual((got["thread"], got["alias"]), (stid, "keeper"))
 
+    def refilled_after(self, q_through):
+        """The seat keeper in DESK, refilled with another session right after the lookup of `q_through`: (seat id,
+        its first session, the session it holds after, a find_target that refills it after it answers)."""
+        stid, ssid, _ = self.seat("keeper")
+        self.placed(stid, ssid, DESK)
+        new = str(uuidlib.uuid4())
+        real = sminos.find_target
+
+        def found_then_refilled(q):
+            got = real(q)
+            with open(sminos.meta_path(stid)) as f:
+                raw = json.load(f)
+            raw.update(current=new, sessions=raw["sessions"] + [new])
+            sminos.write_json(sminos.meta_path(stid), raw, mode=0o600)
+            sminos.forget_caches()
+            return got
+        return stid, ssid, new, found_then_refilled
+
+    def test_r2_who_thread_of_a_seat_through_a_channel_refilled_after_the_lookup_is_refused(self):
+        """Review of the last wave (R2): the thread read afresh and the session from the lookup's snapshot would be
+        a target built from two states, the departed session's short handed to devcloud vm owner."""
+        stid, ssid, new, found = self.refilled_after("desk/keeper")
+        with mock.patch.object(sminos, "find_target", found):
+            code, out = self.cli("who", "--thread", "desk/keeper")
+        self.assertEqual(code, sminos.EXIT_UNKNOWN, out)
+        self.assertNotIn('"session": "%s"' % ssid, out)
+        self.assertIn("name it again", out)
+
+    def test_r2_a_projects_seat_name_refilled_after_the_lookup_is_read_as_at_the_merge_base(self):
+        stid, ssid, new, found = self.refilled_after("g/keeper")
+        with mock.patch.object(sminos, "find_target", found):
+            code, out = self.cli("who", "--thread", "g/keeper")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out.strip().splitlines()[-1])["session"], ssid, "the lookup's snapshot, as before")
+
     def test_h3_a_projects_seat_name_reads_its_sessions_canonical_thread_as_at_the_merge_base(self):
         """B11: the binding is the channel route's alone."""
         stid, ssid, t2, found = self.reused()

@@ -20819,9 +20819,14 @@ def who_thread(name):
         # session's canonical one (a thread its human opened that an older copy seated), else the seat's own; none
         # for a seat a session of no thread holds (lane B, one the MAWS app launched), which nothing guards.
         # A seat named through a channel: the thread the name resolved (resolved_thread), never the session's
-        # canonical one read again.
+        # canonical one read again, and only while it still holds the session the lookup saw (as seat_ending binds
+        # the destructive verbs): an answer is never built from two states.
         cur = s["current"]
-        rec = threads.get(resolved_thread(s)) if resolved_thread(s) else seat_ending(s)[1]
+        bound = resolved_thread(s)
+        rec = threads.get(bound) if bound else seat_ending(s)[1]
+        if bound and (rec is None or rec["current"] != cur):
+            die("'%s': thread %s no longer holds session %s, which the name came to (seat %s/%s changed meanwhile): "
+                "name it again" % (name, bound[:8], cur[:8] or "(none)", s["group"], s["alias"]), EXIT_UNKNOWN)
         state_word = row.state if row is not None else state(s)
         answer = {"thread": rec["thread"] if rec else "", "session": cur, "alias": s["alias"],
                   "opened": rec["opened"] if rec else "", "state": state_word,
