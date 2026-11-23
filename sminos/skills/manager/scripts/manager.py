@@ -260,7 +260,8 @@ def _owner_threads(events, sessions):
     and a frame both could have received certifies neither (OwnerWords' exactly-one rule)."""
     sessions = set(sessions)
     return {e["thread"] for e in events
-            if e.get("kind") in ("joined", "retired", "channels") and e.get("session") in sessions
+            if e.get("kind") in ("joined", "retired", "channels") and isinstance(e.get("session"), str)
+            and e["session"] in sessions
             and isinstance(e.get("thread"), str) and e["thread"]
             and S.writer_session(e.get("writer") or "") == e["session"]}
 

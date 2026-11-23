@@ -536,6 +536,10 @@ class Deliveries(unittest.TestCase):
                   ev("channels", NEXT, "t-C"), ev("joined", SID, "t-D", writer="testhost/human"),
                   ev("joined", "7b00000f-0000-4000-8000-0000000000bf", "t-E"), ev("joined", SID, "")]
         self.assertEqual(manager._owner_threads(events, [SID, NEXT]), {"t-A", "t-B", "t-C"})
+        odd = [{"kind": k, "session": v, "thread": "t-X", "writer": "testhost/x"}
+               for k in ("joined", "retired", "channels") for v in (["a"], {"a": 1}, 7, None)]
+        self.assertEqual(manager._owner_threads(odd + events, [SID, NEXT]), {"t-A", "t-B", "t-C"},
+                         "F27: a session of another type is none of the lineage's")
 
     def test_no_thread_is_derived_where_no_channel_is_known(self):
         logs = [("doperpowers", PROJECT_ID, [dict(self.EVENT)])]
