@@ -1030,6 +1030,14 @@ class Roster(Machine):
         self.joined(sid, "peer-m", pt, p=dest)   # its retirement in app not imported yet
         said = self.roster(rsid)
         self.assertIn("@elsewhere/peer-m  peer-m [%s], elsewhere on beta" % sid[:8], said)
+        # Round 3's A: written in app's log too, whose row of it is the one the move left: one peer, its tag now.
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "say", **{
+            "from": "reader", "text": "hi", "to": [{"session": sid, "alias": "peer-m"}]})
+        said = self.roster(rsid)
+        self.assertEqual(said.count("peer-m [%s]" % sid[:8]), 1, said)
+        self.assertIn("@elsewhere/peer-m  peer-m [%s], elsewhere on beta" % sid[:8], said)
+        self.assertNotIn("@app/peer-m", said)
+        self.assertIn("last: you wrote it", said, "the project's exchange, the latest, is the row's")
 
     def test_one_thread_met_under_two_sessions_in_two_channels_is_one_row_named_as_it_was_last(self):
         rsid, rt = self.reader()
@@ -1136,7 +1144,7 @@ class Roster(Machine):
                                                    until=0.0), (None, False))
         self.assertEqual(index["read"], set(), "no project read past the deadline")
 
-    def test_past_the_deadline_between_channels_the_next_channel_is_not_read(self):
+    def test_past_the_deadline_on_a_channels_read_it_is_not_scanned_and_the_next_not_read(self):
         rsid, rt = self.reader()
         lobby = self.channel("0123abcd-4567-8abc-a123-456789abcdef", "lobby")
         sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "channels", session=rsid, thread=rt,
@@ -1156,7 +1164,48 @@ class Roster(Machine):
         with mock.patch.object(sminos, "log_read", log_read):
             sminos._roster_channel_exchanges(rows, context, until=1.0)
         self.assertEqual(len(read), 1, read)
-        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows, {}, "round 3's B: a log whose read returned past the deadline is not scanned")
+
+    def test_a_deadline_crossed_on_the_thread_scans_last_read_builds_no_member_and_gives_no_tag(self):
+        """Round 3's B: every project read, but the last read returned past the deadline: no member is built
+        (it reads the engine's state), and the channel peer is named untagged as one not read in time."""
+        rsid, rt = self.reader()
+        ordinary, sid = self.moved_peer(rsid, rt)
+        names = sorted(n for n in os.listdir(sminos.projects_root())
+                       if not n.startswith(".") and not sminos.is_channel_id(n))
+        move = self.clock()
+        real_index, real_known, scanning, members = sminos._roster_thread_index, sminos.known_project, [], []
+
+        def known(name, *a, **k):
+            if scanning and name == names[-1]:
+                move()
+            return real_known(name, *a, **k)
+        real_member = sminos._member
+        with mock.patch.object(sminos, "_roster_thread_index", lambda *a, **k: scanning.append(1) or real_index(*a, **k)), \
+                mock.patch.object(sminos, "known_project", known), \
+                mock.patch.object(sminos, "_member", lambda *a, **k: members.append(scanning[:]) or real_member(*a, **k)):
+            said = self.roster(rsid)
+        self.assertEqual(set(map(len, members)), {0}, "no member built once the scan began")
+        self.assertIn("@app/in-app  in-app [%s]" % ordinary[:8], said)
+        self.assertIn("channel-peer [%s], met in a channel: where its thread is now was not read in time, no tag"
+                      " given" % sid[:8], said)
+        self.assertNotIn("@elsewhere/channel-peer", said)
+
+    def test_a_peer_met_first_in_its_project_and_last_in_a_channel_that_ended_is_named_as_the_channel_named_it(self):
+        """Round 3's C: the name and the way met are the latest exchange's, whichever key found the peer."""
+        rsid, rt = self.reader()
+        sid, pt = "7e000701-0000-4000-8000-000000000701", "7e000709-0000-4000-8000-000000000709"
+        self.joined(sid, "first-name", pt)
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, rsid), "say", **{
+            "from": "reader", "text": "hi", "to": [{"session": sid, "alias": "first-name"}]})
+        time.sleep(0.002)
+        self.said(sid, pt, "chan-name", [(rsid, rt)])
+        self.joined(sid, "renamed-since", pt)
+        self.retired(sid, "retire")
+        said = self.roster(rsid)
+        self.assertIn("chan-name [%s], app on beta: its session ended, no tag reaches it" % sid[:8], said)
+        self.assertNotIn("renamed-since", said)
+        self.assertEqual(said.count("[%s]" % sid[:8]), 1, said)
 
     def test_a_reader_in_no_channel_reads_no_thread_record_for_its_project_roster(self):
         """Round 2's finding 3: whether the reader holds a channel is read from its project's statements, already

@@ -19947,7 +19947,10 @@ def _roster_channel_exchanges(rows, context, until=None):
     for c in _roster_channels(named):
         if _roster_past(until):
             break
-        for e in log_read(c):
+        events = log_read(c)
+        if _roster_past(until):   # the read returned past the deadline: its events are not scanned
+            break
+        for e in events:
             to = e.get("to")
             if e["kind"] != "say" or e.get("wake") or not isinstance(to, list) or "copy" in e:
                 continue
@@ -20091,8 +20094,8 @@ def _roster_thread_row(thread, all_seats, index, until=None):
     has not ended (has_ended: a machine the org retired ends it too), the one whose membership is newest
     (sminos_channels._newest_row's rule: two of one moment decide for neither, and none is given); with none,
     the latest of those that ended. None, with False, where the index could not be read whole in time."""
-    if not _roster_thread_index(index, until):
-        return None, False
+    if not _roster_thread_index(index, until) or _roster_past(until):
+        return None, False   # its members are not built past the deadline: they read the engine's state
 
     def at(x):
         return str(((x[0][2] or {}).get("latest") or {}).get("ts") or "")
@@ -20168,7 +20171,10 @@ def roster_text(session, launch):
     part (_roster_channel_exchanges) and the peers it adds or moves, and
     the two are ranked together. A peer met in a channel whose thread could
     not be looked for in every project in time is given by its message's
-    name with no tag: a tag chosen from a part of them may be a stale one."""
+    name with no tag: a tag chosen from a part of them may be a stale one.
+    A peer met in a project whose row there is stamped with a thread found
+    whole is that thread's one row; a peer's name, and whether it was met
+    in a channel, are its latest exchange's."""
     until = roster_clock() + ROSTER_BUDGET
     here = session_project(session, launch)
     if here is None:
@@ -20198,20 +20204,38 @@ def roster_text(session, launch):
             if pkey in peers:   # two sessions of one member
                 peers[pkey]["keys"].append(key)
                 continue
-            peers[pkey] = {"now": now, "sid": sid, "keys": [key], "thread": thread, "complete": complete}
+            peers[pkey] = {"now": now, "keys": [key], "thread": thread, "complete": complete}
             added += 1
+
+    def merge_threads():
+        # A peer met in a project whose row there carries the stamp of a thread a channel's lookup found whole is
+        # that thread's: the lookup read every project, the project's row may be one its move has left.
+        found = {peer["thread"]: pkey for pkey, peer in peers.items()
+                 if peer["thread"] and peer["complete"] and peer["now"] is not None}
+        for pkey, peer in list(peers.items()):
+            if peer["thread"] or peer["now"] is None:
+                continue
+            _, m, _, info = peer["now"]
+            into = found.get(info_thread(info.get(m.session)))
+            if into is not None and into != pkey:
+                peers[into]["keys"] += peer.pop("keys")
+                del peers[pkey]
 
     resolve([k for k in rows if k[0] != ROSTER_THREAD])
     before = {k: last(r) for k, r in rows.items()}
     holds = _roster_channel_exchanges(rows, context, until)
     resolve([k for k in rows if k not in tried and (k[0] == ROSTER_THREAD or before.get(k) != last(rows[k]))])
+    merge_threads()
     # A reader in a channel: resolve_tag matches its bare alias in the rosters it shares too (CH2's M1).
     qualify = bool(peers) and holds
     ranked = sorted(peers.values(), key=lambda peer: max(last(rows[k]) for k in peer["keys"]), reverse=True)
     lines = []
     for peer in ranked[:ROSTER_CAP]:
-        now, sid, thread = peer["now"], peer["sid"], peer["thread"]
-        row = dict(max((rows[k] for k in peer["keys"]), key=last))
+        # What it is called and how it was met are the latest exchange's (`won`), whichever key found it.
+        won = max(peer["keys"], key=lambda k: last(rows[k]))
+        now, row = peer["now"], dict(rows[won])
+        thread = won[1] if won[0] == ROSTER_THREAD else ""
+        sid = row["session"] if thread else won[1]
         row["in"], row["out"] = max(rows[k]["in"] for k in peer["keys"]), max(rows[k]["out"] for k in peer["keys"])
         when = last(row)
         way = "it wrote you" if row["in"] == when else "you wrote it"
