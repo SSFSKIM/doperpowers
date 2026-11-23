@@ -680,6 +680,36 @@ class Outsider(Say):
         self.assertEqual(len(self.got(received, "to both")), 1)
         self.assertEqual(len(self.got(lreceived, "to both")), 1)
 
+    def test_two_threads_that_left_on_two_streams_each_told_sent_only_once_its_own_event_is_appended(self):
+        """Two former members of one project whose audiences differ are two events of one say: each `sent to it
+        directly` is said with its own event's append, so where the second append fails only the first is."""
+        self.au.keep_capabilities(["channels", "access"])
+        rtid, rsid, received = self.live("reader")
+        ltid, lsid, lreceived = self.live("listed")
+        stid, ssid, _ = self.live("writer")
+        self.removed(rtid, rsid)
+        self.removed(ltid, lsid)
+        self.private(rsid)
+        for sid in (lsid, ssid):
+            self.heard(sid)
+        real, calls = sminos.log_append, []
+
+        def second_fails(project, writer, kind, **fields):
+            if project.id == self.p.id and kind == "say":
+                calls.append(fields.get("to"))
+                if len(calls) == 2:
+                    raise OSError("disk full")
+            return real(project, writer, kind, **fields)
+        with mock.patch.object(sminos, "log_append", second_fails):
+            code, out = self.as_session(ssid, "say", "@desk/%s @desk/%s to both" % (rtid[:8], ltid[:8]))
+        self.assertEqual(code, 1, out)
+        [first] = [to for to in calls[:1]]
+        sent = [ln for ln in out.splitlines() if "sent to it directly" in ln]
+        short = {rsid: rtid[:8], lsid: ltid[:8]}[first[0]["session"]]
+        self.assertEqual(sent, ["@desk/%s is not in desk now: sent to it directly, in %s" % (short, self.p.name)],
+                         "the appended one's alone")
+        self.assertIn("say could not be recorded: disk full", out)
+
 
 # ------------------------------------------------------------ what a recipient's line says, and an older row
 

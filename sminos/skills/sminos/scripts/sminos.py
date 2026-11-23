@@ -10836,9 +10836,10 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
     then: the fields its events add (the sender's `thread`, an outsider's
     `from_project`), whether a copy is kept, the line said after the
     `recorded` lines, and the roster's rows deliver_say reads.
-    `told`: lines said once the first event is appended, before its
+    `told`: [(a recipient's session, a line)], each line said once the
+    event that carries its recipient is appended, before that event's
     `recorded` line (a channel's reply rerouted to a thread that left it):
-    a refusal, or an append that fails, says none of them."""
+    a refusal, or an append that fails, says none of its lines."""
     if sid:
         if wake:
             recipients = [r for r in recipients if r["session"] != sid]
@@ -10869,9 +10870,9 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
             e = log_append(dest, split_writer, kind, **fields)
         except OSError as err:
             die("say could not be recorded: %s" % err, 1)
-        for line in told:
+        here = {r["session"] for r in rs}
+        for line in [line for who, line in told if who in here]:
             print(line)
-        told = ()
         if e["seq"] is None:
             print(waits_line(dest, split_writer))
             continue

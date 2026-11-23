@@ -2032,7 +2032,7 @@ def speak(channel, a, session, tags):
             [(dest, got)] = outs.values()
             direct, draws, told = [], [], []
             for t, m, place in got:
-                told.append(SENT_DIRECTLY % (t["raw"], channel.name, dest.name))
+                told.append((m.session, SENT_DIRECTLY % (t["raw"], channel.name, dest.name)))
                 at = next((j for j, x in enumerate(direct) if x["session"] == m.session), None)
                 if at is None:
                     direct.append({"session": m.session, "alias": m.alias})
